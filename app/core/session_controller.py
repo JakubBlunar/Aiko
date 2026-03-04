@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from app.audio.mic_capture import MicrophoneCapture
 from app.audio.system_loopback import SystemLoopbackCapture
 from app.core.settings import AppSettings
 from app.core.turn_manager import TurnInput, TurnManager
 from app.llm.ollama_client import OllamaClient
+from app.stt.whisper_service import WhisperService
 from app.tts.piper_service import PiperTtsService
 from app.vision.ocr import OcrService
 from app.vision.screen_capture import ScreenCaptureService
@@ -26,6 +28,7 @@ class SessionController:
         self._ollama = OllamaClient(settings.ollama)
         self._microphone = MicrophoneCapture(settings.audio)
         self._loopback = SystemLoopbackCapture(settings.audio)
+        self._whisper = WhisperService()
         self._screen = ScreenCaptureService(settings.screen)
         self._ocr = OcrService()
         self._tts = PiperTtsService(settings.tts)
@@ -54,7 +57,7 @@ class SessionController:
 
         system_audio_text = None
         if self._state.system_audio_enabled:
-            system_audio_text = self._loopback.peek_context_text()
+            system_audio_text = self._transcribe_system_audio(seconds=2.0)
 
         messages = self._turn_manager.build_chat_messages(
             TurnInput(
@@ -74,3 +77,46 @@ class SessionController:
 
         self._tts.speak_async(response)
         return response
+
+    def record_and_chat(self, seconds: float = 5.0) -> tuple[str, str]:
+        if not self._state.mic_enabled:
+            raise RuntimeError("Microphone source is disabled. Enable it and try again.")
+
+        if not self._whisper.is_available:
+            raise RuntimeError(
+                "Whisper is not installed. Install AI extras with: pip install -e .[ai]"
+            )
+
+        wav_path = self._microphone.capture_to_wav(seconds=seconds)
+        try:
+            text = self._whisper.transcribe(str(wav_path))
+        finally:
+            self._safe_unlink(wav_path)
+
+        if not text:
+            raise RuntimeError("No speech was detected from microphone audio.")
+
+        response = self.chat_once(text)
+        return text, response
+
+    def _transcribe_system_audio(self, seconds: float) -> str | None:
+        if not self._whisper.is_available:
+            return None
+
+        samples = self._loopback.capture_seconds(seconds=seconds)
+        if samples is None:
+            return None
+
+        wav_path = self._microphone.create_temp_wav_path(prefix="assistant_loopback_")
+        try:
+            self._microphone.write_wav(samples=samples, target_path=wav_path)
+            return self._whisper.transcribe(str(wav_path))
+        finally:
+            self._safe_unlink(wav_path)
+
+    @staticmethod
+    def _safe_unlink(path: Path) -> None:
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            return

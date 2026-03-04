@@ -11,8 +11,13 @@ class WhisperService:
         except Exception:
             self._model = None
 
+    @property
+    def is_available(self) -> bool:
+        return self._model is not None
+
     def transcribe(self, audio_path: str) -> str | None:
         if self._model is None:
             return None
         segments, _ = self._model.transcribe(audio_path)
-        return " ".join(segment.text.strip() for segment in segments if segment.text)
+        text = " ".join(segment.text.strip() for segment in segments if segment.text)
+        return text.strip() or None

@@ -66,8 +66,11 @@ class MainWindow(QMainWindow):
         self._input.returnPressed.connect(self._send)
         self._send_button = QPushButton("Send")
         self._send_button.clicked.connect(self._send)
+        self._record_button = QPushButton("Record 5s")
+        self._record_button.clicked.connect(self._record_and_send)
         input_row.addWidget(self._input, stretch=1)
         input_row.addWidget(self._send_button)
+        input_row.addWidget(self._record_button)
         layout.addLayout(input_row)
 
         self._hint = QLabel("Tip: Start Ollama first (`ollama serve`) and ensure your model is pulled.")
@@ -103,6 +106,7 @@ class MainWindow(QMainWindow):
 
         self._status.set_service_status("thinking")
         self._send_button.setEnabled(False)
+        self._record_button.setEnabled(False)
         self._apply_sources_button.setEnabled(False)
 
         try:
@@ -112,6 +116,25 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Assistant error", str(exc))
         finally:
             self._send_button.setEnabled(True)
+            self._record_button.setEnabled(True)
+            self._apply_sources_button.setEnabled(True)
+            self._status.set_service_status("ready")
+
+    def _record_and_send(self) -> None:
+        self._status.set_service_status("recording")
+        self._send_button.setEnabled(False)
+        self._record_button.setEnabled(False)
+        self._apply_sources_button.setEnabled(False)
+
+        try:
+            user_text, reply = self._session.record_and_chat(seconds=5.0)
+            self._append("You (voice)", user_text)
+            self._append("Assistant", reply)
+        except Exception as exc:
+            QMessageBox.critical(self, "Voice error", str(exc))
+        finally:
+            self._send_button.setEnabled(True)
+            self._record_button.setEnabled(True)
             self._apply_sources_button.setEnabled(True)
             self._status.set_service_status("ready")
 
