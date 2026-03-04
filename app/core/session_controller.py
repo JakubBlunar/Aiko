@@ -37,6 +37,8 @@ class SessionController:
         self._tts = PiperTtsService(settings.tts)
         self._system_audio_context: deque[str] = deque(maxlen=4)
         self._last_system_audio_capture_at = 0.0
+        self._vad_level_threshold = settings.audio.vad_level_threshold
+        self._vad_silence_seconds = settings.audio.vad_silence_seconds
 
         self._state = SessionState(
             mic_enabled=settings.audio.enable_microphone,
@@ -64,6 +66,20 @@ class SessionController:
 
     def set_loopback_device(self, device_index: int | None) -> None:
         self._loopback.set_device(device_index)
+
+    @property
+    def vad_level_threshold(self) -> float:
+        return self._vad_level_threshold
+
+    @property
+    def vad_silence_seconds(self) -> float:
+        return self._vad_silence_seconds
+
+    def set_vad_level_threshold(self, value: float) -> None:
+        self._vad_level_threshold = max(0.001, min(value, 0.5))
+
+    def set_vad_silence_seconds(self, value: float) -> None:
+        self._vad_silence_seconds = max(0.2, min(value, 3.0))
 
     def chat_once(self, user_text: str) -> str:
         return self.chat_once_streaming(user_text=user_text)
@@ -144,6 +160,7 @@ class SessionController:
         stop_requested: Callable[[], bool] | None = None,
         max_listen_seconds: float = 12.0,
         on_token: Callable[[str], None] | None = None,
+        on_audio_level: Callable[[float], None] | None = None,
     ) -> tuple[str, str] | None:
         if not self._state.mic_enabled:
             raise RuntimeError("Microphone source is disabled. Enable it and try again.")
@@ -155,10 +172,11 @@ class SessionController:
 
         wav_path = self._microphone.capture_phrase_to_wav(
             max_seconds=max_listen_seconds,
-            silence_seconds_to_stop=1.0,
-            level_threshold=0.02,
+            silence_seconds_to_stop=self._vad_silence_seconds,
+            level_threshold=self._vad_level_threshold,
             stop_requested=stop_requested,
             on_speech_start=self._tts.stop,
+            on_audio_level=on_audio_level,
         )
         if wav_path is None:
             return None

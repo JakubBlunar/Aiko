@@ -9,6 +9,7 @@ from app.core.session_controller import SessionController
 
 class LivePracticeWorker(QObject):
     status = Signal(str)
+    level = Signal(float)
     heard = Signal(str)
     replying = Signal(str)
     replied = Signal(str)
@@ -28,6 +29,7 @@ class LivePracticeWorker(QObject):
                 turn = self._session.listen_once_and_chat(
                     stop_requested=self._is_stop_requested,
                     on_token=self.replying.emit,
+                    on_audio_level=self.level.emit,
                 )
                 if turn is None:
                     continue

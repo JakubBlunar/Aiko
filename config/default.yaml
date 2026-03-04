@@ -15,6 +15,8 @@ audio:
   enable_system_audio: false
   microphone_device: null
   loopback_device: null
+  vad_level_threshold: 0.02
+  vad_silence_seconds: 1.0
 
 screen:
   enable_screen_context: false

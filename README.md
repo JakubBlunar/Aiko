@@ -58,3 +58,5 @@ python -m app.main
 - Live mode supports barge-in: when your speech starts, current assistant audio playback is stopped.
 - Use `Refresh Devices` in the UI to pick a specific microphone or loopback source.
 - System audio context is captured in short intervals and buffered into recent transcript snippets for prompt grounding.
+- Tune `VAD Threshold` and `Silence Stop` from the UI calibration row to improve phrase detection in noisy or quiet rooms.
+- The live input meter helps you pick a threshold where normal speech is above ~50% and room noise stays low.

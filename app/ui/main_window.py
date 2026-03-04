@@ -5,11 +5,13 @@ from PySide6.QtGui import QCloseEvent, QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QTextEdit,
     QVBoxLayout,
@@ -76,6 +78,38 @@ class MainWindow(QMainWindow):
         capture_row.addStretch(1)
         layout.addLayout(capture_row)
 
+        calibration_row = QHBoxLayout()
+        calibration_row.addWidget(QLabel("VAD Threshold:"))
+        self._vad_threshold_spin = QDoubleSpinBox()
+        self._vad_threshold_spin.setDecimals(3)
+        self._vad_threshold_spin.setRange(0.001, 0.500)
+        self._vad_threshold_spin.setSingleStep(0.005)
+        self._vad_threshold_spin.setValue(self._session.vad_level_threshold)
+        calibration_row.addWidget(self._vad_threshold_spin)
+
+        calibration_row.addWidget(QLabel("Silence Stop (s):"))
+        self._vad_silence_spin = QDoubleSpinBox()
+        self._vad_silence_spin.setDecimals(1)
+        self._vad_silence_spin.setRange(0.2, 3.0)
+        self._vad_silence_spin.setSingleStep(0.1)
+        self._vad_silence_spin.setValue(self._session.vad_silence_seconds)
+        calibration_row.addWidget(self._vad_silence_spin)
+
+        calibration_row.addWidget(QLabel("Input Level:"))
+        self._input_level_bar = QProgressBar()
+        self._input_level_bar.setRange(0, 100)
+        self._input_level_bar.setValue(0)
+        self._input_level_bar.setTextVisible(True)
+        self._input_level_bar.setFormat("%p%")
+        self._input_level_bar.setMinimumWidth(180)
+        calibration_row.addWidget(self._input_level_bar)
+
+        self._apply_calibration_button = QPushButton("Apply Calibration")
+        self._apply_calibration_button.clicked.connect(self._apply_calibration)
+        calibration_row.addWidget(self._apply_calibration_button)
+        calibration_row.addStretch(1)
+        layout.addLayout(calibration_row)
+
         layout.addWidget(QLabel("Conversation"))
         self._conversation = QTextEdit()
         self._conversation.setReadOnly(True)
@@ -129,6 +163,10 @@ class MainWindow(QMainWindow):
             screen=self._screen_checkbox.isChecked(),
         )
         self._refresh_status()
+
+    def _apply_calibration(self) -> None:
+        self._session.set_vad_level_threshold(self._vad_threshold_spin.value())
+        self._session.set_vad_silence_seconds(self._vad_silence_spin.value())
 
     def _refresh_audio_devices(self) -> None:
         current_mic = self._mic_device_combo.currentData()
@@ -188,6 +226,7 @@ class MainWindow(QMainWindow):
 
         self._live_thread.started.connect(self._live_worker.run)
         self._live_worker.status.connect(self._status.set_service_status)
+        self._live_worker.level.connect(self._on_live_audio_level)
         self._live_worker.heard.connect(lambda text: self._append("You (live)", text))
         self._live_worker.heard.connect(self._reset_live_stream)
         self._live_worker.replying.connect(self._append_live_stream_token)
@@ -205,6 +244,7 @@ class MainWindow(QMainWindow):
         self._stop_live_button.setEnabled(True)
         self._apply_sources_button.setEnabled(False)
         self._refresh_devices_button.setEnabled(False)
+        self._apply_calibration_button.setEnabled(False)
 
         self._live_thread.start()
 
@@ -224,8 +264,10 @@ class MainWindow(QMainWindow):
         self._stop_live_button.setEnabled(False)
         self._apply_sources_button.setEnabled(True)
         self._refresh_devices_button.setEnabled(True)
+        self._apply_calibration_button.setEnabled(True)
         self._status.set_service_status("ready")
         self._close_live_stream()
+        self._input_level_bar.setValue(0)
 
         self._live_worker = None
 
@@ -245,6 +287,7 @@ class MainWindow(QMainWindow):
         self._record_button.setEnabled(False)
         self._apply_sources_button.setEnabled(False)
         self._refresh_devices_button.setEnabled(False)
+        self._apply_calibration_button.setEnabled(False)
 
         try:
             user_text, reply = self._session.record_and_chat(seconds=5.0)
@@ -257,6 +300,7 @@ class MainWindow(QMainWindow):
             self._record_button.setEnabled(True)
             self._apply_sources_button.setEnabled(True)
             self._refresh_devices_button.setEnabled(True)
+            self._apply_calibration_button.setEnabled(True)
             self._status.set_service_status("ready")
 
     def _append(self, speaker: str, text: str) -> None:
@@ -288,3 +332,7 @@ class MainWindow(QMainWindow):
         if self._live_stream_open:
             self._conversation.append("")
         self._live_stream_open = False
+
+    def _on_live_audio_level(self, level: float) -> None:
+        normalized = max(0.0, min(level / max(self._session.vad_level_threshold * 2.0, 1e-6), 1.0))
+        self._input_level_bar.setValue(int(normalized * 100))

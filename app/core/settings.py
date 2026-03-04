@@ -22,6 +22,8 @@ class AudioSettings:
     enable_system_audio: bool
     microphone_device: int | None
     loopback_device: int | None
+    vad_level_threshold: float
+    vad_silence_seconds: float
 
 
 @dataclass(slots=True)
@@ -94,6 +96,8 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             loopback_device=(
                 int(audio["loopback_device"]) if audio.get("loopback_device") is not None else None
             ),
+            vad_level_threshold=float(audio.get("vad_level_threshold", 0.02)),
+            vad_silence_seconds=float(audio.get("vad_silence_seconds", 1.0)),
         ),
         screen=ScreenSettings(
             enable_screen_context=bool(_required(screen, "enable_screen_context")),

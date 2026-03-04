@@ -75,6 +75,7 @@ class MicrophoneCapture:
         level_threshold: float = 0.02,
         stop_requested: Callable[[], bool] | None = None,
         on_speech_start: Callable[[], None] | None = None,
+        on_audio_level: Callable[[float], None] | None = None,
     ) -> np.ndarray | None:
         sample_rate = self._settings.sample_rate
         channels = self._settings.channels
@@ -106,6 +107,8 @@ class MicrophoneCapture:
 
                 chunk, _overflow = stream.read(chunk_frames)
                 level = float(np.sqrt(np.mean(np.square(chunk))))
+                if on_audio_level:
+                    on_audio_level(level)
 
                 if not speech_started:
                     pre_roll.append(chunk.copy())
@@ -138,6 +141,7 @@ class MicrophoneCapture:
         level_threshold: float = 0.02,
         stop_requested: Callable[[], bool] | None = None,
         on_speech_start: Callable[[], None] | None = None,
+        on_audio_level: Callable[[float], None] | None = None,
     ) -> Path | None:
         samples = self.capture_phrase(
             max_seconds=max_seconds,
@@ -145,6 +149,7 @@ class MicrophoneCapture:
             level_threshold=level_threshold,
             stop_requested=stop_requested,
             on_speech_start=on_speech_start,
+            on_audio_level=on_audio_level,
         )
         if samples is None:
             return None
