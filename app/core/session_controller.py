@@ -11,6 +11,7 @@ from app.audio.system_loopback import SystemLoopbackCapture
 from app.core.settings import AppSettings
 from app.core.turn_manager import TurnInput, TurnManager
 from app.llm.ollama_client import OllamaClient
+from app.llm.prompt_builder import available_personalities
 from app.stt.whisper_service import WhisperService
 from app.tts.piper_service import PiperTtsService
 from app.vision.ocr import OcrService
@@ -41,6 +42,7 @@ class SessionController:
         self._vad_silence_seconds = settings.audio.vad_silence_seconds
         self._microphone_device = settings.audio.microphone_device
         self._loopback_device = settings.audio.loopback_device
+        self._personality = settings.assistant.personality
 
         self._state = SessionState(
             mic_enabled=settings.audio.enable_microphone,
@@ -93,6 +95,17 @@ class SessionController:
     def set_vad_silence_seconds(self, value: float) -> None:
         self._vad_silence_seconds = max(0.2, min(value, 3.0))
 
+    @property
+    def personality(self) -> str:
+        return self._personality
+
+    def list_personalities(self) -> list[str]:
+        return available_personalities()
+
+    def set_personality(self, value: str) -> None:
+        valid = set(available_personalities())
+        self._personality = value if value in valid else "friendly"
+
     def chat_once(self, user_text: str) -> str:
         return self.chat_once_streaming(user_text=user_text)
 
@@ -118,6 +131,7 @@ class SessionController:
                 user_text=user_text,
                 screen_text=screen_text,
                 system_audio_text=system_audio_text,
+                personality=self._personality,
             )
         )
 

@@ -61,3 +61,4 @@ python -m app.main
 - System audio context is captured in short intervals and buffered into recent transcript snippets for prompt grounding.
 - Tune `VAD Threshold` and `Silence Stop` from the UI calibration row to improve phrase detection in noisy or quiet rooms.
 - The live input meter helps you pick a threshold where normal speech is above ~50% and room noise stays low.
+- Personality profiles (`Friendly`, `Coach`, `Interviewer`) can be selected from the UI and are persisted to local user config.

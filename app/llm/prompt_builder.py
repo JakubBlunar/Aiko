@@ -3,19 +3,40 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+PERSONALITY_SYSTEM_PROMPTS: dict[str, str] = {
+    "friendly": (
+        "You are a friendly English conversation partner helping the user improve fluency and response speed. "
+        "Keep replies concise, natural, and easy to continue. "
+        "Do not force grammar corrections unless the user asks."
+    ),
+    "coach": (
+        "You are an English speaking coach focused on fluency. "
+        "Use supportive tone, give short practical suggestions, and keep conversation natural. "
+        "Only correct mistakes when they block understanding or when user asks."
+    ),
+    "interviewer": (
+        "You are an English interviewer for practice. "
+        "Ask realistic follow-up questions and keep a professional but friendly tone. "
+        "Prioritize helping the user think and respond quickly in English."
+    ),
+}
+
+
 @dataclass(slots=True)
 class PromptContext:
     user_text: str
     screen_text: str | None = None
     system_audio_text: str | None = None
+    personality: str = "friendly"
+
+
+def available_personalities() -> list[str]:
+    return list(PERSONALITY_SYSTEM_PROMPTS.keys())
 
 
 def build_messages(context: PromptContext) -> list[dict[str, str]]:
-    system = (
-        "You are a friendly English conversation partner helping the user improve fluency and response speed. "
-        "Keep replies concise, natural, and easy to continue. "
-        "Do not force grammar corrections unless the user asks."
-    )
+    personality_key = (context.personality or "friendly").strip().lower()
+    system = PERSONALITY_SYSTEM_PROMPTS.get(personality_key, PERSONALITY_SYSTEM_PROMPTS["friendly"])
 
     additional: list[str] = []
     if context.screen_text:

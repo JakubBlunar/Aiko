@@ -37,6 +37,7 @@ class AssistantSettings:
     name: str
     mode: str
     remember_history: bool
+    personality: str
 
 
 @dataclass(slots=True)
@@ -99,6 +100,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             name=_required(assistant, "name"),
             mode=_required(assistant, "mode"),
             remember_history=bool(_required(assistant, "remember_history")),
+            personality=str(assistant.get("personality", "friendly")),
         ),
         ollama=OllamaSettings(
             base_url=_required(ollama, "base_url"),
@@ -133,6 +135,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
 
 def save_runtime_preferences(
     *,
+    personality: str,
     microphone_device: int | None,
     loopback_device: int | None,
     vad_level_threshold: float,
@@ -147,6 +150,9 @@ def save_runtime_preferences(
 
     current = _read_yaml(target)
     updates: dict[str, Any] = {
+        "assistant": {
+            "personality": personality,
+        },
         "audio": {
             "microphone_device": microphone_device,
             "loopback_device": loopback_device,

@@ -2,6 +2,7 @@ assistant:
   name: "English Speaking Assistant"
   mode: "natural_chat"
   remember_history: false
+  personality: "friendly"
 
 ollama:
   base_url: "http://127.0.0.1:11434"

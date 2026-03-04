@@ -72,6 +72,12 @@ class MainWindow(QMainWindow):
         self._refresh_devices_button.clicked.connect(self._refresh_audio_devices)
         capture_row.addWidget(self._refresh_devices_button)
 
+        capture_row.addWidget(QLabel("Personality:"))
+        self._personality_combo = QComboBox()
+        self._personality_combo.setMinimumWidth(140)
+        self._personality_combo.currentIndexChanged.connect(self._on_personality_changed)
+        capture_row.addWidget(self._personality_combo)
+
         self._apply_sources_button = QPushButton("Apply Sources")
         self._apply_sources_button.clicked.connect(self._apply_sources)
         capture_row.addWidget(self._apply_sources_button)
@@ -141,6 +147,7 @@ class MainWindow(QMainWindow):
 
         self._refresh_status()
         self._refresh_audio_devices()
+        self._refresh_personalities()
         self._apply_calibration()
 
     def _refresh_status(self) -> None:
@@ -163,6 +170,7 @@ class MainWindow(QMainWindow):
             system_audio=self._system_checkbox.isChecked(),
             screen=self._screen_checkbox.isChecked(),
         )
+        self._session.set_personality(str(self._personality_combo.currentData() or "friendly"))
         self._persist_preferences()
         self._refresh_status()
 
@@ -199,8 +207,25 @@ class MainWindow(QMainWindow):
         if loopback_index >= 0:
             self._loopback_device_combo.setCurrentIndex(loopback_index)
 
+    def _refresh_personalities(self) -> None:
+        current = self._session.personality
+        self._personality_combo.clear()
+        for key in self._session.list_personalities():
+            self._personality_combo.addItem(key.title(), key)
+
+        index = self._personality_combo.findData(current)
+        if index < 0:
+            index = self._personality_combo.findData("friendly")
+        if index >= 0:
+            self._personality_combo.setCurrentIndex(index)
+
+    def _on_personality_changed(self) -> None:
+        self._session.set_personality(str(self._personality_combo.currentData() or "friendly"))
+        self._persist_preferences()
+
     def _persist_preferences(self) -> None:
         save_runtime_preferences(
+            personality=str(self._personality_combo.currentData() or "friendly"),
             microphone_device=self._mic_device_combo.currentData(),
             loopback_device=self._loopback_device_combo.currentData(),
             vad_level_threshold=self._session.vad_level_threshold,
@@ -262,6 +287,7 @@ class MainWindow(QMainWindow):
         self._stop_live_button.setEnabled(True)
         self._apply_sources_button.setEnabled(False)
         self._refresh_devices_button.setEnabled(False)
+        self._personality_combo.setEnabled(False)
         self._apply_calibration_button.setEnabled(False)
 
         self._live_thread.start()
@@ -282,6 +308,7 @@ class MainWindow(QMainWindow):
         self._stop_live_button.setEnabled(False)
         self._apply_sources_button.setEnabled(True)
         self._refresh_devices_button.setEnabled(True)
+        self._personality_combo.setEnabled(True)
         self._apply_calibration_button.setEnabled(True)
         self._status.set_service_status("ready")
         self._close_live_stream()
@@ -305,6 +332,7 @@ class MainWindow(QMainWindow):
         self._record_button.setEnabled(False)
         self._apply_sources_button.setEnabled(False)
         self._refresh_devices_button.setEnabled(False)
+        self._personality_combo.setEnabled(False)
         self._apply_calibration_button.setEnabled(False)
 
         try:
@@ -318,6 +346,7 @@ class MainWindow(QMainWindow):
             self._record_button.setEnabled(True)
             self._apply_sources_button.setEnabled(True)
             self._refresh_devices_button.setEnabled(True)
+            self._personality_combo.setEnabled(True)
             self._apply_calibration_button.setEnabled(True)
             self._status.set_service_status("ready")
 

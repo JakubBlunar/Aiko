@@ -10,6 +10,7 @@ class TurnInput:
     user_text: str
     screen_text: str | None = None
     system_audio_text: str | None = None
+    personality: str = "friendly"
 
 
 class TurnManager:
@@ -18,5 +19,6 @@ class TurnManager:
             user_text=turn_input.user_text,
             screen_text=turn_input.screen_text,
             system_audio_text=turn_input.system_audio_text,
+            personality=turn_input.personality,
         )
         return build_messages(context)
