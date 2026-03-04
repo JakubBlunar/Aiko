@@ -3,6 +3,7 @@ assistant:
   mode: "natural_chat"
   remember_history: true
   personality: "friendly"
+  background: ""
   thinking_model: null
 
 autonomy:

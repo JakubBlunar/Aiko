@@ -28,6 +28,8 @@ class PromptContext:
     screen_text: str | None = None
     system_audio_text: str | None = None
     personality: str = "friendly"
+    persona_background: str | None = None
+    persona_user_notes: list[str] | None = None
     memory_messages: list[dict[str, str]] | None = None
     assistant_strategy: str | None = None
     active_goal: str | None = None
@@ -40,6 +42,22 @@ def available_personalities() -> list[str]:
 def build_messages(context: PromptContext) -> list[dict[str, str]]:
     personality_key = (context.personality or "friendly").strip().lower()
     system = PERSONALITY_SYSTEM_PROMPTS.get(personality_key, PERSONALITY_SYSTEM_PROMPTS["friendly"])
+
+    persona_lines: list[str] = []
+    background = str(context.persona_background or "").strip()
+    if background:
+        persona_lines.append(f"Assistant background: {background}")
+
+    notes = context.persona_user_notes or []
+    if notes:
+        persona_lines.append("Known user profile notes:")
+        for note in notes[-6:]:
+            cleaned = str(note).strip()
+            if cleaned:
+                persona_lines.append(f"- {cleaned}")
+
+    if persona_lines:
+        system = f"{system}\n\n" + "\n".join(persona_lines)
 
     additional: list[str] = []
     if context.active_goal:

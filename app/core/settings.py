@@ -50,6 +50,7 @@ class AssistantSettings:
     mode: str
     remember_history: bool
     personality: str
+    background: str
     thinking_model: str | None
 
 
@@ -230,6 +231,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             mode=_required(assistant, "mode"),
             remember_history=bool(_required(assistant, "remember_history")),
             personality=str(assistant.get("personality", "friendly")),
+            background=str(assistant.get("background", "")).strip(),
             thinking_model=(
                 str(assistant.get("thinking_model")).strip()
                 if assistant.get("thinking_model") is not None

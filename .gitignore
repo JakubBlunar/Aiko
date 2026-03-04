@@ -7,5 +7,6 @@ dist/
 config/user.yaml
 data/conversation_memory.jsonl
 data/crashlog.txt
+data/persona_profile.json
 models/
 *.wav

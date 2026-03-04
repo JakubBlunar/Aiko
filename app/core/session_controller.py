@@ -14,6 +14,7 @@ from app.actions.executor import ActionExecutionResult, GuardedActionExecutor, P
 from app.audio.mic_capture import MicrophoneCapture
 from app.core.conversation_memory import ConversationMemoryStore
 from app.core.crash_logging import log_event
+from app.core.persona_profile import PersonaProfileStore
 from app.audio.system_loopback import SystemLoopbackCapture
 from app.core.settings import AppSettings, OllamaSettings
 from app.core.turn_manager import TurnInput, TurnManager
@@ -81,6 +82,7 @@ class SessionController:
         self._personality = settings.assistant.personality
         self._remember_history = settings.assistant.remember_history
         self._memory = ConversationMemoryStore()
+        self._persona = PersonaProfileStore(assistant_background=settings.assistant.background)
         self._active_goal = settings.autonomy.default_goal
         self._last_screen_capture_at = 0.0
         self._last_screen_decision_at = 0.0
@@ -603,6 +605,8 @@ class SessionController:
                 screen_text=screen_text,
                 system_audio_text=system_audio_text,
                 personality=self._personality,
+                persona_background=self._persona.get_assistant_background(),
+                persona_user_notes=self._persona.get_user_notes(max_notes=6),
                 memory_messages=(self._memory.recent_messages(12) if self._remember_history else None),
                 assistant_strategy=autonomy_plan.strategy,
                 active_goal=self._active_goal,
@@ -651,6 +655,11 @@ class SessionController:
         if self._remember_history:
             self._memory.add(role="user", content=user_text)
             self._memory.add(role="assistant", content=response)
+
+        try:
+            self._persona.update_from_user_text(user_text)
+        except Exception:
+            pass
 
         tts_started = time.perf_counter()
         tts_ms = 0.0
