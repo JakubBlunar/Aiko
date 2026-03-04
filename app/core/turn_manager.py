@@ -12,6 +12,8 @@ class TurnInput:
     system_audio_text: str | None = None
     personality: str = "friendly"
     memory_messages: list[dict[str, str]] | None = None
+    assistant_strategy: str | None = None
+    active_goal: str | None = None
 
 
 class TurnManager:
@@ -22,5 +24,7 @@ class TurnManager:
             system_audio_text=turn_input.system_audio_text,
             personality=turn_input.personality,
             memory_messages=turn_input.memory_messages,
+            assistant_strategy=turn_input.assistant_strategy,
+            active_goal=turn_input.active_goal,
         )
         return build_messages(context)

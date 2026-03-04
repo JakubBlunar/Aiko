@@ -6,3 +6,6 @@ build/
 dist/
 config/user.yaml
 data/conversation_memory.jsonl
+data/crashlog.txt
+models/
+*.wav

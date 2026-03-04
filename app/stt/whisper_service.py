@@ -2,8 +2,9 @@ from __future__ import annotations
 
 
 class WhisperService:
-    def __init__(self, model_name: str = "base") -> None:
+    def __init__(self, model_name: str = "base", language: str | None = None) -> None:
         self._model = None
+        self._language = (language or "").strip() or None
         try:
             from faster_whisper import WhisperModel
 
@@ -18,6 +19,9 @@ class WhisperService:
     def transcribe(self, audio_path: str) -> str | None:
         if self._model is None:
             return None
-        segments, _ = self._model.transcribe(audio_path)
+        kwargs: dict[str, str] = {}
+        if self._language:
+            kwargs["language"] = self._language
+        segments, _ = self._model.transcribe(audio_path, **kwargs)
         text = " ".join(segment.text.strip() for segment in segments if segment.text)
         return text.strip() or None

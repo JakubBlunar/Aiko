@@ -73,6 +73,8 @@ class MicrophoneCapture:
         max_seconds: float = 12.0,
         silence_seconds_to_stop: float = 1.0,
         level_threshold: float = 0.02,
+        min_speech_seconds_before_stop: float = 1.2,
+        speech_start_grace_seconds: float = 0.5,
         stop_requested: Callable[[], bool] | None = None,
         on_speech_start: Callable[[], None] | None = None,
         on_audio_level: Callable[[float], None] | None = None,
@@ -83,10 +85,13 @@ class MicrophoneCapture:
         pre_roll_chunks = 4
 
         silence_chunks_to_stop = max(1, int(silence_seconds_to_stop / 0.1))
+        min_speech_chunks_before_stop = max(1, int(min_speech_seconds_before_stop / 0.1))
+        speech_start_grace_chunks = max(0, int(speech_start_grace_seconds / 0.1))
         pre_roll: deque[np.ndarray] = deque(maxlen=pre_roll_chunks)
         captured: list[np.ndarray] = []
         speech_started = False
         silence_chunks = 0
+        spoken_chunks = 0
 
         started_at = time.monotonic()
 
@@ -114,18 +119,26 @@ class MicrophoneCapture:
                     pre_roll.append(chunk.copy())
                     if level >= level_threshold:
                         speech_started = True
+                        spoken_chunks = 0
                         if on_speech_start:
                             on_speech_start()
                         captured.extend(pre_roll)
                         captured.append(chunk.copy())
                 else:
                     captured.append(chunk.copy())
+                    spoken_chunks += 1
                     if level < level_threshold:
                         silence_chunks += 1
                     else:
                         silence_chunks = 0
 
-                    if silence_chunks >= silence_chunks_to_stop:
+                    if spoken_chunks < speech_start_grace_chunks:
+                        continue
+
+                    if (
+                        silence_chunks >= silence_chunks_to_stop
+                        and spoken_chunks >= min_speech_chunks_before_stop
+                    ):
                         break
 
         if not speech_started or not captured:
@@ -139,6 +152,8 @@ class MicrophoneCapture:
         max_seconds: float = 12.0,
         silence_seconds_to_stop: float = 1.0,
         level_threshold: float = 0.02,
+        min_speech_seconds_before_stop: float = 1.2,
+        speech_start_grace_seconds: float = 0.5,
         stop_requested: Callable[[], bool] | None = None,
         on_speech_start: Callable[[], None] | None = None,
         on_audio_level: Callable[[float], None] | None = None,
@@ -147,6 +162,8 @@ class MicrophoneCapture:
             max_seconds=max_seconds,
             silence_seconds_to_stop=silence_seconds_to_stop,
             level_threshold=level_threshold,
+            min_speech_seconds_before_stop=min_speech_seconds_before_stop,
+            speech_start_grace_seconds=speech_start_grace_seconds,
             stop_requested=stop_requested,
             on_speech_start=on_speech_start,
             on_audio_level=on_audio_level,

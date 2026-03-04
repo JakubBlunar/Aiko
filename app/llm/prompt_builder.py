@@ -29,6 +29,8 @@ class PromptContext:
     system_audio_text: str | None = None
     personality: str = "friendly"
     memory_messages: list[dict[str, str]] | None = None
+    assistant_strategy: str | None = None
+    active_goal: str | None = None
 
 
 def available_personalities() -> list[str]:
@@ -40,6 +42,10 @@ def build_messages(context: PromptContext) -> list[dict[str, str]]:
     system = PERSONALITY_SYSTEM_PROMPTS.get(personality_key, PERSONALITY_SYSTEM_PROMPTS["friendly"])
 
     additional: list[str] = []
+    if context.active_goal:
+        additional.append(f"Active conversation goal: {context.active_goal}")
+    if context.assistant_strategy:
+        additional.append(f"Assistant strategy: {context.assistant_strategy}")
     if context.screen_text:
         additional.append(f"Screen context: {context.screen_text}")
     if context.system_audio_text:

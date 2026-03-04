@@ -1,9 +1,19 @@
 assistant:
-  name: "English Speaking Assistant"
+  name: "Assistant"
   mode: "natural_chat"
   remember_history: true
   personality: "friendly"
   thinking_model: null
+
+autonomy:
+  enabled: false
+  proactive_conversation: true
+  allow_action_suggestions: true
+  allow_proactive_actions: false
+  max_strategy_chars: 180
+  auto_goal_switch: true
+  default_goal: "general_conversation"
+  goal_switch_min_confidence: 0.6
 
 ollama:
   base_url: "http://127.0.0.1:11434"
@@ -23,14 +33,36 @@ audio:
 screen:
   enable_screen_context: false
   capture_interval_seconds: 2
+  monitor_index: 2
   decision_mode: "model"
   decision_cooldown_seconds: 8
+  min_ocr_chars: 20
+  unchanged_reuse_seconds: 30
+
+actions:
+  enabled: false
+  dry_run: true
+  require_confirmation: true
+  decision_mode: "explicit_only"
+  max_actions_per_turn: 1
+  min_confidence: 0.75
+  min_action_interval_seconds: 1.0
+  emergency_hotkey: "ctrl+alt+f12"
+  allowlist_window_titles: []
 
 stt:
   provider: "faster_whisper"
   model: "base"
+  language: "en"
 
 tts:
   provider: "piper"
   voice: "en_US-lessac-medium"
   enabled: true
+  llasa_model: "NandemoGHS/Anime-Llasa-3B"
+  llasa_codec_model: "HKUSTAudio/xcodec2"
+  llasa_device: "cuda"
+  llasa_temperature: 0.8
+  llasa_top_p: 0.95
+  llasa_max_length: 2048
+  llasa_max_vram_mb: 0

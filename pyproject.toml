@@ -16,11 +16,22 @@ dependencies = [
 [project.optional-dependencies]
 ai = [
   "faster-whisper>=1.1.1",
-  "rapidocr-onnxruntime>=1.3.24",
+  "rapidocr-onnxruntime>=1.2.3",
 ]
 
 tts = [
   "piper-tts>=1.3.0",
+]
+
+actions = [
+  "pyautogui>=0.9.54",
+]
+
+llasa = [
+  "transformers>=4.47.0",
+  "soundfile>=0.12.1",
+  "sentencepiece>=0.2.0",
+  "accelerate>=1.2.1",
 ]
 
 [build-system]

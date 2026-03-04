@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import threading
 import winsound
@@ -17,6 +18,17 @@ class PiperTtsService:
         self._stop_event = threading.Event()
         self._active_process: subprocess.Popen[str] | None = None
         self._active_wav: Path | None = None
+
+    def get_status(self) -> tuple[str, str]:
+        if not self._settings.enabled:
+            return "disabled", "TTS disabled"
+        return "ready", "Piper runtime ready"
+
+    def warmup_async(self) -> None:
+        return
+
+    def warmup_sync(self) -> bool:
+        return True
 
     def speak_async(self, text: str) -> None:
         if not self._settings.enabled:
@@ -51,7 +63,16 @@ class PiperTtsService:
         wav_path = Path(tempfile.mkstemp(suffix=".wav", prefix="assistant_tts_")[1])
 
         try:
-            cmd = [
+            primary_cmd = [
+                "piper",
+                "--model",
+                self._settings.voice,
+                "--output_file",
+                str(wav_path),
+            ]
+            fallback_cmd = [
+                sys.executable,
+                "-m",
                 "piper",
                 "--model",
                 self._settings.voice,
@@ -64,14 +85,23 @@ class PiperTtsService:
 
             try:
                 proc = subprocess.Popen(
-                    cmd,
+                    primary_cmd,
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
                 )
             except FileNotFoundError:
-                return
+                try:
+                    proc = subprocess.Popen(
+                        fallback_cmd,
+                        stdin=subprocess.PIPE,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                    )
+                except Exception:
+                    return
 
             with self._lock:
                 self._active_process = proc
