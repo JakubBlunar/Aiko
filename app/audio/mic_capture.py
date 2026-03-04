@@ -174,3 +174,45 @@ class MicrophoneCapture:
         wav_path = self.create_temp_wav_path(prefix="assistant_phrase_")
         self.write_wav(samples=samples, target_path=wav_path)
         return wav_path
+
+    def monitor_speech_start(
+        self,
+        *,
+        max_seconds: float = 20.0,
+        level_threshold: float = 0.02,
+        min_consecutive_chunks: int = 2,
+        stop_requested: Callable[[], bool] | None = None,
+        on_audio_level: Callable[[float], None] | None = None,
+    ) -> bool:
+        sample_rate = self._settings.sample_rate
+        channels = self._settings.channels
+        chunk_frames = int(sample_rate * 0.1)
+        started_at = time.monotonic()
+        consecutive = 0
+
+        with sd.InputStream(
+            samplerate=sample_rate,
+            channels=channels,
+            dtype="float32",
+            blocksize=chunk_frames,
+            device=self._device,
+        ) as stream:
+            while True:
+                if stop_requested and stop_requested():
+                    return False
+
+                elapsed = time.monotonic() - started_at
+                if elapsed >= max_seconds:
+                    return False
+
+                chunk, _overflow = stream.read(chunk_frames)
+                level = float(np.sqrt(np.mean(np.square(chunk))))
+                if on_audio_level:
+                    on_audio_level(level)
+
+                if level >= level_threshold:
+                    consecutive += 1
+                    if consecutive >= max(1, int(min_consecutive_chunks)):
+                        return True
+                else:
+                    consecutive = 0

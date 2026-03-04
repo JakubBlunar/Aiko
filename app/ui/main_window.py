@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QThread, QTimer, Qt
+from PySide6.QtCore import QEvent, QThread, QTimer, Qt
 from PySide6.QtGui import QCloseEvent, QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFormLayout,
+    QGridLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -15,6 +18,8 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
+    QTabWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -54,6 +59,7 @@ class MainWindow(QMainWindow):
         self._live_stream_open = False
         self._guardrail_controls_locked = False
         self._live_level_peak = 0.01
+        self._wheel_guard_widgets: set[QWidget] = set()
 
         self.setWindowTitle(settings.assistant.name)
         self.resize(900, 640)
@@ -68,34 +74,61 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout()
         root.setLayout(layout)
 
+        tabs = QTabWidget()
+        layout.addWidget(tabs, stretch=1)
+
+        settings_tab = QWidget()
+        settings_tab_layout = QVBoxLayout()
+        settings_tab.setLayout(settings_tab_layout)
+
+        settings_scroll = QScrollArea()
+        settings_scroll.setWidgetResizable(True)
+        settings_panel = QWidget()
+        left_layout = QVBoxLayout()
+        settings_panel.setLayout(left_layout)
+        settings_scroll.setWidget(settings_panel)
+        settings_tab_layout.addWidget(settings_scroll)
+
+        chat_tab = QWidget()
+        chat_layout = QVBoxLayout()
+        chat_tab.setLayout(chat_layout)
+
+        tabs.addTab(settings_tab, "Settings")
+        tabs.addTab(chat_tab, "Chat & Info")
+        tabs.setCurrentIndex(1)
+
         self._status = StatusPanel()
         self._status.set_model(settings.ollama.chat_model)
-        layout.addWidget(self._status)
+        chat_layout.addWidget(self._status)
         self._model_debug_label = QLabel("Active Models: response=unknown | thinking=response")
         self._model_debug_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        layout.addWidget(self._model_debug_label)
+        chat_layout.addWidget(self._model_debug_label)
         self._goal_debug_label = QLabel("Active Goal: unknown")
         self._goal_debug_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        layout.addWidget(self._goal_debug_label)
+        chat_layout.addWidget(self._goal_debug_label)
         self._tts_debug_label = QLabel("Active TTS: unknown")
         self._tts_debug_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        layout.addWidget(self._tts_debug_label)
+        chat_layout.addWidget(self._tts_debug_label)
         self._tts_model_status_label = QLabel("TTS Model: status=unknown | details=unavailable")
         self._tts_model_status_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        layout.addWidget(self._tts_model_status_label)
+        chat_layout.addWidget(self._tts_model_status_label)
         self._action_guardrail_label = QLabel("Actions: e-stop=inactive")
         self._action_guardrail_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        layout.addWidget(self._action_guardrail_label)
+        chat_layout.addWidget(self._action_guardrail_label)
         self._latency_label = QLabel(
             "Latency: mode=idle | capture=0ms | stt=0ms | llm=0ms | tts=0ms | total=0ms"
         )
         self._latency_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        layout.addWidget(self._latency_label)
+        chat_layout.addWidget(self._latency_label)
         self._latency_avg_label = QLabel(
             "Latency Avg(0): capture=0ms | stt=0ms | llm=0ms | tts=0ms | total=0ms"
         )
         self._latency_avg_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        layout.addWidget(self._latency_avg_label)
+        chat_layout.addWidget(self._latency_avg_label)
+
+        sources_group = QGroupBox("Sources & Devices")
+        sources_layout = QVBoxLayout()
+        sources_group.setLayout(sources_layout)
 
         capture_row = QHBoxLayout()
         self._mic_checkbox = QCheckBox("Microphone")
@@ -120,148 +153,171 @@ class MainWindow(QMainWindow):
 
         capture_row.addWidget(QLabel("OCR Profile:"))
         capture_row.addWidget(self._ocr_profile_combo)
+        capture_row.addStretch(1)
+        sources_layout.addLayout(capture_row)
 
         self._mic_device_combo = QComboBox()
         self._mic_device_combo.setMinimumWidth(150)
-        capture_row.addWidget(QLabel("Mic Device:"))
-        capture_row.addWidget(self._mic_device_combo)
-
         self._loopback_device_combo = QComboBox()
         self._loopback_device_combo.setMinimumWidth(150)
-        capture_row.addWidget(QLabel("Loopback Device:"))
-        capture_row.addWidget(self._loopback_device_combo)
+
+        devices_form = QFormLayout()
+        devices_form.addRow("Mic Device:", self._mic_device_combo)
+        devices_form.addRow("Loopback Device:", self._loopback_device_combo)
+        sources_layout.addLayout(devices_form)
 
         self._refresh_devices_button = QPushButton("Refresh Devices")
         self._refresh_devices_button.clicked.connect(self._refresh_audio_devices)
-        capture_row.addWidget(self._refresh_devices_button)
-        capture_row.addStretch(1)
-        layout.addLayout(capture_row)
+        self._apply_sources_button = QPushButton("Apply Sources")
+        self._apply_sources_button.clicked.connect(self._apply_sources)
+        self._test_ocr_button = QPushButton("Test OCR")
+        self._test_ocr_button.clicked.connect(self._test_ocr)
 
-        controls_row = QHBoxLayout()
+        source_actions_row = QHBoxLayout()
+        source_actions_row.addWidget(self._refresh_devices_button)
+        source_actions_row.addWidget(self._apply_sources_button)
+        source_actions_row.addWidget(self._test_ocr_button)
+        source_actions_row.addStretch(1)
+        sources_layout.addLayout(source_actions_row)
+        left_layout.addWidget(sources_group)
+
+        models_group = QGroupBox("Models & Voice")
+        models_layout = QVBoxLayout()
+        models_group.setLayout(models_layout)
+
+        controls_form = QFormLayout()
         self._personality_combo = QComboBox()
         self._personality_combo.setMinimumWidth(120)
         self._personality_combo.currentIndexChanged.connect(self._on_personality_changed)
-        controls_row.addWidget(QLabel("Personality:"))
-        controls_row.addWidget(self._personality_combo)
+        controls_form.addRow("Personality:", self._personality_combo)
 
-        controls_row.addWidget(QLabel("Model:"))
         self._model_combo = QComboBox()
         self._model_combo.setMinimumWidth(180)
         self._model_combo.currentIndexChanged.connect(self._on_model_changed)
-        controls_row.addWidget(self._model_combo)
+        controls_form.addRow("Model:", self._model_combo)
 
-        controls_row.addWidget(QLabel("Thinking Model:"))
         self._thinking_model_combo = QComboBox()
         self._thinking_model_combo.setMinimumWidth(180)
         self._thinking_model_combo.currentIndexChanged.connect(self._on_thinking_model_changed)
-        controls_row.addWidget(self._thinking_model_combo)
+        controls_form.addRow("Thinking Model:", self._thinking_model_combo)
 
-        controls_row.addWidget(QLabel("TTS:"))
         self._tts_provider_combo = QComboBox()
         self._tts_provider_combo.setMinimumWidth(100)
         self._tts_provider_combo.currentIndexChanged.connect(self._on_tts_provider_changed)
-        controls_row.addWidget(self._tts_provider_combo)
+        controls_form.addRow("TTS:", self._tts_provider_combo)
 
-        controls_row.addWidget(QLabel("Voice:"))
         self._tts_voice_combo = QComboBox()
         self._tts_voice_combo.setMinimumWidth(220)
         self._tts_voice_combo.currentIndexChanged.connect(self._on_tts_voice_changed)
-        controls_row.addWidget(self._tts_voice_combo)
+        controls_form.addRow("Voice:", self._tts_voice_combo)
+        models_layout.addLayout(controls_form)
 
         self._refresh_models_button = QPushButton("Refresh Models")
         self._refresh_models_button.clicked.connect(self._refresh_models)
-        controls_row.addWidget(self._refresh_models_button)
+        models_actions_row = QHBoxLayout()
+        models_actions_row.addWidget(self._refresh_models_button)
+        models_actions_row.addStretch(1)
+        models_layout.addLayout(models_actions_row)
+        left_layout.addWidget(models_group)
 
-        self._apply_sources_button = QPushButton("Apply Sources")
-        self._apply_sources_button.clicked.connect(self._apply_sources)
-        controls_row.addWidget(self._apply_sources_button)
+        memory_group = QGroupBox("Memory & Logs")
+        memory_layout = QHBoxLayout()
+        memory_group.setLayout(memory_layout)
 
         self._clear_memory_button = QPushButton("Clear Memory")
         self._clear_memory_button.clicked.connect(self._clear_memory)
-        controls_row.addWidget(self._clear_memory_button)
+        memory_layout.addWidget(self._clear_memory_button)
 
         self._memory_viewer_button = QPushButton("Memory Viewer")
         self._memory_viewer_button.clicked.connect(self._open_memory_viewer)
-        controls_row.addWidget(self._memory_viewer_button)
+        memory_layout.addWidget(self._memory_viewer_button)
 
         self._trace_viewer_button = QPushButton("Action/Thinking Log")
         self._trace_viewer_button.clicked.connect(self._open_trace_viewer)
-        controls_row.addWidget(self._trace_viewer_button)
+        memory_layout.addWidget(self._trace_viewer_button)
+        memory_layout.addStretch(1)
+        left_layout.addWidget(memory_group)
 
-        self._test_ocr_button = QPushButton("Test OCR")
-        self._test_ocr_button.clicked.connect(self._test_ocr)
-        controls_row.addWidget(self._test_ocr_button)
-        controls_row.addStretch(1)
-        layout.addLayout(controls_row)
+        audio_group = QGroupBox("Audio Calibration")
+        audio_layout = QVBoxLayout()
+        audio_group.setLayout(audio_layout)
 
-        audio_row = QHBoxLayout()
-        audio_row.addWidget(QLabel("Audio Calibration:"))
-        audio_row.addWidget(QLabel("VAD Threshold:"))
+        audio_controls_form = QFormLayout()
         self._vad_threshold_spin = QDoubleSpinBox()
         self._vad_threshold_spin.setDecimals(3)
         self._vad_threshold_spin.setRange(0.001, 0.500)
         self._vad_threshold_spin.setSingleStep(0.005)
         self._vad_threshold_spin.setValue(self._session.vad_level_threshold)
-        audio_row.addWidget(self._vad_threshold_spin)
+        audio_controls_form.addRow("VAD Threshold:", self._vad_threshold_spin)
 
-        audio_row.addWidget(QLabel("Silence Stop (s):"))
         self._vad_silence_spin = QDoubleSpinBox()
         self._vad_silence_spin.setDecimals(1)
         self._vad_silence_spin.setRange(0.2, 3.0)
         self._vad_silence_spin.setSingleStep(0.1)
         self._vad_silence_spin.setValue(self._session.vad_silence_seconds)
-        audio_row.addWidget(self._vad_silence_spin)
+        audio_controls_form.addRow("Silence Stop (s):", self._vad_silence_spin)
+        audio_layout.addLayout(audio_controls_form)
 
         self._apply_calibration_button = QPushButton("Apply Calibration")
         self._apply_calibration_button.clicked.connect(self._apply_calibration)
-        audio_row.addWidget(self._apply_calibration_button)
+        calibration_actions_row = QHBoxLayout()
+        calibration_actions_row.addWidget(self._apply_calibration_button)
+        calibration_actions_row.addStretch(1)
+        audio_layout.addLayout(calibration_actions_row)
 
-        audio_row.addWidget(QLabel("Input Level:"))
+        input_level_row = QHBoxLayout()
+        input_level_row.addWidget(QLabel("Input Level:"))
         self._input_level_bar = QProgressBar()
         self._input_level_bar.setRange(0, 100)
         self._input_level_bar.setValue(0)
         self._input_level_bar.setTextVisible(True)
         self._input_level_bar.setFormat("%p%")
         self._input_level_bar.setMinimumWidth(180)
-        audio_row.addWidget(self._input_level_bar)
+        input_level_row.addWidget(self._input_level_bar)
+        input_level_row.addStretch(1)
+        audio_layout.addLayout(input_level_row)
+
         self._input_level_debug_label = QLabel("Mic raw=0.0000 | threshold=0.0000 | below")
         self._input_level_debug_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        audio_row.addWidget(self._input_level_debug_label)
-        audio_row.addStretch(1)
-        layout.addLayout(audio_row)
+        audio_layout.addWidget(self._input_level_debug_label)
+        left_layout.addWidget(audio_group)
 
-        actions_row = QHBoxLayout()
-        actions_row.addWidget(QLabel("Action Guardrails:"))
-        actions_row.addWidget(QLabel("Action Cooldown (s):"))
+        actions_group = QGroupBox("Action Guardrails")
+        actions_layout = QVBoxLayout()
+        actions_group.setLayout(actions_layout)
+
+        actions_controls_form = QFormLayout()
         self._action_cooldown_spin = QDoubleSpinBox()
         self._action_cooldown_spin.setDecimals(1)
         self._action_cooldown_spin.setRange(0.0, 10.0)
         self._action_cooldown_spin.setSingleStep(0.1)
         self._action_cooldown_spin.setValue(self._session.action_min_interval_seconds)
-        actions_row.addWidget(self._action_cooldown_spin)
+        actions_controls_form.addRow("Action Cooldown (s):", self._action_cooldown_spin)
+        actions_layout.addLayout(actions_controls_form)
 
         self._apply_guardrails_button = QPushButton("Apply Guardrails")
         self._apply_guardrails_button.clicked.connect(self._apply_guardrails)
-        actions_row.addWidget(self._apply_guardrails_button)
+        actions_grid = QGridLayout()
+        actions_grid.addWidget(self._apply_guardrails_button, 0, 0)
         self._approve_action_button = QPushButton("Approve Action")
         self._approve_action_button.clicked.connect(self._approve_pending_action)
-        actions_row.addWidget(self._approve_action_button)
+        actions_grid.addWidget(self._approve_action_button, 0, 1)
         self._reject_action_button = QPushButton("Reject Action")
         self._reject_action_button.clicked.connect(self._reject_pending_action)
-        actions_row.addWidget(self._reject_action_button)
+        actions_grid.addWidget(self._reject_action_button, 0, 2)
         self._reset_estop_button = QPushButton("Reset E-Stop")
         self._reset_estop_button.clicked.connect(self._reset_emergency_stop)
-        actions_row.addWidget(self._reset_estop_button)
+        actions_grid.addWidget(self._reset_estop_button, 1, 0)
         self._reset_latency_button = QPushButton("Reset Latency")
         self._reset_latency_button.clicked.connect(self._reset_latency)
-        actions_row.addWidget(self._reset_latency_button)
-        actions_row.addStretch(1)
-        layout.addLayout(actions_row)
+        actions_grid.addWidget(self._reset_latency_button, 1, 1)
+        actions_layout.addLayout(actions_grid)
+        left_layout.addWidget(actions_group)
 
-        layout.addWidget(QLabel("Conversation"))
+        chat_layout.addWidget(QLabel("Conversation"))
         self._conversation = QTextEdit()
         self._conversation.setReadOnly(True)
-        layout.addWidget(self._conversation, stretch=1)
+        chat_layout.addWidget(self._conversation, stretch=1)
 
         input_row = QHBoxLayout()
         self._input = QLineEdit()
@@ -281,14 +337,15 @@ class MainWindow(QMainWindow):
         input_row.addWidget(self._record_button)
         input_row.addWidget(self._start_live_button)
         input_row.addWidget(self._stop_live_button)
-        layout.addLayout(input_row)
+        chat_layout.addLayout(input_row)
 
         self._hint = QLabel(
             "Tip: Start Ollama first (`ollama serve`) and ensure your model is pulled. "
             "If using LLASA TTS, first run may take longer while Hugging Face models download."
         )
         self._hint.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        layout.addWidget(self._hint)
+        left_layout.addWidget(self._hint)
+        left_layout.addStretch(1)
 
         self._refresh_status()
         self._refresh_ocr_profiles()
@@ -318,6 +375,48 @@ class MainWindow(QMainWindow):
         self._action_guardrail_timer.timeout.connect(self._refresh_action_guardrail_label)
         self._action_guardrail_timer.start()
         self._refresh_action_guardrail_label()
+        self._setup_wheel_guard()
+
+    def _setup_wheel_guard(self) -> None:
+        widgets: tuple[QWidget, ...] = (
+            self._ocr_profile_combo,
+            self._mic_device_combo,
+            self._loopback_device_combo,
+            self._personality_combo,
+            self._model_combo,
+            self._thinking_model_combo,
+            self._tts_provider_combo,
+            self._tts_voice_combo,
+            self._vad_threshold_spin,
+            self._vad_silence_spin,
+            self._action_cooldown_spin,
+        )
+        for widget in widgets:
+            widget.installEventFilter(self)
+            self._wheel_guard_widgets.add(widget)
+
+    def eventFilter(self, watched: object, event: QEvent) -> bool:
+        if watched in self._wheel_guard_widgets and event.type() == QEvent.Type.Wheel:
+            widget = watched if isinstance(watched, QWidget) else None
+            while widget is not None:
+                if isinstance(widget, QScrollArea):
+                    scrollbar = widget.verticalScrollBar()
+                    if scrollbar is not None:
+                        delta_y = event.angleDelta().y()
+                        if delta_y:
+                            steps = int(delta_y / 120)
+                            if steps != 0:
+                                scrollbar.setValue(
+                                    scrollbar.value() - (steps * max(1, scrollbar.singleStep()))
+                                )
+                            else:
+                                scrollbar.setValue(
+                                    scrollbar.value() - int(delta_y / 8)
+                                )
+                    return True
+                widget = widget.parentWidget()
+            return True
+        return super().eventFilter(watched, event)
 
     def _refresh_status(self) -> None:
         state = self._session.state

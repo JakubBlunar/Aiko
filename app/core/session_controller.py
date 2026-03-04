@@ -775,25 +775,31 @@ class SessionController:
         if not self._state.screen_enabled:
             return False, "disabled"
 
-        now = time.monotonic()
-        min_interval = max(1, int(self._settings.screen.capture_interval_seconds))
-        if (now - self._last_screen_capture_at) < min_interval:
-            return False, "interval"
-
         keyword_triggers = (
             "screen",
             "on my screen",
             "look at",
+            "look on",
+            "check screen",
+            "check my screen",
             "what do you see",
             "what can you see",
+            "what's on my screen",
+            "whats on my screen",
             "this page",
             "this window",
             "this code",
             "here",
             "shown",
+            "read this",
         )
         if any(token in normalized for token in keyword_triggers):
             return True, "keyword"
+
+        now = time.monotonic()
+        min_interval = max(1, int(self._settings.screen.capture_interval_seconds))
+        if (now - self._last_screen_capture_at) < min_interval:
+            return False, "interval"
 
         decision_mode = (self._settings.screen.decision_mode or "model").lower().strip()
         if decision_mode == "keywords":
@@ -1217,15 +1223,17 @@ class SessionController:
                 "Whisper is not installed. Install AI extras with: pip install -e .[ai]"
             )
 
+        live_level_threshold = max(0.02, float(self._vad_level_threshold))
+
         capture_started = time.perf_counter()
         wav_path = self._microphone.capture_phrase_to_wav(
             max_seconds=max_listen_seconds,
             silence_seconds_to_stop=self._vad_silence_seconds,
-            level_threshold=self._vad_level_threshold,
-            min_speech_seconds_before_stop=1.2,
-            speech_start_grace_seconds=0.5,
+            level_threshold=live_level_threshold,
+            min_speech_seconds_before_stop=1.6,
+            speech_start_grace_seconds=0.8,
             stop_requested=stop_requested,
-            on_speech_start=self._tts.stop,
+            on_speech_start=None,
             on_audio_level=on_audio_level,
         )
         capture_ms = (time.perf_counter() - capture_started) * 1000.0
@@ -1255,6 +1263,7 @@ class SessionController:
             capture_ms=capture_ms,
             stt_ms=stt_ms,
         )
+
         return text, response
 
     def _transcribe_system_audio(self, seconds: float) -> str | None:
