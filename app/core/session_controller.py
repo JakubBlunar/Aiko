@@ -119,6 +119,13 @@ class SessionController:
     def clear_conversation_memory(self) -> None:
         self._memory.clear()
 
+    def get_conversation_memory(self, max_entries: int = 200) -> list[dict[str, str]]:
+        entries = self._memory.recent_entries(max_entries=max_entries)
+        return [
+            {"role": entry.role, "content": entry.content, "timestamp": entry.timestamp}
+            for entry in entries
+        ]
+
     def chat_once(self, user_text: str) -> str:
         return self.chat_once_streaming(user_text=user_text)
 

@@ -55,6 +55,27 @@ class ConversationMemoryStore:
                 output.append({"role": role, "content": content})
         return output
 
+    def recent_entries(self, max_entries: int = 200) -> list[MemoryEntry]:
+        if not self._path.exists():
+            return []
+
+        lines = self._path.read_text(encoding="utf-8").splitlines()
+        selected = lines[-max(1, max_entries) :]
+
+        output: list[MemoryEntry] = []
+        for line in selected:
+            try:
+                obj: dict[str, Any] = json.loads(line)
+            except Exception:
+                continue
+
+            role = str(obj.get("role", "")).strip().lower()
+            content = str(obj.get("content", "")).strip()
+            timestamp = str(obj.get("timestamp", "")).strip()
+            if role in {"user", "assistant"} and content:
+                output.append(MemoryEntry(role=role, content=content, timestamp=timestamp))
+        return output
+
     def clear(self) -> None:
         if self._path.exists():
             self._path.unlink()

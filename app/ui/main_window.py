@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 
 from app.core.session_controller import SessionController
 from app.core.settings import AppSettings, save_runtime_preferences
+from app.ui.memory_viewer_dialog import MemoryViewerDialog
 from app.ui.live_worker import LivePracticeWorker
 from app.ui.widgets.status_panel import StatusPanel
 
@@ -92,6 +93,10 @@ class MainWindow(QMainWindow):
         self._clear_memory_button = QPushButton("Clear Memory")
         self._clear_memory_button.clicked.connect(self._clear_memory)
         capture_row.addWidget(self._clear_memory_button)
+
+        self._memory_viewer_button = QPushButton("Memory Viewer")
+        self._memory_viewer_button.clicked.connect(self._open_memory_viewer)
+        capture_row.addWidget(self._memory_viewer_button)
         capture_row.addStretch(1)
         layout.addLayout(capture_row)
 
@@ -189,6 +194,10 @@ class MainWindow(QMainWindow):
     def _clear_memory(self) -> None:
         self._session.clear_conversation_memory()
         self._append("System", "Conversation memory cleared.")
+
+    def _open_memory_viewer(self) -> None:
+        dialog = MemoryViewerDialog(self._session, self)
+        dialog.exec()
 
     def _apply_calibration(self) -> None:
         self._session.set_vad_level_threshold(self._vad_threshold_spin.value())
@@ -304,6 +313,7 @@ class MainWindow(QMainWindow):
         self._stop_live_button.setEnabled(True)
         self._apply_sources_button.setEnabled(False)
         self._clear_memory_button.setEnabled(False)
+        self._memory_viewer_button.setEnabled(False)
         self._refresh_devices_button.setEnabled(False)
         self._personality_combo.setEnabled(False)
         self._memory_checkbox.setEnabled(False)
@@ -327,6 +337,7 @@ class MainWindow(QMainWindow):
         self._stop_live_button.setEnabled(False)
         self._apply_sources_button.setEnabled(True)
         self._clear_memory_button.setEnabled(True)
+        self._memory_viewer_button.setEnabled(True)
         self._refresh_devices_button.setEnabled(True)
         self._personality_combo.setEnabled(True)
         self._memory_checkbox.setEnabled(True)
@@ -353,6 +364,7 @@ class MainWindow(QMainWindow):
         self._record_button.setEnabled(False)
         self._apply_sources_button.setEnabled(False)
         self._clear_memory_button.setEnabled(False)
+        self._memory_viewer_button.setEnabled(False)
         self._refresh_devices_button.setEnabled(False)
         self._personality_combo.setEnabled(False)
         self._memory_checkbox.setEnabled(False)
@@ -369,6 +381,7 @@ class MainWindow(QMainWindow):
             self._record_button.setEnabled(True)
             self._apply_sources_button.setEnabled(True)
             self._clear_memory_button.setEnabled(True)
+            self._memory_viewer_button.setEnabled(True)
             self._refresh_devices_button.setEnabled(True)
             self._personality_combo.setEnabled(True)
             self._memory_checkbox.setEnabled(True)
