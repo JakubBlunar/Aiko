@@ -32,12 +32,15 @@ audio:
 
 screen:
   enable_screen_context: false
+  ocr_profile: "balanced"
   capture_interval_seconds: 2
   monitor_index: 2
+  ocr_max_side_px: 1280
+  capture_active_window_only: true
   decision_mode: "model"
-  decision_cooldown_seconds: 8
+  decision_cooldown_seconds: 6
   min_ocr_chars: 20
-  unchanged_reuse_seconds: 30
+  unchanged_reuse_seconds: 20
 
 actions:
   enabled: false

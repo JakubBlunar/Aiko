@@ -29,12 +29,19 @@ class AudioSettings:
 @dataclass(slots=True)
 class ScreenSettings:
     enable_screen_context: bool
+    ocr_profile: str
     capture_interval_seconds: int
     monitor_index: int
+    ocr_max_side_px: int
+    capture_active_window_only: bool
     decision_mode: str
     decision_cooldown_seconds: int
     min_ocr_chars: int
     unchanged_reuse_seconds: int
+
+
+def list_screen_ocr_profiles() -> list[str]:
+    return ["fast", "balanced"]
 
 
 @dataclass(slots=True)
@@ -117,6 +124,54 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "default.
 USER_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "user.yaml"
 
 
+_SCREEN_PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
+    "fast": {
+        "capture_interval_seconds": 2,
+        "ocr_max_side_px": 1024,
+        "capture_active_window_only": True,
+        "decision_mode": "keywords",
+        "decision_cooldown_seconds": 2,
+        "min_ocr_chars": 12,
+        "unchanged_reuse_seconds": 8,
+    },
+    "balanced": {
+        "capture_interval_seconds": 2,
+        "ocr_max_side_px": 1280,
+        "capture_active_window_only": True,
+        "decision_mode": "model",
+        "decision_cooldown_seconds": 6,
+        "min_ocr_chars": 20,
+        "unchanged_reuse_seconds": 20,
+    },
+}
+
+
+def normalize_screen_ocr_profile(profile: str | None) -> str:
+    normalized = str(profile or "balanced").strip().lower() or "balanced"
+    if normalized not in _SCREEN_PROFILE_DEFAULTS:
+        return "balanced"
+    return normalized
+
+
+def get_screen_ocr_profile_defaults(profile: str | None) -> dict[str, Any]:
+    normalized = normalize_screen_ocr_profile(profile)
+    return dict(_SCREEN_PROFILE_DEFAULTS[normalized])
+
+
+def apply_screen_ocr_profile(screen: ScreenSettings, profile: str | None) -> str:
+    normalized = normalize_screen_ocr_profile(profile)
+    defaults = _SCREEN_PROFILE_DEFAULTS[normalized]
+    screen.ocr_profile = normalized
+    screen.capture_interval_seconds = int(defaults["capture_interval_seconds"])
+    screen.ocr_max_side_px = int(defaults["ocr_max_side_px"])
+    screen.capture_active_window_only = bool(defaults["capture_active_window_only"])
+    screen.decision_mode = str(defaults["decision_mode"])
+    screen.decision_cooldown_seconds = int(defaults["decision_cooldown_seconds"])
+    screen.min_ocr_chars = int(defaults["min_ocr_chars"])
+    screen.unchanged_reuse_seconds = int(defaults["unchanged_reuse_seconds"])
+    return normalized
+
+
 def _required(section: dict[str, Any], key: str) -> Any:
     if key not in section:
         raise KeyError(f"Missing config key: {key}")
@@ -140,6 +195,18 @@ def _read_yaml(path: Path) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
+def _resolve_screen_settings(raw_screen: dict[str, Any], user_screen: dict[str, Any]) -> dict[str, Any]:
+    screen = dict(raw_screen)
+    profile = normalize_screen_ocr_profile(screen.get("ocr_profile", "balanced"))
+    screen["ocr_profile"] = profile
+
+    profile_defaults = _SCREEN_PROFILE_DEFAULTS[profile]
+    for key, value in profile_defaults.items():
+        if key not in user_screen:
+            screen[key] = value
+    return screen
+
+
 def load_settings(config_path: Path | None = None) -> AppSettings:
     path = config_path or DEFAULT_CONFIG_PATH
     base = _read_yaml(path)
@@ -150,7 +217,8 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
     autonomy = raw.get("autonomy", {})
     ollama = raw["ollama"]
     audio = raw["audio"]
-    screen = raw["screen"]
+    user_screen = user.get("screen", {}) if isinstance(user.get("screen", {}), dict) else {}
+    screen = _resolve_screen_settings(raw["screen"], user_screen)
     actions = raw.get("actions", {})
     stt = raw.get("stt", {})
     tts = raw["tts"]
@@ -203,8 +271,11 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
         ),
         screen=ScreenSettings(
             enable_screen_context=bool(_required(screen, "enable_screen_context")),
+            ocr_profile=str(screen.get("ocr_profile", "balanced")),
             capture_interval_seconds=int(_required(screen, "capture_interval_seconds")),
             monitor_index=int(screen.get("monitor_index", 1)),
+            ocr_max_side_px=max(0, int(screen.get("ocr_max_side_px", 1600))),
+            capture_active_window_only=bool(screen.get("capture_active_window_only", False)),
             decision_mode=str(screen.get("decision_mode", "model")),
             decision_cooldown_seconds=int(screen.get("decision_cooldown_seconds", 8)),
             min_ocr_chars=max(0, int(screen.get("min_ocr_chars", 20))),
@@ -270,6 +341,7 @@ def save_runtime_preferences(
     enable_microphone: bool,
     enable_system_audio: bool,
     enable_screen_context: bool,
+    screen_ocr_profile: str | None = None,
     window_x: int | None = None,
     window_y: int | None = None,
     window_width: int | None = None,
@@ -299,6 +371,7 @@ def save_runtime_preferences(
         },
         "screen": {
             "enable_screen_context": bool(enable_screen_context),
+            "ocr_profile": normalize_screen_ocr_profile(screen_ocr_profile),
         },
         "actions": {
             "min_action_interval_seconds": round(max(0.0, action_min_interval_seconds), 2),

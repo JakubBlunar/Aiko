@@ -21,7 +21,13 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.session_controller import SessionController
-from app.core.settings import AppSettings, save_runtime_preferences
+from app.core.settings import (
+    AppSettings,
+    apply_screen_ocr_profile,
+    list_screen_ocr_profiles,
+    normalize_screen_ocr_profile,
+    save_runtime_preferences,
+)
 from app.ui.decision_trace_dialog import DecisionTraceDialog
 from app.ui.memory_viewer_dialog import MemoryViewerDialog
 from app.ui.live_worker import LivePracticeWorker
@@ -98,6 +104,9 @@ class MainWindow(QMainWindow):
         self._system_checkbox.setChecked(self._session.state.system_audio_enabled)
         self._screen_checkbox = QCheckBox("Screen Context")
         self._screen_checkbox.setChecked(self._session.state.screen_enabled)
+        self._ocr_profile_combo = QComboBox()
+        self._ocr_profile_combo.setMinimumWidth(110)
+        self._ocr_profile_combo.currentIndexChanged.connect(self._on_ocr_profile_changed)
         self._memory_checkbox = QCheckBox("Remember Conversation")
         self._memory_checkbox.setChecked(self._session.remember_history)
 
@@ -108,6 +117,9 @@ class MainWindow(QMainWindow):
             self._memory_checkbox,
         ):
             capture_row.addWidget(widget)
+
+        capture_row.addWidget(QLabel("OCR Profile:"))
+        capture_row.addWidget(self._ocr_profile_combo)
 
         self._mic_device_combo = QComboBox()
         self._mic_device_combo.setMinimumWidth(150)
@@ -279,6 +291,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._hint)
 
         self._refresh_status()
+        self._refresh_ocr_profiles()
         self._refresh_audio_devices()
         self._refresh_personalities()
         self._refresh_models()
@@ -499,6 +512,25 @@ class MainWindow(QMainWindow):
         if index >= 0:
             self._personality_combo.setCurrentIndex(index)
 
+    def _refresh_ocr_profiles(self) -> None:
+        current = normalize_screen_ocr_profile(self._settings.screen.ocr_profile)
+        self._ocr_profile_combo.clear()
+        for key in list_screen_ocr_profiles():
+            self._ocr_profile_combo.addItem(key.title(), key)
+
+        index = self._ocr_profile_combo.findData(current)
+        if index < 0:
+            index = self._ocr_profile_combo.findData("balanced")
+        if index >= 0:
+            self._ocr_profile_combo.setCurrentIndex(index)
+
+    def _on_ocr_profile_changed(self) -> None:
+        selected = normalize_screen_ocr_profile(self._ocr_profile_combo.currentData())
+        if selected == normalize_screen_ocr_profile(self._settings.screen.ocr_profile):
+            return
+        apply_screen_ocr_profile(self._settings.screen, selected)
+        self._persist_preferences()
+
     def _on_personality_changed(self) -> None:
         self._session.set_personality(str(self._personality_combo.currentData() or "friendly"))
         self._persist_preferences()
@@ -664,6 +696,7 @@ class MainWindow(QMainWindow):
             enable_microphone=self._mic_checkbox.isChecked(),
             enable_system_audio=self._system_checkbox.isChecked(),
             enable_screen_context=self._screen_checkbox.isChecked(),
+            screen_ocr_profile=str(self._ocr_profile_combo.currentData() or "balanced"),
             window_x=self.x(),
             window_y=self.y(),
             window_width=self.width(),
@@ -696,6 +729,7 @@ class MainWindow(QMainWindow):
         self._test_ocr_button.setEnabled(not busy)
         self._refresh_devices_button.setEnabled(not busy)
         self._personality_combo.setEnabled(not busy)
+        self._ocr_profile_combo.setEnabled(not busy)
         self._model_combo.setEnabled(not busy)
         self._thinking_model_combo.setEnabled(not busy)
         self._tts_provider_combo.setEnabled(not busy)
@@ -796,6 +830,7 @@ class MainWindow(QMainWindow):
         self._test_ocr_button.setEnabled(False)
         self._refresh_devices_button.setEnabled(False)
         self._personality_combo.setEnabled(False)
+        self._ocr_profile_combo.setEnabled(False)
         self._model_combo.setEnabled(False)
         self._thinking_model_combo.setEnabled(False)
         self._tts_provider_combo.setEnabled(False)
@@ -831,6 +866,7 @@ class MainWindow(QMainWindow):
         self._test_ocr_button.setEnabled(True)
         self._refresh_devices_button.setEnabled(True)
         self._personality_combo.setEnabled(True)
+        self._ocr_profile_combo.setEnabled(True)
         self._model_combo.setEnabled(True)
         self._thinking_model_combo.setEnabled(True)
         self._tts_provider_combo.setEnabled(True)

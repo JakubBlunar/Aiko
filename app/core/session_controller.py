@@ -63,7 +63,7 @@ class SessionController:
             language=settings.stt.language,
         )
         self._screen = ScreenCaptureService(settings.screen)
-        self._ocr = OcrService()
+        self._ocr = OcrService(settings.screen)
         self._tts = self._build_tts_service(settings)
         self._action_stop_state = EmergencyStopState()
         self._action_hotkey_listener = GlobalHotkeyListener(
@@ -872,6 +872,19 @@ class SessionController:
 
         text = (self._ocr.extract_text(frame) or "").strip()
         text = " ".join(text.split())
+        used_fallback = False
+        if not text and bool(getattr(self._settings.screen, "capture_active_window_only", False)):
+            self._trace(
+                "screen.capture",
+                "Active-window OCR returned no text; retrying full monitor capture.",
+            )
+            fallback_frame = self._screen.capture_once(active_window_only=False)
+            self._last_screen_capture_at = time.monotonic()
+            if fallback_frame is not None:
+                text = (self._ocr.extract_text(fallback_frame) or "").strip()
+                text = " ".join(text.split())
+                used_fallback = True
+
         if not text:
             self._trace("screen.capture", "OCR returned no text.")
             return None
@@ -907,7 +920,8 @@ class SessionController:
         self._trace(
             "screen.capture",
             (
-                f"Captured screen context ({len(text)} chars, source={decision_source})."
+                f"Captured screen context ({len(text)} chars, source={decision_source}"
+                f", fallback={'yes' if used_fallback else 'no'})."
             ),
         )
         return text
@@ -922,12 +936,23 @@ class SessionController:
                 "message": "Screen capture unavailable.",
             }
 
+        used_fallback = False
         details = self._ocr.extract_details(frame)
+        if not details and bool(getattr(self._settings.screen, "capture_active_window_only", False)):
+            fallback_frame = self._screen.capture_once(active_window_only=False)
+            self._last_screen_capture_at = time.monotonic()
+            if fallback_frame is not None:
+                details = self._ocr.extract_details(fallback_frame)
+                frame = fallback_frame
+                used_fallback = True
+
         if not details:
             return {
                 "ok": False,
                 "reason": "ocr-empty",
                 "message": "OCR returned no text.",
+                "capture_mode": "active-window" if bool(getattr(self._settings.screen, "capture_active_window_only", False)) else "monitor",
+                "retried_full_monitor": used_fallback,
             }
 
         text = str(details.get("text") or "").strip()
@@ -937,9 +962,13 @@ class SessionController:
                 "ok": False,
                 "reason": "ocr-empty",
                 "message": "OCR returned no readable text.",
+                "capture_mode": "active-window" if bool(getattr(self._settings.screen, "capture_active_window_only", False)) else "monitor",
+                "retried_full_monitor": used_fallback,
             }
 
         min_chars = max(0, int(self._settings.screen.min_ocr_chars))
+        frame_height = int(frame.shape[0]) if getattr(frame, "shape", None) is not None and len(frame.shape) >= 2 else 0
+        frame_width = int(frame.shape[1]) if getattr(frame, "shape", None) is not None and len(frame.shape) >= 2 else 0
         return {
             "ok": True,
             "reason": "ok",
@@ -949,6 +978,10 @@ class SessionController:
             "passes_min_chars": len(text) >= min_chars,
             "line_count": int(details.get("line_count") or 0),
             "avg_confidence": float(details.get("avg_confidence") or 0.0),
+            "capture_mode": "active-window" if bool(getattr(self._settings.screen, "capture_active_window_only", False)) else "monitor",
+            "retried_full_monitor": used_fallback,
+            "frame_width": frame_width,
+            "frame_height": frame_height,
             "text": text,
         }
 

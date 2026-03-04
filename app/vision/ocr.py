@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import numpy as np
+
+from app.core.settings import ScreenSettings
+
 
 class OcrService:
-    def __init__(self) -> None:
+    def __init__(self, settings: ScreenSettings) -> None:
+        self._settings = settings
         self._engine = None
         try:
             from rapidocr_onnxruntime import RapidOCR
@@ -20,6 +25,8 @@ class OcrService:
     def extract_details(self, image) -> dict[str, object] | None:
         if self._engine is None or image is None:
             return None
+
+        image = self._prepare_image(image)
 
         try:
             result, _ = self._engine(image)
@@ -53,3 +60,27 @@ class OcrService:
             "line_count": len(chunks),
             "avg_confidence": avg_confidence,
         }
+
+    def _prepare_image(self, image):
+        try:
+            array = np.asarray(image)
+        except Exception:
+            return image
+
+        if array.ndim < 2:
+            return image
+
+        max_side = max(0, int(getattr(self._settings, "ocr_max_side_px", 1600)))
+        if max_side <= 0:
+            return array
+
+        height = int(array.shape[0])
+        width = int(array.shape[1])
+        longest = max(height, width)
+        if longest <= max_side:
+            return array
+
+        stride = max(1, int(np.ceil(float(longest) / float(max_side))))
+        if stride <= 1:
+            return array
+        return array[::stride, ::stride]
