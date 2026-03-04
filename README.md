@@ -61,7 +61,7 @@ python -m app.main
 
 - All processing is local by default.
 - System audio capture on Windows uses WASAPI loopback device selection and may require manual device configuration.
-- This initial slice keeps memory disabled intentionally.
+- Conversation memory can be toggled from the UI (`Remember Conversation`) and cleared on demand.
 - Live mode uses basic energy-based speech detection (VAD-like thresholding) and may need threshold tuning for noisy rooms.
 - Live mode supports barge-in: when your speech starts, current assistant audio playback is stopped.
 - Use `Refresh Devices` in the UI to pick a specific microphone or loopback source.
@@ -72,3 +72,4 @@ python -m app.main
 - Use `Clear Memory` in the UI to wipe stored conversation history instantly.
 - Use `Memory Viewer` to inspect a long history window and refresh or clear stored entries.
 - Use `Refresh Models` + `Model` dropdown to switch between local Ollama models without editing YAML.
+- A latency strip shows per-turn `capture`, `stt`, `llm`, `tts`, and `total` timings for quick model comparisons.

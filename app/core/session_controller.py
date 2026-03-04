@@ -46,6 +46,14 @@ class SessionController:
         self._personality = settings.assistant.personality
         self._remember_history = settings.assistant.remember_history
         self._memory = ConversationMemoryStore()
+        self._last_metrics: dict[str, float | str] = {
+            "mode": "idle",
+            "capture_ms": 0.0,
+            "stt_ms": 0.0,
+            "llm_ms": 0.0,
+            "tts_ms": 0.0,
+            "total_ms": 0.0,
+        }
 
         self._state = SessionState(
             mic_enabled=settings.audio.enable_microphone,
@@ -139,6 +147,9 @@ class SessionController:
     def clear_conversation_memory(self) -> None:
         self._memory.clear()
 
+    def get_last_metrics(self) -> dict[str, float | str]:
+        return dict(self._last_metrics)
+
     def get_conversation_memory(self, max_entries: int = 200) -> list[dict[str, str]]:
         entries = self._memory.recent_entries(max_entries=max_entries)
         return [
@@ -147,7 +158,7 @@ class SessionController:
         ]
 
     def chat_once(self, user_text: str) -> str:
-        return self.chat_once_streaming(user_text=user_text)
+        return self.chat_once_streaming(user_text=user_text, mode="typed")
 
     def chat_once_streaming(
         self,
@@ -155,7 +166,11 @@ class SessionController:
         user_text: str,
         on_token: Callable[[str], None] | None = None,
         stop_requested: Callable[[], bool] | None = None,
+        mode: str = "typed",
+        capture_ms: float = 0.0,
+        stt_ms: float = 0.0,
     ) -> str:
+        turn_start = time.perf_counter()
         screen_text = None
         if self._state.screen_enabled:
             frame = self._screen.capture_once()
@@ -177,6 +192,7 @@ class SessionController:
         )
 
         try:
+            llm_started = time.perf_counter()
             if on_token is None:
                 response = self._ollama.chat(messages)
             else:
@@ -187,7 +203,16 @@ class SessionController:
                     pieces.append(token)
                     on_token(token)
                 response = "".join(pieces).strip()
+            llm_ms = (time.perf_counter() - llm_started) * 1000.0
         except Exception as exc:
+            self._last_metrics = {
+                "mode": mode,
+                "capture_ms": round(capture_ms, 1),
+                "stt_ms": round(stt_ms, 1),
+                "llm_ms": 0.0,
+                "tts_ms": 0.0,
+                "total_ms": round((time.perf_counter() - turn_start) * 1000.0, 1),
+            }
             return (
                 "I could not reach Ollama. Please make sure it is running and the model is available. "
                 f"Details: {exc}"
@@ -200,8 +225,20 @@ class SessionController:
             self._memory.add(role="user", content=user_text)
             self._memory.add(role="assistant", content=response)
 
+        tts_started = time.perf_counter()
+        tts_ms = 0.0
         if response:
             self._tts.speak_async(response)
+            tts_ms = (time.perf_counter() - tts_started) * 1000.0
+
+        self._last_metrics = {
+            "mode": mode,
+            "capture_ms": round(capture_ms, 1),
+            "stt_ms": round(stt_ms, 1),
+            "llm_ms": round(llm_ms, 1),
+            "tts_ms": round(tts_ms, 1),
+            "total_ms": round((time.perf_counter() - turn_start) * 1000.0, 1),
+        }
         return response
 
     def record_and_chat(self, seconds: float = 5.0) -> tuple[str, str]:
@@ -213,16 +250,25 @@ class SessionController:
                 "Whisper is not installed. Install AI extras with: pip install -e .[ai]"
             )
 
+        capture_started = time.perf_counter()
         wav_path = self._microphone.capture_to_wav(seconds=seconds)
+        capture_ms = (time.perf_counter() - capture_started) * 1000.0
         try:
+            stt_started = time.perf_counter()
             text = self._whisper.transcribe(str(wav_path))
+            stt_ms = (time.perf_counter() - stt_started) * 1000.0
         finally:
             self._safe_unlink(wav_path)
 
         if not text:
             raise RuntimeError("No speech was detected from microphone audio.")
 
-        response = self.chat_once(text)
+        response = self.chat_once_streaming(
+            user_text=text,
+            mode="record",
+            capture_ms=capture_ms,
+            stt_ms=stt_ms,
+        )
         return text, response
 
     def listen_once_and_chat(
@@ -241,6 +287,7 @@ class SessionController:
                 "Whisper is not installed. Install AI extras with: pip install -e .[ai]"
             )
 
+        capture_started = time.perf_counter()
         wav_path = self._microphone.capture_phrase_to_wav(
             max_seconds=max_listen_seconds,
             silence_seconds_to_stop=self._vad_silence_seconds,
@@ -249,11 +296,14 @@ class SessionController:
             on_speech_start=self._tts.stop,
             on_audio_level=on_audio_level,
         )
+        capture_ms = (time.perf_counter() - capture_started) * 1000.0
         if wav_path is None:
             return None
 
         try:
+            stt_started = time.perf_counter()
             text = self._whisper.transcribe(str(wav_path))
+            stt_ms = (time.perf_counter() - stt_started) * 1000.0
         finally:
             self._safe_unlink(wav_path)
 
@@ -264,6 +314,9 @@ class SessionController:
             user_text=text,
             on_token=on_token,
             stop_requested=stop_requested,
+            mode="live",
+            capture_ms=capture_ms,
+            stt_ms=stt_ms,
         )
         return text, response
 

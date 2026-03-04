@@ -47,6 +47,11 @@ class MainWindow(QMainWindow):
         self._status = StatusPanel()
         self._status.set_model(settings.ollama.chat_model)
         layout.addWidget(self._status)
+        self._latency_label = QLabel(
+            "Latency: mode=idle | capture=0ms | stt=0ms | llm=0ms | tts=0ms | total=0ms"
+        )
+        self._latency_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(self._latency_label)
 
         capture_row = QHBoxLayout()
         self._mic_checkbox = QCheckBox("Microphone")
@@ -315,6 +320,7 @@ class MainWindow(QMainWindow):
         try:
             reply = self._session.chat_once(text)
             self._append("Assistant", reply)
+            self._refresh_latency_strip()
         except Exception as exc:
             QMessageBox.critical(self, "Assistant error", str(exc))
         finally:
@@ -418,6 +424,7 @@ class MainWindow(QMainWindow):
             user_text, reply = self._session.record_and_chat(seconds=5.0)
             self._append("You (voice)", user_text)
             self._append("Assistant", reply)
+            self._refresh_latency_strip()
         except Exception as exc:
             QMessageBox.critical(self, "Voice error", str(exc))
         finally:
@@ -458,6 +465,7 @@ class MainWindow(QMainWindow):
         if not self._live_stream_open:
             self._append("Assistant", text)
         self._close_live_stream()
+        self._refresh_latency_strip()
 
     def _close_live_stream(self, _text: str | None = None) -> None:
         if self._live_stream_open:
@@ -467,3 +475,15 @@ class MainWindow(QMainWindow):
     def _on_live_audio_level(self, level: float) -> None:
         normalized = max(0.0, min(level / max(self._session.vad_level_threshold * 2.0, 1e-6), 1.0))
         self._input_level_bar.setValue(int(normalized * 100))
+
+    def _refresh_latency_strip(self) -> None:
+        metrics = self._session.get_last_metrics()
+        self._latency_label.setText(
+            "Latency: "
+            f"mode={metrics.get('mode', 'unknown')} | "
+            f"capture={metrics.get('capture_ms', 0)}ms | "
+            f"stt={metrics.get('stt_ms', 0)}ms | "
+            f"llm={metrics.get('llm_ms', 0)}ms | "
+            f"tts={metrics.get('tts_ms', 0)}ms | "
+            f"total={metrics.get('total_ms', 0)}ms"
+        )
