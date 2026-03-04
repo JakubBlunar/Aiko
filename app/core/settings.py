@@ -40,6 +40,7 @@ class AssistantSettings:
     mode: str
     remember_history: bool
     personality: str
+    thinking_model: str | None
 
 
 @dataclass(slots=True)
@@ -103,6 +104,11 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             mode=_required(assistant, "mode"),
             remember_history=bool(_required(assistant, "remember_history")),
             personality=str(assistant.get("personality", "friendly")),
+            thinking_model=(
+                str(assistant.get("thinking_model")).strip()
+                if assistant.get("thinking_model") is not None
+                else None
+            ),
         ),
         ollama=OllamaSettings(
             base_url=_required(ollama, "base_url"),

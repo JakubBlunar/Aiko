@@ -9,7 +9,7 @@ import time
 from app.audio.mic_capture import MicrophoneCapture
 from app.core.conversation_memory import ConversationMemoryStore
 from app.audio.system_loopback import SystemLoopbackCapture
-from app.core.settings import AppSettings
+from app.core.settings import AppSettings, OllamaSettings
 from app.core.turn_manager import TurnInput, TurnManager
 from app.llm.ollama_client import OllamaClient
 from app.llm.prompt_builder import available_personalities
@@ -31,6 +31,15 @@ class SessionController:
         self._settings = settings
         self._turn_manager = TurnManager()
         self._ollama = OllamaClient(settings.ollama)
+        self._thinking_ollama: OllamaClient | None = None
+        if settings.assistant.thinking_model:
+            self._thinking_ollama = OllamaClient(
+                OllamaSettings(
+                    base_url=settings.ollama.base_url,
+                    chat_model=settings.assistant.thinking_model,
+                    temperature=0.1,
+                )
+            )
         self._microphone = MicrophoneCapture(settings.audio)
         self._loopback = SystemLoopbackCapture(settings.audio)
         self._whisper = WhisperService()
@@ -317,17 +326,34 @@ class SessionController:
             return False
         self._last_screen_decision_at = now
 
+        recent_memory = self._memory.recent_messages(4)
+        recent_lines: list[str] = []
+        for item in recent_memory:
+            role = str(item.get("role", "")).strip().lower()
+            content = str(item.get("content", "")).strip()
+            if role in {"user", "assistant"} and content:
+                recent_lines.append(f"{role}: {content}")
+        recent_text = "\n".join(recent_lines)
+
         try:
-            decision = self._ollama.chat(
+            decider = self._thinking_ollama or self._ollama
+            decision = decider.chat(
                 [
                     {
                         "role": "system",
                         "content": (
-                            "Decide whether checking the user's current screen is needed to answer the message. "
+                            "Decide whether checking the user's current screen is needed to answer the user's latest message. "
+                            "Use latest message plus recent conversation. "
                             "Reply with only YES or NO."
                         ),
                     },
-                    {"role": "user", "content": user_text.strip()},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Latest message:\n{user_text.strip()}\n\n"
+                            f"Recent conversation:\n{recent_text or '[none]'}"
+                        ),
+                    },
                 ]
             )
         except Exception:

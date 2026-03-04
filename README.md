@@ -49,6 +49,13 @@ ollama:
 	chat_model: "aqualaguna/gemma-3-27b-it-abliterated-GGUF:q4_k_m"
 ```
 
+Optional: configure a separate low-temperature `thinking_model` for decision tasks (like screen-capture gating):
+
+```yaml
+assistant:
+	thinking_model: "aqualaguna/gemma-3-27b-it-abliterated-GGUF:q4_k_m"
+```
+
 For Piper TTS, set `tts.voice` to your local Piper model path (example: `models/en_US-lessac-medium.onnx`) and ensure `piper` CLI is installed and available in `PATH`.
 
 ## Run
