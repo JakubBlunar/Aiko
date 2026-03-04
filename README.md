@@ -73,3 +73,4 @@ python -m app.main
 - Use `Memory Viewer` to inspect a long history window and refresh or clear stored entries.
 - Use `Refresh Models` + `Model` dropdown to switch between local Ollama models without editing YAML.
 - A latency strip shows per-turn `capture`, `stt`, `llm`, `tts`, and `total` timings for quick model comparisons.
+- A second latency strip shows rolling averages over the last 10 turns for more stable model comparison.

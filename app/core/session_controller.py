@@ -54,6 +54,7 @@ class SessionController:
             "tts_ms": 0.0,
             "total_ms": 0.0,
         }
+        self._metrics_history: deque[dict[str, float | str]] = deque(maxlen=10)
 
         self._state = SessionState(
             mic_enabled=settings.audio.enable_microphone,
@@ -150,6 +151,34 @@ class SessionController:
     def get_last_metrics(self) -> dict[str, float | str]:
         return dict(self._last_metrics)
 
+    def get_average_metrics(self) -> dict[str, float | str]:
+        if not self._metrics_history:
+            return {
+                "window": 0,
+                "capture_ms": 0.0,
+                "stt_ms": 0.0,
+                "llm_ms": 0.0,
+                "tts_ms": 0.0,
+                "total_ms": 0.0,
+            }
+
+        def avg(key: str) -> float:
+            values = [float(item.get(key, 0.0)) for item in self._metrics_history]
+            return round(sum(values) / max(1, len(values)), 1)
+
+        return {
+            "window": len(self._metrics_history),
+            "capture_ms": avg("capture_ms"),
+            "stt_ms": avg("stt_ms"),
+            "llm_ms": avg("llm_ms"),
+            "tts_ms": avg("tts_ms"),
+            "total_ms": avg("total_ms"),
+        }
+
+    def _set_last_metrics(self, metrics: dict[str, float | str]) -> None:
+        self._last_metrics = metrics
+        self._metrics_history.append(dict(metrics))
+
     def get_conversation_memory(self, max_entries: int = 200) -> list[dict[str, str]]:
         entries = self._memory.recent_entries(max_entries=max_entries)
         return [
@@ -205,14 +234,14 @@ class SessionController:
                 response = "".join(pieces).strip()
             llm_ms = (time.perf_counter() - llm_started) * 1000.0
         except Exception as exc:
-            self._last_metrics = {
+            self._set_last_metrics({
                 "mode": mode,
                 "capture_ms": round(capture_ms, 1),
                 "stt_ms": round(stt_ms, 1),
                 "llm_ms": 0.0,
                 "tts_ms": 0.0,
                 "total_ms": round((time.perf_counter() - turn_start) * 1000.0, 1),
-            }
+            })
             return (
                 "I could not reach Ollama. Please make sure it is running and the model is available. "
                 f"Details: {exc}"
@@ -231,14 +260,14 @@ class SessionController:
             self._tts.speak_async(response)
             tts_ms = (time.perf_counter() - tts_started) * 1000.0
 
-        self._last_metrics = {
+        self._set_last_metrics({
             "mode": mode,
             "capture_ms": round(capture_ms, 1),
             "stt_ms": round(stt_ms, 1),
             "llm_ms": round(llm_ms, 1),
             "tts_ms": round(tts_ms, 1),
             "total_ms": round((time.perf_counter() - turn_start) * 1000.0, 1),
-        }
+        })
         return response
 
     def record_and_chat(self, seconds: float = 5.0) -> tuple[str, str]:

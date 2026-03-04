@@ -52,6 +52,11 @@ class MainWindow(QMainWindow):
         )
         self._latency_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
         layout.addWidget(self._latency_label)
+        self._latency_avg_label = QLabel(
+            "Latency Avg(0): capture=0ms | stt=0ms | llm=0ms | tts=0ms | total=0ms"
+        )
+        self._latency_avg_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(self._latency_avg_label)
 
         capture_row = QHBoxLayout()
         self._mic_checkbox = QCheckBox("Microphone")
@@ -478,6 +483,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_latency_strip(self) -> None:
         metrics = self._session.get_last_metrics()
+        averages = self._session.get_average_metrics()
         self._latency_label.setText(
             "Latency: "
             f"mode={metrics.get('mode', 'unknown')} | "
@@ -486,4 +492,12 @@ class MainWindow(QMainWindow):
             f"llm={metrics.get('llm_ms', 0)}ms | "
             f"tts={metrics.get('tts_ms', 0)}ms | "
             f"total={metrics.get('total_ms', 0)}ms"
+        )
+        self._latency_avg_label.setText(
+            f"Latency Avg({averages.get('window', 0)}): "
+            f"capture={averages.get('capture_ms', 0)}ms | "
+            f"stt={averages.get('stt_ms', 0)}ms | "
+            f"llm={averages.get('llm_ms', 0)}ms | "
+            f"tts={averages.get('tts_ms', 0)}ms | "
+            f"total={averages.get('total_ms', 0)}ms"
         )
