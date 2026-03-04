@@ -74,3 +74,4 @@ python -m app.main
 - Use `Refresh Models` + `Model` dropdown to switch between local Ollama models without editing YAML.
 - A latency strip shows per-turn `capture`, `stt`, `llm`, `tts`, and `total` timings for quick model comparisons.
 - A second latency strip shows rolling averages over the last 10 turns for more stable model comparison.
+- Use `Reset Latency` to clear current and average timing stats before testing another model.

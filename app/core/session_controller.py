@@ -175,6 +175,17 @@ class SessionController:
             "total_ms": avg("total_ms"),
         }
 
+    def reset_latency_metrics(self) -> None:
+        self._last_metrics = {
+            "mode": "idle",
+            "capture_ms": 0.0,
+            "stt_ms": 0.0,
+            "llm_ms": 0.0,
+            "tts_ms": 0.0,
+            "total_ms": 0.0,
+        }
+        self._metrics_history.clear()
+
     def _set_last_metrics(self, metrics: dict[str, float | str]) -> None:
         self._last_metrics = metrics
         self._metrics_history.append(dict(metrics))

@@ -149,6 +149,9 @@ class MainWindow(QMainWindow):
         self._apply_calibration_button = QPushButton("Apply Calibration")
         self._apply_calibration_button.clicked.connect(self._apply_calibration)
         calibration_row.addWidget(self._apply_calibration_button)
+        self._reset_latency_button = QPushButton("Reset Latency")
+        self._reset_latency_button.clicked.connect(self._reset_latency)
+        calibration_row.addWidget(self._reset_latency_button)
         calibration_row.addStretch(1)
         layout.addLayout(calibration_row)
 
@@ -186,6 +189,7 @@ class MainWindow(QMainWindow):
         self._refresh_personalities()
         self._refresh_models()
         self._apply_calibration()
+        self._refresh_latency_strip()
 
     def _refresh_status(self) -> None:
         state = self._session.state
@@ -226,6 +230,10 @@ class MainWindow(QMainWindow):
         self._session.set_vad_level_threshold(self._vad_threshold_spin.value())
         self._session.set_vad_silence_seconds(self._vad_silence_spin.value())
         self._persist_preferences()
+
+    def _reset_latency(self) -> None:
+        self._session.reset_latency_metrics()
+        self._refresh_latency_strip()
 
     def _refresh_audio_devices(self) -> None:
         current_mic = self._mic_device_combo.currentData()
@@ -369,6 +377,7 @@ class MainWindow(QMainWindow):
         self._refresh_models_button.setEnabled(False)
         self._memory_checkbox.setEnabled(False)
         self._apply_calibration_button.setEnabled(False)
+        self._reset_latency_button.setEnabled(False)
 
         self._live_thread.start()
 
@@ -395,6 +404,7 @@ class MainWindow(QMainWindow):
         self._refresh_models_button.setEnabled(True)
         self._memory_checkbox.setEnabled(True)
         self._apply_calibration_button.setEnabled(True)
+        self._reset_latency_button.setEnabled(True)
         self._status.set_service_status("ready")
         self._close_live_stream()
         self._input_level_bar.setValue(0)
@@ -424,6 +434,7 @@ class MainWindow(QMainWindow):
         self._refresh_models_button.setEnabled(False)
         self._memory_checkbox.setEnabled(False)
         self._apply_calibration_button.setEnabled(False)
+        self._reset_latency_button.setEnabled(False)
 
         try:
             user_text, reply = self._session.record_and_chat(seconds=5.0)
@@ -444,6 +455,7 @@ class MainWindow(QMainWindow):
             self._refresh_models_button.setEnabled(True)
             self._memory_checkbox.setEnabled(True)
             self._apply_calibration_button.setEnabled(True)
+            self._reset_latency_button.setEnabled(True)
             self._status.set_service_status("ready")
 
     def _append(self, speaker: str, text: str) -> None:
