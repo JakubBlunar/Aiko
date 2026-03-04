@@ -338,6 +338,7 @@ def save_runtime_preferences(
     action_min_interval_seconds: float,
     tts_provider: str,
     tts_voice: str | None,
+    stt_model: str | None = None,
     enable_microphone: bool,
     enable_system_audio: bool,
     enable_screen_context: bool,
@@ -379,6 +380,9 @@ def save_runtime_preferences(
         "tts": {
             "provider": str(tts_provider or "piper").strip().lower() or "piper",
             "voice": str(tts_voice or "").strip(),
+        },
+        "stt": {
+            "model": str(stt_model or "").strip() or None,
         },
     }
 

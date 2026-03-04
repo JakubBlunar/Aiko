@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import winsound
 
 from app.core.settings import TtsSettings
@@ -28,7 +29,43 @@ class PiperTtsService:
         return
 
     def warmup_sync(self) -> bool:
-        return True
+        if not self._settings.enabled:
+            return True
+
+        warmup_wav = Path(tempfile.mkstemp(suffix=".wav", prefix="assistant_tts_warmup_")[1])
+        try:
+            proc = self._spawn_piper_process(output_file=warmup_wav)
+            if proc is None:
+                return False
+
+            try:
+                if proc.stdin is not None:
+                    proc.stdin.write("warmup")
+                    proc.stdin.close()
+                proc.wait(timeout=45)
+            finally:
+                if proc.poll() is None:
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+
+            if proc.returncode not in (0, None):
+                return False
+
+            deadline = time.time() + 2.0
+            while time.time() < deadline:
+                if warmup_wav.exists() and warmup_wav.stat().st_size > 44:
+                    return True
+                time.sleep(0.05)
+            return warmup_wav.exists()
+        except Exception:
+            return False
+        finally:
+            try:
+                warmup_wav.unlink(missing_ok=True)
+            except Exception:
+                pass
 
     def speak_async(self, text: str) -> None:
         if not self._settings.enabled:
@@ -63,45 +100,12 @@ class PiperTtsService:
         wav_path = Path(tempfile.mkstemp(suffix=".wav", prefix="assistant_tts_")[1])
 
         try:
-            primary_cmd = [
-                "piper",
-                "--model",
-                self._settings.voice,
-                "--output_file",
-                str(wav_path),
-            ]
-            fallback_cmd = [
-                sys.executable,
-                "-m",
-                "piper",
-                "--model",
-                self._settings.voice,
-                "--output_file",
-                str(wav_path),
-            ]
-
             with self._lock:
                 self._active_wav = wav_path
 
-            try:
-                proc = subprocess.Popen(
-                    primary_cmd,
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                )
-            except FileNotFoundError:
-                try:
-                    proc = subprocess.Popen(
-                        fallback_cmd,
-                        stdin=subprocess.PIPE,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        text=True,
-                    )
-                except Exception:
-                    return
+            proc = self._spawn_piper_process(output_file=wav_path)
+            if proc is None:
+                return
 
             with self._lock:
                 self._active_process = proc
@@ -125,3 +129,41 @@ class PiperTtsService:
             with self._lock:
                 self._active_process = None
                 self._active_wav = None
+
+    def _spawn_piper_process(self, *, output_file: Path) -> subprocess.Popen[str] | None:
+        primary_cmd = [
+            "piper",
+            "--model",
+            self._settings.voice,
+            "--output_file",
+            str(output_file),
+        ]
+        fallback_cmd = [
+            sys.executable,
+            "-m",
+            "piper",
+            "--model",
+            self._settings.voice,
+            "--output_file",
+            str(output_file),
+        ]
+
+        try:
+            return subprocess.Popen(
+                primary_cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        except FileNotFoundError:
+            try:
+                return subprocess.Popen(
+                    fallback_cmd,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+            except Exception:
+                return None

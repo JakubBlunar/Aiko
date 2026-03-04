@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import re
 import time
 
 from app.actions.emergency_stop import EmergencyStopState, GlobalHotkeyListener
@@ -141,6 +142,30 @@ class SessionController:
     def vad_silence_seconds(self) -> float:
         return self._vad_silence_seconds
 
+    @property
+    def stt_model(self) -> str:
+        return str(self._settings.stt.model or "base").strip() or "base"
+
+    def set_stt_model(self, model_name: str) -> bool:
+        normalized = str(model_name or "").strip()
+        if not normalized:
+            return False
+        if normalized == self.stt_model:
+            return True
+
+        candidate = WhisperService(
+            model_name=normalized,
+            language=self._settings.stt.language,
+        )
+        if not candidate.is_available:
+            self._trace("stt.error", f"Failed to load STT model: {normalized}")
+            return False
+
+        self._settings.stt.model = normalized
+        self._whisper = candidate
+        self._trace("stt.model", f"Switched STT model to {normalized}")
+        return True
+
     def set_vad_level_threshold(self, value: float) -> None:
         self._vad_level_threshold = max(0.001, min(value, 0.5))
 
@@ -218,6 +243,55 @@ class SessionController:
             except Exception:
                 return "error", "Failed to read TTS status"
         return "ready", "TTS runtime available"
+
+    def speak_text(self, text: str) -> bool:
+        if not bool(getattr(self._settings.tts, "enabled", True)):
+            return False
+        message = self._prepare_tts_text(text)
+        if not message:
+            return False
+        try:
+            self._tts.speak_async(message)
+            return True
+        except Exception as exc:
+            self._trace("tts.error", f"TTS startup speak failed: {exc}")
+            return False
+
+    def build_startup_greeting(self) -> str:
+        fallback = "Welcome back. Audio is ready."
+        try:
+            entries = self._memory.recent_entries(max_entries=80)
+        except Exception:
+            return fallback
+
+        latest_user_text = ""
+        for entry in reversed(entries):
+            if entry.role == "user":
+                latest_user_text = (entry.content or "").strip()
+                if latest_user_text:
+                    break
+
+        if not latest_user_text:
+            return fallback
+
+        normalized = " ".join(latest_user_text.split())
+        lowered = normalized.lower()
+        if lowered in {"hi", "hello", "hey", "hello!", "hey!", "hi!"}:
+            return fallback
+
+        for separator in ("\n", ".", "!", "?"):
+            index = normalized.find(separator)
+            if index > 0:
+                normalized = normalized[:index].strip()
+                break
+
+        if len(normalized) > 72:
+            normalized = f"{normalized[:69].rstrip()}..."
+
+        if len(normalized) < 10:
+            return fallback
+
+        return f"Welcome back. Last time you mentioned: {normalized}. Audio is ready."
 
     def prewarm_tts(self) -> None:
         warmup_sync = getattr(self._tts, "warmup_sync", None)
@@ -582,7 +656,9 @@ class SessionController:
         tts_ms = 0.0
         if response:
             try:
-                self._tts.speak_async(response)
+                tts_text = self._prepare_tts_text(response)
+                if tts_text:
+                    self._tts.speak_async(tts_text)
             except Exception as exc:
                 self._trace("tts.error", f"TTS speak failed: {exc}")
             tts_ms = (time.perf_counter() - tts_started) * 1000.0
@@ -1223,15 +1299,18 @@ class SessionController:
                 "Whisper is not installed. Install AI extras with: pip install -e .[ai]"
             )
 
-        live_level_threshold = max(0.02, float(self._vad_level_threshold))
+        live_level_threshold = max(0.015, float(self._vad_level_threshold) * 0.9)
+        live_silence_seconds = max(1.8, float(self._vad_silence_seconds))
+        live_min_speech_before_stop = 2.2
+        live_start_grace_seconds = 1.0
 
         capture_started = time.perf_counter()
         wav_path = self._microphone.capture_phrase_to_wav(
             max_seconds=max_listen_seconds,
-            silence_seconds_to_stop=self._vad_silence_seconds,
+            silence_seconds_to_stop=live_silence_seconds,
             level_threshold=live_level_threshold,
-            min_speech_seconds_before_stop=1.6,
-            speech_start_grace_seconds=0.8,
+            min_speech_seconds_before_stop=live_min_speech_before_stop,
+            speech_start_grace_seconds=live_start_grace_seconds,
             stop_requested=stop_requested,
             on_speech_start=None,
             on_audio_level=on_audio_level,
@@ -1288,6 +1367,20 @@ class SessionController:
             return " ".join(self._system_audio_context) if self._system_audio_context else None
         finally:
             self._safe_unlink(wav_path)
+
+    @staticmethod
+    def _prepare_tts_text(text: str) -> str:
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            return ""
+        cleaned = re.sub(r"\*\*(.+?)\*\*", r"\1", cleaned)
+        cleaned = re.sub(r"\*(.+?)\*", r"\1", cleaned)
+        cleaned = re.sub(r"__(.+?)__", r"\1", cleaned)
+        cleaned = re.sub(r"_(.+?)_", r"\1", cleaned)
+        cleaned = cleaned.replace("`", "")
+        cleaned = cleaned.replace("[", "").replace("]", "")
+        cleaned = " ".join(cleaned.split())
+        return cleaned
 
     @staticmethod
     def _safe_unlink(path: Path) -> None:

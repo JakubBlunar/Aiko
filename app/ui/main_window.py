@@ -42,6 +42,11 @@ from app.ui.widgets.status_panel import StatusPanel
 
 
 class MainWindow(QMainWindow):
+    _STT_PROFILE_TO_MODEL: dict[str, str] = {
+        "fast": "base",
+        "accurate": "small",
+    }
+
     def __init__(self, settings: AppSettings, session: SessionController | None = None) -> None:
         super().__init__()
         self._settings = settings
@@ -59,7 +64,9 @@ class MainWindow(QMainWindow):
         self._live_stream_open = False
         self._guardrail_controls_locked = False
         self._live_level_peak = 0.01
+        self._live_noise_floor = 0.0
         self._wheel_guard_widgets: set[QWidget] = set()
+        self._startup_greeting_done = False
 
         self.setWindowTitle(settings.assistant.name)
         self.resize(900, 640)
@@ -109,6 +116,9 @@ class MainWindow(QMainWindow):
         self._tts_debug_label = QLabel("Active TTS: unknown")
         self._tts_debug_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
         chat_layout.addWidget(self._tts_debug_label)
+        self._stt_debug_label = QLabel("Active STT: unknown")
+        self._stt_debug_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        chat_layout.addWidget(self._stt_debug_label)
         self._tts_model_status_label = QLabel("TTS Model: status=unknown | details=unavailable")
         self._tts_model_status_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
         chat_layout.addWidget(self._tts_model_status_label)
@@ -210,6 +220,11 @@ class MainWindow(QMainWindow):
         self._tts_voice_combo.setMinimumWidth(220)
         self._tts_voice_combo.currentIndexChanged.connect(self._on_tts_voice_changed)
         controls_form.addRow("Voice:", self._tts_voice_combo)
+
+        self._stt_profile_combo = QComboBox()
+        self._stt_profile_combo.setMinimumWidth(120)
+        self._stt_profile_combo.currentIndexChanged.connect(self._on_stt_profile_changed)
+        controls_form.addRow("STT Profile:", self._stt_profile_combo)
         models_layout.addLayout(controls_form)
 
         self._refresh_models_button = QPushButton("Refresh Models")
@@ -354,11 +369,13 @@ class MainWindow(QMainWindow):
         self._refresh_models()
         self._refresh_tts_providers()
         self._refresh_tts_voices()
+        self._refresh_stt_profiles()
         self._apply_calibration()
         self._refresh_latency_strip()
         self._refresh_model_debug_label()
         self._refresh_goal_debug_label()
         self._refresh_tts_debug_label()
+        self._refresh_stt_debug_label()
         self._refresh_tts_model_status_label()
         if self._session.start_action_hotkey_listener():
             self._append("System", f"Global emergency hotkey active: {self._session.emergency_hotkey}")
@@ -376,6 +393,18 @@ class MainWindow(QMainWindow):
         self._action_guardrail_timer.start()
         self._refresh_action_guardrail_label()
         self._setup_wheel_guard()
+        QTimer.singleShot(250, self._play_startup_greeting)
+
+    def _play_startup_greeting(self) -> None:
+        if self._startup_greeting_done:
+            return
+        self._startup_greeting_done = True
+        if self._live_thread is not None or self._turn_thread is not None:
+            return
+        greeting = self._session.build_startup_greeting()
+        ok = self._session.speak_text(greeting)
+        if ok:
+            self._append("System", f"Startup greeting played: {greeting}")
 
     def _setup_wheel_guard(self) -> None:
         widgets: tuple[QWidget, ...] = (
@@ -387,6 +416,7 @@ class MainWindow(QMainWindow):
             self._thinking_model_combo,
             self._tts_provider_combo,
             self._tts_voice_combo,
+            self._stt_profile_combo,
             self._vad_threshold_spin,
             self._vad_silence_spin,
             self._action_cooldown_spin,
@@ -739,6 +769,42 @@ class MainWindow(QMainWindow):
         self._session.set_tts_voice(selected_voice)
         self._persist_preferences()
 
+    @classmethod
+    def _stt_model_to_profile(cls, model_name: str) -> str:
+        model = str(model_name or "").strip().lower()
+        for profile, mapped_model in cls._STT_PROFILE_TO_MODEL.items():
+            if model == mapped_model:
+                return profile
+        return "accurate"
+
+    def _refresh_stt_profiles(self) -> None:
+        current_profile = self._stt_model_to_profile(self._session.stt_model)
+        self._stt_profile_combo.blockSignals(True)
+        self._stt_profile_combo.clear()
+        self._stt_profile_combo.addItem("Fast", "fast")
+        self._stt_profile_combo.addItem("Accurate", "accurate")
+        index = self._stt_profile_combo.findData(current_profile)
+        if index < 0:
+            index = self._stt_profile_combo.findData("accurate")
+        if index >= 0:
+            self._stt_profile_combo.setCurrentIndex(index)
+        self._stt_profile_combo.blockSignals(False)
+
+    def _on_stt_profile_changed(self) -> None:
+        selected_profile = str(self._stt_profile_combo.currentData() or "accurate").strip().lower()
+        target_model = self._STT_PROFILE_TO_MODEL.get(selected_profile, "small")
+        ok = self._session.set_stt_model(target_model)
+        if not ok:
+            QMessageBox.warning(
+                self,
+                "STT profile",
+                f"Could not switch STT model to {target_model}. Keeping current model.",
+            )
+            self._refresh_stt_profiles()
+            return
+        self._refresh_stt_debug_label()
+        self._persist_preferences()
+
     def _refresh_model_debug_label(self) -> None:
         response_model = self._session.chat_model or "unknown"
         thinking_model = self._session.thinking_model or "response"
@@ -751,6 +817,9 @@ class MainWindow(QMainWindow):
 
     def _refresh_tts_debug_label(self) -> None:
         self._tts_debug_label.setText(f"Active TTS: {self._session.tts_provider}")
+
+    def _refresh_stt_debug_label(self) -> None:
+        self._stt_debug_label.setText(f"Active STT: {self._session.stt_model}")
 
     def _refresh_tts_model_status_label(self) -> None:
         state, details = self._session.get_tts_model_status()
@@ -792,6 +861,7 @@ class MainWindow(QMainWindow):
             action_min_interval_seconds=self._session.action_min_interval_seconds,
             tts_provider=self._session.tts_provider,
             tts_voice=self._session.tts_voice,
+            stt_model=self._session.stt_model,
             enable_microphone=self._mic_checkbox.isChecked(),
             enable_system_audio=self._system_checkbox.isChecked(),
             enable_screen_context=self._screen_checkbox.isChecked(),
@@ -833,6 +903,7 @@ class MainWindow(QMainWindow):
         self._thinking_model_combo.setEnabled(not busy)
         self._tts_provider_combo.setEnabled(not busy)
         self._tts_voice_combo.setEnabled((not busy) and self._session.tts_provider == "piper")
+        self._stt_profile_combo.setEnabled(not busy)
         self._refresh_models_button.setEnabled(not busy)
         self._memory_checkbox.setEnabled(not busy)
         self._apply_calibration_button.setEnabled(not busy)
@@ -934,6 +1005,7 @@ class MainWindow(QMainWindow):
         self._thinking_model_combo.setEnabled(False)
         self._tts_provider_combo.setEnabled(False)
         self._tts_voice_combo.setEnabled(False)
+        self._stt_profile_combo.setEnabled(False)
         self._refresh_models_button.setEnabled(False)
         self._memory_checkbox.setEnabled(False)
         self._apply_calibration_button.setEnabled(False)
@@ -970,6 +1042,7 @@ class MainWindow(QMainWindow):
         self._thinking_model_combo.setEnabled(True)
         self._tts_provider_combo.setEnabled(True)
         self._tts_voice_combo.setEnabled(self._session.tts_provider == "piper")
+        self._stt_profile_combo.setEnabled(True)
         self._refresh_models_button.setEnabled(True)
         self._memory_checkbox.setEnabled(True)
         self._apply_calibration_button.setEnabled(True)
@@ -1053,15 +1126,26 @@ class MainWindow(QMainWindow):
 
     def _on_live_audio_level(self, level: float) -> None:
         threshold = max(self._session.vad_level_threshold, 1e-6)
-        self._live_level_peak = max(level, self._live_level_peak * 0.97)
-        scale_reference = max(threshold * 1.2, self._live_level_peak * 0.45, 1e-6)
-        normalized = max(0.0, min(level / scale_reference, 1.0))
+        if level < threshold:
+            self._live_noise_floor = (self._live_noise_floor * 0.95) + (level * 0.05)
+
+        adjusted_level = max(0.0, level - self._live_noise_floor)
+        self._live_level_peak = max(adjusted_level, self._live_level_peak * 0.97)
+        adjusted_threshold = max(1e-6, threshold - self._live_noise_floor)
+        deadband = adjusted_threshold * 0.25
+        if adjusted_level <= deadband:
+            normalized = 0.0
+        else:
+            effective_level = adjusted_level - deadband
+            scale_reference = max(adjusted_threshold * 1.2, self._live_level_peak * 0.45, 1e-6)
+            normalized = max(0.0, min(effective_level / scale_reference, 1.0))
+
         percent = int(normalized * 100)
         self._input_level_bar.setValue(percent)
         self._input_level_bar.setFormat(f"{percent}%")
         state = "ABOVE" if level >= threshold else "below"
         self._input_level_debug_label.setText(
-            f"Mic raw={level:.4f} | threshold={threshold:.4f} | {state}"
+            f"Mic raw={level:.4f} | floor={self._live_noise_floor:.4f} | threshold={threshold:.4f} | {state}"
         )
 
     def _refresh_latency_strip(self) -> None:
