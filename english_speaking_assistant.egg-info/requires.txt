@@ -1,0 +1,13 @@
+PySide6>=6.8.0
+requests>=2.32.3
+PyYAML>=6.0.2
+sounddevice>=0.5.1
+numpy>=2.2.3
+mss>=10.0.0
+
+[ai]
+faster-whisper>=1.1.1
+rapidocr-onnxruntime>=1.3.24
+
+[tts]
+piper-tts>=1.3.0

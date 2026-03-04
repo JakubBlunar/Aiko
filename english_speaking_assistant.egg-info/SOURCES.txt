@@ -1,0 +1,9 @@
+README.md
+pyproject.toml
+app/__init__.py
+app/main.py
+english_speaking_assistant.egg-info/PKG-INFO
+english_speaking_assistant.egg-info/SOURCES.txt
+english_speaking_assistant.egg-info/dependency_links.txt
+english_speaking_assistant.egg-info/requires.txt
+english_speaking_assistant.egg-info/top_level.txt

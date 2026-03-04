@@ -1,0 +1,66 @@
+Metadata-Version: 2.4
+Name: english-speaking-assistant
+Version: 0.1.0
+Summary: Local Python desktop AI assistant for spoken English practice
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: PySide6>=6.8.0
+Requires-Dist: requests>=2.32.3
+Requires-Dist: PyYAML>=6.0.2
+Requires-Dist: sounddevice>=0.5.1
+Requires-Dist: numpy>=2.2.3
+Requires-Dist: mss>=10.0.0
+Provides-Extra: ai
+Requires-Dist: faster-whisper>=1.1.1; extra == "ai"
+Requires-Dist: rapidocr-onnxruntime>=1.3.24; extra == "ai"
+Provides-Extra: tts
+Requires-Dist: piper-tts>=1.3.0; extra == "tts"
+
+# English Speaking Assistant (Python-only)
+
+Local desktop assistant for speaking English practice using local Ollama models.
+
+## MVP status
+
+This is the first implementation slice:
+- PySide6 desktop UI
+- Local Ollama chat wiring
+- Capture controls (microphone / system audio / screen context)
+- Modular service layout for STT, OCR, and TTS
+
+## Requirements
+
+- Windows 10/11
+- Python 3.11+
+- Ollama installed and running
+- A local Ollama model (example: `llama3.1:8b`)
+
+## Setup
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -e .
+```
+
+Optional dependencies for extended capabilities:
+
+```powershell
+pip install -e .[ai,tts]
+```
+
+## Configure
+
+Edit `config/default.yaml` to match your model names.
+
+## Run
+
+```powershell
+python -m app.main
+```
+
+## Notes
+
+- All processing is local by default.
+- System audio capture on Windows uses WASAPI loopback device selection and may require manual device configuration.
+- This initial slice keeps memory disabled intentionally.

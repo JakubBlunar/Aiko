@@ -1,0 +1,28 @@
+assistant:
+  name: "English Speaking Assistant"
+  mode: "natural_chat"
+  remember_history: false
+
+ollama:
+  base_url: "http://127.0.0.1:11434"
+  chat_model: "llama3.1:8b"
+  temperature: 0.6
+
+audio:
+  sample_rate: 16000
+  channels: 1
+  enable_microphone: true
+  enable_system_audio: false
+
+screen:
+  enable_screen_context: false
+  capture_interval_seconds: 2
+
+stt:
+  provider: "faster_whisper"
+  model: "base"
+
+tts:
+  provider: "piper"
+  voice: "en_US-lessac-medium"
+  enabled: true
