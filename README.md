@@ -56,3 +56,5 @@ python -m app.main
 - This initial slice keeps memory disabled intentionally.
 - Live mode uses basic energy-based speech detection (VAD-like thresholding) and may need threshold tuning for noisy rooms.
 - Live mode supports barge-in: when your speech starts, current assistant audio playback is stopped.
+- Use `Refresh Devices` in the UI to pick a specific microphone or loopback source.
+- System audio context is captured in short intervals and buffered into recent transcript snippets for prompt grounding.

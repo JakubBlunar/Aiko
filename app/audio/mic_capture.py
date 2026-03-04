@@ -16,6 +16,7 @@ from app.core.settings import AudioSettings
 class MicrophoneCapture:
     def __init__(self, settings: AudioSettings) -> None:
         self._settings = settings
+        self._device: int | None = settings.microphone_device
 
     def start(self) -> None:
         return
@@ -30,9 +31,21 @@ class MicrophoneCapture:
             samplerate=self._settings.sample_rate,
             channels=self._settings.channels,
             dtype="float32",
+            device=self._device,
         )
         sd.wait()
         return recording.copy()
+
+    def list_input_devices(self) -> list[tuple[int, str]]:
+        devices = sd.query_devices()
+        output: list[tuple[int, str]] = []
+        for index, device in enumerate(devices):
+            if int(device.get("max_input_channels", 0)) > 0:
+                output.append((index, str(device.get("name", f"Input {index}"))))
+        return output
+
+    def set_device(self, device_index: int | None) -> None:
+        self._device = device_index
 
     def capture_to_wav(self, seconds: float = 5.0) -> Path:
         samples = self.capture_seconds(seconds=seconds)
@@ -81,6 +94,7 @@ class MicrophoneCapture:
             channels=channels,
             dtype="float32",
             blocksize=chunk_frames,
+            device=self._device,
         ) as stream:
             while True:
                 if stop_requested and stop_requested():

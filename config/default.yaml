@@ -13,6 +13,8 @@ audio:
   channels: 1
   enable_microphone: true
   enable_system_audio: false
+  microphone_device: null
+  loopback_device: null
 
 screen:
   enable_screen_context: false

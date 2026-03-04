@@ -20,6 +20,8 @@ class AudioSettings:
     channels: int
     enable_microphone: bool
     enable_system_audio: bool
+    microphone_device: int | None
+    loopback_device: int | None
 
 
 @dataclass(slots=True)
@@ -86,6 +88,12 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             channels=int(_required(audio, "channels")),
             enable_microphone=bool(_required(audio, "enable_microphone")),
             enable_system_audio=bool(_required(audio, "enable_system_audio")),
+            microphone_device=(
+                int(audio["microphone_device"]) if audio.get("microphone_device") is not None else None
+            ),
+            loopback_device=(
+                int(audio["loopback_device"]) if audio.get("loopback_device") is not None else None
+            ),
         ),
         screen=ScreenSettings(
             enable_screen_context=bool(_required(screen, "enable_screen_context")),

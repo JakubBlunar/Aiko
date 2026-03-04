@@ -4,6 +4,7 @@ from PySide6.QtCore import QThread, Qt
 from PySide6.QtGui import QCloseEvent, QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -55,6 +56,20 @@ class MainWindow(QMainWindow):
         for widget in (self._mic_checkbox, self._system_checkbox, self._screen_checkbox):
             capture_row.addWidget(widget)
 
+        self._mic_device_combo = QComboBox()
+        self._mic_device_combo.setMinimumWidth(220)
+        capture_row.addWidget(QLabel("Mic Device:"))
+        capture_row.addWidget(self._mic_device_combo)
+
+        self._loopback_device_combo = QComboBox()
+        self._loopback_device_combo.setMinimumWidth(220)
+        capture_row.addWidget(QLabel("Loopback Device:"))
+        capture_row.addWidget(self._loopback_device_combo)
+
+        self._refresh_devices_button = QPushButton("Refresh Devices")
+        self._refresh_devices_button.clicked.connect(self._refresh_audio_devices)
+        capture_row.addWidget(self._refresh_devices_button)
+
         self._apply_sources_button = QPushButton("Apply Sources")
         self._apply_sources_button.clicked.connect(self._apply_sources)
         capture_row.addWidget(self._apply_sources_button)
@@ -91,6 +106,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._hint)
 
         self._refresh_status()
+        self._refresh_audio_devices()
 
     def _refresh_status(self) -> None:
         state = self._session.state
@@ -102,12 +118,41 @@ class MainWindow(QMainWindow):
         self._status.set_service_status("ready")
 
     def _apply_sources(self) -> None:
+        mic_device = self._mic_device_combo.currentData()
+        loopback_device = self._loopback_device_combo.currentData()
+
+        self._session.set_microphone_device(mic_device)
+        self._session.set_loopback_device(loopback_device)
         self._session.update_sources(
             mic=self._mic_checkbox.isChecked(),
             system_audio=self._system_checkbox.isChecked(),
             screen=self._screen_checkbox.isChecked(),
         )
         self._refresh_status()
+
+    def _refresh_audio_devices(self) -> None:
+        current_mic = self._mic_device_combo.currentData()
+        current_loopback = self._loopback_device_combo.currentData()
+
+        self._mic_device_combo.clear()
+        self._loopback_device_combo.clear()
+
+        self._mic_device_combo.addItem("Default", None)
+        self._loopback_device_combo.addItem("Auto", None)
+
+        for index, name in self._session.list_microphone_devices():
+            self._mic_device_combo.addItem(f"{index}: {name}", index)
+
+        for index, name in self._session.list_loopback_devices():
+            self._loopback_device_combo.addItem(f"{index}: {name}", index)
+
+        mic_index = self._mic_device_combo.findData(current_mic)
+        if mic_index >= 0:
+            self._mic_device_combo.setCurrentIndex(mic_index)
+
+        loopback_index = self._loopback_device_combo.findData(current_loopback)
+        if loopback_index >= 0:
+            self._loopback_device_combo.setCurrentIndex(loopback_index)
 
     def _send(self) -> None:
         text = self._input.text().strip()
@@ -159,6 +204,7 @@ class MainWindow(QMainWindow):
         self._start_live_button.setEnabled(False)
         self._stop_live_button.setEnabled(True)
         self._apply_sources_button.setEnabled(False)
+        self._refresh_devices_button.setEnabled(False)
 
         self._live_thread.start()
 
@@ -177,6 +223,7 @@ class MainWindow(QMainWindow):
         self._start_live_button.setEnabled(True)
         self._stop_live_button.setEnabled(False)
         self._apply_sources_button.setEnabled(True)
+        self._refresh_devices_button.setEnabled(True)
         self._status.set_service_status("ready")
         self._close_live_stream()
 
@@ -197,6 +244,7 @@ class MainWindow(QMainWindow):
         self._send_button.setEnabled(False)
         self._record_button.setEnabled(False)
         self._apply_sources_button.setEnabled(False)
+        self._refresh_devices_button.setEnabled(False)
 
         try:
             user_text, reply = self._session.record_and_chat(seconds=5.0)
@@ -208,6 +256,7 @@ class MainWindow(QMainWindow):
             self._send_button.setEnabled(True)
             self._record_button.setEnabled(True)
             self._apply_sources_button.setEnabled(True)
+            self._refresh_devices_button.setEnabled(True)
             self._status.set_service_status("ready")
 
     def _append(self, speaker: str, text: str) -> None:

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
+import time
 
 from app.audio.mic_capture import MicrophoneCapture
 from app.audio.system_loopback import SystemLoopbackCapture
@@ -33,6 +35,8 @@ class SessionController:
         self._screen = ScreenCaptureService(settings.screen)
         self._ocr = OcrService()
         self._tts = PiperTtsService(settings.tts)
+        self._system_audio_context: deque[str] = deque(maxlen=4)
+        self._last_system_audio_capture_at = 0.0
 
         self._state = SessionState(
             mic_enabled=settings.audio.enable_microphone,
@@ -48,6 +52,18 @@ class SessionController:
         self._state.mic_enabled = mic
         self._state.system_audio_enabled = system_audio
         self._state.screen_enabled = screen
+
+    def list_microphone_devices(self) -> list[tuple[int, str]]:
+        return self._microphone.list_input_devices()
+
+    def list_loopback_devices(self) -> list[tuple[int, str]]:
+        return self._loopback.list_loopback_devices()
+
+    def set_microphone_device(self, device_index: int | None) -> None:
+        self._microphone.set_device(device_index)
+
+    def set_loopback_device(self, device_index: int | None) -> None:
+        self._loopback.set_device(device_index)
 
     def chat_once(self, user_text: str) -> str:
         return self.chat_once_streaming(user_text=user_text)
@@ -166,14 +182,22 @@ class SessionController:
         if not self._whisper.is_available:
             return None
 
+        now = time.monotonic()
+        if self._system_audio_context and (now - self._last_system_audio_capture_at) < 6.0:
+            return " ".join(self._system_audio_context)
+
         samples = self._loopback.capture_seconds(seconds=seconds)
         if samples is None:
-            return None
+            return " ".join(self._system_audio_context) if self._system_audio_context else None
 
         wav_path = self._microphone.create_temp_wav_path(prefix="assistant_loopback_")
         try:
             self._microphone.write_wav(samples=samples, target_path=wav_path)
-            return self._whisper.transcribe(str(wav_path))
+            text = self._whisper.transcribe(str(wav_path))
+            if text:
+                self._system_audio_context.append(text)
+            self._last_system_audio_capture_at = now
+            return " ".join(self._system_audio_context) if self._system_audio_context else None
         finally:
             self._safe_unlink(wav_path)
 
