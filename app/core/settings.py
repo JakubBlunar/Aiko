@@ -30,6 +30,8 @@ class AudioSettings:
 class ScreenSettings:
     enable_screen_context: bool
     capture_interval_seconds: int
+    decision_mode: str
+    decision_cooldown_seconds: int
 
 
 @dataclass(slots=True)
@@ -124,6 +126,8 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
         screen=ScreenSettings(
             enable_screen_context=bool(_required(screen, "enable_screen_context")),
             capture_interval_seconds=int(_required(screen, "capture_interval_seconds")),
+            decision_mode=str(screen.get("decision_mode", "model")),
+            decision_cooldown_seconds=int(screen.get("decision_cooldown_seconds", 8)),
         ),
         tts=TtsSettings(
             provider=_required(tts, "provider"),

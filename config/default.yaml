@@ -22,6 +22,8 @@ audio:
 screen:
   enable_screen_context: false
   capture_interval_seconds: 2
+  decision_mode: "model"
+  decision_cooldown_seconds: 8
 
 stt:
   provider: "faster_whisper"

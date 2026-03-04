@@ -46,6 +46,8 @@ class SessionController:
         self._personality = settings.assistant.personality
         self._remember_history = settings.assistant.remember_history
         self._memory = ConversationMemoryStore()
+        self._last_screen_capture_at = 0.0
+        self._last_screen_decision_at = 0.0
         self._last_metrics: dict[str, float | str] = {
             "mode": "idle",
             "capture_ms": 0.0,
@@ -212,10 +214,11 @@ class SessionController:
     ) -> str:
         turn_start = time.perf_counter()
         screen_text = None
-        if self._state.screen_enabled:
+        if self._state.screen_enabled and self._should_capture_screen(user_text=user_text):
             frame = self._screen.capture_once()
             if frame is not None:
                 screen_text = self._ocr.extract_text(frame)
+            self._last_screen_capture_at = time.monotonic()
 
         system_audio_text = None
         if self._state.system_audio_enabled:
@@ -280,6 +283,57 @@ class SessionController:
             "total_ms": round((time.perf_counter() - turn_start) * 1000.0, 1),
         })
         return response
+
+    def _should_capture_screen(self, *, user_text: str) -> bool:
+        if not self._state.screen_enabled:
+            return False
+
+        now = time.monotonic()
+        min_interval = max(1, int(self._settings.screen.capture_interval_seconds))
+        if (now - self._last_screen_capture_at) < min_interval:
+            return False
+
+        normalized = (user_text or "").lower()
+        keyword_triggers = (
+            "screen",
+            "on my screen",
+            "look at",
+            "what do you see",
+            "this page",
+            "this window",
+            "this code",
+            "here",
+            "shown",
+        )
+        if any(token in normalized for token in keyword_triggers):
+            return True
+
+        decision_mode = (self._settings.screen.decision_mode or "model").lower().strip()
+        if decision_mode == "keywords":
+            return False
+
+        cooldown = max(1, int(self._settings.screen.decision_cooldown_seconds))
+        if (now - self._last_screen_decision_at) < cooldown:
+            return False
+        self._last_screen_decision_at = now
+
+        try:
+            decision = self._ollama.chat(
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Decide whether checking the user's current screen is needed to answer the message. "
+                            "Reply with only YES or NO."
+                        ),
+                    },
+                    {"role": "user", "content": user_text.strip()},
+                ]
+            )
+        except Exception:
+            return False
+
+        return decision.strip().lower().startswith("y")
 
     def record_and_chat(self, seconds: float = 5.0) -> tuple[str, str]:
         if not self._state.mic_enabled:
