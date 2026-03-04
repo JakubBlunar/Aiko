@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QThread, Qt
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtGui import QCloseEvent, QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox,
     QHBoxLayout,
@@ -28,6 +28,8 @@ class MainWindow(QMainWindow):
         self._session = SessionController(settings)
         self._live_thread: QThread | None = None
         self._live_worker: LivePracticeWorker | None = None
+        self._live_stream_buffer = ""
+        self._live_stream_open = False
 
         self.setWindowTitle(settings.assistant.name)
         self.resize(900, 640)
@@ -142,7 +144,9 @@ class MainWindow(QMainWindow):
         self._live_thread.started.connect(self._live_worker.run)
         self._live_worker.status.connect(self._status.set_service_status)
         self._live_worker.heard.connect(lambda text: self._append("You (live)", text))
-        self._live_worker.replied.connect(lambda text: self._append("Assistant", text))
+        self._live_worker.heard.connect(self._reset_live_stream)
+        self._live_worker.replying.connect(self._append_live_stream_token)
+        self._live_worker.replied.connect(self._on_live_replied)
         self._live_worker.failed.connect(self._on_live_error)
         self._live_worker.stopped.connect(self._on_live_stopped)
         self._live_worker.stopped.connect(self._live_thread.quit)
@@ -174,6 +178,7 @@ class MainWindow(QMainWindow):
         self._stop_live_button.setEnabled(False)
         self._apply_sources_button.setEnabled(True)
         self._status.set_service_status("ready")
+        self._close_live_stream()
 
         self._live_worker = None
 
@@ -207,3 +212,30 @@ class MainWindow(QMainWindow):
 
     def _append(self, speaker: str, text: str) -> None:
         self._conversation.append(f"<b>{speaker}:</b> {text}")
+
+    def _reset_live_stream(self, _text: str) -> None:
+        self._live_stream_buffer = ""
+        self._live_stream_open = False
+
+    def _append_live_stream_token(self, token: str) -> None:
+        token = token or ""
+        if not token:
+            return
+        if not self._live_stream_open:
+            self._conversation.append("<b>Assistant (stream):</b> ")
+            self._live_stream_open = True
+
+        self._live_stream_buffer += token
+        self._conversation.moveCursor(QTextCursor.MoveOperation.End)
+        self._conversation.insertPlainText(token)
+        self._conversation.ensureCursorVisible()
+
+    def _on_live_replied(self, text: str) -> None:
+        if not self._live_stream_open:
+            self._append("Assistant", text)
+        self._close_live_stream()
+
+    def _close_live_stream(self, _text: str | None = None) -> None:
+        if self._live_stream_open:
+            self._conversation.append("")
+        self._live_stream_open = False

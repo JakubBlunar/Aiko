@@ -41,6 +41,8 @@ pip install -e .[ai]
 
 Edit `config/default.yaml` to match your model names.
 
+For Piper TTS, set `tts.voice` to your local Piper model path (example: `models/en_US-lessac-medium.onnx`) and ensure `piper` CLI is installed and available in `PATH`.
+
 ## Run
 
 ```powershell
@@ -53,3 +55,4 @@ python -m app.main
 - System audio capture on Windows uses WASAPI loopback device selection and may require manual device configuration.
 - This initial slice keeps memory disabled intentionally.
 - Live mode uses basic energy-based speech detection (VAD-like thresholding) and may need threshold tuning for noisy rooms.
+- Live mode supports barge-in: when your speech starts, current assistant audio playback is stopped.

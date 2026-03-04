@@ -50,6 +50,15 @@ class SessionController:
         self._state.screen_enabled = screen
 
     def chat_once(self, user_text: str) -> str:
+        return self.chat_once_streaming(user_text=user_text)
+
+    def chat_once_streaming(
+        self,
+        *,
+        user_text: str,
+        on_token: Callable[[str], None] | None = None,
+        stop_requested: Callable[[], bool] | None = None,
+    ) -> str:
         screen_text = None
         if self._state.screen_enabled:
             frame = self._screen.capture_once()
@@ -69,14 +78,27 @@ class SessionController:
         )
 
         try:
-            response = self._ollama.chat(messages)
+            if on_token is None:
+                response = self._ollama.chat(messages)
+            else:
+                pieces: list[str] = []
+                for token in self._ollama.chat_stream(messages):
+                    if stop_requested and stop_requested():
+                        break
+                    pieces.append(token)
+                    on_token(token)
+                response = "".join(pieces).strip()
         except Exception as exc:
             return (
                 "I could not reach Ollama. Please make sure it is running and the model is available. "
                 f"Details: {exc}"
             )
 
-        self._tts.speak_async(response)
+        if stop_requested and stop_requested():
+            return response
+
+        if response:
+            self._tts.speak_async(response)
         return response
 
     def record_and_chat(self, seconds: float = 5.0) -> tuple[str, str]:
@@ -105,6 +127,7 @@ class SessionController:
         *,
         stop_requested: Callable[[], bool] | None = None,
         max_listen_seconds: float = 12.0,
+        on_token: Callable[[str], None] | None = None,
     ) -> tuple[str, str] | None:
         if not self._state.mic_enabled:
             raise RuntimeError("Microphone source is disabled. Enable it and try again.")
@@ -119,6 +142,7 @@ class SessionController:
             silence_seconds_to_stop=1.0,
             level_threshold=0.02,
             stop_requested=stop_requested,
+            on_speech_start=self._tts.stop,
         )
         if wav_path is None:
             return None
@@ -131,7 +155,11 @@ class SessionController:
         if not text:
             return None
 
-        response = self.chat_once(text)
+        response = self.chat_once_streaming(
+            user_text=text,
+            on_token=on_token,
+            stop_requested=stop_requested,
+        )
         return text, response
 
     def _transcribe_system_audio(self, seconds: float) -> str | None:

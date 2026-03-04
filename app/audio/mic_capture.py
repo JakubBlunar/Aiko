@@ -61,6 +61,7 @@ class MicrophoneCapture:
         silence_seconds_to_stop: float = 1.0,
         level_threshold: float = 0.02,
         stop_requested: Callable[[], bool] | None = None,
+        on_speech_start: Callable[[], None] | None = None,
     ) -> np.ndarray | None:
         sample_rate = self._settings.sample_rate
         channels = self._settings.channels
@@ -96,6 +97,8 @@ class MicrophoneCapture:
                     pre_roll.append(chunk.copy())
                     if level >= level_threshold:
                         speech_started = True
+                        if on_speech_start:
+                            on_speech_start()
                         captured.extend(pre_roll)
                         captured.append(chunk.copy())
                 else:
@@ -120,12 +123,14 @@ class MicrophoneCapture:
         silence_seconds_to_stop: float = 1.0,
         level_threshold: float = 0.02,
         stop_requested: Callable[[], bool] | None = None,
+        on_speech_start: Callable[[], None] | None = None,
     ) -> Path | None:
         samples = self.capture_phrase(
             max_seconds=max_seconds,
             silence_seconds_to_stop=silence_seconds_to_stop,
             level_threshold=level_threshold,
             stop_requested=stop_requested,
+            on_speech_start=on_speech_start,
         )
         if samples is None:
             return None

@@ -10,6 +10,7 @@ from app.core.session_controller import SessionController
 class LivePracticeWorker(QObject):
     status = Signal(str)
     heard = Signal(str)
+    replying = Signal(str)
     replied = Signal(str)
     failed = Signal(str)
     stopped = Signal()
@@ -24,12 +25,14 @@ class LivePracticeWorker(QObject):
         self.status.emit("listening")
         try:
             while not self._stop_requested:
-                turn = self._session.listen_once_and_chat(stop_requested=self._is_stop_requested)
+                turn = self._session.listen_once_and_chat(
+                    stop_requested=self._is_stop_requested,
+                    on_token=self.replying.emit,
+                )
                 if turn is None:
                     continue
                 user_text, reply_text = turn
                 self.heard.emit(user_text)
-                self.status.emit("thinking")
                 self.replied.emit(reply_text)
                 self.status.emit("listening")
         except Exception as exc:
