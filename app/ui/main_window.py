@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.session_controller import SessionController
-from app.core.settings import AppSettings
+from app.core.settings import AppSettings, save_runtime_preferences
 from app.ui.live_worker import LivePracticeWorker
 from app.ui.widgets.status_panel import StatusPanel
 
@@ -141,6 +141,7 @@ class MainWindow(QMainWindow):
 
         self._refresh_status()
         self._refresh_audio_devices()
+        self._apply_calibration()
 
     def _refresh_status(self) -> None:
         state = self._session.state
@@ -162,15 +163,21 @@ class MainWindow(QMainWindow):
             system_audio=self._system_checkbox.isChecked(),
             screen=self._screen_checkbox.isChecked(),
         )
+        self._persist_preferences()
         self._refresh_status()
 
     def _apply_calibration(self) -> None:
         self._session.set_vad_level_threshold(self._vad_threshold_spin.value())
         self._session.set_vad_silence_seconds(self._vad_silence_spin.value())
+        self._persist_preferences()
 
     def _refresh_audio_devices(self) -> None:
         current_mic = self._mic_device_combo.currentData()
         current_loopback = self._loopback_device_combo.currentData()
+        if current_mic is None:
+            current_mic = self._session.microphone_device
+        if current_loopback is None:
+            current_loopback = self._session.loopback_device
 
         self._mic_device_combo.clear()
         self._loopback_device_combo.clear()
@@ -191,6 +198,17 @@ class MainWindow(QMainWindow):
         loopback_index = self._loopback_device_combo.findData(current_loopback)
         if loopback_index >= 0:
             self._loopback_device_combo.setCurrentIndex(loopback_index)
+
+    def _persist_preferences(self) -> None:
+        save_runtime_preferences(
+            microphone_device=self._mic_device_combo.currentData(),
+            loopback_device=self._loopback_device_combo.currentData(),
+            vad_level_threshold=self._session.vad_level_threshold,
+            vad_silence_seconds=self._session.vad_silence_seconds,
+            enable_microphone=self._mic_checkbox.isChecked(),
+            enable_system_audio=self._system_checkbox.isChecked(),
+            enable_screen_context=self._screen_checkbox.isChecked(),
+        )
 
     def _send(self) -> None:
         text = self._input.text().strip()

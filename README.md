@@ -40,6 +40,7 @@ pip install -e .[ai]
 ## Configure
 
 Edit `config/default.yaml` to match your model names.
+Runtime UI preferences are saved automatically to `config/user.yaml` (device choices, source toggles, and VAD calibration).
 
 For Piper TTS, set `tts.voice` to your local Piper model path (example: `models/en_US-lessac-medium.onnx`) and ensure `piper` CLI is installed and available in `PATH`.
 

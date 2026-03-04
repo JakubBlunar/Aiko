@@ -56,6 +56,7 @@ class AppSettings:
 
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "default.yaml"
+USER_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "user.yaml"
 
 
 def _required(section: dict[str, Any], key: str) -> Any:
@@ -64,9 +65,28 @@ def _required(section: dict[str, Any], key: str) -> Any:
     return section[key]
 
 
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _read_yaml(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return raw if isinstance(raw, dict) else {}
+
+
 def load_settings(config_path: Path | None = None) -> AppSettings:
     path = config_path or DEFAULT_CONFIG_PATH
-    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    base = _read_yaml(path)
+    user = _read_yaml(USER_CONFIG_PATH)
+    raw = _deep_merge(base, user)
 
     assistant = raw["assistant"]
     ollama = raw["ollama"]
@@ -109,3 +129,36 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             enabled=bool(_required(tts, "enabled")),
         ),
     )
+
+
+def save_runtime_preferences(
+    *,
+    microphone_device: int | None,
+    loopback_device: int | None,
+    vad_level_threshold: float,
+    vad_silence_seconds: float,
+    enable_microphone: bool,
+    enable_system_audio: bool,
+    enable_screen_context: bool,
+    path: Path | None = None,
+) -> None:
+    target = path or USER_CONFIG_PATH
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    current = _read_yaml(target)
+    updates: dict[str, Any] = {
+        "audio": {
+            "microphone_device": microphone_device,
+            "loopback_device": loopback_device,
+            "vad_level_threshold": round(vad_level_threshold, 4),
+            "vad_silence_seconds": round(vad_silence_seconds, 2),
+            "enable_microphone": bool(enable_microphone),
+            "enable_system_audio": bool(enable_system_audio),
+        },
+        "screen": {
+            "enable_screen_context": bool(enable_screen_context),
+        },
+    }
+
+    merged = _deep_merge(current, updates)
+    target.write_text(yaml.safe_dump(merged, sort_keys=False), encoding="utf-8")

@@ -39,6 +39,8 @@ class SessionController:
         self._last_system_audio_capture_at = 0.0
         self._vad_level_threshold = settings.audio.vad_level_threshold
         self._vad_silence_seconds = settings.audio.vad_silence_seconds
+        self._microphone_device = settings.audio.microphone_device
+        self._loopback_device = settings.audio.loopback_device
 
         self._state = SessionState(
             mic_enabled=settings.audio.enable_microphone,
@@ -62,10 +64,20 @@ class SessionController:
         return self._loopback.list_loopback_devices()
 
     def set_microphone_device(self, device_index: int | None) -> None:
+        self._microphone_device = device_index
         self._microphone.set_device(device_index)
 
     def set_loopback_device(self, device_index: int | None) -> None:
+        self._loopback_device = device_index
         self._loopback.set_device(device_index)
+
+    @property
+    def microphone_device(self) -> int | None:
+        return self._microphone_device
+
+    @property
+    def loopback_device(self) -> int | None:
+        return self._loopback_device
 
     @property
     def vad_level_threshold(self) -> float:
