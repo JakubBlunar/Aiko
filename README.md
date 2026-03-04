@@ -31,6 +31,12 @@ Optional dependencies for extended capabilities:
 pip install -e .[ai,tts]
 ```
 
+For voice live mode, install AI extras at minimum:
+
+```powershell
+pip install -e .[ai]
+```
+
 ## Configure
 
 Edit `config/default.yaml` to match your model names.
@@ -46,3 +52,4 @@ python -m app.main
 - All processing is local by default.
 - System audio capture on Windows uses WASAPI loopback device selection and may require manual device configuration.
 - This initial slice keeps memory disabled intentionally.
+- Live mode uses basic energy-based speech detection (VAD-like thresholding) and may need threshold tuning for noisy rooms.

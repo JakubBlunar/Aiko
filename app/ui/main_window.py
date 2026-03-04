@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QThread, Qt
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QHBoxLayout,
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import (
 
 from app.core.session_controller import SessionController
 from app.core.settings import AppSettings
+from app.ui.live_worker import LivePracticeWorker
 from app.ui.widgets.status_panel import StatusPanel
 
 
@@ -24,6 +26,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._settings = settings
         self._session = SessionController(settings)
+        self._live_thread: QThread | None = None
+        self._live_worker: LivePracticeWorker | None = None
 
         self.setWindowTitle(settings.assistant.name)
         self.resize(900, 640)
@@ -68,9 +72,16 @@ class MainWindow(QMainWindow):
         self._send_button.clicked.connect(self._send)
         self._record_button = QPushButton("Record 5s")
         self._record_button.clicked.connect(self._record_and_send)
+        self._start_live_button = QPushButton("Start Live")
+        self._start_live_button.clicked.connect(self._start_live_mode)
+        self._stop_live_button = QPushButton("Stop Live")
+        self._stop_live_button.clicked.connect(self._stop_live_mode)
+        self._stop_live_button.setEnabled(False)
         input_row.addWidget(self._input, stretch=1)
         input_row.addWidget(self._send_button)
         input_row.addWidget(self._record_button)
+        input_row.addWidget(self._start_live_button)
+        input_row.addWidget(self._stop_live_button)
         layout.addLayout(input_row)
 
         self._hint = QLabel("Tip: Start Ollama first (`ollama serve`) and ensure your model is pulled.")
@@ -119,6 +130,62 @@ class MainWindow(QMainWindow):
             self._record_button.setEnabled(True)
             self._apply_sources_button.setEnabled(True)
             self._status.set_service_status("ready")
+
+    def _start_live_mode(self) -> None:
+        if self._live_thread is not None:
+            return
+
+        self._live_thread = QThread(self)
+        self._live_worker = LivePracticeWorker(self._session)
+        self._live_worker.moveToThread(self._live_thread)
+
+        self._live_thread.started.connect(self._live_worker.run)
+        self._live_worker.status.connect(self._status.set_service_status)
+        self._live_worker.heard.connect(lambda text: self._append("You (live)", text))
+        self._live_worker.replied.connect(lambda text: self._append("Assistant", text))
+        self._live_worker.failed.connect(self._on_live_error)
+        self._live_worker.stopped.connect(self._on_live_stopped)
+        self._live_worker.stopped.connect(self._live_thread.quit)
+        self._live_thread.finished.connect(self._on_live_thread_finished)
+        self._live_thread.finished.connect(self._live_thread.deleteLater)
+        self._live_worker.stopped.connect(self._live_worker.deleteLater)
+
+        self._send_button.setEnabled(False)
+        self._record_button.setEnabled(False)
+        self._start_live_button.setEnabled(False)
+        self._stop_live_button.setEnabled(True)
+        self._apply_sources_button.setEnabled(False)
+
+        self._live_thread.start()
+
+    def _stop_live_mode(self) -> None:
+        if self._live_worker is not None:
+            self._live_worker.stop()
+            self._stop_live_button.setEnabled(False)
+        self._status.set_service_status("stopping")
+
+    def _on_live_error(self, message: str) -> None:
+        QMessageBox.critical(self, "Live mode error", message)
+
+    def _on_live_stopped(self) -> None:
+        self._send_button.setEnabled(True)
+        self._record_button.setEnabled(True)
+        self._start_live_button.setEnabled(True)
+        self._stop_live_button.setEnabled(False)
+        self._apply_sources_button.setEnabled(True)
+        self._status.set_service_status("ready")
+
+        self._live_worker = None
+
+    def _on_live_thread_finished(self) -> None:
+        self._live_thread = None
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        self._stop_live_mode()
+        if self._live_thread is not None:
+            self._live_thread.quit()
+            self._live_thread.wait(1500)
+        super().closeEvent(event)
 
     def _record_and_send(self) -> None:
         self._status.set_service_status("recording")

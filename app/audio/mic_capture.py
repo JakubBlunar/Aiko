@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from collections import deque
+from collections.abc import Callable
 from pathlib import Path
 import tempfile
+import time
 import wave
 
 import numpy as np
@@ -50,3 +53,83 @@ class MicrophoneCapture:
             wav_file.setsampwidth(2)
             wav_file.setframerate(self._settings.sample_rate)
             wav_file.writeframes(pcm.tobytes())
+
+    def capture_phrase(
+        self,
+        *,
+        max_seconds: float = 12.0,
+        silence_seconds_to_stop: float = 1.0,
+        level_threshold: float = 0.02,
+        stop_requested: Callable[[], bool] | None = None,
+    ) -> np.ndarray | None:
+        sample_rate = self._settings.sample_rate
+        channels = self._settings.channels
+        chunk_frames = int(sample_rate * 0.1)
+        pre_roll_chunks = 4
+
+        silence_chunks_to_stop = max(1, int(silence_seconds_to_stop / 0.1))
+        pre_roll: deque[np.ndarray] = deque(maxlen=pre_roll_chunks)
+        captured: list[np.ndarray] = []
+        speech_started = False
+        silence_chunks = 0
+
+        started_at = time.monotonic()
+
+        with sd.InputStream(
+            samplerate=sample_rate,
+            channels=channels,
+            dtype="float32",
+            blocksize=chunk_frames,
+        ) as stream:
+            while True:
+                if stop_requested and stop_requested():
+                    return None
+
+                elapsed = time.monotonic() - started_at
+                if elapsed >= max_seconds:
+                    break
+
+                chunk, _overflow = stream.read(chunk_frames)
+                level = float(np.sqrt(np.mean(np.square(chunk))))
+
+                if not speech_started:
+                    pre_roll.append(chunk.copy())
+                    if level >= level_threshold:
+                        speech_started = True
+                        captured.extend(pre_roll)
+                        captured.append(chunk.copy())
+                else:
+                    captured.append(chunk.copy())
+                    if level < level_threshold:
+                        silence_chunks += 1
+                    else:
+                        silence_chunks = 0
+
+                    if silence_chunks >= silence_chunks_to_stop:
+                        break
+
+        if not speech_started or not captured:
+            return None
+
+        return np.concatenate(captured, axis=0)
+
+    def capture_phrase_to_wav(
+        self,
+        *,
+        max_seconds: float = 12.0,
+        silence_seconds_to_stop: float = 1.0,
+        level_threshold: float = 0.02,
+        stop_requested: Callable[[], bool] | None = None,
+    ) -> Path | None:
+        samples = self.capture_phrase(
+            max_seconds=max_seconds,
+            silence_seconds_to_stop=silence_seconds_to_stop,
+            level_threshold=level_threshold,
+            stop_requested=stop_requested,
+        )
+        if samples is None:
+            return None
+
+        wav_path = self.create_temp_wav_path(prefix="assistant_phrase_")
+        self.write_wav(samples=samples, target_path=wav_path)
+        return wav_path

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -95,6 +96,40 @@ class SessionController:
 
         if not text:
             raise RuntimeError("No speech was detected from microphone audio.")
+
+        response = self.chat_once(text)
+        return text, response
+
+    def listen_once_and_chat(
+        self,
+        *,
+        stop_requested: Callable[[], bool] | None = None,
+        max_listen_seconds: float = 12.0,
+    ) -> tuple[str, str] | None:
+        if not self._state.mic_enabled:
+            raise RuntimeError("Microphone source is disabled. Enable it and try again.")
+
+        if not self._whisper.is_available:
+            raise RuntimeError(
+                "Whisper is not installed. Install AI extras with: pip install -e .[ai]"
+            )
+
+        wav_path = self._microphone.capture_phrase_to_wav(
+            max_seconds=max_listen_seconds,
+            silence_seconds_to_stop=1.0,
+            level_threshold=0.02,
+            stop_requested=stop_requested,
+        )
+        if wav_path is None:
+            return None
+
+        try:
+            text = self._whisper.transcribe(str(wav_path))
+        finally:
+            self._safe_unlink(wav_path)
+
+        if not text:
+            return None
 
         response = self.chat_once(text)
         return text, response
