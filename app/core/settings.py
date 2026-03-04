@@ -136,6 +136,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
 def save_runtime_preferences(
     *,
     personality: str,
+    remember_history: bool,
     microphone_device: int | None,
     loopback_device: int | None,
     vad_level_threshold: float,
@@ -152,6 +153,7 @@ def save_runtime_preferences(
     updates: dict[str, Any] = {
         "assistant": {
             "personality": personality,
+            "remember_history": bool(remember_history),
         },
         "audio": {
             "microphone_device": microphone_device,

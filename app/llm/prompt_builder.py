@@ -28,6 +28,7 @@ class PromptContext:
     screen_text: str | None = None
     system_audio_text: str | None = None
     personality: str = "friendly"
+    memory_messages: list[dict[str, str]] | None = None
 
 
 def available_personalities() -> list[str]:
@@ -48,7 +49,13 @@ def build_messages(context: PromptContext) -> list[dict[str, str]]:
     if additional:
         user_content = f"{user_content}\n\n" + "\n".join(additional)
 
-    return [
-        {"role": "system", "content": system},
-        {"role": "user", "content": user_content},
-    ]
+    messages: list[dict[str, str]] = [{"role": "system", "content": system}]
+    if context.memory_messages:
+        for item in context.memory_messages:
+            role = str(item.get("role", "")).strip().lower()
+            content = str(item.get("content", "")).strip()
+            if role in {"user", "assistant"} and content:
+                messages.append({"role": role, "content": content})
+
+    messages.append({"role": "user", "content": user_content})
+    return messages

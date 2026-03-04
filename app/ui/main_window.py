@@ -54,8 +54,15 @@ class MainWindow(QMainWindow):
         self._system_checkbox.setChecked(self._session.state.system_audio_enabled)
         self._screen_checkbox = QCheckBox("Screen Context")
         self._screen_checkbox.setChecked(self._session.state.screen_enabled)
+        self._memory_checkbox = QCheckBox("Remember Conversation")
+        self._memory_checkbox.setChecked(self._session.remember_history)
 
-        for widget in (self._mic_checkbox, self._system_checkbox, self._screen_checkbox):
+        for widget in (
+            self._mic_checkbox,
+            self._system_checkbox,
+            self._screen_checkbox,
+            self._memory_checkbox,
+        ):
             capture_row.addWidget(widget)
 
         self._mic_device_combo = QComboBox()
@@ -81,6 +88,10 @@ class MainWindow(QMainWindow):
         self._apply_sources_button = QPushButton("Apply Sources")
         self._apply_sources_button.clicked.connect(self._apply_sources)
         capture_row.addWidget(self._apply_sources_button)
+
+        self._clear_memory_button = QPushButton("Clear Memory")
+        self._clear_memory_button.clicked.connect(self._clear_memory)
+        capture_row.addWidget(self._clear_memory_button)
         capture_row.addStretch(1)
         layout.addLayout(capture_row)
 
@@ -170,9 +181,14 @@ class MainWindow(QMainWindow):
             system_audio=self._system_checkbox.isChecked(),
             screen=self._screen_checkbox.isChecked(),
         )
+        self._session.set_remember_history(self._memory_checkbox.isChecked())
         self._session.set_personality(str(self._personality_combo.currentData() or "friendly"))
         self._persist_preferences()
         self._refresh_status()
+
+    def _clear_memory(self) -> None:
+        self._session.clear_conversation_memory()
+        self._append("System", "Conversation memory cleared.")
 
     def _apply_calibration(self) -> None:
         self._session.set_vad_level_threshold(self._vad_threshold_spin.value())
@@ -226,6 +242,7 @@ class MainWindow(QMainWindow):
     def _persist_preferences(self) -> None:
         save_runtime_preferences(
             personality=str(self._personality_combo.currentData() or "friendly"),
+            remember_history=self._memory_checkbox.isChecked(),
             microphone_device=self._mic_device_combo.currentData(),
             loopback_device=self._loopback_device_combo.currentData(),
             vad_level_threshold=self._session.vad_level_threshold,
@@ -286,8 +303,10 @@ class MainWindow(QMainWindow):
         self._start_live_button.setEnabled(False)
         self._stop_live_button.setEnabled(True)
         self._apply_sources_button.setEnabled(False)
+        self._clear_memory_button.setEnabled(False)
         self._refresh_devices_button.setEnabled(False)
         self._personality_combo.setEnabled(False)
+        self._memory_checkbox.setEnabled(False)
         self._apply_calibration_button.setEnabled(False)
 
         self._live_thread.start()
@@ -307,8 +326,10 @@ class MainWindow(QMainWindow):
         self._start_live_button.setEnabled(True)
         self._stop_live_button.setEnabled(False)
         self._apply_sources_button.setEnabled(True)
+        self._clear_memory_button.setEnabled(True)
         self._refresh_devices_button.setEnabled(True)
         self._personality_combo.setEnabled(True)
+        self._memory_checkbox.setEnabled(True)
         self._apply_calibration_button.setEnabled(True)
         self._status.set_service_status("ready")
         self._close_live_stream()
@@ -331,8 +352,10 @@ class MainWindow(QMainWindow):
         self._send_button.setEnabled(False)
         self._record_button.setEnabled(False)
         self._apply_sources_button.setEnabled(False)
+        self._clear_memory_button.setEnabled(False)
         self._refresh_devices_button.setEnabled(False)
         self._personality_combo.setEnabled(False)
+        self._memory_checkbox.setEnabled(False)
         self._apply_calibration_button.setEnabled(False)
 
         try:
@@ -345,8 +368,10 @@ class MainWindow(QMainWindow):
             self._send_button.setEnabled(True)
             self._record_button.setEnabled(True)
             self._apply_sources_button.setEnabled(True)
+            self._clear_memory_button.setEnabled(True)
             self._refresh_devices_button.setEnabled(True)
             self._personality_combo.setEnabled(True)
+            self._memory_checkbox.setEnabled(True)
             self._apply_calibration_button.setEnabled(True)
             self._status.set_service_status("ready")
 

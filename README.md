@@ -41,6 +41,7 @@ pip install -e .[ai]
 
 Edit `config/default.yaml` to match your model names.
 Runtime UI preferences are saved automatically to `config/user.yaml` (device choices, source toggles, and VAD calibration).
+Conversation memory is stored locally in `data/conversation_memory.jsonl` when `Remember Conversation` is enabled.
 
 For Piper TTS, set `tts.voice` to your local Piper model path (example: `models/en_US-lessac-medium.onnx`) and ensure `piper` CLI is installed and available in `PATH`.
 
@@ -62,3 +63,4 @@ python -m app.main
 - Tune `VAD Threshold` and `Silence Stop` from the UI calibration row to improve phrase detection in noisy or quiet rooms.
 - The live input meter helps you pick a threshold where normal speech is above ~50% and room noise stays low.
 - Personality profiles (`Friendly`, `Coach`, `Interviewer`) can be selected from the UI and are persisted to local user config.
+- Use `Clear Memory` in the UI to wipe stored conversation history instantly.

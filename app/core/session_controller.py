@@ -7,6 +7,7 @@ from pathlib import Path
 import time
 
 from app.audio.mic_capture import MicrophoneCapture
+from app.core.conversation_memory import ConversationMemoryStore
 from app.audio.system_loopback import SystemLoopbackCapture
 from app.core.settings import AppSettings
 from app.core.turn_manager import TurnInput, TurnManager
@@ -43,6 +44,8 @@ class SessionController:
         self._microphone_device = settings.audio.microphone_device
         self._loopback_device = settings.audio.loopback_device
         self._personality = settings.assistant.personality
+        self._remember_history = settings.assistant.remember_history
+        self._memory = ConversationMemoryStore()
 
         self._state = SessionState(
             mic_enabled=settings.audio.enable_microphone,
@@ -106,6 +109,16 @@ class SessionController:
         valid = set(available_personalities())
         self._personality = value if value in valid else "friendly"
 
+    @property
+    def remember_history(self) -> bool:
+        return self._remember_history
+
+    def set_remember_history(self, value: bool) -> None:
+        self._remember_history = bool(value)
+
+    def clear_conversation_memory(self) -> None:
+        self._memory.clear()
+
     def chat_once(self, user_text: str) -> str:
         return self.chat_once_streaming(user_text=user_text)
 
@@ -132,6 +145,7 @@ class SessionController:
                 screen_text=screen_text,
                 system_audio_text=system_audio_text,
                 personality=self._personality,
+                memory_messages=(self._memory.recent_messages(12) if self._remember_history else None),
             )
         )
 
@@ -154,6 +168,10 @@ class SessionController:
 
         if stop_requested and stop_requested():
             return response
+
+        if self._remember_history:
+            self._memory.add(role="user", content=user_text)
+            self._memory.add(role="assistant", content=response)
 
         if response:
             self._tts.speak_async(response)

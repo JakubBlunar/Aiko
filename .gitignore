@@ -5,3 +5,4 @@ __pycache__/
 build/
 dist/
 config/user.yaml
+data/conversation_memory.jsonl

@@ -1,7 +1,7 @@
 assistant:
   name: "English Speaking Assistant"
   mode: "natural_chat"
-  remember_history: false
+  remember_history: true
   personality: "friendly"
 
 ollama:
