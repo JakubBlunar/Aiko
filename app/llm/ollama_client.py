@@ -50,3 +50,18 @@ class OllamaClient:
                 token = chunk.get("message", {}).get("content", "")
                 if token:
                     yield token
+
+    def list_models(self) -> list[str]:
+        response = requests.get(
+            f"{self._settings.base_url}/api/tags",
+            timeout=self._timeout_seconds,
+        )
+        response.raise_for_status()
+        body = response.json()
+        models = body.get("models", [])
+        output: list[str] = []
+        for item in models:
+            name = str(item.get("name", "")).strip()
+            if name:
+                output.append(name)
+        return output

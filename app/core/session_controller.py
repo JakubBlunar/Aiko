@@ -110,6 +110,26 @@ class SessionController:
         self._personality = value if value in valid else "friendly"
 
     @property
+    def chat_model(self) -> str:
+        return self._settings.ollama.chat_model
+
+    def set_chat_model(self, model_name: str) -> None:
+        model_name = (model_name or "").strip()
+        if model_name:
+            self._settings.ollama.chat_model = model_name
+
+    def list_chat_models(self) -> list[str]:
+        try:
+            models = self._ollama.list_models()
+        except Exception:
+            models = []
+
+        current = self.chat_model
+        if current and current not in models:
+            models.insert(0, current)
+        return models
+
+    @property
     def remember_history(self) -> bool:
         return self._remember_history
 

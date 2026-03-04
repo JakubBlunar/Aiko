@@ -135,6 +135,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
 
 def save_runtime_preferences(
     *,
+    chat_model: str,
     personality: str,
     remember_history: bool,
     microphone_device: int | None,
@@ -151,6 +152,9 @@ def save_runtime_preferences(
 
     current = _read_yaml(target)
     updates: dict[str, Any] = {
+        "ollama": {
+            "chat_model": chat_model,
+        },
         "assistant": {
             "personality": personality,
             "remember_history": bool(remember_history),

@@ -86,6 +86,16 @@ class MainWindow(QMainWindow):
         self._personality_combo.currentIndexChanged.connect(self._on_personality_changed)
         capture_row.addWidget(self._personality_combo)
 
+        capture_row.addWidget(QLabel("Model:"))
+        self._model_combo = QComboBox()
+        self._model_combo.setMinimumWidth(260)
+        self._model_combo.currentIndexChanged.connect(self._on_model_changed)
+        capture_row.addWidget(self._model_combo)
+
+        self._refresh_models_button = QPushButton("Refresh Models")
+        self._refresh_models_button.clicked.connect(self._refresh_models)
+        capture_row.addWidget(self._refresh_models_button)
+
         self._apply_sources_button = QPushButton("Apply Sources")
         self._apply_sources_button.clicked.connect(self._apply_sources)
         capture_row.addWidget(self._apply_sources_button)
@@ -164,6 +174,7 @@ class MainWindow(QMainWindow):
         self._refresh_status()
         self._refresh_audio_devices()
         self._refresh_personalities()
+        self._refresh_models()
         self._apply_calibration()
 
     def _refresh_status(self) -> None:
@@ -188,6 +199,8 @@ class MainWindow(QMainWindow):
         )
         self._session.set_remember_history(self._memory_checkbox.isChecked())
         self._session.set_personality(str(self._personality_combo.currentData() or "friendly"))
+        self._session.set_chat_model(str(self._model_combo.currentData() or self._session.chat_model))
+        self._status.set_model(self._session.chat_model)
         self._persist_preferences()
         self._refresh_status()
 
@@ -248,8 +261,33 @@ class MainWindow(QMainWindow):
         self._session.set_personality(str(self._personality_combo.currentData() or "friendly"))
         self._persist_preferences()
 
+    def _refresh_models(self) -> None:
+        current = self._session.chat_model
+        self._model_combo.clear()
+
+        models = self._session.list_chat_models()
+        for model_name in models:
+            self._model_combo.addItem(model_name, model_name)
+
+        index = self._model_combo.findData(current)
+        if index < 0 and self._model_combo.count() > 0:
+            index = 0
+        if index >= 0:
+            self._model_combo.setCurrentIndex(index)
+
+        self._status.set_model(self._session.chat_model)
+
+    def _on_model_changed(self) -> None:
+        model_name = str(self._model_combo.currentData() or "").strip()
+        if not model_name:
+            return
+        self._session.set_chat_model(model_name)
+        self._status.set_model(model_name)
+        self._persist_preferences()
+
     def _persist_preferences(self) -> None:
         save_runtime_preferences(
+            chat_model=self._session.chat_model,
             personality=str(self._personality_combo.currentData() or "friendly"),
             remember_history=self._memory_checkbox.isChecked(),
             microphone_device=self._mic_device_combo.currentData(),
@@ -316,6 +354,8 @@ class MainWindow(QMainWindow):
         self._memory_viewer_button.setEnabled(False)
         self._refresh_devices_button.setEnabled(False)
         self._personality_combo.setEnabled(False)
+        self._model_combo.setEnabled(False)
+        self._refresh_models_button.setEnabled(False)
         self._memory_checkbox.setEnabled(False)
         self._apply_calibration_button.setEnabled(False)
 
@@ -340,6 +380,8 @@ class MainWindow(QMainWindow):
         self._memory_viewer_button.setEnabled(True)
         self._refresh_devices_button.setEnabled(True)
         self._personality_combo.setEnabled(True)
+        self._model_combo.setEnabled(True)
+        self._refresh_models_button.setEnabled(True)
         self._memory_checkbox.setEnabled(True)
         self._apply_calibration_button.setEnabled(True)
         self._status.set_service_status("ready")
@@ -367,6 +409,8 @@ class MainWindow(QMainWindow):
         self._memory_viewer_button.setEnabled(False)
         self._refresh_devices_button.setEnabled(False)
         self._personality_combo.setEnabled(False)
+        self._model_combo.setEnabled(False)
+        self._refresh_models_button.setEnabled(False)
         self._memory_checkbox.setEnabled(False)
         self._apply_calibration_button.setEnabled(False)
 
@@ -384,6 +428,8 @@ class MainWindow(QMainWindow):
             self._memory_viewer_button.setEnabled(True)
             self._refresh_devices_button.setEnabled(True)
             self._personality_combo.setEnabled(True)
+            self._model_combo.setEnabled(True)
+            self._refresh_models_button.setEnabled(True)
             self._memory_checkbox.setEnabled(True)
             self._apply_calibration_button.setEnabled(True)
             self._status.set_service_status("ready")

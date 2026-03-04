@@ -71,3 +71,4 @@ python -m app.main
 - Personality profiles (`Friendly`, `Coach`, `Interviewer`) can be selected from the UI and are persisted to local user config.
 - Use `Clear Memory` in the UI to wipe stored conversation history instantly.
 - Use `Memory Viewer` to inspect a long history window and refresh or clear stored entries.
+- Use `Refresh Models` + `Model` dropdown to switch between local Ollama models without editing YAML.
