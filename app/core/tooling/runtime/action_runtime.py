@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import ctypes
 import ctypes.wintypes as wintypes
+import re
 import time
 
 from app.core.settings import ActionSettings
@@ -196,6 +197,44 @@ class GuardedActionExecutor:
                 message=f"Restored and focused window (hwnd={action.hwnd}).",
             )
 
+        if action.kind == "window_state":
+            if action.hwnd is None:
+                return ActionExecutionResult(
+                    executed=False,
+                    dry_run=False,
+                    blocked=True,
+                    requires_confirmation=False,
+                    message="window_state missing hwnd.",
+                )
+            state = str(action.text or "restore").strip().lower() or "restore"
+            show_map = {
+                "minimize": 6,
+                "maximize": 3,
+                "restore": 9,
+            }
+            if state not in show_map:
+                return ActionExecutionResult(
+                    executed=False,
+                    dry_run=False,
+                    blocked=True,
+                    requires_confirmation=False,
+                    message=f"Unsupported window_state: {state}",
+                )
+
+            user32 = ctypes.WinDLL("user32", use_last_error=True)
+            user32.ShowWindow(action.hwnd, show_map[state])
+            if state != "minimize":
+                time.sleep(0.2)
+                user32.SetForegroundWindow(action.hwnd)
+            self._last_action_at = time.monotonic()
+            return ActionExecutionResult(
+                executed=True,
+                dry_run=False,
+                blocked=False,
+                requires_confirmation=False,
+                message=f"Executed window_state '{state}' on hwnd={action.hwnd}.",
+            )
+
         if pyautogui is None:
             return ActionExecutionResult(
                 executed=False,
@@ -250,6 +289,47 @@ class GuardedActionExecutor:
                 blocked=False,
                 requires_confirmation=False,
                 message=f"Executed typing{click_note}: {repr(text)}",
+            )
+
+        if action.kind == "scroll":
+            direction = "down"
+            steps = 8
+            scroll_text = str(action.text or "").strip().lower()
+            if scroll_text:
+                parsed = re.match(r"^(up|down)(?::(\d+))?$", scroll_text)
+                if parsed:
+                    direction = parsed.group(1)
+                    if parsed.group(2):
+                        steps = int(parsed.group(2))
+
+            steps = max(1, min(int(steps), 50))
+            delta = steps if direction == "up" else -steps
+
+            used_fallback = False
+            try:
+                if action.x is not None and action.y is not None:
+                    pyautogui.scroll(delta, x=action.x, y=action.y)
+                else:
+                    pyautogui.scroll(delta)
+            except Exception:
+                # Some apps ignore wheel delta; use page navigation fallback.
+                used_fallback = True
+                key = "pageup" if direction == "up" else "pagedown"
+                pyautogui.press(key)
+
+            self._last_action_at = time.monotonic()
+            target_note = (
+                f" at ({action.x}, {action.y})"
+                if action.x is not None and action.y is not None
+                else ""
+            )
+            fallback_note = " with PageUp/PageDown fallback" if used_fallback else ""
+            return ActionExecutionResult(
+                executed=True,
+                dry_run=False,
+                blocked=False,
+                requires_confirmation=False,
+                message=f"Executed scroll {direction}:{steps}{target_note}{fallback_note}.",
             )
 
         return ActionExecutionResult(
@@ -327,6 +407,13 @@ class GuardedActionExecutor:
             )
         if action.kind == "focus_window":
             return f"focus_window hwnd={action.hwnd} confidence={round(action.confidence, 2)}"
+        if action.kind == "scroll":
+            hint = str(action.text or "down:8").strip() or "down:8"
+            location = f" x={action.x} y={action.y}" if action.x is not None and action.y is not None else ""
+            return f"scroll mode={hint}{location} confidence={round(action.confidence, 2)}"
+        if action.kind == "window_state":
+            state = str(action.text or "restore").strip() or "restore"
+            return f"window_state={state} hwnd={action.hwnd} confidence={round(action.confidence, 2)}"
         return action.kind
 
     @staticmethod

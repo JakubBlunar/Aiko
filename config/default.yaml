@@ -14,6 +14,17 @@ autonomy:
   auto_goal_switch: true
   default_goal: "general_conversation"
   goal_switch_min_confidence: 0.75
+  reading_session_memory_enabled: true
+  reading_max_scroll_steps: 6
+  reading_max_quotes: 4
+  reading_max_quote_chars: 500
+  reading_trusted_window_titles:
+    - "chrome"
+    - "firefox"
+    - "brave"
+    - "edge"
+    - "vscode"
+    - "notepad"
 
 ollama:
   base_url: "http://127.0.0.1:11434"

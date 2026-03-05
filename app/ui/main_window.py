@@ -142,8 +142,11 @@ class MainWindow(QMainWindow):
         self._reject_action_button = QPushButton("Reject Action")
         self._reject_action_button.clicked.connect(self._reject_pending_action)
         self._reject_action_button.setEnabled(False)
+        self._stop_reading_button = QPushButton("Stop Reading")
+        self._stop_reading_button.clicked.connect(self._stop_reading_session)
         action_confirm_row.addWidget(self._approve_action_button)
         action_confirm_row.addWidget(self._reject_action_button)
+        action_confirm_row.addWidget(self._stop_reading_button)
         action_confirm_row.addStretch(1)
         chat_layout.addLayout(action_confirm_row)
         self._latency_label = QLabel(
@@ -755,6 +758,14 @@ class MainWindow(QMainWindow):
         self._append("System", message)
         self._refresh_action_guardrail_label()
 
+    def _stop_reading_session(self) -> None:
+        stopped = self._session.stop_reading_session()
+        if stopped:
+            self._append("System", "Reading session stopped.")
+        else:
+            self._append("System", "No active reading session to stop.")
+        self._refresh_action_guardrail_label()
+
     def _refresh_audio_devices(self) -> None:
         current_mic = self._mic_device_combo.currentData()
         if current_mic is None:
@@ -953,11 +964,17 @@ class MainWindow(QMainWindow):
 
     def _refresh_action_guardrail_label(self) -> None:
         state = "ACTIVE" if self._session.emergency_stop_active else "inactive"
+        reading = self._session.get_reading_status()
+        reading_state = "active" if bool(reading.get("active", False)) else "idle"
+        reading_chunks = int(reading.get("chunks", 0) or 0)
+        reading_steps = int(reading.get("scroll_steps", 0) or 0)
+        reading_max_steps = int(reading.get("max_scroll_steps", 0) or 0)
         self._action_guardrail_label.setText(
             (
                 f"Actions: e-stop={state} | hotkey={self._session.emergency_hotkey} | "
                 f"cooldown={round(self._session.action_min_interval_seconds, 2)}s | "
-                f"pending={self._session.pending_action_description}"
+                f"pending={self._session.pending_action_description} | "
+                f"reading={reading_state} {reading_steps}/{reading_max_steps} chunks={reading_chunks}"
             )
         )
         self._refresh_goal_debug_label()
@@ -1053,6 +1070,7 @@ class MainWindow(QMainWindow):
         self._apply_guardrails_button.setEnabled(not busy)
         self._approve_action_button.setEnabled((not busy) and self._session.has_pending_action)
         self._reject_action_button.setEnabled((not busy) and self._session.has_pending_action)
+        self._stop_reading_button.setEnabled(not busy)
         self._reset_latency_button.setEnabled(not busy)
         self._run_stt_test_button.setEnabled((not busy) and self._stt_test_thread is None)
         self._apply_stt_test_config_button.setEnabled(not busy)
@@ -1166,6 +1184,7 @@ class MainWindow(QMainWindow):
         self._apply_guardrails_button.setEnabled(False)
         self._approve_action_button.setEnabled(False)
         self._reject_action_button.setEnabled(False)
+        self._stop_reading_button.setEnabled(False)
         self._reset_latency_button.setEnabled(False)
         self._run_stt_test_button.setEnabled(False)
         self._apply_stt_test_config_button.setEnabled(False)
@@ -1205,6 +1224,7 @@ class MainWindow(QMainWindow):
         self._apply_guardrails_button.setEnabled(True)
         self._approve_action_button.setEnabled(self._session.has_pending_action)
         self._reject_action_button.setEnabled(self._session.has_pending_action)
+        self._stop_reading_button.setEnabled(True)
         self._reset_latency_button.setEnabled(True)
         self._run_stt_test_button.setEnabled(self._stt_test_thread is None)
         self._apply_stt_test_config_button.setEnabled(True)

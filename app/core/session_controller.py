@@ -4,6 +4,7 @@ from collections.abc import Callable
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -189,6 +190,21 @@ class SessionController:
         self._open_windows: list[dict] = []
         self._all_windows: list[dict] = []
         self._foreground_window_title: str = ""
+        self._reading_session_memory_enabled = bool(settings.autonomy.reading_session_memory_enabled)
+        self._reading_max_scroll_steps = max(1, int(settings.autonomy.reading_max_scroll_steps))
+        self._reading_max_quotes = max(1, int(settings.autonomy.reading_max_quotes))
+        self._reading_max_quote_chars = max(120, int(settings.autonomy.reading_max_quote_chars))
+        self._reading_trusted_window_titles = [
+            str(item).strip().lower()
+            for item in (settings.autonomy.reading_trusted_window_titles or [])
+            if str(item).strip()
+        ]
+        self._reading_active = False
+        self._reading_window_title = ""
+        self._reading_chunks: list[str] = []
+        self._reading_chunk_hashes: set[str] = set()
+        self._reading_scroll_steps = 0
+        self._reading_last_summary = ""
         self._last_metrics: dict[str, float | str] = {
             "mode": "idle",
             "capture_ms": 0.0,
@@ -502,6 +518,17 @@ class SessionController:
     def clear_decision_trace(self) -> None:
         self._decision_trace.clear()
 
+    def stop_reading_session(self) -> bool:
+        was_active = bool(self._reading_active)
+        self._reading_active = False
+        self._reading_window_title = ""
+        self._reading_chunks.clear()
+        self._reading_chunk_hashes.clear()
+        self._reading_scroll_steps = 0
+        self._reading_last_summary = ""
+        self._trace("reading.stop", "Reading session cleared by user request.")
+        return was_active
+
     @property
     def emergency_hotkey(self) -> str:
         return self._settings.actions.emergency_hotkey
@@ -531,16 +558,34 @@ class SessionController:
                 "type_text "
                 f"chars={len(text)} preview='{preview}' conf={round(pending.confidence, 2)}"
             )
+        if pending.kind == "scroll":
+            mode = str(pending.text or "down:8").strip() or "down:8"
+            if pending.x is not None and pending.y is not None:
+                return f"scroll mode={mode} at=({pending.x}, {pending.y}) conf={round(pending.confidence, 2)}"
+            return f"scroll mode={mode} conf={round(pending.confidence, 2)}"
+        if pending.kind == "window_state":
+            state = str(pending.text or "restore").strip() or "restore"
+            return f"window_state={state} hwnd={pending.hwnd} conf={round(pending.confidence, 2)}"
         return pending.kind
 
     def approve_pending_action(self) -> tuple[str, str | None]:
         result = self._action_executor.approve_pending_action()
         self._trace("action.confirmation", result.message)
+        followups: list[str] = []
         followup = self._build_post_action_followup(
             result,
             require_confirmation=self._settings.actions.require_confirmation,
         )
-        return result.message, (followup if followup else None)
+        if followup:
+            followups.append(followup)
+
+        if result.executed and self._settings.actions.require_confirmation:
+            reading_followup = self._continue_reading_after_approval()
+            if reading_followup:
+                followups.append(reading_followup)
+
+        combined = "\n\n".join(part.strip() for part in followups if str(part).strip())
+        return result.message, (combined if combined else None)
 
     def reject_pending_action(self) -> str:
         result = self._action_executor.reject_pending_action()
@@ -578,6 +623,15 @@ class SessionController:
             "llm_ms": avg("llm_ms"),
             "tts_ms": avg("tts_ms"),
             "total_ms": avg("total_ms"),
+        }
+
+    def get_reading_status(self) -> dict[str, bool | int | str]:
+        return {
+            "active": bool(self._reading_active),
+            "window": str(self._reading_window_title or ""),
+            "chunks": int(len(self._reading_chunks)),
+            "scroll_steps": int(self._reading_scroll_steps),
+            "max_scroll_steps": int(self._reading_max_scroll_steps),
         }
 
     def reset_latency_metrics(self) -> None:
@@ -927,6 +981,8 @@ class SessionController:
                 action_intent="",
             )
         screen_intent = self._is_screen_intent(user_text)
+        reading_intent = self._is_reading_intent(user_text)
+        continue_reading = self._is_continue_reading_request(user_text)
         screen_text = None
         should_capture = False
         decision_source = "none"
@@ -936,8 +992,17 @@ class SessionController:
         else:
             should_capture, decision_source = self._should_capture_screen(user_text=user_text)
 
+        if reading_intent and self._state.screen_enabled:
+            should_capture = True
+            decision_source = "reading_intent"
+
+        if continue_reading and self._reading_active:
+            should_capture = True
+            decision_source = "reading_session"
+
         if should_capture:
             screen_text = self._capture_screen_text(decision_source=decision_source)
+            self._update_reading_session(user_text=user_text, screen_text=screen_text)
         elif decision_source == "disabled":
             self._trace(
                 "screen.capture",
@@ -1012,6 +1077,10 @@ class SessionController:
             win_header_parts.append("Open windows:\n" + "\n".join(win_lines))
         if win_header_parts:
             screen_context_for_llm = "\n".join(win_header_parts) + "\n\n" + (screen_context_for_llm or "")
+
+        reading_context = self._build_reading_context_for_prompt()
+        if reading_context:
+            screen_context_for_llm = ((screen_context_for_llm or "").strip() + "\n\n" + reading_context).strip()
 
         # Build capability list so the model knows what it can do this turn.
         caps = [f"tool:{name}" for name in self._tool_executor.list_available_tools()]
@@ -1142,12 +1211,13 @@ class SessionController:
 
         self._trace("pipeline.action.start", f"mode={mode}")
         try:
+            reading_action_intent = self._reading_action_intent(user_text)
             action_result = self._maybe_execute_action(
                 user_text=user_text,
                 assistant_reply=response,
                 screen_text=screen_text,
                 allow_planning_override=autonomy_plan.should_plan_action,
-                action_intent=autonomy_plan.action_intent,
+                action_intent=(autonomy_plan.action_intent or reading_action_intent),
                 on_token=on_token,
             )
         except Exception as exc:
@@ -1187,6 +1257,13 @@ class SessionController:
                 if on_token:
                     on_token(followup_suffix)
                 response = f"{response}{followup_suffix}".strip()
+
+        if reading_intent or continue_reading or self._is_reading_evidence_request(user_text):
+            evidence_suffix = self._build_reading_evidence_block()
+            if evidence_suffix:
+                response = f"{response}\n\n{evidence_suffix}".strip()
+                if on_token:
+                    on_token(f"\n\n{evidence_suffix}")
 
         response = self._sanitize_assistant_text(response)
 
@@ -2004,6 +2081,15 @@ class SessionController:
                 elif s.kind == "type_text":
                     snippet = (s.text or "")[:24]
                     line = f"{idx}. type_text({snippet!r})"
+                elif s.kind == "scroll":
+                    mode = (s.text or "down:8").strip() or "down:8"
+                    if s.x is not None and s.y is not None:
+                        line = f"{idx}. scroll({mode!r}, at=({s.x}, {s.y}))"
+                    else:
+                        line = f"{idx}. scroll({mode!r})"
+                elif s.kind == "window_state":
+                    state = (s.text or "restore").strip() or "restore"
+                    line = f"{idx}. window_state({state!r}, hwnd={s.hwnd})"
                 else:
                     line = f"{idx}. {s.kind}"
                 if s.reason:
@@ -2066,6 +2152,12 @@ class SessionController:
             "choose",
             "submit",
             "send",
+            "scroll",
+            "minimize",
+            "maximize",
+            "restore",
+            "read on screen",
+            "read the article",
         )
         return any(token in normalized for token in triggers)
 
@@ -2124,7 +2216,7 @@ class SessionController:
                             "Return exactly one JSON object with keys: "
                             "steps (array), description (string), needs_screen (bool). "
                             "Each step object has keys: type, x, y, text, hwnd, confidence, reason. "
-                            "Allowed step types: none, click, type_text, focus_window. "
+                            "Allowed step types: none, click, type_text, focus_window, scroll, window_state. "
                             "Steps are executed in order — use multiple steps when needed "
                             "(e.g. focus_window first, then click, then type_text). "
                             "For click: x and y are the element center to click. "
@@ -2133,7 +2225,11 @@ class SessionController:
                             "— pick the text input element, not a button. "
                             "For focus_window: hwnd is the integer window handle from the 'Open windows' list; "
                             "use this to restore a minimized window or bring a background window to the front "
-                            "before performing a click inside it. Set x, y, text, hwnd to null when unused. "
+                            "before performing a click inside it. "
+                            "For scroll: set text to one of: down, up, down:8, up:8 (direction with optional strength), "
+                            "and optionally set x/y as the on-screen anchor position to scroll around. "
+                            "For window_state: set text to one of minimize, maximize, restore and provide hwnd. "
+                            "Set x, y, text, hwnd to null when unused. "
                             "ALL coordinates MUST be exact values "
                             "copied from the 'Detected UI elements' list — do NOT invent coordinates. "
                             "CRITICAL: elements marked '[THIS APP — do not target]' belong to the assistant "
@@ -2173,7 +2269,7 @@ class SessionController:
 
         def _parse_step(s: dict) -> PlannedAction:
             raw_kind = str(s.get("type", "none")).strip().lower()
-            if raw_kind not in {"none", "click", "type_text", "focus_window"}:
+            if raw_kind not in {"none", "click", "type_text", "focus_window", "scroll", "window_state"}:
                 raw_kind = "none"
             conf = float(s.get("confidence", 0.0) or 0.0)
             conf = max(0.0, min(conf, 1.0))
@@ -2593,6 +2689,20 @@ class SessionController:
                 step_phrases.append("click the target")
             elif step.kind == "type_text":
                 step_phrases.append("type into the target field")
+            elif step.kind == "scroll":
+                mode = str(step.text or "down").strip().lower()
+                if mode.startswith("up"):
+                    step_phrases.append("scroll up to read earlier content")
+                else:
+                    step_phrases.append("scroll down to continue reading")
+            elif step.kind == "window_state":
+                state = str(step.text or "restore").strip().lower()
+                if state == "minimize":
+                    step_phrases.append("minimize the target window")
+                elif state == "maximize":
+                    step_phrases.append("maximize the target window")
+                else:
+                    step_phrases.append("restore the target window")
 
         if not step_phrases:
             return ""
@@ -2639,6 +2749,226 @@ class SessionController:
         cleaned = "\n".join(cleaned_lines)
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
         return cleaned
+
+    @staticmethod
+    def _is_reading_intent(user_text: str) -> bool:
+        lowered = str(user_text or "").strip().lower()
+        if not lowered:
+            return False
+        tokens = (
+            "read this",
+            "read article",
+            "read the article",
+            "what do you see",
+            "what did you see",
+            "read on screen",
+            "summarize this page",
+        )
+        return any(token in lowered for token in tokens)
+
+    @staticmethod
+    def _is_continue_reading_request(user_text: str) -> bool:
+        lowered = str(user_text or "").strip().lower()
+        if not lowered:
+            return False
+        tokens = (
+            "continue reading",
+            "read more",
+            "next part",
+            "scroll more",
+            "keep reading",
+        )
+        return any(token in lowered for token in tokens)
+
+    @staticmethod
+    def _is_reading_evidence_request(user_text: str) -> bool:
+        lowered = str(user_text or "").strip().lower()
+        if not lowered:
+            return False
+        tokens = ("what did you see", "show snippet", "quote", "evidence", "summary")
+        return any(token in lowered for token in tokens)
+
+    def _is_trusted_reading_window(self) -> bool:
+        title = str(self._foreground_window_title or "").strip().lower()
+        if not title:
+            return False
+        if not self._reading_trusted_window_titles:
+            return True
+        return any(token in title for token in self._reading_trusted_window_titles)
+
+    def _update_reading_session(self, *, user_text: str, screen_text: str | None) -> None:
+        if not self._reading_session_memory_enabled or not screen_text:
+            return
+
+        reading_intent = self._is_reading_intent(user_text)
+        continue_request = self._is_continue_reading_request(user_text)
+        if not (self._reading_active or reading_intent or continue_request):
+            return
+
+        if not self._is_trusted_reading_window():
+            self._trace(
+                "reading.blocked",
+                f"Untrusted foreground window for reading: {self._foreground_window_title or '[unknown]'}",
+            )
+            return
+
+        if not self._reading_active:
+            self._reading_active = True
+            self._reading_window_title = str(self._foreground_window_title or "")
+            self._reading_chunks.clear()
+            self._reading_chunk_hashes.clear()
+            self._reading_scroll_steps = 0
+            self._reading_last_summary = ""
+            self._trace("reading.start", f"window={self._reading_window_title or '[unknown]'}")
+
+        normalized = "\n".join(line.strip() for line in str(screen_text).splitlines() if line.strip())
+        if not normalized:
+            return
+        digest = hashlib.sha1(normalized.encode("utf-8", errors="ignore")).hexdigest()
+        if digest in self._reading_chunk_hashes:
+            self._trace("reading.chunk", "Skipped duplicate OCR chunk.")
+            return
+
+        self._reading_chunk_hashes.add(digest)
+        self._reading_chunks.append(normalized[:2400])
+        if len(self._reading_chunks) > 10:
+            self._reading_chunks = self._reading_chunks[-10:]
+        self._trace("reading.chunk", f"chunks={len(self._reading_chunks)}")
+
+    def _build_reading_context_for_prompt(self) -> str:
+        if not self._reading_active or not self._reading_chunks:
+            return ""
+        recent = self._reading_chunks[-2:]
+        combined = "\n\n".join(recent)
+        return (
+            "Active reading session context (recent captures):\n"
+            f"{combined[:1800]}"
+        )
+
+    def _reading_action_intent(self, user_text: str) -> str:
+        if not self._state.screen_enabled or not self._settings.actions.enabled:
+            return ""
+        if self._is_continue_reading_request(user_text) and self._reading_active:
+            if self._reading_scroll_steps >= self._reading_max_scroll_steps:
+                return ""
+            self._reading_scroll_steps += 1
+            return "Continue reading the current article by scrolling down and then re-reading visible content."
+        if self._is_reading_intent(user_text):
+            return "Read visible article content and scroll if more content is needed."
+        return ""
+
+    def _build_reading_evidence_block(self) -> str:
+        if not self._reading_active or not self._reading_chunks:
+            return ""
+
+        quotes: list[str] = []
+        used = 0
+        for chunk in reversed(self._reading_chunks):
+            for line in chunk.splitlines():
+                text = line.strip()
+                if len(text) < 35:
+                    continue
+                if text in quotes:
+                    continue
+                trimmed = text[:160]
+                extra = len(trimmed)
+                if used + extra > self._reading_max_quote_chars:
+                    continue
+                quotes.append(trimmed)
+                used += extra
+                if len(quotes) >= self._reading_max_quotes:
+                    break
+            if len(quotes) >= self._reading_max_quotes:
+                break
+
+        if not quotes:
+            return ""
+
+        bullets = "\n".join(f"- \"{q}\"" for q in quotes)
+        summary = (
+            f"Summary: I captured {len(quotes)} excerpt(s) from "
+            f"{self._reading_window_title or 'the active window'} across {len(self._reading_chunks)} screen chunk(s)."
+        )
+        self._reading_last_summary = summary
+        self._trace("reading.summary", summary)
+        return f"Reading evidence:\n{bullets}\n{summary}"
+
+    def _continue_reading_after_approval(self) -> str:
+        if not self._reading_session_memory_enabled or not self._reading_active:
+            return ""
+        if not self._settings.actions.enabled or not self._state.screen_enabled:
+            return ""
+        if not self._is_trusted_reading_window():
+            self._trace(
+                "reading.blocked",
+                f"Autopilot blocked in untrusted window: {self._foreground_window_title or '[unknown]'}",
+            )
+            return ""
+
+        remaining = max(0, int(self._reading_max_scroll_steps) - int(self._reading_scroll_steps))
+        if remaining <= 0:
+            return ""
+
+        executed_steps = 0
+        duplicate_streak = 0
+        require_confirmation_original = self._settings.actions.require_confirmation
+        try:
+            # One-approval flow: subsequent bounded read steps execute without re-prompting.
+            self._settings.actions.require_confirmation = False
+            for _ in range(remaining):
+                before_hashes = len(self._reading_chunk_hashes)
+                execute_result = self._invoke_tool(
+                    "action.execute_plan",
+                    args={
+                        "plan": {
+                            "description": "Continue reading article by scrolling down.",
+                            "needs_screen": False,
+                            "steps": [
+                                {
+                                    "kind": "scroll",
+                                    "x": None,
+                                    "y": None,
+                                    "text": "down:10",
+                                    "hwnd": None,
+                                    "confidence": 0.95,
+                                    "reason": "Continue reading content below.",
+                                }
+                            ],
+                        }
+                    },
+                )
+                if not execute_result.success:
+                    self._trace("reading.stop", "Autopilot scroll execution failed.")
+                    break
+                if not bool(execute_result.data.get("executed", False)):
+                    self._trace("reading.stop", "Autopilot scroll did not execute.")
+                    break
+
+                executed_steps += 1
+                self._reading_scroll_steps += 1
+                self._trace("reading.scroll", f"step={self._reading_scroll_steps}")
+
+                captured = self._capture_screen_text(decision_source="reading-autopilot")
+                self._update_reading_session(user_text="continue reading", screen_text=captured)
+                if len(self._reading_chunk_hashes) == before_hashes:
+                    duplicate_streak += 1
+                else:
+                    duplicate_streak = 0
+
+                if duplicate_streak >= 2:
+                    self._trace("reading.stop", "Autopilot stopped (no new readable content).")
+                    break
+        finally:
+            self._settings.actions.require_confirmation = require_confirmation_original
+
+        if executed_steps < 1:
+            return ""
+
+        lead = f"I continued reading automatically for {executed_steps} scroll step(s)."
+        evidence = self._build_reading_evidence_block()
+        if evidence:
+            return f"{lead}\n{evidence}"
+        return lead
 
     @staticmethod
     def _sanitize_user_text(text: str) -> str:

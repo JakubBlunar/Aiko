@@ -41,6 +41,74 @@ class ToolingActionToolTests(unittest.TestCase):
         self.assertTrue(result.data.get("dry_run"))
         self.assertFalse(result.data.get("executed"))
 
+    def test_action_execute_plan_scroll_dry_run(self) -> None:
+        settings = ActionSettings(
+            enabled=True,
+            dry_run=True,
+            require_confirmation=False,
+            decision_mode="explicit_only",
+            max_actions_per_turn=3,
+            min_confidence=0.2,
+            min_action_interval_seconds=0.0,
+            emergency_hotkey="ctrl+alt+f12",
+            allowlist_window_titles=[],
+        )
+        runtime = GuardedActionExecutor(settings, EmergencyStopState())
+        tool = ActionExecutePlanTool(runtime)
+
+        result = tool.run(
+            ToolContext(),
+            {
+                "plan": {
+                    "description": "dry-run scroll test",
+                    "steps": [
+                        {"kind": "scroll", "text": "down:10", "confidence": 0.9, "reason": "read more"}
+                    ],
+                }
+            },
+        )
+
+        self.assertTrue(result.success)
+        self.assertTrue(result.data.get("dry_run"))
+        self.assertFalse(result.data.get("executed"))
+
+    def test_action_execute_plan_window_state_dry_run(self) -> None:
+        settings = ActionSettings(
+            enabled=True,
+            dry_run=True,
+            require_confirmation=False,
+            decision_mode="explicit_only",
+            max_actions_per_turn=3,
+            min_confidence=0.2,
+            min_action_interval_seconds=0.0,
+            emergency_hotkey="ctrl+alt+f12",
+            allowlist_window_titles=[],
+        )
+        runtime = GuardedActionExecutor(settings, EmergencyStopState())
+        tool = ActionExecutePlanTool(runtime)
+
+        result = tool.run(
+            ToolContext(),
+            {
+                "plan": {
+                    "description": "dry-run window state test",
+                    "steps": [
+                        {
+                            "kind": "window_state",
+                            "hwnd": 123,
+                            "text": "maximize",
+                            "confidence": 0.9,
+                            "reason": "prepare reading",
+                        }
+                    ],
+                }
+            },
+        )
+
+        self.assertTrue(result.success)
+        self.assertTrue(result.data.get("dry_run"))
+        self.assertFalse(result.data.get("executed"))
+
 
 if __name__ == "__main__":
     unittest.main()

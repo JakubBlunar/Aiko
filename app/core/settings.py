@@ -61,6 +61,11 @@ class AutonomySettings:
     auto_goal_switch: bool
     default_goal: str
     goal_switch_min_confidence: float
+    reading_session_memory_enabled: bool = True
+    reading_max_scroll_steps: int = 6
+    reading_max_quotes: int = 4
+    reading_max_quote_chars: int = 500
+    reading_trusted_window_titles: list[str] | None = None
 
 
 @dataclass(slots=True)
@@ -296,6 +301,16 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                 0.0,
                 min(float(autonomy.get("goal_switch_min_confidence", 0.6)), 1.0),
             ),
+            reading_session_memory_enabled=bool(autonomy.get("reading_session_memory_enabled", True)),
+            reading_max_scroll_steps=max(1, min(int(autonomy.get("reading_max_scroll_steps", 6)), 30)),
+            reading_max_quotes=max(1, min(int(autonomy.get("reading_max_quotes", 4)), 8)),
+            reading_max_quote_chars=max(120, min(int(autonomy.get("reading_max_quote_chars", 500)), 2400)),
+            reading_trusted_window_titles=[
+                str(item).strip()
+                for item in autonomy.get("reading_trusted_window_titles", ["chrome", "firefox", "edge", "vscode", "notepad"])
+                if str(item).strip()
+            ]
+            or ["chrome", "firefox", "edge", "vscode", "notepad"],
         ),
         ollama=OllamaSettings(
             base_url=_required(ollama, "base_url"),
