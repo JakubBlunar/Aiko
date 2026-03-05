@@ -4,7 +4,9 @@ import atexit
 from collections.abc import Callable
 import json
 import os
+from pathlib import Path
 import queue
+import shutil
 import subprocess
 import threading
 import time
@@ -65,14 +67,16 @@ class MCPStdioClient:
             self._trace("mcp.error", "MCP command is empty.")
             return False
 
-        cmd = [self._command, *self._args]
+        launch_env = self._build_env()
+        resolved_command = self._resolve_command_for_launch(self._command, launch_env)
+        cmd = [resolved_command, *self._args]
         try:
             self._process = subprocess.Popen(
                 cmd,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                env=self._build_env(),
+                env=launch_env,
             )
         except Exception as exc:
             self._trace("mcp.error", f"Failed to start MCP process: {exc}")
@@ -114,6 +118,17 @@ class MCPStdioClient:
         self._started = True
         self._trace("mcp.start", f"Connected MCP server via stdio: {' '.join(cmd)}")
         return True
+
+    @staticmethod
+    def _resolve_command_for_launch(command: str, env: dict[str, str]) -> str:
+        raw = str(command or "").strip()
+        if not raw:
+            return raw
+        # Absolute/relative paths should be used as provided.
+        if any(sep in raw for sep in ("/", "\\")):
+            return raw
+        resolved = shutil.which(raw, path=str(env.get("PATH", "")))
+        return str(resolved).strip() if resolved else raw
 
     def stop(self) -> None:
         self._started = False
@@ -192,6 +207,18 @@ class MCPStdioClient:
     def _build_env(self) -> dict[str, str]:
         merged = dict(os.environ)
         merged.update(self._env)
+
+        # PATH resilience: if command is bare 'uvx' and not currently resolvable,
+        # prepend common global uv installation location.
+        command_name = str(self._command or "").strip().lower()
+        if command_name == "uvx":
+            resolved = shutil.which("uvx", path=str(merged.get("PATH", "")))
+            if not resolved:
+                candidate = Path.home() / ".local" / "bin"
+                candidate_uvx = candidate / "uvx.exe"
+                if candidate_uvx.exists():
+                    current_path = str(merged.get("PATH", ""))
+                    merged["PATH"] = f"{candidate};{current_path}" if current_path else str(candidate)
         return merged
 
     def _notify(self, method: str, params: dict[str, Any]) -> None:
