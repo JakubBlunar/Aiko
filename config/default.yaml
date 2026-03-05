@@ -14,7 +14,7 @@ autonomy:
   max_strategy_chars: 180
   auto_goal_switch: true
   default_goal: "general_conversation"
-  goal_switch_min_confidence: 0.6
+  goal_switch_min_confidence: 0.75
 
 ollama:
   base_url: "http://127.0.0.1:11434"

@@ -11,7 +11,7 @@ import time
 import unicodedata
 
 from app.actions.emergency_stop import EmergencyStopState, GlobalHotkeyListener
-from app.actions.executor import ActionExecutionResult, GuardedActionExecutor, PlannedAction
+from app.actions.executor import ActionExecutionResult, ActionPlan, GuardedActionExecutor, PlannedAction
 from app.audio.mic_capture import MicrophoneCapture
 from app.core.conversation_memory import ConversationMemoryStore
 from app.core.crash_logging import log_event
@@ -26,6 +26,7 @@ from app.tts.llasa_service import LlasaTtsService
 from app.tts.piper_service import PiperTtsService
 from app.vision.ocr import OcrService
 from app.vision.screen_capture import ScreenCaptureService
+from app.vision.uia_service import UiaService
 
 
 @dataclass(slots=True)
@@ -42,6 +43,7 @@ class TurnAutonomyPlan:
     should_plan_action: bool
     ask_followup: bool
     confidence: float
+    action_intent: str = ""
 
 
 @dataclass(slots=True)
@@ -49,6 +51,7 @@ class GoalInference:
     goal: str
     confidence: float
     reason: str
+    description: str = ""
 
 
 class SessionController:
@@ -85,11 +88,16 @@ class SessionController:
         self._memory = ConversationMemoryStore()
         self._persona = PersonaProfileStore(assistant_background=settings.assistant.background)
         self._active_goal = settings.autonomy.default_goal
+        self._active_goal_description: str = ""
         self._last_screen_capture_at = 0.0
         self._last_screen_decision_at = 0.0
         self._last_screen_text = ""
         self._last_screen_text_at = 0.0
         self._last_screen_elements: list[dict] = []
+        self._uia = UiaService()
+        self._open_windows: list[dict] = []
+        self._all_windows: list[dict] = []
+        self._foreground_window_title: str = ""
         self._last_metrics: dict[str, float | str] = {
             "mode": "idle",
             "capture_ms": 0.0,
@@ -599,10 +607,50 @@ class SessionController:
         if self._state.system_audio_enabled:
             system_audio_text = self._transcribe_system_audio(seconds=2.0)
 
+        # Build structured screen context: give the main LLM real element coordinates
+        # so it never has to invent positions.
+        if screen_text and self._last_screen_elements:
+            el_lines = [
+                f'- "{e["text"]}" at ({e["cx"]}, {e["cy"]})'
+                for e in self._last_screen_elements[:60]
+                if str(e.get("text", "")).strip()
+            ]
+            if el_lines:
+                screen_context_for_llm = (
+                    "Detected UI elements (label → click coordinates):\n"
+                    + "\n".join(el_lines)
+                    + "\n\nFull text: " + screen_text
+                )
+            else:
+                screen_context_for_llm = screen_text
+        else:
+            screen_context_for_llm = screen_text
+
+        # Prepend open-windows / foreground-window context
+        win_header_parts: list[str] = []
+        if self._foreground_window_title:
+            win_header_parts.append(f"Foreground window: {self._foreground_window_title}")
+        if self._open_windows:
+            win_lines = []
+            for w in self._open_windows[:15]:
+                prefix = "[active] " if w.get("is_foreground") else ""
+                win_lines.append(f"  - {prefix}{w['title']}")
+            win_header_parts.append("Open windows:\n" + "\n".join(win_lines))
+        if win_header_parts:
+            screen_context_for_llm = "\n".join(win_header_parts) + "\n\n" + (screen_context_for_llm or "")
+
+        # Build capability list so the model knows what it can do this turn.
+        caps: list[str] = []
+        if self._state.screen_enabled:
+            caps.append("read_screen")
+        if self._settings.actions.enabled:
+            caps.append("click (pyautogui)")
+            caps.append("type_text (pyautogui)")
+
         messages = self._turn_manager.build_chat_messages(
             TurnInput(
                 user_text=user_text,
-                screen_text=screen_text,
+                screen_text=screen_context_for_llm,
                 system_audio_text=system_audio_text,
                 personality=self._personality,
                 persona_background=self._persona.get_assistant_background(),
@@ -611,6 +659,8 @@ class SessionController:
                 memory_messages=(self._memory.recent_messages(12) if self._remember_history else None),
                 assistant_strategy=autonomy_plan.strategy,
                 active_goal=self._active_goal,
+                goal_description=self._active_goal_description,
+                available_capabilities=caps or None,
             )
         )
 
@@ -708,13 +758,18 @@ class SessionController:
             assistant_reply=response,
             screen_text=screen_text,
             allow_planning_override=autonomy_plan.should_plan_action,
+            action_intent=autonomy_plan.action_intent,
         )
         self._trace(
             "pipeline.action.done",
             "executed" if action_result is not None else "skipped",
         )
+        # Keep the pure LLM text for TTS — action status lines are for the UI only.
+        llm_response_for_tts = response
+
         if action_result is not None and action_result.message:
-            response = f"{response}\n\n[Action] {action_result.message}".strip()
+            prefix = "[Action]" if action_result.executed or action_result.requires_confirmation else "[Note]"
+            response = f"{response}\n\n{prefix} {action_result.message}".strip()
 
         response = self._sanitize_assistant_text(response)
 
@@ -746,7 +801,7 @@ class SessionController:
 
         if should_speak_full_response:
             try:
-                tts_text = self._prepare_tts_text(response)
+                tts_text = self._prepare_tts_text(llm_response_for_tts)
                 if tts_text:
                     self._tts.speak_async(tts_text)
                     self._trace("pipeline.tts.speak", f"chars={len(tts_text)}")
@@ -792,6 +847,7 @@ class SessionController:
             should_plan_action=False,
             ask_followup=True,
             confidence=0.4,
+            action_intent="",
         )
 
         if not self._settings.autonomy.enabled:
@@ -805,6 +861,19 @@ class SessionController:
             if role in {"user", "assistant"} and content:
                 recent_lines.append(f"{role}: {content}")
 
+        # Build capability list based on current settings.
+        caps: list[str] = ["- respond_to_user (always available)"]
+        if self._state.screen_enabled:
+            caps.append("- read_screen: read screen text via OCR")
+        if self._settings.actions.enabled:
+            caps.append("- execute_click: click a UI element at given screen coordinates")
+            caps.append("- execute_type: type text into the focused field")
+            caps.append("- focus_window: restore a minimized or background window to the foreground")
+        caps_block = "\n".join(caps)
+
+        goal_context = self._active_goal or "general_conversation"
+        goal_desc = self._active_goal_description or ""
+
         planner = self._thinking_ollama or self._ollama
         try:
             raw = planner.chat(
@@ -812,20 +881,31 @@ class SessionController:
                     {
                         "role": "system",
                         "content": (
-                            "Plan the assistant's next turn for natural autonomous conversation. "
+                            "You are an autonomous assistant turn planner. "
+                            "Given the current goal, available capabilities, and the user's message, "
+                            "decide which capabilities are needed for this turn and plan the strategy. "
                             "Return exactly one JSON object with keys: "
-                            "strategy, should_use_screen, should_plan_action, ask_followup, confidence. "
-                            "strategy must be one short sentence under 180 chars. "
-                            "Use booleans for flags and confidence in range 0.0-1.0."
+                            "strategy, should_use_screen, should_plan_action, ask_followup, confidence, action_intent. "
+                            "strategy: one short sentence under 180 chars describing the response approach. "
+                            "should_use_screen: true if reading screen context is needed to answer this turn. "
+                            "should_plan_action: true if a UI click or type action should be performed this turn. "
+                            "action_intent: if should_plan_action is true, one sentence describing the intended UI action; otherwise empty string. "
+                            "ask_followup: true if the assistant needs to ask the user a clarifying question before acting. "
+                            "IMPORTANT: should_plan_action and ask_followup are mutually exclusive — "
+                            "if you need more information first, set ask_followup=true and should_plan_action=false. "
+                            "confidence: 0.0-1.0 reflecting plan certainty. "
+                            "Use booleans for flags."
                         ),
                     },
                     {
                         "role": "user",
                         "content": (
+                            f"Current goal: {goal_context}\n"
+                            + (f"Goal description: {goal_desc}\n" if goal_desc else "")
+                            + f"\nAvailable capabilities:\n{caps_block}\n\n"
                             f"Latest user message:\n{user_text.strip()}\n\n"
                             f"Recent conversation:\n{chr(10).join(recent_lines) or '[none]'}\n\n"
-                            "Context:\n"
-                            f"- active_goal={self._active_goal}\n"
+                            "Settings:\n"
                             f"- proactive_conversation={self._settings.autonomy.proactive_conversation}\n"
                             f"- allow_action_suggestions={self._settings.autonomy.allow_action_suggestions}\n"
                             f"- allow_proactive_actions={self._settings.autonomy.allow_proactive_actions}"
@@ -849,12 +929,15 @@ class SessionController:
         confidence = float(payload.get("confidence", defaults.confidence) or defaults.confidence)
         confidence = max(0.0, min(confidence, 1.0))
 
+        action_intent = str(payload.get("action_intent", "")).strip()
+
         plan = TurnAutonomyPlan(
             strategy=strategy,
             should_use_screen=bool(payload.get("should_use_screen", False)),
             should_plan_action=bool(payload.get("should_plan_action", False)),
             ask_followup=bool(payload.get("ask_followup", True)),
             confidence=confidence,
+            action_intent=action_intent,
         )
 
         if not self._settings.autonomy.allow_action_suggestions:
@@ -863,6 +946,12 @@ class SessionController:
             plan.should_plan_action = False
         if not self._settings.autonomy.proactive_conversation:
             plan.ask_followup = False
+        # Asking a follow-up question and executing an action are mutually exclusive.
+        # If the model wants to ask something, don't fire an action this turn.
+        if plan.ask_followup:
+            plan.should_plan_action = False
+        if not plan.should_plan_action:
+            plan.action_intent = ""
 
         self._trace(
             "autonomy.plan",
@@ -870,6 +959,7 @@ class SessionController:
                 f"strategy='{plan.strategy}' | screen={plan.should_use_screen} | "
                 f"action={plan.should_plan_action} | followup={plan.ask_followup} | "
                 f"confidence={round(plan.confidence, 2)}"
+                + (f" | intent='{plan.action_intent}'" if plan.action_intent else "")
             ),
         )
         return plan
@@ -893,11 +983,13 @@ class SessionController:
         if inferred.goal != self._active_goal:
             previous = self._active_goal
             self._active_goal = inferred.goal
+            self._active_goal_description = inferred.description
             self._trace(
                 "autonomy.goal",
                 (
                     f"Switched goal {previous} -> {self._active_goal} "
-                    f"(confidence={round(inferred.confidence, 2)}; reason={inferred.reason or 'n/a'})"
+                    f"(confidence={round(inferred.confidence, 2)}; reason={inferred.reason or 'n/a'}; "
+                    f"desc={inferred.description or 'n/a'})"
                 ),
             )
 
@@ -918,10 +1010,12 @@ class SessionController:
                         "role": "system",
                         "content": (
                             "Infer the most useful current conversation goal from dialogue context. "
-                            "Return exactly one JSON object with keys: goal, confidence, reason. "
-                            "goal must be one of: general_conversation, english_practice, coding_help, "
-                            "ui_automation, learning_coach, troubleshooting. "
-                            "confidence is 0.0-1.0."
+                            "Return exactly one JSON object with keys: goal, confidence, reason, description. "
+                            "goal: a short snake_case identifier for the task "
+                            "(e.g. 'tic_tac_toe', 'english_practice', 'coding_help', 'general_conversation'). "
+                            "description: one sentence describing what the user is trying to accomplish. "
+                            "confidence: 0.0-1.0 how confident you are in the inferred goal. "
+                            "reason: brief explanation of why you chose this goal."
                         ),
                     },
                     {
@@ -941,22 +1035,17 @@ class SessionController:
         if not isinstance(payload, dict):
             return GoalInference(goal=self._active_goal, confidence=0.0, reason="invalid-goal-json")
 
-        allowed_goals = {
-            "general_conversation",
-            "english_practice",
-            "coding_help",
-            "ui_automation",
-            "learning_coach",
-            "troubleshooting",
-        }
-        goal = str(payload.get("goal", self._active_goal)).strip().lower() or self._active_goal
-        if goal not in allowed_goals:
-            goal = self._active_goal
+        raw_goal = str(payload.get("goal", self._active_goal)).strip().lower()
+        # Sanitize to snake_case: keep alphanumeric/underscores/spaces only.
+        sanitized = re.sub(r"[^a-z0-9\s_]", "", raw_goal)
+        sanitized = re.sub(r"[\s_]+", "_", sanitized).strip("_")
+        goal = sanitized[:60] or self._active_goal
 
         confidence = float(payload.get("confidence", 0.0) or 0.0)
         confidence = max(0.0, min(confidence, 1.0))
         reason = str(payload.get("reason", "")).strip()
-        return GoalInference(goal=goal, confidence=confidence, reason=reason)
+        description = str(payload.get("description", "")).strip()
+        return GoalInference(goal=goal, confidence=confidence, reason=reason, description=description)
 
     def _should_capture_screen(self, *, user_text: str) -> tuple[bool, str]:
         normalized = (user_text or "").lower()
@@ -1067,8 +1156,11 @@ class SessionController:
 
         screen_left = int((region or {}).get("left", 0))
         screen_top = int((region or {}).get("top", 0))
+        screen_width = int((region or {}).get("width", 0))
+        screen_height = int((region or {}).get("height", 0))
         elements = self._ocr.extract_elements(
-            frame, screen_left=screen_left, screen_top=screen_top
+            frame, screen_left=screen_left, screen_top=screen_top,
+            screen_width=screen_width, screen_height=screen_height
         )
         used_fallback = False
         if not elements and bool(getattr(self._settings.screen, "capture_active_window_only", False)):
@@ -1081,10 +1173,53 @@ class SessionController:
             if fb_frame is not None:
                 fb_left = int((fb_region or {}).get("left", 0))
                 fb_top = int((fb_region or {}).get("top", 0))
+                fb_width = int((fb_region or {}).get("width", 0))
+                fb_height = int((fb_region or {}).get("height", 0))
                 elements = self._ocr.extract_elements(
-                    fb_frame, screen_left=fb_left, screen_top=fb_top
+                    fb_frame, screen_left=fb_left, screen_top=fb_top,
+                    screen_width=fb_width, screen_height=fb_height
                 )
                 used_fallback = True
+
+        # UIA enrichment — get native window controls for the foreground window
+        if getattr(self._settings.screen, "enable_uia", True):
+            try:
+                fw_title, uia_els = self._uia.get_foreground_elements()
+                self._foreground_window_title = fw_title
+                self._open_windows = self._uia.list_visible_windows()
+                self._all_windows = self._uia.list_all_windows()
+                if uia_els:
+                    # Convert UIA dicts to element format compatible with OCR elements
+                    uia_dicts = [
+                        {
+                            "text": f"[{e['type']}] {e['name']}" if e.get("name") else f"[{e['type']}]",
+                            "type": e["type"],
+                            "name": e.get("name", ""),
+                            "cx": e["cx"],
+                            "cy": e["cy"],
+                            "w": e["w"],
+                            "h": e["h"],
+                            "enabled": e.get("enabled", True),
+                            "source": "uia",
+                            "window_title": fw_title,
+                        }
+                        for e in uia_els
+                    ]
+                    # Merge: UIA first, then OCR elements that don't overlap with any UIA element
+                    def _ocr_overlaps(ocr_el: dict, uia_list: list[dict]) -> bool:
+                        cx, cy = ocr_el["cx"], ocr_el["cy"]
+                        for u in uia_list:
+                            ux1 = u["cx"] - u["w"] // 2
+                            ux2 = u["cx"] + u["w"] // 2
+                            uy1 = u["cy"] - u["h"] // 2
+                            uy2 = u["cy"] + u["h"] // 2
+                            if ux1 <= cx <= ux2 and uy1 <= cy <= uy2:
+                                return True
+                        return False
+                    ocr_only = [e for e in elements if not _ocr_overlaps(e, uia_dicts)]
+                    elements = uia_dicts + ocr_only
+            except Exception as exc:
+                self._trace("screen.uia", f"UIA enrichment failed: {exc}")
 
         self._last_screen_elements = elements
         text = " ".join(e["text"] for e in elements).strip()
@@ -1234,8 +1369,19 @@ class SessionController:
         assistant_reply: str,
         screen_text: str | None,
         allow_planning_override: bool = False,
+        action_intent: str = "",
     ) -> ActionExecutionResult | None:
         if not self._settings.actions.enabled:
+            wants_action = bool(action_intent) or self._has_action_intent(user_text)
+            if wants_action:
+                self._trace("action.plan", f"Actions disabled; intent was: {action_intent or user_text[:80]}")
+                return ActionExecutionResult(
+                    executed=False,
+                    dry_run=False,
+                    blocked=True,
+                    requires_confirmation=False,
+                    message="I can't perform UI actions right now — actions are disabled in settings.",
+                )
             return None
 
         if self._settings.actions.max_actions_per_turn < 1:
@@ -1253,8 +1399,9 @@ class SessionController:
             user_text=user_text,
             assistant_reply=assistant_reply,
             screen_text=screen_text,
+            action_intent=action_intent,
         )
-        result = self._action_executor.execute(planned)
+        result = self._action_executor.execute_plan(planned)
         self._trace("action.execute", result.message)
         return result
 
@@ -1282,7 +1429,8 @@ class SessionController:
         user_text: str,
         assistant_reply: str,
         screen_text: str | None,
-    ) -> PlannedAction:
+        action_intent: str = "",
+    ) -> ActionPlan:
         recent_memory = self._memory.recent_messages(4)
         recent_lines: list[str] = []
         for item in recent_memory:
@@ -1292,14 +1440,32 @@ class SessionController:
                 recent_lines.append(f"{role}: {content}")
 
         # Build a structured element list so the planner uses real coordinates.
+        # Label elements that belong to this assistant app so the planner never targets them.
+        own_title_lower = "assistant"  # substring that identifies our own window title
         elements_lines: list[str] = []
         for el in self._last_screen_elements[:60]:
             el_text = str(el.get("text", "")).strip()
             if el_text:
+                # Mark UIA elements that belong to the assistant's own window
+                win_title = str(el.get("window_title", "")).lower()
+                is_own = el.get("source") == "uia" and own_title_lower in win_title
+                own_tag = " [THIS APP — do not target]" if is_own else ""
                 elements_lines.append(
-                    f"- \"{el_text}\" at ({el['cx']}, {el['cy']}) size {el['w']}x{el['h']}"
+                    f"- \"{el_text}\" at ({el['cx']}, {el['cy']}) size {el['w']}x{el['h']}{own_tag}"
                 )
         elements_block = "\n".join(elements_lines) if elements_lines else "[none detected]"
+
+        # Build windows list so planner can reference hwnds for focus_window actions.
+        windows_lines: list[str] = []
+        for w in self._all_windows[:20]:
+            labels: list[str] = []
+            if w.get("is_foreground"):
+                labels.append("active")
+            if w.get("is_minimized"):
+                labels.append("MINIMIZED")
+            label_str = f" [{', '.join(labels)}]" if labels else ""
+            windows_lines.append(f"- hwnd={w['hwnd']} \"{w['title']}\"{label_str}")
+        windows_block = "\n".join(windows_lines) if windows_lines else "[none]"
 
         planner = self._thinking_ollama or self._ollama
         try:
@@ -1310,22 +1476,39 @@ class SessionController:
                         "content": (
                             "You are an action planner for desktop UI automation. "
                             "Return exactly one JSON object with keys: "
-                            "type, x, y, text, confidence, reason. "
-                            "Allowed types: none, click, type_text. "
-                            "For click and type_text, x and y MUST be exact coordinates "
-                            "copied from the 'Detected UI elements' list below — "
-                            "do NOT invent or estimate coordinates. "
-                            "If no element matches the action, return type='none'. "
-                            "confidence must be 0.0 to 1.0."
+                            "steps (array), description (string). "
+                            "Each step object has keys: type, x, y, text, hwnd, confidence, reason. "
+                            "Allowed step types: none, click, type_text, focus_window. "
+                            "Steps are executed in order — use multiple steps when needed "
+                            "(e.g. focus_window first, then click, then type_text). "
+                            "For click: x and y are the element center to click. "
+                            "For type_text: text is the string to type; "
+                            "x and y are the coordinates of the INPUT FIELD to click for focus "
+                            "— pick the text input element, not a button. "
+                            "For focus_window: hwnd is the integer window handle from the 'Open windows' list; "
+                            "use this to restore a minimized window or bring a background window to the front "
+                            "before performing a click inside it. Set x, y, text, hwnd to null when unused. "
+                            "ALL coordinates MUST be exact values "
+                            "copied from the 'Detected UI elements' list — do NOT invent coordinates. "
+                            "CRITICAL: elements marked '[THIS APP — do not target]' belong to the assistant "
+                            "application itself — NEVER click or type into them. "
+                            "Always target elements in the user's intended application (e.g. Notepad, browser). "
+                            "OCR may have minor typos (e.g. 'Seltings' for 'Settings'); "
+                            "match labels by approximate similarity. "
+                            "If no suitable target element exists outside THIS APP, return steps=[] and explain. "
+                            "confidence per step must be 0.0–1.0."
                         ),
                     },
                     {
                         "role": "user",
                         "content": (
-                            f"Latest user message:\n{user_text.strip()}\n\n"
+                            f"Current goal: {self._active_goal}\n\n"
+                            + (f"Action intent: {action_intent}\n\n" if action_intent else "")
+                            + f"Latest user message:\n{user_text.strip()}\n\n"
                             f"Assistant draft reply:\n{assistant_reply.strip()}\n\n"
                             f"Recent conversation:\n{chr(10).join(recent_lines) or '[none]'}\n\n"
-                            f"Detected UI elements (text → screen coordinates):\n{elements_block}\n\n"
+                            f"Open windows (hwnd handles for focus_window):\n{windows_block}\n\n"
+                            f"Detected UI elements (text \u2192 screen coordinates):\n{elements_block}\n\n"
                             f"Full OCR text:\n{(screen_text or '[none]')[:3000]}"
                         ),
                     },
@@ -1333,37 +1516,53 @@ class SessionController:
             )
         except Exception:
             self._trace("action.plan", "Planner unavailable. Falling back to no action.")
-            return PlannedAction(kind="none", reason="Action planner unavailable")
+            return ActionPlan(steps=[], description="Action planner unavailable")
 
         payload = self._extract_json_object(raw)
         if not isinstance(payload, dict):
             self._trace("action.plan", "Planner output was not valid JSON. Falling back to no action.")
-            return PlannedAction(kind="none", reason="Planner output was not valid JSON")
+            return ActionPlan(steps=[], description="Planner output was not valid JSON")
 
-        raw_kind = str(payload.get("type", "none")).strip().lower()
-        if raw_kind not in {"none", "click", "type_text"}:
-            raw_kind = "none"
+        def _parse_step(s: dict) -> PlannedAction:
+            raw_kind = str(s.get("type", "none")).strip().lower()
+            if raw_kind not in {"none", "click", "type_text", "focus_window"}:
+                raw_kind = "none"
+            conf = float(s.get("confidence", 0.0) or 0.0)
+            conf = max(0.0, min(conf, 1.0))
+            return PlannedAction(
+                kind=raw_kind,
+                x=(int(s["x"]) if s.get("x") is not None else None),
+                y=(int(s["y"]) if s.get("y") is not None else None),
+                text=(str(s.get("text", "")).strip() or None),
+                hwnd=(int(s["hwnd"]) if s.get("hwnd") is not None else None),
+                confidence=conf,
+                reason=str(s.get("reason", "")).strip(),
+            )
 
-        confidence = float(payload.get("confidence", 0.0) or 0.0)
-        confidence = max(0.0, min(confidence, 1.0))
+        # Support both new array format {steps: [...]} and legacy single-action format {type: ...}
+        raw_steps = payload.get("steps")
+        if isinstance(raw_steps, list):
+            steps = [_parse_step(s) for s in raw_steps if isinstance(s, dict)]
+        else:
+            # Legacy single-action fallback
+            steps = [_parse_step(payload)]
 
-        planned = PlannedAction(
-            kind=raw_kind,
-            x=(int(payload["x"]) if payload.get("x") is not None else None),
-            y=(int(payload["y"]) if payload.get("y") is not None else None),
-            text=(str(payload.get("text", "")).strip() or None),
-            confidence=confidence,
-            reason=str(payload.get("reason", "")).strip(),
+        plan = ActionPlan(
+            steps=[s for s in steps if s.kind != "none"],
+            description=str(payload.get("description", "")).strip(),
         )
         self._trace(
             "action.plan",
             (
-                "Planned "
-                f"{planned.kind} (confidence={round(planned.confidence, 2)}; "
-                f"reason={planned.reason or 'n/a'})"
+                f"Planned {len(plan.steps)} step(s): "
+                + " → ".join(
+                    f"{s.kind}(conf={round(s.confidence, 2)})"
+                    for s in plan.steps
+                )
+                or "no actions"
             ),
         )
-        return planned
+        return plan
 
     @staticmethod
     def _extract_json_object(raw_text: str) -> dict | None:

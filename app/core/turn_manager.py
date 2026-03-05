@@ -17,6 +17,8 @@ class TurnInput:
     memory_messages: list[dict[str, str]] | None = None
     assistant_strategy: str | None = None
     active_goal: str | None = None
+    goal_description: str | None = None
+    available_capabilities: list[str] | None = None
 
 
 class TurnManager:
@@ -32,5 +34,7 @@ class TurnManager:
             memory_messages=turn_input.memory_messages,
             assistant_strategy=turn_input.assistant_strategy,
             active_goal=turn_input.active_goal,
+            goal_description=turn_input.goal_description,
+            available_capabilities=turn_input.available_capabilities,
         )
         return build_messages(context)

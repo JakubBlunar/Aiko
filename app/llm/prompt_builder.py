@@ -41,6 +41,8 @@ class PromptContext:
     memory_messages: list[dict[str, str]] | None = None
     assistant_strategy: str | None = None
     active_goal: str | None = None
+    goal_description: str | None = None
+    available_capabilities: list[str] | None = None
 
 
 def available_personalities() -> list[str]:
@@ -79,7 +81,23 @@ def build_messages(context: PromptContext) -> list[dict[str, str]]:
             "Response style preference: detailed. Provide richer explanations while staying clear and structured."
         )
 
+    if context.available_capabilities:
+        caps_str = ", ".join(context.available_capabilities)
+        system = (
+            f"{system}\n\n"
+            f"Available capabilities this session: {caps_str}. "
+            "When referring to UI elements, always use the exact coordinates from the "
+            "'Detected UI elements' list in the screen context — never invent positions."
+        )
+
     additional: list[str] = []
+    goal = str(context.active_goal or "").strip()
+    if goal and goal != "general_conversation":
+        goal_desc = str(context.goal_description or "").strip()
+        if goal_desc:
+            system = f"{system}\n\nCurrent task: {goal} — {goal_desc}"
+        else:
+            system = f"{system}\n\nCurrent task: {goal}"
     if context.active_goal:
         additional.append(f"Active conversation goal: {context.active_goal}")
     if context.assistant_strategy:

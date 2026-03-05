@@ -38,6 +38,7 @@ class ScreenSettings:
     decision_cooldown_seconds: int
     min_ocr_chars: int
     unchanged_reuse_seconds: int
+    enable_uia: bool = True
 
 
 def list_screen_ocr_profiles() -> list[str]:
@@ -282,6 +283,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             decision_cooldown_seconds=int(screen.get("decision_cooldown_seconds", 8)),
             min_ocr_chars=max(0, int(screen.get("min_ocr_chars", 20))),
             unchanged_reuse_seconds=max(0, int(screen.get("unchanged_reuse_seconds", 30))),
+            enable_uia=bool(screen.get("enable_uia", True)),
         ),
         actions=ActionSettings(
             enabled=bool(actions.get("enabled", False)),
