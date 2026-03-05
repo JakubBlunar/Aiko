@@ -119,6 +119,37 @@ class MainWindow(QMainWindow):
         self._chat_sections.addTab(conversation_page, "Conversation")
         self._chat_sections.addTab(session_info_page, "Session Info")
 
+        conversation_header = QHBoxLayout()
+        self._focus_chat_checkbox = QCheckBox("Focus Chat Mode")
+        self._focus_chat_checkbox.toggled.connect(self._on_focus_chat_toggled)
+        self._composer_hint_label = QLabel("Composer: Enter newline, Ctrl+Enter send")
+        self._composer_hint_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        conversation_header.addWidget(self._focus_chat_checkbox)
+        conversation_header.addWidget(self._composer_hint_label)
+        conversation_header.addStretch(1)
+        conversation_layout.addLayout(conversation_header)
+
+        info_filter_row = QHBoxLayout()
+        info_filter_row.addWidget(QLabel("Quick filters:"))
+        self._session_filter_identity = QCheckBox("Identity")
+        self._session_filter_identity.setChecked(True)
+        self._session_filter_identity.toggled.connect(self._apply_session_info_filters)
+        info_filter_row.addWidget(self._session_filter_identity)
+        self._session_filter_model = QCheckBox("Models")
+        self._session_filter_model.setChecked(True)
+        self._session_filter_model.toggled.connect(self._apply_session_info_filters)
+        info_filter_row.addWidget(self._session_filter_model)
+        self._session_filter_runtime = QCheckBox("Runtime")
+        self._session_filter_runtime.setChecked(True)
+        self._session_filter_runtime.toggled.connect(self._apply_session_info_filters)
+        info_filter_row.addWidget(self._session_filter_runtime)
+        self._session_filter_guardrails = QCheckBox("Guardrails")
+        self._session_filter_guardrails.setChecked(True)
+        self._session_filter_guardrails.toggled.connect(self._apply_session_info_filters)
+        info_filter_row.addWidget(self._session_filter_guardrails)
+        info_filter_row.addStretch(1)
+        session_info_layout.addLayout(info_filter_row)
+
         testing_tab = QWidget()
         testing_layout = QVBoxLayout()
         testing_tab.setLayout(testing_layout)
@@ -171,7 +202,9 @@ class MainWindow(QMainWindow):
         action_confirm_row.addWidget(self._approve_action_button)
         action_confirm_row.addWidget(self._reject_action_button)
         action_confirm_row.addStretch(1)
-        session_info_layout.addLayout(action_confirm_row)
+        self._action_controls_widget = QWidget()
+        self._action_controls_widget.setLayout(action_confirm_row)
+        session_info_layout.addWidget(self._action_controls_widget)
         self._latency_label = QLabel(
             "Latency: mode=idle | capture=0ms | stt=0ms | llm=0ms | tts=0ms | total=0ms"
         )
@@ -443,10 +476,12 @@ class MainWindow(QMainWindow):
         conversation_layout.addWidget(self._conversation, stretch=1)
 
         input_row = QHBoxLayout()
-        self._input = QLineEdit()
+        self._input = QTextEdit()
         self._input.setPlaceholderText("Type what you want to say...")
-        self._input.setStyleSheet("QLineEdit { font-size: 15px; padding: 6px 8px; }")
-        self._input.returnPressed.connect(self._send)
+        self._input.setStyleSheet("QTextEdit { font-size: 15px; padding: 6px 8px; }")
+        self._input.setAcceptRichText(False)
+        self._input.setFixedHeight(88)
+        self._input.installEventFilter(self)
         self._send_button = QPushButton("Send")
         self._send_button.clicked.connect(self._send)
         self._record_button = QPushButton("Record 5s")
@@ -504,6 +539,7 @@ class MainWindow(QMainWindow):
         self._action_guardrail_timer.start()
         self._refresh_action_guardrail_label()
         self._refresh_autonomy_controls()
+        self._apply_session_info_filters()
         self._setup_wheel_guard()
         QTimer.singleShot(250, self._play_startup_greeting)
 
@@ -538,6 +574,13 @@ class MainWindow(QMainWindow):
             self._wheel_guard_widgets.add(widget)
 
     def eventFilter(self, watched: object, event: QEvent) -> bool:
+        if watched is self._input and event.type() == QEvent.Type.KeyPress:
+            key = getattr(event, "key", lambda: None)()
+            modifiers = getattr(event, "modifiers", lambda: Qt.KeyboardModifier.NoModifier)()
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and bool(modifiers & Qt.KeyboardModifier.ControlModifier):
+                self._send()
+                return True
+
         if watched in self._wheel_guard_widgets and event.type() == QEvent.Type.Wheel:
             widget = watched if isinstance(watched, QWidget) else None
             while widget is not None:
@@ -1094,7 +1137,7 @@ class MainWindow(QMainWindow):
     def _send(self) -> None:
         if self._turn_thread is not None:
             return
-        text = self._input.text().strip()
+        text = self._input.toPlainText().strip()
         if not text:
             return
         if self._live_thread is not None:
@@ -1102,7 +1145,7 @@ class MainWindow(QMainWindow):
             return
 
         self._append("You", text)
-        self._input.clear()
+        self._input.setPlainText("")
         self._start_single_turn(mode="typed", text=text)
 
     def _set_single_turn_controls_busy(self, busy: bool) -> None:
@@ -1111,6 +1154,8 @@ class MainWindow(QMainWindow):
         self._record_button.setEnabled(not busy)
         self._start_live_button.setEnabled((not busy) and self._live_thread is None)
         self._clear_chat_button.setEnabled(not busy)
+        self._input.setEnabled(not busy)
+        self._focus_chat_checkbox.setEnabled(not busy)
         self._apply_sources_button.setEnabled(not busy)
         self._clear_memory_button.setEnabled(not busy)
         self._memory_viewer_button.setEnabled(not busy)
@@ -1226,6 +1271,8 @@ class MainWindow(QMainWindow):
         self._record_button.setEnabled(False)
         self._start_live_button.setEnabled(False)
         self._clear_chat_button.setEnabled(False)
+        self._input.setEnabled(False)
+        self._focus_chat_checkbox.setEnabled(False)
         self._stop_live_button.setEnabled(True)
         self._apply_sources_button.setEnabled(False)
         self._clear_memory_button.setEnabled(False)
@@ -1268,6 +1315,8 @@ class MainWindow(QMainWindow):
         self._record_button.setEnabled(True)
         self._start_live_button.setEnabled(True)
         self._clear_chat_button.setEnabled(True)
+        self._input.setEnabled(True)
+        self._focus_chat_checkbox.setEnabled(True)
         self._stop_live_button.setEnabled(False)
         self._apply_sources_button.setEnabled(True)
         self._clear_memory_button.setEnabled(True)
@@ -1334,6 +1383,33 @@ class MainWindow(QMainWindow):
 
     def _clear_conversation_view(self) -> None:
         self._conversation.clear()
+
+    def _on_focus_chat_toggled(self, checked: bool) -> None:
+        self._chat_sections.setTabVisible(1, not bool(checked))
+        if checked:
+            self._chat_sections.setCurrentIndex(0)
+        self._chat_sections.tabBar().setVisible(not bool(checked))
+
+    def _apply_session_info_filters(self) -> None:
+        identity_visible = self._session_filter_identity.isChecked()
+        model_visible = self._session_filter_model.isChecked()
+        runtime_visible = self._session_filter_runtime.isChecked()
+        guardrails_visible = self._session_filter_guardrails.isChecked()
+
+        self._autonomy_label.setVisible(identity_visible)
+        self._current_session_label.setVisible(identity_visible)
+
+        self._model_debug_label.setVisible(model_visible)
+        self._goal_debug_label.setVisible(model_visible)
+        self._tts_debug_label.setVisible(model_visible)
+        self._stt_debug_label.setVisible(model_visible)
+        self._tts_model_status_label.setVisible(model_visible)
+
+        self._latency_label.setVisible(runtime_visible)
+        self._latency_avg_label.setVisible(runtime_visible)
+
+        self._action_guardrail_label.setVisible(guardrails_visible)
+        self._action_controls_widget.setVisible(guardrails_visible)
 
     def _append(self, speaker: str, text: str) -> None:
         speaker_label = str(speaker or "Assistant").strip() or "Assistant"
