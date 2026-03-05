@@ -22,6 +22,7 @@ class StartupRuntimeService:
         chat_model: Callable[[], str],
         tts_getter: Callable[[], object],
         tts_status: Callable[[], tuple[str, str]],
+        mcp_runtime_status: Callable[[], dict[str, object]],
         trace: Callable[[str, str], None],
     ) -> None:
         self._persona_snapshot = persona_snapshot
@@ -39,6 +40,7 @@ class StartupRuntimeService:
         self._chat_model = chat_model
         self._tts_getter = tts_getter
         self._tts_status = tts_status
+        self._mcp_runtime_status = mcp_runtime_status
         self._trace = trace
 
     def build_startup_greeting(self) -> str:
@@ -112,7 +114,39 @@ class StartupRuntimeService:
         else:
             self.prewarm_tts()
 
+        self._check_mcp_runtime(report)
+
         report("Warmup complete")
+
+    def _check_mcp_runtime(self, report: Callable[[str], None]) -> None:
+        try:
+            status = self._mcp_runtime_status()
+        except Exception as exc:
+            self._trace("mcp.error", f"Failed to read MCP runtime status during preload: {exc}")
+            raise RuntimeError(f"Failed to check MCP runtime: {exc}") from exc
+
+        if not isinstance(status, dict):
+            self._trace("mcp.error", "Invalid MCP runtime status payload during preload.")
+            raise RuntimeError("Invalid MCP runtime status payload.")
+
+        enabled = bool(status.get("enabled", False))
+        if not enabled:
+            report("MCP disabled; skipping MCP preload checks")
+            return
+
+        server_count = int(status.get("server_count", 0) or 0)
+        connected_count = int(status.get("connected_count", 0) or 0)
+        report(f"Checking MCP servers: {connected_count}/{server_count} running")
+
+        if server_count <= 0:
+            raise RuntimeError("MCP is enabled but no servers are configured or running.")
+        if connected_count <= 0:
+            raise RuntimeError("MCP is enabled but no MCP servers are running.")
+        if connected_count < server_count:
+            self._trace(
+                "mcp.warn",
+                f"MCP preload check partial readiness: {connected_count}/{server_count} server(s) running.",
+            )
 
     def _build_startup_prewarm_messages(self) -> list[dict[str, str]]:
         if not self._startup_context_prewarm_enabled():

@@ -279,6 +279,7 @@ class SessionController:
             chat_model=lambda: self.chat_model,
             tts_getter=lambda: self._tts,
             tts_status=self.get_tts_model_status,
+            mcp_runtime_status=self.get_mcp_runtime_status,
             trace=self._trace,
         )
         self._last_metrics: dict[str, float | str] = {
