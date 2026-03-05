@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 from pathlib import Path
 import re
 
+from app.core.tooling.types import ToolContext, ToolError, ToolResult, ToolSpec
 
-DEFAULT_PERSONA_PATH = Path(__file__).resolve().parents[2] / "data" / "persona_profile.json"
+
+DEFAULT_PERSONA_PATH = Path(__file__).resolve().parents[4] / "data" / "persona_profile.json"
 
 
 @dataclass(slots=True)
@@ -19,7 +22,7 @@ class PersonaProfile:
     updated_at: str
 
 
-class PersonaProfileStore:
+class PersonaProfileRuntime:
     def __init__(self, path: Path | None = None, assistant_background: str | None = None) -> None:
         self._path = path or DEFAULT_PERSONA_PATH
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -53,10 +56,7 @@ class PersonaProfileStore:
         if not text:
             return False
 
-        changed = False
-        pref_changed = self._update_preferences_from_text(text)
-        changed = changed or pref_changed
-
+        changed = self._update_preferences_from_text(text)
         candidate = self._extract_user_note(text)
         if not candidate:
             if changed:
@@ -107,20 +107,8 @@ class PersonaProfileStore:
             "go deeper",
             "more explanation",
         )
-        faster_tts_triggers = (
-            "speak faster",
-            "talk faster",
-            "too slow",
-            "faster voice",
-            "speed up",
-        )
-        slower_tts_triggers = (
-            "speak slower",
-            "talk slower",
-            "too fast",
-            "slow down",
-            "slower voice",
-        )
+        faster_tts_triggers = ("speak faster", "talk faster", "too slow", "faster voice", "speed up")
+        slower_tts_triggers = ("speak slower", "talk slower", "too fast", "slow down", "slower voice")
 
         if any(trigger in lowered for trigger in concise_triggers):
             if self._profile.response_style != "concise":
@@ -139,12 +127,10 @@ class PersonaProfileStore:
             if abs(self._profile.tts_length_scale - 1.12) > 1e-6:
                 self._profile.tts_length_scale = 1.12
                 updated = True
-
         return updated
 
     def _extract_user_note(self, text: str) -> str | None:
         lowered = text.lower()
-
         patterns: list[tuple[str, str]] = [
             (r"\bmy name is\s+([^.!?]{2,50})", "User's name is {value}."),
             (r"\bi(?:'m| am) working on\s+([^.!?]{3,120})", "User is working on {value}."),
@@ -161,10 +147,10 @@ class PersonaProfileStore:
             raw_value = match.group(1).strip(" ,;:\t\n\r")
             if not raw_value:
                 continue
-            cleaned_value = self._normalize_fragment(raw_value)
-            if len(cleaned_value) < 3:
+            cleaned = self._normalize_fragment(raw_value)
+            if len(cleaned) < 3:
                 continue
-            return template.format(value=cleaned_value)
+            return template.format(value=cleaned)
 
         if len(text) <= 80 and any(phrase in lowered for phrase in (" i ", " i'm ", " my ")):
             return f"User said: {self._normalize_fragment(text)}"
@@ -179,35 +165,16 @@ class PersonaProfileStore:
 
     def _load(self) -> PersonaProfile:
         if not self._path.exists():
-            return PersonaProfile(
-                assistant_background="",
-                user_notes=[],
-                response_style="balanced",
-                tts_length_scale=1.0,
-                updated_at="",
-            )
+            return PersonaProfile("", [], "balanced", 1.0, "")
 
         try:
             payload = json.loads(self._path.read_text(encoding="utf-8"))
         except Exception:
-            return PersonaProfile(
-                assistant_background="",
-                user_notes=[],
-                response_style="balanced",
-                tts_length_scale=1.0,
-                updated_at="",
-            )
+            return PersonaProfile("", [], "balanced", 1.0, "")
 
         if not isinstance(payload, dict):
-            return PersonaProfile(
-                assistant_background="",
-                user_notes=[],
-                response_style="balanced",
-                tts_length_scale=1.0,
-                updated_at="",
-            )
+            return PersonaProfile("", [], "balanced", 1.0, "")
 
-        background = str(payload.get("assistant_background", "") or "").strip()
         notes_raw = payload.get("user_notes", [])
         notes: list[str] = []
         if isinstance(notes_raw, list):
@@ -215,21 +182,22 @@ class PersonaProfileStore:
                 text = str(item or "").strip()
                 if text:
                     notes.append(text)
+
         response_style = str(payload.get("response_style", "balanced") or "balanced").strip().lower()
         if response_style not in {"balanced", "concise", "detailed"}:
             response_style = "balanced"
+
         try:
             tts_length_scale = float(payload.get("tts_length_scale", 1.0) or 1.0)
         except Exception:
             tts_length_scale = 1.0
-        tts_length_scale = max(0.65, min(tts_length_scale, 1.35))
-        updated_at = str(payload.get("updated_at", "") or "").strip()
+
         return PersonaProfile(
-            assistant_background=background,
+            assistant_background=str(payload.get("assistant_background", "") or "").strip(),
             user_notes=notes,
             response_style=response_style,
-            tts_length_scale=tts_length_scale,
-            updated_at=updated_at,
+            tts_length_scale=max(0.65, min(tts_length_scale, 1.35)),
+            updated_at=str(payload.get("updated_at", "") or "").strip(),
         )
 
     def _save(self) -> None:
@@ -241,3 +209,62 @@ class PersonaProfileStore:
             "updated_at": self._profile.updated_at,
         }
         self._path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+class PersonaUpdateFromTextTool:
+    def __init__(self, runtime: PersonaProfileRuntime) -> None:
+        self._runtime = runtime
+        self.spec = ToolSpec(
+            name="persona.update_from_user_text",
+            description="Update persona profile from user message patterns.",
+            is_mutating=False,
+            input_schema={"required": ["user_text"]},
+            output_schema={"changed": "bool"},
+        )
+
+    def run(
+        self,
+        context: ToolContext,
+        args: dict,
+        cancel_token: Callable[[], bool] | None = None,
+    ) -> ToolResult:
+        if cancel_token and cancel_token():
+            return ToolResult(success=False, error=ToolError(code="cancelled", message="Tool call cancelled."))
+        user_text = str(args.get("user_text", "")).strip()
+        changed = self._runtime.update_from_user_text(user_text)
+        return ToolResult(success=True, data={"changed": changed})
+
+
+class PersonaReadSnapshotTool:
+    def __init__(self, runtime: PersonaProfileRuntime) -> None:
+        self._runtime = runtime
+        self.spec = ToolSpec(
+            name="persona.read_snapshot",
+            description="Read persona values used by prompt and TTS.",
+            is_mutating=False,
+            output_schema={
+                "assistant_background": "str",
+                "user_notes": "list[str]",
+                "response_style": "str",
+                "tts_length_scale": "float",
+            },
+        )
+
+    def run(
+        self,
+        context: ToolContext,
+        args: dict,
+        cancel_token: Callable[[], bool] | None = None,
+    ) -> ToolResult:
+        if cancel_token and cancel_token():
+            return ToolResult(success=False, error=ToolError(code="cancelled", message="Tool call cancelled."))
+        max_notes = int(args.get("max_notes", 6) or 6)
+        return ToolResult(
+            success=True,
+            data={
+                "assistant_background": self._runtime.get_assistant_background(),
+                "user_notes": self._runtime.get_user_notes(max_notes=max_notes),
+                "response_style": self._runtime.get_response_style(),
+                "tts_length_scale": self._runtime.get_tts_length_scale(),
+            },
+        )

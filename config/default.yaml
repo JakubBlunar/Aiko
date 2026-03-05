@@ -41,6 +41,7 @@ screen:
   decision_cooldown_seconds: 6
   min_ocr_chars: 20
   unchanged_reuse_seconds: 20
+  enable_uia: true
 
 actions:
   enabled: false
@@ -69,3 +70,14 @@ tts:
   llasa_top_p: 0.95
   llasa_max_length: 2048
   llasa_max_vram_mb: 0
+
+ui:
+  window_x: null
+  window_y: null
+  window_width: null
+  window_height: null
+
+tooling:
+  config_default_path: "config/tooling.default.yaml"
+  config_user_path: "config/tooling.user.yaml"
+  enable_runtime_overrides: true

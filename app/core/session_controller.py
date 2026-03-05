@@ -10,23 +10,27 @@ import re
 import time
 import unicodedata
 
-from app.actions.emergency_stop import EmergencyStopState, GlobalHotkeyListener
-from app.actions.executor import ActionExecutionResult, ActionPlan, GuardedActionExecutor, PlannedAction
+from app.core.tooling.runtime.action_runtime import (
+    ActionExecutionResult,
+    ActionPlan,
+    GuardedActionExecutor,
+    PlannedAction,
+)
+from app.core.tooling.runtime.emergency_stop import EmergencyStopState, GlobalHotkeyListener
 from app.audio.mic_capture import MicrophoneCapture
 from app.core.conversation_memory import ConversationMemoryStore
 from app.core.crash_logging import log_event
-from app.core.persona_profile import PersonaProfileStore
 from app.audio.system_loopback import SystemLoopbackCapture
 from app.core.settings import AppSettings, OllamaSettings
+from app.core.tooling import ToolContext, ToolExecutor, ToolRegistry, load_tooling_config
+from app.core.tooling.tools import ActionExecutePlanTool, build_default_tools
 from app.core.turn_manager import TurnInput, TurnManager
 from app.llm.ollama_client import OllamaClient
 from app.llm.prompt_builder import available_personalities
 from app.stt.whisper_service import WhisperService
 from app.tts.llasa_service import LlasaTtsService
 from app.tts.piper_service import PiperTtsService
-from app.vision.ocr import OcrService
 from app.vision.screen_capture import ScreenCaptureService
-from app.vision.uia_service import UiaService
 
 
 @dataclass(slots=True)
@@ -69,14 +73,30 @@ class SessionController:
             language=settings.stt.language,
         )
         self._screen = ScreenCaptureService(settings.screen)
-        self._ocr = OcrService(settings.screen)
-        self._tts = self._build_tts_service(settings)
         self._action_stop_state = EmergencyStopState()
         self._action_hotkey_listener = GlobalHotkeyListener(
             hotkey=settings.actions.emergency_hotkey,
             state=self._action_stop_state,
         )
         self._action_executor = GuardedActionExecutor(settings.actions, self._action_stop_state)
+
+        tooling_default_path = Path(settings.tooling.config_default_path)
+        tooling_user_path = Path(settings.tooling.config_user_path)
+        workspace_root = Path(__file__).resolve().parents[2]
+        if not tooling_default_path.is_absolute():
+            tooling_default_path = workspace_root / tooling_default_path
+        if not tooling_user_path.is_absolute():
+            tooling_user_path = workspace_root / tooling_user_path
+        self._tooling_config = load_tooling_config(
+            default_path=tooling_default_path,
+            user_path=tooling_user_path,
+        )
+        self._tool_registry = ToolRegistry()
+        self._tool_registry.register_many(build_default_tools(settings, self._tooling_config))
+        self._tool_registry.register(ActionExecutePlanTool(self._action_executor))
+        self._tool_executor = ToolExecutor(self._tool_registry, self._tooling_config)
+        self._tool_context = ToolContext(metadata={"source": "session_controller"})
+        self._tts = self._build_tts_service(settings)
         self._system_audio_context: deque[str] = deque(maxlen=4)
         self._last_system_audio_capture_at = 0.0
         self._vad_level_threshold = settings.audio.vad_level_threshold
@@ -86,14 +106,12 @@ class SessionController:
         self._personality = settings.assistant.personality
         self._remember_history = settings.assistant.remember_history
         self._memory = ConversationMemoryStore()
-        self._persona = PersonaProfileStore(assistant_background=settings.assistant.background)
         self._active_goal = settings.autonomy.default_goal
         self._active_goal_description: str = ""
         self._last_screen_decision_at = 0.0
         self._last_screen_text = ""
         self._last_screen_text_at = 0.0
         self._last_screen_elements: list[dict] = []
-        self._uia = UiaService()
         self._open_windows: list[dict] = []
         self._all_windows: list[dict] = []
         self._foreground_window_title: str = ""
@@ -519,6 +537,7 @@ class SessionController:
     ) -> str:
         turn_start = time.perf_counter()
         self._trace("pipeline.turn.start", f"mode={mode}")
+        self._tool_executor.reset_turn_budget()
         raw_user_text = str(user_text or "")
         user_text = self._sanitize_user_text(raw_user_text)
         if raw_user_text.strip() and not user_text:
@@ -539,11 +558,13 @@ class SessionController:
             self._trace("stt.clean", f"Sanitized user text ({len(raw_user_text)} -> {len(user_text)} chars).")
 
         try:
-            persona_changed = self._persona.update_from_user_text(user_text)
+            persona_changed = self._persona_update_from_user_text(user_text)
             if persona_changed:
                 self._apply_persona_runtime_preferences()
         except Exception:
             pass
+
+        persona_snapshot = self._persona_snapshot(max_notes=6)
 
         self._update_goal_from_conversation(user_text=user_text)
         autonomy_plan = self._plan_turn_autonomy(user_text=user_text)
@@ -639,12 +660,9 @@ class SessionController:
             screen_context_for_llm = "\n".join(win_header_parts) + "\n\n" + (screen_context_for_llm or "")
 
         # Build capability list so the model knows what it can do this turn.
-        caps: list[str] = []
-        if self._state.screen_enabled:
-            caps.append("read_screen")
+        caps = [f"tool:{name}" for name in self._tool_executor.list_available_tools()]
         if self._settings.actions.enabled:
-            caps.append("click (pyautogui)")
-            caps.append("type_text (pyautogui)")
+            caps.extend(["click (pyautogui)", "type_text (pyautogui)"])
 
         messages = self._turn_manager.build_chat_messages(
             TurnInput(
@@ -652,9 +670,9 @@ class SessionController:
                 screen_text=screen_context_for_llm,
                 system_audio_text=system_audio_text,
                 personality=self._personality,
-                persona_background=self._persona.get_assistant_background(),
-                persona_user_notes=self._persona.get_user_notes(max_notes=6),
-                persona_response_style=self._persona.get_response_style(),
+                persona_background=str(persona_snapshot.get("assistant_background", "")),
+                persona_user_notes=list(persona_snapshot.get("user_notes", [])),
+                persona_response_style=str(persona_snapshot.get("response_style", "balanced")),
                 memory_messages=(self._memory.recent_messages(12) if self._remember_history else None),
                 assistant_strategy=autonomy_plan.strategy,
                 active_goal=self._active_goal,
@@ -769,7 +787,10 @@ class SessionController:
 
         if action_result is not None and action_result.message:
             prefix = "[Action]" if action_result.executed or action_result.requires_confirmation else "[Note]"
-            response = f"{response}\n\n{prefix} {action_result.message}".strip()
+            action_suffix = f"\n\n{prefix} {action_result.message}"
+            if on_token:
+                on_token(action_suffix)
+            response = f"{response}{action_suffix}".strip()
 
         response = self._sanitize_assistant_text(response)
 
@@ -824,7 +845,8 @@ class SessionController:
         return response
 
     def _apply_persona_runtime_preferences(self) -> None:
-        length_scale = self._persona.get_tts_length_scale()
+        snapshot = self._persona_snapshot(max_notes=1)
+        length_scale = float(snapshot.get("tts_length_scale", 1.0) or 1.0)
         set_length_scale = getattr(self._tts, "set_length_scale", None)
         if callable(set_length_scale):
             try:
@@ -833,12 +855,37 @@ class SessionController:
                 pass
 
     def _response_num_predict(self) -> int:
-        style = self._persona.get_response_style()
+        style = str(self._persona_snapshot(max_notes=1).get("response_style", "balanced"))
         if style == "concise":
             return 96
         if style == "detailed":
             return 220
         return 140
+
+    def _persona_update_from_user_text(self, user_text: str) -> bool:
+        result = self._tool_executor.invoke(
+            "persona.update_from_user_text",
+            args={"user_text": user_text},
+            context=self._tool_context,
+        )
+        if not result.success:
+            return False
+        return bool(result.data.get("changed", False))
+
+    def _persona_snapshot(self, *, max_notes: int) -> dict:
+        result = self._tool_executor.invoke(
+            "persona.read_snapshot",
+            args={"max_notes": max_notes},
+            context=self._tool_context,
+        )
+        if not result.success:
+            return {
+                "assistant_background": self._settings.assistant.background,
+                "user_notes": [],
+                "response_style": "balanced",
+                "tts_length_scale": 1.0,
+            }
+        return result.data
 
     def _plan_turn_autonomy(self, *, user_text: str) -> TurnAutonomyPlan:
         defaults = TurnAutonomyPlan(
@@ -861,14 +908,13 @@ class SessionController:
             if role in {"user", "assistant"} and content:
                 recent_lines.append(f"{role}: {content}")
 
-        # Build capability list based on current settings.
+        # Build capability list from the registered tooling interface.
         caps: list[str] = ["- respond_to_user (always available)"]
-        if self._state.screen_enabled:
-            caps.append("- read_screen: read screen text via OCR")
+        for tool_name in self._tool_executor.list_available_tools():
+            caps.append(f"- tool:{tool_name}")
         if self._settings.actions.enabled:
             caps.append("- execute_click: click a UI element at given screen coordinates")
             caps.append("- execute_type: type text into the focused field")
-            caps.append("- focus_window: restore a minimized or background window to the foreground")
         caps_block = "\n".join(caps)
 
         goal_context = self._active_goal or "general_conversation"
@@ -1153,10 +1199,18 @@ class SessionController:
         screen_top = int((region or {}).get("top", 0))
         screen_width = int((region or {}).get("width", 0))
         screen_height = int((region or {}).get("height", 0))
-        elements = self._ocr.extract_elements(
-            frame, screen_left=screen_left, screen_top=screen_top,
-            screen_width=screen_width, screen_height=screen_height
+        elements_result = self._tool_executor.invoke(
+            "ocr.extract_elements",
+            args={
+                "image": frame,
+                "screen_left": screen_left,
+                "screen_top": screen_top,
+                "screen_width": screen_width,
+                "screen_height": screen_height,
+            },
+            context=self._tool_context,
         )
+        elements = list(elements_result.data.get("elements", [])) if elements_result.success else []
         used_fallback = False
         if not elements and bool(getattr(self._settings.screen, "capture_active_window_only", False)):
             self._trace(
@@ -1169,19 +1223,51 @@ class SessionController:
                 fb_top = int((fb_region or {}).get("top", 0))
                 fb_width = int((fb_region or {}).get("width", 0))
                 fb_height = int((fb_region or {}).get("height", 0))
-                elements = self._ocr.extract_elements(
-                    fb_frame, screen_left=fb_left, screen_top=fb_top,
-                    screen_width=fb_width, screen_height=fb_height
+                fallback_result = self._tool_executor.invoke(
+                    "ocr.extract_elements",
+                    args={
+                        "image": fb_frame,
+                        "screen_left": fb_left,
+                        "screen_top": fb_top,
+                        "screen_width": fb_width,
+                        "screen_height": fb_height,
+                    },
+                    context=self._tool_context,
                 )
+                elements = list(fallback_result.data.get("elements", [])) if fallback_result.success else []
                 used_fallback = True
 
         # UIA enrichment — get native window controls for the foreground window
         if getattr(self._settings.screen, "enable_uia", True):
             try:
-                fw_title, uia_els = self._uia.get_foreground_elements()
+                fg_result = self._tool_executor.invoke(
+                    "uia.get_foreground_elements",
+                    args={},
+                    context=self._tool_context,
+                )
+                visible_windows_result = self._tool_executor.invoke(
+                    "uia.list_visible_windows",
+                    args={},
+                    context=self._tool_context,
+                )
+                all_windows_result = self._tool_executor.invoke(
+                    "uia.list_all_windows",
+                    args={},
+                    context=self._tool_context,
+                )
+                fw_title = str(fg_result.data.get("title", "")) if fg_result.success else ""
+                uia_els = list(fg_result.data.get("elements", [])) if fg_result.success else []
                 self._foreground_window_title = fw_title
-                self._open_windows = self._uia.list_visible_windows()
-                self._all_windows = self._uia.list_all_windows()
+                self._open_windows = (
+                    list(visible_windows_result.data.get("windows", []))
+                    if visible_windows_result.success
+                    else []
+                )
+                self._all_windows = (
+                    list(all_windows_result.data.get("windows", []))
+                    if all_windows_result.success
+                    else []
+                )
                 if uia_els:
                     # Convert UIA dicts to element format compatible with OCR elements
                     uia_dicts = [
@@ -1271,11 +1357,23 @@ class SessionController:
             }
 
         used_fallback = False
-        details = self._ocr.extract_details(frame)
+        details_result = self._tool_executor.invoke(
+            "ocr.extract_details",
+            args={"image": frame},
+            context=self._tool_context,
+        )
+        details = details_result.data.get("details") if details_result.success else None
         if not details and bool(getattr(self._settings.screen, "capture_active_window_only", False)):
             fallback_frame = self._screen.capture_once(active_window_only=False)
             if fallback_frame is not None:
-                details = self._ocr.extract_details(fallback_frame)
+                fallback_details_result = self._tool_executor.invoke(
+                    "ocr.extract_details",
+                    args={"image": fallback_frame},
+                    context=self._tool_context,
+                )
+                details = (
+                    fallback_details_result.data.get("details") if fallback_details_result.success else None
+                )
                 frame = fallback_frame
                 used_fallback = True
 
@@ -1413,21 +1511,61 @@ class SessionController:
         # what steps are about to run.
         if planned.steps and on_token:
             hwnd_to_title = {w["hwnd"]: w["title"] for w in self._all_windows}
-            parts: list[str] = []
-            for s in planned.steps:
+            lines: list[str] = []
+            for idx, s in enumerate(planned.steps, start=1):
                 if s.kind == "focus_window":
                     title = hwnd_to_title.get(s.hwnd or 0, str(s.hwnd))
-                    parts.append(f"focus_window({title!r})")
+                    line = f"{idx}. focus_window('{title}')"
                 elif s.kind == "click":
-                    parts.append(f"click({s.x}, {s.y})")
+                    line = f"{idx}. click({s.x}, {s.y})"
                 elif s.kind == "type_text":
                     snippet = (s.text or "")[:24]
-                    parts.append(f"type_text({snippet!r})")
+                    line = f"{idx}. type_text({snippet!r})"
                 else:
-                    parts.append(s.kind)
-            on_token(f"\n\n[Plan] {' → '.join(parts)}")
+                    line = f"{idx}. {s.kind}"
+                if s.reason:
+                    line += f" - {s.reason}"
+                lines.append(line)
+            plan_text = "\n".join(lines)
+            on_token(f"\n\n[Plan]\n{plan_text}\n")
 
-        result = self._action_executor.execute_plan(planned)
+        plan_payload = {
+            "description": planned.description,
+            "needs_screen": planned.needs_screen,
+            "steps": [
+                {
+                    "kind": step.kind,
+                    "x": step.x,
+                    "y": step.y,
+                    "text": step.text,
+                    "hwnd": step.hwnd,
+                    "confidence": step.confidence,
+                    "reason": step.reason,
+                }
+                for step in planned.steps
+            ],
+        }
+        execute_result = self._tool_executor.invoke(
+            "action.execute_plan",
+            args={"plan": plan_payload},
+            context=self._tool_context,
+        )
+        if execute_result.success:
+            result = ActionExecutionResult(
+                executed=bool(execute_result.data.get("executed", False)),
+                dry_run=bool(execute_result.data.get("dry_run", False)),
+                blocked=bool(execute_result.data.get("blocked", False)),
+                requires_confirmation=bool(execute_result.data.get("requires_confirmation", False)),
+                message=str(execute_result.data.get("message", "")),
+            )
+        else:
+            result = ActionExecutionResult(
+                executed=False,
+                dry_run=False,
+                blocked=True,
+                requires_confirmation=False,
+                message=(execute_result.error.message if execute_result.error else "Action tool execution failed."),
+            )
         self._trace("action.execute", result.message)
         return result
 

@@ -1,0 +1,15 @@
+enabled_tools: []
+disabled_tools: []
+
+policies:
+  full_auto: false
+  read_only_auto: true
+  mutating_requires_confirmation: true
+  max_tool_calls_per_turn: 64
+  default_timeout_ms: 10000
+
+runtime_overrides: {}
+
+tools:
+  persona:
+    profile_path: "data/persona_profile.json"

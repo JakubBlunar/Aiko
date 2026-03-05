@@ -109,6 +109,13 @@ class UiSettings:
 
 
 @dataclass(slots=True)
+class ToolingBridgeSettings:
+    config_default_path: str
+    config_user_path: str
+    enable_runtime_overrides: bool
+
+
+@dataclass(slots=True)
 class AppSettings:
     assistant: AssistantSettings
     autonomy: AutonomySettings
@@ -119,6 +126,7 @@ class AppSettings:
     stt: SttSettings
     tts: TtsSettings
     ui: UiSettings
+    tooling: ToolingBridgeSettings
 
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "default.yaml"
@@ -186,6 +194,33 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
     return merged
 
 
+_NO_CHANGE = object()
+
+
+def _deep_diff(base: Any, value: Any) -> Any:
+    """Return only keys/values from value that differ from base.
+
+    Returns _NO_CHANGE when there is no difference.
+    """
+    if isinstance(base, dict) and isinstance(value, dict):
+        result: dict[str, Any] = {}
+        keys = set(base.keys()) | set(value.keys())
+        for key in keys:
+            if key not in value:
+                continue
+            if key not in base:
+                result[key] = value[key]
+                continue
+            nested = _deep_diff(base[key], value[key])
+            if nested is not _NO_CHANGE:
+                result[key] = nested
+        return result if result else _NO_CHANGE
+
+    if base == value:
+        return _NO_CHANGE
+    return value
+
+
 def _read_yaml(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
@@ -221,6 +256,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
     stt = raw.get("stt", {})
     tts = raw["tts"]
     ui = raw.get("ui", {})
+    tooling = raw.get("tooling", {})
 
     return AppSettings(
         assistant=AssistantSettings(
@@ -321,6 +357,11 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             window_width=int(ui["window_width"]) if ui.get("window_width") is not None else None,
             window_height=int(ui["window_height"]) if ui.get("window_height") is not None else None,
         ),
+        tooling=ToolingBridgeSettings(
+            config_default_path=str(tooling.get("config_default_path", "config/tooling.default.yaml")),
+            config_user_path=str(tooling.get("config_user_path", "config/tooling.user.yaml")),
+            enable_runtime_overrides=bool(tooling.get("enable_runtime_overrides", True)),
+        ),
     )
 
 
@@ -351,7 +392,10 @@ def save_runtime_preferences(
     target = path or USER_CONFIG_PATH
     target.parent.mkdir(parents=True, exist_ok=True)
 
-    current = _read_yaml(target)
+    current_user = _read_yaml(target)
+    base = _read_yaml(DEFAULT_CONFIG_PATH)
+    effective = _deep_merge(base, current_user)
+
     updates: dict[str, Any] = {
         "ollama": {
             "chat_model": chat_model,
@@ -393,5 +437,7 @@ def save_runtime_preferences(
             "window_height": int(window_height) if window_height is not None else None,
         }
 
-    merged = _deep_merge(current, updates)
-    target.write_text(yaml.safe_dump(merged, sort_keys=False), encoding="utf-8")
+    updated_effective = _deep_merge(effective, updates)
+    minimal_overrides = _deep_diff(base, updated_effective)
+    payload = minimal_overrides if isinstance(minimal_overrides, dict) else {}
+    target.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")

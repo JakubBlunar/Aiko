@@ -1,0 +1,19 @@
+enabled_tools:
+  - "ocr.extract_elements"
+  - "ocr.extract_details"
+  - "uia.get_foreground_elements"
+  - "uia.list_visible_windows"
+  - "uia.list_all_windows"
+  - "uia.focus_window"
+  - "persona.update_from_user_text"
+  - "persona.read_snapshot"
+  - "action.execute_plan"
+
+disabled_tools: []
+
+policies:
+  full_auto: false
+
+tools:
+  persona:
+    profile_path: "data/persona_profile.json"

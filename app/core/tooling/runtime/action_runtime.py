@@ -5,8 +5,8 @@ import ctypes
 import ctypes.wintypes as wintypes
 import time
 
-from app.actions.emergency_stop import EmergencyStopState
 from app.core.settings import ActionSettings
+from app.core.tooling.runtime.emergency_stop import EmergencyStopState
 
 
 @dataclass(slots=True)
@@ -22,10 +22,9 @@ class PlannedAction:
 
 @dataclass
 class ActionPlan:
-    """An ordered sequence of actions to execute as a single logical unit."""
     steps: list[PlannedAction] = field(default_factory=list)
     description: str = ""
-    needs_screen: bool = False  # planner requests a fresh screen capture before committing
+    needs_screen: bool = False
 
 
 @dataclass(slots=True)
@@ -57,17 +56,14 @@ class GuardedActionExecutor:
 
     @property
     def pending_action(self) -> PlannedAction | None:
-        """Return the first step of the pending plan (for UI display)."""
         if self._pending_plan and self._pending_plan.steps:
             return self._pending_plan.steps[0]
         return None
 
     def execute(self, action: PlannedAction) -> ActionExecutionResult:
-        """Execute a single action. Thin wrapper around execute_plan."""
         return self.execute_plan(ActionPlan(steps=[action], description=self._describe(action)))
 
     def execute_plan(self, plan: ActionPlan) -> ActionExecutionResult:
-        """Execute an ordered sequence of actions, stopping on first failure."""
         steps = [s for s in plan.steps if s.kind != "none"]
         if not steps:
             return ActionExecutionResult(
@@ -78,7 +74,6 @@ class GuardedActionExecutor:
                 message="No actions planned.",
             )
 
-        # ── Plan-level guards (checked once for the whole plan) ──────────────
         if not self._settings.enabled:
             return ActionExecutionResult(
                 executed=False,
@@ -120,7 +115,7 @@ class GuardedActionExecutor:
             step_lines = "\n".join(
                 f"  {i + 1}. {self._describe(s)}" for i, s in enumerate(steps)
             )
-            desc = f" — {plan.description}" if plan.description else ""
+            desc = f" - {plan.description}" if plan.description else ""
             return ActionExecutionResult(
                 executed=False,
                 dry_run=self._settings.dry_run,
@@ -131,7 +126,7 @@ class GuardedActionExecutor:
 
         if self._settings.dry_run:
             self._last_action_at = time.monotonic()
-            step_desc = " → ".join(self._describe(s) for s in steps)
+            step_desc = " -> ".join(self._describe(s) for s in steps)
             return ActionExecutionResult(
                 executed=False,
                 dry_run=True,
@@ -140,21 +135,18 @@ class GuardedActionExecutor:
                 message=f"Dry-run plan ({len(steps)} step(s)): {step_desc}",
             )
 
-        # ── Sequential step execution ─────────────────────────────────────────
         pyautogui = self._load_pyautogui()
         step_results: list[str] = []
         any_executed = False
 
         for i, step in enumerate(steps):
-            # Per-step confidence check
             if step.confidence < self._settings.min_confidence:
                 step_results.append(
-                    f"Step {i + 1} ({step.kind}): blocked — confidence "
+                    f"Step {i + 1} ({step.kind}): blocked - confidence "
                     f"{round(step.confidence, 2)} < {round(self._settings.min_confidence, 2)}"
                 )
                 break
 
-            # Honour cooldown between steps (sleep rather than hard-block)
             min_interval = max(0.0, float(self._settings.min_action_interval_seconds))
             if min_interval > 0.0 and self._last_action_at > 0.0:
                 elapsed = time.monotonic() - self._last_action_at
@@ -166,7 +158,6 @@ class GuardedActionExecutor:
 
             if result.executed:
                 any_executed = True
-                # Extra pause after focus_window so the window finishes animating
                 if step.kind == "focus_window":
                     time.sleep(0.2)
 
@@ -182,31 +173,34 @@ class GuardedActionExecutor:
             message=combined,
         )
 
-    def _execute_step(
-        self, action: PlannedAction, pyautogui
-    ) -> ActionExecutionResult:
-        """Raw step executor — no guards. Called only from execute_plan."""
+    def _execute_step(self, action: PlannedAction, pyautogui) -> ActionExecutionResult:
         if action.kind == "focus_window":
             if action.hwnd is None:
                 return ActionExecutionResult(
-                    executed=False, dry_run=False, blocked=True,
+                    executed=False,
+                    dry_run=False,
+                    blocked=True,
                     requires_confirmation=False,
                     message="focus_window missing hwnd.",
                 )
             user32 = ctypes.WinDLL("user32", use_last_error=True)
-            user32.ShowWindow(action.hwnd, 9)  # SW_RESTORE
+            user32.ShowWindow(action.hwnd, 9)
             time.sleep(0.3)
             user32.SetForegroundWindow(action.hwnd)
             self._last_action_at = time.monotonic()
             return ActionExecutionResult(
-                executed=True, dry_run=False, blocked=False,
+                executed=True,
+                dry_run=False,
+                blocked=False,
                 requires_confirmation=False,
                 message=f"Restored and focused window (hwnd={action.hwnd}).",
             )
 
         if pyautogui is None:
             return ActionExecutionResult(
-                executed=False, dry_run=False, blocked=True,
+                executed=False,
+                dry_run=False,
+                blocked=True,
                 requires_confirmation=False,
                 message="Real actions require pyautogui. Install with: pip install -e .[actions]",
             )
@@ -214,14 +208,18 @@ class GuardedActionExecutor:
         if action.kind == "click":
             if action.x is None or action.y is None:
                 return ActionExecutionResult(
-                    executed=False, dry_run=False, blocked=True,
+                    executed=False,
+                    dry_run=False,
+                    blocked=True,
                     requires_confirmation=False,
                     message="Click action missing coordinates.",
                 )
             pyautogui.click(action.x, action.y)
             self._last_action_at = time.monotonic()
             return ActionExecutionResult(
-                executed=True, dry_run=False, blocked=False,
+                executed=True,
+                dry_run=False,
+                blocked=False,
                 requires_confirmation=False,
                 message=f"Executed click at ({action.x}, {action.y}).",
             )
@@ -230,7 +228,9 @@ class GuardedActionExecutor:
             text = (action.text or "").strip()
             if not text:
                 return ActionExecutionResult(
-                    executed=False, dry_run=False, blocked=True,
+                    executed=False,
+                    dry_run=False,
+                    blocked=True,
                     requires_confirmation=False,
                     message="Type action missing text.",
                 )
@@ -241,16 +241,21 @@ class GuardedActionExecutor:
             self._last_action_at = time.monotonic()
             click_note = (
                 f" (clicked at ({action.x}, {action.y}) to focus)"
-                if action.x is not None else ""
+                if action.x is not None
+                else ""
             )
             return ActionExecutionResult(
-                executed=True, dry_run=False, blocked=False,
+                executed=True,
+                dry_run=False,
+                blocked=False,
                 requires_confirmation=False,
                 message=f"Executed typing{click_note}: {repr(text)}",
             )
 
         return ActionExecutionResult(
-            executed=False, dry_run=False, blocked=True,
+            executed=False,
+            dry_run=False,
+            blocked=True,
             requires_confirmation=False,
             message=f"Unsupported action kind: {action.kind}",
         )
@@ -289,7 +294,7 @@ class GuardedActionExecutor:
                 message="No pending action to reject.",
             )
 
-        step_descs = " → ".join(self._describe(s) for s in pending.steps)
+        step_descs = " -> ".join(self._describe(s) for s in pending.steps)
         self._pending_plan = None
         return ActionExecutionResult(
             executed=False,
