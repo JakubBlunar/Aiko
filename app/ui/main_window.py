@@ -164,8 +164,6 @@ class MainWindow(QMainWindow):
         capture_row = QHBoxLayout()
         self._mic_checkbox = QCheckBox("Microphone")
         self._mic_checkbox.setChecked(self._session.state.mic_enabled)
-        self._system_checkbox = QCheckBox("System Audio")
-        self._system_checkbox.setChecked(self._session.state.system_audio_enabled)
         self._screen_checkbox = QCheckBox("Screen Context")
         self._screen_checkbox.setChecked(self._session.state.screen_enabled)
         self._ocr_profile_combo = QComboBox()
@@ -176,7 +174,6 @@ class MainWindow(QMainWindow):
 
         for widget in (
             self._mic_checkbox,
-            self._system_checkbox,
             self._screen_checkbox,
             self._memory_checkbox,
         ):
@@ -189,12 +186,9 @@ class MainWindow(QMainWindow):
 
         self._mic_device_combo = QComboBox()
         self._mic_device_combo.setMinimumWidth(150)
-        self._loopback_device_combo = QComboBox()
-        self._loopback_device_combo.setMinimumWidth(150)
 
         devices_form = QFormLayout()
         devices_form.addRow("Mic Device:", self._mic_device_combo)
-        devices_form.addRow("Loopback Device:", self._loopback_device_combo)
         sources_layout.addLayout(devices_form)
 
         self._refresh_devices_button = QPushButton("Refresh Devices")
@@ -465,7 +459,6 @@ class MainWindow(QMainWindow):
         widgets: tuple[QWidget, ...] = (
             self._ocr_profile_combo,
             self._mic_device_combo,
-            self._loopback_device_combo,
             self._model_combo,
             self._thinking_model_combo,
             self._tts_provider_combo,
@@ -506,20 +499,16 @@ class MainWindow(QMainWindow):
         state = self._session.state
         self._status.set_capture_status(
             mic=state.mic_enabled,
-            system_audio=state.system_audio_enabled,
             screen=state.screen_enabled,
         )
         self._status.set_service_status("ready")
 
     def _apply_sources(self) -> None:
         mic_device = self._mic_device_combo.currentData()
-        loopback_device = self._loopback_device_combo.currentData()
 
         self._session.set_microphone_device(mic_device)
-        self._session.set_loopback_device(loopback_device)
         self._session.update_sources(
             mic=self._mic_checkbox.isChecked(),
-            system_audio=self._system_checkbox.isChecked(),
             screen=self._screen_checkbox.isChecked(),
         )
         self._session.set_remember_history(self._memory_checkbox.isChecked())
@@ -734,31 +723,19 @@ class MainWindow(QMainWindow):
 
     def _refresh_audio_devices(self) -> None:
         current_mic = self._mic_device_combo.currentData()
-        current_loopback = self._loopback_device_combo.currentData()
         if current_mic is None:
             current_mic = self._session.microphone_device
-        if current_loopback is None:
-            current_loopback = self._session.loopback_device
 
         self._mic_device_combo.clear()
-        self._loopback_device_combo.clear()
 
         self._mic_device_combo.addItem("Default", None)
-        self._loopback_device_combo.addItem("Auto", None)
 
         for index, name in self._session.list_microphone_devices():
             self._mic_device_combo.addItem(f"{index}: {name}", index)
 
-        for index, name in self._session.list_loopback_devices():
-            self._loopback_device_combo.addItem(f"{index}: {name}", index)
-
         mic_index = self._mic_device_combo.findData(current_mic)
         if mic_index >= 0:
             self._mic_device_combo.setCurrentIndex(mic_index)
-
-        loopback_index = self._loopback_device_combo.findData(current_loopback)
-        if loopback_index >= 0:
-            self._loopback_device_combo.setCurrentIndex(loopback_index)
 
     def _refresh_ocr_profiles(self) -> None:
         current = normalize_screen_ocr_profile(self._settings.screen.ocr_profile)
@@ -969,7 +946,6 @@ class MainWindow(QMainWindow):
             thinking_model=self._session.thinking_model,
             remember_history=self._memory_checkbox.isChecked(),
             microphone_device=self._mic_device_combo.currentData(),
-            loopback_device=self._loopback_device_combo.currentData(),
             vad_level_threshold=self._session.vad_level_threshold,
             vad_silence_seconds=self._session.vad_silence_seconds,
             action_min_interval_seconds=self._session.action_min_interval_seconds,
@@ -988,7 +964,6 @@ class MainWindow(QMainWindow):
                 else None
             ),
             enable_microphone=self._mic_checkbox.isChecked(),
-            enable_system_audio=self._system_checkbox.isChecked(),
             enable_screen_context=self._screen_checkbox.isChecked(),
             screen_ocr_profile=str(self._ocr_profile_combo.currentData() or "balanced"),
             window_x=self.x(),

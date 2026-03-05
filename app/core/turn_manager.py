@@ -9,7 +9,6 @@ from app.llm.prompt_builder import PromptContext, build_messages
 class TurnInput:
     user_text: str
     screen_text: str | None = None
-    system_audio_text: str | None = None
     persona_background: str | None = None
     persona_user_notes: list[str] | None = None
     persona_response_style: str | None = None
@@ -26,7 +25,6 @@ class TurnManager:
         context = PromptContext(
             user_text=turn_input.user_text,
             screen_text=turn_input.screen_text,
-            system_audio_text=turn_input.system_audio_text,
             persona_background=turn_input.persona_background,
             persona_user_notes=turn_input.persona_user_notes,
             persona_response_style=turn_input.persona_response_style,

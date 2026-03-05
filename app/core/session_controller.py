@@ -20,7 +20,6 @@ from app.core.tooling.runtime.emergency_stop import EmergencyStopState, GlobalHo
 from app.audio.mic_capture import MicrophoneCapture
 from app.core.conversation_memory import ConversationMemoryStore
 from app.core.crash_logging import log_event
-from app.audio.system_loopback import SystemLoopbackCapture
 from app.core.settings import AppSettings, OllamaSettings
 from app.core.tooling import ToolContext, ToolExecutor, ToolRegistry, load_tooling_config
 from app.core.tooling.tools import ActionExecutePlanTool, build_default_tools
@@ -35,7 +34,6 @@ from app.vision.screen_capture import ScreenCaptureService
 @dataclass(slots=True)
 class SessionState:
     mic_enabled: bool
-    system_audio_enabled: bool
     screen_enabled: bool
 
 
@@ -66,7 +64,6 @@ class SessionController:
         self._thinking_ollama: OllamaClient | None = None
         self._rebuild_thinking_client()
         self._microphone = MicrophoneCapture(settings.audio)
-        self._loopback = SystemLoopbackCapture(settings.audio)
         self._whisper = WhisperService(
             model_name=settings.stt.model,
             language=settings.stt.language,
@@ -146,12 +143,9 @@ class SessionController:
             maximum=400,
         )
         self._tts = self._build_tts_service(settings)
-        self._system_audio_context: deque[str] = deque(maxlen=4)
-        self._last_system_audio_capture_at = 0.0
         self._vad_level_threshold = settings.audio.vad_level_threshold
         self._vad_silence_seconds = settings.audio.vad_silence_seconds
         self._microphone_device = settings.audio.microphone_device
-        self._loopback_device = settings.audio.loopback_device
         self._remember_history = settings.assistant.remember_history
         self._active_goal = settings.autonomy.default_goal
         self._active_goal_description: str = ""
@@ -176,7 +170,6 @@ class SessionController:
 
         self._state = SessionState(
             mic_enabled=settings.audio.enable_microphone,
-            system_audio_enabled=settings.audio.enable_system_audio,
             screen_enabled=settings.screen.enable_screen_context,
         )
         self._apply_persona_runtime_preferences()
@@ -185,32 +178,20 @@ class SessionController:
     def state(self) -> SessionState:
         return self._state
 
-    def update_sources(self, *, mic: bool, system_audio: bool, screen: bool) -> None:
+    def update_sources(self, *, mic: bool, screen: bool) -> None:
         self._state.mic_enabled = mic
-        self._state.system_audio_enabled = system_audio
         self._state.screen_enabled = screen
 
     def list_microphone_devices(self) -> list[tuple[int, str]]:
         return self._microphone.list_input_devices()
 
-    def list_loopback_devices(self) -> list[tuple[int, str]]:
-        return self._loopback.list_loopback_devices()
-
     def set_microphone_device(self, device_index: int | None) -> None:
         self._microphone_device = device_index
         self._microphone.set_device(device_index)
 
-    def set_loopback_device(self, device_index: int | None) -> None:
-        self._loopback_device = device_index
-        self._loopback.set_device(device_index)
-
     @property
     def microphone_device(self) -> int | None:
         return self._microphone_device
-
-    @property
-    def loopback_device(self) -> int | None:
-        return self._loopback_device
 
     @property
     def vad_level_threshold(self) -> float:
@@ -894,10 +875,6 @@ class SessionController:
                 "Try putting clear/high-contrast text in the active monitor and run Test OCR."
             )
 
-        system_audio_text = None
-        if self._state.system_audio_enabled:
-            system_audio_text = self._transcribe_system_audio(seconds=2.0)
-
         # Build structured screen context: give the main LLM real element coordinates
         # so it never has to invent positions.
         if screen_text and self._last_screen_elements:
@@ -939,7 +916,6 @@ class SessionController:
             TurnInput(
                 user_text=user_text,
                 screen_text=screen_context_for_llm,
-                system_audio_text=system_audio_text,
                 persona_background=str(persona_snapshot.get("assistant_background", "")),
                 persona_user_notes=list(persona_snapshot.get("user_notes", [])),
                 persona_response_style=str(persona_snapshot.get("response_style", "balanced")),
@@ -2310,29 +2286,6 @@ class SessionController:
         )
 
         return text, response
-
-    def _transcribe_system_audio(self, seconds: float) -> str | None:
-        if not self._whisper.is_available:
-            return None
-
-        now = time.monotonic()
-        if self._system_audio_context and (now - self._last_system_audio_capture_at) < 6.0:
-            return " ".join(self._system_audio_context)
-
-        samples = self._loopback.capture_seconds(seconds=seconds)
-        if samples is None:
-            return " ".join(self._system_audio_context) if self._system_audio_context else None
-
-        wav_path = self._microphone.create_temp_wav_path(prefix="assistant_loopback_")
-        try:
-            self._microphone.write_wav(samples=samples, target_path=wav_path)
-            text = self._whisper.transcribe(str(wav_path))
-            if text:
-                self._system_audio_context.append(text)
-            self._last_system_audio_capture_at = now
-            return " ".join(self._system_audio_context) if self._system_audio_context else None
-        finally:
-            self._safe_unlink(wav_path)
 
     @staticmethod
     def _prepare_tts_text(text: str) -> str:

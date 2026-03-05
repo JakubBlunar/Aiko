@@ -19,7 +19,6 @@ BASE_SYSTEM_PROMPT = (
 class PromptContext:
     user_text: str
     screen_text: str | None = None
-    system_audio_text: str | None = None
     persona_background: str | None = None
     persona_user_notes: list[str] | None = None
     persona_response_style: str | None = None
@@ -88,9 +87,6 @@ def build_messages(context: PromptContext) -> list[dict[str, str]]:
         additional.append(f"Assistant strategy: {context.assistant_strategy}")
     if context.screen_text:
         additional.append(f"Screen context: {context.screen_text}")
-    if context.system_audio_text:
-        additional.append(f"System audio context: {context.system_audio_text}")
-
     user_content = context.user_text.strip()
     if additional:
         user_content = f"{user_content}\n\n" + "\n".join(additional)

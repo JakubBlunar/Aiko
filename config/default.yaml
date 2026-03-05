@@ -24,9 +24,7 @@ audio:
   sample_rate: 16000
   channels: 1
   enable_microphone: true
-  enable_system_audio: false
   microphone_device: null
-  loopback_device: null
   vad_level_threshold: 0.02
   vad_silence_seconds: 1.0
 

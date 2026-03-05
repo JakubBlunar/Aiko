@@ -19,9 +19,7 @@ class AudioSettings:
     sample_rate: int
     channels: int
     enable_microphone: bool
-    enable_system_audio: bool
     microphone_device: int | None
-    loopback_device: int | None
     vad_level_threshold: float
     vad_silence_seconds: float
 
@@ -295,12 +293,8 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             sample_rate=int(_required(audio, "sample_rate")),
             channels=int(_required(audio, "channels")),
             enable_microphone=bool(_required(audio, "enable_microphone")),
-            enable_system_audio=bool(_required(audio, "enable_system_audio")),
             microphone_device=(
                 int(audio["microphone_device"]) if audio.get("microphone_device") is not None else None
-            ),
-            loopback_device=(
-                int(audio["loopback_device"]) if audio.get("loopback_device") is not None else None
             ),
             vad_level_threshold=float(audio.get("vad_level_threshold", 0.02)),
             vad_silence_seconds=float(audio.get("vad_silence_seconds", 1.0)),
@@ -375,7 +369,6 @@ def save_runtime_preferences(
     thinking_model: str | None,
     remember_history: bool,
     microphone_device: int | None,
-    loopback_device: int | None,
     vad_level_threshold: float,
     vad_silence_seconds: float,
     action_min_interval_seconds: float,
@@ -386,7 +379,6 @@ def save_runtime_preferences(
     stt_diagnostic_vad_filter: bool | None = None,
     stt_diagnostic_initial_prompt: str | None = None,
     enable_microphone: bool,
-    enable_system_audio: bool,
     enable_screen_context: bool,
     screen_ocr_profile: str | None = None,
     window_x: int | None = None,
@@ -412,11 +404,9 @@ def save_runtime_preferences(
         },
         "audio": {
             "microphone_device": microphone_device,
-            "loopback_device": loopback_device,
             "vad_level_threshold": round(vad_level_threshold, 4),
             "vad_silence_seconds": round(vad_silence_seconds, 2),
             "enable_microphone": bool(enable_microphone),
-            "enable_system_audio": bool(enable_system_audio),
         },
         "screen": {
             "enable_screen_context": bool(enable_screen_context),
