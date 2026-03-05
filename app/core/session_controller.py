@@ -106,6 +106,25 @@ class SessionController:
             minimum=1,
             maximum=400,
         )
+        self._history_summary_enabled = bool(history_cfg.get("summary_enabled", True))
+        self._history_summary_limit = self._coerce_int(
+            history_cfg.get("summary_limit", max(self._history_prompt_limit * 3, 24)),
+            default=max(self._history_prompt_limit * 3, 24),
+            minimum=1,
+            maximum=400,
+        )
+        self._history_summary_max_chars = self._coerce_int(
+            history_cfg.get("summary_max_chars", 420),
+            default=420,
+            minimum=80,
+            maximum=2000,
+        )
+        self._history_summary_tail_limit = self._coerce_int(
+            history_cfg.get("summary_tail_limit", 8),
+            default=8,
+            minimum=1,
+            maximum=100,
+        )
         self._startup_history_limit = self._coerce_int(
             history_cfg.get("startup_history_limit", self._history_prompt_limit),
             default=self._history_prompt_limit,
@@ -113,6 +132,20 @@ class SessionController:
             maximum=400,
         )
         self._startup_context_prewarm_enabled = bool(history_cfg.get("preload_on_startup", True))
+        persona_cfg = self._tooling_config.tool_settings("persona")
+        self._persona_compact_enabled = bool(persona_cfg.get("compact_notes_enabled", True))
+        self._persona_compact_max_notes = self._coerce_int(
+            persona_cfg.get("compact_max_notes", 10),
+            default=10,
+            minimum=1,
+            maximum=40,
+        )
+        self._persona_compact_max_chars = self._coerce_int(
+            persona_cfg.get("compact_max_chars", 110),
+            default=110,
+            minimum=40,
+            maximum=400,
+        )
         self._tts = self._build_tts_service(settings)
         self._system_audio_context: deque[str] = deque(maxlen=4)
         self._last_system_audio_capture_at = 0.0
@@ -549,6 +582,64 @@ class SessionController:
             parsed = default
         return max(minimum, min(parsed, maximum))
 
+    @staticmethod
+    def _preview_tool_value(value: object) -> str:
+        if value is None:
+            return "null"
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, (int, float)):
+            return str(value)
+        if isinstance(value, str):
+            text = value.strip().replace("\n", " ")
+            return repr(text if len(text) <= 80 else f"{text[:77]}...")
+        if hasattr(value, "shape"):
+            return f"<image shape={getattr(value, 'shape', '?')}>"
+        if isinstance(value, dict):
+            return f"<dict keys={len(value)}>"
+        if isinstance(value, list):
+            return f"<list len={len(value)}>"
+        return f"<{type(value).__name__}>"
+
+    def _preview_tool_args(self, args: dict[str, object]) -> str:
+        if not args:
+            return "{}"
+        parts: list[str] = []
+        for key in sorted(args.keys()):
+            if len(parts) >= 6:
+                parts.append("...")
+                break
+            parts.append(f"{key}={self._preview_tool_value(args[key])}")
+        return "{" + ", ".join(parts) + "}"
+
+    def _invoke_tool(
+        self,
+        name: str,
+        *,
+        args: dict[str, object] | None = None,
+        cancel_token: Callable[[], bool] | None = None,
+    ):
+        safe_args = dict(args or {})
+        self._trace("tool.invoke", f"{name} args={self._preview_tool_args(safe_args)}")
+        started = time.perf_counter()
+        result = self._tool_executor.invoke(
+            name,
+            args=safe_args,
+            context=self._tool_context,
+            cancel_token=cancel_token,
+        )
+        duration_ms = round((time.perf_counter() - started) * 1000.0, 1)
+        if result.success:
+            data_keys = list(result.data.keys()) if isinstance(result.data, dict) else []
+            keys_preview = ",".join(data_keys[:6]) if data_keys else "none"
+            self._trace("tool.result", f"{name} success ms={duration_ms} keys={keys_preview}")
+        else:
+            if result.requires_confirmation:
+                self._trace("tool.confirmation", f"{name} confirmation required")
+            message = result.error.message if result.error else "unknown error"
+            self._trace("tool.error", f"{name} failed ms={duration_ms}: {message}")
+        return result
+
     def _build_startup_prewarm_messages(self) -> list[dict[str, str]]:
         if not self._startup_context_prewarm_enabled:
             return [{"role": "user", "content": "Reply with OK."}]
@@ -576,6 +667,14 @@ class SessionController:
                     profile_lines.append(f"- {note}")
             messages.append({"role": "user", "content": "\n".join(profile_lines)})
 
+        if self._history_summary_enabled and self._remember_history:
+            summary = self._history_summary(
+                limit=self._history_summary_limit,
+                max_chars=self._history_summary_max_chars,
+            )
+            if summary:
+                messages.append({"role": "user", "content": f"Conversation summary:\n{summary}"})
+
         if self._remember_history:
             for item in self._history_messages(limit=self._startup_history_limit):
                 role = str(item.get("role", "")).strip().lower()
@@ -587,10 +686,9 @@ class SessionController:
         return messages
 
     def _history_messages(self, *, limit: int, offset: int = 0) -> list[dict[str, str]]:
-        result = self._tool_executor.invoke(
+        result = self._invoke_tool(
             "history.read_messages",
             args={"limit": max(1, int(limit)), "offset": max(0, int(offset))},
-            context=self._tool_context,
         )
         if result.success:
             messages = result.data.get("messages", [])
@@ -623,10 +721,9 @@ class SessionController:
         ]
 
     def _history_entries(self, *, limit: int, offset: int = 0) -> list[dict[str, str]]:
-        result = self._tool_executor.invoke(
+        result = self._invoke_tool(
             "history.read_entries",
             args={"limit": max(1, int(limit)), "offset": max(0, int(offset))},
-            context=self._tool_context,
         )
         if result.success:
             entries = result.data.get("entries", [])
@@ -664,6 +761,48 @@ class SessionController:
             {"role": item.role, "content": item.content, "timestamp": item.timestamp}
             for item in fallback_entries
         ]
+
+    def _history_summary(self, *, limit: int, max_chars: int, offset: int = 0) -> str:
+        result = self._invoke_tool(
+            "history.read_summary",
+            args={
+                "limit": max(1, int(limit)),
+                "offset": max(0, int(offset)),
+                "max_chars": max(80, int(max_chars)),
+            },
+        )
+        if result.success:
+            summary = str(result.data.get("summary", "")).strip()
+            if summary:
+                return summary
+
+        entries = self._history_entries(limit=limit, offset=offset)
+        if not entries:
+            return ""
+        parts: list[str] = []
+        for item in entries[-3:]:
+            role = str(item.get("role", "")).strip().lower()
+            content = str(item.get("content", "")).strip()
+            if role in {"user", "assistant"} and content:
+                trimmed = content if len(content) <= 120 else f"{content[:117].rstrip()}..."
+                parts.append(f"{role}: {trimmed}")
+        fallback = " | ".join(parts)
+        return fallback[: max(80, int(max_chars))].strip()
+
+    def _persona_compact_notes(self) -> None:
+        if not self._persona_compact_enabled:
+            return
+        result = self._invoke_tool(
+            "persona.compact_notes",
+            args={
+                "max_notes": self._persona_compact_max_notes,
+                "max_chars_per_note": self._persona_compact_max_chars,
+            },
+        )
+        if result.success:
+            removed = int(result.data.get("removed_count", 0) or 0)
+            if removed > 0:
+                self._trace("persona.compact", f"Compacted persona notes: removed={removed}")
 
     def chat_once(self, user_text: str) -> str:
         return self.chat_once_streaming(user_text=user_text, mode="typed")
@@ -704,6 +843,7 @@ class SessionController:
         try:
             persona_changed = self._persona_update_from_user_text(user_text)
             if persona_changed:
+                self._persona_compact_notes()
                 self._apply_persona_runtime_preferences()
         except Exception:
             pass
@@ -817,7 +957,21 @@ class SessionController:
                 persona_background=str(persona_snapshot.get("assistant_background", "")),
                 persona_user_notes=list(persona_snapshot.get("user_notes", [])),
                 persona_response_style=str(persona_snapshot.get("response_style", "balanced")),
-                memory_messages=(self._history_messages(limit=self._history_prompt_limit) if self._remember_history else None),
+                memory_messages=(
+                    self._history_messages(
+                        limit=(self._history_summary_tail_limit if self._history_summary_enabled else self._history_prompt_limit)
+                    )
+                    if self._remember_history
+                    else None
+                ),
+                memory_summary=(
+                    self._history_summary(
+                        limit=self._history_summary_limit,
+                        max_chars=self._history_summary_max_chars,
+                    )
+                    if (self._remember_history and self._history_summary_enabled)
+                    else None
+                ),
                 assistant_strategy=autonomy_plan.strategy,
                 active_goal=self._active_goal,
                 goal_description=self._active_goal_description,
@@ -1007,20 +1161,18 @@ class SessionController:
         return 140
 
     def _persona_update_from_user_text(self, user_text: str) -> bool:
-        result = self._tool_executor.invoke(
+        result = self._invoke_tool(
             "persona.update_from_user_text",
             args={"user_text": user_text},
-            context=self._tool_context,
         )
         if not result.success:
             return False
         return bool(result.data.get("changed", False))
 
     def _persona_snapshot(self, *, max_notes: int) -> dict:
-        result = self._tool_executor.invoke(
+        result = self._invoke_tool(
             "persona.read_snapshot",
             args={"max_notes": max_notes},
-            context=self._tool_context,
         )
         if not result.success:
             return {
@@ -1343,7 +1495,7 @@ class SessionController:
         screen_top = int((region or {}).get("top", 0))
         screen_width = int((region or {}).get("width", 0))
         screen_height = int((region or {}).get("height", 0))
-        elements_result = self._tool_executor.invoke(
+        elements_result = self._invoke_tool(
             "ocr.extract_elements",
             args={
                 "image": frame,
@@ -1352,7 +1504,6 @@ class SessionController:
                 "screen_width": screen_width,
                 "screen_height": screen_height,
             },
-            context=self._tool_context,
         )
         elements = list(elements_result.data.get("elements", [])) if elements_result.success else []
         used_fallback = False
@@ -1367,7 +1518,7 @@ class SessionController:
                 fb_top = int((fb_region or {}).get("top", 0))
                 fb_width = int((fb_region or {}).get("width", 0))
                 fb_height = int((fb_region or {}).get("height", 0))
-                fallback_result = self._tool_executor.invoke(
+                fallback_result = self._invoke_tool(
                     "ocr.extract_elements",
                     args={
                         "image": fb_frame,
@@ -1376,7 +1527,6 @@ class SessionController:
                         "screen_width": fb_width,
                         "screen_height": fb_height,
                     },
-                    context=self._tool_context,
                 )
                 elements = list(fallback_result.data.get("elements", [])) if fallback_result.success else []
                 used_fallback = True
@@ -1384,20 +1534,17 @@ class SessionController:
         # UIA enrichment — get native window controls for the foreground window
         if getattr(self._settings.screen, "enable_uia", True):
             try:
-                fg_result = self._tool_executor.invoke(
+                fg_result = self._invoke_tool(
                     "uia.get_foreground_elements",
                     args={},
-                    context=self._tool_context,
                 )
-                visible_windows_result = self._tool_executor.invoke(
+                visible_windows_result = self._invoke_tool(
                     "uia.list_visible_windows",
                     args={},
-                    context=self._tool_context,
                 )
-                all_windows_result = self._tool_executor.invoke(
+                all_windows_result = self._invoke_tool(
                     "uia.list_all_windows",
                     args={},
-                    context=self._tool_context,
                 )
                 fw_title = str(fg_result.data.get("title", "")) if fg_result.success else ""
                 uia_els = list(fg_result.data.get("elements", [])) if fg_result.success else []
@@ -1501,19 +1648,17 @@ class SessionController:
             }
 
         used_fallback = False
-        details_result = self._tool_executor.invoke(
+        details_result = self._invoke_tool(
             "ocr.extract_details",
             args={"image": frame},
-            context=self._tool_context,
         )
         details = details_result.data.get("details") if details_result.success else None
         if not details and bool(getattr(self._settings.screen, "capture_active_window_only", False)):
             fallback_frame = self._screen.capture_once(active_window_only=False)
             if fallback_frame is not None:
-                fallback_details_result = self._tool_executor.invoke(
+                fallback_details_result = self._invoke_tool(
                     "ocr.extract_details",
                     args={"image": fallback_frame},
-                    context=self._tool_context,
                 )
                 details = (
                     fallback_details_result.data.get("details") if fallback_details_result.success else None
@@ -1689,10 +1834,9 @@ class SessionController:
                 for step in planned.steps
             ],
         }
-        execute_result = self._tool_executor.invoke(
+        execute_result = self._invoke_tool(
             "action.execute_plan",
             args={"plan": plan_payload},
-            context=self._tool_context,
         )
         if execute_result.success:
             result = ActionExecutionResult(

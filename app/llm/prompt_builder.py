@@ -39,6 +39,7 @@ class PromptContext:
     persona_user_notes: list[str] | None = None
     persona_response_style: str | None = None
     memory_messages: list[dict[str, str]] | None = None
+    memory_summary: str | None = None
     assistant_strategy: str | None = None
     active_goal: str | None = None
     goal_description: str | None = None
@@ -89,6 +90,10 @@ def build_messages(context: PromptContext) -> list[dict[str, str]]:
             "When referring to UI elements, always use the exact coordinates from the "
             "'Detected UI elements' list in the screen context — never invent positions."
         )
+
+    summary = str(context.memory_summary or "").strip()
+    if summary:
+        system = f"{system}\n\nConversation summary: {summary}"
 
     additional: list[str] = []
     goal = str(context.active_goal or "").strip()

@@ -51,6 +51,42 @@ class PersonaProfileRuntime:
             return 1.0
         return max(0.65, min(value, 1.35))
 
+    def compact_user_notes(self, *, max_notes: int = 10, max_chars_per_note: int = 110) -> dict[str, int]:
+        original = list(self._profile.user_notes)
+        if not original:
+            return {"notes_before": 0, "notes_after": 0, "removed_count": 0}
+
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for note in reversed(original):
+            normalized = re.sub(r"\s+", " ", str(note or "")).strip()
+            if not normalized:
+                continue
+            truncated = normalized[: max(30, int(max_chars_per_note))].rstrip()
+            key = truncated.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(truncated)
+
+        deduped.reverse()
+        max_kept = max(1, int(max_notes))
+        compacted = deduped[-max_kept:]
+
+        changed = compacted != original
+        if changed:
+            self._profile.user_notes = compacted
+            self._profile.updated_at = datetime.now(timezone.utc).isoformat()
+            self._save()
+
+        before = len(original)
+        after = len(compacted)
+        return {
+            "notes_before": before,
+            "notes_after": after,
+            "removed_count": max(0, before - after),
+        }
+
     def update_from_user_text(self, user_text: str) -> bool:
         text = " ".join(str(user_text or "").split())
         if not text:
@@ -268,3 +304,29 @@ class PersonaReadSnapshotTool:
                 "tts_length_scale": self._runtime.get_tts_length_scale(),
             },
         )
+
+
+class PersonaCompactNotesTool:
+    def __init__(self, runtime: PersonaProfileRuntime) -> None:
+        self._runtime = runtime
+        self.spec = ToolSpec(
+            name="persona.compact_notes",
+            description="Compact persona user notes by deduplicating and trimming old notes.",
+            is_mutating=False,
+            input_schema={"properties": {"max_notes": "int", "max_chars_per_note": "int"}},
+            output_schema={"notes_before": "int", "notes_after": "int", "removed_count": "int"},
+        )
+
+    def run(
+        self,
+        context: ToolContext,
+        args: dict,
+        cancel_token: Callable[[], bool] | None = None,
+    ) -> ToolResult:
+        if cancel_token and cancel_token():
+            return ToolResult(success=False, error=ToolError(code="cancelled", message="Tool call cancelled."))
+        result = self._runtime.compact_user_notes(
+            max_notes=int(args.get("max_notes", 10) or 10),
+            max_chars_per_note=int(args.get("max_chars_per_note", 110) or 110),
+        )
+        return ToolResult(success=True, data=result)

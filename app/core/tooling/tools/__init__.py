@@ -5,9 +5,20 @@ from app.core.settings import AppSettings
 from app.core.tooling.config_loader import ToolingConfig
 from app.core.tooling.contracts import Tool
 from app.core.tooling.tools.action_tools import ActionExecutePlanTool
-from app.core.tooling.tools.history_tools import HistoryReadEntriesTool, HistoryReadMessagesTool, HistoryRuntime
+from app.core.tooling.tools.history_tools import (
+    HistoryCompactSummaryTool,
+    HistoryReadEntriesTool,
+    HistoryReadMessagesTool,
+    HistoryReadSummaryTool,
+    HistoryRuntime,
+)
 from app.core.tooling.tools.ocr_tools import OcrExtractDetailsTool, OcrExtractElementsTool, OcrRuntime
-from app.core.tooling.tools.persona_tools import PersonaProfileRuntime, PersonaReadSnapshotTool, PersonaUpdateFromTextTool
+from app.core.tooling.tools.persona_tools import (
+    PersonaCompactNotesTool,
+    PersonaProfileRuntime,
+    PersonaReadSnapshotTool,
+    PersonaUpdateFromTextTool,
+)
 from app.core.tooling.tools.uia_tools import (
     UiaFocusWindowTool,
     UiaForegroundElementsTool,
@@ -55,7 +66,10 @@ def build_default_tools(
         UiaFocusWindowTool(uia_runtime),
         HistoryReadMessagesTool(history_runtime),
         HistoryReadEntriesTool(history_runtime),
+        HistoryReadSummaryTool(history_runtime),
+        HistoryCompactSummaryTool(history_runtime),
         PersonaUpdateFromTextTool(persona_runtime),
+        PersonaCompactNotesTool(persona_runtime),
         PersonaReadSnapshotTool(persona_runtime),
     ]
 

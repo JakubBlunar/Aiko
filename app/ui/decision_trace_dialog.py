@@ -81,6 +81,11 @@ class DecisionTraceDialog(QDialog):
         self._filter_pipeline.stateChanged.connect(lambda _state: self._refresh())
         filters.addWidget(self._filter_pipeline)
 
+        self._filter_tooling = QCheckBox("tool.*")
+        self._filter_tooling.setChecked(True)
+        self._filter_tooling.stateChanged.connect(lambda _state: self._refresh())
+        filters.addWidget(self._filter_tooling)
+
         self._filter_tts = QCheckBox("tts.error")
         self._filter_tts.setChecked(True)
         self._filter_tts.stateChanged.connect(lambda _state: self._refresh())
@@ -129,6 +134,8 @@ class DecisionTraceDialog(QDialog):
             allowed_stages.add("stt.mic")
         if self._filter_pipeline.isChecked():
             allowed_stages.add("pipeline.*")
+        if self._filter_tooling.isChecked():
+            allowed_stages.add("tool.*")
         if self._filter_tts.isChecked():
             allowed_stages.add("tts.error")
         if self._filter_plan.isChecked():
@@ -146,6 +153,9 @@ class DecisionTraceDialog(QDialog):
                     filtered.append(entry)
                     continue
                 if "pipeline.*" in allowed_stages and stage.startswith("pipeline."):
+                    filtered.append(entry)
+                    continue
+                if "tool.*" in allowed_stages and stage.startswith("tool."):
                     filtered.append(entry)
             entries = filtered
         else:

@@ -19,9 +19,20 @@ from app.core.settings import (
     UiSettings,
 )
 from app.core.tooling.tools import build_default_tools
-from app.core.tooling.tools.history_tools import HistoryReadEntriesTool, HistoryReadMessagesTool, HistoryRuntime
+from app.core.tooling.tools.history_tools import (
+    HistoryCompactSummaryTool,
+    HistoryReadEntriesTool,
+    HistoryReadMessagesTool,
+    HistoryReadSummaryTool,
+    HistoryRuntime,
+)
 from app.core.tooling.tools.ocr_tools import OcrExtractElementsTool, OcrRuntime
-from app.core.tooling.tools.persona_tools import PersonaProfileRuntime, PersonaReadSnapshotTool, PersonaUpdateFromTextTool
+from app.core.tooling.tools.persona_tools import (
+    PersonaCompactNotesTool,
+    PersonaProfileRuntime,
+    PersonaReadSnapshotTool,
+    PersonaUpdateFromTextTool,
+)
 from app.core.tooling.types import ToolContext
 
 
@@ -106,6 +117,8 @@ class ToolingToolsTests(unittest.TestCase):
         names = {tool.spec.name for tool in build_default_tools(_app_settings())}
         self.assertIn("history.read_messages", names)
         self.assertIn("history.read_entries", names)
+        self.assertIn("history.read_summary", names)
+        self.assertIn("history.compact_summary", names)
         self.assertIn("ocr.extract_elements", names)
         self.assertIn("ocr.extract_details", names)
         self.assertIn("uia.get_foreground_elements", names)
@@ -113,6 +126,7 @@ class ToolingToolsTests(unittest.TestCase):
         self.assertIn("uia.list_all_windows", names)
         self.assertIn("uia.focus_window", names)
         self.assertIn("persona.update_from_user_text", names)
+        self.assertIn("persona.compact_notes", names)
         self.assertIn("persona.read_snapshot", names)
 
     def test_ocr_tool_missing_image_is_validation_error(self) -> None:
@@ -136,6 +150,13 @@ class ToolingToolsTests(unittest.TestCase):
             self.assertEqual(snapshot.data["assistant_background"], "helper")
             self.assertGreaterEqual(len(snapshot.data["user_notes"]), 1)
 
+            compact = PersonaCompactNotesTool(runtime).run(
+                ToolContext(),
+                {"max_notes": 1, "max_chars_per_note": 60},
+            )
+            self.assertTrue(compact.success)
+            self.assertGreaterEqual(compact.data["notes_before"], compact.data["notes_after"])
+
     def test_history_tools_limit_and_offset(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             path = Path(tmp_dir) / "memory.jsonl"
@@ -148,6 +169,8 @@ class ToolingToolsTests(unittest.TestCase):
             runtime = HistoryRuntime(store, default_limit=2, max_limit=3)
             read_messages = HistoryReadMessagesTool(runtime)
             read_entries = HistoryReadEntriesTool(runtime)
+            read_summary = HistoryReadSummaryTool(runtime)
+            compact_summary = HistoryCompactSummaryTool(runtime)
 
             latest = read_messages.run(ToolContext(), {})
             self.assertTrue(latest.success)
@@ -161,6 +184,18 @@ class ToolingToolsTests(unittest.TestCase):
             self.assertTrue(clamped.success)
             self.assertEqual(clamped.data["count"], 3)
             self.assertEqual(clamped.data["entries"][-1]["content"], "a2")
+
+            summary_result = read_summary.run(ToolContext(), {"limit": 4, "max_chars": 240})
+            self.assertTrue(summary_result.success)
+            self.assertGreater(summary_result.data["entry_count"], 0)
+            self.assertIn("Recent exchange:", summary_result.data["summary"])
+
+            compacted = compact_summary.run(
+                ToolContext(),
+                {"text": "one   two   three " * 20, "max_chars": 80},
+            )
+            self.assertTrue(compacted.success)
+            self.assertLessEqual(len(compacted.data["summary"]), 80)
 
 
 if __name__ == "__main__":
