@@ -37,6 +37,7 @@ from app.ui.decision_trace_dialog import DecisionTraceDialog
 from app.ui.memory_viewer_dialog import MemoryViewerDialog
 from app.ui.live_worker import LivePracticeWorker
 from app.ui.ocr_test_worker import OcrTestWorker
+from app.ui.stt_test_worker import SttTestWorker
 from app.ui.turn_worker import SingleTurnWorker
 from app.ui.widgets.status_panel import StatusPanel
 
@@ -57,6 +58,8 @@ class MainWindow(QMainWindow):
         self._turn_worker: SingleTurnWorker | None = None
         self._ocr_test_thread: QThread | None = None
         self._ocr_test_worker: OcrTestWorker | None = None
+        self._stt_test_thread: QThread | None = None
+        self._stt_test_worker: SttTestWorker | None = None
         self._turn_mode: str | None = None
         self._memory_dialog: MemoryViewerDialog | None = None
         self._trace_dialog: DecisionTraceDialog | None = None
@@ -101,8 +104,13 @@ class MainWindow(QMainWindow):
         chat_layout = QVBoxLayout()
         chat_tab.setLayout(chat_layout)
 
+        testing_tab = QWidget()
+        testing_layout = QVBoxLayout()
+        testing_tab.setLayout(testing_layout)
+
         tabs.addTab(settings_tab, "Settings")
         tabs.addTab(chat_tab, "Chat & Info")
+        tabs.addTab(testing_tab, "Testing")
         tabs.setCurrentIndex(1)
 
         self._status = StatusPanel()
@@ -335,6 +343,48 @@ class MainWindow(QMainWindow):
         actions_grid.addWidget(self._reset_latency_button, 0, 2)
         actions_layout.addLayout(actions_grid)
         left_layout.addWidget(actions_group)
+
+        stt_testing_group = QGroupBox("STT Diagnostic")
+        stt_testing_layout = QVBoxLayout()
+        stt_testing_group.setLayout(stt_testing_layout)
+
+        stt_test_form = QFormLayout()
+        self._stt_test_seconds_spin = QDoubleSpinBox()
+        self._stt_test_seconds_spin.setDecimals(1)
+        self._stt_test_seconds_spin.setRange(1.0, 30.0)
+        self._stt_test_seconds_spin.setSingleStep(0.5)
+        self._stt_test_seconds_spin.setValue(5.0)
+        stt_test_form.addRow("Record seconds:", self._stt_test_seconds_spin)
+
+        self._stt_test_vad_checkbox = QCheckBox("Use Whisper VAD filter")
+        self._stt_test_vad_checkbox.setChecked(True)
+        stt_test_form.addRow("Options:", self._stt_test_vad_checkbox)
+
+        self._stt_test_prompt_input = QLineEdit()
+        self._stt_test_prompt_input.setPlaceholderText("Optional STT initial prompt (domain hints)")
+        stt_test_form.addRow("Initial prompt:", self._stt_test_prompt_input)
+        stt_testing_layout.addLayout(stt_test_form)
+
+        stt_test_actions = QHBoxLayout()
+        self._run_stt_test_button = QPushButton("Run STT Test")
+        self._run_stt_test_button.clicked.connect(self._run_stt_test)
+        self._clear_stt_test_button = QPushButton("Clear Results")
+        self._clear_stt_test_button.clicked.connect(lambda: self._stt_test_output.clear())
+        stt_test_actions.addWidget(self._run_stt_test_button)
+        stt_test_actions.addWidget(self._clear_stt_test_button)
+        stt_test_actions.addStretch(1)
+        stt_testing_layout.addLayout(stt_test_actions)
+
+        self._stt_test_status = QLabel("Ready")
+        stt_testing_layout.addWidget(self._stt_test_status)
+
+        self._stt_test_output = QTextEdit()
+        self._stt_test_output.setReadOnly(True)
+        self._stt_test_output.setPlaceholderText("STT test transcript and metrics will appear here.")
+        stt_testing_layout.addWidget(self._stt_test_output, stretch=1)
+
+        testing_layout.addWidget(stt_testing_group)
+        testing_layout.addStretch(1)
 
         chat_layout.addWidget(QLabel("Conversation"))
         self._conversation = QTextEdit()
@@ -578,6 +628,76 @@ class MainWindow(QMainWindow):
     def _on_test_ocr_thread_finished(self) -> None:
         self._ocr_test_thread = None
         self._ocr_test_worker = None
+
+    def _run_stt_test(self) -> None:
+        if self._stt_test_thread is not None:
+            return
+        if self._live_thread is not None or self._turn_thread is not None:
+            QMessageBox.information(self, "STT diagnostic", "Stop active turn/live mode before running STT test.")
+            return
+
+        self._run_stt_test_button.setEnabled(False)
+        self._run_stt_test_button.setText("Run STT Test (Recording...)")
+        self._stt_test_status.setText("Recording and transcribing...")
+        self._status.set_service_status("stt-diagnostic")
+
+        self._stt_test_thread = QThread(self)
+        self._stt_test_worker = SttTestWorker(
+            self._session,
+            seconds=float(self._stt_test_seconds_spin.value()),
+            vad_filter=bool(self._stt_test_vad_checkbox.isChecked()),
+            initial_prompt=str(self._stt_test_prompt_input.text() or "").strip(),
+        )
+        self._stt_test_worker.moveToThread(self._stt_test_thread)
+
+        self._stt_test_thread.started.connect(self._stt_test_worker.run)
+        self._stt_test_worker.done.connect(self._on_stt_test_done)
+        self._stt_test_worker.failed.connect(self._on_stt_test_failed)
+        self._stt_test_worker.finished.connect(self._on_stt_test_finished)
+        self._stt_test_worker.finished.connect(self._stt_test_thread.quit)
+        self._stt_test_thread.finished.connect(self._on_stt_test_thread_finished)
+        self._stt_test_thread.finished.connect(self._stt_test_thread.deleteLater)
+        self._stt_test_worker.finished.connect(self._stt_test_worker.deleteLater)
+        self._stt_test_thread.start()
+
+    def _on_stt_test_done(self, result: dict) -> None:
+        if not bool(result.get("ok", False)):
+            self._stt_test_output.append(f"[error] {result.get('message', 'STT diagnostic failed.')}")
+            return
+
+        text = str(result.get("text", ""))
+        capture_ms = float(result.get("capture_ms", 0.0) or 0.0)
+        stt_ms = float(result.get("stt_ms", 0.0) or 0.0)
+        chars = int(result.get("chars", 0) or 0)
+        model = str(result.get("stt_model", self._session.stt_model))
+        seconds = float(result.get("seconds", self._stt_test_seconds_spin.value()) or 0.0)
+        vad_filter = bool(result.get("vad_filter", self._stt_test_vad_checkbox.isChecked()))
+
+        self._stt_test_output.append(
+            (
+                f"[ok] model={model} seconds={seconds:.1f} "
+                f"capture_ms={capture_ms:.1f} stt_ms={stt_ms:.1f} chars={chars} "
+                f"vad_filter={'on' if vad_filter else 'off'}"
+            )
+        )
+        self._stt_test_output.append(text or "[empty transcript]")
+        self._stt_test_output.append("-" * 60)
+        self._stt_test_status.setText(
+            f"Last run: capture={capture_ms:.1f}ms | stt={stt_ms:.1f}ms | chars={chars}"
+        )
+
+    def _on_stt_test_failed(self, message: str) -> None:
+        self._stt_test_status.setText("Error")
+        QMessageBox.warning(self, "STT diagnostic", message or "STT diagnostic failed.")
+
+    def _on_stt_test_finished(self) -> None:
+        self._run_stt_test_button.setEnabled(True)
+        self._run_stt_test_button.setText("Run STT Test")
+        self._status.set_service_status("ready")
+
+    def _on_stt_test_thread_finished(self) -> None:
+        self._stt_test_thread = None
+        self._stt_test_worker = None
 
     def _apply_calibration(self) -> None:
         self._session.set_vad_level_threshold(self._vad_threshold_spin.value())
@@ -918,6 +1038,8 @@ class MainWindow(QMainWindow):
         self._approve_action_button.setEnabled((not busy) and self._session.has_pending_action)
         self._reject_action_button.setEnabled((not busy) and self._session.has_pending_action)
         self._reset_latency_button.setEnabled(not busy)
+        self._run_stt_test_button.setEnabled((not busy) and self._stt_test_thread is None)
+        self._clear_stt_test_button.setEnabled(not busy)
 
     def _start_single_turn(self, *, mode: str, text: str = "", record_seconds: float = 5.0) -> None:
         if self._turn_thread is not None:
@@ -1029,6 +1151,8 @@ class MainWindow(QMainWindow):
         self._approve_action_button.setEnabled(False)
         self._reject_action_button.setEnabled(False)
         self._reset_latency_button.setEnabled(False)
+        self._run_stt_test_button.setEnabled(False)
+        self._clear_stt_test_button.setEnabled(False)
 
         self._live_thread.start()
 
@@ -1066,6 +1190,8 @@ class MainWindow(QMainWindow):
         self._approve_action_button.setEnabled(self._session.has_pending_action)
         self._reject_action_button.setEnabled(self._session.has_pending_action)
         self._reset_latency_button.setEnabled(True)
+        self._run_stt_test_button.setEnabled(self._stt_test_thread is None)
+        self._clear_stt_test_button.setEnabled(True)
         self._status.set_service_status("ready")
         self._close_live_stream()
         self._input_level_bar.setValue(0)
@@ -1089,6 +1215,9 @@ class MainWindow(QMainWindow):
         if self._ocr_test_thread is not None:
             self._ocr_test_thread.quit()
             self._ocr_test_thread.wait(1500)
+        if self._stt_test_thread is not None:
+            self._stt_test_thread.quit()
+            self._stt_test_thread.wait(1500)
         if self._live_thread is not None:
             self._live_thread.quit()
             self._live_thread.wait(1500)

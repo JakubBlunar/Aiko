@@ -1705,6 +1705,68 @@ class SessionController:
             "text": text,
         }
 
+    def run_stt_diagnostic(
+        self,
+        *,
+        seconds: float = 5.0,
+        vad_filter: bool = True,
+        initial_prompt: str = "",
+    ) -> dict[str, object]:
+        if not self._state.mic_enabled:
+            return {
+                "ok": False,
+                "reason": "mic-disabled",
+                "message": "Microphone source is disabled.",
+            }
+
+        if not self._whisper.is_available:
+            return {
+                "ok": False,
+                "reason": "stt-unavailable",
+                "message": "Whisper model is unavailable.",
+            }
+
+        duration = max(1.0, min(float(seconds), 30.0))
+        capture_started = time.perf_counter()
+        wav_path = self._microphone.capture_to_wav(seconds=duration)
+        capture_ms = (time.perf_counter() - capture_started) * 1000.0
+
+        try:
+            stt_started = time.perf_counter()
+            text = self._whisper.transcribe(
+                str(wav_path),
+                vad_filter=bool(vad_filter),
+                initial_prompt=(str(initial_prompt).strip() or None),
+            )
+            stt_ms = (time.perf_counter() - stt_started) * 1000.0
+        finally:
+            self._safe_unlink(wav_path)
+
+        sanitized = self._sanitize_user_text(text or "")
+        preview = " ".join((sanitized or "").split())
+        if len(preview) > 180:
+            preview = f"{preview[:177]}..."
+        self._trace(
+            "stt.mic",
+            (
+                f"diagnostic capture_ms={round(capture_ms, 1)} stt_ms={round(stt_ms, 1)} "
+                f"chars={len(sanitized)} vad_filter={bool(vad_filter)} "
+                f"text={preview or '[empty]'}"
+            ),
+        )
+
+        return {
+            "ok": True,
+            "reason": "ok",
+            "seconds": duration,
+            "capture_ms": round(capture_ms, 1),
+            "stt_ms": round(stt_ms, 1),
+            "chars": len(sanitized),
+            "vad_filter": bool(vad_filter),
+            "stt_model": self.stt_model,
+            "text": sanitized,
+        }
+
     def _trace(self, stage: str, message: str) -> None:
         stage_text = str(stage)
         message_text = str(message)
