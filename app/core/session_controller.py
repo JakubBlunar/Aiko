@@ -758,6 +758,7 @@ class SessionController:
             screen_text=screen_text,
             allow_planning_override=autonomy_plan.should_plan_action,
             action_intent=autonomy_plan.action_intent,
+            on_token=on_token,
         )
         self._trace(
             "pipeline.action.done",
@@ -1361,6 +1362,7 @@ class SessionController:
         screen_text: str | None,
         allow_planning_override: bool = False,
         action_intent: str = "",
+        on_token: Callable[[str], None] | None = None,
     ) -> ActionExecutionResult | None:
         if not self._settings.actions.enabled:
             wants_action = bool(action_intent) or self._has_action_intent(user_text)
@@ -1386,12 +1388,45 @@ class SessionController:
         if not screen_text and self._state.screen_enabled:
             screen_text = self._capture_screen_text(decision_source="action")
 
-        planned = self._plan_action(
-            user_text=user_text,
-            assistant_reply=assistant_reply,
-            screen_text=screen_text,
-            action_intent=action_intent,
-        )
+        # Agentic replan loop: the planner can set needs_screen=true when element
+        # data is absent; the system re-captures and calls the planner again with
+        # fresh context so it can produce an informed plan.
+        _MAX_REPLAN = 2
+        planned: ActionPlan = ActionPlan(steps=[], description="not yet planned")
+        for _attempt in range(_MAX_REPLAN + 1):
+            planned = self._plan_action(
+                user_text=user_text,
+                assistant_reply=assistant_reply,
+                screen_text=screen_text,
+                action_intent=action_intent,
+            )
+            if planned.needs_screen and _attempt < _MAX_REPLAN and self._state.screen_enabled:
+                self._trace(
+                    "action.replan",
+                    f"Planner requested screen capture (attempt {_attempt + 1}/{_MAX_REPLAN}); re-capturing.",
+                )
+                screen_text = self._capture_screen_text(decision_source="action-replan")
+                continue
+            break
+
+        # Stream plan preview to the chat before executing so the user sees
+        # what steps are about to run.
+        if planned.steps and on_token:
+            hwnd_to_title = {w["hwnd"]: w["title"] for w in self._all_windows}
+            parts: list[str] = []
+            for s in planned.steps:
+                if s.kind == "focus_window":
+                    title = hwnd_to_title.get(s.hwnd or 0, str(s.hwnd))
+                    parts.append(f"focus_window({title!r})")
+                elif s.kind == "click":
+                    parts.append(f"click({s.x}, {s.y})")
+                elif s.kind == "type_text":
+                    snippet = (s.text or "")[:24]
+                    parts.append(f"type_text({snippet!r})")
+                else:
+                    parts.append(s.kind)
+            on_token(f"\n\n[Plan] {' → '.join(parts)}")
+
         result = self._action_executor.execute_plan(planned)
         self._trace("action.execute", result.message)
         return result
@@ -1467,7 +1502,7 @@ class SessionController:
                         "content": (
                             "You are an action planner for desktop UI automation. "
                             "Return exactly one JSON object with keys: "
-                            "steps (array), description (string). "
+                            "steps (array), description (string), needs_screen (bool). "
                             "Each step object has keys: type, x, y, text, hwnd, confidence, reason. "
                             "Allowed step types: none, click, type_text, focus_window. "
                             "Steps are executed in order — use multiple steps when needed "
@@ -1486,7 +1521,9 @@ class SessionController:
                             "Always target elements in the user's intended application (e.g. Notepad, browser). "
                             "OCR may have minor typos (e.g. 'Seltings' for 'Settings'); "
                             "match labels by approximate similarity. "
-                            "If no suitable target element exists outside THIS APP, return steps=[] and explain. "
+                            "If 'Detected UI elements' shows [none detected] or the target app is not visible, "
+                            "return needs_screen=true and steps=[] — the system will capture a fresh screenshot "
+                            "and call you again with updated data. Only request this once. "
                             "confidence per step must be 0.0–1.0."
                         ),
                     },
@@ -1541,6 +1578,7 @@ class SessionController:
         plan = ActionPlan(
             steps=[s for s in steps if s.kind != "none"],
             description=str(payload.get("description", "")).strip(),
+            needs_screen=bool(payload.get("needs_screen", False)),
         )
         self._trace(
             "action.plan",

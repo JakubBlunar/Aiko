@@ -25,6 +25,7 @@ class ActionPlan:
     """An ordered sequence of actions to execute as a single logical unit."""
     steps: list[PlannedAction] = field(default_factory=list)
     description: str = ""
+    needs_screen: bool = False  # planner requests a fresh screen capture before committing
 
 
 @dataclass(slots=True)
