@@ -34,7 +34,6 @@ audio:
 screen:
   enable_screen_context: false
   ocr_profile: "balanced"
-  capture_interval_seconds: 2
   monitor_index: 2
   ocr_max_side_px: 1280
   capture_active_window_only: true

@@ -30,7 +30,6 @@ class AudioSettings:
 class ScreenSettings:
     enable_screen_context: bool
     ocr_profile: str
-    capture_interval_seconds: int
     monitor_index: int
     ocr_max_side_px: int
     capture_active_window_only: bool
@@ -128,7 +127,6 @@ USER_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "user.yaml"
 
 _SCREEN_PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
     "fast": {
-        "capture_interval_seconds": 2,
         "ocr_max_side_px": 1024,
         "capture_active_window_only": True,
         "decision_mode": "keywords",
@@ -137,7 +135,6 @@ _SCREEN_PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
         "unchanged_reuse_seconds": 8,
     },
     "balanced": {
-        "capture_interval_seconds": 2,
         "ocr_max_side_px": 1280,
         "capture_active_window_only": True,
         "decision_mode": "model",
@@ -164,7 +161,6 @@ def apply_screen_ocr_profile(screen: ScreenSettings, profile: str | None) -> str
     normalized = normalize_screen_ocr_profile(profile)
     defaults = _SCREEN_PROFILE_DEFAULTS[normalized]
     screen.ocr_profile = normalized
-    screen.capture_interval_seconds = int(defaults["capture_interval_seconds"])
     screen.ocr_max_side_px = int(defaults["ocr_max_side_px"])
     screen.capture_active_window_only = bool(defaults["capture_active_window_only"])
     screen.decision_mode = str(defaults["decision_mode"])
@@ -275,7 +271,6 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
         screen=ScreenSettings(
             enable_screen_context=bool(_required(screen, "enable_screen_context")),
             ocr_profile=str(screen.get("ocr_profile", "balanced")),
-            capture_interval_seconds=int(_required(screen, "capture_interval_seconds")),
             monitor_index=int(screen.get("monitor_index", 1)),
             ocr_max_side_px=max(0, int(screen.get("ocr_max_side_px", 1600))),
             capture_active_window_only=bool(screen.get("capture_active_window_only", False)),

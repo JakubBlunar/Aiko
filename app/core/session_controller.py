@@ -89,7 +89,6 @@ class SessionController:
         self._persona = PersonaProfileStore(assistant_background=settings.assistant.background)
         self._active_goal = settings.autonomy.default_goal
         self._active_goal_description: str = ""
-        self._last_screen_capture_at = 0.0
         self._last_screen_decision_at = 0.0
         self._last_screen_text = ""
         self._last_screen_text_at = 0.0
@@ -1074,10 +1073,6 @@ class SessionController:
             return True, "keyword"
 
         now = time.monotonic()
-        min_interval = max(1, int(self._settings.screen.capture_interval_seconds))
-        if (now - self._last_screen_capture_at) < min_interval:
-            return False, "interval"
-
         decision_mode = (self._settings.screen.decision_mode or "model").lower().strip()
         if decision_mode == "keywords":
             return False, "keywords-only"
@@ -1148,7 +1143,6 @@ class SessionController:
 
     def _capture_screen_text(self, *, decision_source: str) -> str | None:
         frame, region = self._screen.capture_once_with_region()
-        self._last_screen_capture_at = time.monotonic()
         if frame is None:
             self._trace("screen.capture", "Screen capture unavailable.")
             self._last_screen_elements = []
@@ -1169,7 +1163,6 @@ class SessionController:
                 "Active-window OCR returned no elements; retrying full monitor capture.",
             )
             fb_frame, fb_region = self._screen.capture_once_with_region(active_window_only=False)
-            self._last_screen_capture_at = time.monotonic()
             if fb_frame is not None:
                 fb_left = int((fb_region or {}).get("left", 0))
                 fb_top = int((fb_region or {}).get("top", 0))
@@ -1269,7 +1262,6 @@ class SessionController:
 
     def run_screen_ocr_diagnostic(self) -> dict[str, object]:
         frame = self._screen.capture_once()
-        self._last_screen_capture_at = time.monotonic()
         if frame is None:
             return {
                 "ok": False,
@@ -1281,7 +1273,6 @@ class SessionController:
         details = self._ocr.extract_details(frame)
         if not details and bool(getattr(self._settings.screen, "capture_active_window_only", False)):
             fallback_frame = self._screen.capture_once(active_window_only=False)
-            self._last_screen_capture_at = time.monotonic()
             if fallback_frame is not None:
                 details = self._ocr.extract_details(fallback_frame)
                 frame = fallback_frame
