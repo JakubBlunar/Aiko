@@ -514,12 +514,6 @@ class SessionController:
     def clear_decision_trace(self) -> None:
         self._decision_trace.clear()
 
-    def stop_reading_session(self) -> bool:
-        reading = self._session_handlers.get("reading")
-        if reading is None:
-            return False
-        return bool(reading.stop(self._trace))
-
     @property
     def emergency_hotkey(self) -> str:
         return self._settings.actions.emergency_hotkey

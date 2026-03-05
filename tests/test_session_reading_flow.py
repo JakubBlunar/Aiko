@@ -79,7 +79,7 @@ class SessionReadingFlowTests(unittest.TestCase):
         self.assertIn("step=1", "\n".join(traces))
         self.assertIn("step=2", "\n".join(traces))
 
-    def test_stop_reading_session_clears_state(self) -> None:
+    def test_reading_handler_stop_clears_state(self) -> None:
         controller = SessionController.__new__(SessionController)
         controller._reading_session = ReadingSessionManager(
             ReadingSessionConfig(
@@ -101,7 +101,7 @@ class SessionReadingFlowTests(unittest.TestCase):
         }
         controller._trace = lambda *_args, **_kwargs: None
 
-        was_active = controller.stop_reading_session()
+        was_active = controller._session_handlers["reading"].stop(controller._trace)
 
         self.assertTrue(was_active)
         self.assertFalse(controller._reading_session._active)

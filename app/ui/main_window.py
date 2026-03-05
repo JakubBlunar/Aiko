@@ -142,11 +142,8 @@ class MainWindow(QMainWindow):
         self._reject_action_button = QPushButton("Reject Action")
         self._reject_action_button.clicked.connect(self._reject_pending_action)
         self._reject_action_button.setEnabled(False)
-        self._stop_reading_button = QPushButton("Stop Reading")
-        self._stop_reading_button.clicked.connect(self._stop_reading_session)
         action_confirm_row.addWidget(self._approve_action_button)
         action_confirm_row.addWidget(self._reject_action_button)
-        action_confirm_row.addWidget(self._stop_reading_button)
         action_confirm_row.addStretch(1)
         chat_layout.addLayout(action_confirm_row)
         self._latency_label = QLabel(
@@ -758,14 +755,6 @@ class MainWindow(QMainWindow):
         self._append("System", message)
         self._refresh_action_guardrail_label()
 
-    def _stop_reading_session(self) -> None:
-        stopped = self._session.stop_reading_session()
-        if stopped:
-            self._append("System", "Reading session stopped.")
-        else:
-            self._append("System", "No active reading session to stop.")
-        self._refresh_action_guardrail_label()
-
     def _refresh_audio_devices(self) -> None:
         current_mic = self._mic_device_combo.currentData()
         if current_mic is None:
@@ -1070,7 +1059,6 @@ class MainWindow(QMainWindow):
         self._apply_guardrails_button.setEnabled(not busy)
         self._approve_action_button.setEnabled((not busy) and self._session.has_pending_action)
         self._reject_action_button.setEnabled((not busy) and self._session.has_pending_action)
-        self._stop_reading_button.setEnabled(not busy)
         self._reset_latency_button.setEnabled(not busy)
         self._run_stt_test_button.setEnabled((not busy) and self._stt_test_thread is None)
         self._apply_stt_test_config_button.setEnabled(not busy)
@@ -1184,7 +1172,6 @@ class MainWindow(QMainWindow):
         self._apply_guardrails_button.setEnabled(False)
         self._approve_action_button.setEnabled(False)
         self._reject_action_button.setEnabled(False)
-        self._stop_reading_button.setEnabled(False)
         self._reset_latency_button.setEnabled(False)
         self._run_stt_test_button.setEnabled(False)
         self._apply_stt_test_config_button.setEnabled(False)
@@ -1224,7 +1211,6 @@ class MainWindow(QMainWindow):
         self._apply_guardrails_button.setEnabled(True)
         self._approve_action_button.setEnabled(self._session.has_pending_action)
         self._reject_action_button.setEnabled(self._session.has_pending_action)
-        self._stop_reading_button.setEnabled(True)
         self._reset_latency_button.setEnabled(True)
         self._run_stt_test_button.setEnabled(self._stt_test_thread is None)
         self._apply_stt_test_config_button.setEnabled(True)
