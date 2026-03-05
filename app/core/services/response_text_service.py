@@ -11,6 +11,10 @@ _ACTION_META_LINE_PATTERN = re.compile(
     r"^(\[plan\]|\[action\]|system:\s*step\s+\d+|step\s+\d+\s*\(|awaiting confirmation)",
     flags=re.IGNORECASE,
 )
+_INLINE_ACTION_META_PATTERN = re.compile(
+    r"\s*\[(plan|action|note)\].*$",
+    flags=re.IGNORECASE,
+)
 
 
 def extract_tts_reaction_tag(text: str) -> tuple[str | None, str]:
@@ -33,7 +37,8 @@ def strip_action_meta_for_tts(text: str) -> str:
     cleaned_lines: list[str] = []
     skip_plan_block = False
     for raw_line in source.splitlines():
-        line = raw_line.strip()
+        stripped_inline = _INLINE_ACTION_META_PATTERN.sub("", raw_line)
+        line = stripped_inline.strip()
         lowered = line.lower()
 
         if not line:
@@ -55,7 +60,7 @@ def strip_action_meta_for_tts(text: str) -> str:
         if _ACTION_META_LINE_PATTERN.match(line):
             continue
 
-        cleaned_lines.append(raw_line)
+        cleaned_lines.append(stripped_inline)
 
     cleaned = "\n".join(cleaned_lines)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
