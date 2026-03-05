@@ -267,7 +267,7 @@ class MainWindow(QMainWindow):
 
         self._vad_silence_spin = QDoubleSpinBox()
         self._vad_silence_spin.setDecimals(1)
-        self._vad_silence_spin.setRange(0.2, 3.0)
+        self._vad_silence_spin.setRange(0.3, 6.0)
         self._vad_silence_spin.setSingleStep(0.1)
         self._vad_silence_spin.setValue(self._session.vad_silence_seconds)
         audio_controls_form.addRow("Silence Stop (s):", self._vad_silence_spin)
@@ -917,8 +917,9 @@ class MainWindow(QMainWindow):
             return
 
         self._turn_mode = mode
+        self._reset_live_stream("")
         self._set_single_turn_controls_busy(True)
-        self._status.set_service_status("recording" if mode == "record" else "thinking")
+        self._status.set_service_status("recording" if mode == "record" else "AI is generating response...")
 
         self._turn_thread = QThread(self)
         self._turn_worker = SingleTurnWorker(
@@ -930,6 +931,8 @@ class MainWindow(QMainWindow):
         self._turn_worker.moveToThread(self._turn_thread)
 
         self._turn_thread.started.connect(self._turn_worker.run)
+        self._turn_worker.status.connect(self._status.set_service_status)
+        self._turn_worker.replying.connect(self._append_live_stream_token)
         self._turn_worker.typed_done.connect(self._on_typed_turn_done)
         self._turn_worker.voice_done.connect(self._on_voice_turn_done)
         self._turn_worker.failed.connect(self._on_single_turn_failed)
@@ -941,13 +944,17 @@ class MainWindow(QMainWindow):
         self._turn_thread.start()
 
     def _on_typed_turn_done(self, reply: str) -> None:
-        self._append("Assistant", reply)
+        if not self._live_stream_open:
+            self._append("Assistant", reply)
+        self._close_live_stream()
         self._refresh_latency_strip()
         self._refresh_goal_debug_label()
 
     def _on_voice_turn_done(self, user_text: str, reply: str) -> None:
         self._append("You (voice)", user_text)
-        self._append("Assistant", reply)
+        if not self._live_stream_open:
+            self._append("Assistant", reply)
+        self._close_live_stream()
         self._refresh_latency_strip()
         self._refresh_goal_debug_label()
 
@@ -1095,6 +1102,8 @@ class MainWindow(QMainWindow):
         self._conversation.ensureCursorVisible()
 
     def _reset_live_stream(self, _text: str) -> None:
+        if self._live_stream_open:
+            self._close_live_stream()
         self._live_stream_buffer = ""
         self._live_stream_open = False
 
@@ -1103,7 +1112,7 @@ class MainWindow(QMainWindow):
         if not token:
             return
         if not self._live_stream_open:
-            self._conversation.append("<b>Assistant (stream):</b> ")
+            self._conversation.append("<b>Assistant:</b> ")
             self._live_stream_open = True
 
         self._live_stream_buffer += token
@@ -1120,7 +1129,6 @@ class MainWindow(QMainWindow):
 
     def _close_live_stream(self, _text: str | None = None) -> None:
         if self._live_stream_open:
-            self._conversation.append("")
             self._scroll_conversation_to_bottom()
         self._live_stream_open = False
 

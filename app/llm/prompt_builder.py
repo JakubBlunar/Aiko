@@ -30,6 +30,7 @@ class PromptContext:
     personality: str = "friendly"
     persona_background: str | None = None
     persona_user_notes: list[str] | None = None
+    persona_response_style: str | None = None
     memory_messages: list[dict[str, str]] | None = None
     assistant_strategy: str | None = None
     active_goal: str | None = None
@@ -58,6 +59,18 @@ def build_messages(context: PromptContext) -> list[dict[str, str]]:
 
     if persona_lines:
         system = f"{system}\n\n" + "\n".join(persona_lines)
+
+    style = str(context.persona_response_style or "balanced").strip().lower()
+    if style == "concise":
+        system = (
+            f"{system}\n\n"
+            "Response style preference: concise. Keep replies to 1-2 short sentences unless user asks for detail."
+        )
+    elif style == "detailed":
+        system = (
+            f"{system}\n\n"
+            "Response style preference: detailed. Provide richer explanations while staying clear and structured."
+        )
 
     additional: list[str] = []
     if context.active_goal:

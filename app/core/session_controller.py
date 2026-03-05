@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import re
 import time
+import unicodedata
 
 from app.actions.emergency_stop import EmergencyStopState, GlobalHotkeyListener
 from app.actions.executor import ActionExecutionResult, GuardedActionExecutor, PlannedAction
@@ -98,12 +99,14 @@ class SessionController:
         }
         self._metrics_history: deque[dict[str, float | str]] = deque(maxlen=10)
         self._decision_trace: deque[dict[str, str]] = deque(maxlen=500)
+        self._live_no_speech_streak = 0
 
         self._state = SessionState(
             mic_enabled=settings.audio.enable_microphone,
             system_audio_enabled=settings.audio.enable_system_audio,
             screen_enabled=settings.screen.enable_screen_context,
         )
+        self._apply_persona_runtime_preferences()
 
     @property
     def state(self) -> SessionState:
@@ -172,7 +175,7 @@ class SessionController:
         self._vad_level_threshold = max(0.001, min(value, 0.5))
 
     def set_vad_silence_seconds(self, value: float) -> None:
-        self._vad_silence_seconds = max(0.2, min(value, 3.0))
+        self._vad_silence_seconds = max(0.3, min(value, 6.0))
 
     @property
     def action_min_interval_seconds(self) -> float:
@@ -260,40 +263,7 @@ class SessionController:
             return False
 
     def build_startup_greeting(self) -> str:
-        fallback = "Welcome back. Audio is ready."
-        try:
-            entries = self._memory.recent_entries(max_entries=80)
-        except Exception:
-            return fallback
-
-        latest_user_text = ""
-        for entry in reversed(entries):
-            if entry.role == "user":
-                latest_user_text = (entry.content or "").strip()
-                if latest_user_text:
-                    break
-
-        if not latest_user_text:
-            return fallback
-
-        normalized = " ".join(latest_user_text.split())
-        lowered = normalized.lower()
-        if lowered in {"hi", "hello", "hey", "hello!", "hey!", "hi!"}:
-            return fallback
-
-        for separator in ("\n", ".", "!", "?"):
-            index = normalized.find(separator)
-            if index > 0:
-                normalized = normalized[:index].strip()
-                break
-
-        if len(normalized) > 72:
-            normalized = f"{normalized[:69].rstrip()}..."
-
-        if len(normalized) < 10:
-            return fallback
-
-        return f"Welcome back. Last time you mentioned: {normalized}. Audio is ready."
+        return "Welcome back. Audio is ready."
 
     def prewarm_tts(self) -> None:
         warmup_sync = getattr(self._tts, "warmup_sync", None)
@@ -368,6 +338,7 @@ class SessionController:
 
         self._settings.tts.provider = normalized
         self._tts = self._build_tts_service(self._settings)
+        self._apply_persona_runtime_preferences()
         self._trace("tts.provider", f"Switched TTS provider to {normalized}")
 
     @property
@@ -533,11 +504,37 @@ class SessionController:
         user_text: str,
         on_token: Callable[[str], None] | None = None,
         stop_requested: Callable[[], bool] | None = None,
+        on_generation_status: Callable[[str], None] | None = None,
         mode: str = "typed",
         capture_ms: float = 0.0,
         stt_ms: float = 0.0,
     ) -> str:
         turn_start = time.perf_counter()
+        raw_user_text = str(user_text or "")
+        user_text = self._sanitize_user_text(raw_user_text)
+        if raw_user_text.strip() and not user_text:
+            self._set_last_metrics(
+                {
+                    "mode": mode,
+                    "capture_ms": round(capture_ms, 1),
+                    "stt_ms": round(stt_ms, 1),
+                    "llm_ms": 0.0,
+                    "tts_ms": 0.0,
+                    "total_ms": round((time.perf_counter() - turn_start) * 1000.0, 1),
+                }
+            )
+            return "I could not parse that clearly. Please say it again in plain words."
+
+        if raw_user_text != user_text:
+            self._trace("stt.clean", f"Sanitized user text ({len(raw_user_text)} -> {len(user_text)} chars).")
+
+        try:
+            persona_changed = self._persona.update_from_user_text(user_text)
+            if persona_changed:
+                self._apply_persona_runtime_preferences()
+        except Exception:
+            pass
+
         self._update_goal_from_conversation(user_text=user_text)
         autonomy_plan = self._plan_turn_autonomy(user_text=user_text)
         screen_intent = self._is_screen_intent(user_text)
@@ -607,24 +604,62 @@ class SessionController:
                 personality=self._personality,
                 persona_background=self._persona.get_assistant_background(),
                 persona_user_notes=self._persona.get_user_notes(max_notes=6),
+                persona_response_style=self._persona.get_response_style(),
                 memory_messages=(self._memory.recent_messages(12) if self._remember_history else None),
                 assistant_strategy=autonomy_plan.strategy,
                 active_goal=self._active_goal,
             )
         )
 
+        generation_options: dict[str, object] = {
+            "num_predict": self._response_num_predict(),
+        }
+
+        stream_tts_used = False
+
         try:
+            if on_generation_status:
+                on_generation_status("AI is generating response...")
             llm_started = time.perf_counter()
+            stream_tts_buffer = ""
+            enqueue_tts = getattr(self._tts, "enqueue_async", None)
+            can_stream_tts = bool(on_token is not None and callable(enqueue_tts))
             if on_token is None:
-                response = self._ollama.chat(messages)
+                response = self._sanitize_assistant_text(
+                    self._ollama.chat(messages, options=generation_options)
+                )
             else:
                 pieces: list[str] = []
-                for token in self._ollama.chat_stream(messages):
+                for token in self._ollama.chat_stream(messages, options=generation_options):
                     if stop_requested and stop_requested():
                         break
-                    pieces.append(token)
-                    on_token(token)
+                    safe_token = self._sanitize_assistant_text(token, preserve_newlines=False)
+                    if not safe_token:
+                        continue
+                    pieces.append(safe_token)
+                    on_token(safe_token)
+                    if can_stream_tts:
+                        stream_tts_buffer += safe_token
+                        ready_chunks, stream_tts_buffer = self._drain_tts_stream_chunks(
+                            stream_tts_buffer,
+                            flush=False,
+                        )
+                        for chunk in ready_chunks:
+                            tts_chunk = self._prepare_tts_text(chunk)
+                            if tts_chunk and callable(enqueue_tts):
+                                enqueue_tts(tts_chunk)
+                                stream_tts_used = True
                 response = "".join(pieces).strip()
+                if can_stream_tts and stream_tts_buffer.strip():
+                    ready_chunks, stream_tts_buffer = self._drain_tts_stream_chunks(
+                        stream_tts_buffer,
+                        flush=True,
+                    )
+                    for chunk in ready_chunks:
+                        tts_chunk = self._prepare_tts_text(chunk)
+                        if tts_chunk and callable(enqueue_tts):
+                            enqueue_tts(tts_chunk)
+                            stream_tts_used = True
             llm_ms = (time.perf_counter() - llm_started) * 1000.0
         except Exception as exc:
             self._set_last_metrics({
@@ -652,18 +687,15 @@ class SessionController:
         if action_result is not None and action_result.message:
             response = f"{response}\n\n[Action] {action_result.message}".strip()
 
+        response = self._sanitize_assistant_text(response)
+
         if self._remember_history:
             self._memory.add(role="user", content=user_text)
             self._memory.add(role="assistant", content=response)
 
-        try:
-            self._persona.update_from_user_text(user_text)
-        except Exception:
-            pass
-
         tts_started = time.perf_counter()
         tts_ms = 0.0
-        if response:
+        if response and not stream_tts_used:
             try:
                 tts_text = self._prepare_tts_text(response)
                 if tts_text:
@@ -681,6 +713,23 @@ class SessionController:
             "total_ms": round((time.perf_counter() - turn_start) * 1000.0, 1),
         })
         return response
+
+    def _apply_persona_runtime_preferences(self) -> None:
+        length_scale = self._persona.get_tts_length_scale()
+        set_length_scale = getattr(self._tts, "set_length_scale", None)
+        if callable(set_length_scale):
+            try:
+                set_length_scale(length_scale)
+            except Exception:
+                pass
+
+    def _response_num_predict(self) -> int:
+        style = self._persona.get_response_style()
+        if style == "concise":
+            return 96
+        if style == "detailed":
+            return 220
+        return 140
 
     def _plan_turn_autonomy(self, *, user_text: str) -> TurnAutonomyPlan:
         defaults = TurnAutonomyPlan(
@@ -1257,7 +1306,12 @@ class SessionController:
         except Exception:
             return None
 
-    def record_and_chat(self, seconds: float = 5.0) -> tuple[str, str]:
+    def record_and_chat(
+        self,
+        seconds: float = 5.0,
+        on_token: Callable[[str], None] | None = None,
+        on_generation_status: Callable[[str], None] | None = None,
+    ) -> tuple[str, str]:
         if not self._state.mic_enabled:
             raise RuntimeError("Microphone source is disabled. Enable it and try again.")
 
@@ -1279,6 +1333,10 @@ class SessionController:
         if not text:
             raise RuntimeError("No speech was detected from microphone audio.")
 
+        text = self._sanitize_user_text(text)
+        if not text:
+            raise RuntimeError("No clear speech was detected from microphone audio.")
+
         preview = " ".join(text.strip().split())
         if len(preview) > 180:
             preview = f"{preview[:177]}..."
@@ -1286,6 +1344,8 @@ class SessionController:
 
         response = self.chat_once_streaming(
             user_text=text,
+            on_token=on_token,
+            on_generation_status=on_generation_status,
             mode="record",
             capture_ms=capture_ms,
             stt_ms=stt_ms,
@@ -1299,6 +1359,7 @@ class SessionController:
         max_listen_seconds: float = 18.0,
         on_token: Callable[[str], None] | None = None,
         on_audio_level: Callable[[float], None] | None = None,
+        on_generation_status: Callable[[str], None] | None = None,
     ) -> tuple[str, str] | None:
         if not self._state.mic_enabled:
             raise RuntimeError("Microphone source is disabled. Enable it and try again.")
@@ -1308,35 +1369,70 @@ class SessionController:
                 "Whisper is not installed. Install AI extras with: pip install -e .[ai]"
             )
 
-        live_level_threshold = max(0.015, float(self._vad_level_threshold) * 0.9)
-        live_silence_seconds = max(1.8, float(self._vad_silence_seconds))
+        live_level_threshold = max(0.008, float(self._vad_level_threshold) * 0.7)
+        if self._live_no_speech_streak > 0:
+            relax_factor = min(0.55, 0.12 * float(self._live_no_speech_streak))
+            live_level_threshold = max(0.004, live_level_threshold * (1.0 - relax_factor))
+        live_end_level_threshold = max(0.008, float(self._vad_level_threshold) * 0.7)
+        live_pause_base = max(0.3, float(self._vad_silence_seconds))
+        live_silence_seconds = min(6.0, max(1.8, live_pause_base + 0.6))
         live_min_speech_before_stop = 2.2
         live_start_grace_seconds = 1.0
+        live_max_speech_seconds = 16.0
+        live_wait_for_start_seconds = 7.0
+        live_use_webrtc_vad = self._live_no_speech_streak < 3
 
         capture_started = time.perf_counter()
+        if on_generation_status:
+            on_generation_status("listening")
         wav_path = self._microphone.capture_phrase_to_wav(
             max_seconds=max_listen_seconds,
+            max_wait_for_speech_start_seconds=live_wait_for_start_seconds,
+            use_webrtc_vad=live_use_webrtc_vad,
             silence_seconds_to_stop=live_silence_seconds,
             level_threshold=live_level_threshold,
+            end_level_threshold=live_end_level_threshold,
             min_speech_seconds_before_stop=live_min_speech_before_stop,
             speech_start_grace_seconds=live_start_grace_seconds,
+            max_seconds_after_speech_start=live_max_speech_seconds,
             stop_requested=stop_requested,
             on_speech_start=None,
             on_audio_level=on_audio_level,
         )
         capture_ms = (time.perf_counter() - capture_started) * 1000.0
         if wav_path is None:
+            self._live_no_speech_streak += 1
+            if on_generation_status:
+                on_generation_status(f"listening (retry {self._live_no_speech_streak})")
             return None
 
         try:
+            if on_generation_status:
+                on_generation_status("transcribing")
             stt_started = time.perf_counter()
-            text = self._whisper.transcribe(str(wav_path))
+            text = self._whisper.transcribe(
+                str(wav_path),
+                vad_filter=False,
+                initial_prompt=None,
+            )
             stt_ms = (time.perf_counter() - stt_started) * 1000.0
         finally:
             self._safe_unlink(wav_path)
 
         if not text:
+            self._live_no_speech_streak += 1
+            if on_generation_status:
+                on_generation_status("did not catch that, listening")
             return None
+
+        text = self._sanitize_user_text(text)
+        if not text:
+            self._live_no_speech_streak += 1
+            if on_generation_status:
+                on_generation_status("did not catch that, listening")
+            return None
+
+        self._live_no_speech_streak = 0
 
         preview = " ".join(text.strip().split())
         if len(preview) > 180:
@@ -1347,6 +1443,7 @@ class SessionController:
             user_text=text,
             on_token=on_token,
             stop_requested=stop_requested,
+            on_generation_status=on_generation_status,
             mode="live",
             capture_ms=capture_ms,
             stt_ms=stt_ms,
@@ -1390,6 +1487,90 @@ class SessionController:
         cleaned = cleaned.replace("[", "").replace("]", "")
         cleaned = " ".join(cleaned.split())
         return cleaned
+
+    @staticmethod
+    def _sanitize_user_text(text: str) -> str:
+        cleaned = str(text or "")
+        if not cleaned:
+            return ""
+
+        # Remove common emoji/dingbat ranges that can break downstream prompting.
+        cleaned = re.sub(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]", " ", cleaned)
+
+        out_chars: list[str] = []
+        for ch in cleaned:
+            category = unicodedata.category(ch)
+            if category.startswith("C"):
+                continue
+            out_chars.append(ch)
+
+        cleaned = "".join(out_chars)
+        cleaned = re.sub(r"[^\w\s\.,!?;:'\"()\-]", " ", cleaned)
+        cleaned = " ".join(cleaned.split())
+        return cleaned.strip()
+
+    @staticmethod
+    def _sanitize_assistant_text(text: str, *, preserve_newlines: bool = True) -> str:
+        cleaned = unicodedata.normalize("NFKC", str(text or ""))
+        if not cleaned:
+            return ""
+
+        cleaned = (
+            cleaned.replace("\u2018", "'")
+            .replace("\u2019", "'")
+            .replace("\u201c", '"')
+            .replace("\u201d", '"')
+            .replace("\u2013", "-")
+            .replace("\u2014", "-")
+        )
+
+        out_chars: list[str] = []
+        for ch in cleaned:
+            code = ord(ch)
+            if ch == "\n" and preserve_newlines:
+                out_chars.append(ch)
+                continue
+            if ch == "\t":
+                out_chars.append(" ")
+                continue
+            if 32 <= code <= 126:
+                out_chars.append(ch)
+
+        cleaned = "".join(out_chars)
+        if preserve_newlines:
+            cleaned = re.sub(r"[^\S\n]+", " ", cleaned)
+            cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        else:
+            cleaned = " ".join(cleaned.split())
+        return cleaned.strip()
+
+    @staticmethod
+    def _drain_tts_stream_chunks(buffer: str, *, flush: bool) -> tuple[list[str], str]:
+        text = str(buffer or "")
+        if not text:
+            return [], ""
+
+        chunks: list[str] = []
+        start = 0
+        for index, ch in enumerate(text):
+            if ch not in ".!?\n":
+                continue
+
+            candidate = text[start : index + 1].strip()
+            if not candidate:
+                start = index + 1
+                continue
+
+            if len(candidate) >= 24 or candidate.count(" ") >= 4 or ch == "\n":
+                chunks.append(candidate)
+                start = index + 1
+
+        remainder = text[start:]
+        if flush and remainder.strip():
+            chunks.append(remainder.strip())
+            remainder = ""
+
+        return chunks, remainder
 
     @staticmethod
     def _safe_unlink(path: Path) -> None:

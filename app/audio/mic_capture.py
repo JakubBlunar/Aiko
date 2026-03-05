@@ -5,12 +5,18 @@ from collections.abc import Callable
 from pathlib import Path
 import tempfile
 import time
+from typing import Any
 import wave
 
 import numpy as np
 import sounddevice as sd
 
 from app.core.settings import AudioSettings
+
+try:
+    import webrtcvad
+except Exception:
+    webrtcvad = None
 
 
 class MicrophoneCapture:
@@ -67,14 +73,78 @@ class MicrophoneCapture:
             wav_file.setframerate(self._settings.sample_rate)
             wav_file.writeframes(pcm.tobytes())
 
+    def _create_webrtc_vad(self, level_threshold: float) -> Any | None:
+        if webrtcvad is None:
+            return None
+        if self._settings.sample_rate not in {8000, 16000, 32000, 48000}:
+            return None
+
+        # Map existing UI threshold to VAD aggressiveness without adding new settings.
+        if level_threshold >= 0.06:
+            mode = 3
+        elif level_threshold >= 0.035:
+            mode = 2
+        elif level_threshold >= 0.02:
+            mode = 1
+        else:
+            mode = 0
+
+        try:
+            return webrtcvad.Vad(mode)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _chunk_has_vad_speech(
+        chunk: np.ndarray,
+        *,
+        sample_rate: int,
+        vad: Any,
+        frame_ms: int = 30,
+    ) -> bool:
+        if chunk.size == 0:
+            return False
+
+        mono = chunk[:, 0] if chunk.ndim > 1 else chunk
+        pcm = np.clip(mono, -1.0, 1.0)
+        pcm_i16 = (pcm * 32767).astype(np.int16)
+
+        frame_samples = int(sample_rate * frame_ms / 1000)
+        if frame_samples <= 0:
+            return False
+
+        total_samples = int(pcm_i16.shape[0])
+        if total_samples < frame_samples:
+            return False
+
+        voiced = 0
+        frames = 0
+        for start in range(0, total_samples - frame_samples + 1, frame_samples):
+            frame = pcm_i16[start : start + frame_samples]
+            frames += 1
+            try:
+                if bool(vad.is_speech(frame.tobytes(), sample_rate)):
+                    voiced += 1
+            except Exception:
+                return False
+
+        if frames == 0:
+            return False
+
+        return voiced >= 1
+
     def capture_phrase(
         self,
         *,
         max_seconds: float = 12.0,
+        max_wait_for_speech_start_seconds: float | None = None,
+        use_webrtc_vad: bool = True,
         silence_seconds_to_stop: float = 1.0,
         level_threshold: float = 0.02,
+        end_level_threshold: float | None = None,
         min_speech_seconds_before_stop: float = 1.2,
         speech_start_grace_seconds: float = 0.5,
+        max_seconds_after_speech_start: float | None = None,
         stop_requested: Callable[[], bool] | None = None,
         on_speech_start: Callable[[], None] | None = None,
         on_audio_level: Callable[[float], None] | None = None,
@@ -82,16 +152,30 @@ class MicrophoneCapture:
         sample_rate = self._settings.sample_rate
         channels = self._settings.channels
         chunk_frames = int(sample_rate * 0.1)
-        pre_roll_chunks = 4
+        # Keep more lead-in audio so slow starts and soft first words are retained.
+        pre_roll_chunks = 12
 
         silence_chunks_to_stop = max(1, int(silence_seconds_to_stop / 0.1))
         min_speech_chunks_before_stop = max(1, int(min_speech_seconds_before_stop / 0.1))
         speech_start_grace_chunks = max(0, int(speech_start_grace_seconds / 0.1))
+        silence_level_threshold = (
+            float(end_level_threshold)
+            if end_level_threshold is not None
+            else float(level_threshold)
+        )
+        max_speech_duration = (
+            float(max_seconds_after_speech_start)
+            if max_seconds_after_speech_start is not None
+            else None
+        )
+        vad = self._create_webrtc_vad(level_threshold) if use_webrtc_vad else None
         pre_roll: deque[np.ndarray] = deque(maxlen=pre_roll_chunks)
         captured: list[np.ndarray] = []
         speech_started = False
+        speech_started_at: float | None = None
         silence_chunks = 0
         spoken_chunks = 0
+        speech_candidate_chunks = 0
 
         started_at = time.monotonic()
 
@@ -110,24 +194,63 @@ class MicrophoneCapture:
                 if elapsed >= max_seconds:
                     break
 
+                if (
+                    not speech_started
+                    and max_wait_for_speech_start_seconds is not None
+                    and elapsed >= max(0.5, float(max_wait_for_speech_start_seconds))
+                ):
+                    break
+
                 chunk, _overflow = stream.read(chunk_frames)
                 level = float(np.sqrt(np.mean(np.square(chunk))))
+                vad_speech = bool(vad) and self._chunk_has_vad_speech(
+                    chunk,
+                    sample_rate=sample_rate,
+                    vad=vad,
+                )
                 if on_audio_level:
                     on_audio_level(level)
 
                 if not speech_started:
                     pre_roll.append(chunk.copy())
-                    if level >= level_threshold:
+                    has_vad = vad is not None
+                    energy_start_threshold = float(level_threshold)
+                    if has_vad:
+                        # Keep an energy fallback when VAD misses quiet speech starts.
+                        energy_start_threshold = max(0.005, float(level_threshold) * 0.75)
+
+                    speech_detected = vad_speech or (level >= energy_start_threshold)
+                    if speech_detected:
+                        speech_candidate_chunks += 1
+                    else:
+                        speech_candidate_chunks = 0
+
+                    required_start_chunks = 1 if vad_speech else 2
+                    if speech_candidate_chunks >= required_start_chunks:
                         speech_started = True
+                        speech_started_at = time.monotonic()
                         spoken_chunks = 0
                         if on_speech_start:
                             on_speech_start()
+                        # pre_roll already includes the current chunk; do not append it twice.
                         captured.extend(pre_roll)
-                        captured.append(chunk.copy())
                 else:
+                    if (
+                        max_speech_duration is not None
+                        and speech_started_at is not None
+                        and (time.monotonic() - speech_started_at) >= max_speech_duration
+                    ):
+                        break
+
                     captured.append(chunk.copy())
                     spoken_chunks += 1
-                    if level < level_threshold:
+                    has_vad = vad is not None
+                    if has_vad:
+                        # Let VAD decide end-of-speech to avoid getting stuck by steady noise floors.
+                        in_silence = not vad_speech
+                    else:
+                        in_silence = level < silence_level_threshold
+                    if in_silence:
                         silence_chunks += 1
                     else:
                         silence_chunks = 0
@@ -150,20 +273,28 @@ class MicrophoneCapture:
         self,
         *,
         max_seconds: float = 12.0,
+        max_wait_for_speech_start_seconds: float | None = None,
+        use_webrtc_vad: bool = True,
         silence_seconds_to_stop: float = 1.0,
         level_threshold: float = 0.02,
+        end_level_threshold: float | None = None,
         min_speech_seconds_before_stop: float = 1.2,
         speech_start_grace_seconds: float = 0.5,
+        max_seconds_after_speech_start: float | None = None,
         stop_requested: Callable[[], bool] | None = None,
         on_speech_start: Callable[[], None] | None = None,
         on_audio_level: Callable[[float], None] | None = None,
     ) -> Path | None:
         samples = self.capture_phrase(
             max_seconds=max_seconds,
+            max_wait_for_speech_start_seconds=max_wait_for_speech_start_seconds,
+            use_webrtc_vad=use_webrtc_vad,
             silence_seconds_to_stop=silence_seconds_to_stop,
             level_threshold=level_threshold,
+            end_level_threshold=end_level_threshold,
             min_speech_seconds_before_stop=min_speech_seconds_before_stop,
             speech_start_grace_seconds=speech_start_grace_seconds,
+            max_seconds_after_speech_start=max_seconds_after_speech_start,
             stop_requested=stop_requested,
             on_speech_start=on_speech_start,
             on_audio_level=on_audio_level,
@@ -189,6 +320,7 @@ class MicrophoneCapture:
         chunk_frames = int(sample_rate * 0.1)
         started_at = time.monotonic()
         consecutive = 0
+        vad = self._create_webrtc_vad(level_threshold)
 
         with sd.InputStream(
             samplerate=sample_rate,
@@ -207,10 +339,15 @@ class MicrophoneCapture:
 
                 chunk, _overflow = stream.read(chunk_frames)
                 level = float(np.sqrt(np.mean(np.square(chunk))))
+                vad_speech = bool(vad) and self._chunk_has_vad_speech(
+                    chunk,
+                    sample_rate=sample_rate,
+                    vad=vad,
+                )
                 if on_audio_level:
                     on_audio_level(level)
 
-                if level >= level_threshold:
+                if vad_speech or (level >= level_threshold):
                     consecutive += 1
                     if consecutive >= max(1, int(min_consecutive_chunks)):
                         return True

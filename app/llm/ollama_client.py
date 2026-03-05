@@ -13,12 +13,15 @@ class OllamaClient:
         self._settings = settings
         self._timeout_seconds = timeout_seconds
 
-    def chat(self, messages: list[dict[str, str]]) -> str:
+    def chat(self, messages: list[dict[str, str]], options: dict[str, object] | None = None) -> str:
+        merged_options: dict[str, object] = {"temperature": self._settings.temperature}
+        if options:
+            merged_options.update(options)
         payload = {
             "model": self._settings.chat_model,
             "messages": messages,
             "stream": False,
-            "options": {"temperature": self._settings.temperature},
+            "options": merged_options,
         }
         response = requests.post(
             f"{self._settings.base_url}/api/chat",
@@ -29,12 +32,19 @@ class OllamaClient:
         body = response.json()
         return body.get("message", {}).get("content", "")
 
-    def chat_stream(self, messages: list[dict[str, str]]) -> Generator[str, None, None]:
+    def chat_stream(
+        self,
+        messages: list[dict[str, str]],
+        options: dict[str, object] | None = None,
+    ) -> Generator[str, None, None]:
+        merged_options: dict[str, object] = {"temperature": self._settings.temperature}
+        if options:
+            merged_options.update(options)
         payload = {
             "model": self._settings.chat_model,
             "messages": messages,
             "stream": True,
-            "options": {"temperature": self._settings.temperature},
+            "options": merged_options,
         }
         with requests.post(
             f"{self._settings.base_url}/api/chat",

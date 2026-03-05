@@ -13,6 +13,7 @@ class TurnInput:
     personality: str = "friendly"
     persona_background: str | None = None
     persona_user_notes: list[str] | None = None
+    persona_response_style: str | None = None
     memory_messages: list[dict[str, str]] | None = None
     assistant_strategy: str | None = None
     active_goal: str | None = None
@@ -27,6 +28,7 @@ class TurnManager:
             personality=turn_input.personality,
             persona_background=turn_input.persona_background,
             persona_user_notes=turn_input.persona_user_notes,
+            persona_response_style=turn_input.persona_response_style,
             memory_messages=turn_input.memory_messages,
             assistant_strategy=turn_input.assistant_strategy,
             active_goal=turn_input.active_goal,

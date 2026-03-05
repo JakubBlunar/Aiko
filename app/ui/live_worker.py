@@ -30,6 +30,7 @@ class LivePracticeWorker(QObject):
                     stop_requested=self._is_stop_requested,
                     on_token=self.replying.emit,
                     on_audio_level=self.level.emit,
+                    on_generation_status=self.status.emit,
                 )
                 if turn is None:
                     continue

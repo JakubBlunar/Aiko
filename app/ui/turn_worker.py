@@ -8,6 +8,8 @@ from app.core.session_controller import SessionController
 class SingleTurnWorker(QObject):
     typed_done = Signal(str)
     voice_done = Signal(str, str)
+    replying = Signal(str)
+    status = Signal(str)
     failed = Signal(str)
     finished = Signal()
 
@@ -29,12 +31,24 @@ class SingleTurnWorker(QObject):
     def run(self) -> None:
         try:
             if self._mode == "typed":
-                reply = self._session.chat_once(self._text)
+                self.status.emit("AI is generating response...")
+                reply = self._session.chat_once_streaming(
+                    user_text=self._text,
+                    on_token=self.replying.emit,
+                    mode="typed",
+                    on_generation_status=self.status.emit,
+                )
                 self.typed_done.emit(reply)
             else:
-                user_text, reply = self._session.record_and_chat(seconds=self._record_seconds)
+                self.status.emit("recording")
+                user_text, reply = self._session.record_and_chat(
+                    seconds=self._record_seconds,
+                    on_token=self.replying.emit,
+                    on_generation_status=self.status.emit,
+                )
                 self.voice_done.emit(user_text, reply)
         except Exception as exc:
             self.failed.emit(str(exc))
         finally:
+            self.status.emit("ready")
             self.finished.emit()
