@@ -89,6 +89,7 @@ class SessionController:
         self._last_screen_decision_at = 0.0
         self._last_screen_text = ""
         self._last_screen_text_at = 0.0
+        self._last_screen_elements: list[dict] = []
         self._last_metrics: dict[str, float | str] = {
             "mode": "idle",
             "capture_ms": 0.0,
@@ -1057,26 +1058,37 @@ class SessionController:
         return any(token in normalized for token in triggers)
 
     def _capture_screen_text(self, *, decision_source: str) -> str | None:
-        frame = self._screen.capture_once()
+        frame, region = self._screen.capture_once_with_region()
         self._last_screen_capture_at = time.monotonic()
         if frame is None:
             self._trace("screen.capture", "Screen capture unavailable.")
+            self._last_screen_elements = []
             return None
 
-        text = (self._ocr.extract_text(frame) or "").strip()
-        text = " ".join(text.split())
+        screen_left = int((region or {}).get("left", 0))
+        screen_top = int((region or {}).get("top", 0))
+        elements = self._ocr.extract_elements(
+            frame, screen_left=screen_left, screen_top=screen_top
+        )
         used_fallback = False
-        if not text and bool(getattr(self._settings.screen, "capture_active_window_only", False)):
+        if not elements and bool(getattr(self._settings.screen, "capture_active_window_only", False)):
             self._trace(
                 "screen.capture",
-                "Active-window OCR returned no text; retrying full monitor capture.",
+                "Active-window OCR returned no elements; retrying full monitor capture.",
             )
-            fallback_frame = self._screen.capture_once(active_window_only=False)
+            fb_frame, fb_region = self._screen.capture_once_with_region(active_window_only=False)
             self._last_screen_capture_at = time.monotonic()
-            if fallback_frame is not None:
-                text = (self._ocr.extract_text(fallback_frame) or "").strip()
-                text = " ".join(text.split())
+            if fb_frame is not None:
+                fb_left = int((fb_region or {}).get("left", 0))
+                fb_top = int((fb_region or {}).get("top", 0))
+                elements = self._ocr.extract_elements(
+                    fb_frame, screen_left=fb_left, screen_top=fb_top
+                )
                 used_fallback = True
+
+        self._last_screen_elements = elements
+        text = " ".join(e["text"] for e in elements).strip()
+        text = " ".join(text.split())
 
         if not text:
             self._trace("screen.capture", "OCR returned no text.")
@@ -1113,7 +1125,8 @@ class SessionController:
         self._trace(
             "screen.capture",
             (
-                f"Captured screen context ({len(text)} chars, source={decision_source}"
+                f"Captured screen context ({len(text)} chars, "
+                f"{len(elements)} elements, source={decision_source}"
                 f", fallback={'yes' if used_fallback else 'no'})."
             ),
         )
@@ -1278,6 +1291,16 @@ class SessionController:
             if role in {"user", "assistant"} and content:
                 recent_lines.append(f"{role}: {content}")
 
+        # Build a structured element list so the planner uses real coordinates.
+        elements_lines: list[str] = []
+        for el in self._last_screen_elements[:60]:
+            el_text = str(el.get("text", "")).strip()
+            if el_text:
+                elements_lines.append(
+                    f"- \"{el_text}\" at ({el['cx']}, {el['cy']}) size {el['w']}x{el['h']}"
+                )
+        elements_block = "\n".join(elements_lines) if elements_lines else "[none detected]"
+
         planner = self._thinking_ollama or self._ollama
         try:
             raw = planner.chat(
@@ -1289,8 +1312,10 @@ class SessionController:
                             "Return exactly one JSON object with keys: "
                             "type, x, y, text, confidence, reason. "
                             "Allowed types: none, click, type_text. "
-                            "Use click only when you can infer a concrete target. "
-                            "If uncertain, return type='none'. "
+                            "For click and type_text, x and y MUST be exact coordinates "
+                            "copied from the 'Detected UI elements' list below — "
+                            "do NOT invent or estimate coordinates. "
+                            "If no element matches the action, return type='none'. "
                             "confidence must be 0.0 to 1.0."
                         ),
                     },
@@ -1300,7 +1325,8 @@ class SessionController:
                             f"Latest user message:\n{user_text.strip()}\n\n"
                             f"Assistant draft reply:\n{assistant_reply.strip()}\n\n"
                             f"Recent conversation:\n{chr(10).join(recent_lines) or '[none]'}\n\n"
-                            f"OCR screen text:\n{(screen_text or '[none]')[:5000]}"
+                            f"Detected UI elements (text → screen coordinates):\n{elements_block}\n\n"
+                            f"Full OCR text:\n{(screen_text or '[none]')[:3000]}"
                         ),
                     },
                 ]

@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import ctypes
 from ctypes import wintypes
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import numpy as np
 
 from app.core.settings import ScreenSettings
 
@@ -11,18 +15,27 @@ class ScreenCaptureService:
         self._settings = settings
 
     def capture_once(self, *, active_window_only: bool | None = None):
+        frame, _ = self.capture_once_with_region(active_window_only=active_window_only)
+        return frame
+
+    def capture_once_with_region(
+        self, *, active_window_only: bool | None = None
+    ) -> tuple:
+        """Return ``(frame, region)`` where *region* is a dict with ``left``,
+        ``top``, ``width``, ``height`` in screen (logical pixel) coordinates.
+        Either value may be *None* if capture fails."""
         try:
             import mss
             import numpy as np
         except Exception:
-            return None
+            return None, None
 
         with mss.mss() as sct:
             monitors = sct.monitors
             monitor_index = int(getattr(self._settings, "monitor_index", 1))
 
             if not monitors:
-                return None
+                return None, None
 
             if monitor_index < 0:
                 monitor_index = 1
@@ -41,10 +54,16 @@ class ScreenCaptureService:
                     monitor = region
 
             frame = sct.grab(monitor)
+            region_dict = {
+                "left": int(monitor.get("left", 0)),
+                "top": int(monitor.get("top", 0)),
+                "width": int(monitor.get("width", 0)),
+                "height": int(monitor.get("height", 0)),
+            }
             array = np.asarray(frame)
             if array.ndim == 3 and array.shape[2] >= 3:
-                return array[:, :, :3]
-            return array
+                return array[:, :, :3], region_dict
+            return array, region_dict
 
     @staticmethod
     def _active_window_region_within_monitor(monitor: dict) -> dict | None:
