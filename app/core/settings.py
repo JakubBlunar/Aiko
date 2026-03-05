@@ -49,7 +49,6 @@ class AssistantSettings:
     name: str
     mode: str
     remember_history: bool
-    personality: str
     background: str
     thinking_model: str | None
 
@@ -266,7 +265,6 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             name=_required(assistant, "name"),
             mode=_required(assistant, "mode"),
             remember_history=bool(_required(assistant, "remember_history")),
-            personality=str(assistant.get("personality", "friendly")),
             background=str(assistant.get("background", "")).strip(),
             thinking_model=(
                 str(assistant.get("thinking_model")).strip()
@@ -375,7 +373,6 @@ def save_runtime_preferences(
     *,
     chat_model: str,
     thinking_model: str | None,
-    personality: str,
     remember_history: bool,
     microphone_device: int | None,
     loopback_device: int | None,
@@ -410,7 +407,6 @@ def save_runtime_preferences(
             "chat_model": chat_model,
         },
         "assistant": {
-            "personality": personality,
             "remember_history": bool(remember_history),
             "thinking_model": thinking_model,
         },

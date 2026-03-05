@@ -2,7 +2,6 @@ assistant:
   name: "Assistant"
   mode: "natural_chat"
   remember_history: true
-  personality: "friendly"
   background: ""
   thinking_model: null
 
@@ -48,7 +47,7 @@ actions:
   dry_run: true
   require_confirmation: true
   decision_mode: "explicit_only"
-  max_actions_per_turn: 1
+  max_actions_per_turn: 10
   min_confidence: 0.75
   min_action_interval_seconds: 1.0
   emergency_hotkey: "ctrl+alt+f12"

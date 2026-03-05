@@ -42,7 +42,6 @@ def _app_settings() -> AppSettings:
             name="Assistant",
             mode="natural_chat",
             remember_history=True,
-            personality="friendly",
             background="",
             thinking_model=None,
         ),

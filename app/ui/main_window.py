@@ -217,11 +217,6 @@ class MainWindow(QMainWindow):
         models_group.setLayout(models_layout)
 
         controls_form = QFormLayout()
-        self._personality_combo = QComboBox()
-        self._personality_combo.setMinimumWidth(120)
-        self._personality_combo.currentIndexChanged.connect(self._on_personality_changed)
-        controls_form.addRow("Personality:", self._personality_combo)
-
         self._model_combo = QComboBox()
         self._model_combo.setMinimumWidth(180)
         self._model_combo.currentIndexChanged.connect(self._on_model_changed)
@@ -426,7 +421,6 @@ class MainWindow(QMainWindow):
         self._refresh_status()
         self._refresh_ocr_profiles()
         self._refresh_audio_devices()
-        self._refresh_personalities()
         self._refresh_models()
         self._refresh_tts_providers()
         self._refresh_tts_voices()
@@ -472,7 +466,6 @@ class MainWindow(QMainWindow):
             self._ocr_profile_combo,
             self._mic_device_combo,
             self._loopback_device_combo,
-            self._personality_combo,
             self._model_combo,
             self._thinking_model_combo,
             self._tts_provider_combo,
@@ -530,7 +523,6 @@ class MainWindow(QMainWindow):
             screen=self._screen_checkbox.isChecked(),
         )
         self._session.set_remember_history(self._memory_checkbox.isChecked())
-        self._session.set_personality(str(self._personality_combo.currentData() or "friendly"))
         self._session.set_chat_model(str(self._model_combo.currentData() or self._session.chat_model))
         thinking_model = self._thinking_model_combo.currentData()
         self._session.set_thinking_model(str(thinking_model) if thinking_model else None)
@@ -768,18 +760,6 @@ class MainWindow(QMainWindow):
         if loopback_index >= 0:
             self._loopback_device_combo.setCurrentIndex(loopback_index)
 
-    def _refresh_personalities(self) -> None:
-        current = self._session.personality
-        self._personality_combo.clear()
-        for key in self._session.list_personalities():
-            self._personality_combo.addItem(key.title(), key)
-
-        index = self._personality_combo.findData(current)
-        if index < 0:
-            index = self._personality_combo.findData("friendly")
-        if index >= 0:
-            self._personality_combo.setCurrentIndex(index)
-
     def _refresh_ocr_profiles(self) -> None:
         current = normalize_screen_ocr_profile(self._settings.screen.ocr_profile)
         self._ocr_profile_combo.clear()
@@ -797,10 +777,6 @@ class MainWindow(QMainWindow):
         if selected == normalize_screen_ocr_profile(self._settings.screen.ocr_profile):
             return
         apply_screen_ocr_profile(self._settings.screen, selected)
-        self._persist_preferences()
-
-    def _on_personality_changed(self) -> None:
-        self._session.set_personality(str(self._personality_combo.currentData() or "friendly"))
         self._persist_preferences()
 
     def _refresh_models(self) -> None:
@@ -991,7 +967,6 @@ class MainWindow(QMainWindow):
         save_runtime_preferences(
             chat_model=self._session.chat_model,
             thinking_model=self._session.thinking_model,
-            personality=str(self._personality_combo.currentData() or "friendly"),
             remember_history=self._memory_checkbox.isChecked(),
             microphone_device=self._mic_device_combo.currentData(),
             loopback_device=self._loopback_device_combo.currentData(),
@@ -1047,7 +1022,6 @@ class MainWindow(QMainWindow):
         self._trace_viewer_button.setEnabled(not busy)
         self._test_ocr_button.setEnabled(not busy)
         self._refresh_devices_button.setEnabled(not busy)
-        self._personality_combo.setEnabled(not busy)
         self._ocr_profile_combo.setEnabled(not busy)
         self._model_combo.setEnabled(not busy)
         self._thinking_model_combo.setEnabled(not busy)
@@ -1161,7 +1135,6 @@ class MainWindow(QMainWindow):
         self._trace_viewer_button.setEnabled(False)
         self._test_ocr_button.setEnabled(False)
         self._refresh_devices_button.setEnabled(False)
-        self._personality_combo.setEnabled(False)
         self._ocr_profile_combo.setEnabled(False)
         self._model_combo.setEnabled(False)
         self._thinking_model_combo.setEnabled(False)
@@ -1201,7 +1174,6 @@ class MainWindow(QMainWindow):
         self._trace_viewer_button.setEnabled(True)
         self._test_ocr_button.setEnabled(True)
         self._refresh_devices_button.setEnabled(True)
-        self._personality_combo.setEnabled(True)
         self._ocr_profile_combo.setEnabled(True)
         self._model_combo.setEnabled(True)
         self._thinking_model_combo.setEnabled(True)

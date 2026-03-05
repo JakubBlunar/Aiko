@@ -26,7 +26,6 @@ from app.core.tooling import ToolContext, ToolExecutor, ToolRegistry, load_tooli
 from app.core.tooling.tools import ActionExecutePlanTool, build_default_tools
 from app.core.turn_manager import TurnInput, TurnManager
 from app.llm.ollama_client import OllamaClient
-from app.llm.prompt_builder import available_personalities
 from app.stt.whisper_service import WhisperService
 from app.tts.llasa_service import LlasaTtsService
 from app.tts.piper_service import PiperTtsService
@@ -153,7 +152,6 @@ class SessionController:
         self._vad_silence_seconds = settings.audio.vad_silence_seconds
         self._microphone_device = settings.audio.microphone_device
         self._loopback_device = settings.audio.loopback_device
-        self._personality = settings.assistant.personality
         self._remember_history = settings.assistant.remember_history
         self._active_goal = settings.autonomy.default_goal
         self._active_goal_description: str = ""
@@ -258,17 +256,6 @@ class SessionController:
 
     def set_action_min_interval_seconds(self, value: float) -> None:
         self._settings.actions.min_action_interval_seconds = max(0.0, float(value))
-
-    @property
-    def personality(self) -> str:
-        return self._personality
-
-    def list_personalities(self) -> list[str]:
-        return available_personalities()
-
-    def set_personality(self, value: str) -> None:
-        valid = set(available_personalities())
-        self._personality = value if value in valid else "friendly"
 
     @property
     def tts_provider(self) -> str:
@@ -953,7 +940,6 @@ class SessionController:
                 user_text=user_text,
                 screen_text=screen_context_for_llm,
                 system_audio_text=system_audio_text,
-                personality=self._personality,
                 persona_background=str(persona_snapshot.get("assistant_background", "")),
                 persona_user_notes=list(persona_snapshot.get("user_notes", [])),
                 persona_response_style=str(persona_snapshot.get("response_style", "balanced")),

@@ -7,26 +7,12 @@ _NO_EMOJI_RULE = (
     "Never use emoji, emoticons, or text-based smileys such as :) :-) ;) :D =) in your replies."
 )
 
-PERSONALITY_SYSTEM_PROMPTS: dict[str, str] = {
-    "friendly": (
-        "You are a friendly English conversation partner helping the user improve fluency and response speed. "
-        "Keep replies concise, natural, and easy to continue. "
-        "Do not force grammar corrections unless the user asks. "
-        + _NO_EMOJI_RULE
-    ),
-    "coach": (
-        "You are an English speaking coach focused on fluency. "
-        "Use supportive tone, give short practical suggestions, and keep conversation natural. "
-        "Only correct mistakes when they block understanding or when user asks. "
-        + _NO_EMOJI_RULE
-    ),
-    "interviewer": (
-        "You are an English interviewer for practice. "
-        "Ask realistic follow-up questions and keep a professional but friendly tone. "
-        "Prioritize helping the user think and respond quickly in English. "
-        + _NO_EMOJI_RULE
-    ),
-}
+BASE_SYSTEM_PROMPT = (
+    "You are an English conversation partner helping the user improve fluency and response speed. "
+    "Keep replies concise, natural, and easy to continue. "
+    "Do not force grammar corrections unless the user asks. "
+    + _NO_EMOJI_RULE
+)
 
 
 @dataclass(slots=True)
@@ -34,7 +20,6 @@ class PromptContext:
     user_text: str
     screen_text: str | None = None
     system_audio_text: str | None = None
-    personality: str = "friendly"
     persona_background: str | None = None
     persona_user_notes: list[str] | None = None
     persona_response_style: str | None = None
@@ -45,14 +30,8 @@ class PromptContext:
     goal_description: str | None = None
     available_capabilities: list[str] | None = None
 
-
-def available_personalities() -> list[str]:
-    return list(PERSONALITY_SYSTEM_PROMPTS.keys())
-
-
 def build_messages(context: PromptContext) -> list[dict[str, str]]:
-    personality_key = (context.personality or "friendly").strip().lower()
-    system = PERSONALITY_SYSTEM_PROMPTS.get(personality_key, PERSONALITY_SYSTEM_PROMPTS["friendly"])
+    system = BASE_SYSTEM_PROMPT
 
     persona_lines: list[str] = []
     background = str(context.persona_background or "").strip()

@@ -10,7 +10,6 @@ class TurnInput:
     user_text: str
     screen_text: str | None = None
     system_audio_text: str | None = None
-    personality: str = "friendly"
     persona_background: str | None = None
     persona_user_notes: list[str] | None = None
     persona_response_style: str | None = None
@@ -28,7 +27,6 @@ class TurnManager:
             user_text=turn_input.user_text,
             screen_text=turn_input.screen_text,
             system_audio_text=turn_input.system_audio_text,
-            personality=turn_input.personality,
             persona_background=turn_input.persona_background,
             persona_user_notes=turn_input.persona_user_notes,
             persona_response_style=turn_input.persona_response_style,
