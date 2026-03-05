@@ -4,24 +4,42 @@ from collections.abc import Callable
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import hashlib
-import json
 from pathlib import Path
 import re
 import time
-import unicodedata
 
 from app.core.tooling.runtime.action_runtime import (
     ActionExecutionResult,
-    ActionPlan,
     GuardedActionExecutor,
-    PlannedAction,
 )
 from app.core.tooling.runtime.emergency_stop import EmergencyStopState, GlobalHotkeyListener
 from app.audio.mic_capture import MicrophoneCapture
+from app.core.planning.action_planner import ActionPlanner
+from app.core.planning.autonomy_planner import AutonomyPlanner, GoalInference
+from app.core.planning.turn_orchestrator import TurnAutonomyPlan, TurnOrchestrator, TurnOrchestratorPlan
+from app.core.services.action_execution_service import ActionExecutionService
+from app.core.services.action_response_service import (
+    build_post_action_followup,
+    normalize_action_narration,
+)
 from app.core.conversation_memory import ConversationMemoryStore
 from app.core.crash_logging import log_event, log_handled_exception
+from app.core.sessions.chat_session import ChatSession
+from app.core.sessions.reading_session import ReadingSessionConfig, ReadingSessionManager
+from app.core.sessions.reading_session_adapter import ReadingSessionAdapter
+from app.core.sessions.session_router import SessionRouter
+from app.core.sessions.session_types import SessionHandler, SessionRuntimeContext
 from app.core.settings import AppSettings, OllamaSettings
+from app.core.services.response_text_service import extract_tts_reaction_tag, strip_action_meta_for_tts
+from app.core.session_text_utils import (
+    drain_tts_stream_chunks,
+    extract_json_object,
+    infer_tts_reaction,
+    prepare_tts_text,
+    sanitize_assistant_text,
+    sanitize_user_text,
+)
+from app.core.services.screen_context_service import ScreenContextService
 from app.core.tooling import ToolContext, ToolExecutor, ToolRegistry, load_tooling_config
 from app.core.tooling.tools import ActionExecutePlanTool, build_default_tools
 from app.core.tooling.types import ToolError, ToolResult
@@ -40,38 +58,7 @@ class SessionState:
     screen_enabled: bool
 
 
-@dataclass(slots=True)
-class TurnAutonomyPlan:
-    strategy: str
-    should_use_screen: bool
-    should_plan_action: bool
-    ask_followup: bool
-    confidence: float
-    action_intent: str = ""
-
-
-@dataclass(slots=True)
-class GoalInference:
-    goal: str
-    confidence: float
-    reason: str
-    description: str = ""
-
-
 class SessionController:
-    _REACTION_TAG_PATTERN = re.compile(
-        r"\[\[reaction:(neutral|excited|surprised|sad|angry|calm)\]\]",
-        flags=re.IGNORECASE,
-    )
-    _ACTION_META_LINE_PATTERN = re.compile(
-        r"^(\[plan\]|\[action\]|system:\s*step\s+\d+|step\s+\d+\s*\(|awaiting confirmation)",
-        flags=re.IGNORECASE,
-    )
-    _ACTION_COMPLETION_CLAIM_PATTERN = re.compile(
-        r"\b(i|we)\s+(just\s+)?(clicked|pressed|typed|wrote|opened|selected|filled|entered|focused|navigated)\b",
-        flags=re.IGNORECASE,
-    )
-
     def __init__(self, settings: AppSettings) -> None:
         self._settings = settings
         self._turn_manager = TurnManager()
@@ -183,28 +170,71 @@ class SessionController:
         self._remember_history = settings.assistant.remember_history
         self._active_goal = settings.autonomy.default_goal
         self._active_goal_description: str = ""
-        self._last_screen_decision_at = 0.0
-        self._last_screen_text = ""
-        self._last_screen_text_at = 0.0
         self._last_screen_elements: list[dict] = []
         self._open_windows: list[dict] = []
         self._all_windows: list[dict] = []
         self._foreground_window_title: str = ""
-        self._reading_session_memory_enabled = bool(settings.autonomy.reading_session_memory_enabled)
-        self._reading_max_scroll_steps = max(1, int(settings.autonomy.reading_max_scroll_steps))
-        self._reading_max_quotes = max(1, int(settings.autonomy.reading_max_quotes))
-        self._reading_max_quote_chars = max(120, int(settings.autonomy.reading_max_quote_chars))
-        self._reading_trusted_window_titles = [
-            str(item).strip().lower()
-            for item in (settings.autonomy.reading_trusted_window_titles or [])
-            if str(item).strip()
-        ]
-        self._reading_active = False
-        self._reading_window_title = ""
-        self._reading_chunks: list[str] = []
-        self._reading_chunk_hashes: set[str] = set()
-        self._reading_scroll_steps = 0
-        self._reading_last_summary = ""
+        self._reading_session = ReadingSessionManager(
+            ReadingSessionConfig(
+                memory_enabled=bool(settings.autonomy.reading_session_memory_enabled),
+                max_scroll_steps=max(1, int(settings.autonomy.reading_max_scroll_steps)),
+                max_quotes=max(1, int(settings.autonomy.reading_max_quotes)),
+                max_quote_chars=max(120, int(settings.autonomy.reading_max_quote_chars)),
+                trusted_window_titles=list(settings.autonomy.reading_trusted_window_titles or []),
+            )
+        )
+        self._session_handlers: dict[str, SessionHandler] = {
+            "chat": ChatSession(),
+            "reading": ReadingSessionAdapter(self._reading_session),
+        }
+        self._session_router = SessionRouter(
+            supported_session_types=set(self._session_handlers.keys()),
+            default_session_type="chat",
+        )
+        self._active_session_type, _ = self._session_router.resolve(
+            inferred_session_type="chat",
+            inferred_goal=self._active_goal,
+            current_session_type="chat",
+        )
+        self._active_session = self._session_handlers[self._active_session_type]
+        self._turn_orchestrator = TurnOrchestrator(
+            planner_chat=lambda messages: (self._thinking_ollama or self._ollama).chat(messages),
+            history_messages=lambda limit: self._history_messages(limit=limit),
+            extract_json_object=extract_json_object,
+            trace=self._trace,
+        )
+        self._autonomy_planner = AutonomyPlanner(
+            planner_chat=lambda messages: (self._thinking_ollama or self._ollama).chat(messages),
+            history_messages=lambda limit: self._history_messages(limit=limit),
+            extract_json_object=extract_json_object,
+            trace=self._trace,
+        )
+        self._action_planner = ActionPlanner(
+            planner_chat=lambda messages: (self._thinking_ollama or self._ollama).chat(messages),
+            history_messages=lambda limit: self._history_messages(limit=limit),
+            extract_json_object=extract_json_object,
+            trace=self._trace,
+        )
+        self._screen_context = ScreenContextService(
+            screen_settings=self._settings.screen,
+            planner_chat=lambda messages: (self._thinking_ollama or self._ollama).chat(messages),
+            history_messages=lambda limit: self._history_messages(limit=limit),
+            invoke_tool=self._invoke_tool,
+            trace=self._trace,
+            screen_capture_once_with_region=self._screen.capture_once_with_region,
+            screen_capture_once=self._screen.capture_once,
+        )
+        self._action_execution = ActionExecutionService(
+            actions_settings=self._settings.actions,
+            action_planner=self._action_planner,
+            capture_screen_text=self._capture_screen_text,
+            invoke_tool=self._invoke_tool,
+            trace=self._trace,
+            screen_enabled=lambda: bool(self._state.screen_enabled),
+            active_goal=lambda: self._active_goal,
+            last_screen_elements=lambda: list(self._last_screen_elements),
+            all_windows=lambda: list(self._all_windows),
+        )
         self._last_metrics: dict[str, float | str] = {
             "mode": "idle",
             "capture_ms": 0.0,
@@ -362,11 +392,11 @@ class SessionController:
     def speak_text(self, text: str) -> bool:
         if not bool(getattr(self._settings.tts, "enabled", True)):
             return False
-        message = self._prepare_tts_text(text)
+        message = prepare_tts_text(text)
         if not message:
             return False
         try:
-            reaction = self._infer_tts_reaction(message)
+            reaction = infer_tts_reaction(message)
             self._tts.speak_async(message, reaction=reaction)
             return True
         except Exception as exc:
@@ -508,6 +538,10 @@ class SessionController:
     def active_goal(self) -> str:
         return self._active_goal
 
+    @property
+    def active_session_type(self) -> str:
+        return str(getattr(self, "_active_session_type", "chat") or "chat")
+
     def get_decision_trace(self, max_entries: int = 300) -> list[dict[str, str]]:
         capped = max(1, max_entries)
         items = list(self._decision_trace)
@@ -519,15 +553,10 @@ class SessionController:
         self._decision_trace.clear()
 
     def stop_reading_session(self) -> bool:
-        was_active = bool(self._reading_active)
-        self._reading_active = False
-        self._reading_window_title = ""
-        self._reading_chunks.clear()
-        self._reading_chunk_hashes.clear()
-        self._reading_scroll_steps = 0
-        self._reading_last_summary = ""
-        self._trace("reading.stop", "Reading session cleared by user request.")
-        return was_active
+        reading = self._session_handlers.get("reading")
+        if reading is None:
+            return False
+        return bool(reading.stop(self._trace))
 
     @property
     def emergency_hotkey(self) -> str:
@@ -572,7 +601,7 @@ class SessionController:
         result = self._action_executor.approve_pending_action()
         self._trace("action.confirmation", result.message)
         followups: list[str] = []
-        followup = self._build_post_action_followup(
+        followup = build_post_action_followup(
             result,
             require_confirmation=self._settings.actions.require_confirmation,
         )
@@ -626,13 +655,16 @@ class SessionController:
         }
 
     def get_reading_status(self) -> dict[str, bool | int | str]:
-        return {
-            "active": bool(self._reading_active),
-            "window": str(self._reading_window_title or ""),
-            "chunks": int(len(self._reading_chunks)),
-            "scroll_steps": int(self._reading_scroll_steps),
-            "max_scroll_steps": int(self._reading_max_scroll_steps),
-        }
+        reading = self._session_handlers.get("reading")
+        if reading is None:
+            return {
+                "active": False,
+                "window": "",
+                "chunks": 0,
+                "scroll_steps": 0,
+                "max_scroll_steps": 0,
+            }
+        return reading.get_status()
 
     def reset_latency_metrics(self) -> None:
         self._last_metrics = {
@@ -931,7 +963,7 @@ class SessionController:
         self._trace("pipeline.turn.start", f"mode={mode}")
         self._tool_executor.reset_turn_budget()
         raw_user_text = str(user_text or "")
-        user_text = self._sanitize_user_text(raw_user_text)
+        user_text = sanitize_user_text(raw_user_text)
         if raw_user_text.strip() and not user_text:
             self._trace("pipeline.input.drop", "Input became empty after sanitization")
             self._set_last_metrics(
@@ -980,29 +1012,41 @@ class SessionController:
                 confidence=0.4,
                 action_intent="",
             )
+        self._route_session_for_turn(user_text=user_text)
+        session_signals = self._active_session.detect_turn_signals(user_text)
         screen_intent = self._is_screen_intent(user_text)
-        reading_intent = self._is_reading_intent(user_text)
-        continue_reading = self._is_continue_reading_request(user_text)
+        reading_intent = bool(session_signals.wants_screen_context)
+        continue_reading = bool(session_signals.wants_continue)
+        orchestration_plan = self._plan_turn_orchestration(
+            user_text=user_text,
+            autonomy_plan=autonomy_plan,
+            screen_intent=screen_intent,
+            reading_intent=reading_intent,
+            continue_reading=continue_reading,
+        )
+        autonomy_plan.strategy = orchestration_plan.strategy
+
         screen_text = None
         should_capture = False
         decision_source = "none"
-        if autonomy_plan.should_use_screen:
+        if orchestration_plan.should_capture_screen and self._state.screen_enabled:
             should_capture = True
-            decision_source = "autonomy"
-        else:
+            decision_source = "orchestrator"
+        elif not orchestration_plan.should_capture_screen:
             should_capture, decision_source = self._should_capture_screen(user_text=user_text)
 
-        if reading_intent and self._state.screen_enabled:
-            should_capture = True
-            decision_source = "reading_intent"
-
-        if continue_reading and self._reading_active:
+        if orchestration_plan.has_operation("continue_session") and self._active_session.is_active():
             should_capture = True
             decision_source = "reading_session"
 
         if should_capture:
             screen_text = self._capture_screen_text(decision_source=decision_source)
-            self._update_reading_session(user_text=user_text, screen_text=screen_text)
+            self._active_session.on_screen_text(
+                user_text=user_text,
+                screen_text=screen_text,
+                foreground_window_title=self._foreground_window_title,
+                trace=self._trace,
+            )
         elif decision_source == "disabled":
             self._trace(
                 "screen.capture",
@@ -1078,7 +1122,7 @@ class SessionController:
         if win_header_parts:
             screen_context_for_llm = "\n".join(win_header_parts) + "\n\n" + (screen_context_for_llm or "")
 
-        reading_context = self._build_reading_context_for_prompt()
+        reading_context = self._active_session.build_prompt_context()
         if reading_context:
             screen_context_for_llm = ((screen_context_for_llm or "").strip() + "\n\n" + reading_context).strip()
 
@@ -1090,6 +1134,7 @@ class SessionController:
         messages = self._turn_manager.build_chat_messages(
             TurnInput(
                 user_text=user_text,
+                session_type=self._active_session_type,
                 user_vocal_tone=user_vocal_tone,
                 screen_text=screen_context_for_llm,
                 persona_background=str(persona_snapshot.get("assistant_background", "")),
@@ -1134,7 +1179,7 @@ class SessionController:
             # Reliability guard: keep token streaming in UI, but use full-response TTS playback.
             can_stream_tts = False
             if on_token is None:
-                response = self._sanitize_assistant_text(
+                response = sanitize_assistant_text(
                     self._ollama.chat(messages, options=generation_options)
                 )
             else:
@@ -1142,7 +1187,7 @@ class SessionController:
                 for token in self._ollama.chat_stream(messages, options=generation_options):
                     if stop_requested and stop_requested():
                         break
-                    safe_token = self._sanitize_assistant_text(
+                    safe_token = sanitize_assistant_text(
                         token,
                         preserve_newlines=False,
                         trim=False,
@@ -1153,12 +1198,12 @@ class SessionController:
                     on_token(safe_token)
                     if can_stream_tts:
                         stream_tts_buffer += safe_token
-                        ready_chunks, stream_tts_buffer = self._drain_tts_stream_chunks(
+                        ready_chunks, stream_tts_buffer = drain_tts_stream_chunks(
                             stream_tts_buffer,
                             flush=False,
                         )
                         for chunk in ready_chunks:
-                            tts_chunk = self._prepare_tts_text(chunk)
+                            tts_chunk = prepare_tts_text(chunk)
                             if tts_chunk and callable(enqueue_tts):
                                 queued_ok = bool(enqueue_tts(tts_chunk))
                                 if queued_ok:
@@ -1168,12 +1213,12 @@ class SessionController:
                                     self._trace("pipeline.tts.enqueue", "chunk enqueue failed")
                 response = "".join(pieces).strip()
                 if can_stream_tts and stream_tts_buffer.strip():
-                    ready_chunks, stream_tts_buffer = self._drain_tts_stream_chunks(
+                    ready_chunks, stream_tts_buffer = drain_tts_stream_chunks(
                         stream_tts_buffer,
                         flush=True,
                     )
                     for chunk in ready_chunks:
-                        tts_chunk = self._prepare_tts_text(chunk)
+                        tts_chunk = prepare_tts_text(chunk)
                         if tts_chunk and callable(enqueue_tts):
                             queued_ok = bool(enqueue_tts(tts_chunk))
                             if queued_ok:
@@ -1201,7 +1246,7 @@ class SessionController:
                 f"Details: {exc}"
             )
 
-        explicit_reaction, response = self._extract_tts_reaction_tag(response)
+        explicit_reaction, response = extract_tts_reaction_tag(response)
         if explicit_reaction:
             self._trace("pipeline.tts.reaction", f"explicit={explicit_reaction}")
 
@@ -1211,15 +1256,18 @@ class SessionController:
 
         self._trace("pipeline.action.start", f"mode={mode}")
         try:
-            reading_action_intent = self._reading_action_intent(user_text)
-            action_result = self._maybe_execute_action(
-                user_text=user_text,
-                assistant_reply=response,
-                screen_text=screen_text,
-                allow_planning_override=autonomy_plan.should_plan_action,
-                action_intent=(autonomy_plan.action_intent or reading_action_intent),
-                on_token=on_token,
-            )
+            if orchestration_plan.should_plan_action:
+                action_result = self._maybe_execute_action(
+                    user_text=user_text,
+                    assistant_reply=response,
+                    screen_text=screen_text,
+                    allow_planning_override=True,
+                    action_intent=orchestration_plan.action_intent,
+                    on_token=on_token,
+                )
+            else:
+                self._trace("pipeline.action.skip", "orchestrator decided no action")
+                action_result = None
         except Exception as exc:
             log_handled_exception(exc, context="session.action_execution")
             self._trace("pipeline.action.error", str(exc))
@@ -1236,10 +1284,10 @@ class SessionController:
         )
 
         if action_result is not None and self._settings.actions.require_confirmation:
-            response = self._normalize_action_narration(response, action_result)
+            response = normalize_action_narration(response, action_result)
 
         # Keep the pure conversational text for TTS — action status lines are UI-only.
-        llm_response_for_tts = self._strip_action_meta_for_tts(response)
+        llm_response_for_tts = strip_action_meta_for_tts(response)
 
         if action_result is not None and action_result.message:
             prefix = "[Action]" if action_result.executed or action_result.requires_confirmation else "[Note]"
@@ -1248,7 +1296,7 @@ class SessionController:
                 on_token(action_suffix)
             response = f"{response}{action_suffix}".strip()
 
-            post_action_followup = self._build_post_action_followup(
+            post_action_followup = build_post_action_followup(
                 action_result,
                 require_confirmation=self._settings.actions.require_confirmation,
             )
@@ -1258,14 +1306,14 @@ class SessionController:
                     on_token(followup_suffix)
                 response = f"{response}{followup_suffix}".strip()
 
-        if reading_intent or continue_reading or self._is_reading_evidence_request(user_text):
-            evidence_suffix = self._build_reading_evidence_block()
+        if orchestration_plan.has_operation("include_session_evidence") or session_signals.wants_evidence:
+            evidence_suffix = self._active_session.build_evidence_block(self._trace)
             if evidence_suffix:
                 response = f"{response}\n\n{evidence_suffix}".strip()
                 if on_token:
                     on_token(f"\n\n{evidence_suffix}")
 
-        response = self._sanitize_assistant_text(response)
+        response = sanitize_assistant_text(response)
 
         if self._remember_history:
             try:
@@ -1299,9 +1347,9 @@ class SessionController:
 
         if should_speak_full_response:
             try:
-                tts_text = self._prepare_tts_text(self._strip_action_meta_for_tts(llm_response_for_tts))
+                tts_text = prepare_tts_text(strip_action_meta_for_tts(llm_response_for_tts))
                 if tts_text:
-                    reaction = explicit_reaction or self._infer_tts_reaction(llm_response_for_tts)
+                    reaction = explicit_reaction or infer_tts_reaction(llm_response_for_tts)
                     self._tts.speak_async(tts_text, reaction=reaction)
                     self._trace("pipeline.tts.reaction", f"reaction={reaction}")
                     self._trace("pipeline.tts.speak", f"chars={len(tts_text)}")
@@ -1365,127 +1413,45 @@ class SessionController:
         return result.data
 
     def _plan_turn_autonomy(self, *, user_text: str) -> TurnAutonomyPlan:
-        defaults = TurnAutonomyPlan(
-            strategy="Respond naturally, concise first, ask one focused follow-up when useful.",
-            should_use_screen=False,
-            should_plan_action=False,
-            ask_followup=True,
-            confidence=0.4,
-            action_intent="",
-        )
-
         if not self._settings.autonomy.enabled:
-            return defaults
-
-        recent_memory = self._history_messages(limit=6)
-        recent_lines: list[str] = []
-        for item in recent_memory:
-            role = str(item.get("role", "")).strip().lower()
-            content = str(item.get("content", "")).strip()
-            if role in {"user", "assistant"} and content:
-                recent_lines.append(f"{role}: {content}")
-
-        # Build capability list from the registered tooling interface.
-        caps: list[str] = ["- respond_to_user (always available)"]
-        for tool_name in self._tool_executor.list_available_tools():
-            caps.append(f"- tool:{tool_name}")
-        if self._settings.actions.enabled:
-            caps.append("- execute_click: click a UI element at given screen coordinates")
-            caps.append("- execute_type: type text into the focused field")
-        caps_block = "\n".join(caps)
-
-        goal_context = self._active_goal or "general_conversation"
-        goal_desc = self._active_goal_description or ""
-
-        planner = self._thinking_ollama or self._ollama
-        try:
-            raw = planner.chat(
-                [
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are an autonomous assistant turn planner. "
-                            "Given the current goal, available capabilities, and the user's message, "
-                            "decide which capabilities are needed for this turn and plan the strategy. "
-                            "Return exactly one JSON object with keys: "
-                            "strategy, should_use_screen, should_plan_action, ask_followup, confidence, action_intent. "
-                            "strategy: one short sentence under 180 chars describing the response approach. "
-                            "should_use_screen: true if reading screen context is needed to answer this turn. "
-                            "should_plan_action: true if a UI click or type action should be performed this turn. "
-                            "action_intent: if should_plan_action is true, one sentence describing the intended UI action; otherwise empty string. "
-                            "ask_followup: true if the assistant needs to ask the user a clarifying question before acting. "
-                            "IMPORTANT: should_plan_action and ask_followup are mutually exclusive — "
-                            "if you need more information first, set ask_followup=true and should_plan_action=false. "
-                            "confidence: 0.0-1.0 reflecting plan certainty. "
-                            "Use booleans for flags."
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Current goal: {goal_context}\n"
-                            + (f"Goal description: {goal_desc}\n" if goal_desc else "")
-                            + f"\nAvailable capabilities:\n{caps_block}\n\n"
-                            f"Latest user message:\n{user_text.strip()}\n\n"
-                            f"Recent conversation:\n{chr(10).join(recent_lines) or '[none]'}\n\n"
-                            "Settings:\n"
-                            f"- proactive_conversation={self._settings.autonomy.proactive_conversation}\n"
-                            f"- allow_action_suggestions={self._settings.autonomy.allow_action_suggestions}\n"
-                            f"- allow_proactive_actions={self._settings.autonomy.allow_proactive_actions}"
-                        ),
-                    },
-                ]
+            return TurnAutonomyPlan(
+                strategy="Respond naturally, concise first, ask one focused follow-up when useful.",
+                should_use_screen=False,
+                should_plan_action=False,
+                ask_followup=True,
+                confidence=0.4,
+                action_intent="",
             )
-        except Exception:
-            self._trace("autonomy.plan", "Autonomy planner unavailable; using defaults.")
-            return defaults
 
-        payload = self._extract_json_object(raw)
-        if not isinstance(payload, dict):
-            self._trace("autonomy.plan", "Autonomy planner returned invalid JSON; using defaults.")
-            return defaults
-
-        strategy = str(payload.get("strategy", defaults.strategy)).strip() or defaults.strategy
-        max_chars = max(40, int(self._settings.autonomy.max_strategy_chars))
-        strategy = strategy[:max_chars]
-
-        confidence = float(payload.get("confidence", defaults.confidence) or defaults.confidence)
-        confidence = max(0.0, min(confidence, 1.0))
-
-        action_intent = str(payload.get("action_intent", "")).strip()
-
-        plan = TurnAutonomyPlan(
-            strategy=strategy,
-            should_use_screen=bool(payload.get("should_use_screen", False)),
-            should_plan_action=bool(payload.get("should_plan_action", False)),
-            ask_followup=bool(payload.get("ask_followup", True)),
-            confidence=confidence,
-            action_intent=action_intent,
+        return self._autonomy_planner.plan_turn_autonomy(
+            user_text=user_text,
+            active_goal=self._active_goal,
+            active_goal_description=self._active_goal_description,
+            max_strategy_chars=int(self._settings.autonomy.max_strategy_chars),
+            proactive_conversation=bool(self._settings.autonomy.proactive_conversation),
+            allow_action_suggestions=bool(self._settings.autonomy.allow_action_suggestions),
+            allow_proactive_actions=bool(self._settings.autonomy.allow_proactive_actions),
+            actions_enabled=bool(self._settings.actions.enabled),
+            available_tool_names=self._tool_executor.list_available_tools(),
         )
 
-        if not self._settings.autonomy.allow_action_suggestions:
-            plan.should_plan_action = False
-        if not self._settings.autonomy.allow_proactive_actions:
-            plan.should_plan_action = False
-        if not self._settings.autonomy.proactive_conversation:
-            plan.ask_followup = False
-        # Asking a follow-up question and executing an action are mutually exclusive.
-        # If the model wants to ask something, don't fire an action this turn.
-        if plan.ask_followup:
-            plan.should_plan_action = False
-        if not plan.should_plan_action:
-            plan.action_intent = ""
-
-        self._trace(
-            "autonomy.plan",
-            (
-                f"strategy='{plan.strategy}' | screen={plan.should_use_screen} | "
-                f"action={plan.should_plan_action} | followup={plan.ask_followup} | "
-                f"confidence={round(plan.confidence, 2)}"
-                + (f" | intent='{plan.action_intent}'" if plan.action_intent else "")
-            ),
+    def _plan_turn_orchestration(
+        self,
+        *,
+        user_text: str,
+        autonomy_plan: TurnAutonomyPlan,
+        screen_intent: bool,
+        reading_intent: bool,
+        continue_reading: bool,
+    ) -> TurnOrchestratorPlan:
+        return self._turn_orchestrator.plan_turn(
+            user_text=user_text,
+            active_goal=self._active_goal,
+            autonomy_plan=autonomy_plan,
+            screen_intent=screen_intent,
+            reading_intent=reading_intent,
+            continue_reading=continue_reading,
         )
-        return plan
 
     def _update_goal_from_conversation(self, *, user_text: str) -> None:
         if not self._settings.autonomy.enabled or not self._settings.autonomy.auto_goal_switch:
@@ -1503,388 +1469,81 @@ class SessionController:
             )
             return
 
-        if inferred.goal != self._active_goal:
-            previous = self._active_goal
-            self._active_goal = inferred.goal
-            self._active_goal_description = inferred.description
-            self._trace(
-                "autonomy.goal",
-                (
-                    f"Switched goal {previous} -> {self._active_goal} "
-                    f"(confidence={round(inferred.confidence, 2)}; reason={inferred.reason or 'n/a'}; "
-                    f"desc={inferred.description or 'n/a'})"
-                ),
-            )
-
-    def _infer_goal(self, *, user_text: str) -> GoalInference:
-        recent_memory = self._history_messages(limit=8)
-        recent_lines: list[str] = []
-        for item in recent_memory:
-            role = str(item.get("role", "")).strip().lower()
-            content = str(item.get("content", "")).strip()
-            if role in {"user", "assistant"} and content:
-                recent_lines.append(f"{role}: {content}")
-
-        planner = self._thinking_ollama or self._ollama
-        try:
-            raw = planner.chat(
-                [
-                    {
-                        "role": "system",
-                        "content": (
-                            "Infer the most useful current conversation goal from dialogue context. "
-                            "Return exactly one JSON object with keys: goal, confidence, reason, description. "
-                            "goal: a short snake_case identifier for the task "
-                            "(e.g. 'tic_tac_toe', 'english_practice', 'coding_help', 'general_conversation'). "
-                            "description: one sentence describing what the user is trying to accomplish. "
-                            "confidence: 0.0-1.0 how confident you are in the inferred goal. "
-                            "reason: brief explanation of why you chose this goal."
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Current goal: {self._active_goal}\n\n"
-                            f"Latest user message:\n{user_text.strip()}\n\n"
-                            f"Recent conversation:\n{chr(10).join(recent_lines) or '[none]'}"
-                        ),
-                    },
-                ]
-            )
-        except Exception:
-            return GoalInference(goal=self._active_goal, confidence=0.0, reason="goal-planner-unavailable")
-
-        payload = self._extract_json_object(raw)
-        if not isinstance(payload, dict):
-            return GoalInference(goal=self._active_goal, confidence=0.0, reason="invalid-goal-json")
-
-        raw_goal = str(payload.get("goal", self._active_goal)).strip().lower()
-        # Sanitize to snake_case: keep alphanumeric/underscores/spaces only.
-        sanitized = re.sub(r"[^a-z0-9\s_]", "", raw_goal)
-        sanitized = re.sub(r"[\s_]+", "_", sanitized).strip("_")
-        goal = sanitized[:60] or self._active_goal
-
-        confidence = float(payload.get("confidence", 0.0) or 0.0)
-        confidence = max(0.0, min(confidence, 1.0))
-        reason = str(payload.get("reason", "")).strip()
-        description = str(payload.get("description", "")).strip()
-        return GoalInference(goal=goal, confidence=confidence, reason=reason, description=description)
-
-    def _should_capture_screen(self, *, user_text: str) -> tuple[bool, str]:
-        normalized = (user_text or "").lower()
-        if not self._state.screen_enabled:
-            return False, "disabled"
-
-        keyword_triggers = (
-            "screen",
-            "on my screen",
-            "look at",
-            "look on",
-            "check screen",
-            "check my screen",
-            "what do you see",
-            "what can you see",
-            "what's on my screen",
-            "whats on my screen",
-            "this page",
-            "this window",
-            "this code",
-            "here",
-            "shown",
-            "read this",
+        resolved_session_type, session_reason = self._session_router.resolve(
+            inferred_session_type=inferred.session_type,
+            inferred_goal=inferred.goal,
+            current_session_type=self._active_session_type,
         )
-        if any(token in normalized for token in keyword_triggers):
-            return True, "keyword"
+        previous_goal = self._active_goal
+        previous_session_type = self._active_session_type
+        goal_changed = inferred.goal != self._active_goal
+        session_changed = resolved_session_type != self._active_session_type
+        if not goal_changed and not session_changed:
+            return
 
-        now = time.monotonic()
-        decision_mode = (self._settings.screen.decision_mode or "model").lower().strip()
-        if decision_mode == "keywords":
-            return False, "keywords-only"
+        self._active_goal = inferred.goal
+        self._active_goal_description = inferred.description
+        if session_changed:
+            self._set_active_session(resolved_session_type)
 
-        cooldown = max(1, int(self._settings.screen.decision_cooldown_seconds))
-        if (now - self._last_screen_decision_at) < cooldown:
-            return False, "decision-cooldown"
-        self._last_screen_decision_at = now
-
-        recent_memory = self._history_messages(limit=4)
-        recent_lines: list[str] = []
-        for item in recent_memory:
-            role = str(item.get("role", "")).strip().lower()
-            content = str(item.get("content", "")).strip()
-            if role in {"user", "assistant"} and content:
-                recent_lines.append(f"{role}: {content}")
-        recent_text = "\n".join(recent_lines)
-
-        try:
-            decider = self._thinking_ollama or self._ollama
-            decision = decider.chat(
-                [
-                    {
-                        "role": "system",
-                        "content": (
-                            "Decide whether checking the user's current screen is needed to answer the user's latest message. "
-                            "Use latest message plus recent conversation. "
-                            "Reply with only YES or NO."
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Latest message:\n{user_text.strip()}\n\n"
-                            f"Recent conversation:\n{recent_text or '[none]'}"
-                        ),
-                    },
-                ]
-            )
-        except Exception:
-            self._trace("screen.decision", "Screen decision unavailable (model error), skipping capture.")
-            return False, "model-error"
-
-        capture = decision.strip().lower().startswith("y")
         self._trace(
-            "screen.decision",
+            "autonomy.goal",
             (
-                f"Decision={'YES' if capture else 'NO'} for latest message: "
-                f"{(user_text or '').strip()[:140]}"
+                f"Switched goal {previous_goal} -> {self._active_goal} "
+                f"(confidence={round(inferred.confidence, 2)}; reason={inferred.reason or 'n/a'}; "
+                f"desc={inferred.description or 'n/a'}; "
+                f"session={previous_session_type}->{self._active_session_type} via {session_reason})"
             ),
         )
-        return capture, "model"
+
+    def _infer_goal(self, *, user_text: str) -> GoalInference:
+        return self._autonomy_planner.infer_goal(user_text=user_text, active_goal=self._active_goal)
+
+    def _set_active_session(self, session_type: str) -> None:
+        normalized = str(session_type or "").strip().lower()
+        if normalized not in self._session_handlers:
+            normalized = "chat"
+        self._active_session_type = normalized
+        self._active_session = self._session_handlers[normalized]
+
+    def _route_session_for_turn(self, *, user_text: str) -> None:
+        current_signals = self._active_session.detect_turn_signals(user_text)
+        if current_signals.wants_continue or current_signals.wants_screen_context or current_signals.wants_evidence:
+            return
+
+        for session_type, handler in self._session_handlers.items():
+            if session_type == self._active_session_type:
+                continue
+            signals = handler.detect_turn_signals(user_text)
+            if signals.wants_continue or signals.wants_screen_context or signals.wants_evidence:
+                previous = self._active_session_type
+                self._set_active_session(session_type)
+                self._trace(
+                    "session.route",
+                    f"Switched active session {previous} -> {self._active_session_type} (intent route).",
+                )
+                return
+
+    def _should_capture_screen(self, *, user_text: str) -> tuple[bool, str]:
+        return self._screen_context.should_capture_screen(
+            user_text=user_text,
+            screen_enabled=bool(self._state.screen_enabled),
+        )
 
     @staticmethod
     def _is_screen_intent(user_text: str) -> bool:
-        normalized = (user_text or "").lower()
-        triggers = (
-            "screen",
-            "on my screen",
-            "look at",
-            "what do you see",
-            "what can you see",
-            "see this",
-            "read this",
-            "from the screen",
-        )
-        return any(token in normalized for token in triggers)
+        return ScreenContextService.is_screen_intent(user_text)
 
     def _capture_screen_text(self, *, decision_source: str) -> str | None:
-        frame, region = self._screen.capture_once_with_region()
-        if frame is None:
-            self._trace("screen.capture", "Screen capture unavailable.")
-            self._last_screen_elements = []
-            return None
-
-        screen_left = int((region or {}).get("left", 0))
-        screen_top = int((region or {}).get("top", 0))
-        screen_width = int((region or {}).get("width", 0))
-        screen_height = int((region or {}).get("height", 0))
-        elements_result = self._invoke_tool(
-            "ocr.extract_elements",
-            args={
-                "image": frame,
-                "screen_left": screen_left,
-                "screen_top": screen_top,
-                "screen_width": screen_width,
-                "screen_height": screen_height,
-            },
-        )
-        elements = list(elements_result.data.get("elements", [])) if elements_result.success else []
-        used_fallback = False
-        if not elements and bool(getattr(self._settings.screen, "capture_active_window_only", False)):
-            self._trace(
-                "screen.capture",
-                "Active-window OCR returned no elements; retrying full monitor capture.",
-            )
-            fb_frame, fb_region = self._screen.capture_once_with_region(active_window_only=False)
-            if fb_frame is not None:
-                fb_left = int((fb_region or {}).get("left", 0))
-                fb_top = int((fb_region or {}).get("top", 0))
-                fb_width = int((fb_region or {}).get("width", 0))
-                fb_height = int((fb_region or {}).get("height", 0))
-                fallback_result = self._invoke_tool(
-                    "ocr.extract_elements",
-                    args={
-                        "image": fb_frame,
-                        "screen_left": fb_left,
-                        "screen_top": fb_top,
-                        "screen_width": fb_width,
-                        "screen_height": fb_height,
-                    },
-                )
-                elements = list(fallback_result.data.get("elements", [])) if fallback_result.success else []
-                used_fallback = True
-
-        # UIA enrichment — get native window controls for the foreground window
-        if getattr(self._settings.screen, "enable_uia", True):
-            try:
-                fg_result = self._invoke_tool(
-                    "uia.get_foreground_elements",
-                    args={},
-                )
-                visible_windows_result = self._invoke_tool(
-                    "uia.list_visible_windows",
-                    args={},
-                )
-                all_windows_result = self._invoke_tool(
-                    "uia.list_all_windows",
-                    args={},
-                )
-                fw_title = str(fg_result.data.get("title", "")) if fg_result.success else ""
-                uia_els = list(fg_result.data.get("elements", [])) if fg_result.success else []
-                self._foreground_window_title = fw_title
-                self._open_windows = (
-                    list(visible_windows_result.data.get("windows", []))
-                    if visible_windows_result.success
-                    else []
-                )
-                self._all_windows = (
-                    list(all_windows_result.data.get("windows", []))
-                    if all_windows_result.success
-                    else []
-                )
-                if uia_els:
-                    # Convert UIA dicts to element format compatible with OCR elements
-                    uia_dicts = [
-                        {
-                            "text": f"[{e['type']}] {e['name']}" if e.get("name") else f"[{e['type']}]",
-                            "type": e["type"],
-                            "name": e.get("name", ""),
-                            "cx": e["cx"],
-                            "cy": e["cy"],
-                            "w": e["w"],
-                            "h": e["h"],
-                            "enabled": e.get("enabled", True),
-                            "source": "uia",
-                            "window_title": fw_title,
-                        }
-                        for e in uia_els
-                    ]
-                    # Merge: UIA first, then OCR elements that don't overlap with any UIA element
-                    def _ocr_overlaps(ocr_el: dict, uia_list: list[dict]) -> bool:
-                        cx, cy = ocr_el["cx"], ocr_el["cy"]
-                        for u in uia_list:
-                            ux1 = u["cx"] - u["w"] // 2
-                            ux2 = u["cx"] + u["w"] // 2
-                            uy1 = u["cy"] - u["h"] // 2
-                            uy2 = u["cy"] + u["h"] // 2
-                            if ux1 <= cx <= ux2 and uy1 <= cy <= uy2:
-                                return True
-                        return False
-                    ocr_only = [e for e in elements if not _ocr_overlaps(e, uia_dicts)]
-                    elements = uia_dicts + ocr_only
-            except Exception as exc:
-                self._trace("screen.uia", f"UIA enrichment failed: {exc}")
-
-        self._last_screen_elements = elements
-        text = " ".join(e["text"] for e in elements).strip()
-        text = " ".join(text.split())
-
-        if not text:
-            self._trace("screen.capture", "OCR returned no text.")
-            return None
-
-        min_chars = max(0, int(self._settings.screen.min_ocr_chars))
-        if len(text) < min_chars:
-            self._trace(
-                "screen.capture",
-                (
-                    "OCR text below minimum length: "
-                    f"{len(text)} < {min_chars}. Ignoring capture."
-                ),
-            )
-            return None
-
-        now = time.monotonic()
-        reuse_window = max(0, int(self._settings.screen.unchanged_reuse_seconds))
-        is_unchanged = text == self._last_screen_text
-        within_window = (now - self._last_screen_text_at) <= reuse_window if self._last_screen_text_at else False
-
-        if is_unchanged and within_window and decision_source != "keyword":
-            self._trace(
-                "screen.capture",
-                (
-                    "Screen OCR unchanged within reuse window "
-                    f"({reuse_window}s). Skipping repeated context."
-                ),
-            )
-            return None
-
-        self._last_screen_text = text
-        self._last_screen_text_at = now
-        self._trace(
-            "screen.capture",
-            (
-                f"Captured screen context ({len(text)} chars, "
-                f"{len(elements)} elements, source={decision_source}"
-                f", fallback={'yes' if used_fallback else 'no'})."
-            ),
-        )
-        return text
+        result = self._screen_context.capture_screen_text(decision_source=decision_source)
+        self._last_screen_elements = list(result.elements)
+        self._foreground_window_title = str(result.foreground_window_title or "")
+        self._open_windows = list(result.open_windows)
+        self._all_windows = list(result.all_windows)
+        return result.text
 
     def run_screen_ocr_diagnostic(self) -> dict[str, object]:
-        frame = self._screen.capture_once()
-        if frame is None:
-            return {
-                "ok": False,
-                "reason": "capture-unavailable",
-                "message": "Screen capture unavailable.",
-            }
-
-        used_fallback = False
-        details_result = self._invoke_tool(
-            "ocr.extract_details",
-            args={"image": frame},
-        )
-        details = details_result.data.get("details") if details_result.success else None
-        if not details and bool(getattr(self._settings.screen, "capture_active_window_only", False)):
-            fallback_frame = self._screen.capture_once(active_window_only=False)
-            if fallback_frame is not None:
-                fallback_details_result = self._invoke_tool(
-                    "ocr.extract_details",
-                    args={"image": fallback_frame},
-                )
-                details = (
-                    fallback_details_result.data.get("details") if fallback_details_result.success else None
-                )
-                frame = fallback_frame
-                used_fallback = True
-
-        if not details:
-            return {
-                "ok": False,
-                "reason": "ocr-empty",
-                "message": "OCR returned no text.",
-                "capture_mode": "active-window" if bool(getattr(self._settings.screen, "capture_active_window_only", False)) else "monitor",
-                "retried_full_monitor": used_fallback,
-            }
-
-        text = str(details.get("text") or "").strip()
-        text = " ".join(text.split())
-        if not text:
-            return {
-                "ok": False,
-                "reason": "ocr-empty",
-                "message": "OCR returned no readable text.",
-                "capture_mode": "active-window" if bool(getattr(self._settings.screen, "capture_active_window_only", False)) else "monitor",
-                "retried_full_monitor": used_fallback,
-            }
-
-        min_chars = max(0, int(self._settings.screen.min_ocr_chars))
-        frame_height = int(frame.shape[0]) if getattr(frame, "shape", None) is not None and len(frame.shape) >= 2 else 0
-        frame_width = int(frame.shape[1]) if getattr(frame, "shape", None) is not None and len(frame.shape) >= 2 else 0
-        return {
-            "ok": True,
-            "reason": "ok",
-            "message": "OCR diagnostic captured text.",
-            "chars": len(text),
-            "min_chars": min_chars,
-            "passes_min_chars": len(text) >= min_chars,
-            "line_count": int(details.get("line_count") or 0),
-            "avg_confidence": float(details.get("avg_confidence") or 0.0),
-            "capture_mode": "active-window" if bool(getattr(self._settings.screen, "capture_active_window_only", False)) else "monitor",
-            "retried_full_monitor": used_fallback,
-            "frame_width": frame_width,
-            "frame_height": frame_height,
-            "text": text,
-        }
+        return self._screen_context.run_ocr_diagnostic()
 
     def run_stt_diagnostic(
         self,
@@ -1925,7 +1584,7 @@ class SessionController:
         finally:
             self._safe_unlink(wav_path)
 
-        sanitized = self._sanitize_user_text(text or "")
+        sanitized = sanitize_user_text(text or "")
         preview = " ".join((sanitized or "").split())
         if len(preview) > 180:
             preview = f"{preview[:177]}..."
@@ -2019,315 +1678,14 @@ class SessionController:
         action_intent: str = "",
         on_token: Callable[[str], None] | None = None,
     ) -> ActionExecutionResult | None:
-        if not self._settings.actions.enabled:
-            wants_action = bool(action_intent) or self._has_action_intent(user_text)
-            if wants_action:
-                self._trace("action.plan", f"Actions disabled; intent was: {action_intent or user_text[:80]}")
-                return ActionExecutionResult(
-                    executed=False,
-                    dry_run=False,
-                    blocked=True,
-                    requires_confirmation=False,
-                    message="I can't perform UI actions right now — actions are disabled in settings.",
-                )
-            return None
-
-        if self._settings.actions.max_actions_per_turn < 1:
-            return None
-
-        mode = (self._settings.actions.decision_mode or "explicit_only").lower().strip()
-        if mode == "explicit_only" and not allow_planning_override and not self._has_action_intent(user_text):
-            self._trace("action.plan", "Skipped action planning (no explicit action intent).")
-            return None
-
-        if not screen_text and self._state.screen_enabled:
-            screen_text = self._capture_screen_text(decision_source="action")
-
-        # Agentic replan loop: the planner can set needs_screen=true when element
-        # data is absent; the system re-captures and calls the planner again with
-        # fresh context so it can produce an informed plan.
-        _MAX_REPLAN = 2
-        planned: ActionPlan = ActionPlan(steps=[], description="not yet planned")
-        for _attempt in range(_MAX_REPLAN + 1):
-            planned = self._plan_action(
-                user_text=user_text,
-                assistant_reply=assistant_reply,
-                screen_text=screen_text,
-                action_intent=action_intent,
-            )
-            if planned.needs_screen and _attempt < _MAX_REPLAN and self._state.screen_enabled:
-                self._trace(
-                    "action.replan",
-                    f"Planner requested screen capture (attempt {_attempt + 1}/{_MAX_REPLAN}); re-capturing.",
-                )
-                screen_text = self._capture_screen_text(decision_source="action-replan")
-                continue
-            break
-
-        # Stream plan preview to the chat before executing so the user sees
-        # what steps are about to run.
-        if planned.steps and on_token:
-            hwnd_to_title = {w["hwnd"]: w["title"] for w in self._all_windows}
-            plain_summary = self._summarize_action_plan_plain(planned, hwnd_to_title)
-            if plain_summary:
-                on_token(f"\n\n{plain_summary}\n")
-            lines: list[str] = []
-            for idx, s in enumerate(planned.steps, start=1):
-                if s.kind == "focus_window":
-                    title = hwnd_to_title.get(s.hwnd or 0, str(s.hwnd))
-                    line = f"{idx}. focus_window('{title}')"
-                elif s.kind == "click":
-                    line = f"{idx}. click({s.x}, {s.y})"
-                elif s.kind == "type_text":
-                    snippet = (s.text or "")[:24]
-                    line = f"{idx}. type_text({snippet!r})"
-                elif s.kind == "scroll":
-                    mode = (s.text or "down:8").strip() or "down:8"
-                    if s.x is not None and s.y is not None:
-                        line = f"{idx}. scroll({mode!r}, at=({s.x}, {s.y}))"
-                    else:
-                        line = f"{idx}. scroll({mode!r})"
-                elif s.kind == "window_state":
-                    state = (s.text or "restore").strip() or "restore"
-                    line = f"{idx}. window_state({state!r}, hwnd={s.hwnd})"
-                else:
-                    line = f"{idx}. {s.kind}"
-                if s.reason:
-                    line += f" - {s.reason}"
-                lines.append(line)
-            plan_text = "\n".join(lines)
-            on_token(f"\n\n[Plan]\n{plan_text}\n")
-
-        plan_payload = {
-            "description": planned.description,
-            "needs_screen": planned.needs_screen,
-            "steps": [
-                {
-                    "kind": step.kind,
-                    "x": step.x,
-                    "y": step.y,
-                    "text": step.text,
-                    "hwnd": step.hwnd,
-                    "confidence": step.confidence,
-                    "reason": step.reason,
-                }
-                for step in planned.steps
-            ],
-        }
-        execute_result = self._invoke_tool(
-            "action.execute_plan",
-            args={"plan": plan_payload},
+        return self._action_execution.maybe_execute_action(
+            user_text=user_text,
+            assistant_reply=assistant_reply,
+            screen_text=screen_text,
+            action_intent=action_intent,
+            allow_planning_override=allow_planning_override,
+            on_token=on_token,
         )
-        if execute_result.success:
-            result = ActionExecutionResult(
-                executed=bool(execute_result.data.get("executed", False)),
-                dry_run=bool(execute_result.data.get("dry_run", False)),
-                blocked=bool(execute_result.data.get("blocked", False)),
-                requires_confirmation=bool(execute_result.data.get("requires_confirmation", False)),
-                message=str(execute_result.data.get("message", "")),
-            )
-        else:
-            result = ActionExecutionResult(
-                executed=False,
-                dry_run=False,
-                blocked=True,
-                requires_confirmation=False,
-                message=(execute_result.error.message if execute_result.error else "Action tool execution failed."),
-            )
-        self._trace("action.execute", result.message)
-        return result
-
-    @staticmethod
-    def _has_action_intent(user_text: str) -> bool:
-        normalized = (user_text or "").lower()
-        triggers = (
-            "click",
-            "press",
-            "tap",
-            "type",
-            "write",
-            "fill",
-            "open",
-            "select",
-            "choose",
-            "submit",
-            "send",
-            "scroll",
-            "minimize",
-            "maximize",
-            "restore",
-            "read on screen",
-            "read the article",
-        )
-        return any(token in normalized for token in triggers)
-
-    def _plan_action(
-        self,
-        *,
-        user_text: str,
-        assistant_reply: str,
-        screen_text: str | None,
-        action_intent: str = "",
-    ) -> ActionPlan:
-        recent_memory = self._history_messages(limit=4)
-        recent_lines: list[str] = []
-        for item in recent_memory:
-            role = str(item.get("role", "")).strip().lower()
-            content = str(item.get("content", "")).strip()
-            if role in {"user", "assistant"} and content:
-                recent_lines.append(f"{role}: {content}")
-
-        # Build a structured element list so the planner uses real coordinates.
-        # Label elements that belong to this assistant app so the planner never targets them.
-        own_title_lower = "assistant"  # substring that identifies our own window title
-        elements_lines: list[str] = []
-        for el in self._last_screen_elements[:60]:
-            el_text = str(el.get("text", "")).strip()
-            if el_text:
-                # Mark UIA elements that belong to the assistant's own window
-                win_title = str(el.get("window_title", "")).lower()
-                is_own = el.get("source") == "uia" and own_title_lower in win_title
-                own_tag = " [THIS APP — do not target]" if is_own else ""
-                elements_lines.append(
-                    f"- \"{el_text}\" at ({el['cx']}, {el['cy']}) size {el['w']}x{el['h']}{own_tag}"
-                )
-        elements_block = "\n".join(elements_lines) if elements_lines else "[none detected]"
-
-        # Build windows list so planner can reference hwnds for focus_window actions.
-        windows_lines: list[str] = []
-        for w in self._all_windows[:20]:
-            labels: list[str] = []
-            if w.get("is_foreground"):
-                labels.append("active")
-            if w.get("is_minimized"):
-                labels.append("MINIMIZED")
-            label_str = f" [{', '.join(labels)}]" if labels else ""
-            windows_lines.append(f"- hwnd={w['hwnd']} \"{w['title']}\"{label_str}")
-        windows_block = "\n".join(windows_lines) if windows_lines else "[none]"
-
-        planner = self._thinking_ollama or self._ollama
-        try:
-            raw = planner.chat(
-                [
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are an action planner for desktop UI automation. "
-                            "Return exactly one JSON object with keys: "
-                            "steps (array), description (string), needs_screen (bool). "
-                            "Each step object has keys: type, x, y, text, hwnd, confidence, reason. "
-                            "Allowed step types: none, click, type_text, focus_window, scroll, window_state. "
-                            "Steps are executed in order — use multiple steps when needed "
-                            "(e.g. focus_window first, then click, then type_text). "
-                            "For click: x and y are the element center to click. "
-                            "For type_text: text is the string to type; "
-                            "x and y are the coordinates of the INPUT FIELD to click for focus "
-                            "— pick the text input element, not a button. "
-                            "For focus_window: hwnd is the integer window handle from the 'Open windows' list; "
-                            "use this to restore a minimized window or bring a background window to the front "
-                            "before performing a click inside it. "
-                            "For scroll: set text to one of: down, up, down:8, up:8 (direction with optional strength), "
-                            "and optionally set x/y as the on-screen anchor position to scroll around. "
-                            "For window_state: set text to one of minimize, maximize, restore and provide hwnd. "
-                            "Set x, y, text, hwnd to null when unused. "
-                            "ALL coordinates MUST be exact values "
-                            "copied from the 'Detected UI elements' list — do NOT invent coordinates. "
-                            "CRITICAL: elements marked '[THIS APP — do not target]' belong to the assistant "
-                            "application itself — NEVER click or type into them. "
-                            "Always target elements in the user's intended application (e.g. Notepad, browser). "
-                            "OCR may have minor typos (e.g. 'Seltings' for 'Settings'); "
-                            "match labels by approximate similarity. "
-                            "If 'Detected UI elements' shows [none detected] or the target app is not visible, "
-                            "return needs_screen=true and steps=[] — the system will capture a fresh screenshot "
-                            "and call you again with updated data. Only request this once. "
-                            "confidence per step must be 0.0–1.0."
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Current goal: {self._active_goal}\n\n"
-                            + (f"Action intent: {action_intent}\n\n" if action_intent else "")
-                            + f"Latest user message:\n{user_text.strip()}\n\n"
-                            f"Assistant draft reply:\n{assistant_reply.strip()}\n\n"
-                            f"Recent conversation:\n{chr(10).join(recent_lines) or '[none]'}\n\n"
-                            f"Open windows (hwnd handles for focus_window):\n{windows_block}\n\n"
-                            f"Detected UI elements (text \u2192 screen coordinates):\n{elements_block}\n\n"
-                            f"Full OCR text:\n{(screen_text or '[none]')[:3000]}"
-                        ),
-                    },
-                ]
-            )
-        except Exception:
-            self._trace("action.plan", "Planner unavailable. Falling back to no action.")
-            return ActionPlan(steps=[], description="Action planner unavailable")
-
-        payload = self._extract_json_object(raw)
-        if not isinstance(payload, dict):
-            self._trace("action.plan", "Planner output was not valid JSON. Falling back to no action.")
-            return ActionPlan(steps=[], description="Planner output was not valid JSON")
-
-        def _parse_step(s: dict) -> PlannedAction:
-            raw_kind = str(s.get("type", "none")).strip().lower()
-            if raw_kind not in {"none", "click", "type_text", "focus_window", "scroll", "window_state"}:
-                raw_kind = "none"
-            conf = float(s.get("confidence", 0.0) or 0.0)
-            conf = max(0.0, min(conf, 1.0))
-            return PlannedAction(
-                kind=raw_kind,
-                x=(int(s["x"]) if s.get("x") is not None else None),
-                y=(int(s["y"]) if s.get("y") is not None else None),
-                text=(str(s.get("text", "")).strip() or None),
-                hwnd=(int(s["hwnd"]) if s.get("hwnd") is not None else None),
-                confidence=conf,
-                reason=str(s.get("reason", "")).strip(),
-            )
-
-        # Support both new array format {steps: [...]} and legacy single-action format {type: ...}
-        raw_steps = payload.get("steps")
-        if isinstance(raw_steps, list):
-            steps = [_parse_step(s) for s in raw_steps if isinstance(s, dict)]
-        else:
-            # Legacy single-action fallback
-            steps = [_parse_step(payload)]
-
-        plan = ActionPlan(
-            steps=[s for s in steps if s.kind != "none"],
-            description=str(payload.get("description", "")).strip(),
-            needs_screen=bool(payload.get("needs_screen", False)),
-        )
-        self._trace(
-            "action.plan",
-            (
-                f"Planned {len(plan.steps)} step(s): "
-                + " → ".join(
-                    f"{s.kind}(conf={round(s.confidence, 2)})"
-                    for s in plan.steps
-                )
-                or "no actions"
-            ),
-        )
-        return plan
-
-    @staticmethod
-    def _extract_json_object(raw_text: str) -> dict | None:
-        try:
-            direct = json.loads(raw_text)
-            return direct if isinstance(direct, dict) else None
-        except Exception:
-            pass
-
-        start = raw_text.find("{")
-        end = raw_text.rfind("}")
-        if start < 0 or end <= start:
-            return None
-
-        fragment = raw_text[start : end + 1]
-        try:
-            nested = json.loads(fragment)
-            return nested if isinstance(nested, dict) else None
-        except Exception:
-            return None
 
     def record_and_chat(
         self,
@@ -2358,7 +1716,7 @@ class SessionController:
         if not text:
             raise RuntimeError("No speech was detected from microphone audio.")
 
-        text = self._sanitize_user_text(text)
+        text = sanitize_user_text(text)
         if not text:
             raise RuntimeError("No clear speech was detected from microphone audio.")
 
@@ -2528,7 +1886,7 @@ class SessionController:
                 on_generation_status("did not catch that, listening")
             return None
 
-        text = self._sanitize_user_text(text)
+        text = sanitize_user_text(text)
         if not text:
             self._live_no_speech_streak += 1
             self._trace(
@@ -2559,20 +1917,6 @@ class SessionController:
 
         return text, response
 
-    @staticmethod
-    def _prepare_tts_text(text: str) -> str:
-        cleaned = str(text or "").strip()
-        if not cleaned:
-            return ""
-        cleaned = re.sub(r"\*\*(.+?)\*\*", r"\1", cleaned)
-        cleaned = re.sub(r"\*(.+?)\*", r"\1", cleaned)
-        cleaned = re.sub(r"__(.+?)__", r"\1", cleaned)
-        cleaned = re.sub(r"_(.+?)_", r"\1", cleaned)
-        cleaned = cleaned.replace("`", "")
-        cleaned = cleaned.replace("[", "").replace("]", "")
-        cleaned = " ".join(cleaned.split())
-        return cleaned
-
     def _analyze_prosody(self, *, wav_path: str, text: str) -> ProsodyAnalysis | None:
         if not self._prosody.enabled:
             return None
@@ -2598,480 +1942,22 @@ class SessionController:
         parts.append(f"confidence={round(analysis.confidence, 2)}")
         return ", ".join(parts)
 
-    @staticmethod
-    def _infer_tts_reaction(text: str) -> str:
-        lowered = str(text or "").strip().lower()
-        if not lowered:
-            return "neutral"
-
-        if "[action]" in lowered:
-            return "excited"
-        if any(token in lowered for token in ("!", "wow", "amazing", "great", "awesome")):
-            return "excited"
-        if any(token in lowered for token in ("surprised", "unexpected", "didn't expect", "whoa")):
-            return "surprised"
-        if any(token in lowered for token in ("sorry", "unfortunately", "sad", "regret")):
-            return "sad"
-        if any(token in lowered for token in ("angry", "frustrated", "annoyed", "this is wrong")):
-            return "angry"
-        if any(token in lowered for token in ("calm", "let's slow", "take it step", "no rush")):
-            return "calm"
-        return "neutral"
-
-    @classmethod
-    def _extract_tts_reaction_tag(cls, text: str) -> tuple[str | None, str]:
-        source = str(text or "")
-        matches = list(cls._REACTION_TAG_PATTERN.finditer(source))
-        if not matches:
-            return None, source
-
-        reaction = matches[-1].group(1).strip().lower()
-        cleaned = cls._REACTION_TAG_PATTERN.sub("", source)
-        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
-        return reaction, cleaned
-
-    @classmethod
-    def _normalize_action_narration(
-        cls,
-        text: str,
-        action_result: ActionExecutionResult,
-    ) -> str:
-        reply = str(text or "").strip()
-        if not reply:
-            return ""
-
-        # Keep action narration temporally consistent: if a plan still needs
-        # confirmation (or execution was blocked), avoid first-person "I clicked"
-        # style claims in the same turn.
-        claimed_completion = bool(cls._ACTION_COMPLETION_CLAIM_PATTERN.search(reply))
-        if not claimed_completion:
-            return reply
-
-        if action_result.requires_confirmation:
-            return "I can do that. I have not executed it yet. Please confirm the action plan below."
-
-        if not action_result.executed:
-            return "I can try that, but it did not execute yet. See the action status below."
-
-        return reply
-
-    @staticmethod
-    def _build_post_action_followup(
-        action_result: ActionExecutionResult,
-        *,
-        require_confirmation: bool,
-    ) -> str:
-        if not require_confirmation:
-            return ""
-        if action_result.requires_confirmation:
-            return ""
-        if action_result.executed and not action_result.dry_run and not action_result.blocked:
-            return "Done. I executed that plan. Tell me the next step you want me to take."
-        return ""
-
-    @staticmethod
-    def _summarize_action_plan_plain(
-        planned: ActionPlan,
-        hwnd_to_title: dict[int, str],
-    ) -> str:
-        description = str(planned.description or "").strip()
-        if description:
-            if description[-1] not in ".!?":
-                description = f"{description}."
-            return f"I will try this next: {description}"
-
-        step_phrases: list[str] = []
-        for step in planned.steps[:3]:
-            if step.kind == "focus_window":
-                title = str(hwnd_to_title.get(step.hwnd or 0, "that window")).strip() or "that window"
-                step_phrases.append(f"focus {title}")
-            elif step.kind == "click":
-                step_phrases.append("click the target")
-            elif step.kind == "type_text":
-                step_phrases.append("type into the target field")
-            elif step.kind == "scroll":
-                mode = str(step.text or "down").strip().lower()
-                if mode.startswith("up"):
-                    step_phrases.append("scroll up to read earlier content")
-                else:
-                    step_phrases.append("scroll down to continue reading")
-            elif step.kind == "window_state":
-                state = str(step.text or "restore").strip().lower()
-                if state == "minimize":
-                    step_phrases.append("minimize the target window")
-                elif state == "maximize":
-                    step_phrases.append("maximize the target window")
-                else:
-                    step_phrases.append("restore the target window")
-
-        if not step_phrases:
-            return ""
-
-        if len(step_phrases) == 1:
-            return f"I will {step_phrases[0]} now."
-        if len(step_phrases) == 2:
-            return f"I will {step_phrases[0]}, then {step_phrases[1]}."
-        return f"I will {step_phrases[0]}, then {step_phrases[1]}, then {step_phrases[2]}."
-
-    @classmethod
-    def _strip_action_meta_for_tts(cls, text: str) -> str:
-        source = str(text or "")
-        if not source:
-            return ""
-
-        cleaned_lines: list[str] = []
-        skip_plan_block = False
-        for raw_line in source.splitlines():
-            line = raw_line.strip()
-            lowered = line.lower()
-
-            if not line:
-                if not skip_plan_block:
-                    cleaned_lines.append("")
-                continue
-
-            if lowered.startswith("[plan]"):
-                skip_plan_block = True
-                continue
-
-            if skip_plan_block:
-                # Plan blocks are line-based; stop skipping on the next non-plan section.
-                if lowered.startswith("[action]") or lowered.startswith("[note]"):
-                    skip_plan_block = False
-                else:
-                    continue
-
-            if cls._ACTION_META_LINE_PATTERN.match(line):
-                continue
-
-            cleaned_lines.append(raw_line)
-
-        cleaned = "\n".join(cleaned_lines)
-        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
-        return cleaned
-
-    @staticmethod
-    def _is_reading_intent(user_text: str) -> bool:
-        lowered = str(user_text or "").strip().lower()
-        if not lowered:
-            return False
-        tokens = (
-            "read this",
-            "read article",
-            "read the article",
-            "what do you see",
-            "what did you see",
-            "read on screen",
-            "summarize this page",
-        )
-        return any(token in lowered for token in tokens)
-
-    @staticmethod
-    def _is_continue_reading_request(user_text: str) -> bool:
-        lowered = str(user_text or "").strip().lower()
-        if not lowered:
-            return False
-        tokens = (
-            "continue reading",
-            "read more",
-            "next part",
-            "scroll more",
-            "keep reading",
-        )
-        return any(token in lowered for token in tokens)
-
-    @staticmethod
-    def _is_reading_evidence_request(user_text: str) -> bool:
-        lowered = str(user_text or "").strip().lower()
-        if not lowered:
-            return False
-        tokens = ("what did you see", "show snippet", "quote", "evidence", "summary")
-        return any(token in lowered for token in tokens)
-
-    def _is_trusted_reading_window(self) -> bool:
-        title = str(self._foreground_window_title or "").strip().lower()
-        if not title:
-            return False
-        if not self._reading_trusted_window_titles:
-            return True
-        return any(token in title for token in self._reading_trusted_window_titles)
-
-    def _update_reading_session(self, *, user_text: str, screen_text: str | None) -> None:
-        if not self._reading_session_memory_enabled or not screen_text:
-            return
-
-        reading_intent = self._is_reading_intent(user_text)
-        continue_request = self._is_continue_reading_request(user_text)
-        if not (self._reading_active or reading_intent or continue_request):
-            return
-
-        if not self._is_trusted_reading_window():
-            self._trace(
-                "reading.blocked",
-                f"Untrusted foreground window for reading: {self._foreground_window_title or '[unknown]'}",
-            )
-            return
-
-        if not self._reading_active:
-            self._reading_active = True
-            self._reading_window_title = str(self._foreground_window_title or "")
-            self._reading_chunks.clear()
-            self._reading_chunk_hashes.clear()
-            self._reading_scroll_steps = 0
-            self._reading_last_summary = ""
-            self._trace("reading.start", f"window={self._reading_window_title or '[unknown]'}")
-
-        normalized = "\n".join(line.strip() for line in str(screen_text).splitlines() if line.strip())
-        if not normalized:
-            return
-        digest = hashlib.sha1(normalized.encode("utf-8", errors="ignore")).hexdigest()
-        if digest in self._reading_chunk_hashes:
-            self._trace("reading.chunk", "Skipped duplicate OCR chunk.")
-            return
-
-        self._reading_chunk_hashes.add(digest)
-        self._reading_chunks.append(normalized[:2400])
-        if len(self._reading_chunks) > 10:
-            self._reading_chunks = self._reading_chunks[-10:]
-        self._trace("reading.chunk", f"chunks={len(self._reading_chunks)}")
-
-    def _build_reading_context_for_prompt(self) -> str:
-        if not self._reading_active or not self._reading_chunks:
-            return ""
-        recent = self._reading_chunks[-2:]
-        combined = "\n\n".join(recent)
-        return (
-            "Active reading session context (recent captures):\n"
-            f"{combined[:1800]}"
-        )
-
-    def _reading_action_intent(self, user_text: str) -> str:
-        if not self._state.screen_enabled or not self._settings.actions.enabled:
-            return ""
-        if self._is_continue_reading_request(user_text) and self._reading_active:
-            if self._reading_scroll_steps >= self._reading_max_scroll_steps:
-                return ""
-            self._reading_scroll_steps += 1
-            return "Continue reading the current article by scrolling down and then re-reading visible content."
-        if self._is_reading_intent(user_text):
-            return "Read visible article content and scroll if more content is needed."
-        return ""
-
-    def _build_reading_evidence_block(self) -> str:
-        if not self._reading_active or not self._reading_chunks:
-            return ""
-
-        quotes: list[str] = []
-        used = 0
-        for chunk in reversed(self._reading_chunks):
-            for line in chunk.splitlines():
-                text = line.strip()
-                if len(text) < 35:
-                    continue
-                if text in quotes:
-                    continue
-                trimmed = text[:160]
-                extra = len(trimmed)
-                if used + extra > self._reading_max_quote_chars:
-                    continue
-                quotes.append(trimmed)
-                used += extra
-                if len(quotes) >= self._reading_max_quotes:
-                    break
-            if len(quotes) >= self._reading_max_quotes:
-                break
-
-        if not quotes:
-            return ""
-
-        bullets = "\n".join(f"- \"{q}\"" for q in quotes)
-        summary = (
-            f"Summary: I captured {len(quotes)} excerpt(s) from "
-            f"{self._reading_window_title or 'the active window'} across {len(self._reading_chunks)} screen chunk(s)."
-        )
-        self._reading_last_summary = summary
-        self._trace("reading.summary", summary)
-        return f"Reading evidence:\n{bullets}\n{summary}"
-
     def _continue_reading_after_approval(self) -> str:
-        if not self._reading_session_memory_enabled or not self._reading_active:
-            return ""
-        if not self._settings.actions.enabled or not self._state.screen_enabled:
-            return ""
-        if not self._is_trusted_reading_window():
-            self._trace(
-                "reading.blocked",
-                f"Autopilot blocked in untrusted window: {self._foreground_window_title or '[unknown]'}",
-            )
-            return ""
-
-        remaining = max(0, int(self._reading_max_scroll_steps) - int(self._reading_scroll_steps))
-        if remaining <= 0:
-            return ""
-
-        executed_steps = 0
-        duplicate_streak = 0
-        require_confirmation_original = self._settings.actions.require_confirmation
-        try:
-            # One-approval flow: subsequent bounded read steps execute without re-prompting.
-            self._settings.actions.require_confirmation = False
-            for _ in range(remaining):
-                before_hashes = len(self._reading_chunk_hashes)
-                execute_result = self._invoke_tool(
-                    "action.execute_plan",
-                    args={
-                        "plan": {
-                            "description": "Continue reading article by scrolling down.",
-                            "needs_screen": False,
-                            "steps": [
-                                {
-                                    "kind": "scroll",
-                                    "x": None,
-                                    "y": None,
-                                    "text": "down:10",
-                                    "hwnd": None,
-                                    "confidence": 0.95,
-                                    "reason": "Continue reading content below.",
-                                }
-                            ],
-                        }
-                    },
-                )
-                if not execute_result.success:
-                    self._trace("reading.stop", "Autopilot scroll execution failed.")
-                    break
-                if not bool(execute_result.data.get("executed", False)):
-                    self._trace("reading.stop", "Autopilot scroll did not execute.")
-                    break
-
-                executed_steps += 1
-                self._reading_scroll_steps += 1
-                self._trace("reading.scroll", f"step={self._reading_scroll_steps}")
-
-                captured = self._capture_screen_text(decision_source="reading-autopilot")
-                self._update_reading_session(user_text="continue reading", screen_text=captured)
-                if len(self._reading_chunk_hashes) == before_hashes:
-                    duplicate_streak += 1
-                else:
-                    duplicate_streak = 0
-
-                if duplicate_streak >= 2:
-                    self._trace("reading.stop", "Autopilot stopped (no new readable content).")
-                    break
-        finally:
-            self._settings.actions.require_confirmation = require_confirmation_original
-
-        if executed_steps < 1:
-            return ""
-
-        lead = f"I continued reading automatically for {executed_steps} scroll step(s)."
-        evidence = self._build_reading_evidence_block()
-        if evidence:
-            return f"{lead}\n{evidence}"
-        return lead
-
-    @staticmethod
-    def _sanitize_user_text(text: str) -> str:
-        cleaned = str(text or "")
-        if not cleaned:
-            return ""
-
-        # Remove common emoji/dingbat ranges that can break downstream prompting.
-        cleaned = re.sub(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]", " ", cleaned)
-
-        out_chars: list[str] = []
-        for ch in cleaned:
-            category = unicodedata.category(ch)
-            if category.startswith("C"):
-                continue
-            out_chars.append(ch)
-
-        cleaned = "".join(out_chars)
-        cleaned = re.sub(r"[^\w\s\.,!?;:'\"()\-]", " ", cleaned)
-        cleaned = " ".join(cleaned.split())
-        return cleaned.strip()
-
-    @staticmethod
-    def _sanitize_assistant_text(
-        text: str,
-        *,
-        preserve_newlines: bool = True,
-        trim: bool = True,
-    ) -> str:
-        cleaned = unicodedata.normalize("NFKC", str(text or ""))
-        if not cleaned:
-            return ""
-
-        cleaned = (
-            cleaned.replace("\u2018", "'")
-            .replace("\u2019", "'")
-            .replace("\u201c", '"')
-            .replace("\u201d", '"')
-            .replace("\u2013", "-")
-            .replace("\u2014", "-")
+        runtime = SessionRuntimeContext(
+            actions_enabled=bool(self._settings.actions.enabled),
+            screen_enabled=bool(self._state.screen_enabled),
+            foreground_window_title=str(self._foreground_window_title or ""),
+            get_require_confirmation=lambda: bool(self._settings.actions.require_confirmation),
+            set_require_confirmation=lambda value: setattr(
+                self._settings.actions,
+                "require_confirmation",
+                bool(value),
+            ),
+            invoke_tool=self._invoke_tool,
+            capture_screen_text=self._capture_screen_text,
+            trace=self._trace,
         )
-
-        # Strip Unicode emoji and common text-based emoticons.
-        cleaned = re.sub(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]", "", cleaned)
-        cleaned = re.sub(
-            r"(?<![\w])([:;=8Xx][-o*']?[)DPpOo03{}\[\]|/\\]|[)DPp][:;=]|\^[_-]?\^|>_<|<3|:\*|;\*)(?![\w])",
-            "",
-            cleaned,
-        )
-
-        out_chars: list[str] = []
-        for ch in cleaned:
-            code = ord(ch)
-            if ch == "\n" and preserve_newlines:
-                out_chars.append(ch)
-                continue
-            if ch == "\n" and not preserve_newlines:
-                out_chars.append(" ")
-                continue
-            if ch == "\t":
-                out_chars.append(" ")
-                continue
-            if 32 <= code <= 126:
-                out_chars.append(ch)
-
-        cleaned = "".join(out_chars)
-        if preserve_newlines:
-            cleaned = re.sub(r"[^\S\n]+", " ", cleaned)
-            cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
-        else:
-            cleaned = re.sub(r" {2,}", " ", cleaned)
-
-        if trim:
-            return cleaned.strip()
-        return cleaned
-
-    @staticmethod
-    def _drain_tts_stream_chunks(buffer: str, *, flush: bool) -> tuple[list[str], str]:
-        text = str(buffer or "")
-        if not text:
-            return [], ""
-
-        chunks: list[str] = []
-        start = 0
-        for index, ch in enumerate(text):
-            if ch not in ".!?\n":
-                continue
-
-            candidate = text[start : index + 1].strip()
-            if not candidate:
-                start = index + 1
-                continue
-
-            if len(candidate) >= 24 or candidate.count(" ") >= 4 or ch == "\n":
-                chunks.append(candidate)
-                start = index + 1
-
-        remainder = text[start:]
-        if flush and remainder.strip():
-            chunks.append(remainder.strip())
-            remainder = ""
-
-        return chunks, remainder
+        return self._active_session.continue_after_approval(runtime)
 
     @staticmethod
     def _safe_unlink(path: Path) -> None:

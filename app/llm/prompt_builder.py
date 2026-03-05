@@ -22,6 +22,7 @@ BASE_SYSTEM_PROMPT = (
 @dataclass(slots=True)
 class PromptContext:
     user_text: str
+    session_type: str | None = None
     user_vocal_tone: str | None = None
     screen_text: str | None = None
     persona_background: str | None = None
@@ -90,6 +91,8 @@ def build_messages(context: PromptContext) -> list[dict[str, str]]:
         additional.append(f"Active conversation goal: {context.active_goal}")
     if context.assistant_strategy:
         additional.append(f"Assistant strategy: {context.assistant_strategy}")
+    if context.session_type:
+        additional.append(f"Active session type: {context.session_type}")
     if context.user_vocal_tone:
         additional.append(f"User vocal tone hint: {context.user_vocal_tone}")
     if context.screen_text:
