@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QObject, Qt, Signal, Slot
 from PySide6.QtWidgets import QDialog, QLabel, QProgressBar, QVBoxLayout
 
+from app.core.session_controller import SessionController
 from app.core.settings import AppSettings
 
 
@@ -28,3 +29,22 @@ class StartupPreloaderDialog(QDialog):
 
     def set_status(self, message: str) -> None:
         self._status.setText(message)
+
+
+class StartupPrewarmWorker(QObject):
+    status = Signal(str)
+    ready = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, settings: AppSettings) -> None:
+        super().__init__()
+        self._settings = settings
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            session = SessionController(self._settings)
+            session.prewarm_runtime(on_status=self.status.emit)
+            self.ready.emit(session)
+        except Exception as exc:
+            self.failed.emit(str(exc))

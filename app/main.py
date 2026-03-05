@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import sys
 
+from PySide6.QtCore import QEventLoop, QThread
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from app.core.crash_logging import install_global_exception_hooks
 from app.core.session_controller import SessionController
 from app.core.settings import load_settings
 from app.ui.main_window import MainWindow
-from app.ui.startup_preloader import StartupPreloaderDialog
+from app.ui.startup_preloader import StartupPreloaderDialog, StartupPrewarmWorker
 
 
 def main() -> int:
@@ -18,21 +19,55 @@ def main() -> int:
 
     preloader = StartupPreloaderDialog(settings)
     preloader.show()
-    app.processEvents()
 
-    try:
-        session = SessionController(settings)
-        session.prewarm_runtime(on_status=lambda message: (preloader.set_status(message), app.processEvents()))
-    except Exception as exc:
-        preloader.close()
+    thread = QThread()
+    worker = StartupPrewarmWorker(settings)
+    worker.moveToThread(thread)
+
+    startup_loop = QEventLoop()
+    startup_error: dict[str, str | None] = {"message": None}
+    startup_session: dict[str, SessionController | None] = {"session": None}
+
+    def on_ready(session_obj: object) -> None:
+        if isinstance(session_obj, SessionController):
+            startup_session["session"] = session_obj
+        startup_loop.quit()
+
+    def on_failed(message: str) -> None:
+        startup_error["message"] = str(message)
+        startup_loop.quit()
+
+    worker.status.connect(preloader.set_status)
+    worker.ready.connect(on_ready)
+    worker.failed.connect(on_failed)
+
+    worker.ready.connect(thread.quit)
+    worker.failed.connect(thread.quit)
+    thread.started.connect(worker.run)
+    thread.finished.connect(worker.deleteLater)
+    thread.finished.connect(thread.deleteLater)
+    thread.start()
+
+    startup_loop.exec()
+    preloader.close()
+    thread.wait(1500)
+
+    if startup_error["message"]:
         QMessageBox.critical(
             None,
             "Startup warmup failed",
-            str(exc),
+            str(startup_error["message"]),
         )
         return 1
 
-    preloader.close()
+    session = startup_session["session"]
+    if session is None:
+        QMessageBox.critical(
+            None,
+            "Startup warmup failed",
+            "Startup did not return a ready session.",
+        )
+        return 1
 
     window = MainWindow(settings, session=session)
     window.show()
