@@ -7,6 +7,7 @@ assistant:
 
 autonomy:
   enabled: false
+  mode: "interactive"
   proactive_conversation: true
   allow_action_suggestions: true
   allow_proactive_actions: false
@@ -14,6 +15,9 @@ autonomy:
   auto_goal_switch: true
   default_goal: "general_conversation"
   goal_switch_min_confidence: 0.75
+  agentic_max_auto_steps: 3
+  agentic_full_narration: false
+  agentic_narration_level: "summary"
   reading_session_memory_enabled: true
   reading_max_scroll_steps: 6
   reading_max_quotes: 4

@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import re
 import time
+from typing import Any
 
 from app.core.tooling.runtime.action_runtime import (
     ActionExecutionResult,
@@ -25,6 +26,8 @@ from app.core.services.action_response_service import (
 from app.core.conversation_memory import ConversationMemoryStore
 from app.core.crash_logging import log_event, log_handled_exception
 from app.core.sessions.chat_session import ChatSession
+from app.core.sessions.agentic_session import AgenticSessionConfig, AgenticSessionManager
+from app.core.sessions.agentic_session_adapter import AgenticSessionAdapter
 from app.core.sessions.reading_session import ReadingSessionConfig, ReadingSessionManager
 from app.core.sessions.reading_session_adapter import ReadingSessionAdapter
 from app.core.sessions.session_router import SessionRouter
@@ -41,6 +44,8 @@ from app.core.session_text_utils import (
     sanitize_user_text,
 )
 from app.core.services.screen_context_service import ScreenContextService
+from app.core.tooling.mcp_client import MCPStdioClient
+from app.core.tooling.mcp_tools import build_mcp_tools
 from app.core.tooling import ToolContext, ToolExecutor, ToolRegistry, load_tooling_config
 from app.core.tooling.tools import ActionExecutePlanTool, build_default_tools
 from app.core.tooling.types import ToolError, ToolResult
@@ -57,6 +62,8 @@ from app.vision.screen_capture import ScreenCaptureService
 class SessionState:
     mic_enabled: bool
     screen_enabled: bool
+    autonomy_mode: str
+    session_type: str
 
 
 class SessionController:
@@ -95,10 +102,12 @@ class SessionController:
             user_path=tooling_user_path,
         )
         self._tool_registry = ToolRegistry()
+        self._mcp_client: MCPStdioClient | None = None
         self._tool_registry.register_many(
             build_default_tools(settings, self._tooling_config, memory_store=self._memory)
         )
         self._tool_registry.register(ActionExecutePlanTool(self._action_executor))
+        self._register_mcp_tools()
         self._tool_executor = ToolExecutor(self._tool_registry, self._tooling_config)
         self._tool_context = ToolContext(metadata={"source": "session_controller"})
         history_cfg = self._tooling_config.tool_settings("history")
@@ -169,6 +178,9 @@ class SessionController:
         self._vad_silence_seconds = settings.audio.vad_silence_seconds
         self._microphone_device = settings.audio.microphone_device
         self._remember_history = settings.assistant.remember_history
+        self._autonomy_mode = str(getattr(settings.autonomy, "mode", "interactive") or "interactive").strip().lower()
+        if self._autonomy_mode not in {"manual", "interactive", "automatic"}:
+            self._autonomy_mode = "interactive"
         self._active_goal = settings.autonomy.default_goal
         self._active_goal_description: str = ""
         self._last_screen_elements: list[dict] = []
@@ -184,9 +196,16 @@ class SessionController:
                 trusted_window_titles=list(settings.autonomy.reading_trusted_window_titles or []),
             )
         )
+        self._agentic_session = AgenticSessionManager(
+            AgenticSessionConfig(
+                enabled=bool(self._settings.autonomy.enabled),
+                max_auto_steps=max(1, int(getattr(self._settings.autonomy, "agentic_max_auto_steps", 3))),
+            )
+        )
         self._session_handlers: dict[str, SessionHandler] = {
             "chat": ChatSession(),
             "reading": ReadingSessionAdapter(self._reading_session),
+            "agentic": AgenticSessionAdapter(self._agentic_session),
         }
         self._session_router = SessionRouter(
             supported_session_types=set(self._session_handlers.keys()),
@@ -272,6 +291,8 @@ class SessionController:
         self._state = SessionState(
             mic_enabled=settings.audio.enable_microphone,
             screen_enabled=settings.screen.enable_screen_context,
+            autonomy_mode=self._autonomy_mode,
+            session_type=self._active_session_type,
         )
         self._apply_persona_runtime_preferences()
 
@@ -493,6 +514,28 @@ class SessionController:
     def set_remember_history(self, value: bool) -> None:
         self._remember_history = bool(value)
 
+    @property
+    def autonomy_mode(self) -> str:
+        return self._autonomy_mode
+
+    def set_autonomy_mode(self, mode: str) -> None:
+        normalized = str(mode or "").strip().lower()
+        if normalized not in {"manual", "interactive", "automatic"}:
+            return
+        if normalized == self._autonomy_mode:
+            return
+        previous = self._autonomy_mode
+        self._autonomy_mode = normalized
+        self._state.autonomy_mode = normalized
+        if normalized == "automatic":
+            self._set_active_session("agentic")
+        elif self._active_session_type == "agentic" and normalized in {"manual", "interactive"}:
+            self._set_active_session("chat")
+        self._trace("autonomy.mode", f"Switched autonomy mode {previous} -> {normalized}")
+
+    def set_active_session_type(self, session_type: str) -> None:
+        self._set_active_session(session_type)
+
     def clear_conversation_memory(self) -> None:
         self._memory.clear()
 
@@ -572,6 +615,54 @@ class SessionController:
         combined = "\n\n".join(part.strip() for part in followups if str(part).strip())
         return result.message, (combined if combined else None)
 
+    @property
+    def agentic_narration_level(self) -> str:
+        level = str(getattr(self._settings.autonomy, "agentic_narration_level", "summary") or "summary").strip().lower()
+        return level if level in {"full", "summary", "off"} else "summary"
+
+    def tts_text_for_followup(self, followup: str) -> str:
+        level = self.agentic_narration_level
+        if level == "off":
+            return ""
+        if level == "full" and "agentic continuation completed" in str(followup or "").lower():
+            return "Agentic continuation completed."
+        return self.summarize_followup_for_tts(followup)
+
+    @staticmethod
+    def summarize_followup_for_tts(followup: str, *, max_steps: int = 3) -> str:
+        source = strip_action_meta_for_tts(str(followup or "")).strip()
+        if not source:
+            return ""
+
+        progress_match = re.search(r"progress:\s*(\d+)\s*/\s*(\d+)", source, flags=re.IGNORECASE)
+        step_matches = re.findall(
+            r"^[-*\s]*step\s+(\d+)\s*:\s*(.+)$",
+            source,
+            flags=re.IGNORECASE | re.MULTILINE,
+        )
+
+        chunks: list[str] = []
+        if "agentic continuation" in source.lower():
+            chunks.append("Agentic continuation update.")
+        if progress_match:
+            done, total = progress_match.group(1), progress_match.group(2)
+            chunks.append(f"Progress {done} of {total} autonomous steps.")
+
+        for index, (step_no, detail) in enumerate(step_matches[: max(1, int(max_steps))], start=1):
+            _ = index
+            cleaned = " ".join(str(detail).split())
+            if len(cleaned) > 90:
+                cleaned = cleaned[:87].rstrip() + "..."
+            chunks.append(f"Step {step_no}: {cleaned}.")
+
+        if chunks:
+            return " ".join(chunks).strip()
+
+        compact = " ".join(source.split())
+        if len(compact) > 220:
+            compact = compact[:217].rstrip() + "..."
+        return compact
+
     def reject_pending_action(self) -> str:
         result = self._action_executor.reject_pending_action()
         self._trace("action.confirmation", result.message)
@@ -582,6 +673,15 @@ class SessionController:
 
     def stop_action_hotkey_listener(self) -> None:
         self._action_hotkey_listener.stop()
+
+    def shutdown(self) -> None:
+        self.stop_action_hotkey_listener()
+        if self._mcp_client is not None:
+            try:
+                self._mcp_client.stop()
+            except Exception:
+                pass
+            self._mcp_client = None
 
     def get_last_metrics(self) -> dict[str, float | str]:
         return dict(self._last_metrics)
@@ -621,6 +721,17 @@ class SessionController:
                 "max_scroll_steps": 0,
             }
         return reading.get_status()
+
+    def get_agentic_status(self) -> dict[str, bool | int | str]:
+        agentic = self._session_handlers.get("agentic")
+        if agentic is None:
+            return {
+                "active": False,
+                "objective": "",
+                "auto_steps": 0,
+                "max_auto_steps": 0,
+            }
+        return agentic.get_status()
 
     def reset_latency_metrics(self) -> None:
         self._last_metrics = {
@@ -891,6 +1002,36 @@ class SessionController:
 
         if raw_user_text != user_text:
             self._trace("stt.clean", f"Sanitized user text ({len(raw_user_text)} -> {len(user_text)} chars).")
+
+        steering_response = self._handle_steering_command(user_text)
+        if steering_response is not None:
+            self._set_last_metrics(
+                {
+                    "mode": mode,
+                    "capture_ms": round(capture_ms, 1),
+                    "stt_ms": round(stt_ms, 1),
+                    "llm_ms": 0.0,
+                    "tts_ms": 0.0,
+                    "total_ms": round((time.perf_counter() - turn_start) * 1000.0, 1),
+                }
+            )
+            return steering_response
+
+        if self._stop_agentic_for_emergency(source="turn_start"):
+            self._set_last_metrics(
+                {
+                    "mode": mode,
+                    "capture_ms": round(capture_ms, 1),
+                    "stt_ms": round(stt_ms, 1),
+                    "llm_ms": 0.0,
+                    "tts_ms": 0.0,
+                    "total_ms": round((time.perf_counter() - turn_start) * 1000.0, 1),
+                }
+            )
+            return (
+                "Emergency stop is active, so I stopped agentic mode and switched to chat. "
+                "Reset emergency stop before asking for automatic continuation again."
+            )
 
         try:
             persona_changed = self._persona_update_from_user_text(user_text)
@@ -1344,7 +1485,17 @@ class SessionController:
                 action_intent="",
             )
 
-        return self._autonomy_planner.plan_turn_autonomy(
+        if self._autonomy_mode == "manual":
+            return TurnAutonomyPlan(
+                strategy="Respond naturally and avoid autonomous actions unless explicitly requested.",
+                should_use_screen=False,
+                should_plan_action=False,
+                ask_followup=True,
+                confidence=0.8,
+                action_intent="",
+            )
+
+        plan = self._autonomy_planner.plan_turn_autonomy(
             user_text=user_text,
             active_goal=self._active_goal,
             active_goal_description=self._active_goal_description,
@@ -1355,6 +1506,15 @@ class SessionController:
             actions_enabled=bool(self._settings.actions.enabled),
             available_tool_names=self._tool_executor.list_available_tools(),
         )
+
+        if self._autonomy_mode == "automatic":
+            plan.ask_followup = False
+            plan.should_use_screen = bool(self._state.screen_enabled)
+            plan.should_plan_action = bool(self._settings.actions.enabled)
+            if plan.should_plan_action and not plan.action_intent:
+                plan.action_intent = "Execute the next best UI step for the active objective."
+            self._trace("autonomy.mode", "Automatic mode forced action planning and disabled follow-up prompt.")
+        return plan
 
     def _plan_turn_orchestration(
         self,
@@ -1426,6 +1586,7 @@ class SessionController:
             normalized = "chat"
         self._active_session_type = normalized
         self._active_session = self._session_handlers[normalized]
+        self._state.session_type = normalized
 
     def _route_session_for_turn(self, *, user_text: str) -> None:
         current_signals = self._active_session.detect_turn_signals(user_text)
@@ -1869,12 +2030,36 @@ class SessionController:
         parts.append(f"confidence={round(analysis.confidence, 2)}")
         return ", ".join(parts)
 
-    def _continue_reading_after_approval(self) -> str:
+    def _continue_session_after_approval(self) -> str:
+        if self._stop_agentic_for_emergency(source="continue_after_approval"):
+            return (
+                "Emergency stop is active, so I stopped agentic mode and switched to chat. "
+                "Reset emergency stop before resuming automation."
+            )
+
+        actions_enabled = bool(getattr(self._settings.actions, "enabled", False))
+        state = getattr(self, "_state", None)
+        screen_enabled = bool(getattr(state, "screen_enabled", False))
+        require_confirmation = lambda: bool(getattr(self._settings.actions, "require_confirmation", True))
+        available_tools = (
+            self._tool_executor.list_available_tools
+            if hasattr(self, "_tool_executor") and self._tool_executor is not None
+            else (lambda: [])
+        )
+        autonomy_settings = getattr(self._settings, "autonomy", None)
+        narration_level = str(getattr(autonomy_settings, "agentic_narration_level", "summary") or "summary").strip().lower()
+        if narration_level not in {"full", "summary", "off"}:
+            narration_level = "summary"
+        narrate_callback = (
+            self._narrate_agentic_step
+            if narration_level == "full"
+            else None
+        )
         runtime = SessionRuntimeContext(
-            actions_enabled=bool(self._settings.actions.enabled),
-            screen_enabled=bool(self._state.screen_enabled),
+            actions_enabled=actions_enabled,
+            screen_enabled=screen_enabled,
             foreground_window_title=str(self._foreground_window_title or ""),
-            get_require_confirmation=lambda: bool(self._settings.actions.require_confirmation),
+            get_require_confirmation=require_confirmation,
             set_require_confirmation=lambda value: setattr(
                 self._settings.actions,
                 "require_confirmation",
@@ -1883,8 +2068,213 @@ class SessionController:
             invoke_tool=self._invoke_tool,
             capture_screen_text=self._capture_screen_text,
             trace=self._trace,
+            active_goal=str(getattr(self, "_active_goal", "") or ""),
+            narration_level=narration_level,
+            available_tools=available_tools,
+            plan_agentic_step=self._plan_agentic_step,
+            narrate=narrate_callback,
         )
         return self._active_session.continue_after_approval(runtime)
+
+    def _stop_agentic_for_emergency(self, *, source: str) -> bool:
+        if not bool(getattr(self, "emergency_stop_active", False)):
+            return False
+        if str(getattr(self, "_active_session_type", "chat") or "chat") != "agentic":
+            return False
+
+        stopped = False
+        try:
+            active_session = getattr(self, "_active_session", None)
+            if active_session is not None and hasattr(active_session, "stop"):
+                stopped = bool(active_session.stop(self._trace))
+        except Exception as exc:
+            self._trace("autonomy.safety.error", f"Failed to stop agentic session cleanly: {exc}")
+
+        handlers = getattr(self, "_session_handlers", {})
+        if isinstance(handlers, dict) and "chat" in handlers:
+            self._set_active_session("chat")
+        else:
+            self._active_session_type = "chat"
+
+        mode = str(getattr(self, "_autonomy_mode", "interactive") or "interactive").strip().lower()
+        if mode == "automatic":
+            self._autonomy_mode = "interactive"
+            state = getattr(self, "_state", None)
+            if state is not None:
+                setattr(state, "autonomy_mode", "interactive")
+
+        self._trace(
+            "autonomy.safety",
+            (
+                "Emergency stop is active; agentic session halted "
+                f"(source={source}, stopped={stopped})."
+            ),
+        )
+        return True
+
+    def _narrate_agentic_step(self, text: str) -> None:
+        spoken = " ".join(str(text or "").split()).strip()
+        if not spoken:
+            return
+        if len(spoken) > 220:
+            spoken = spoken[:217].rstrip() + "..."
+        self.speak_text(spoken)
+
+    def _plan_agentic_step(
+        self,
+        objective: str,
+        screen_text: str | None,
+        recent_events: list[dict[str, Any]],
+        remaining_steps: int,
+    ) -> dict[str, Any]:
+        available_tools = self._tool_executor.list_available_tools()
+        objective_text = str(objective or "").strip() or str(self._active_goal or "").strip() or "general_assistance"
+        compact_events = recent_events[-4:]
+        screen_preview = str(screen_text or "")[:1800]
+        self._trace(
+            "agentic.plan.input",
+            (
+                f"objective={objective_text!r} remaining={max(1, int(remaining_steps))} "
+                f"tools={len(available_tools)} events={len(compact_events)} screen_chars={len(screen_preview)}"
+            ),
+        )
+
+        if not available_tools:
+            self._trace("agentic.plan.output", "done=true reason=no_tools")
+            return {
+                "done": True,
+                "progress_note": "No tools available, stopping autonomous continuation.",
+                "next_tool": "",
+                "next_args": {},
+            }
+
+        try:
+            raw = (self._thinking_ollama or self._ollama).chat(
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are an agentic continuation planner. "
+                            "Choose exactly one best next tool call to advance the objective, "
+                            "or mark done when objective appears complete. "
+                            "Return exactly one JSON object with keys: "
+                            "done (bool), progress_note (str), next_tool (str), next_args (object). "
+                            "Rules: use only tools listed in AVAILABLE_TOOLS; do not invent tool names; "
+                            "if uncertain, prefer observational tools before mutating actions."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"OBJECTIVE:\n{objective_text}\n\n"
+                            f"ACTIVE_GOAL:\n{self._active_goal}\n\n"
+                            f"REMAINING_STEPS:{max(1, int(remaining_steps))}\n\n"
+                            f"AVAILABLE_TOOLS:\n" + "\n".join(f"- {name}" for name in available_tools[:120]) + "\n\n"
+                            f"RECENT_EVENTS_JSON:\n{compact_events}\n\n"
+                            f"SCREEN_CONTEXT_PREVIEW:\n{screen_preview or '[none]'}"
+                        ),
+                    },
+                ]
+            )
+            payload = extract_json_object(raw)
+        except Exception as exc:
+            self._trace("agentic.plan.error", f"planner unavailable: {exc}")
+            payload = {}
+
+        if not isinstance(payload, dict):
+            payload = {}
+
+        done = bool(payload.get("done", False))
+        progress_note = str(payload.get("progress_note", "")).strip()
+        next_tool = str(payload.get("next_tool", "")).strip()
+        next_args = payload.get("next_args", {})
+        if not isinstance(next_args, dict):
+            next_args = {}
+
+        if not done and next_tool and next_tool not in available_tools:
+            self._trace("agentic.plan.error", f"planner chose unavailable tool: {next_tool}")
+            return {
+                "done": True,
+                "progress_note": (
+                    "Planner selected unavailable tool; stopping to avoid invalid execution."
+                ),
+                "next_tool": "",
+                "next_args": {},
+            }
+
+        if not done and not next_tool:
+            # Fallback: prefer non-mutating context refresh if available.
+            for candidate in ("mcp.windows.Snapshot", "ocr.extract_details", "ocr.extract_elements"):
+                if candidate in available_tools:
+                    self._trace("agentic.plan.output", f"done=false fallback_tool={candidate}")
+                    return {
+                        "done": False,
+                        "progress_note": progress_note or "Refreshing context before next action.",
+                        "next_tool": candidate,
+                        "next_args": {},
+                    }
+            self._trace("agentic.plan.output", "done=true reason=no_fallback")
+            return {
+                "done": True,
+                "progress_note": progress_note or "No safe fallback tool available.",
+                "next_tool": "",
+                "next_args": {},
+            }
+
+        self._trace(
+            "agentic.plan.output",
+            f"done={done} next_tool={next_tool or '[none]'} note={progress_note or '[none]'}",
+        )
+
+        return {
+            "done": done,
+            "progress_note": progress_note,
+            "next_tool": next_tool,
+            "next_args": next_args,
+        }
+
+    def _continue_reading_after_approval(self) -> str:
+        return self._continue_session_after_approval()
+
+    def _handle_steering_command(self, user_text: str) -> str | None:
+        text = str(user_text or "").strip()
+        if not text.startswith("@"):
+            return None
+
+        lowered = text.lower()
+        if lowered.startswith("@mode"):
+            parts = lowered.split(maxsplit=1)
+            if len(parts) < 2:
+                return "Mode command requires a value: @mode manual|interactive|automatic"
+            target = parts[1].strip()
+            if target not in {"manual", "interactive", "automatic"}:
+                return "Unknown mode. Use: @mode manual|interactive|automatic"
+            self.set_autonomy_mode(target)
+            return f"Autonomy mode set to {self._autonomy_mode}. Active session: {self._active_session_type}."
+
+        if lowered.startswith("@session"):
+            parts = text.split(maxsplit=1)
+            if len(parts) < 2:
+                return "Session command requires a value: @session chat|reading|agentic"
+            raw_target = str(parts[1]).strip()
+            session_parts = raw_target.split(maxsplit=1)
+            target = session_parts[0].strip()
+            objective = session_parts[1].strip() if len(session_parts) > 1 else ""
+            if target not in self._session_handlers:
+                return "Unknown session. Use: @session chat|reading|agentic"
+            self._set_active_session(target)
+            if target == "agentic" and self._autonomy_mode != "automatic":
+                self.set_autonomy_mode("automatic")
+            if target == "agentic" and objective:
+                self._agentic_session.set_objective(objective=objective, trace=self._trace)
+            return f"Session switched to {self._active_session_type}. Mode: {self._autonomy_mode}."
+
+        if lowered.startswith("@stop session"):
+            was_active = self._active_session.stop(self._trace)
+            self._set_active_session("chat")
+            return "Stopped active session and returned to chat." if was_active else "No active session to stop."
+
+        return None
 
     @staticmethod
     def _safe_unlink(path: Path) -> None:
@@ -1892,3 +2282,75 @@ class SessionController:
             path.unlink(missing_ok=True)
         except Exception:
             return
+
+    def _register_mcp_tools(self) -> None:
+        cfg = self._tooling_config.tool_settings("mcp")
+        if not bool(cfg.get("enabled", False)):
+            self._trace("mcp.start", "MCP integration disabled by config.")
+            return
+
+        command = str(cfg.get("command", "uvx")).strip()
+        args = cfg.get("args", ["windows-mcp"])
+        env = cfg.get("env", {})
+        timeout_ms = int(cfg.get("timeout_ms", self._tooling_config.policies.default_timeout_ms))
+        startup_timeout_seconds = float(cfg.get("startup_timeout_seconds", 12.0))
+        framing_mode = str(cfg.get("framing_mode", "content-length")).strip().lower()
+        prefix = str(cfg.get("prefix", "mcp.windows")).strip()
+
+        parsed_args = [str(item).strip() for item in args if str(item).strip()] if isinstance(args, list) else ["windows-mcp"]
+        parsed_env = (
+            {str(k): str(v) for k, v in env.items()}
+            if isinstance(env, dict)
+            else {}
+        )
+
+        allowed_tools = set()
+        blocked_tools = set()
+        mutating_tools = set()
+        for item in cfg.get("allow_tools", []):
+            text = str(item).strip()
+            if text:
+                allowed_tools.add(text)
+        for item in cfg.get("block_tools", []):
+            text = str(item).strip()
+            if text:
+                blocked_tools.add(text)
+        for item in cfg.get("mutating_tools", []):
+            text = str(item).strip()
+            if text:
+                mutating_tools.add(text)
+
+        client = MCPStdioClient(
+            command=command,
+            args=parsed_args,
+            env=parsed_env,
+            framing_mode=framing_mode,
+            startup_timeout_seconds=startup_timeout_seconds,
+            trace=self._trace,
+        )
+        if not client.start():
+            self._trace("mcp.error", "MCP client failed to start. Continuing without MCP tools.")
+            return
+
+        tools = build_mcp_tools(
+            client=client,
+            prefix=prefix,
+            timeout_ms=timeout_ms,
+            mutating_tools=mutating_tools,
+            allowed_tools=allowed_tools,
+            blocked_tools=blocked_tools,
+        )
+        if not tools:
+            self._trace("mcp.start", "No MCP tools discovered after filters; disabling MCP runtime.")
+            client.stop()
+            return
+
+        self._tool_registry.register_many(tools)
+        if self._tooling_config.enabled_tools and bool(cfg.get("append_to_enabled_tools", True)):
+            existing = set(self._tooling_config.enabled_tools)
+            for tool in tools:
+                if tool.spec.name not in existing:
+                    self._tooling_config.enabled_tools.append(tool.spec.name)
+                    existing.add(tool.spec.name)
+        self._mcp_client = client
+        self._trace("mcp.start", f"Registered {len(tools)} MCP tool(s).")

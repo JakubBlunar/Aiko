@@ -21,6 +21,10 @@ enabled_tools:
 policies:
   full_auto: false
   max_tool_calls_per_turn: 4
+tools:
+  mcp:
+    enabled: false
+    command: uvx
 """.strip(),
                 encoding="utf-8",
             )
@@ -28,6 +32,10 @@ policies:
                 """
 policies:
   full_auto: true
+tools:
+  mcp:
+    enabled: true
+    args: [windows-mcp]
 """.strip(),
                 encoding="utf-8",
             )
@@ -41,6 +49,9 @@ policies:
             self.assertEqual(config.enabled_tools, ["ocr.extract_elements"])
             self.assertTrue(config.policies.full_auto)
             self.assertEqual(config.policies.max_tool_calls_per_turn, 9)
+            mcp = config.tool_settings("mcp")
+            self.assertTrue(mcp.get("enabled"))
+            self.assertEqual(mcp.get("command"), "uvx")
 
 
 if __name__ == "__main__":

@@ -48,6 +48,7 @@ def _app_settings() -> AppSettings:
         ),
         autonomy=AutonomySettings(
             enabled=False,
+            mode="interactive",
             proactive_conversation=True,
             allow_action_suggestions=True,
             allow_proactive_actions=False,
@@ -55,6 +56,8 @@ def _app_settings() -> AppSettings:
             auto_goal_switch=True,
             default_goal="general_conversation",
             goal_switch_min_confidence=0.75,
+            agentic_full_narration=False,
+            agentic_narration_level="summary",
         ),
         ollama=OllamaSettings(base_url="http://127.0.0.1:11434", chat_model="llama3.1:8b", temperature=0.6),
         audio=AudioSettings(

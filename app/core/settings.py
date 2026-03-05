@@ -54,6 +54,7 @@ class AssistantSettings:
 @dataclass(slots=True)
 class AutonomySettings:
     enabled: bool
+    mode: str
     proactive_conversation: bool
     allow_action_suggestions: bool
     allow_proactive_actions: bool
@@ -61,6 +62,9 @@ class AutonomySettings:
     auto_goal_switch: bool
     default_goal: str
     goal_switch_min_confidence: float
+    agentic_max_auto_steps: int = 3
+    agentic_full_narration: bool = False
+    agentic_narration_level: str = "summary"
     reading_session_memory_enabled: bool = True
     reading_max_scroll_steps: int = 6
     reading_max_quotes: int = 4
@@ -276,6 +280,14 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
     stt_prosody_prompt_raw = stt.get("prosody_include_in_prompt", True)
     stt_prosody_prompt = True if stt_prosody_prompt_raw is None else bool(stt_prosody_prompt_raw)
 
+    narration_level_raw = str(autonomy.get("agentic_narration_level", "")).strip().lower()
+    if narration_level_raw not in {"full", "summary", "off"}:
+        narration_level_raw = (
+            "full"
+            if bool(autonomy.get("agentic_full_narration", False))
+            else "summary"
+        )
+
     return AppSettings(
         assistant=AssistantSettings(
             name=_required(assistant, "name"),
@@ -290,6 +302,12 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
         ),
         autonomy=AutonomySettings(
             enabled=bool(autonomy.get("enabled", False)),
+            mode=(
+                str(autonomy.get("mode", "interactive")).strip().lower()
+                if str(autonomy.get("mode", "interactive")).strip().lower()
+                in {"manual", "interactive", "automatic"}
+                else "interactive"
+            ),
             proactive_conversation=bool(autonomy.get("proactive_conversation", True)),
             allow_action_suggestions=bool(autonomy.get("allow_action_suggestions", True)),
             allow_proactive_actions=bool(autonomy.get("allow_proactive_actions", False)),
@@ -301,6 +319,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                 0.0,
                 min(float(autonomy.get("goal_switch_min_confidence", 0.6)), 1.0),
             ),
+            agentic_max_auto_steps=max(1, min(int(autonomy.get("agentic_max_auto_steps", 3)), 20)),
+            agentic_full_narration=bool(autonomy.get("agentic_full_narration", False)),
+            agentic_narration_level=narration_level_raw,
             reading_session_memory_enabled=bool(autonomy.get("reading_session_memory_enabled", True)),
             reading_max_scroll_steps=max(1, min(int(autonomy.get("reading_max_scroll_steps", 6)), 30)),
             reading_max_quotes=max(1, min(int(autonomy.get("reading_max_quotes", 4)), 8)),
@@ -398,6 +419,7 @@ def save_runtime_preferences(
     chat_model: str,
     thinking_model: str | None,
     remember_history: bool,
+    autonomy_mode: str,
     microphone_device: int | None,
     vad_level_threshold: float,
     vad_silence_seconds: float,
@@ -433,6 +455,14 @@ def save_runtime_preferences(
         "assistant": {
             "remember_history": bool(remember_history),
             "thinking_model": thinking_model,
+        },
+        "autonomy": {
+            "mode": (
+                str(autonomy_mode or "interactive").strip().lower()
+                if str(autonomy_mode or "interactive").strip().lower()
+                in {"manual", "interactive", "automatic"}
+                else "interactive"
+            ),
         },
         "audio": {
             "microphone_device": microphone_device,

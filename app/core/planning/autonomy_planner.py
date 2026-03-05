@@ -173,7 +173,8 @@ class AutonomyPlanner:
                             "goal: a short snake_case identifier for the task "
                             "(e.g. 'tic_tac_toe', 'english_practice', 'coding_help', 'general_conversation'). "
                             "description: one sentence describing what the user is trying to accomplish. "
-                            "session_type: one of 'chat' or 'reading' (choose reading only when the user asks to read/continue reading on-screen content). "
+                            "session_type: one of 'chat', 'reading', or 'agentic' "
+                            "(choose agentic when user asks for autonomous/full-auto operation). "
                             "confidence: 0.0-1.0 how confident you are in the inferred goal. "
                             "reason: brief explanation of why you chose this goal."
                         ),
@@ -205,7 +206,7 @@ class AutonomyPlanner:
         reason = str(payload.get("reason", "")).strip()
         description = str(payload.get("description", "")).strip()
         session_type = str(payload.get("session_type", "chat")).strip().lower()
-        if session_type not in {"chat", "reading"}:
+        if session_type not in {"chat", "reading", "agentic"}:
             session_type = "chat"
         return GoalInference(
             goal=goal,

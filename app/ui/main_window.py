@@ -115,6 +115,11 @@ class MainWindow(QMainWindow):
 
         self._status = StatusPanel()
         self._status.set_model(settings.ollama.chat_model)
+        self._status.set_autonomy_status(
+            mode=self._session.autonomy_mode,
+            session_type=self._session.active_session_type,
+        )
+        self._status.set_current_session(self._session.active_session_type)
         chat_layout.addWidget(self._status)
         self._model_debug_label = QLabel("Active Models: response=unknown | thinking=response")
         self._model_debug_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
@@ -134,6 +139,12 @@ class MainWindow(QMainWindow):
         self._action_guardrail_label = QLabel("Actions: e-stop=inactive")
         self._action_guardrail_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
         chat_layout.addWidget(self._action_guardrail_label)
+        self._autonomy_label = QLabel("Autonomy: mode=interactive | session=chat")
+        self._autonomy_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        chat_layout.addWidget(self._autonomy_label)
+        self._current_session_label = QLabel("Current Session: chat")
+        self._current_session_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        chat_layout.addWidget(self._current_session_label)
 
         action_confirm_row = QHBoxLayout()
         self._approve_action_button = QPushButton("Approve Action")
@@ -312,6 +323,20 @@ class MainWindow(QMainWindow):
         actions_group.setLayout(actions_layout)
 
         actions_controls_form = QFormLayout()
+        self._autonomy_mode_combo = QComboBox()
+        self._autonomy_mode_combo.addItem("Manual", "manual")
+        self._autonomy_mode_combo.addItem("Interactive", "interactive")
+        self._autonomy_mode_combo.addItem("Automatic", "automatic")
+        self._autonomy_mode_combo.currentIndexChanged.connect(self._on_autonomy_mode_changed)
+        actions_controls_form.addRow("Autonomy Mode:", self._autonomy_mode_combo)
+
+        self._session_type_combo = QComboBox()
+        self._session_type_combo.addItem("Chat", "chat")
+        self._session_type_combo.addItem("Reading", "reading")
+        self._session_type_combo.addItem("Agentic", "agentic")
+        self._session_type_combo.currentIndexChanged.connect(self._on_session_type_changed)
+        actions_controls_form.addRow("Session Type:", self._session_type_combo)
+
         self._action_cooldown_spin = QDoubleSpinBox()
         self._action_cooldown_spin.setDecimals(1)
         self._action_cooldown_spin.setRange(0.0, 10.0)
@@ -457,6 +482,7 @@ class MainWindow(QMainWindow):
         self._action_guardrail_timer.timeout.connect(self._refresh_action_guardrail_label)
         self._action_guardrail_timer.start()
         self._refresh_action_guardrail_label()
+        self._refresh_autonomy_controls()
         self._setup_wheel_guard()
         QTimer.singleShot(250, self._play_startup_greeting)
 
@@ -483,6 +509,8 @@ class MainWindow(QMainWindow):
             self._vad_threshold_spin,
             self._vad_silence_spin,
             self._action_cooldown_spin,
+            self._autonomy_mode_combo,
+            self._session_type_combo,
         )
         for widget in widgets:
             widget.installEventFilter(self)
@@ -517,6 +545,11 @@ class MainWindow(QMainWindow):
             mic=state.mic_enabled,
             screen=state.screen_enabled,
         )
+        self._status.set_autonomy_status(
+            mode=self._session.autonomy_mode,
+            session_type=self._session.active_session_type,
+        )
+        self._status.set_current_session(self._session.active_session_type)
         self._status.set_service_status("ready")
 
     def _apply_sources(self) -> None:
@@ -531,10 +564,13 @@ class MainWindow(QMainWindow):
         self._session.set_chat_model(str(self._model_combo.currentData() or self._session.chat_model))
         thinking_model = self._thinking_model_combo.currentData()
         self._session.set_thinking_model(str(thinking_model) if thinking_model else None)
+        self._session.set_autonomy_mode(str(self._autonomy_mode_combo.currentData() or "interactive"))
+        self._session.set_active_session_type(str(self._session_type_combo.currentData() or "chat"))
         self._session.set_tts_provider(str(self._tts_provider_combo.currentData() or "piper"))
         self._session.set_tts_voice(str(self._tts_voice_combo.currentData() or self._session.tts_voice))
         self._status.set_model(self._session.chat_model)
         self._refresh_model_debug_label()
+        self._refresh_autonomy_controls()
         self._persist_preferences()
         self._refresh_status()
 
@@ -747,7 +783,9 @@ class MainWindow(QMainWindow):
         self._append("System", message)
         if followup:
             self._append("Assistant", followup)
-            self._session.speak_text(followup)
+            spoken = self._session.tts_text_for_followup(followup)
+            if spoken:
+                self._session.speak_text(spoken)
         self._refresh_action_guardrail_label()
 
     def _reject_pending_action(self) -> None:
@@ -966,6 +1004,15 @@ class MainWindow(QMainWindow):
                 f"reading={reading_state} {reading_steps}/{reading_max_steps} chunks={reading_chunks}"
             )
         )
+        self._autonomy_label.setText(
+            f"Autonomy: mode={self._session.autonomy_mode} | session={self._session.active_session_type}"
+        )
+        self._status.set_autonomy_status(
+            mode=self._session.autonomy_mode,
+            session_type=self._session.active_session_type,
+        )
+        self._status.set_current_session(self._session.active_session_type)
+        self._current_session_label.setText(f"Current Session: {self._session.active_session_type}")
         self._refresh_goal_debug_label()
         self._refresh_tts_debug_label()
         self._refresh_tts_model_status_label()
@@ -985,6 +1032,7 @@ class MainWindow(QMainWindow):
             chat_model=self._session.chat_model,
             thinking_model=self._session.thinking_model,
             remember_history=self._memory_checkbox.isChecked(),
+            autonomy_mode=self._session.autonomy_mode,
             microphone_device=self._mic_device_combo.currentData(),
             vad_level_threshold=self._session.vad_level_threshold,
             vad_silence_seconds=self._session.vad_silence_seconds,
@@ -1057,6 +1105,8 @@ class MainWindow(QMainWindow):
         self._memory_checkbox.setEnabled(not busy)
         self._apply_calibration_button.setEnabled(not busy)
         self._apply_guardrails_button.setEnabled(not busy)
+        self._autonomy_mode_combo.setEnabled(not busy)
+        self._session_type_combo.setEnabled(not busy)
         self._approve_action_button.setEnabled((not busy) and self._session.has_pending_action)
         self._reject_action_button.setEnabled((not busy) and self._session.has_pending_action)
         self._reset_latency_button.setEnabled(not busy)
@@ -1170,6 +1220,8 @@ class MainWindow(QMainWindow):
         self._memory_checkbox.setEnabled(False)
         self._apply_calibration_button.setEnabled(False)
         self._apply_guardrails_button.setEnabled(False)
+        self._autonomy_mode_combo.setEnabled(False)
+        self._session_type_combo.setEnabled(False)
         self._approve_action_button.setEnabled(False)
         self._reject_action_button.setEnabled(False)
         self._reset_latency_button.setEnabled(False)
@@ -1209,6 +1261,8 @@ class MainWindow(QMainWindow):
         self._memory_checkbox.setEnabled(True)
         self._apply_calibration_button.setEnabled(True)
         self._apply_guardrails_button.setEnabled(True)
+        self._autonomy_mode_combo.setEnabled(True)
+        self._session_type_combo.setEnabled(True)
         self._approve_action_button.setEnabled(self._session.has_pending_action)
         self._reject_action_button.setEnabled(self._session.has_pending_action)
         self._reset_latency_button.setEnabled(True)
@@ -1231,7 +1285,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         self._persist_preferences()
         self._stop_live_mode()
-        self._session.stop_action_hotkey_listener()
+        self._session.shutdown()
         if self._turn_thread is not None:
             self._turn_thread.quit()
             self._turn_thread.wait(1500)
@@ -1337,3 +1391,33 @@ class MainWindow(QMainWindow):
             f"tts={averages.get('tts_ms', 0)}ms | "
             f"total={averages.get('total_ms', 0)}ms"
         )
+
+    def _refresh_autonomy_controls(self) -> None:
+        mode_index = self._autonomy_mode_combo.findData(self._session.autonomy_mode)
+        if mode_index >= 0:
+            self._autonomy_mode_combo.blockSignals(True)
+            self._autonomy_mode_combo.setCurrentIndex(mode_index)
+            self._autonomy_mode_combo.blockSignals(False)
+
+        session_index = self._session_type_combo.findData(self._session.active_session_type)
+        if session_index >= 0:
+            self._session_type_combo.blockSignals(True)
+            self._session_type_combo.setCurrentIndex(session_index)
+            self._session_type_combo.blockSignals(False)
+
+        self._autonomy_label.setText(
+            f"Autonomy: mode={self._session.autonomy_mode} | session={self._session.active_session_type}"
+        )
+        self._current_session_label.setText(f"Current Session: {self._session.active_session_type}")
+
+    def _on_autonomy_mode_changed(self) -> None:
+        mode = str(self._autonomy_mode_combo.currentData() or "interactive")
+        self._session.set_autonomy_mode(mode)
+        self._refresh_autonomy_controls()
+        self._persist_preferences()
+
+    def _on_session_type_changed(self) -> None:
+        session_type = str(self._session_type_combo.currentData() or "chat")
+        self._session.set_active_session_type(session_type)
+        self._refresh_autonomy_controls()
+        self._persist_preferences()

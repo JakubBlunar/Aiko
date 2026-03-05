@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 from typing import Protocol
 
 
@@ -22,6 +23,11 @@ class SessionRuntimeContext:
     invoke_tool: Callable[..., object]
     capture_screen_text: Callable[..., str | None]
     trace: Callable[[str, str], None]
+    active_goal: str = ""
+    narration_level: str = "summary"
+    available_tools: Callable[[], list[str]] | None = None
+    plan_agentic_step: Callable[[str, str | None, list[dict[str, Any]], int], dict[str, Any]] | None = None
+    narrate: Callable[[str], None] | None = None
 
 
 class SessionHandler(Protocol):

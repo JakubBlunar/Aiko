@@ -25,6 +25,8 @@ class SessionRouter:
             return candidate, "model"
 
         goal = str(inferred_goal or "").strip().lower()
+        if ("agentic" in goal or "autonom" in goal) and "agentic" in self._supported:
+            return "agentic", "goal_fallback"
         if "read" in goal and "reading" in self._supported:
             return "reading", "goal_fallback"
 

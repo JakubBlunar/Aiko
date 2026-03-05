@@ -86,6 +86,16 @@ class DecisionTraceDialog(QDialog):
         self._filter_tooling.stateChanged.connect(lambda _state: self._refresh())
         filters.addWidget(self._filter_tooling)
 
+        self._filter_agentic = QCheckBox("agentic.*")
+        self._filter_agentic.setChecked(True)
+        self._filter_agentic.stateChanged.connect(lambda _state: self._refresh())
+        filters.addWidget(self._filter_agentic)
+
+        self._filter_mcp = QCheckBox("mcp.*")
+        self._filter_mcp.setChecked(True)
+        self._filter_mcp.stateChanged.connect(lambda _state: self._refresh())
+        filters.addWidget(self._filter_mcp)
+
         self._filter_tts = QCheckBox("tts.error")
         self._filter_tts.setChecked(True)
         self._filter_tts.stateChanged.connect(lambda _state: self._refresh())
@@ -140,6 +150,10 @@ class DecisionTraceDialog(QDialog):
             allowed_stages.add("pipeline.*")
         if self._filter_tooling.isChecked():
             allowed_stages.add("tool.*")
+        if self._filter_agentic.isChecked():
+            allowed_stages.add("agentic.*")
+        if self._filter_mcp.isChecked():
+            allowed_stages.add("mcp.*")
         if self._filter_tts.isChecked():
             allowed_stages.add("tts.error")
         if self._filter_plan.isChecked():
@@ -160,6 +174,12 @@ class DecisionTraceDialog(QDialog):
                     filtered.append(entry)
                     continue
                 if "tool.*" in allowed_stages and stage.startswith("tool."):
+                    filtered.append(entry)
+                    continue
+                if "agentic.*" in allowed_stages and stage.startswith("agentic."):
+                    filtered.append(entry)
+                    continue
+                if "mcp.*" in allowed_stages and stage.startswith("mcp."):
                     filtered.append(entry)
             entries = filtered
         else:

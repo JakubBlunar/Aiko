@@ -135,6 +135,70 @@ class SessionReadingFlowTests(unittest.TestCase):
         self.assertEqual(controller._reading_session._scroll_steps, 0)
         self.assertEqual(controller._reading_session._last_summary, "")
 
+    def test_summarize_followup_for_tts_agentic_loop(self) -> None:
+        followup = (
+            "Agentic continuation completed. Progress: 2/5.\n"
+            "- step 1: mcp.windows.Snapshot ok\n"
+            "- step 2: mcp.windows.App ok"
+        )
+        spoken = SessionController.summarize_followup_for_tts(followup)
+
+        self.assertIn("Agentic continuation update", spoken)
+        self.assertIn("Progress 2 of 5", spoken)
+        self.assertIn("Step 1", spoken)
+        self.assertIn("Step 2", spoken)
+
+    def test_tts_text_for_followup_off_level(self) -> None:
+        controller = SessionController.__new__(SessionController)
+        controller._settings = SimpleNamespace(autonomy=SimpleNamespace(agentic_narration_level="off"))
+
+        spoken = controller.tts_text_for_followup("Agentic continuation completed. Progress: 1/3.")
+
+        self.assertEqual(spoken, "")
+
+    def test_tts_text_for_followup_full_level_agentic(self) -> None:
+        controller = SessionController.__new__(SessionController)
+        controller._settings = SimpleNamespace(autonomy=SimpleNamespace(agentic_narration_level="full"))
+
+        spoken = controller.tts_text_for_followup("Agentic continuation completed. Progress: 1/3.")
+
+        self.assertEqual(spoken, "Agentic continuation completed.")
+
+    def test_tts_text_for_followup_summary_level(self) -> None:
+        controller = SessionController.__new__(SessionController)
+        controller._settings = SimpleNamespace(autonomy=SimpleNamespace(agentic_narration_level="summary"))
+
+        spoken = controller.tts_text_for_followup(
+            "Agentic continuation completed. Progress: 2/5.\n- step 1: mcp.windows.Snapshot ok"
+        )
+
+        self.assertIn("Progress 2 of 5", spoken)
+
+    def test_continue_after_approval_stops_agentic_when_estop_active(self) -> None:
+        controller = SessionController.__new__(SessionController)
+        traces: list[str] = []
+
+        controller._trace = lambda _stage, message: traces.append(str(message))
+        controller._action_executor = SimpleNamespace(emergency_stopped=True)
+        controller._autonomy_mode = "automatic"
+        controller._state = SimpleNamespace(autonomy_mode="automatic", session_type="agentic")
+        controller._active_session_type = "agentic"
+        chat_handler = SimpleNamespace(get_status=lambda: {})
+        agentic_handler = SimpleNamespace(stop=lambda _trace: True)
+        controller._session_handlers = {
+            "chat": chat_handler,
+            "agentic": agentic_handler,
+        }
+        controller._active_session = agentic_handler
+
+        reply = controller._continue_session_after_approval()
+
+        self.assertIn("Emergency stop is active", reply)
+        self.assertEqual(controller._active_session_type, "chat")
+        self.assertEqual(controller._autonomy_mode, "interactive")
+        self.assertEqual(controller._state.autonomy_mode, "interactive")
+        self.assertTrue(any("agentic session halted" in line for line in traces))
+
 
 if __name__ == "__main__":
     unittest.main()

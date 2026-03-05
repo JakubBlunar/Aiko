@@ -87,6 +87,8 @@ Optional: enable structured autonomy planning for more proactive turn-by-turn de
 ```yaml
 autonomy:
 	enabled: true
+	mode: "interactive"   # manual | interactive | automatic
+	agentic_narration_level: "summary"  # off | summary | full
 	proactive_conversation: true
 	allow_action_suggestions: true
 	allow_proactive_actions: false
@@ -95,6 +97,29 @@ autonomy:
 	default_goal: "general_conversation"
 	goal_switch_min_confidence: 0.6
 ```
+
+Optional: enable Windows-MCP tool integration (local stdio mode):
+
+1. Install prerequisites (Python 3.13+ recommended for `windows-mcp`, and `uv`).
+2. Verify server starts locally:
+
+```powershell
+uvx windows-mcp
+```
+
+3. Enable MCP in `config/tooling.user.yaml`:
+
+```yaml
+tools:
+	mcp:
+		enabled: true
+		command: "uvx"
+		args: ["windows-mcp"]
+		framing_mode: "newline-json"
+		prefix: "mcp.windows"
+```
+
+If you keep a strict `enabled_tools` list in `config/tooling.user.yaml`, discovered MCP tools are auto-added at startup when `append_to_enabled_tools` is true (default in `tooling.default.yaml`).
 
 When enabled, the assistant infers current goal from dialogue and can switch between goals like
 `general_conversation`, `english_practice`, `coding_help`, `ui_automation`, `learning_coach`, and `troubleshooting`.
@@ -216,3 +241,17 @@ actions:
 - Use `Action/Thinking Log` in the UI to inspect decision traces (screen decision YES/NO, planned action type/confidence/reason, execution result, confirmations).
 - The log is a compact decision trace for debugging, not raw hidden chain-of-thought output.
 - The trace dialog includes stage filters so you can view only `autonomy.plan`, `autonomy.goal`, `screen.decision`, `screen.capture`, `action.plan`, `action.execute`, or `action.confirmation` entries.
+
+## Session and mode steering
+
+You can switch behavior in-chat at runtime:
+
+- `@mode manual`
+- `@mode interactive`
+- `@mode automatic`
+- `@session chat`
+- `@session reading`
+- `@session agentic`
+- `@stop session`
+
+The Settings tab also exposes `Autonomy Mode` and `Session Type` controls.
