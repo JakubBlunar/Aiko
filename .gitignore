@@ -5,6 +5,7 @@ __pycache__/
 build/
 dist/
 config/user.yaml
+config/*.user.yaml
 data/conversation_memory.jsonl
 data/crashlog.txt
 data/persona_profile.json

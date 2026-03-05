@@ -79,6 +79,7 @@ class SessionController:
             state=self._action_stop_state,
         )
         self._action_executor = GuardedActionExecutor(settings.actions, self._action_stop_state)
+        self._memory = ConversationMemoryStore()
 
         tooling_default_path = Path(settings.tooling.config_default_path)
         tooling_user_path = Path(settings.tooling.config_user_path)
@@ -92,10 +93,26 @@ class SessionController:
             user_path=tooling_user_path,
         )
         self._tool_registry = ToolRegistry()
-        self._tool_registry.register_many(build_default_tools(settings, self._tooling_config))
+        self._tool_registry.register_many(
+            build_default_tools(settings, self._tooling_config, memory_store=self._memory)
+        )
         self._tool_registry.register(ActionExecutePlanTool(self._action_executor))
         self._tool_executor = ToolExecutor(self._tool_registry, self._tooling_config)
         self._tool_context = ToolContext(metadata={"source": "session_controller"})
+        history_cfg = self._tooling_config.tool_settings("history")
+        self._history_prompt_limit = self._coerce_int(
+            history_cfg.get("prompt_limit", history_cfg.get("default_limit", 12)),
+            default=12,
+            minimum=1,
+            maximum=400,
+        )
+        self._startup_history_limit = self._coerce_int(
+            history_cfg.get("startup_history_limit", self._history_prompt_limit),
+            default=self._history_prompt_limit,
+            minimum=1,
+            maximum=400,
+        )
+        self._startup_context_prewarm_enabled = bool(history_cfg.get("preload_on_startup", True))
         self._tts = self._build_tts_service(settings)
         self._system_audio_context: deque[str] = deque(maxlen=4)
         self._last_system_audio_capture_at = 0.0
@@ -105,7 +122,6 @@ class SessionController:
         self._loopback_device = settings.audio.loopback_device
         self._personality = settings.assistant.personality
         self._remember_history = settings.assistant.remember_history
-        self._memory = ConversationMemoryStore()
         self._active_goal = settings.autonomy.default_goal
         self._active_goal_description: str = ""
         self._last_screen_decision_at = 0.0
@@ -289,6 +305,16 @@ class SessionController:
             return False
 
     def build_startup_greeting(self) -> str:
+        snapshot = self._persona_snapshot(max_notes=6)
+        notes = list(snapshot.get("user_notes", []))
+        has_history = bool(self._remember_history and self._history_messages(limit=1))
+
+        if notes and has_history:
+            return "Welcome back. I loaded your profile and recent conversation context."
+        if notes:
+            return "Welcome back. I loaded your profile."
+        if has_history:
+            return "Welcome back. I loaded recent conversation context."
         return "Welcome back. Audio is ready."
 
     def prewarm_tts(self) -> None:
@@ -327,9 +353,7 @@ class SessionController:
             )
 
         report(f"Warming response model: {self.chat_model}")
-        self._ollama.chat([
-            {"role": "user", "content": "Reply with OK."},
-        ])
+        self._ollama.chat(self._build_startup_prewarm_messages())
 
         if self._thinking_ollama is not None and self._thinking_model:
             report(f"Warming thinking model: {self._thinking_model}")
@@ -515,10 +539,130 @@ class SessionController:
         self._metrics_history.append(dict(metrics))
 
     def get_conversation_memory(self, max_entries: int = 200) -> list[dict[str, str]]:
-        entries = self._memory.recent_entries(max_entries=max_entries)
+        return self._history_entries(limit=max_entries)
+
+    @staticmethod
+    def _coerce_int(value: object, *, default: int, minimum: int, maximum: int) -> int:
+        try:
+            parsed = int(value)
+        except Exception:
+            parsed = default
+        return max(minimum, min(parsed, maximum))
+
+    def _build_startup_prewarm_messages(self) -> list[dict[str, str]]:
+        if not self._startup_context_prewarm_enabled:
+            return [{"role": "user", "content": "Reply with OK."}]
+
+        persona_snapshot = self._persona_snapshot(max_notes=6)
+        messages: list[dict[str, str]] = [
+            {
+                "role": "system",
+                "content": (
+                    "You are preparing startup context for an assistant session. "
+                    "Read the profile and history context and reply with only OK."
+                ),
+            }
+        ]
+
+        background = str(persona_snapshot.get("assistant_background", "")).strip()
+        user_notes = [str(item).strip() for item in list(persona_snapshot.get("user_notes", [])) if str(item).strip()]
+        if background or user_notes:
+            profile_lines: list[str] = []
+            if background:
+                profile_lines.append(f"Assistant background: {background}")
+            if user_notes:
+                profile_lines.append("User notes:")
+                for note in user_notes[-6:]:
+                    profile_lines.append(f"- {note}")
+            messages.append({"role": "user", "content": "\n".join(profile_lines)})
+
+        if self._remember_history:
+            for item in self._history_messages(limit=self._startup_history_limit):
+                role = str(item.get("role", "")).strip().lower()
+                content = str(item.get("content", "")).strip()
+                if role in {"user", "assistant"} and content:
+                    messages.append({"role": role, "content": content})
+
+        messages.append({"role": "user", "content": "Reply with OK."})
+        return messages
+
+    def _history_messages(self, *, limit: int, offset: int = 0) -> list[dict[str, str]]:
+        result = self._tool_executor.invoke(
+            "history.read_messages",
+            args={"limit": max(1, int(limit)), "offset": max(0, int(offset))},
+            context=self._tool_context,
+        )
+        if result.success:
+            messages = result.data.get("messages", [])
+            if isinstance(messages, list):
+                normalized: list[dict[str, str]] = []
+                for item in messages:
+                    if not isinstance(item, dict):
+                        continue
+                    role = str(item.get("role", "")).strip().lower()
+                    content = str(item.get("content", "")).strip()
+                    if role in {"user", "assistant"} and content:
+                        normalized.append({"role": role, "content": content})
+                return normalized
+        safe_limit = max(1, int(limit))
+        safe_offset = max(0, int(offset))
+        fallback_entries = self._memory.recent_entries(max_entries=safe_limit + safe_offset)
+        if safe_offset:
+            if len(fallback_entries) <= safe_offset:
+                return []
+            end = len(fallback_entries) - safe_offset
+            start = max(0, end - safe_limit)
+            fallback_entries = fallback_entries[start:end]
+        else:
+            fallback_entries = fallback_entries[-safe_limit:]
+
         return [
-            {"role": entry.role, "content": entry.content, "timestamp": entry.timestamp}
-            for entry in entries
+            {"role": item.role, "content": item.content}
+            for item in fallback_entries
+            if item.role in {"user", "assistant"} and item.content
+        ]
+
+    def _history_entries(self, *, limit: int, offset: int = 0) -> list[dict[str, str]]:
+        result = self._tool_executor.invoke(
+            "history.read_entries",
+            args={"limit": max(1, int(limit)), "offset": max(0, int(offset))},
+            context=self._tool_context,
+        )
+        if result.success:
+            entries = result.data.get("entries", [])
+            if isinstance(entries, list):
+                normalized: list[dict[str, str]] = []
+                for item in entries:
+                    if not isinstance(item, dict):
+                        continue
+                    role = str(item.get("role", "")).strip().lower()
+                    content = str(item.get("content", "")).strip()
+                    timestamp = str(item.get("timestamp", "")).strip()
+                    if role in {"user", "assistant"} and content:
+                        normalized.append(
+                            {
+                                "role": role,
+                                "content": content,
+                                "timestamp": timestamp,
+                            }
+                        )
+                return normalized
+
+        safe_limit = max(1, int(limit))
+        safe_offset = max(0, int(offset))
+        fallback_entries = self._memory.recent_entries(max_entries=safe_limit + safe_offset)
+        if safe_offset:
+            if len(fallback_entries) <= safe_offset:
+                return []
+            end = len(fallback_entries) - safe_offset
+            start = max(0, end - safe_limit)
+            fallback_entries = fallback_entries[start:end]
+        else:
+            fallback_entries = fallback_entries[-safe_limit:]
+
+        return [
+            {"role": item.role, "content": item.content, "timestamp": item.timestamp}
+            for item in fallback_entries
         ]
 
     def chat_once(self, user_text: str) -> str:
@@ -673,7 +817,7 @@ class SessionController:
                 persona_background=str(persona_snapshot.get("assistant_background", "")),
                 persona_user_notes=list(persona_snapshot.get("user_notes", [])),
                 persona_response_style=str(persona_snapshot.get("response_style", "balanced")),
-                memory_messages=(self._memory.recent_messages(12) if self._remember_history else None),
+                memory_messages=(self._history_messages(limit=self._history_prompt_limit) if self._remember_history else None),
                 assistant_strategy=autonomy_plan.strategy,
                 active_goal=self._active_goal,
                 goal_description=self._active_goal_description,
@@ -900,7 +1044,7 @@ class SessionController:
         if not self._settings.autonomy.enabled:
             return defaults
 
-        recent_memory = self._memory.recent_messages(6)
+        recent_memory = self._history_messages(limit=6)
         recent_lines: list[str] = []
         for item in recent_memory:
             role = str(item.get("role", "")).strip().lower()
@@ -1040,7 +1184,7 @@ class SessionController:
             )
 
     def _infer_goal(self, *, user_text: str) -> GoalInference:
-        recent_memory = self._memory.recent_messages(8)
+        recent_memory = self._history_messages(limit=8)
         recent_lines: list[str] = []
         for item in recent_memory:
             role = str(item.get("role", "")).strip().lower()
@@ -1129,7 +1273,7 @@ class SessionController:
             return False, "decision-cooldown"
         self._last_screen_decision_at = now
 
-        recent_memory = self._memory.recent_messages(4)
+        recent_memory = self._history_messages(limit=4)
         recent_lines: list[str] = []
         for item in recent_memory:
             role = str(item.get("role", "")).strip().lower()
@@ -1595,7 +1739,7 @@ class SessionController:
         screen_text: str | None,
         action_intent: str = "",
     ) -> ActionPlan:
-        recent_memory = self._memory.recent_messages(4)
+        recent_memory = self._history_messages(limit=4)
         recent_lines: list[str] = []
         for item in recent_memory:
             role = str(item.get("role", "")).strip().lower()

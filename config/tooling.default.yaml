@@ -11,5 +11,11 @@ policies:
 runtime_overrides: {}
 
 tools:
+  history:
+    default_limit: 50
+    max_limit: 400
+    prompt_limit: 20
+    startup_history_limit: 20
+    preload_on_startup: true
   persona:
     profile_path: "data/persona_profile.json"

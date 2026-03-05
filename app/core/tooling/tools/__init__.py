@@ -1,9 +1,11 @@
 from pathlib import Path
 
+from app.core.conversation_memory import ConversationMemoryStore
 from app.core.settings import AppSettings
 from app.core.tooling.config_loader import ToolingConfig
 from app.core.tooling.contracts import Tool
 from app.core.tooling.tools.action_tools import ActionExecutePlanTool
+from app.core.tooling.tools.history_tools import HistoryReadEntriesTool, HistoryReadMessagesTool, HistoryRuntime
 from app.core.tooling.tools.ocr_tools import OcrExtractDetailsTool, OcrExtractElementsTool, OcrRuntime
 from app.core.tooling.tools.persona_tools import PersonaProfileRuntime, PersonaReadSnapshotTool, PersonaUpdateFromTextTool
 from app.core.tooling.tools.uia_tools import (
@@ -15,9 +17,15 @@ from app.core.tooling.tools.uia_tools import (
 )
 
 
-def build_default_tools(settings: AppSettings, tooling_config: ToolingConfig | None = None) -> list[Tool]:
+def build_default_tools(
+    settings: AppSettings,
+    tooling_config: ToolingConfig | None = None,
+    memory_store: ConversationMemoryStore | None = None,
+) -> list[Tool]:
     config = tooling_config or ToolingConfig()
     persona_cfg = config.tool_settings("persona")
+    history_cfg = config.tool_settings("history")
+
     persona_path_raw = str(persona_cfg.get("profile_path", "")).strip()
     persona_path: Path | None = None
     if persona_path_raw:
@@ -33,6 +41,11 @@ def build_default_tools(settings: AppSettings, tooling_config: ToolingConfig | N
         path=persona_path,
         assistant_background=settings.assistant.background,
     )
+    history_runtime = HistoryRuntime(
+        memory_store or ConversationMemoryStore(),
+        default_limit=int(history_cfg.get("default_limit", 50)),
+        max_limit=int(history_cfg.get("max_limit", 400)),
+    )
     return [
         OcrExtractElementsTool(ocr_runtime),
         OcrExtractDetailsTool(ocr_runtime),
@@ -40,6 +53,8 @@ def build_default_tools(settings: AppSettings, tooling_config: ToolingConfig | N
         UiaListVisibleWindowsTool(uia_runtime),
         UiaListAllWindowsTool(uia_runtime),
         UiaFocusWindowTool(uia_runtime),
+        HistoryReadMessagesTool(history_runtime),
+        HistoryReadEntriesTool(history_runtime),
         PersonaUpdateFromTextTool(persona_runtime),
         PersonaReadSnapshotTool(persona_runtime),
     ]

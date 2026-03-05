@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from app.core.conversation_memory import ConversationMemoryStore
 from app.core.settings import (
     ActionSettings,
     AppSettings,
@@ -18,6 +19,7 @@ from app.core.settings import (
     UiSettings,
 )
 from app.core.tooling.tools import build_default_tools
+from app.core.tooling.tools.history_tools import HistoryReadEntriesTool, HistoryReadMessagesTool, HistoryRuntime
 from app.core.tooling.tools.ocr_tools import OcrExtractElementsTool, OcrRuntime
 from app.core.tooling.tools.persona_tools import PersonaProfileRuntime, PersonaReadSnapshotTool, PersonaUpdateFromTextTool
 from app.core.tooling.types import ToolContext
@@ -102,6 +104,8 @@ def _app_settings() -> AppSettings:
 class ToolingToolsTests(unittest.TestCase):
     def test_build_default_tools_contains_expected_names(self) -> None:
         names = {tool.spec.name for tool in build_default_tools(_app_settings())}
+        self.assertIn("history.read_messages", names)
+        self.assertIn("history.read_entries", names)
         self.assertIn("ocr.extract_elements", names)
         self.assertIn("ocr.extract_details", names)
         self.assertIn("uia.get_foreground_elements", names)
@@ -131,6 +135,32 @@ class ToolingToolsTests(unittest.TestCase):
             self.assertTrue(snapshot.success)
             self.assertEqual(snapshot.data["assistant_background"], "helper")
             self.assertGreaterEqual(len(snapshot.data["user_notes"]), 1)
+
+    def test_history_tools_limit_and_offset(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "memory.jsonl"
+            store = ConversationMemoryStore(path)
+            store.add(role="user", content="u1")
+            store.add(role="assistant", content="a1")
+            store.add(role="user", content="u2")
+            store.add(role="assistant", content="a2")
+
+            runtime = HistoryRuntime(store, default_limit=2, max_limit=3)
+            read_messages = HistoryReadMessagesTool(runtime)
+            read_entries = HistoryReadEntriesTool(runtime)
+
+            latest = read_messages.run(ToolContext(), {})
+            self.assertTrue(latest.success)
+            self.assertEqual([m["content"] for m in latest.data["messages"]], ["u2", "a2"])
+
+            lookback = read_messages.run(ToolContext(), {"limit": 2, "offset": 2})
+            self.assertTrue(lookback.success)
+            self.assertEqual([m["content"] for m in lookback.data["messages"]], ["u1", "a1"])
+
+            clamped = read_entries.run(ToolContext(), {"limit": 99})
+            self.assertTrue(clamped.success)
+            self.assertEqual(clamped.data["count"], 3)
+            self.assertEqual(clamped.data["entries"][-1]["content"], "a2")
 
 
 if __name__ == "__main__":
