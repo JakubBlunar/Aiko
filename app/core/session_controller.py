@@ -1168,14 +1168,22 @@ class SessionController:
         self._trace("pipeline.action.start", f"mode={mode}")
         try:
             if orchestration_plan.should_plan_action:
-                action_result = self._maybe_execute_action(
-                    user_text=user_text,
-                    assistant_reply=response,
-                    screen_text=screen_text,
-                    allow_planning_override=True,
-                    action_intent=orchestration_plan.action_intent,
-                    on_token=on_token,
-                )
+                explicit_action_intent = ActionExecutionService.has_action_intent(user_text)
+                if self._active_session_type == "chat" and not explicit_action_intent:
+                    self._trace(
+                        "pipeline.action.skip",
+                        "Chat turn has no explicit action intent; skipping action execution.",
+                    )
+                    action_result = None
+                else:
+                    action_result = self._maybe_execute_action(
+                        user_text=user_text,
+                        assistant_reply=response,
+                        screen_text=screen_text,
+                        allow_planning_override=True,
+                        action_intent=orchestration_plan.action_intent,
+                        on_token=on_token,
+                    )
             else:
                 self._trace("pipeline.action.skip", "orchestrator decided no action")
                 action_result = None
