@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "windows": {
+      "transport": "stdio",
+      "command": "F:/Projects/assistant/.venv/Scripts/uvx.exe",
+      "args": [
+        "windows-mcp"
+      ],
+      "framing_mode": "newline-json",
+      "env": {}
+    }
+  }
+}

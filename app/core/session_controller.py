@@ -4,6 +4,7 @@ from collections.abc import Callable
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 import re
 import time
@@ -45,6 +46,7 @@ from app.core.session_text_utils import (
 )
 from app.core.services.screen_context_service import ScreenContextService
 from app.core.tooling.mcp_client import MCPStdioClient
+from app.core.tooling.mcp_http_client import MCPHttpClient
 from app.core.tooling.mcp_tools import build_mcp_tools
 from app.core.tooling import ToolContext, ToolExecutor, ToolRegistry, load_tooling_config
 from app.core.tooling.tools import ActionExecutePlanTool, build_default_tools
@@ -69,6 +71,9 @@ class SessionState:
 class SessionController:
     def __init__(self, settings: AppSettings) -> None:
         self._settings = settings
+        # Initialize trace buffer first because background startup paths (e.g. MCP stderr)
+        # can emit trace events before the controller has fully finished bootstrapping.
+        self._decision_trace: deque[dict[str, str]] = deque(maxlen=500)
         self._turn_manager = TurnManager()
         self._ollama = OllamaClient(settings.ollama)
         self._thinking_model = settings.assistant.thinking_model
@@ -102,7 +107,7 @@ class SessionController:
             user_path=tooling_user_path,
         )
         self._tool_registry = ToolRegistry()
-        self._mcp_client: MCPStdioClient | None = None
+        self._mcp_servers: list[dict[str, Any]] = []
         self._tool_registry.register_many(
             build_default_tools(settings, self._tooling_config, memory_store=self._memory)
         )
@@ -285,7 +290,6 @@ class SessionController:
             "total_ms": 0.0,
         }
         self._metrics_history: deque[dict[str, float | str]] = deque(maxlen=10)
-        self._decision_trace: deque[dict[str, str]] = deque(maxlen=500)
         self._live_no_speech_streak = 0
 
         self._state = SessionState(
@@ -676,12 +680,15 @@ class SessionController:
 
     def shutdown(self) -> None:
         self.stop_action_hotkey_listener()
-        if self._mcp_client is not None:
+        for entry in self._mcp_servers:
+            client = entry.get("client") if isinstance(entry, dict) else None
+            if client is None:
+                continue
             try:
-                self._mcp_client.stop()
+                client.stop()
             except Exception:
                 pass
-            self._mcp_client = None
+        self._mcp_servers = []
 
     def get_last_metrics(self) -> dict[str, float | str]:
         return dict(self._last_metrics)
@@ -732,6 +739,126 @@ class SessionController:
                 "max_auto_steps": 0,
             }
         return agentic.get_status()
+
+    def get_mcp_runtime_status(self) -> dict[str, object]:
+        cfg = self._tooling_config.tool_settings("mcp")
+        enabled = bool(cfg.get("enabled", False))
+        auto_restart = bool(cfg.get("auto_restart", True))
+        restart_backoff_seconds = max(1.0, float(cfg.get("restart_backoff_seconds", 4.0)))
+        max_restart_attempts = max(1, int(cfg.get("max_restart_attempts", 5)))
+
+        servers: list[dict[str, object]] = []
+        for index, entry in enumerate(self._mcp_servers, start=1):
+            if not isinstance(entry, dict):
+                continue
+            client = entry.get("client")
+            transport = str(entry.get("transport", "stdio")).strip() or "stdio"
+            if (
+                client is not None
+                and hasattr(client, "get_runtime_status")
+                and callable(getattr(client, "get_runtime_status", None))
+            ):
+                try:
+                    client_status = client.get_runtime_status()
+                except Exception as exc:
+                    client_status = {
+                        "connected": False,
+                        "server_name": "",
+                        "server_version": "",
+                        "protocol_version": "",
+                        "capability_keys": [],
+                        "tool_names": [],
+                        "tool_count": 0,
+                        "command": str(entry.get("command", "")).strip(),
+                        "url": str(entry.get("url", "")).strip(),
+                        "args": list(entry.get("args", [])),
+                        "framing_mode": str(entry.get("framing_mode", "")),
+                        "error": str(exc),
+                    }
+
+                connected = bool(client_status.get("connected", False))
+                restart_attempts = int(entry.get("restart_attempts", 0) or 0)
+                last_restart_ts = float(entry.get("last_restart_ts", 0.0) or 0.0)
+                if (
+                    auto_restart
+                    and (not connected)
+                    and restart_attempts < max_restart_attempts
+                    and (time.time() - last_restart_ts) >= restart_backoff_seconds
+                ):
+                    entry["last_restart_ts"] = time.time()
+                    entry["restart_attempts"] = restart_attempts + 1
+                    try:
+                        restarted = bool(client.start())
+                    except Exception as exc:
+                        restarted = False
+                        self._trace(
+                            "mcp.error",
+                            f"MCP server restart threw exception for '{entry.get('name', 'unknown')}': {exc}",
+                        )
+                    if restarted:
+                        entry["error"] = ""
+                        self._trace(
+                            "mcp.start",
+                            (
+                                "Restarted MCP server "
+                                f"'{entry.get('name', 'unknown')}' "
+                                f"(attempt={entry['restart_attempts']}/{max_restart_attempts})."
+                            ),
+                        )
+                        try:
+                            client_status = client.get_runtime_status()
+                        except Exception:
+                            pass
+                    else:
+                        entry["error"] = "restart failed"
+            else:
+                client_status = {
+                    "connected": False,
+                    "server_name": "",
+                    "server_version": "",
+                    "protocol_version": "",
+                    "capability_keys": [],
+                    "tool_names": [],
+                    "tool_count": 0,
+                    "command": str(entry.get("command", "")).strip(),
+                    "url": str(entry.get("url", "")).strip(),
+                    "args": list(entry.get("args", [])),
+                    "framing_mode": str(entry.get("framing_mode", "")),
+                    "error": str(entry.get("error", "")).strip(),
+                }
+
+            servers.append(
+                {
+                    "id": str(entry.get("id", f"mcp-{transport}-{index}")),
+                    "transport": transport,
+                    "connected": bool(client_status.get("connected", False)),
+                    "command": str(client_status.get("command", "")).strip(),
+                    "url": str(client_status.get("url", "")).strip(),
+                    "args": [str(item) for item in client_status.get("args", []) if str(item).strip()],
+                    "framing_mode": str(client_status.get("framing_mode", "")).strip(),
+                    "server_name": str(client_status.get("server_name", "")).strip(),
+                    "server_version": str(client_status.get("server_version", "")).strip(),
+                    "protocol_version": str(client_status.get("protocol_version", "")).strip(),
+                    "capabilities": [str(item) for item in client_status.get("capability_keys", []) if str(item).strip()],
+                    "tool_count": int(client_status.get("tool_count", 0) or 0),
+                    "tool_names": [str(item) for item in client_status.get("tool_names", []) if str(item).strip()],
+                    "error": str(client_status.get("error", "")).strip(),
+                    "configured_name": str(entry.get("name", "")).strip(),
+                    "configured_prefix": str(entry.get("prefix", "")).strip(),
+                    "source": str(entry.get("source", "")).strip(),
+                    "restart_attempts": int(entry.get("restart_attempts", 0) or 0),
+                }
+            )
+
+        connected_count = sum(1 for item in servers if bool(item.get("connected", False)))
+        return {
+            "enabled": enabled,
+            "server_count": len(servers),
+            "connected_count": connected_count,
+            "auto_restart": auto_restart,
+            "max_restart_attempts": max_restart_attempts,
+            "servers": servers,
+        }
 
     def reset_latency_metrics(self) -> None:
         self._last_metrics = {
@@ -1723,7 +1850,12 @@ class SessionController:
     def _trace(self, stage: str, message: str) -> None:
         stage_text = str(stage)
         message_text = str(message)
-        self._decision_trace.append(
+        trace_buffer = getattr(self, "_decision_trace", None)
+        if not isinstance(trace_buffer, deque):
+            trace_buffer = deque(maxlen=500)
+            self._decision_trace = trace_buffer
+
+        trace_buffer.append(
             {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "stage": stage_text,
@@ -2283,26 +2415,126 @@ class SessionController:
         except Exception:
             return
 
+    @staticmethod
+    def _slugify_mcp_server_name(name: str) -> str:
+        text = re.sub(r"[^a-zA-Z0-9]+", "_", str(name or "").strip().lower()).strip("_")
+        return text or "server"
+
+    @staticmethod
+    def _normalize_mcp_framing_mode(value: object, *, fallback: str = "content-length") -> str:
+        text = str(value or "").strip().lower()
+        if text in {"content-length", "newline-json"}:
+            return text
+        return str(fallback or "content-length").strip().lower() or "content-length"
+
+    @staticmethod
+    def _parse_mcp_servers_payload(payload: object) -> list[dict[str, Any]]:
+        if not isinstance(payload, dict):
+            return []
+        servers_raw = payload.get("mcpServers", {})
+        if not isinstance(servers_raw, dict):
+            return []
+
+        parsed: list[dict[str, Any]] = []
+        for name, raw in servers_raw.items():
+            server_name = str(name or "").strip()
+            if not server_name or not isinstance(raw, dict):
+                continue
+            transport = str(raw.get("transport", "stdio")).strip().lower() or "stdio"
+            if transport not in {"stdio", "http", "streamable-http"}:
+                continue
+
+            command = str(raw.get("command", "")).strip()
+            url = str(raw.get("url", "")).strip()
+            if transport == "stdio" and not command:
+                continue
+            if transport in {"http", "streamable-http"} and not url:
+                continue
+
+            args = raw.get("args", [])
+            env = raw.get("env", {})
+            headers = raw.get("headers", {})
+            parsed.append(
+                {
+                    "name": server_name,
+                    "transport": transport,
+                    "command": command,
+                    "url": url,
+                    "args": [str(item).strip() for item in args if str(item).strip()] if isinstance(args, list) else [],
+                    "env": {str(k): str(v) for k, v in env.items()} if isinstance(env, dict) else {},
+                    "headers": {str(k): str(v) for k, v in headers.items()} if isinstance(headers, dict) else {},
+                    "framing_mode": str(raw.get("framing_mode", "")).strip().lower(),
+                }
+            )
+        return parsed
+
+    def _load_mcp_servers_from_json(self, *, cfg: dict[str, Any]) -> list[dict[str, Any]]:
+        path_raw = str(cfg.get("servers_json_path", "")).strip()
+        if not path_raw:
+            return []
+
+        path = Path(path_raw)
+        if not path.is_absolute():
+            workspace_root = Path(__file__).resolve().parents[2]
+            path = workspace_root / path
+        if not path.exists():
+            self._trace("mcp.error", f"Configured MCP servers JSON file not found: {path}")
+            return []
+
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            self._trace("mcp.error", f"Failed to parse MCP servers JSON ({path}): {exc}")
+            return []
+
+        parsed = self._parse_mcp_servers_payload(payload)
+        if not parsed:
+            self._trace("mcp.error", f"No valid mcpServers entries found in: {path}")
+            return []
+
+        for item in parsed:
+            item["source"] = str(path)
+        return parsed
+
+    def _load_mcp_servers_from_user_json(self, *, cfg: dict[str, Any]) -> list[dict[str, Any]]:
+        path_raw = str(cfg.get("servers_user_json_path", "")).strip()
+        if not path_raw:
+            return []
+
+        path = Path(path_raw)
+        if not path.is_absolute():
+            workspace_root = Path(__file__).resolve().parents[2]
+            path = workspace_root / path
+        if not path.exists():
+            return []
+
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            self._trace("mcp.error", f"Failed to parse MCP servers user JSON ({path}): {exc}")
+            return []
+
+        parsed = self._parse_mcp_servers_payload(payload)
+        if not parsed:
+            self._trace("mcp.error", f"No valid mcpServers entries found in user JSON: {path}")
+            return []
+
+        for item in parsed:
+            item["source"] = str(path)
+        return parsed
+
     def _register_mcp_tools(self) -> None:
         cfg = self._tooling_config.tool_settings("mcp")
+        self._mcp_servers = []
         if not bool(cfg.get("enabled", False)):
             self._trace("mcp.start", "MCP integration disabled by config.")
             return
 
-        command = str(cfg.get("command", "uvx")).strip()
-        args = cfg.get("args", ["windows-mcp"])
-        env = cfg.get("env", {})
         timeout_ms = int(cfg.get("timeout_ms", self._tooling_config.policies.default_timeout_ms))
         startup_timeout_seconds = float(cfg.get("startup_timeout_seconds", 12.0))
-        framing_mode = str(cfg.get("framing_mode", "content-length")).strip().lower()
-        prefix = str(cfg.get("prefix", "mcp.windows")).strip()
-
-        parsed_args = [str(item).strip() for item in args if str(item).strip()] if isinstance(args, list) else ["windows-mcp"]
-        parsed_env = (
-            {str(k): str(v) for k, v in env.items()}
-            if isinstance(env, dict)
-            else {}
-        )
+        default_framing_mode = self._normalize_mcp_framing_mode(cfg.get("framing_mode", "content-length"))
+        # Keep namespace stable in code; no user-facing prefix config needed.
+        base_prefix = "mcp.windows"
 
         allowed_tools = set()
         blocked_tools = set()
@@ -2320,37 +2552,173 @@ class SessionController:
             if text:
                 mutating_tools.add(text)
 
-        client = MCPStdioClient(
-            command=command,
-            args=parsed_args,
-            env=parsed_env,
-            framing_mode=framing_mode,
-            startup_timeout_seconds=startup_timeout_seconds,
-            trace=self._trace,
-        )
-        if not client.start():
-            self._trace("mcp.error", "MCP client failed to start. Continuing without MCP tools.")
+        server_configs = self._load_mcp_servers_from_user_json(cfg=cfg)
+        if not server_configs:
+            server_configs = self._load_mcp_servers_from_json(cfg=cfg)
+        if not server_configs:
+            self._trace(
+                "mcp.error",
+                "MCP is enabled but no valid user JSON or fallback JSON mcpServers config was loaded. Skipping MCP startup.",
+            )
             return
 
-        tools = build_mcp_tools(
-            client=client,
-            prefix=prefix,
-            timeout_ms=timeout_ms,
-            mutating_tools=mutating_tools,
-            allowed_tools=allowed_tools,
-            blocked_tools=blocked_tools,
-        )
-        if not tools:
-            self._trace("mcp.start", "No MCP tools discovered after filters; disabling MCP runtime.")
-            client.stop()
-            return
+        total_registered = 0
+        multiple_servers = len(server_configs) > 1
+        for index, server_cfg in enumerate(server_configs, start=1):
+            server_name = str(server_cfg.get("name", f"server-{index}")).strip() or f"server-{index}"
+            server_transport = str(server_cfg.get("transport", "stdio")).strip().lower() or "stdio"
+            server_command = str(server_cfg.get("command", "")).strip()
+            server_url = str(server_cfg.get("url", "")).strip()
+            server_args = [str(item).strip() for item in server_cfg.get("args", []) if str(item).strip()]
+            server_env = {str(k): str(v) for k, v in server_cfg.get("env", {}).items()} if isinstance(server_cfg.get("env", {}), dict) else {}
+            server_headers = {str(k): str(v) for k, v in server_cfg.get("headers", {}).items()} if isinstance(server_cfg.get("headers", {}), dict) else {}
+            server_source = str(server_cfg.get("source", "tools.mcp")).strip() or "tools.mcp"
+            server_framing_mode = self._normalize_mcp_framing_mode(
+                server_cfg.get("framing_mode", ""),
+                fallback=default_framing_mode,
+            )
 
-        self._tool_registry.register_many(tools)
-        if self._tooling_config.enabled_tools and bool(cfg.get("append_to_enabled_tools", True)):
-            existing = set(self._tooling_config.enabled_tools)
-            for tool in tools:
-                if tool.spec.name not in existing:
-                    self._tooling_config.enabled_tools.append(tool.spec.name)
-                    existing.add(tool.spec.name)
-        self._mcp_client = client
-        self._trace("mcp.start", f"Registered {len(tools)} MCP tool(s).")
+            if server_transport == "stdio" and not server_command:
+                self._trace("mcp.error", f"Skipping MCP stdio server '{server_name}' (missing command).")
+                self._mcp_servers.append(
+                    {
+                        "id": f"mcp-stdio-{index}",
+                        "name": server_name,
+                        "transport": server_transport,
+                        "command": server_command,
+                        "url": server_url,
+                        "args": server_args,
+                        "framing_mode": server_framing_mode,
+                        "prefix": base_prefix,
+                        "source": server_source,
+                        "client": None,
+                        "error": "missing command",
+                        "restart_attempts": 0,
+                        "last_restart_ts": 0.0,
+                    }
+                )
+                continue
+            if server_transport in {"http", "streamable-http"} and not server_url:
+                self._trace("mcp.error", f"Skipping MCP HTTP server '{server_name}' (missing url).")
+                self._mcp_servers.append(
+                    {
+                        "id": f"mcp-stdio-{index}",
+                        "name": server_name,
+                        "transport": server_transport,
+                        "command": server_command,
+                        "url": server_url,
+                        "args": server_args,
+                        "framing_mode": server_framing_mode,
+                        "prefix": base_prefix,
+                        "source": server_source,
+                        "client": None,
+                        "error": "missing url",
+                        "restart_attempts": 0,
+                        "last_restart_ts": 0.0,
+                    }
+                )
+                continue
+
+            server_prefix = base_prefix
+            if multiple_servers:
+                server_prefix = f"{base_prefix}.{self._slugify_mcp_server_name(server_name)}"
+
+            if server_transport in {"http", "streamable-http"}:
+                client = MCPHttpClient(
+                    url=server_url,
+                    headers=server_headers,
+                    startup_timeout_seconds=startup_timeout_seconds,
+                    request_timeout_seconds=max(1.0, float(timeout_ms) / 1000.0),
+                    trace=self._trace,
+                )
+            else:
+                client = MCPStdioClient(
+                    command=server_command,
+                    args=server_args,
+                    env=server_env,
+                    framing_mode=server_framing_mode,
+                    startup_timeout_seconds=startup_timeout_seconds,
+                    trace=self._trace,
+                )
+            if not client.start():
+                self._trace("mcp.error", f"MCP server '{server_name}' failed to start. Continuing.")
+                self._mcp_servers.append(
+                    {
+                        "id": f"mcp-stdio-{index}",
+                        "name": server_name,
+                        "transport": server_transport,
+                        "command": server_command,
+                        "url": server_url,
+                        "args": server_args,
+                        "framing_mode": server_framing_mode,
+                        "prefix": server_prefix,
+                        "source": server_source,
+                        "client": None,
+                        "error": "startup failed",
+                        "restart_attempts": 0,
+                        "last_restart_ts": 0.0,
+                    }
+                )
+                continue
+
+            tools = build_mcp_tools(
+                client=client,
+                prefix=server_prefix,
+                timeout_ms=timeout_ms,
+                mutating_tools=mutating_tools,
+                allowed_tools=allowed_tools,
+                blocked_tools=blocked_tools,
+            )
+            if not tools:
+                self._trace("mcp.start", f"No MCP tools discovered for server '{server_name}'.")
+                client.stop()
+                self._mcp_servers.append(
+                    {
+                        "id": f"mcp-stdio-{index}",
+                        "name": server_name,
+                        "transport": server_transport,
+                        "command": server_command,
+                        "url": server_url,
+                        "args": server_args,
+                        "framing_mode": server_framing_mode,
+                        "prefix": server_prefix,
+                        "source": server_source,
+                        "client": None,
+                        "error": "no tools discovered",
+                        "restart_attempts": 0,
+                        "last_restart_ts": 0.0,
+                    }
+                )
+                continue
+
+            self._tool_registry.register_many(tools)
+            total_registered += len(tools)
+            if self._tooling_config.enabled_tools and bool(cfg.get("append_to_enabled_tools", True)):
+                existing = set(self._tooling_config.enabled_tools)
+                for tool in tools:
+                    if tool.spec.name not in existing:
+                        self._tooling_config.enabled_tools.append(tool.spec.name)
+                        existing.add(tool.spec.name)
+
+            self._mcp_servers.append(
+                {
+                    "id": f"mcp-stdio-{index}",
+                    "name": server_name,
+                    "transport": server_transport,
+                    "command": server_command,
+                    "url": server_url,
+                    "args": server_args,
+                    "framing_mode": server_framing_mode,
+                    "prefix": server_prefix,
+                    "source": server_source,
+                    "client": client,
+                    "error": "",
+                    "restart_attempts": 0,
+                    "last_restart_ts": 0.0,
+                }
+            )
+
+        if total_registered <= 0:
+            self._trace("mcp.start", "No MCP tools registered from configured servers.")
+            return
+        self._trace("mcp.start", f"Registered {total_registered} MCP tool(s) across configured server(s).")
