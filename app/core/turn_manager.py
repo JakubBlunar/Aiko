@@ -8,6 +8,7 @@ from app.llm.prompt_builder import PromptContext, build_messages
 @dataclass(slots=True)
 class TurnInput:
     user_text: str
+    user_vocal_tone: str | None = None
     screen_text: str | None = None
     persona_background: str | None = None
     persona_user_notes: list[str] | None = None
@@ -24,6 +25,7 @@ class TurnManager:
     def build_chat_messages(self, turn_input: TurnInput) -> list[dict[str, str]]:
         context = PromptContext(
             user_text=turn_input.user_text,
+            user_vocal_tone=turn_input.user_vocal_tone,
             screen_text=turn_input.screen_text,
             persona_background=turn_input.persona_background,
             persona_user_notes=turn_input.persona_user_notes,

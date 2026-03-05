@@ -349,6 +349,14 @@ class MainWindow(QMainWindow):
         self._stt_test_vad_checkbox.setChecked(bool(self._settings.stt.diagnostic_vad_filter))
         stt_test_form.addRow("Options:", self._stt_test_vad_checkbox)
 
+        self._stt_prosody_enabled_checkbox = QCheckBox("Enable fast prosody detection")
+        self._stt_prosody_enabled_checkbox.setChecked(bool(self._session.prosody_enabled))
+        stt_test_form.addRow("Prosody:", self._stt_prosody_enabled_checkbox)
+
+        self._stt_prosody_prompt_checkbox = QCheckBox("Use prosody hint in prompt")
+        self._stt_prosody_prompt_checkbox.setChecked(bool(self._session.prosody_include_in_prompt))
+        stt_test_form.addRow("Prompt hint:", self._stt_prosody_prompt_checkbox)
+
         self._stt_test_prompt_input = QLineEdit()
         self._stt_test_prompt_input.setPlaceholderText("Optional STT initial prompt (domain hints)")
         self._stt_test_prompt_input.setText(str(self._settings.stt.diagnostic_initial_prompt or ""))
@@ -665,6 +673,7 @@ class MainWindow(QMainWindow):
         model = str(result.get("stt_model", self._session.stt_model))
         seconds = float(result.get("seconds", self._stt_test_seconds_spin.value()) or 0.0)
         vad_filter = bool(result.get("vad_filter", self._stt_test_vad_checkbox.isChecked()))
+        prosody = result.get("prosody") if isinstance(result.get("prosody"), dict) else None
 
         self._stt_test_output.append(
             (
@@ -673,6 +682,16 @@ class MainWindow(QMainWindow):
                 f"vad_filter={'on' if vad_filter else 'off'}"
             )
         )
+        if prosody is not None:
+            self._stt_test_output.append(
+                (
+                    "[prosody] "
+                    f"emotion={prosody.get('emotion', 'unknown')} "
+                    f"question_likely={prosody.get('question_likely', False)} "
+                    f"confidence={prosody.get('confidence', 0.0)} "
+                    f"analysis_ms={prosody.get('analysis_ms', 0.0)}"
+                )
+            )
         self._stt_test_output.append(text or "[empty transcript]")
         self._stt_test_output.append("-" * 60)
         self._stt_test_status.setText(
@@ -696,6 +715,10 @@ class MainWindow(QMainWindow):
         self._settings.stt.diagnostic_record_seconds = float(self._stt_test_seconds_spin.value())
         self._settings.stt.diagnostic_vad_filter = bool(self._stt_test_vad_checkbox.isChecked())
         self._settings.stt.diagnostic_initial_prompt = str(self._stt_test_prompt_input.text() or "").strip()
+        self._settings.stt.prosody_enabled = bool(self._stt_prosody_enabled_checkbox.isChecked())
+        self._settings.stt.prosody_include_in_prompt = bool(self._stt_prosody_prompt_checkbox.isChecked())
+        self._session.set_prosody_enabled(self._settings.stt.prosody_enabled)
+        self._session.set_prosody_include_in_prompt(self._settings.stt.prosody_include_in_prompt)
         self._persist_preferences(include_stt_testing=True)
         self._stt_test_status.setText("STT config saved to user config.")
         self._append("System", "Saved STT diagnostic config to user preferences.")
@@ -968,6 +991,16 @@ class MainWindow(QMainWindow):
             ),
             stt_diagnostic_initial_prompt=(
                 str(self._stt_test_prompt_input.text() or "").strip()
+                if include_stt_testing
+                else None
+            ),
+            stt_prosody_enabled=(
+                bool(self._stt_prosody_enabled_checkbox.isChecked())
+                if include_stt_testing
+                else None
+            ),
+            stt_prosody_include_in_prompt=(
+                bool(self._stt_prosody_prompt_checkbox.isChecked())
                 if include_stt_testing
                 else None
             ),

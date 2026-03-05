@@ -84,6 +84,8 @@ class SttSettings:
     diagnostic_record_seconds: float = 5.0
     diagnostic_vad_filter: bool = True
     diagnostic_initial_prompt: str = ""
+    prosody_enabled: bool = False
+    prosody_include_in_prompt: bool = True
 
 
 @dataclass(slots=True)
@@ -336,6 +338,8 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             diagnostic_record_seconds=max(1.0, min(float(stt.get("diagnostic_record_seconds", 5.0)), 30.0)),
             diagnostic_vad_filter=bool(stt.get("diagnostic_vad_filter", True)),
             diagnostic_initial_prompt=str(stt.get("diagnostic_initial_prompt", "") or "").strip(),
+            prosody_enabled=bool(stt.get("prosody_enabled", False)),
+            prosody_include_in_prompt=bool(stt.get("prosody_include_in_prompt", True)),
         ),
         tts=TtsSettings(
             provider=_required(tts, "provider"),
@@ -378,6 +382,8 @@ def save_runtime_preferences(
     stt_diagnostic_record_seconds: float | None = None,
     stt_diagnostic_vad_filter: bool | None = None,
     stt_diagnostic_initial_prompt: str | None = None,
+    stt_prosody_enabled: bool | None = None,
+    stt_prosody_include_in_prompt: bool | None = None,
     enable_microphone: bool,
     enable_screen_context: bool,
     screen_ocr_profile: str | None = None,
@@ -434,6 +440,16 @@ def save_runtime_preferences(
             "diagnostic_initial_prompt": (
                 str(stt_diagnostic_initial_prompt or "").strip()
                 if stt_diagnostic_initial_prompt is not None
+                else None
+            ),
+            "prosody_enabled": (
+                bool(stt_prosody_enabled)
+                if stt_prosody_enabled is not None
+                else None
+            ),
+            "prosody_include_in_prompt": (
+                bool(stt_prosody_include_in_prompt)
+                if stt_prosody_include_in_prompt is not None
                 else None
             ),
         },

@@ -58,6 +58,8 @@ stt:
   diagnostic_record_seconds: 5.0
   diagnostic_vad_filter: true
   diagnostic_initial_prompt: ""
+  prosody_enabled: false
+  prosody_include_in_prompt: true
 
 tts:
   provider: "piper"

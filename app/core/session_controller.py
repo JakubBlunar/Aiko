@@ -26,6 +26,7 @@ from app.core.tooling.tools import ActionExecutePlanTool, build_default_tools
 from app.core.tooling.types import ToolError, ToolResult
 from app.core.turn_manager import TurnInput, TurnManager
 from app.llm.ollama_client import OllamaClient
+from app.stt.prosody_fast import FastProsodyAnalyzer, ProsodyAnalysis
 from app.stt.whisper_service import WhisperService
 from app.tts.llasa_service import LlasaTtsService
 from app.tts.piper_service import PiperTtsService
@@ -74,6 +75,8 @@ class SessionController:
             model_name=settings.stt.model,
             language=settings.stt.language,
         )
+        self._prosody = FastProsodyAnalyzer(enabled=bool(settings.stt.prosody_enabled))
+        self._prosody_include_in_prompt = bool(settings.stt.prosody_include_in_prompt)
         self._screen = ScreenCaptureService(settings.screen)
         self._action_stop_state = EmergencyStopState()
         self._action_hotkey_listener = GlobalHotkeyListener(
@@ -226,6 +229,24 @@ class SessionController:
     @property
     def stt_model(self) -> str:
         return str(self._settings.stt.model or "base").strip() or "base"
+
+    @property
+    def prosody_enabled(self) -> bool:
+        return bool(self._prosody.enabled)
+
+    def set_prosody_enabled(self, value: bool) -> None:
+        enabled = bool(value)
+        self._settings.stt.prosody_enabled = enabled
+        self._prosody.set_enabled(enabled)
+
+    @property
+    def prosody_include_in_prompt(self) -> bool:
+        return bool(self._prosody_include_in_prompt)
+
+    def set_prosody_include_in_prompt(self, value: bool) -> None:
+        include = bool(value)
+        self._settings.stt.prosody_include_in_prompt = include
+        self._prosody_include_in_prompt = include
 
     def set_stt_model(self, model_name: str) -> bool:
         normalized = str(model_name or "").strip()
@@ -832,6 +853,7 @@ class SessionController:
         self,
         *,
         user_text: str,
+        user_vocal_tone: str | None = None,
         on_token: Callable[[str], None] | None = None,
         stop_requested: Callable[[], bool] | None = None,
         on_generation_status: Callable[[str], None] | None = None,
@@ -987,6 +1009,7 @@ class SessionController:
         messages = self._turn_manager.build_chat_messages(
             TurnInput(
                 user_text=user_text,
+                user_vocal_tone=user_vocal_tone,
                 screen_text=screen_context_for_llm,
                 persona_background=str(persona_snapshot.get("assistant_background", "")),
                 persona_user_notes=list(persona_snapshot.get("user_notes", [])),
@@ -1786,6 +1809,7 @@ class SessionController:
         wav_path = self._microphone.capture_to_wav(seconds=duration)
         capture_ms = (time.perf_counter() - capture_started) * 1000.0
 
+        prosody: ProsodyAnalysis | None = None
         try:
             stt_started = time.perf_counter()
             text = self._whisper.transcribe(
@@ -1794,6 +1818,7 @@ class SessionController:
                 initial_prompt=(str(initial_prompt).strip() or None),
             )
             stt_ms = (time.perf_counter() - stt_started) * 1000.0
+            prosody = self._analyze_prosody(wav_path=str(wav_path), text=text or "")
         finally:
             self._safe_unlink(wav_path)
 
@@ -1819,6 +1844,29 @@ class SessionController:
             "chars": len(sanitized),
             "vad_filter": bool(vad_filter),
             "stt_model": self.stt_model,
+            "prosody_enabled": bool(self._prosody.enabled),
+            "prosody": (
+                {
+                    "emotion": prosody.emotion,
+                    "question_likely": bool(prosody.question_likely),
+                    "confidence": round(float(prosody.confidence), 3),
+                    "rms": round(float(prosody.rms), 5),
+                    "zcr": round(float(prosody.zcr), 5),
+                    "pitch_start_hz": (
+                        round(float(prosody.pitch_start_hz), 1)
+                        if prosody.pitch_start_hz is not None
+                        else None
+                    ),
+                    "pitch_end_hz": (
+                        round(float(prosody.pitch_end_hz), 1)
+                        if prosody.pitch_end_hz is not None
+                        else None
+                    ),
+                    "analysis_ms": round(float(prosody.analysis_ms), 2),
+                }
+                if prosody is not None
+                else None
+            ),
             "text": sanitized,
         }
 
@@ -2173,10 +2221,12 @@ class SessionController:
         capture_started = time.perf_counter()
         wav_path = self._microphone.capture_to_wav(seconds=seconds)
         capture_ms = (time.perf_counter() - capture_started) * 1000.0
+        prosody: ProsodyAnalysis | None = None
         try:
             stt_started = time.perf_counter()
             text = self._whisper.transcribe(str(wav_path))
             stt_ms = (time.perf_counter() - stt_started) * 1000.0
+            prosody = self._analyze_prosody(wav_path=str(wav_path), text=text or "")
         finally:
             self._safe_unlink(wav_path)
 
@@ -2199,6 +2249,7 @@ class SessionController:
             mode="record",
             capture_ms=capture_ms,
             stt_ms=stt_ms,
+            user_vocal_tone=self._prosody_prompt_hint(prosody),
         )
         return text, response
 
@@ -2322,6 +2373,7 @@ class SessionController:
         if not self._whisper.is_available:
             return None
 
+        prosody: ProsodyAnalysis | None = None
         try:
             if on_generation_status:
                 on_generation_status("transcribing")
@@ -2336,6 +2388,7 @@ class SessionController:
                 ),
             )
             stt_ms = (time.perf_counter() - stt_started) * 1000.0
+            prosody = self._analyze_prosody(wav_path=str(wav_path), text=text or "")
             self._trace("pipeline.stt.done", f"stt_ms={round(stt_ms, 1)} chars={len(text or '')}")
         finally:
             self._safe_unlink(wav_path)
@@ -2376,6 +2429,7 @@ class SessionController:
             mode="live",
             capture_ms=capture_ms,
             stt_ms=stt_ms,
+            user_vocal_tone=self._prosody_prompt_hint(prosody),
         )
 
         return text, response
@@ -2393,6 +2447,31 @@ class SessionController:
         cleaned = cleaned.replace("[", "").replace("]", "")
         cleaned = " ".join(cleaned.split())
         return cleaned
+
+    def _analyze_prosody(self, *, wav_path: str, text: str) -> ProsodyAnalysis | None:
+        if not self._prosody.enabled:
+            return None
+        analysis = self._prosody.analyze_wav(wav_path, text=text)
+        if analysis is None:
+            return None
+        self._trace(
+            "stt.prosody",
+            (
+                f"emotion={analysis.emotion} question={analysis.question_likely} "
+                f"conf={round(analysis.confidence, 2)} rms={round(analysis.rms, 4)} "
+                f"zcr={round(analysis.zcr, 4)} ms={round(analysis.analysis_ms, 1)}"
+            ),
+        )
+        return analysis
+
+    def _prosody_prompt_hint(self, analysis: ProsodyAnalysis | None) -> str | None:
+        if analysis is None or not self._prosody_include_in_prompt:
+            return None
+        parts = [f"emotion={analysis.emotion}"]
+        if analysis.question_likely:
+            parts.append("question_tone=true")
+        parts.append(f"confidence={round(analysis.confidence, 2)}")
+        return ", ".join(parts)
 
     @staticmethod
     def _infer_tts_reaction(text: str) -> str:
