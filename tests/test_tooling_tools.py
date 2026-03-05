@@ -29,6 +29,7 @@ from app.core.tooling.tools.history_tools import (
 from app.core.tooling.tools.ocr_tools import OcrExtractElementsTool, OcrRuntime
 from app.core.tooling.tools.persona_tools import (
     PersonaCompactNotesTool,
+    PersonaFilterNotesTool,
     PersonaProfileRuntime,
     PersonaReadSnapshotTool,
     PersonaUpdateFromTextTool,
@@ -124,6 +125,7 @@ class ToolingToolsTests(unittest.TestCase):
         self.assertIn("uia.focus_window", names)
         self.assertIn("persona.update_from_user_text", names)
         self.assertIn("persona.compact_notes", names)
+        self.assertIn("persona.filter_notes", names)
         self.assertIn("persona.read_snapshot", names)
 
     def test_ocr_tool_missing_image_is_validation_error(self) -> None:
@@ -153,6 +155,34 @@ class ToolingToolsTests(unittest.TestCase):
             )
             self.assertTrue(compact.success)
             self.assertGreaterEqual(compact.data["notes_before"], compact.data["notes_after"])
+
+    def test_persona_filter_notes_removes_low_relevance_items(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "persona.json"
+            runtime = PersonaProfileRuntime(path=path, assistant_background="helper")
+            updater = PersonaUpdateFromTextTool(runtime)
+
+            updater.run(ToolContext(), {"user_text": "I am working on speech to text reliability"})
+            updater.run(ToolContext(), {"user_text": "I like coding tooling"})
+            updater.run(ToolContext(), {"user_text": "ok"})
+            updater.run(ToolContext(), {"user_text": "yes"})
+
+            result = PersonaFilterNotesTool(runtime).run(
+                ToolContext(),
+                {
+                    "max_notes": 5,
+                    "min_chars": 10,
+                    "focus_text": "speech reliability coding",
+                },
+            )
+            self.assertTrue(result.success)
+            self.assertGreaterEqual(result.data["notes_before"], result.data["notes_after"])
+
+            snapshot = PersonaReadSnapshotTool(runtime).run(ToolContext(), {"max_notes": 8})
+            self.assertTrue(snapshot.success)
+            notes = list(snapshot.data["user_notes"])
+            self.assertLessEqual(len(notes), 5)
+            self.assertTrue(any("working on" in note.lower() for note in notes))
 
     def test_history_tools_limit_and_offset(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

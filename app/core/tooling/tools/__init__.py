@@ -15,6 +15,7 @@ from app.core.tooling.tools.history_tools import (
 from app.core.tooling.tools.ocr_tools import OcrExtractDetailsTool, OcrExtractElementsTool, OcrRuntime
 from app.core.tooling.tools.persona_tools import (
     PersonaCompactNotesTool,
+    PersonaFilterNotesTool,
     PersonaProfileRuntime,
     PersonaReadSnapshotTool,
     PersonaUpdateFromTextTool,
@@ -70,6 +71,7 @@ def build_default_tools(
         HistoryCompactSummaryTool(history_runtime),
         PersonaUpdateFromTextTool(persona_runtime),
         PersonaCompactNotesTool(persona_runtime),
+        PersonaFilterNotesTool(persona_runtime),
         PersonaReadSnapshotTool(persona_runtime),
     ]
 

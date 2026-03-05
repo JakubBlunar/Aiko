@@ -143,6 +143,22 @@ class SessionController:
             minimum=40,
             maximum=400,
         )
+        self._persona_filter_enabled = bool(persona_cfg.get("filter_notes_enabled", True))
+        self._persona_filter_max_notes = self._coerce_int(
+            persona_cfg.get("filter_max_notes", self._persona_compact_max_notes),
+            default=self._persona_compact_max_notes,
+            minimum=1,
+            maximum=60,
+        )
+        self._persona_filter_min_chars = self._coerce_int(
+            persona_cfg.get("filter_min_chars", 12),
+            default=12,
+            minimum=4,
+            maximum=120,
+        )
+        self._persona_filter_remove_generic_user_said = bool(
+            persona_cfg.get("filter_remove_generic_user_said", True)
+        )
         self._tts = self._build_tts_service(settings)
         self._vad_level_threshold = settings.audio.vad_level_threshold
         self._vad_silence_seconds = settings.audio.vad_silence_seconds
@@ -786,6 +802,23 @@ class SessionController:
             if removed > 0:
                 self._trace("persona.compact", f"Compacted persona notes: removed={removed}")
 
+    def _persona_filter_notes(self, *, focus_text: str) -> None:
+        if not self._persona_filter_enabled:
+            return
+        result = self._invoke_tool(
+            "persona.filter_notes",
+            args={
+                "max_notes": self._persona_filter_max_notes,
+                "min_chars": self._persona_filter_min_chars,
+                "remove_generic_user_said": self._persona_filter_remove_generic_user_said,
+                "focus_text": focus_text,
+            },
+        )
+        if result.success:
+            removed = int(result.data.get("removed_count", 0) or 0)
+            if removed > 0:
+                self._trace("persona.filter", f"Filtered persona notes: removed={removed}")
+
     def chat_once(self, user_text: str) -> str:
         return self.chat_once_streaming(user_text=user_text, mode="typed")
 
@@ -825,6 +858,7 @@ class SessionController:
         try:
             persona_changed = self._persona_update_from_user_text(user_text)
             if persona_changed:
+                self._persona_filter_notes(focus_text=user_text)
                 self._persona_compact_notes()
                 self._apply_persona_runtime_preferences()
         except Exception as exc:

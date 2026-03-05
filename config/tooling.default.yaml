@@ -26,3 +26,7 @@ tools:
     compact_notes_enabled: true
     compact_max_notes: 10
     compact_max_chars: 110
+    filter_notes_enabled: true
+    filter_max_notes: 50
+    filter_min_chars: 6
+    filter_remove_generic_user_said: true
