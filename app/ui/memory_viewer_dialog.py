@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from PySide6.QtCore import Qt
 
 from PySide6.QtWidgets import (
     QDialog,
@@ -19,6 +20,8 @@ class MemoryViewerDialog(QDialog):
     def __init__(self, session: SessionController, parent=None) -> None:
         super().__init__(parent)
         self._session = session
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
 
         self.setWindowTitle("Memory Viewer")
         self.resize(900, 680)

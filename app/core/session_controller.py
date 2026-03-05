@@ -510,9 +510,11 @@ class SessionController:
         stt_ms: float = 0.0,
     ) -> str:
         turn_start = time.perf_counter()
+        self._trace("pipeline.turn.start", f"mode={mode}")
         raw_user_text = str(user_text or "")
         user_text = self._sanitize_user_text(raw_user_text)
         if raw_user_text.strip() and not user_text:
+            self._trace("pipeline.input.drop", "Input became empty after sanitization")
             self._set_last_metrics(
                 {
                     "mode": mode,
@@ -616,14 +618,17 @@ class SessionController:
         }
 
         stream_tts_used = False
+        stream_tts_enqueued_chunks = 0
 
         try:
             if on_generation_status:
                 on_generation_status("AI is generating response...")
+            self._trace("pipeline.llm.start", f"mode={mode} model={self.chat_model}")
             llm_started = time.perf_counter()
             stream_tts_buffer = ""
             enqueue_tts = getattr(self._tts, "enqueue_async", None)
-            can_stream_tts = bool(on_token is not None and callable(enqueue_tts))
+            # Reliability guard: keep token streaming in UI, but use full-response TTS playback.
+            can_stream_tts = False
             if on_token is None:
                 response = self._sanitize_assistant_text(
                     self._ollama.chat(messages, options=generation_options)
@@ -633,7 +638,11 @@ class SessionController:
                 for token in self._ollama.chat_stream(messages, options=generation_options):
                     if stop_requested and stop_requested():
                         break
-                    safe_token = self._sanitize_assistant_text(token, preserve_newlines=False)
+                    safe_token = self._sanitize_assistant_text(
+                        token,
+                        preserve_newlines=False,
+                        trim=False,
+                    )
                     if not safe_token:
                         continue
                     pieces.append(safe_token)
@@ -647,8 +656,12 @@ class SessionController:
                         for chunk in ready_chunks:
                             tts_chunk = self._prepare_tts_text(chunk)
                             if tts_chunk and callable(enqueue_tts):
-                                enqueue_tts(tts_chunk)
-                                stream_tts_used = True
+                                queued_ok = bool(enqueue_tts(tts_chunk))
+                                if queued_ok:
+                                    stream_tts_used = True
+                                    stream_tts_enqueued_chunks += 1
+                                else:
+                                    self._trace("pipeline.tts.enqueue", "chunk enqueue failed")
                 response = "".join(pieces).strip()
                 if can_stream_tts and stream_tts_buffer.strip():
                     ready_chunks, stream_tts_buffer = self._drain_tts_stream_chunks(
@@ -658,10 +671,19 @@ class SessionController:
                     for chunk in ready_chunks:
                         tts_chunk = self._prepare_tts_text(chunk)
                         if tts_chunk and callable(enqueue_tts):
-                            enqueue_tts(tts_chunk)
-                            stream_tts_used = True
+                            queued_ok = bool(enqueue_tts(tts_chunk))
+                            if queued_ok:
+                                stream_tts_used = True
+                                stream_tts_enqueued_chunks += 1
+                            else:
+                                self._trace("pipeline.tts.enqueue", "flush chunk enqueue failed")
             llm_ms = (time.perf_counter() - llm_started) * 1000.0
+            self._trace(
+                "pipeline.llm.done",
+                f"mode={mode} chars={len(response)} llm_ms={round(llm_ms, 1)}",
+            )
         except Exception as exc:
+            self._trace("pipeline.llm.error", str(exc))
             self._set_last_metrics({
                 "mode": mode,
                 "capture_ms": round(capture_ms, 1),
@@ -676,13 +698,19 @@ class SessionController:
             )
 
         if stop_requested and stop_requested():
+            self._trace("pipeline.turn.stopped", f"mode={mode} stop_requested=true")
             return response
 
+        self._trace("pipeline.action.start", f"mode={mode}")
         action_result = self._maybe_execute_action(
             user_text=user_text,
             assistant_reply=response,
             screen_text=screen_text,
             allow_planning_override=autonomy_plan.should_plan_action,
+        )
+        self._trace(
+            "pipeline.action.done",
+            "executed" if action_result is not None else "skipped",
         )
         if action_result is not None and action_result.message:
             response = f"{response}\n\n[Action] {action_result.message}".strip()
@@ -695,14 +723,38 @@ class SessionController:
 
         tts_started = time.perf_counter()
         tts_ms = 0.0
-        if response and not stream_tts_used:
+        should_speak_full_response = bool(response and not stream_tts_used)
+        if stream_tts_used and stream_tts_enqueued_chunks < 1:
+            self._trace("pipeline.tts.enqueue", "stream mode used but no chunks enqueued; fallback full TTS")
+            should_speak_full_response = bool(response)
+        self._trace(
+            "pipeline.tts.plan",
+            (
+                f"stream_used={stream_tts_used} "
+                f"queued_chunks={stream_tts_enqueued_chunks} "
+                f"full_response={'yes' if should_speak_full_response else 'no'}"
+            ),
+        )
+        if response and stream_tts_used:
+            has_pending_audio = getattr(self._tts, "has_pending_audio", None)
+            if callable(has_pending_audio):
+                try:
+                    should_speak_full_response = not bool(has_pending_audio())
+                except Exception:
+                    should_speak_full_response = True
+
+        if should_speak_full_response:
             try:
                 tts_text = self._prepare_tts_text(response)
                 if tts_text:
                     self._tts.speak_async(tts_text)
+                    self._trace("pipeline.tts.speak", f"chars={len(tts_text)}")
             except Exception as exc:
                 self._trace("tts.error", f"TTS speak failed: {exc}")
+                self._trace("pipeline.tts.error", str(exc))
             tts_ms = (time.perf_counter() - tts_started) * 1000.0
+        else:
+            self._trace("pipeline.tts.speak", "stream queue active")
 
         self._set_last_metrics({
             "mode": mode,
@@ -712,6 +764,7 @@ class SessionController:
             "tts_ms": round(tts_ms, 1),
             "total_ms": round((time.perf_counter() - turn_start) * 1000.0, 1),
         })
+        self._trace("pipeline.turn.done", f"mode={mode} total_ms={round((time.perf_counter() - turn_start) * 1000.0, 1)}")
         return response
 
     def _apply_persona_runtime_preferences(self) -> None:
@@ -1361,6 +1414,32 @@ class SessionController:
         on_audio_level: Callable[[float], None] | None = None,
         on_generation_status: Callable[[str], None] | None = None,
     ) -> tuple[str, str] | None:
+        captured = self.capture_live_phrase(
+            stop_requested=stop_requested,
+            max_listen_seconds=max_listen_seconds,
+            on_audio_level=on_audio_level,
+            on_generation_status=on_generation_status,
+        )
+        if captured is None:
+            return None
+
+        wav_path, capture_ms = captured
+        return self.process_live_capture(
+            wav_path=wav_path,
+            capture_ms=capture_ms,
+            stop_requested=stop_requested,
+            on_token=on_token,
+            on_generation_status=on_generation_status,
+        )
+
+    def capture_live_phrase(
+        self,
+        *,
+        stop_requested: Callable[[], bool] | None = None,
+        max_listen_seconds: float = 18.0,
+        on_audio_level: Callable[[float], None] | None = None,
+        on_generation_status: Callable[[str], None] | None = None,
+    ) -> tuple[Path, float] | None:
         if not self._state.mic_enabled:
             raise RuntimeError("Microphone source is disabled. Enable it and try again.")
 
@@ -1369,18 +1448,35 @@ class SessionController:
                 "Whisper is not installed. Install AI extras with: pip install -e .[ai]"
             )
 
-        live_level_threshold = max(0.008, float(self._vad_level_threshold) * 0.7)
+        live_level_threshold = max(0.004, float(self._vad_level_threshold) * 0.4)
         if self._live_no_speech_streak > 0:
-            relax_factor = min(0.55, 0.12 * float(self._live_no_speech_streak))
-            live_level_threshold = max(0.004, live_level_threshold * (1.0 - relax_factor))
-        live_end_level_threshold = max(0.008, float(self._vad_level_threshold) * 0.7)
+            relax_factor = min(0.7, 0.18 * float(self._live_no_speech_streak))
+            live_level_threshold = max(0.002, live_level_threshold * (1.0 - relax_factor))
+        live_end_level_threshold = max(0.004, float(self._vad_level_threshold) * 0.4)
         live_pause_base = max(0.3, float(self._vad_silence_seconds))
-        live_silence_seconds = min(6.0, max(1.8, live_pause_base + 0.6))
-        live_min_speech_before_stop = 2.2
-        live_start_grace_seconds = 1.0
-        live_max_speech_seconds = 16.0
-        live_wait_for_start_seconds = 7.0
+        live_silence_seconds = min(6.0, max(1.5, live_pause_base + 0.4))
+        live_min_speech_before_stop = 1.5
+        live_start_grace_seconds = 0.8
+        live_max_speech_seconds = 18.0
+        live_wait_for_start_seconds = 12.0
         live_use_webrtc_vad = self._live_no_speech_streak < 3
+
+        self._trace(
+            "pipeline.listen.start",
+            (
+                f"threshold={live_level_threshold:.4f} silence={live_silence_seconds:.2f}s "
+                f"streak={self._live_no_speech_streak} webrtcvad={live_use_webrtc_vad}"
+            ),
+        )
+
+        # Track the peak mic level seen during capture for diagnostic logging.
+        _peak_level: list[float] = [0.0]
+        _orig_on_audio_level = on_audio_level
+        def _tracking_level(lvl: float) -> None:
+            if lvl > _peak_level[0]:
+                _peak_level[0] = lvl
+            if _orig_on_audio_level:
+                _orig_on_audio_level(lvl)
 
         capture_started = time.perf_counter()
         if on_generation_status:
@@ -1397,30 +1493,62 @@ class SessionController:
             max_seconds_after_speech_start=live_max_speech_seconds,
             stop_requested=stop_requested,
             on_speech_start=None,
-            on_audio_level=on_audio_level,
+            on_audio_level=_tracking_level,
         )
         capture_ms = (time.perf_counter() - capture_started) * 1000.0
         if wav_path is None:
             self._live_no_speech_streak += 1
+            self._trace(
+                "pipeline.listen.no_speech",
+                (
+                    f"capture_ms={round(capture_ms, 1)} "
+                    f"peak_level={_peak_level[0]:.4f} "
+                    f"threshold={live_level_threshold:.4f} "
+                    f"streak={self._live_no_speech_streak}"
+                ),
+            )
             if on_generation_status:
                 on_generation_status(f"listening (retry {self._live_no_speech_streak})")
+            return None
+
+        return wav_path, capture_ms
+
+    def process_live_capture(
+        self,
+        *,
+        wav_path: Path,
+        capture_ms: float,
+        stop_requested: Callable[[], bool] | None = None,
+        on_token: Callable[[str], None] | None = None,
+        on_generation_status: Callable[[str], None] | None = None,
+    ) -> tuple[str, str] | None:
+        if not self._whisper.is_available:
             return None
 
         try:
             if on_generation_status:
                 on_generation_status("transcribing")
+            self._trace("pipeline.stt.start", f"capture_ms={round(capture_ms, 1)}")
             stt_started = time.perf_counter()
             text = self._whisper.transcribe(
                 str(wav_path),
                 vad_filter=False,
-                initial_prompt=None,
+                initial_prompt=(
+                    "The speaker may say technical words such as pipeline, debugging, "
+                    "streaming, latency, microphone, transcription."
+                ),
             )
             stt_ms = (time.perf_counter() - stt_started) * 1000.0
+            self._trace("pipeline.stt.done", f"stt_ms={round(stt_ms, 1)} chars={len(text or '')}")
         finally:
             self._safe_unlink(wav_path)
 
         if not text:
             self._live_no_speech_streak += 1
+            self._trace(
+                "pipeline.stt.empty",
+                f"streak={self._live_no_speech_streak}",
+            )
             if on_generation_status:
                 on_generation_status("did not catch that, listening")
             return None
@@ -1428,6 +1556,10 @@ class SessionController:
         text = self._sanitize_user_text(text)
         if not text:
             self._live_no_speech_streak += 1
+            self._trace(
+                "pipeline.stt.drop",
+                f"empty after sanitize streak={self._live_no_speech_streak}",
+            )
             if on_generation_status:
                 on_generation_status("did not catch that, listening")
             return None
@@ -1510,7 +1642,12 @@ class SessionController:
         return cleaned.strip()
 
     @staticmethod
-    def _sanitize_assistant_text(text: str, *, preserve_newlines: bool = True) -> str:
+    def _sanitize_assistant_text(
+        text: str,
+        *,
+        preserve_newlines: bool = True,
+        trim: bool = True,
+    ) -> str:
         cleaned = unicodedata.normalize("NFKC", str(text or ""))
         if not cleaned:
             return ""
@@ -1524,11 +1661,22 @@ class SessionController:
             .replace("\u2014", "-")
         )
 
+        # Strip Unicode emoji and common text-based emoticons.
+        cleaned = re.sub(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]", "", cleaned)
+        cleaned = re.sub(
+            r"(?<![\w])([:;=8Xx][-o*']?[)DPpOo03{}\[\]|/\\]|[)DPp][:;=]|\^[_-]?\^|>_<|<3|:\*|;\*)(?![\w])",
+            "",
+            cleaned,
+        )
+
         out_chars: list[str] = []
         for ch in cleaned:
             code = ord(ch)
             if ch == "\n" and preserve_newlines:
                 out_chars.append(ch)
+                continue
+            if ch == "\n" and not preserve_newlines:
+                out_chars.append(" ")
                 continue
             if ch == "\t":
                 out_chars.append(" ")
@@ -1541,8 +1689,11 @@ class SessionController:
             cleaned = re.sub(r"[^\S\n]+", " ", cleaned)
             cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
         else:
-            cleaned = " ".join(cleaned.split())
-        return cleaned.strip()
+            cleaned = re.sub(r" {2,}", " ", cleaned)
+
+        if trim:
+            return cleaned.strip()
+        return cleaned
 
     @staticmethod
     def _drain_tts_stream_chunks(buffer: str, *, flush: bool) -> tuple[list[str], str]:

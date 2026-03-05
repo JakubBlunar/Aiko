@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -20,6 +21,8 @@ class DecisionTraceDialog(QDialog):
     def __init__(self, session: SessionController, parent=None) -> None:
         super().__init__(parent)
         self._session = session
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
 
         self.setWindowTitle("Action + Thinking Trace")
         self.resize(980, 700)
@@ -73,6 +76,11 @@ class DecisionTraceDialog(QDialog):
         self._filter_stt.stateChanged.connect(lambda _state: self._refresh())
         filters.addWidget(self._filter_stt)
 
+        self._filter_pipeline = QCheckBox("pipeline.*")
+        self._filter_pipeline.setChecked(True)
+        self._filter_pipeline.stateChanged.connect(lambda _state: self._refresh())
+        filters.addWidget(self._filter_pipeline)
+
         self._filter_tts = QCheckBox("tts.error")
         self._filter_tts.setChecked(True)
         self._filter_tts.stateChanged.connect(lambda _state: self._refresh())
@@ -119,6 +127,8 @@ class DecisionTraceDialog(QDialog):
             allowed_stages.add("autonomy.goal")
         if self._filter_stt.isChecked():
             allowed_stages.add("stt.mic")
+        if self._filter_pipeline.isChecked():
+            allowed_stages.add("pipeline.*")
         if self._filter_tts.isChecked():
             allowed_stages.add("tts.error")
         if self._filter_plan.isChecked():
@@ -129,7 +139,15 @@ class DecisionTraceDialog(QDialog):
             allowed_stages.add("action.confirmation")
 
         if allowed_stages:
-            entries = [entry for entry in entries if str(entry.get("stage", "")) in allowed_stages]
+            filtered: list[dict[str, str]] = []
+            for entry in entries:
+                stage = str(entry.get("stage", ""))
+                if stage in allowed_stages:
+                    filtered.append(entry)
+                    continue
+                if "pipeline.*" in allowed_stages and stage.startswith("pipeline."):
+                    filtered.append(entry)
+            entries = filtered
         else:
             entries = []
 

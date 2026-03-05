@@ -6,15 +6,26 @@ import subprocess
 import sys
 import tempfile
 import threading
+import wave
 import winsound
 
 from app.core.settings import TtsSettings
+
+try:
+    from piper import PiperVoice as _PiperVoice  # type: ignore[import]
+    from piper.config import SynthesisConfig as _SynthesisConfig  # type: ignore[import]
+except Exception:
+    _PiperVoice = None
+    _SynthesisConfig = None
 
 
 class PiperTtsService:
     def __init__(self, settings: TtsSettings) -> None:
         self._settings = settings
         self._lock = threading.Lock()
+        # Persistent in-process voice — loaded once, reused for every synthesis.
+        self._voice: object | None = None
+        self._voice_loaded = threading.Event()
         self._speech_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._active_process: subprocess.Popen[str] | None = None
@@ -23,8 +34,24 @@ class PiperTtsService:
         self._length_scale_supported: bool | None = None
         self._last_error: str | None = None
         self._queue: Queue[str] = Queue()
+        self._queue_speaking = False
         self._queue_thread = threading.Thread(target=self._queue_worker, daemon=True)
         self._queue_thread.start()
+        if _PiperVoice is not None:
+            threading.Thread(target=self._load_voice, daemon=True, name="piper-load").start()
+        else:
+            self._voice_loaded.set()
+
+    def _load_voice(self) -> None:
+        try:
+            voice = _PiperVoice.load(self._settings.voice)
+            with self._lock:
+                self._voice = voice
+            self._last_error = None
+        except Exception as exc:
+            self._last_error = f"Piper voice load failed: {exc}"
+        finally:
+            self._voice_loaded.set()
 
     def set_length_scale(self, value: float) -> None:
         self._length_scale = max(0.65, min(float(value), 1.35))
@@ -43,6 +70,20 @@ class PiperTtsService:
         if not self._settings.enabled:
             return True
 
+        # When using the in-process API, warmup = wait for voice load to finish.
+        if _PiperVoice is not None:
+            loaded = self._voice_loaded.wait(timeout=60.0)
+            if not loaded:
+                self._last_error = "Piper voice load timed out"
+                return False
+            with self._lock:
+                voice_ok = self._voice is not None
+            if not voice_ok:
+                return False
+            self._last_error = None
+            return True
+
+        # Subprocess fallback: do a short synthesis to prove the binary works.
         warmup_wav = Path(tempfile.mkstemp(suffix=".wav", prefix="assistant_tts_warmup_")[1])
         try:
             ok = self._synthesize_to_wav(text="warmup", output_file=warmup_wav, timeout=45)
@@ -71,14 +112,23 @@ class PiperTtsService:
         self._speech_thread = threading.Thread(target=self._speak_worker, args=(text,), daemon=True)
         self._speech_thread.start()
 
-    def enqueue_async(self, text: str) -> None:
+    def enqueue_async(self, text: str) -> bool:
         if not self._settings.enabled:
-            return
+            return False
         queued = str(text or "").strip()
         if not queued:
-            return
+            return False
         self._stop_event.clear()
         self._queue.put(queued)
+        return True
+
+    def has_pending_audio(self) -> bool:
+        if not self._queue.empty():
+            return True
+        with self._lock:
+            proc_running = self._active_process is not None
+            queue_speaking = self._queue_speaking
+        return bool(proc_running or queue_speaking)
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -111,7 +161,13 @@ class PiperTtsService:
             text = self._queue.get()
             if self._stop_event.is_set():
                 continue
-            self._speak_blocking(text)
+            with self._lock:
+                self._queue_speaking = True
+            try:
+                self._speak_blocking(text)
+            finally:
+                with self._lock:
+                    self._queue_speaking = False
 
     def _speak_blocking(self, text: str) -> None:
         wav_path = Path(tempfile.mkstemp(suffix=".wav", prefix="assistant_tts_stream_")[1])
@@ -166,6 +222,13 @@ class PiperTtsService:
                 self._active_wav = None
 
     def _synthesize_to_wav(self, *, text: str, output_file: Path, timeout: int) -> bool:
+        # Prefer in-process synthesis with the persistent loaded voice.
+        with self._lock:
+            voice = self._voice
+        if voice is not None:
+            return self._synthesize_with_api(voice=voice, text=text, output_file=output_file)
+
+        # Subprocess fallback (used when piper module is unavailable).
         use_length_scale = self._length_scale_supported is not False
         proc = self._spawn_piper_process(output_file=output_file, use_length_scale=use_length_scale)
         if proc is None:
@@ -189,6 +252,26 @@ class PiperTtsService:
 
         self._last_error = (stderr_text or "Piper synthesis failed").strip()
         return False
+
+    def _synthesize_with_api(self, *, voice: object, text: str, output_file: Path) -> bool:
+        try:
+            syn_config = _SynthesisConfig(length_scale=self._length_scale)
+            chunks = list(voice.synthesize(text, syn_config=syn_config))
+            if not chunks:
+                self._last_error = "Piper returned no audio"
+                return False
+            first = chunks[0]
+            with wave.open(str(output_file), "wb") as wf:
+                wf.setnchannels(first.sample_channels)
+                wf.setsampwidth(first.sample_width)
+                wf.setframerate(first.sample_rate)
+                for chunk in chunks:
+                    wf.writeframes(chunk.audio_int16_bytes)
+            self._last_error = None
+            return self._is_valid_wav(output_file)
+        except Exception as exc:
+            self._last_error = f"Piper in-process synthesis failed: {exc}"
+            return False
 
     def _run_process(self, *, proc: subprocess.Popen[str], text: str, timeout: int) -> tuple[bool, str]:
         with self._lock:

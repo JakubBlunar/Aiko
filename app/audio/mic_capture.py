@@ -216,8 +216,9 @@ class MicrophoneCapture:
                     has_vad = vad is not None
                     energy_start_threshold = float(level_threshold)
                     if has_vad:
-                        # Keep an energy fallback when VAD misses quiet speech starts.
-                        energy_start_threshold = max(0.005, float(level_threshold) * 0.75)
+                        # When VAD is active it's the primary detector. Keep a very low
+                        # energy fallback so quiet mics can still trigger if VAD misses.
+                        energy_start_threshold = max(0.002, float(level_threshold) * 0.5)
 
                     speech_detected = vad_speech or (level >= energy_start_threshold)
                     if speech_detected:

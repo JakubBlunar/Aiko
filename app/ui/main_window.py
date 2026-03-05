@@ -62,6 +62,7 @@ class MainWindow(QMainWindow):
         self._trace_dialog: DecisionTraceDialog | None = None
         self._live_stream_buffer = ""
         self._live_stream_open = False
+        self._stream_speaker = "Assistant"
         self._guardrail_controls_locked = False
         self._live_level_peak = 0.01
         self._live_noise_floor = 0.0
@@ -486,7 +487,7 @@ class MainWindow(QMainWindow):
 
     def _open_memory_viewer(self) -> None:
         if self._memory_dialog is None:
-            self._memory_dialog = MemoryViewerDialog(self._session, self)
+            self._memory_dialog = MemoryViewerDialog(self._session, None)
             self._memory_dialog.finished.connect(self._on_memory_dialog_closed)
         self._memory_dialog.show()
         self._memory_dialog.raise_()
@@ -497,7 +498,7 @@ class MainWindow(QMainWindow):
 
     def _open_trace_viewer(self) -> None:
         if self._trace_dialog is None:
-            self._trace_dialog = DecisionTraceDialog(self._session, self)
+            self._trace_dialog = DecisionTraceDialog(self._session, None)
             self._trace_dialog.finished.connect(self._on_trace_dialog_closed)
         self._trace_dialog.show()
         self._trace_dialog.raise_()
@@ -917,6 +918,7 @@ class MainWindow(QMainWindow):
             return
 
         self._turn_mode = mode
+        self._stream_speaker = "Assistant"
         self._reset_live_stream("")
         self._set_single_turn_controls_busy(True)
         self._status.set_service_status("recording" if mode == "record" else "AI is generating response...")
@@ -977,6 +979,7 @@ class MainWindow(QMainWindow):
 
         self._guardrail_controls_locked = True
         self._live_level_peak = max(0.01, self._session.vad_level_threshold)
+        self._stream_speaker = "Assistant (live)"
 
         self._live_thread = QThread(self)
         self._live_worker = LivePracticeWorker(self._session)
@@ -1112,7 +1115,7 @@ class MainWindow(QMainWindow):
         if not token:
             return
         if not self._live_stream_open:
-            self._conversation.append("<b>Assistant:</b> ")
+            self._conversation.append(f"<b>{self._stream_speaker}:</b> ")
             self._live_stream_open = True
 
         self._live_stream_buffer += token
