@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QThread, QTimer, Qt
@@ -104,6 +105,20 @@ class MainWindow(QMainWindow):
         chat_layout = QVBoxLayout()
         chat_tab.setLayout(chat_layout)
 
+        self._chat_sections = QTabWidget()
+        chat_layout.addWidget(self._chat_sections, stretch=1)
+
+        conversation_page = QWidget()
+        conversation_layout = QVBoxLayout()
+        conversation_page.setLayout(conversation_layout)
+
+        session_info_page = QWidget()
+        session_info_layout = QVBoxLayout()
+        session_info_page.setLayout(session_info_layout)
+
+        self._chat_sections.addTab(conversation_page, "Conversation")
+        self._chat_sections.addTab(session_info_page, "Session Info")
+
         testing_tab = QWidget()
         testing_layout = QVBoxLayout()
         testing_tab.setLayout(testing_layout)
@@ -120,31 +135,31 @@ class MainWindow(QMainWindow):
             session_type=self._session.active_session_type,
         )
         self._status.set_current_session(self._session.active_session_type)
-        chat_layout.addWidget(self._status)
+        session_info_layout.addWidget(self._status)
         self._model_debug_label = QLabel("Active Models: response=unknown | thinking=response")
         self._model_debug_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        chat_layout.addWidget(self._model_debug_label)
+        session_info_layout.addWidget(self._model_debug_label)
         self._goal_debug_label = QLabel("Active Goal: unknown")
         self._goal_debug_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        chat_layout.addWidget(self._goal_debug_label)
+        session_info_layout.addWidget(self._goal_debug_label)
         self._tts_debug_label = QLabel("Active TTS: unknown")
         self._tts_debug_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        chat_layout.addWidget(self._tts_debug_label)
+        session_info_layout.addWidget(self._tts_debug_label)
         self._stt_debug_label = QLabel("Active STT: unknown")
         self._stt_debug_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        chat_layout.addWidget(self._stt_debug_label)
+        session_info_layout.addWidget(self._stt_debug_label)
         self._tts_model_status_label = QLabel("TTS Model: status=unknown | details=unavailable")
         self._tts_model_status_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        chat_layout.addWidget(self._tts_model_status_label)
+        session_info_layout.addWidget(self._tts_model_status_label)
         self._action_guardrail_label = QLabel("Actions: e-stop=inactive")
         self._action_guardrail_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        chat_layout.addWidget(self._action_guardrail_label)
+        session_info_layout.addWidget(self._action_guardrail_label)
         self._autonomy_label = QLabel("Autonomy: mode=interactive | session=chat")
         self._autonomy_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        chat_layout.addWidget(self._autonomy_label)
+        session_info_layout.addWidget(self._autonomy_label)
         self._current_session_label = QLabel("Current Session: chat")
         self._current_session_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        chat_layout.addWidget(self._current_session_label)
+        session_info_layout.addWidget(self._current_session_label)
 
         action_confirm_row = QHBoxLayout()
         self._approve_action_button = QPushButton("Approve Action")
@@ -156,17 +171,18 @@ class MainWindow(QMainWindow):
         action_confirm_row.addWidget(self._approve_action_button)
         action_confirm_row.addWidget(self._reject_action_button)
         action_confirm_row.addStretch(1)
-        chat_layout.addLayout(action_confirm_row)
+        session_info_layout.addLayout(action_confirm_row)
         self._latency_label = QLabel(
             "Latency: mode=idle | capture=0ms | stt=0ms | llm=0ms | tts=0ms | total=0ms"
         )
         self._latency_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        chat_layout.addWidget(self._latency_label)
+        session_info_layout.addWidget(self._latency_label)
         self._latency_avg_label = QLabel(
             "Latency Avg(0): capture=0ms | stt=0ms | llm=0ms | tts=0ms | total=0ms"
         )
         self._latency_avg_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        chat_layout.addWidget(self._latency_avg_label)
+        session_info_layout.addWidget(self._latency_avg_label)
+        session_info_layout.addStretch(1)
 
         sources_group = QGroupBox("Sources & Devices")
         sources_layout = QVBoxLayout()
@@ -416,18 +432,20 @@ class MainWindow(QMainWindow):
         testing_layout.addWidget(stt_testing_group)
         testing_layout.addStretch(1)
 
-        chat_layout.addWidget(QLabel("Conversation"))
+        conversation_layout.addWidget(QLabel("Conversation"))
         self._conversation = QTextEdit()
         self._conversation.setReadOnly(True)
         self._conversation.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
             | Qt.TextInteractionFlag.TextSelectableByKeyboard
         )
-        chat_layout.addWidget(self._conversation, stretch=1)
+        self._conversation.setStyleSheet("QTextEdit { font-size: 15px; line-height: 1.45; }")
+        conversation_layout.addWidget(self._conversation, stretch=1)
 
         input_row = QHBoxLayout()
         self._input = QLineEdit()
         self._input.setPlaceholderText("Type what you want to say...")
+        self._input.setStyleSheet("QLineEdit { font-size: 15px; padding: 6px 8px; }")
         self._input.returnPressed.connect(self._send)
         self._send_button = QPushButton("Send")
         self._send_button.clicked.connect(self._send)
@@ -438,12 +456,15 @@ class MainWindow(QMainWindow):
         self._stop_live_button = QPushButton("Stop Live")
         self._stop_live_button.clicked.connect(self._stop_live_mode)
         self._stop_live_button.setEnabled(False)
+        self._clear_chat_button = QPushButton("Clear Chat")
+        self._clear_chat_button.clicked.connect(self._clear_conversation_view)
         input_row.addWidget(self._input, stretch=1)
         input_row.addWidget(self._send_button)
         input_row.addWidget(self._record_button)
         input_row.addWidget(self._start_live_button)
         input_row.addWidget(self._stop_live_button)
-        chat_layout.addLayout(input_row)
+        input_row.addWidget(self._clear_chat_button)
+        conversation_layout.addLayout(input_row)
 
         self._hint = QLabel(
             "Tip: Start Ollama first (`ollama serve`) and ensure your model is pulled. "
@@ -1089,6 +1110,7 @@ class MainWindow(QMainWindow):
         self._send_button.setEnabled(not busy)
         self._record_button.setEnabled(not busy)
         self._start_live_button.setEnabled((not busy) and self._live_thread is None)
+        self._clear_chat_button.setEnabled(not busy)
         self._apply_sources_button.setEnabled(not busy)
         self._clear_memory_button.setEnabled(not busy)
         self._memory_viewer_button.setEnabled(not busy)
@@ -1203,6 +1225,7 @@ class MainWindow(QMainWindow):
         self._send_button.setEnabled(False)
         self._record_button.setEnabled(False)
         self._start_live_button.setEnabled(False)
+        self._clear_chat_button.setEnabled(False)
         self._stop_live_button.setEnabled(True)
         self._apply_sources_button.setEnabled(False)
         self._clear_memory_button.setEnabled(False)
@@ -1244,6 +1267,7 @@ class MainWindow(QMainWindow):
         self._send_button.setEnabled(True)
         self._record_button.setEnabled(True)
         self._start_live_button.setEnabled(True)
+        self._clear_chat_button.setEnabled(True)
         self._stop_live_button.setEnabled(False)
         self._apply_sources_button.setEnabled(True)
         self._clear_memory_button.setEnabled(True)
@@ -1308,8 +1332,29 @@ class MainWindow(QMainWindow):
             return
         self._start_single_turn(mode="record", record_seconds=5.0)
 
+    def _clear_conversation_view(self) -> None:
+        self._conversation.clear()
+
     def _append(self, speaker: str, text: str) -> None:
-        self._conversation.append(f"<b>{speaker}:</b> {text}")
+        speaker_label = str(speaker or "Assistant").strip() or "Assistant"
+        safe_speaker = html.escape(speaker_label)
+        safe_text = html.escape(str(text or "")).replace("\n", "<br>")
+        bubble_style = "background:#f6f8fa;"
+        if speaker_label.lower() in {"you", "user"}:
+            bubble_style = "background:#eaf3ff;"
+        elif speaker_label.lower() == "assistant":
+            bubble_style = "background:#f4f9ef;"
+        elif speaker_label.lower() == "system":
+            bubble_style = "background:#fff8e6;"
+
+        self._conversation.append(
+            (
+                "<div style='margin:8px 0;'>"
+                f"<div style='font-size:12px; color:#4a5568; margin-bottom:3px;'><b>{safe_speaker}</b></div>"
+                f"<div style='padding:8px 10px; border-radius:8px; {bubble_style}'>{safe_text}</div>"
+                "</div>"
+            )
+        )
         self._scroll_conversation_to_bottom()
 
     def _scroll_conversation_to_bottom(self) -> None:
