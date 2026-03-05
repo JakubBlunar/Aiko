@@ -31,6 +31,7 @@ from app.core.sessions.session_router import SessionRouter
 from app.core.sessions.session_types import SessionHandler, SessionRuntimeContext
 from app.core.settings import AppSettings, OllamaSettings
 from app.core.services.response_text_service import extract_tts_reaction_tag, strip_action_meta_for_tts
+from app.core.services.startup_runtime_service import StartupRuntimeService
 from app.core.session_text_utils import (
     drain_tts_stream_chunks,
     extract_json_object,
@@ -235,6 +236,27 @@ class SessionController:
             last_screen_elements=lambda: list(self._last_screen_elements),
             all_windows=lambda: list(self._all_windows),
         )
+        self._startup_runtime = StartupRuntimeService(
+            persona_snapshot=lambda max_notes: self._persona_snapshot(max_notes=max_notes),
+            history_messages=lambda limit: self._history_messages(limit=limit),
+            history_summary=lambda limit, max_chars: self._history_summary(limit=limit, max_chars=max_chars),
+            remember_history=lambda: bool(self._remember_history),
+            startup_context_prewarm_enabled=lambda: bool(self._startup_context_prewarm_enabled),
+            startup_history_limit=lambda: int(self._startup_history_limit),
+            history_summary_enabled=lambda: bool(self._history_summary_enabled),
+            history_summary_limit=lambda: int(self._history_summary_limit),
+            history_summary_max_chars=lambda: int(self._history_summary_max_chars),
+            ollama_list_models=self._ollama.list_models,
+            ollama_chat=lambda messages: self._ollama.chat(messages),
+            thinking_chat=lambda: (
+                (lambda messages: self._thinking_ollama.chat(messages)) if self._thinking_ollama else None,
+                self._thinking_model,
+            ),
+            chat_model=lambda: self.chat_model,
+            tts_getter=lambda: self._tts,
+            tts_status=self.get_tts_model_status,
+            trace=self._trace,
+        )
         self._last_metrics: dict[str, float | str] = {
             "mode": "idle",
             "capture_ms": 0.0,
@@ -404,73 +426,13 @@ class SessionController:
             return False
 
     def build_startup_greeting(self) -> str:
-        snapshot = self._persona_snapshot(max_notes=6)
-        notes = list(snapshot.get("user_notes", []))
-        has_history = bool(self._remember_history and self._history_messages(limit=1))
-
-        if notes and has_history:
-            return "Welcome back. I loaded your profile and recent conversation context."
-        if notes:
-            return "Welcome back. I loaded your profile."
-        if has_history:
-            return "Welcome back. I loaded recent conversation context."
-        return "Welcome back. Audio is ready."
+        return self._startup_runtime.build_startup_greeting()
 
     def prewarm_tts(self) -> None:
-        warmup_sync = getattr(self._tts, "warmup_sync", None)
-        if callable(warmup_sync):
-            try:
-                ok = bool(warmup_sync())
-                if not ok:
-                    state, details = self.get_tts_model_status()
-                    self._trace("tts.error", f"TTS warmup failed ({state}): {details}")
-            except Exception as exc:
-                self._trace("tts.error", f"TTS warmup failed: {exc}")
-            return
-
-        warmup_async = getattr(self._tts, "warmup_async", None)
-        if callable(warmup_async):
-            try:
-                warmup_async()
-            except Exception as exc:
-                self._trace("tts.error", f"TTS warmup async failed: {exc}")
+        self._startup_runtime.prewarm_tts()
 
     def prewarm_runtime(self, on_status: Callable[[str], None] | None = None) -> None:
-        def report(message: str) -> None:
-            if on_status:
-                on_status(message)
-
-        report("Checking Ollama availability...")
-        try:
-            models = self._ollama.list_models()
-        except Exception as exc:
-            raise RuntimeError(f"Failed to reach Ollama server: {exc}") from exc
-
-        if self.chat_model not in models:
-            raise RuntimeError(
-                f"Configured chat model not found in Ollama: {self.chat_model}. Pull it first."
-            )
-
-        report(f"Warming response model: {self.chat_model}")
-        self._ollama.chat(self._build_startup_prewarm_messages())
-
-        if self._thinking_ollama is not None and self._thinking_model:
-            report(f"Warming thinking model: {self._thinking_model}")
-            self._thinking_ollama.chat([
-                {"role": "user", "content": "Reply with OK."},
-            ])
-
-        report("Warming TTS models...")
-        warmup_sync = getattr(self._tts, "warmup_sync", None)
-        if callable(warmup_sync):
-            success = bool(warmup_sync())
-            if not success:
-                state, details = self.get_tts_model_status()
-                raise RuntimeError(f"TTS warmup failed ({state}): {details}")
-        else:
-            self.prewarm_tts()
-
-        report("Warmup complete")
+        self._startup_runtime.prewarm_runtime(on_status=on_status)
 
     def set_tts_provider(self, provider: str) -> None:
         normalized = (provider or "").strip().lower()
@@ -762,51 +724,6 @@ class SessionController:
             message = result.error.message if result.error else "unknown error"
             self._trace("tool.error", f"{name} failed ms={duration_ms}: {message}")
         return result
-
-    def _build_startup_prewarm_messages(self) -> list[dict[str, str]]:
-        if not self._startup_context_prewarm_enabled:
-            return [{"role": "user", "content": "Reply with OK."}]
-
-        persona_snapshot = self._persona_snapshot(max_notes=6)
-        messages: list[dict[str, str]] = [
-            {
-                "role": "system",
-                "content": (
-                    "You are preparing startup context for an assistant session. "
-                    "Read the profile and history context and reply with only OK."
-                ),
-            }
-        ]
-
-        background = str(persona_snapshot.get("assistant_background", "")).strip()
-        user_notes = [str(item).strip() for item in list(persona_snapshot.get("user_notes", [])) if str(item).strip()]
-        if background or user_notes:
-            profile_lines: list[str] = []
-            if background:
-                profile_lines.append(f"Assistant background: {background}")
-            if user_notes:
-                profile_lines.append("User notes:")
-                for note in user_notes[-6:]:
-                    profile_lines.append(f"- {note}")
-            messages.append({"role": "user", "content": "\n".join(profile_lines)})
-
-        if self._history_summary_enabled and self._remember_history:
-            summary = self._history_summary(
-                limit=self._history_summary_limit,
-                max_chars=self._history_summary_max_chars,
-            )
-            if summary:
-                messages.append({"role": "user", "content": f"Conversation summary:\n{summary}"})
-
-        if self._remember_history:
-            for item in self._history_messages(limit=self._startup_history_limit):
-                role = str(item.get("role", "")).strip().lower()
-                content = str(item.get("content", "")).strip()
-                if role in {"user", "assistant"} and content:
-                    messages.append({"role": role, "content": content})
-
-        messages.append({"role": "user", "content": "Reply with OK."})
-        return messages
 
     def _history_messages(self, *, limit: int, offset: int = 0) -> list[dict[str, str]]:
         result = self._invoke_tool(
