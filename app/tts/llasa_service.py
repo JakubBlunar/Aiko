@@ -39,7 +39,7 @@ class LlasaTtsService:
             self._status = status
             self._status_message = message
 
-    def speak_async(self, text: str) -> None:
+    def speak_async(self, text: str, reaction: str | None = None) -> None:
         if not self._settings.enabled:
             return
         if not text.strip():

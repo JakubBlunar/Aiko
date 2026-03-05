@@ -42,6 +42,38 @@ class PiperTtsService:
         else:
             self._voice_loaded.set()
 
+    @staticmethod
+    def _normalize_reaction(reaction: str | None) -> str:
+        value = str(reaction or "neutral").strip().lower()
+        if value in {"surprised", "surprise"}:
+            return "surprised"
+        if value in {"excited", "enthusiastic"}:
+            return "excited"
+        if value in {"happy", "positive"}:
+            return "happy"
+        if value in {"sad", "down"}:
+            return "sad"
+        if value in {"angry", "frustrated", "annoyed"}:
+            return "angry"
+        if value in {"calm", "relaxed"}:
+            return "calm"
+        return "neutral"
+
+    def _effective_length_scale(self, reaction: str | None) -> float:
+        multipliers: dict[str, float] = {
+            "neutral": 1.0,
+            "happy": 0.95,
+            "excited": 0.9,
+            "surprised": 0.87,
+            "angry": 0.9,
+            "sad": 1.12,
+            "calm": 1.05,
+        }
+        key = self._normalize_reaction(reaction)
+        base = float(self._length_scale)
+        scaled = base * multipliers.get(key, 1.0)
+        return max(0.65, min(scaled, 1.35))
+
     def _load_voice(self) -> None:
         try:
             voice = _PiperVoice.load(self._settings.voice)
@@ -101,7 +133,7 @@ class PiperTtsService:
             except Exception:
                 pass
 
-    def speak_async(self, text: str) -> None:
+    def speak_async(self, text: str, reaction: str | None = None) -> None:
         if not self._settings.enabled:
             return
         if not text.strip():
@@ -109,7 +141,11 @@ class PiperTtsService:
 
         self.stop()
         self._stop_event.clear()
-        self._speech_thread = threading.Thread(target=self._speak_worker, args=(text,), daemon=True)
+        self._speech_thread = threading.Thread(
+            target=self._speak_worker,
+            args=(text, reaction),
+            daemon=True,
+        )
         self._speech_thread.start()
 
     def enqueue_async(self, text: str) -> bool:
@@ -196,14 +232,19 @@ class PiperTtsService:
             except Exception:
                 pass
 
-    def _speak_worker(self, text: str) -> None:
+    def _speak_worker(self, text: str, reaction: str | None) -> None:
         wav_path = Path(tempfile.mkstemp(suffix=".wav", prefix="assistant_tts_")[1])
 
         try:
             with self._lock:
                 self._active_wav = wav_path
 
-            ok = self._synthesize_to_wav(text=text, output_file=wav_path, timeout=30)
+            ok = self._synthesize_to_wav(
+                text=text,
+                output_file=wav_path,
+                timeout=30,
+                reaction=reaction,
+            )
             if not ok:
                 self._last_error = self._last_error or "Piper synthesis failed"
                 return
@@ -221,16 +262,32 @@ class PiperTtsService:
                 self._active_process = None
                 self._active_wav = None
 
-    def _synthesize_to_wav(self, *, text: str, output_file: Path, timeout: int) -> bool:
+    def _synthesize_to_wav(
+        self,
+        *,
+        text: str,
+        output_file: Path,
+        timeout: int,
+        reaction: str | None = None,
+    ) -> bool:
         # Prefer in-process synthesis with the persistent loaded voice.
         with self._lock:
             voice = self._voice
         if voice is not None:
-            return self._synthesize_with_api(voice=voice, text=text, output_file=output_file)
+            return self._synthesize_with_api(
+                voice=voice,
+                text=text,
+                output_file=output_file,
+                reaction=reaction,
+            )
 
         # Subprocess fallback (used when piper module is unavailable).
         use_length_scale = self._length_scale_supported is not False
-        proc = self._spawn_piper_process(output_file=output_file, use_length_scale=use_length_scale)
+        proc = self._spawn_piper_process(
+            output_file=output_file,
+            use_length_scale=use_length_scale,
+            reaction=reaction,
+        )
         if proc is None:
             self._last_error = "Piper executable not found"
             return False
@@ -243,7 +300,11 @@ class PiperTtsService:
 
         if use_length_scale and stderr_text and "length_scale" in stderr_text.lower():
             self._length_scale_supported = False
-            retry = self._spawn_piper_process(output_file=output_file, use_length_scale=False)
+            retry = self._spawn_piper_process(
+                output_file=output_file,
+                use_length_scale=False,
+                reaction=reaction,
+            )
             if retry is not None:
                 retry_ok, retry_err = self._run_process(proc=retry, text=text, timeout=timeout)
                 if retry_ok and self._is_valid_wav(output_file):
@@ -253,9 +314,16 @@ class PiperTtsService:
         self._last_error = (stderr_text or "Piper synthesis failed").strip()
         return False
 
-    def _synthesize_with_api(self, *, voice: object, text: str, output_file: Path) -> bool:
+    def _synthesize_with_api(
+        self,
+        *,
+        voice: object,
+        text: str,
+        output_file: Path,
+        reaction: str | None = None,
+    ) -> bool:
         try:
-            syn_config = _SynthesisConfig(length_scale=self._length_scale)
+            syn_config = _SynthesisConfig(length_scale=self._effective_length_scale(reaction))
             chunks = list(voice.synthesize(text, syn_config=syn_config))
             if not chunks:
                 self._last_error = "Piper returned no audio"
@@ -306,8 +374,9 @@ class PiperTtsService:
         *,
         output_file: Path,
         use_length_scale: bool,
+        reaction: str | None = None,
     ) -> subprocess.Popen[str] | None:
-        length_scale = max(0.65, min(float(self._length_scale), 1.35))
+        length_scale = self._effective_length_scale(reaction)
         primary_cmd = ["piper", "--model", self._settings.voice]
         fallback_cmd = [sys.executable, "-m", "piper", "--model", self._settings.voice]
         if use_length_scale:

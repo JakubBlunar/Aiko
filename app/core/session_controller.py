@@ -57,6 +57,11 @@ class GoalInference:
 
 
 class SessionController:
+    _REACTION_TAG_PATTERN = re.compile(
+        r"\[\[reaction:(neutral|excited|surprised|sad|angry|calm)\]\]",
+        flags=re.IGNORECASE,
+    )
+
     def __init__(self, settings: AppSettings) -> None:
         self._settings = settings
         self._turn_manager = TurnManager()
@@ -316,7 +321,8 @@ class SessionController:
         if not message:
             return False
         try:
-            self._tts.speak_async(message)
+            reaction = self._infer_tts_reaction(message)
+            self._tts.speak_async(message, reaction=reaction)
             return True
         except Exception as exc:
             self._trace("tts.error", f"TTS startup speak failed: {exc}")
@@ -1091,6 +1097,10 @@ class SessionController:
                 f"Details: {exc}"
             )
 
+        explicit_reaction, response = self._extract_tts_reaction_tag(response)
+        if explicit_reaction:
+            self._trace("pipeline.tts.reaction", f"explicit={explicit_reaction}")
+
         if stop_requested and stop_requested():
             self._trace("pipeline.turn.stopped", f"mode={mode} stop_requested=true")
             return response
@@ -1165,7 +1175,9 @@ class SessionController:
             try:
                 tts_text = self._prepare_tts_text(llm_response_for_tts)
                 if tts_text:
-                    self._tts.speak_async(tts_text)
+                    reaction = explicit_reaction or self._infer_tts_reaction(llm_response_for_tts)
+                    self._tts.speak_async(tts_text, reaction=reaction)
+                    self._trace("pipeline.tts.reaction", f"reaction={reaction}")
                     self._trace("pipeline.tts.speak", f"chars={len(tts_text)}")
             except Exception as exc:
                 self._trace("tts.error", f"TTS speak failed: {exc}")
@@ -2381,6 +2393,38 @@ class SessionController:
         cleaned = cleaned.replace("[", "").replace("]", "")
         cleaned = " ".join(cleaned.split())
         return cleaned
+
+    @staticmethod
+    def _infer_tts_reaction(text: str) -> str:
+        lowered = str(text or "").strip().lower()
+        if not lowered:
+            return "neutral"
+
+        if "[action]" in lowered:
+            return "excited"
+        if any(token in lowered for token in ("!", "wow", "amazing", "great", "awesome")):
+            return "excited"
+        if any(token in lowered for token in ("surprised", "unexpected", "didn't expect", "whoa")):
+            return "surprised"
+        if any(token in lowered for token in ("sorry", "unfortunately", "sad", "regret")):
+            return "sad"
+        if any(token in lowered for token in ("angry", "frustrated", "annoyed", "this is wrong")):
+            return "angry"
+        if any(token in lowered for token in ("calm", "let's slow", "take it step", "no rush")):
+            return "calm"
+        return "neutral"
+
+    @classmethod
+    def _extract_tts_reaction_tag(cls, text: str) -> tuple[str | None, str]:
+        source = str(text or "")
+        matches = list(cls._REACTION_TAG_PATTERN.finditer(source))
+        if not matches:
+            return None, source
+
+        reaction = matches[-1].group(1).strip().lower()
+        cleaned = cls._REACTION_TAG_PATTERN.sub("", source)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+        return reaction, cleaned
 
     @staticmethod
     def _sanitize_user_text(text: str) -> str:
