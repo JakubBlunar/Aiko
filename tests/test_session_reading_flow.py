@@ -12,6 +12,30 @@ from app.core.tooling.types import ToolResult
 
 
 class SessionReadingFlowTests(unittest.TestCase):
+    def test_action_gate_blocks_non_action_text_in_chat_session(self) -> None:
+        self.assertFalse(
+            SessionController._should_allow_action_execution(
+                session_type="chat",
+                user_text="But you can summarize what you remember until now.",
+            )
+        )
+
+    def test_action_gate_allows_explicit_action_text_in_chat_session(self) -> None:
+        self.assertTrue(
+            SessionController._should_allow_action_execution(
+                session_type="chat",
+                user_text="Click the Save button and type hello in the input field.",
+            )
+        )
+
+    def test_action_gate_allows_non_chat_sessions(self) -> None:
+        self.assertTrue(
+            SessionController._should_allow_action_execution(
+                session_type="reading",
+                user_text="continue reading",
+            )
+        )
+
     def test_approve_pending_action_combines_followups(self) -> None:
         controller = SessionController.__new__(SessionController)
         controller._settings = SimpleNamespace(actions=SimpleNamespace(require_confirmation=True))

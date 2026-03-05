@@ -1168,8 +1168,10 @@ class SessionController:
         self._trace("pipeline.action.start", f"mode={mode}")
         try:
             if orchestration_plan.should_plan_action:
-                explicit_action_intent = ActionExecutionService.has_action_intent(user_text)
-                if self._active_session_type == "chat" and not explicit_action_intent:
+                if not self._should_allow_action_execution(
+                    session_type=self._active_session_type,
+                    user_text=user_text,
+                ):
                     self._trace(
                         "pipeline.action.skip",
                         "Chat turn has no explicit action intent; skipping action execution.",
@@ -1452,6 +1454,12 @@ class SessionController:
     @staticmethod
     def _is_screen_intent(user_text: str) -> bool:
         return ScreenContextService.is_screen_intent(user_text)
+
+    @staticmethod
+    def _should_allow_action_execution(*, session_type: str, user_text: str) -> bool:
+        if str(session_type or "").strip().lower() != "chat":
+            return True
+        return ActionExecutionService.has_action_intent(user_text)
 
     def _capture_screen_text(self, *, decision_source: str) -> str | None:
         result = self._screen_context.capture_screen_text(decision_source=decision_source)
