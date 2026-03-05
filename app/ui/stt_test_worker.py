@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QObject, Signal, Slot
 
+from app.core.crash_logging import log_handled_exception
 from app.core.session_controller import SessionController
 
 
@@ -34,6 +35,7 @@ class SttTestWorker(QObject):
             )
             self.done.emit(result)
         except Exception as exc:
+            log_handled_exception(exc, context="ui.stt_test_worker")
             self.failed.emit(str(exc))
         finally:
             self.finished.emit()

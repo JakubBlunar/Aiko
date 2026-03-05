@@ -3,6 +3,7 @@ from __future__ import annotations
 from PySide6.QtCore import QObject, Qt, Signal, Slot
 from PySide6.QtWidgets import QDialog, QLabel, QProgressBar, QVBoxLayout
 
+from app.core.crash_logging import log_handled_exception
 from app.core.session_controller import SessionController
 from app.core.settings import AppSettings
 
@@ -47,4 +48,5 @@ class StartupPrewarmWorker(QObject):
             session.prewarm_runtime(on_status=self.status.emit)
             self.ready.emit(session)
         except Exception as exc:
+            log_handled_exception(exc, context="ui.startup_prewarm")
             self.failed.emit(str(exc))

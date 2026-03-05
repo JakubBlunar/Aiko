@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QObject, Signal, Slot
 
+from app.core.crash_logging import log_handled_exception
 from app.core.session_controller import SessionController
 
 
@@ -48,6 +49,7 @@ class SingleTurnWorker(QObject):
                 )
                 self.voice_done.emit(user_text, reply)
         except Exception as exc:
+            log_handled_exception(exc, context=f"ui.single_turn_worker:{self._mode}")
             self.failed.emit(str(exc))
         finally:
             self.status.emit("ready")

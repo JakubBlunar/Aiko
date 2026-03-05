@@ -110,6 +110,10 @@ class DecisionTraceDialog(QDialog):
 
         self._text = QTextEdit()
         self._text.setReadOnly(True)
+        self._text.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+            | Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
         layout.addWidget(self._text, stretch=1)
 
         self._status = QLabel("")

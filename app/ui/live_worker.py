@@ -7,6 +7,7 @@ import time
 
 from PySide6.QtCore import QObject, Signal, Slot
 
+from app.core.crash_logging import log_handled_exception
 from app.core.session_controller import SessionController
 
 
@@ -71,6 +72,7 @@ class LivePracticeWorker(QObject):
                 self.replied.emit(reply_text)
                 self.status.emit("listening")
         except Exception as exc:
+            log_handled_exception(exc, context="ui.live_worker")
             self.failed.emit(str(exc))
         finally:
             self._stop_requested = True

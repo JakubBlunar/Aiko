@@ -56,6 +56,10 @@ def log_exception(
     )
 
 
+def log_handled_exception(exc: BaseException, *, context: str) -> None:
+    log_exception(type(exc), exc, exc.__traceback__, context=context)
+
+
 def install_global_exception_hooks() -> None:
     global _fault_file
 

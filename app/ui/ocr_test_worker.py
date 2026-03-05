@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QObject, Signal, Slot
 
+from app.core.crash_logging import log_handled_exception
 from app.core.session_controller import SessionController
 
 
@@ -20,6 +21,7 @@ class OcrTestWorker(QObject):
             result = self._session.run_screen_ocr_diagnostic()
             self.done.emit(result)
         except Exception as exc:
+            log_handled_exception(exc, context="ui.ocr_test_worker")
             self.failed.emit(str(exc))
         finally:
             self.finished.emit()

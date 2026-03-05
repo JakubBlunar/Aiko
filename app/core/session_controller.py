@@ -19,10 +19,11 @@ from app.core.tooling.runtime.action_runtime import (
 from app.core.tooling.runtime.emergency_stop import EmergencyStopState, GlobalHotkeyListener
 from app.audio.mic_capture import MicrophoneCapture
 from app.core.conversation_memory import ConversationMemoryStore
-from app.core.crash_logging import log_event
+from app.core.crash_logging import log_event, log_handled_exception
 from app.core.settings import AppSettings, OllamaSettings
 from app.core.tooling import ToolContext, ToolExecutor, ToolRegistry, load_tooling_config
 from app.core.tooling.tools import ActionExecutePlanTool, build_default_tools
+from app.core.tooling.types import ToolError, ToolResult
 from app.core.turn_manager import TurnInput, TurnManager
 from app.llm.ollama_client import OllamaClient
 from app.stt.whisper_service import WhisperService
@@ -590,12 +591,25 @@ class SessionController:
         safe_args = dict(args or {})
         self._trace("tool.invoke", f"{name} args={self._preview_tool_args(safe_args)}")
         started = time.perf_counter()
-        result = self._tool_executor.invoke(
-            name,
-            args=safe_args,
-            context=self._tool_context,
-            cancel_token=cancel_token,
-        )
+        try:
+            result = self._tool_executor.invoke(
+                name,
+                args=safe_args,
+                context=self._tool_context,
+                cancel_token=cancel_token,
+            )
+        except Exception as exc:
+            duration_ms = round((time.perf_counter() - started) * 1000.0, 1)
+            log_handled_exception(exc, context=f"session.tool_invoke:{name}")
+            self._trace("tool.error", f"{name} invoke crashed ms={duration_ms}: {exc}")
+            return ToolResult(
+                success=False,
+                duration_ms=duration_ms,
+                error=ToolError(
+                    code="tool_invoke_exception",
+                    message=f"Tool invocation crashed for '{name}': {exc}",
+                ),
+            )
         duration_ms = round((time.perf_counter() - started) * 1000.0, 1)
         if result.success:
             data_keys = list(result.data.keys()) if isinstance(result.data, dict) else []
@@ -813,13 +827,31 @@ class SessionController:
             if persona_changed:
                 self._persona_compact_notes()
                 self._apply_persona_runtime_preferences()
-        except Exception:
-            pass
+        except Exception as exc:
+            log_handled_exception(exc, context="session.persona_update")
+            self._trace("persona.error", f"Persona update failed: {exc}")
 
         persona_snapshot = self._persona_snapshot(max_notes=6)
 
-        self._update_goal_from_conversation(user_text=user_text)
-        autonomy_plan = self._plan_turn_autonomy(user_text=user_text)
+        try:
+            self._update_goal_from_conversation(user_text=user_text)
+        except Exception as exc:
+            log_handled_exception(exc, context="session.goal_update")
+            self._trace("autonomy.goal.error", f"Goal update failed: {exc}")
+
+        try:
+            autonomy_plan = self._plan_turn_autonomy(user_text=user_text)
+        except Exception as exc:
+            log_handled_exception(exc, context="session.autonomy_plan")
+            self._trace("autonomy.plan.error", f"Plan generation failed: {exc}")
+            autonomy_plan = TurnAutonomyPlan(
+                strategy="Respond naturally, concise first, ask one focused follow-up when useful.",
+                should_use_screen=False,
+                should_plan_action=False,
+                ask_followup=True,
+                confidence=0.4,
+                action_intent="",
+            )
         screen_intent = self._is_screen_intent(user_text)
         screen_text = None
         should_capture = False
@@ -1030,14 +1062,25 @@ class SessionController:
             return response
 
         self._trace("pipeline.action.start", f"mode={mode}")
-        action_result = self._maybe_execute_action(
-            user_text=user_text,
-            assistant_reply=response,
-            screen_text=screen_text,
-            allow_planning_override=autonomy_plan.should_plan_action,
-            action_intent=autonomy_plan.action_intent,
-            on_token=on_token,
-        )
+        try:
+            action_result = self._maybe_execute_action(
+                user_text=user_text,
+                assistant_reply=response,
+                screen_text=screen_text,
+                allow_planning_override=autonomy_plan.should_plan_action,
+                action_intent=autonomy_plan.action_intent,
+                on_token=on_token,
+            )
+        except Exception as exc:
+            log_handled_exception(exc, context="session.action_execution")
+            self._trace("pipeline.action.error", str(exc))
+            action_result = ActionExecutionResult(
+                executed=False,
+                dry_run=False,
+                blocked=True,
+                requires_confirmation=False,
+                message="Action pipeline failed unexpectedly. See logs for details.",
+            )
         self._trace(
             "pipeline.action.done",
             "executed" if action_result is not None else "skipped",
@@ -1055,8 +1098,12 @@ class SessionController:
         response = self._sanitize_assistant_text(response)
 
         if self._remember_history:
-            self._memory.add(role="user", content=user_text)
-            self._memory.add(role="assistant", content=response)
+            try:
+                self._memory.add(role="user", content=user_text)
+                self._memory.add(role="assistant", content=response)
+            except Exception as exc:
+                log_handled_exception(exc, context="session.memory_write")
+                self._trace("memory.error", f"Failed to write conversation memory: {exc}")
 
         tts_started = time.perf_counter()
         tts_ms = 0.0

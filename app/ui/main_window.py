@@ -373,6 +373,10 @@ class MainWindow(QMainWindow):
 
         self._stt_test_output = QTextEdit()
         self._stt_test_output.setReadOnly(True)
+        self._stt_test_output.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+            | Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
         self._stt_test_output.setPlaceholderText("STT test transcript and metrics will appear here.")
         stt_testing_layout.addWidget(self._stt_test_output, stretch=1)
 
@@ -382,6 +386,10 @@ class MainWindow(QMainWindow):
         chat_layout.addWidget(QLabel("Conversation"))
         self._conversation = QTextEdit()
         self._conversation.setReadOnly(True)
+        self._conversation.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+            | Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
         chat_layout.addWidget(self._conversation, stretch=1)
 
         input_row = QHBoxLayout()
