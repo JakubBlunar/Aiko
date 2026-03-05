@@ -62,6 +62,14 @@ class SessionController:
         r"\[\[reaction:(neutral|excited|surprised|sad|angry|calm)\]\]",
         flags=re.IGNORECASE,
     )
+    _ACTION_META_LINE_PATTERN = re.compile(
+        r"^(\[plan\]|\[action\]|system:\s*step\s+\d+|step\s+\d+\s*\(|awaiting confirmation)",
+        flags=re.IGNORECASE,
+    )
+    _ACTION_COMPLETION_CLAIM_PATTERN = re.compile(
+        r"\b(i|we)\s+(just\s+)?(clicked|pressed|typed|wrote|opened|selected|filled|entered|focused|navigated)\b",
+        flags=re.IGNORECASE,
+    )
 
     def __init__(self, settings: AppSettings) -> None:
         self._settings = settings
@@ -525,10 +533,14 @@ class SessionController:
             )
         return pending.kind
 
-    def approve_pending_action(self) -> str:
+    def approve_pending_action(self) -> tuple[str, str | None]:
         result = self._action_executor.approve_pending_action()
         self._trace("action.confirmation", result.message)
-        return result.message
+        followup = self._build_post_action_followup(
+            result,
+            require_confirmation=self._settings.actions.require_confirmation,
+        )
+        return result.message, (followup if followup else None)
 
     def reject_pending_action(self) -> str:
         result = self._action_executor.reject_pending_action()
@@ -1152,8 +1164,12 @@ class SessionController:
             "pipeline.action.done",
             "executed" if action_result is not None else "skipped",
         )
-        # Keep the pure LLM text for TTS — action status lines are for the UI only.
-        llm_response_for_tts = response
+
+        if action_result is not None and self._settings.actions.require_confirmation:
+            response = self._normalize_action_narration(response, action_result)
+
+        # Keep the pure conversational text for TTS — action status lines are UI-only.
+        llm_response_for_tts = self._strip_action_meta_for_tts(response)
 
         if action_result is not None and action_result.message:
             prefix = "[Action]" if action_result.executed or action_result.requires_confirmation else "[Note]"
@@ -1161,6 +1177,16 @@ class SessionController:
             if on_token:
                 on_token(action_suffix)
             response = f"{response}{action_suffix}".strip()
+
+            post_action_followup = self._build_post_action_followup(
+                action_result,
+                require_confirmation=self._settings.actions.require_confirmation,
+            )
+            if post_action_followup:
+                followup_suffix = f"\n\n{post_action_followup}"
+                if on_token:
+                    on_token(followup_suffix)
+                response = f"{response}{followup_suffix}".strip()
 
         response = self._sanitize_assistant_text(response)
 
@@ -1196,7 +1222,7 @@ class SessionController:
 
         if should_speak_full_response:
             try:
-                tts_text = self._prepare_tts_text(llm_response_for_tts)
+                tts_text = self._prepare_tts_text(self._strip_action_meta_for_tts(llm_response_for_tts))
                 if tts_text:
                     reaction = explicit_reaction or self._infer_tts_reaction(llm_response_for_tts)
                     self._tts.speak_async(tts_text, reaction=reaction)
@@ -1965,6 +1991,9 @@ class SessionController:
         # what steps are about to run.
         if planned.steps and on_token:
             hwnd_to_title = {w["hwnd"]: w["title"] for w in self._all_windows}
+            plain_summary = self._summarize_action_plan_plain(planned, hwnd_to_title)
+            if plain_summary:
+                on_token(f"\n\n{plain_summary}\n")
             lines: list[str] = []
             for idx, s in enumerate(planned.steps, start=1):
                 if s.kind == "focus_window":
@@ -2504,6 +2533,112 @@ class SessionController:
         cleaned = cls._REACTION_TAG_PATTERN.sub("", source)
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
         return reaction, cleaned
+
+    @classmethod
+    def _normalize_action_narration(
+        cls,
+        text: str,
+        action_result: ActionExecutionResult,
+    ) -> str:
+        reply = str(text or "").strip()
+        if not reply:
+            return ""
+
+        # Keep action narration temporally consistent: if a plan still needs
+        # confirmation (or execution was blocked), avoid first-person "I clicked"
+        # style claims in the same turn.
+        claimed_completion = bool(cls._ACTION_COMPLETION_CLAIM_PATTERN.search(reply))
+        if not claimed_completion:
+            return reply
+
+        if action_result.requires_confirmation:
+            return "I can do that. I have not executed it yet. Please confirm the action plan below."
+
+        if not action_result.executed:
+            return "I can try that, but it did not execute yet. See the action status below."
+
+        return reply
+
+    @staticmethod
+    def _build_post_action_followup(
+        action_result: ActionExecutionResult,
+        *,
+        require_confirmation: bool,
+    ) -> str:
+        if not require_confirmation:
+            return ""
+        if action_result.requires_confirmation:
+            return ""
+        if action_result.executed and not action_result.dry_run and not action_result.blocked:
+            return "Done. I executed that plan. Tell me the next step you want me to take."
+        return ""
+
+    @staticmethod
+    def _summarize_action_plan_plain(
+        planned: ActionPlan,
+        hwnd_to_title: dict[int, str],
+    ) -> str:
+        description = str(planned.description or "").strip()
+        if description:
+            if description[-1] not in ".!?":
+                description = f"{description}."
+            return f"I will try this next: {description}"
+
+        step_phrases: list[str] = []
+        for step in planned.steps[:3]:
+            if step.kind == "focus_window":
+                title = str(hwnd_to_title.get(step.hwnd or 0, "that window")).strip() or "that window"
+                step_phrases.append(f"focus {title}")
+            elif step.kind == "click":
+                step_phrases.append("click the target")
+            elif step.kind == "type_text":
+                step_phrases.append("type into the target field")
+
+        if not step_phrases:
+            return ""
+
+        if len(step_phrases) == 1:
+            return f"I will {step_phrases[0]} now."
+        if len(step_phrases) == 2:
+            return f"I will {step_phrases[0]}, then {step_phrases[1]}."
+        return f"I will {step_phrases[0]}, then {step_phrases[1]}, then {step_phrases[2]}."
+
+    @classmethod
+    def _strip_action_meta_for_tts(cls, text: str) -> str:
+        source = str(text or "")
+        if not source:
+            return ""
+
+        cleaned_lines: list[str] = []
+        skip_plan_block = False
+        for raw_line in source.splitlines():
+            line = raw_line.strip()
+            lowered = line.lower()
+
+            if not line:
+                if not skip_plan_block:
+                    cleaned_lines.append("")
+                continue
+
+            if lowered.startswith("[plan]"):
+                skip_plan_block = True
+                continue
+
+            if skip_plan_block:
+                # Plan blocks are line-based; stop skipping on the next non-plan section.
+                if lowered.startswith("[action]") or lowered.startswith("[note]"):
+                    skip_plan_block = False
+                else:
+                    continue
+
+            if cls._ACTION_META_LINE_PATTERN.match(line):
+                continue
+
+            cleaned_lines.append(raw_line)
+
+        cleaned = "\n".join(cleaned_lines)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+        return cleaned
 
     @staticmethod
     def _sanitize_user_text(text: str) -> str:

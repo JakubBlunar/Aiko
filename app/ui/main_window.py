@@ -743,8 +743,11 @@ class MainWindow(QMainWindow):
         self._refresh_action_guardrail_label()
 
     def _approve_pending_action(self) -> None:
-        message = self._session.approve_pending_action()
+        message, followup = self._session.approve_pending_action()
         self._append("System", message)
+        if followup:
+            self._append("Assistant", followup)
+            self._session.speak_text(followup)
         self._refresh_action_guardrail_label()
 
     def _reject_pending_action(self) -> None:

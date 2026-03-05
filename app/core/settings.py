@@ -260,6 +260,17 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
     ui = raw.get("ui", {})
     tooling = raw.get("tooling", {})
 
+    stt_diag_seconds_raw = stt.get("diagnostic_record_seconds", 5.0)
+    stt_diag_seconds = 5.0 if stt_diag_seconds_raw is None else float(stt_diag_seconds_raw)
+    stt_diag_vad_raw = stt.get("diagnostic_vad_filter", True)
+    stt_diag_vad = True if stt_diag_vad_raw is None else bool(stt_diag_vad_raw)
+    stt_diag_prompt_raw = stt.get("diagnostic_initial_prompt", "")
+    stt_diag_prompt = "" if stt_diag_prompt_raw is None else str(stt_diag_prompt_raw)
+    stt_prosody_enabled_raw = stt.get("prosody_enabled", False)
+    stt_prosody_enabled = False if stt_prosody_enabled_raw is None else bool(stt_prosody_enabled_raw)
+    stt_prosody_prompt_raw = stt.get("prosody_include_in_prompt", True)
+    stt_prosody_prompt = True if stt_prosody_prompt_raw is None else bool(stt_prosody_prompt_raw)
+
     return AppSettings(
         assistant=AssistantSettings(
             name=_required(assistant, "name"),
@@ -335,11 +346,11 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             provider=str(stt.get("provider", "faster_whisper")),
             model=str(stt.get("model", "base")),
             language=(str(stt.get("language")).strip() if stt.get("language") is not None else None),
-            diagnostic_record_seconds=max(1.0, min(float(stt.get("diagnostic_record_seconds", 5.0)), 30.0)),
-            diagnostic_vad_filter=bool(stt.get("diagnostic_vad_filter", True)),
-            diagnostic_initial_prompt=str(stt.get("diagnostic_initial_prompt", "") or "").strip(),
-            prosody_enabled=bool(stt.get("prosody_enabled", False)),
-            prosody_include_in_prompt=bool(stt.get("prosody_include_in_prompt", True)),
+            diagnostic_record_seconds=max(1.0, min(stt_diag_seconds, 30.0)),
+            diagnostic_vad_filter=stt_diag_vad,
+            diagnostic_initial_prompt=stt_diag_prompt.strip(),
+            prosody_enabled=stt_prosody_enabled,
+            prosody_include_in_prompt=stt_prosody_prompt,
         ),
         tts=TtsSettings(
             provider=_required(tts, "provider"),
@@ -425,35 +436,26 @@ def save_runtime_preferences(
             "provider": str(tts_provider or "piper").strip().lower() or "piper",
             "voice": str(tts_voice or "").strip(),
         },
-        "stt": {
-            "model": str(stt_model or "").strip() or None,
-            "diagnostic_record_seconds": (
-                round(max(1.0, min(float(stt_diagnostic_record_seconds), 30.0)), 1)
-                if stt_diagnostic_record_seconds is not None
-                else None
-            ),
-            "diagnostic_vad_filter": (
-                bool(stt_diagnostic_vad_filter)
-                if stt_diagnostic_vad_filter is not None
-                else None
-            ),
-            "diagnostic_initial_prompt": (
-                str(stt_diagnostic_initial_prompt or "").strip()
-                if stt_diagnostic_initial_prompt is not None
-                else None
-            ),
-            "prosody_enabled": (
-                bool(stt_prosody_enabled)
-                if stt_prosody_enabled is not None
-                else None
-            ),
-            "prosody_include_in_prompt": (
-                bool(stt_prosody_include_in_prompt)
-                if stt_prosody_include_in_prompt is not None
-                else None
-            ),
-        },
+        "stt": {},
     }
+
+    stt_updates: dict[str, Any] = updates["stt"]
+    model_value = str(stt_model or "").strip()
+    if model_value:
+        stt_updates["model"] = model_value
+    if stt_diagnostic_record_seconds is not None:
+        stt_updates["diagnostic_record_seconds"] = round(
+            max(1.0, min(float(stt_diagnostic_record_seconds), 30.0)),
+            1,
+        )
+    if stt_diagnostic_vad_filter is not None:
+        stt_updates["diagnostic_vad_filter"] = bool(stt_diagnostic_vad_filter)
+    if stt_diagnostic_initial_prompt is not None:
+        stt_updates["diagnostic_initial_prompt"] = str(stt_diagnostic_initial_prompt or "").strip()
+    if stt_prosody_enabled is not None:
+        stt_updates["prosody_enabled"] = bool(stt_prosody_enabled)
+    if stt_prosody_include_in_prompt is not None:
+        stt_updates["prosody_include_in_prompt"] = bool(stt_prosody_include_in_prompt)
 
     if any(value is not None for value in (window_x, window_y, window_width, window_height)):
         updates["ui"] = {
