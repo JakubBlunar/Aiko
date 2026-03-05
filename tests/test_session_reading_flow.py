@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from app.core.sessions.reading_session_adapter import ReadingSessionAdapter
 from app.core.sessions.reading_session import ReadingSessionConfig, ReadingSessionManager
 from app.core.session_controller import SessionController
+from app.core.planning.autonomy_planner import GoalInference
 from app.core.tooling.runtime.action_runtime import ActionExecutionResult
 from app.core.tooling.types import ToolResult
 
@@ -25,6 +26,14 @@ class SessionReadingFlowTests(unittest.TestCase):
             SessionController._should_allow_action_execution(
                 session_type="chat",
                 user_text="Click the Save button and type hello in the input field.",
+            )
+        )
+
+    def test_action_gate_allows_british_minimise_spelling(self) -> None:
+        self.assertTrue(
+            SessionController._should_allow_action_execution(
+                session_type="chat",
+                user_text="Minimise your assistant window please.",
             )
         )
 
@@ -198,6 +207,35 @@ class SessionReadingFlowTests(unittest.TestCase):
         self.assertEqual(controller._autonomy_mode, "interactive")
         self.assertEqual(controller._state.autonomy_mode, "interactive")
         self.assertTrue(any("agentic session halted" in line for line in traces))
+
+    def test_goal_update_does_not_auto_switch_into_agentic_without_explicit_intent(self) -> None:
+        controller = SessionController.__new__(SessionController)
+        traces: list[str] = []
+        controller._trace = lambda _stage, message: traces.append(str(message))
+        controller._settings = SimpleNamespace(
+            autonomy=SimpleNamespace(
+                enabled=True,
+                auto_goal_switch=True,
+                goal_switch_min_confidence=0.5,
+            )
+        )
+        controller._active_goal = "general_conversation"
+        controller._active_goal_description = ""
+        controller._active_session_type = "chat"
+        controller._session_router = SimpleNamespace(resolve=lambda **_kwargs: ("agentic", "model"))
+        controller._set_active_session = lambda session_type: setattr(controller, "_active_session_type", session_type)
+        controller._infer_goal = lambda **_kwargs: GoalInference(
+            goal="ui_automation",
+            confidence=0.9,
+            reason="user asked to minimize a window",
+            description="Minimize the assistant window",
+            session_type="agentic",
+        )
+
+        controller._update_goal_from_conversation(user_text="Minimise your assistant window please.")
+
+        self.assertEqual(controller._active_session_type, "chat")
+        self.assertTrue(any("guarded_no_explicit_agentic" in line for line in traces))
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from app.core.planning.action_planner import ActionPlanner
-from app.core.tooling.runtime.action_runtime import ActionExecutionResult, ActionPlan
+from app.core.tooling.runtime.action_runtime import ActionExecutionResult, ActionPlan, PlannedAction
 
 
 class ActionExecutionService:
@@ -81,6 +81,15 @@ class ActionExecutionService:
                 screen_text = self._capture_screen_text(decision_source="action-replan")
                 continue
             break
+
+        if not planned.steps:
+            fallback_plan = self._build_minimize_assistant_plan(user_text)
+            if fallback_plan is not None:
+                planned = fallback_plan
+                self._trace(
+                    "action.plan",
+                    "Applied deterministic fallback plan: minimize assistant window.",
+                )
 
         if planned.steps and on_token:
             hwnd_to_title = {w["hwnd"]: w["title"] for w in self._all_windows()}
@@ -160,6 +169,53 @@ class ActionExecutionService:
     @staticmethod
     def has_action_intent(user_text: str) -> bool:
         return ActionPlanner.has_action_intent(user_text)
+
+    def _build_minimize_assistant_plan(self, user_text: str) -> ActionPlan | None:
+        lowered = str(user_text or "").strip().lower()
+        if not lowered:
+            return None
+
+        wants_minimize = ("minimize" in lowered) or ("minimise" in lowered)
+        if not wants_minimize:
+            return None
+        if "assistant" not in lowered:
+            return None
+
+        hwnd_to_title = {
+            int(w.get("hwnd", 0) or 0): str(w.get("title", "")).strip()
+            for w in self._all_windows()
+            if isinstance(w, dict)
+        }
+        assistant_candidates: list[tuple[int, bool]] = []
+        for window in self._all_windows():
+            if not isinstance(window, dict):
+                continue
+            title = str(window.get("title", "")).strip().lower()
+            hwnd = int(window.get("hwnd", 0) or 0)
+            if hwnd <= 0:
+                continue
+            if "assistant" in title:
+                assistant_candidates.append((hwnd, bool(window.get("is_foreground", False))))
+
+        if not assistant_candidates:
+            return None
+
+        assistant_candidates.sort(key=lambda item: (not item[1], item[0]))
+        hwnd = int(assistant_candidates[0][0])
+        title = hwnd_to_title.get(hwnd, "assistant window")
+        return ActionPlan(
+            steps=[
+                PlannedAction(
+                    kind="window_state",
+                    hwnd=hwnd,
+                    text="minimize",
+                    confidence=1.0,
+                    reason="Explicit user request to minimize the assistant window.",
+                )
+            ],
+            description=f"Minimize '{title}'.",
+            needs_screen=False,
+        )
 
     def _plan_action(
         self,

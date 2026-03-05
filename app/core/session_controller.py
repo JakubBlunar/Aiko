@@ -1683,6 +1683,11 @@ class SessionController:
             inferred_goal=inferred.goal,
             current_session_type=self._active_session_type,
         )
+        if resolved_session_type == "agentic" and self._active_session_type != "agentic":
+            explicit_agentic = AgenticSessionManager.is_agentic_intent(user_text)
+            if not explicit_agentic:
+                resolved_session_type = self._active_session_type
+                session_reason = f"{session_reason}+guarded_no_explicit_agentic"
         previous_goal = self._active_goal
         previous_session_type = self._active_session_type
         goal_changed = inferred.goal != self._active_goal

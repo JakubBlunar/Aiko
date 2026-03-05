@@ -36,6 +36,7 @@ class ActionPlanner:
             "send",
             "scroll",
             "minimize",
+            "minimise",
             "maximize",
             "restore",
             "read on screen",
