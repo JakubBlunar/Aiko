@@ -4,7 +4,6 @@ from app.core.conversation_memory import ConversationMemoryStore
 from app.core.settings import AppSettings
 from app.core.tooling.config_loader import ToolingConfig
 from app.core.tooling.contracts import Tool
-from app.core.tooling.tools.action_tools import ActionExecutePlanTool
 from app.core.tooling.tools.history_tools import (
     HistoryCompactSummaryTool,
     HistoryReadEntriesTool,
@@ -12,20 +11,12 @@ from app.core.tooling.tools.history_tools import (
     HistoryReadSummaryTool,
     HistoryRuntime,
 )
-from app.core.tooling.tools.ocr_tools import OcrExtractDetailsTool, OcrExtractElementsTool, OcrRuntime
 from app.core.tooling.tools.persona_tools import (
     PersonaCompactNotesTool,
     PersonaFilterNotesTool,
     PersonaProfileRuntime,
     PersonaReadSnapshotTool,
     PersonaUpdateFromTextTool,
-)
-from app.core.tooling.tools.uia_tools import (
-    UiaFocusWindowTool,
-    UiaForegroundElementsTool,
-    UiaListAllWindowsTool,
-    UiaListVisibleWindowsTool,
-    UiaRuntime,
 )
 
 
@@ -47,8 +38,6 @@ def build_default_tools(
             candidate = workspace_root / candidate
         persona_path = candidate
 
-    ocr_runtime = OcrRuntime(settings.screen)
-    uia_runtime = UiaRuntime()
     persona_runtime = PersonaProfileRuntime(
         path=persona_path,
         assistant_background=settings.assistant.background,
@@ -59,12 +48,6 @@ def build_default_tools(
         max_limit=int(history_cfg.get("max_limit", 400)),
     )
     return [
-        OcrExtractElementsTool(ocr_runtime),
-        OcrExtractDetailsTool(ocr_runtime),
-        UiaForegroundElementsTool(uia_runtime),
-        UiaListVisibleWindowsTool(uia_runtime),
-        UiaListAllWindowsTool(uia_runtime),
-        UiaFocusWindowTool(uia_runtime),
         HistoryReadMessagesTool(history_runtime),
         HistoryReadEntriesTool(history_runtime),
         HistoryReadSummaryTool(history_runtime),
@@ -77,6 +60,5 @@ def build_default_tools(
 
 
 __all__ = [
-    "ActionExecutePlanTool",
     "build_default_tools",
 ]

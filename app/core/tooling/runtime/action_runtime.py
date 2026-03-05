@@ -5,6 +5,7 @@ import ctypes
 import ctypes.wintypes as wintypes
 import re
 import time
+from typing import Any
 
 from app.core.settings import ActionSettings
 from app.core.tooling.runtime.emergency_stop import EmergencyStopState
@@ -19,6 +20,7 @@ class PlannedAction:
     hwnd: int | None = None
     confidence: float = 0.0
     reason: str = ""
+    meta: dict[str, Any] | None = None
 
 
 @dataclass

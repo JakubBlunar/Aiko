@@ -20,6 +20,8 @@ class TurnInput:
     active_goal: str | None = None
     goal_description: str | None = None
     available_capabilities: list[str] | None = None
+    autonomy_mode: str | None = None
+    action_confirmation_required: bool | None = None
 
 
 class TurnManager:
@@ -38,5 +40,7 @@ class TurnManager:
             active_goal=turn_input.active_goal,
             goal_description=turn_input.goal_description,
             available_capabilities=turn_input.available_capabilities,
+            autonomy_mode=turn_input.autonomy_mode,
+            action_confirmation_required=turn_input.action_confirmation_required,
         )
         return build_messages(context)

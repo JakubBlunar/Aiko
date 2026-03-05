@@ -34,6 +34,8 @@ class PromptContext:
     active_goal: str | None = None
     goal_description: str | None = None
     available_capabilities: list[str] | None = None
+    autonomy_mode: str | None = None
+    action_confirmation_required: bool | None = None
 
 def build_messages(context: PromptContext) -> list[dict[str, str]]:
     system = BASE_SYSTEM_PROMPT
@@ -73,6 +75,25 @@ def build_messages(context: PromptContext) -> list[dict[str, str]]:
             f"Available capabilities this session: {caps_str}. "
             "When referring to UI elements, always use the exact coordinates from the "
             "'Detected UI elements' list in the screen context — never invent positions."
+        )
+
+    mode = str(context.autonomy_mode or "").strip().lower()
+    if mode in {"manual", "interactive", "automatic"}:
+        system = f"{system}\n\nAutonomy mode: {mode}."
+
+    if context.action_confirmation_required is True:
+        system = (
+            f"{system}\n\n"
+            "Action confirmation policy: enabled. "
+            "When you propose UI automation, phrase it as planned/pending and avoid claiming completion "
+            "before system action status confirms execution."
+        )
+    elif context.action_confirmation_required is False:
+        system = (
+            f"{system}\n\n"
+            "Action confirmation policy: disabled (automatic execution mode). "
+            "Do not ask the user to approve or reject actions unless the system explicitly reports "
+            "that confirmation is required."
         )
 
     summary = str(context.memory_summary or "").strip()

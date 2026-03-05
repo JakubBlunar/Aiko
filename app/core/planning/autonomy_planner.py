@@ -41,6 +41,7 @@ class AutonomyPlanner:
         allow_action_suggestions: bool,
         allow_proactive_actions: bool,
         actions_enabled: bool,
+        require_confirmation: bool,
         available_tool_names: list[str],
     ) -> TurnAutonomyPlan:
         defaults = TurnAutonomyPlan(
@@ -89,6 +90,7 @@ class AutonomyPlanner:
                             "ask_followup: true if the assistant needs to ask the user a clarifying question before acting. "
                             "IMPORTANT: should_plan_action and ask_followup are mutually exclusive - "
                             "if you need more information first, set ask_followup=true and should_plan_action=false. "
+                            "If require_confirmation=false, do not mention user approval/confirmation in strategy. "
                             "confidence: 0.0-1.0 reflecting plan certainty. "
                             "Use booleans for flags."
                         ),
@@ -104,7 +106,8 @@ class AutonomyPlanner:
                             "Settings:\n"
                             f"- proactive_conversation={proactive_conversation}\n"
                             f"- allow_action_suggestions={allow_action_suggestions}\n"
-                            f"- allow_proactive_actions={allow_proactive_actions}"
+                            f"- allow_proactive_actions={allow_proactive_actions}\n"
+                            f"- require_confirmation={require_confirmation}"
                         ),
                     },
                 ]

@@ -63,6 +63,7 @@
     "require_confirmation": true,
     "decision_mode": "explicit_only",
     "max_actions_per_turn": 10,
+    "mcp_repair_attempts": 2,
     "min_confidence": 0.75,
     "min_action_interval_seconds": 1.0,
     "emergency_hotkey": "ctrl+alt+f12",

@@ -21,7 +21,11 @@ class ScreenContextService:
         screen_settings: object,
         planner_chat: Callable[[list[dict[str, str]]], str],
         history_messages: Callable[[int], list[dict[str, str]]],
-        invoke_tool: Callable[..., object],
+        ocr_extract_elements: Callable[..., list[dict]],
+        ocr_extract_details: Callable[..., dict[str, object] | None],
+        uia_get_foreground_elements: Callable[[], tuple[str, list[dict]]],
+        uia_list_visible_windows: Callable[[], list[dict]],
+        uia_list_all_windows: Callable[[], list[dict]],
         trace: Callable[[str, str], None],
         screen_capture_once_with_region: Callable[..., tuple[object | None, dict | None]],
         screen_capture_once: Callable[..., object | None],
@@ -29,7 +33,11 @@ class ScreenContextService:
         self._screen_settings = screen_settings
         self._planner_chat = planner_chat
         self._history_messages = history_messages
-        self._invoke_tool = invoke_tool
+        self._ocr_extract_elements = ocr_extract_elements
+        self._ocr_extract_details = ocr_extract_details
+        self._uia_get_foreground_elements = uia_get_foreground_elements
+        self._uia_list_visible_windows = uia_list_visible_windows
+        self._uia_list_all_windows = uia_list_all_windows
         self._trace = trace
         self._capture_once_with_region = screen_capture_once_with_region
         self._capture_once = screen_capture_once
@@ -145,17 +153,16 @@ class ScreenContextService:
         screen_top = int((region or {}).get("top", 0))
         screen_width = int((region or {}).get("width", 0))
         screen_height = int((region or {}).get("height", 0))
-        elements_result = self._invoke_tool(
-            "ocr.extract_elements",
-            args={
-                "image": frame,
-                "screen_left": screen_left,
-                "screen_top": screen_top,
-                "screen_width": screen_width,
-                "screen_height": screen_height,
-            },
+        elements = list(
+            self._ocr_extract_elements(
+                frame,
+                screen_left=screen_left,
+                screen_top=screen_top,
+                screen_width=screen_width,
+                screen_height=screen_height,
+            )
+            or []
         )
-        elements = list(elements_result.data.get("elements", [])) if elements_result.success else []
         used_fallback = False
 
         if not elements and bool(getattr(self._screen_settings, "capture_active_window_only", False)):
@@ -166,17 +173,16 @@ class ScreenContextService:
                 fb_top = int((fb_region or {}).get("top", 0))
                 fb_width = int((fb_region or {}).get("width", 0))
                 fb_height = int((fb_region or {}).get("height", 0))
-                fallback_result = self._invoke_tool(
-                    "ocr.extract_elements",
-                    args={
-                        "image": fb_frame,
-                        "screen_left": fb_left,
-                        "screen_top": fb_top,
-                        "screen_width": fb_width,
-                        "screen_height": fb_height,
-                    },
+                elements = list(
+                    self._ocr_extract_elements(
+                        fb_frame,
+                        screen_left=fb_left,
+                        screen_top=fb_top,
+                        screen_width=fb_width,
+                        screen_height=fb_height,
+                    )
+                    or []
                 )
-                elements = list(fallback_result.data.get("elements", [])) if fallback_result.success else []
                 used_fallback = True
 
         foreground_window_title = ""
@@ -184,22 +190,9 @@ class ScreenContextService:
         all_windows: list[dict] = []
         if bool(getattr(self._screen_settings, "enable_uia", True)):
             try:
-                fg_result = self._invoke_tool("uia.get_foreground_elements", args={})
-                visible_windows_result = self._invoke_tool("uia.list_visible_windows", args={})
-                all_windows_result = self._invoke_tool("uia.list_all_windows", args={})
-
-                foreground_window_title = str(fg_result.data.get("title", "")) if fg_result.success else ""
-                uia_els = list(fg_result.data.get("elements", [])) if fg_result.success else []
-                open_windows = (
-                    list(visible_windows_result.data.get("windows", []))
-                    if visible_windows_result.success
-                    else []
-                )
-                all_windows = (
-                    list(all_windows_result.data.get("windows", []))
-                    if all_windows_result.success
-                    else []
-                )
+                foreground_window_title, uia_els = self._uia_get_foreground_elements()
+                open_windows = list(self._uia_list_visible_windows() or [])
+                all_windows = list(self._uia_list_all_windows() or [])
                 if uia_els:
                     uia_dicts = [
                         {
@@ -304,13 +297,11 @@ class ScreenContextService:
             }
 
         used_fallback = False
-        details_result = self._invoke_tool("ocr.extract_details", args={"image": frame})
-        details = details_result.data.get("details") if details_result.success else None
+        details = self._ocr_extract_details(frame)
         if not details and bool(getattr(self._screen_settings, "capture_active_window_only", False)):
             fallback_frame = self._capture_once(active_window_only=False)
             if fallback_frame is not None:
-                fallback_details_result = self._invoke_tool("ocr.extract_details", args={"image": fallback_frame})
-                details = fallback_details_result.data.get("details") if fallback_details_result.success else None
+                details = self._ocr_extract_details(fallback_frame)
                 frame = fallback_frame
                 used_fallback = True
 

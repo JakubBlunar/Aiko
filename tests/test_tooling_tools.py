@@ -86,6 +86,7 @@ def _app_settings() -> AppSettings:
             require_confirmation=True,
             decision_mode="explicit_only",
             max_actions_per_turn=1,
+            mcp_repair_attempts=2,
             min_confidence=0.75,
             min_action_interval_seconds=1.0,
             emergency_hotkey="ctrl+alt+f12",
@@ -120,12 +121,6 @@ class ToolingToolsTests(unittest.TestCase):
         self.assertIn("history.read_entries", names)
         self.assertIn("history.read_summary", names)
         self.assertIn("history.compact_summary", names)
-        self.assertIn("ocr.extract_elements", names)
-        self.assertIn("ocr.extract_details", names)
-        self.assertIn("uia.get_foreground_elements", names)
-        self.assertIn("uia.list_visible_windows", names)
-        self.assertIn("uia.list_all_windows", names)
-        self.assertIn("uia.focus_window", names)
         self.assertIn("persona.update_from_user_text", names)
         self.assertIn("persona.compact_notes", names)
         self.assertIn("persona.filter_notes", names)

@@ -24,6 +24,22 @@ class ToolExecutor:
             disabled=self._config.disabled_tools,
         )]
 
+    def list_available_tool_schemas(self) -> dict[str, dict[str, Any]]:
+        specs = self._registry.filtered_specs(
+            enabled=self._config.enabled_tools,
+            disabled=self._config.disabled_tools,
+        )
+        result: dict[str, dict[str, Any]] = {}
+        for spec in specs:
+            schema = spec.input_schema if isinstance(spec.input_schema, dict) else {}
+            enum_hints = schema.get("enum_hints", {}) if isinstance(schema.get("enum_hints", {}), dict) else {}
+            result[str(spec.name)] = {
+                "required": list(schema.get("required", [])) if isinstance(schema.get("required", []), list) else [],
+                "properties": dict(schema.get("properties", {})) if isinstance(schema.get("properties", {}), dict) else {},
+                "enum_hints": dict(enum_hints),
+            }
+        return result
+
     def invoke(
         self,
         name: str,
@@ -66,7 +82,15 @@ class ToolExecutor:
         if schema_error is not None:
             return ToolResult(success=False, error=schema_error)
 
-        if tool.spec.is_mutating and not self._config.policies.full_auto and self._config.policies.mutating_requires_confirmation:
+        context_metadata = (context.metadata if context is not None and isinstance(context.metadata, dict) else {})
+        skip_mutating_confirmation = bool(context_metadata.get("skip_mutating_confirmation", False))
+
+        if (
+            tool.spec.is_mutating
+            and not skip_mutating_confirmation
+            and not self._config.policies.full_auto
+            and self._config.policies.mutating_requires_confirmation
+        ):
             return ToolResult(
                 success=False,
                 requires_confirmation=True,

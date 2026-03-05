@@ -49,7 +49,9 @@ from app.core.tooling.mcp_client import MCPStdioClient
 from app.core.tooling.mcp_http_client import MCPHttpClient
 from app.core.tooling.mcp_tools import build_mcp_tools
 from app.core.tooling import ToolContext, ToolExecutor, ToolRegistry, load_tooling_config
-from app.core.tooling.tools import ActionExecutePlanTool, build_default_tools
+from app.core.tooling.tools import build_default_tools
+from app.core.tooling.tools.ocr_tools import OcrRuntime
+from app.core.tooling.tools.uia_tools import UiaRuntime
 from app.core.tooling.types import ToolError, ToolResult
 from app.core.turn_manager import TurnInput, TurnManager
 from app.llm.ollama_client import OllamaClient
@@ -111,7 +113,6 @@ class SessionController:
         self._tool_registry.register_many(
             build_default_tools(settings, self._tooling_config, memory_store=self._memory)
         )
-        self._tool_registry.register(ActionExecutePlanTool(self._action_executor))
         self._register_mcp_tools()
         self._tool_executor = ToolExecutor(self._tool_registry, self._tooling_config)
         self._tool_context = ToolContext(metadata={"source": "session_controller"})
@@ -240,11 +241,17 @@ class SessionController:
             extract_json_object=extract_json_object,
             trace=self._trace,
         )
+        self._ocr_runtime = OcrRuntime(settings.screen)
+        self._uia_runtime = UiaRuntime()
         self._screen_context = ScreenContextService(
             screen_settings=self._settings.screen,
             planner_chat=lambda messages: (self._thinking_ollama or self._ollama).chat(messages),
             history_messages=lambda limit: self._history_messages(limit=limit),
-            invoke_tool=self._invoke_tool,
+            ocr_extract_elements=self._ocr_runtime.extract_elements,
+            ocr_extract_details=self._ocr_runtime.extract_details,
+            uia_get_foreground_elements=self._uia_runtime.get_foreground_elements,
+            uia_list_visible_windows=self._uia_runtime.list_visible_windows,
+            uia_list_all_windows=self._uia_runtime.list_all_windows,
             trace=self._trace,
             screen_capture_once_with_region=self._screen.capture_once_with_region,
             screen_capture_once=self._screen.capture_once,
@@ -252,11 +259,14 @@ class SessionController:
         self._action_execution = ActionExecutionService(
             actions_settings=self._settings.actions,
             action_planner=self._action_planner,
+            execute_action_plan=self._action_executor.execute_plan,
             capture_screen_text=self._capture_screen_text,
             invoke_tool=self._invoke_tool,
             trace=self._trace,
             screen_enabled=lambda: bool(self._state.screen_enabled),
             active_goal=lambda: self._active_goal,
+            list_available_tools=self._tool_executor.list_available_tools,
+            list_available_tool_schemas=self._tool_executor.list_available_tool_schemas,
             last_screen_elements=lambda: list(self._last_screen_elements),
             all_windows=lambda: list(self._all_windows),
         )
@@ -299,6 +309,7 @@ class SessionController:
             autonomy_mode=self._autonomy_mode,
             session_type=self._active_session_type,
         )
+        self._sync_action_confirmation_policy()
         self._apply_persona_runtime_preferences()
 
     @property
@@ -532,11 +543,37 @@ class SessionController:
         previous = self._autonomy_mode
         self._autonomy_mode = normalized
         self._state.autonomy_mode = normalized
+        self._sync_action_confirmation_policy()
         if normalized == "automatic":
             self._set_active_session("agentic")
         elif self._active_session_type == "agentic" and normalized in {"manual", "interactive"}:
             self._set_active_session("chat")
         self._trace("autonomy.mode", f"Switched autonomy mode {previous} -> {normalized}")
+
+    def _sync_action_confirmation_policy(self) -> None:
+        mode = str(getattr(self, "_autonomy_mode", "interactive") or "interactive").strip().lower()
+        require_confirmation = mode != "automatic"
+        settings = getattr(self, "_settings", None)
+        actions = getattr(settings, "actions", None) if settings is not None else None
+        if actions is None:
+            return
+        setattr(actions, "require_confirmation", bool(require_confirmation))
+        self._trace(
+            "action.confirmation.policy",
+            f"mode={mode} require_confirmation={str(require_confirmation).lower()}",
+        )
+
+    def _trace_turn_action_policy(self) -> None:
+        settings = getattr(self, "_settings", None)
+        actions = getattr(settings, "actions", None) if settings is not None else None
+        if actions is None:
+            return
+        mode = str(getattr(self, "_autonomy_mode", "interactive") or "interactive").strip().lower()
+        require_confirmation = bool(getattr(actions, "require_confirmation", True))
+        self._trace(
+            "action.confirmation",
+            f"turn mode={mode} require_confirmation={str(require_confirmation).lower()}",
+        )
 
     def set_active_session_type(self, session_type: str) -> None:
         self._set_active_session(session_type)
@@ -906,6 +943,17 @@ class SessionController:
             return f"<list len={len(value)}>"
         return f"<{type(value).__name__}>"
 
+    @staticmethod
+    def _build_tts_action_failure_note(action_result: ActionExecutionResult | None) -> str:
+        if action_result is None:
+            return ""
+        if action_result.executed or action_result.requires_confirmation or not action_result.blocked:
+            return ""
+        message = str(action_result.message or "").strip()
+        if not message:
+            return "I could not complete that action."
+        return f"I could not complete that action. {message}"
+
     def _preview_tool_args(self, args: dict[str, object]) -> str:
         if not args:
             return "{}"
@@ -926,12 +974,24 @@ class SessionController:
     ):
         safe_args = dict(args or {})
         self._trace("tool.invoke", f"{name} args={self._preview_tool_args(safe_args)}")
+        context = self._tool_context
+        actions = getattr(getattr(self, "_settings", None), "actions", None)
+        bypass_confirmation = (
+            str(name or "").strip().lower().startswith("mcp.")
+            and actions is not None
+            and not bool(getattr(actions, "require_confirmation", True))
+        )
+        if bypass_confirmation:
+            metadata = dict(getattr(self._tool_context, "metadata", {}) or {})
+            metadata["skip_mutating_confirmation"] = True
+            context = ToolContext(metadata=metadata)
+            self._trace("tool.policy", f"{name} mutating confirmation bypassed (automatic mode)")
         started = time.perf_counter()
         try:
             result = self._tool_executor.invoke(
                 name,
                 args=safe_args,
-                context=self._tool_context,
+                context=context,
                 cancel_token=cancel_token,
             )
         except Exception as exc:
@@ -1111,6 +1171,7 @@ class SessionController:
     ) -> str:
         turn_start = time.perf_counter()
         self._trace("pipeline.turn.start", f"mode={mode}")
+        self._trace_turn_action_policy()
         self._tool_executor.reset_turn_budget()
         raw_user_text = str(user_text or "")
         user_text = sanitize_user_text(raw_user_text)
@@ -1339,6 +1400,8 @@ class SessionController:
                 active_goal=self._active_goal,
                 goal_description=self._active_goal_description,
                 available_capabilities=caps or None,
+                autonomy_mode=self._autonomy_mode,
+                action_confirmation_required=bool(self._settings.actions.require_confirmation),
             )
         )
 
@@ -1435,16 +1498,26 @@ class SessionController:
             return response
 
         self._trace("pipeline.action.start", f"mode={mode}")
+        blocked_action_note: str = ""
         try:
             if orchestration_plan.should_plan_action:
                 if not self._should_allow_action_execution(
                     session_type=self._active_session_type,
                     user_text=user_text,
+                    active_goal=self._active_goal,
                 ):
                     self._trace(
                         "pipeline.action.skip",
-                        "Chat turn has no explicit action intent; skipping action execution.",
+                        "Action execution blocked by chat/goal policy.",
                     )
+                    if (
+                        str(self._active_session_type or "").strip().lower() == "chat"
+                        and str(self._active_goal or "").strip().lower() == "coding_help"
+                    ):
+                        blocked_action_note = (
+                            "[Note] I stayed in coding-help mode and did not run desktop actions. "
+                            "If you want automation, switch to a goal/session that allows actions."
+                        )
                     action_result = None
                 else:
                     action_result = self._maybe_execute_action(
@@ -1478,6 +1551,14 @@ class SessionController:
 
         # Keep the pure conversational text for TTS — action status lines are UI-only.
         llm_response_for_tts = strip_action_meta_for_tts(response)
+        tts_action_failure_note = self._build_tts_action_failure_note(action_result)
+        if tts_action_failure_note:
+            llm_response_for_tts = f"{llm_response_for_tts}\n\n{tts_action_failure_note}".strip()
+
+        if blocked_action_note:
+            if on_token:
+                on_token(f"\n\n{blocked_action_note}")
+            response = f"{response}\n\n{blocked_action_note}".strip()
 
         if action_result is not None and action_result.message:
             prefix = "[Action]" if action_result.executed or action_result.requires_confirmation else "[Note]"
@@ -1613,6 +1694,19 @@ class SessionController:
                 action_intent="",
             )
 
+        if AgenticSessionManager.is_agentic_intent(user_text):
+            return TurnAutonomyPlan(
+                strategy=(
+                    "Confirm agentic mode is active and ask for the first objective. "
+                    "Do not propose or perform UI actions in this turn."
+                ),
+                should_use_screen=False,
+                should_plan_action=False,
+                ask_followup=True,
+                confidence=1.0,
+                action_intent="",
+            )
+
         if self._autonomy_mode == "manual":
             return TurnAutonomyPlan(
                 strategy="Respond naturally and avoid autonomous actions unless explicitly requested.",
@@ -1632,6 +1726,7 @@ class SessionController:
             allow_action_suggestions=bool(self._settings.autonomy.allow_action_suggestions),
             allow_proactive_actions=bool(self._settings.autonomy.allow_proactive_actions),
             actions_enabled=bool(self._settings.actions.enabled),
+            require_confirmation=bool(self._settings.actions.require_confirmation),
             available_tool_names=self._tool_executor.list_available_tools(),
         )
 
@@ -1653,10 +1748,21 @@ class SessionController:
         reading_intent: bool,
         continue_reading: bool,
     ) -> TurnOrchestratorPlan:
+        if AgenticSessionManager.is_agentic_intent(user_text):
+            return TurnOrchestratorPlan(
+                strategy="Confirm switch to agentic mode and wait for the user's first objective.",
+                should_capture_screen=False,
+                should_plan_action=False,
+                requested_operations=tuple(),
+                action_intent="",
+                reason="agentic_switch_guard",
+                confidence=1.0,
+            )
         return self._turn_orchestrator.plan_turn(
             user_text=user_text,
             active_goal=self._active_goal,
             autonomy_plan=autonomy_plan,
+            require_confirmation=bool(self._settings.actions.require_confirmation),
             screen_intent=screen_intent,
             reading_intent=reading_intent,
             continue_reading=continue_reading,
@@ -1750,9 +1856,15 @@ class SessionController:
         return ScreenContextService.is_screen_intent(user_text)
 
     @staticmethod
-    def _should_allow_action_execution(*, session_type: str, user_text: str) -> bool:
-        if str(session_type or "").strip().lower() != "chat":
+    def _should_allow_action_execution(*, session_type: str, user_text: str, active_goal: str = "") -> bool:
+        if AgenticSessionManager.is_agentic_intent(user_text):
+            return False
+        normalized_session = str(session_type or "").strip().lower()
+        if normalized_session != "chat":
             return True
+        normalized_goal = str(active_goal or "").strip().lower()
+        if normalized_goal == "coding_help":
+            return False
         return ActionExecutionService.has_action_intent(user_text)
 
     def _capture_screen_text(self, *, decision_source: str) -> str | None:
@@ -2211,6 +2323,7 @@ class SessionController:
             available_tools=available_tools,
             plan_agentic_step=self._plan_agentic_step,
             narrate=narrate_callback,
+            execute_action_plan=self._action_executor.execute_plan,
         )
         return self._active_session.continue_after_approval(runtime)
 
@@ -2240,6 +2353,7 @@ class SessionController:
             state = getattr(self, "_state", None)
             if state is not None:
                 setattr(state, "autonomy_mode", "interactive")
+            self._sync_action_confirmation_policy()
 
         self._trace(
             "autonomy.safety",
@@ -2341,8 +2455,8 @@ class SessionController:
             }
 
         if not done and not next_tool:
-            # Fallback: prefer non-mutating context refresh if available.
-            for candidate in ("mcp.windows.Snapshot", "ocr.extract_details", "ocr.extract_elements"):
+            # Fallback: prefer non-mutating MCP context refresh if available.
+            for candidate in ("mcp.windows.Snapshot",):
                 if candidate in available_tools:
                     self._trace("agentic.plan.output", f"done=false fallback_tool={candidate}")
                     return {

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime
+from collections.abc import Callable
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QCloseEvent, QMoveEvent, QResizeEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -18,14 +20,34 @@ from app.core.session_controller import SessionController
 
 
 class DecisionTraceDialog(QDialog):
-    def __init__(self, session: SessionController, parent=None) -> None:
+    def __init__(
+        self,
+        session: SessionController,
+        *,
+        initial_limit: int = 400,
+        initial_filters: dict[str, bool] | None = None,
+        persist_state: Callable[[dict[str, bool], int], None] | None = None,
+        initial_x: int | None = None,
+        initial_y: int | None = None,
+        initial_width: int | None = None,
+        initial_height: int | None = None,
+        persist_geometry: Callable[[int, int, int, int], None] | None = None,
+        parent=None,
+    ) -> None:
         super().__init__(parent)
         self._session = session
+        self._persist_state = persist_state
+        self._persist_geometry = persist_geometry
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
 
         self.setWindowTitle("Action + Thinking Trace")
-        self.resize(980, 700)
+        self.resize(
+            max(300, int(initial_width)) if initial_width is not None else 980,
+            max(220, int(initial_height)) if initial_height is not None else 700,
+        )
+        if initial_x is not None and initial_y is not None:
+            self.move(int(initial_x), int(initial_y))
 
         layout = QVBoxLayout(self)
 
@@ -35,7 +57,8 @@ class DecisionTraceDialog(QDialog):
         self._limit_spin = QSpinBox()
         self._limit_spin.setRange(20, 5000)
         self._limit_spin.setSingleStep(20)
-        self._limit_spin.setValue(400)
+        self._limit_spin.setValue(max(20, min(int(initial_limit), 5000)))
+        self._limit_spin.valueChanged.connect(self._on_filters_changed)
         controls.addWidget(self._limit_spin)
 
         self._refresh_button = QPushButton("Refresh")
@@ -52,71 +75,64 @@ class DecisionTraceDialog(QDialog):
         filters = QHBoxLayout()
         filters.addWidget(QLabel("Stage filters:"))
         self._filter_screen = QCheckBox("screen.decision")
-        self._filter_screen.setChecked(True)
-        self._filter_screen.stateChanged.connect(lambda _state: self._refresh())
         filters.addWidget(self._filter_screen)
 
         self._filter_capture = QCheckBox("screen.capture")
-        self._filter_capture.setChecked(True)
-        self._filter_capture.stateChanged.connect(lambda _state: self._refresh())
         filters.addWidget(self._filter_capture)
 
         self._filter_autonomy = QCheckBox("autonomy.plan")
-        self._filter_autonomy.setChecked(True)
-        self._filter_autonomy.stateChanged.connect(lambda _state: self._refresh())
         filters.addWidget(self._filter_autonomy)
 
         self._filter_goal = QCheckBox("autonomy.goal")
-        self._filter_goal.setChecked(True)
-        self._filter_goal.stateChanged.connect(lambda _state: self._refresh())
         filters.addWidget(self._filter_goal)
 
         self._filter_stt = QCheckBox("stt.mic")
-        self._filter_stt.setChecked(True)
-        self._filter_stt.stateChanged.connect(lambda _state: self._refresh())
         filters.addWidget(self._filter_stt)
 
         self._filter_pipeline = QCheckBox("pipeline.*")
-        self._filter_pipeline.setChecked(True)
-        self._filter_pipeline.stateChanged.connect(lambda _state: self._refresh())
         filters.addWidget(self._filter_pipeline)
 
         self._filter_tooling = QCheckBox("tool.*")
-        self._filter_tooling.setChecked(True)
-        self._filter_tooling.stateChanged.connect(lambda _state: self._refresh())
         filters.addWidget(self._filter_tooling)
 
         self._filter_agentic = QCheckBox("agentic.*")
-        self._filter_agentic.setChecked(True)
-        self._filter_agentic.stateChanged.connect(lambda _state: self._refresh())
         filters.addWidget(self._filter_agentic)
 
         self._filter_mcp = QCheckBox("mcp.*")
-        self._filter_mcp.setChecked(True)
-        self._filter_mcp.stateChanged.connect(lambda _state: self._refresh())
         filters.addWidget(self._filter_mcp)
 
         self._filter_tts = QCheckBox("tts.error")
-        self._filter_tts.setChecked(True)
-        self._filter_tts.stateChanged.connect(lambda _state: self._refresh())
         filters.addWidget(self._filter_tts)
 
         self._filter_plan = QCheckBox("action.plan")
-        self._filter_plan.setChecked(True)
-        self._filter_plan.stateChanged.connect(lambda _state: self._refresh())
         filters.addWidget(self._filter_plan)
 
         self._filter_execute = QCheckBox("action.execute")
-        self._filter_execute.setChecked(True)
-        self._filter_execute.stateChanged.connect(lambda _state: self._refresh())
         filters.addWidget(self._filter_execute)
 
         self._filter_confirm = QCheckBox("action.confirmation")
-        self._filter_confirm.setChecked(True)
-        self._filter_confirm.stateChanged.connect(lambda _state: self._refresh())
         filters.addWidget(self._filter_confirm)
         filters.addStretch(1)
         layout.addLayout(filters)
+
+        self._filters: dict[str, QCheckBox] = {
+            "screen.decision": self._filter_screen,
+            "screen.capture": self._filter_capture,
+            "autonomy.plan": self._filter_autonomy,
+            "autonomy.goal": self._filter_goal,
+            "stt.mic": self._filter_stt,
+            "pipeline.*": self._filter_pipeline,
+            "tool.*": self._filter_tooling,
+            "agentic.*": self._filter_agentic,
+            "mcp.*": self._filter_mcp,
+            "tts.error": self._filter_tts,
+            "action.plan": self._filter_plan,
+            "action.execute": self._filter_execute,
+            "action.confirmation": self._filter_confirm,
+        }
+        for key, box in self._filters.items():
+            box.setChecked(bool((initial_filters or {}).get(key, True)))
+            box.stateChanged.connect(self._on_filters_changed)
 
         self._text = QTextEdit()
         self._text.setReadOnly(True)
@@ -130,6 +146,30 @@ class DecisionTraceDialog(QDialog):
         layout.addWidget(self._status)
 
         self._refresh()
+
+    def _selected_filters(self) -> dict[str, bool]:
+        return {key: box.isChecked() for key, box in self._filters.items()}
+
+    def _on_filters_changed(self) -> None:
+        self._refresh()
+        if callable(self._persist_state):
+            self._persist_state(self._selected_filters(), int(self._limit_spin.value()))
+
+    def _persist_geometry_state(self) -> None:
+        if callable(self._persist_geometry):
+            self._persist_geometry(self.x(), self.y(), self.width(), self.height())
+
+    def moveEvent(self, event: QMoveEvent) -> None:
+        super().moveEvent(event)
+        self._persist_geometry_state()
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._persist_geometry_state()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        self._persist_geometry_state()
+        super().closeEvent(event)
 
     def _refresh(self) -> None:
         limit = self._limit_spin.value()

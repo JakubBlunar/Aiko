@@ -48,6 +48,7 @@ class TurnOrchestrator:
         user_text: str,
         active_goal: str,
         autonomy_plan: TurnAutonomyPlan,
+        require_confirmation: bool,
         screen_intent: bool,
         reading_intent: bool,
         continue_reading: bool,
@@ -88,6 +89,7 @@ class TurnOrchestrator:
                             "operations is an array using only: capture_screen, plan_action, include_session_evidence, continue_session, respond_only. "
                             "If an operation is not needed, omit it. "
                             "action_intent should be a short sentence only if plan_action is present; otherwise empty string. "
+                            "If require_confirmation=false, do not suggest waiting for user approval in strategy/reason. "
                             "confidence must be 0.0-1.0."
                         ),
                     },
@@ -99,7 +101,8 @@ class TurnOrchestrator:
                             f"Legacy autonomy hint: strategy='{autonomy_plan.strategy}', "
                             f"use_screen={autonomy_plan.should_use_screen}, "
                             f"plan_action={autonomy_plan.should_plan_action}, "
-                            f"action_intent='{autonomy_plan.action_intent}'\n\n"
+                            f"action_intent='{autonomy_plan.action_intent}'\n"
+                            f"require_confirmation={require_confirmation}\n\n"
                             f"Intent hints: screen_intent={screen_intent}, reading_intent={reading_intent}, "
                             f"continue_reading={continue_reading}\n\n"
                             f"Recent conversation:\n{chr(10).join(recent_lines) or '[none]'}"

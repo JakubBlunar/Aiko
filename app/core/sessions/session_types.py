@@ -28,6 +28,7 @@ class SessionRuntimeContext:
     available_tools: Callable[[], list[str]] | None = None
     plan_agentic_step: Callable[[str, str | None, list[dict[str, Any]], int], dict[str, Any]] | None = None
     narrate: Callable[[str], None] | None = None
+    execute_action_plan: Callable[[Any], Any] | None = None
 
 
 class SessionHandler(Protocol):

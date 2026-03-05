@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from app.core.planning.action_planner import ActionPlanner
-from app.core.tooling.runtime.action_runtime import ActionExecutionResult, ActionPlan, PlannedAction
+from app.core.tooling.runtime.action_runtime import ActionExecutionResult, ActionPlan
 
 
 class ActionExecutionService:
@@ -12,21 +12,27 @@ class ActionExecutionService:
         *,
         actions_settings: object,
         action_planner: ActionPlanner,
+        execute_action_plan: Callable[[ActionPlan], ActionExecutionResult],
         capture_screen_text: Callable[..., str | None],
         invoke_tool: Callable[..., object],
         trace: Callable[[str, str], None],
         screen_enabled: Callable[[], bool],
         active_goal: Callable[[], str],
+        list_available_tools: Callable[[], list[str]],
+        list_available_tool_schemas: Callable[[], dict[str, dict[str, object]]],
         last_screen_elements: Callable[[], list[dict]],
         all_windows: Callable[[], list[dict]],
     ) -> None:
         self._actions_settings = actions_settings
         self._action_planner = action_planner
+        self._execute_action_plan = execute_action_plan
         self._capture_screen_text = capture_screen_text
         self._invoke_tool = invoke_tool
         self._trace = trace
         self._screen_enabled = screen_enabled
         self._active_goal = active_goal
+        self._list_available_tools = list_available_tools
+        self._list_available_tool_schemas = list_available_tool_schemas
         self._last_screen_elements = last_screen_elements
         self._all_windows = all_windows
 
@@ -40,8 +46,10 @@ class ActionExecutionService:
         action_intent: str = "",
         on_token: Callable[[str], None] | None = None,
     ) -> ActionExecutionResult | None:
+        detected_action_intent = self._detect_action_intent(user_text)
+
         if not bool(getattr(self._actions_settings, "enabled", False)):
-            wants_action = bool(action_intent) or self.has_action_intent(user_text)
+            wants_action = bool(action_intent) or detected_action_intent
             if wants_action:
                 self._trace("action.plan", f"Actions disabled; intent was: {action_intent or user_text[:80]}")
                 return ActionExecutionResult(
@@ -57,7 +65,7 @@ class ActionExecutionService:
             return None
 
         mode = (getattr(self._actions_settings, "decision_mode", "explicit_only") or "explicit_only").lower().strip()
-        if mode == "explicit_only" and not allow_planning_override and not self.has_action_intent(user_text):
+        if mode == "explicit_only" and not allow_planning_override and not detected_action_intent:
             self._trace("action.plan", "Skipped action planning (no explicit action intent).")
             return None
 
@@ -82,15 +90,6 @@ class ActionExecutionService:
                 continue
             break
 
-        if not planned.steps:
-            fallback_plan = self._build_minimize_assistant_plan(user_text)
-            if fallback_plan is not None:
-                planned = fallback_plan
-                self._trace(
-                    "action.plan",
-                    "Applied deterministic fallback plan: minimize assistant window.",
-                )
-
         if planned.steps and on_token:
             hwnd_to_title = {w["hwnd"]: w["title"] for w in self._all_windows()}
             plain_summary = self.summarize_action_plan_plain(planned, hwnd_to_title)
@@ -98,7 +97,12 @@ class ActionExecutionService:
                 on_token(f"\n\n{plain_summary}\n")
             lines: list[str] = []
             for idx, step in enumerate(planned.steps, start=1):
-                if step.kind == "focus_window":
+                if step.kind == "mcp_tool":
+                    tool_name = str(step.text or "").strip() or "[missing_tool_name]"
+                    line = f"{idx}. mcp_tool({tool_name})"
+                    if isinstance(step.meta, dict) and step.meta:
+                        line += f" args={step.meta}"
+                elif step.kind == "focus_window":
                     title = hwnd_to_title.get(step.hwnd or 0, str(step.hwnd))
                     line = f"{idx}. focus_window('{title}')"
                 elif step.kind == "click":
@@ -123,46 +127,17 @@ class ActionExecutionService:
             plan_text = "\n".join(lines)
             on_token(f"\n\n[Plan]\n{plan_text}\n")
 
-        plan_payload = {
-            "description": planned.description,
-            "needs_screen": planned.needs_screen,
-            "steps": [
-                {
-                    "kind": step.kind,
-                    "x": step.x,
-                    "y": step.y,
-                    "text": step.text,
-                    "hwnd": step.hwnd,
-                    "confidence": step.confidence,
-                    "reason": step.reason,
-                }
-                for step in planned.steps
-            ],
-        }
-        execute_result = self._invoke_tool(
-            "action.execute_plan",
-            args={"plan": plan_payload},
-        )
-        if execute_result.success:
-            result = ActionExecutionResult(
-                executed=bool(execute_result.data.get("executed", False)),
-                dry_run=bool(execute_result.data.get("dry_run", False)),
-                blocked=bool(execute_result.data.get("blocked", False)),
-                requires_confirmation=bool(execute_result.data.get("requires_confirmation", False)),
-                message=str(execute_result.data.get("message", "")),
+        first_step = planned.steps[0] if planned.steps else None
+        if first_step is not None and first_step.kind == "mcp_tool":
+            return self._execute_mcp_with_repair(
+                first_step=first_step,
+                user_text=user_text,
+                assistant_reply=assistant_reply,
+                screen_text=screen_text,
+                action_intent=action_intent,
             )
-        else:
-            result = ActionExecutionResult(
-                executed=False,
-                dry_run=False,
-                blocked=True,
-                requires_confirmation=False,
-                message=(
-                    execute_result.error.message
-                    if execute_result.error
-                    else "Action tool execution failed."
-                ),
-            )
+
+        result = self._execute_action_plan(planned)
         self._trace("action.execute", result.message)
         return result
 
@@ -170,52 +145,182 @@ class ActionExecutionService:
     def has_action_intent(user_text: str) -> bool:
         return ActionPlanner.has_action_intent(user_text)
 
-    def _build_minimize_assistant_plan(self, user_text: str) -> ActionPlan | None:
-        lowered = str(user_text or "").strip().lower()
-        if not lowered:
-            return None
+    def _detect_action_intent(self, user_text: str) -> bool:
+        detector = getattr(self._action_planner, "has_action_intent_with_model", None)
+        if callable(detector):
+            return bool(detector(user_text))
+        return self.has_action_intent(user_text)
 
-        wants_minimize = ("minimize" in lowered) or ("minimise" in lowered)
-        if not wants_minimize:
-            return None
-        if "assistant" not in lowered:
-            return None
+    @staticmethod
+    def _is_blank_value(value: object) -> bool:
+        if value is None:
+            return True
+        if isinstance(value, str):
+            return not value.strip()
+        return False
 
-        hwnd_to_title = {
-            int(w.get("hwnd", 0) or 0): str(w.get("title", "")).strip()
-            for w in self._all_windows()
-            if isinstance(w, dict)
-        }
-        assistant_candidates: list[tuple[int, bool]] = []
-        for window in self._all_windows():
-            if not isinstance(window, dict):
+    def _validate_mcp_tool_args(self, tool_name: str, tool_args: dict[str, object]) -> str | None:
+        schemas = self._list_available_tool_schemas()
+        schema = schemas.get(str(tool_name), {}) if isinstance(schemas, dict) else {}
+        required = schema.get("required", []) if isinstance(schema, dict) else []
+        if not isinstance(required, list):
+            return None
+        missing: list[str] = []
+        for raw_key in required:
+            key = str(raw_key or "").strip()
+            if not key:
                 continue
-            title = str(window.get("title", "")).strip().lower()
-            hwnd = int(window.get("hwnd", 0) or 0)
-            if hwnd <= 0:
-                continue
-            if "assistant" in title:
-                assistant_candidates.append((hwnd, bool(window.get("is_foreground", False))))
+            if key not in tool_args or self._is_blank_value(tool_args.get(key)):
+                missing.append(key)
+        if missing:
+            quoted = ", ".join(f"'{key}'" for key in missing)
+            return f"Missing required argument(s): {quoted}."
 
-        if not assistant_candidates:
-            return None
+        enum_hints = schema.get("enum_hints", []) if isinstance(schema, dict) else []
+        if isinstance(enum_hints, dict):
+            for raw_key, raw_allowed in enum_hints.items():
+                key = str(raw_key or "").strip()
+                if not key or key not in tool_args:
+                    continue
+                if not isinstance(raw_allowed, list):
+                    continue
+                allowed = [str(item).strip() for item in raw_allowed if str(item).strip()]
+                if not allowed:
+                    continue
+                value = str(tool_args.get(key) or "").strip()
+                if value and value not in allowed:
+                    return f"Invalid value for '{key}': {value!r}. Allowed values: {allowed}."
+        return None
 
-        assistant_candidates.sort(key=lambda item: (not item[1], item[0]))
-        hwnd = int(assistant_candidates[0][0])
-        title = hwnd_to_title.get(hwnd, "assistant window")
-        return ActionPlan(
-            steps=[
-                PlannedAction(
-                    kind="window_state",
-                    hwnd=hwnd,
-                    text="minimize",
-                    confidence=1.0,
-                    reason="Explicit user request to minimize the assistant window.",
-                )
-            ],
-            description=f"Minimize '{title}'.",
-            needs_screen=False,
+    def _execute_mcp_with_repair(
+        self,
+        *,
+        first_step: object,
+        user_text: str,
+        assistant_reply: str,
+        screen_text: str | None,
+        action_intent: str,
+    ) -> ActionExecutionResult:
+        step = first_step
+        max_repair_attempts = max(
+            0,
+            min(20, int(getattr(self._actions_settings, "mcp_repair_attempts", 2) or 2)),
         )
+
+        for attempt in range(max_repair_attempts + 1):
+            tool_name = str(getattr(step, "text", "") or "").strip()
+            tool_args = dict(getattr(step, "meta", {})) if isinstance(getattr(step, "meta", {}), dict) else {}
+            if not tool_name:
+                return ActionExecutionResult(
+                    executed=False,
+                    dry_run=False,
+                    blocked=True,
+                    requires_confirmation=False,
+                    message="Planner requested mcp_tool without a tool name.",
+                )
+
+            validation_error = self._validate_mcp_tool_args(tool_name, tool_args)
+            if validation_error:
+                self._trace("action.plan", f"Blocked invalid mcp_tool step: {validation_error}")
+                if attempt < max_repair_attempts:
+                    repaired = self._repair_mcp_step(
+                        user_text=user_text,
+                        assistant_reply=assistant_reply,
+                        screen_text=screen_text,
+                        action_intent=action_intent,
+                        failed_tool_name=tool_name,
+                        failed_tool_args=tool_args,
+                        failure_message=validation_error,
+                    )
+                    if repaired is not None:
+                        step = repaired
+                        continue
+                return ActionExecutionResult(
+                    executed=False,
+                    dry_run=False,
+                    blocked=True,
+                    requires_confirmation=False,
+                    message=f"MCP tool '{tool_name}' blocked: {validation_error}",
+                )
+
+            tool_result = self._invoke_tool(tool_name, args=tool_args)
+            if tool_result.success:
+                summary = str(tool_result.data.get("text") or tool_result.data.get("message") or "MCP tool executed.").strip()
+                return ActionExecutionResult(
+                    executed=True,
+                    dry_run=False,
+                    blocked=False,
+                    requires_confirmation=False,
+                    message=f"Executed MCP tool '{tool_name}'. {summary}".strip(),
+                )
+
+            error_message = "MCP tool execution failed."
+            if tool_result.error is not None:
+                error_message = str(tool_result.error.message or error_message)
+            if attempt < max_repair_attempts:
+                repaired = self._repair_mcp_step(
+                    user_text=user_text,
+                    assistant_reply=assistant_reply,
+                    screen_text=screen_text,
+                    action_intent=action_intent,
+                    failed_tool_name=tool_name,
+                    failed_tool_args=tool_args,
+                    failure_message=error_message,
+                )
+                if repaired is not None:
+                    step = repaired
+                    continue
+            return ActionExecutionResult(
+                executed=False,
+                dry_run=False,
+                blocked=True,
+                requires_confirmation=False,
+                message=f"MCP tool '{tool_name}' failed: {error_message}",
+            )
+
+        return ActionExecutionResult(
+            executed=False,
+            dry_run=False,
+            blocked=True,
+            requires_confirmation=False,
+            message="MCP tool repair loop ended without a valid step.",
+        )
+
+    def _repair_mcp_step(
+        self,
+        *,
+        user_text: str,
+        assistant_reply: str,
+        screen_text: str | None,
+        action_intent: str,
+        failed_tool_name: str,
+        failed_tool_args: dict[str, object],
+        failure_message: str,
+    ):
+        feedback = (
+            f"Previous mcp_tool failed. tool={failed_tool_name} args={failed_tool_args} error={failure_message}. "
+            "Repair by returning one corrected mcp_tool step with valid required fields and enum values."
+        )
+        self._trace("action.repair", feedback)
+        repaired_plan = self._plan_action(
+            user_text=user_text,
+            assistant_reply=assistant_reply,
+            screen_text=screen_text,
+            action_intent=action_intent,
+            tool_error_feedback=feedback,
+        )
+        if not repaired_plan.steps:
+            return None
+        repaired = repaired_plan.steps[0]
+        if str(getattr(repaired, "kind", "")).strip().lower() != "mcp_tool":
+            return None
+
+        repaired_name = str(getattr(repaired, "text", "") or "").strip()
+        repaired_args = dict(getattr(repaired, "meta", {})) if isinstance(getattr(repaired, "meta", {}), dict) else {}
+        if repaired_name == failed_tool_name and repaired_args == failed_tool_args:
+            self._trace("action.repair", "Planner repair returned identical mcp_tool step; skipping retry.")
+            return None
+        return repaired
 
     def _plan_action(
         self,
@@ -224,6 +329,7 @@ class ActionExecutionService:
         assistant_reply: str,
         screen_text: str | None,
         action_intent: str,
+        tool_error_feedback: str | None = None,
     ) -> ActionPlan:
         return self._action_planner.plan_action(
             user_text=user_text,
@@ -233,6 +339,9 @@ class ActionExecutionService:
             active_goal=self._active_goal(),
             last_screen_elements=self._last_screen_elements(),
             all_windows=self._all_windows(),
+            available_tool_names=self._list_available_tools(),
+            available_tool_schemas=self._list_available_tool_schemas(),
+            tool_error_feedback=tool_error_feedback,
         )
 
     @staticmethod

@@ -37,6 +37,22 @@ class SessionReadingFlowTests(unittest.TestCase):
             )
         )
 
+    def test_action_gate_allows_polite_window_switch_request(self) -> None:
+        self.assertTrue(
+            SessionController._should_allow_action_execution(
+                session_type="chat",
+                user_text="Could you switch to the VSCode window please?",
+            )
+        )
+
+    def test_action_gate_allows_make_window_active_request(self) -> None:
+        self.assertTrue(
+            SessionController._should_allow_action_execution(
+                session_type="chat",
+                user_text="Please make the Notepad window active.",
+            )
+        )
+
     def test_action_gate_allows_non_chat_sessions(self) -> None:
         self.assertTrue(
             SessionController._should_allow_action_execution(
@@ -44,6 +60,122 @@ class SessionReadingFlowTests(unittest.TestCase):
                 user_text="continue reading",
             )
         )
+
+    def test_action_gate_blocks_coding_help_goal_in_chat(self) -> None:
+        self.assertFalse(
+            SessionController._should_allow_action_execution(
+                session_type="chat",
+                user_text="Click the minimize button.",
+                active_goal="coding_help",
+            )
+        )
+
+    def test_action_gate_blocks_agentic_switch_turn(self) -> None:
+        self.assertFalse(
+            SessionController._should_allow_action_execution(
+                session_type="chat",
+                user_text="Please enter agentic mode now.",
+                active_goal="general_conversation",
+            )
+        )
+
+    def test_action_gate_blocks_agentic_switch_turn_even_in_agentic_session(self) -> None:
+        self.assertFalse(
+            SessionController._should_allow_action_execution(
+                session_type="agentic",
+                user_text="Switch to agentic mode again.",
+                active_goal="ui_automation",
+            )
+        )
+
+    def test_autonomy_plan_agentic_switch_turn_never_requests_action(self) -> None:
+        controller = SessionController.__new__(SessionController)
+        controller._settings = SimpleNamespace(
+            autonomy=SimpleNamespace(enabled=True),
+        )
+        controller._autonomy_mode = "interactive"
+
+        plan = controller._plan_turn_autonomy(user_text="Switch to agentic mode.")
+
+        self.assertFalse(plan.should_plan_action)
+        self.assertEqual(plan.action_intent, "")
+
+    def test_orchestration_plan_agentic_switch_turn_never_requests_action(self) -> None:
+        controller = SessionController.__new__(SessionController)
+        controller._turn_orchestrator = SimpleNamespace(plan_turn=lambda **_kwargs: None)
+
+        plan = controller._plan_turn_orchestration(
+            user_text="Switch to agentic mode.",
+            autonomy_plan=SimpleNamespace(
+                strategy="irrelevant",
+                should_use_screen=False,
+                should_plan_action=False,
+                ask_followup=True,
+                confidence=1.0,
+                action_intent="",
+            ),
+            screen_intent=False,
+            reading_intent=False,
+            continue_reading=False,
+        )
+
+        self.assertFalse(plan.should_plan_action)
+        self.assertEqual(plan.action_intent, "")
+        self.assertEqual(plan.requested_operations, tuple())
+
+    def test_autonomy_mode_interactive_requires_confirmation(self) -> None:
+        controller = SessionController.__new__(SessionController)
+        controller._trace = lambda *_args, **_kwargs: None
+        controller._settings = SimpleNamespace(actions=SimpleNamespace(require_confirmation=False))
+        controller._state = SimpleNamespace(autonomy_mode="automatic")
+        controller._active_session_type = "agentic"
+        controller._set_active_session = lambda _session_type: None
+        controller._autonomy_mode = "automatic"
+
+        controller.set_autonomy_mode("interactive")
+
+        self.assertTrue(controller._settings.actions.require_confirmation)
+
+    def test_autonomy_mode_automatic_disables_confirmation(self) -> None:
+        controller = SessionController.__new__(SessionController)
+        controller._trace = lambda *_args, **_kwargs: None
+        controller._settings = SimpleNamespace(actions=SimpleNamespace(require_confirmation=True))
+        controller._state = SimpleNamespace(autonomy_mode="interactive")
+        controller._active_session_type = "chat"
+        controller._set_active_session = lambda _session_type: None
+        controller._autonomy_mode = "interactive"
+
+        controller.set_autonomy_mode("automatic")
+
+        self.assertFalse(controller._settings.actions.require_confirmation)
+
+    def test_trace_turn_action_policy_logs_mode_and_confirmation(self) -> None:
+        controller = SessionController.__new__(SessionController)
+        controller._autonomy_mode = "automatic"
+        controller._settings = SimpleNamespace(actions=SimpleNamespace(require_confirmation=False))
+        traces: list[tuple[str, str]] = []
+        controller._trace = lambda stage, message: traces.append((str(stage), str(message)))
+
+        controller._trace_turn_action_policy()
+
+        self.assertEqual(len(traces), 1)
+        self.assertEqual(traces[0][0], "action.confirmation")
+        self.assertIn("mode=automatic", traces[0][1])
+        self.assertIn("require_confirmation=false", traces[0][1])
+
+    def test_tts_action_failure_note_for_blocked_failed_action(self) -> None:
+        note = SessionController._build_tts_action_failure_note(
+            ActionExecutionResult(
+                executed=False,
+                dry_run=False,
+                blocked=True,
+                requires_confirmation=False,
+                message="MCP tool failed after retries.",
+            )
+        )
+
+        self.assertIn("I could not complete that action.", note)
+        self.assertIn("failed after retries", note)
 
     def test_approve_pending_action_combines_followups(self) -> None:
         controller = SessionController.__new__(SessionController)
@@ -96,6 +228,15 @@ class SessionReadingFlowTests(unittest.TestCase):
         # Keep hash-set unchanged so duplicate streak triggers stop after 2 loops.
         controller._capture_screen_text = lambda decision_source: "example article chunk"
         controller._active_session.build_evidence_block = lambda _trace: 'Reading evidence:\n- "Example quote"'
+        controller._action_executor = SimpleNamespace(
+            execute_plan=lambda _plan: ActionExecutionResult(
+                executed=True,
+                dry_run=False,
+                blocked=False,
+                requires_confirmation=False,
+                message="Step 1 (scroll): Executed scroll down.",
+            )
+        )
 
         def invoke_tool(_name: str, *, args: dict | None = None, cancel_token=None):
             _ = args

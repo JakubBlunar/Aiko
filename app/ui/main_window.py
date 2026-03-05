@@ -54,6 +54,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._settings = settings
         self._session = session or SessionController(settings)
+        # Always start the UI in chat session regardless of prior runtime mode/state.
+        self._session.set_active_session_type("chat")
         self._live_thread: QThread | None = None
         self._live_worker: LivePracticeWorker | None = None
         self._turn_thread: QThread | None = None
@@ -682,7 +684,18 @@ class MainWindow(QMainWindow):
 
     def _open_trace_viewer(self) -> None:
         if self._trace_dialog is None:
-            self._trace_dialog = DecisionTraceDialog(self._session, None)
+            self._trace_dialog = DecisionTraceDialog(
+                self._session,
+                initial_limit=(self._settings.ui.decision_trace_limit or 400),
+                initial_filters=dict(self._settings.ui.decision_trace_filters or {}),
+                persist_state=self._persist_trace_viewer_preferences,
+                initial_x=self._settings.ui.decision_trace_window_x,
+                initial_y=self._settings.ui.decision_trace_window_y,
+                initial_width=self._settings.ui.decision_trace_window_width,
+                initial_height=self._settings.ui.decision_trace_window_height,
+                persist_geometry=self._persist_trace_viewer_geometry,
+                parent=None,
+            )
             self._trace_dialog.finished.connect(self._on_trace_dialog_closed)
         self._trace_dialog.show()
         self._trace_dialog.raise_()
@@ -690,6 +703,23 @@ class MainWindow(QMainWindow):
 
     def _on_trace_dialog_closed(self) -> None:
         self._trace_dialog = None
+
+    def _persist_trace_viewer_preferences(self, filters: dict[str, bool], limit: int) -> None:
+        self._settings.ui.decision_trace_filters = dict(filters)
+        self._settings.ui.decision_trace_limit = int(limit)
+        self._persist_preferences(trace_filters=filters, trace_limit=limit)
+
+    def _persist_trace_viewer_geometry(self, x: int, y: int, width: int, height: int) -> None:
+        self._settings.ui.decision_trace_window_x = int(x)
+        self._settings.ui.decision_trace_window_y = int(y)
+        self._settings.ui.decision_trace_window_width = int(width)
+        self._settings.ui.decision_trace_window_height = int(height)
+        self._persist_preferences(
+            trace_window_x=x,
+            trace_window_y=y,
+            trace_window_width=width,
+            trace_window_height=height,
+        )
 
     def _test_ocr(self) -> None:
         if self._ocr_test_thread is not None:
@@ -1119,7 +1149,17 @@ class MainWindow(QMainWindow):
         self._approve_action_button.setEnabled(has_pending)
         self._reject_action_button.setEnabled(has_pending)
 
-    def _persist_preferences(self, *, include_stt_testing: bool = False) -> None:
+    def _persist_preferences(
+        self,
+        *,
+        include_stt_testing: bool = False,
+        trace_filters: dict[str, bool] | None = None,
+        trace_limit: int | None = None,
+        trace_window_x: int | None = None,
+        trace_window_y: int | None = None,
+        trace_window_width: int | None = None,
+        trace_window_height: int | None = None,
+    ) -> None:
         save_runtime_preferences(
             chat_model=self._session.chat_model,
             thinking_model=self._session.thinking_model,
@@ -1160,6 +1200,12 @@ class MainWindow(QMainWindow):
             window_y=self.y(),
             window_width=self.width(),
             window_height=self.height(),
+            ui_decision_trace_filters=trace_filters,
+            ui_decision_trace_limit=trace_limit,
+            ui_decision_trace_window_x=trace_window_x,
+            ui_decision_trace_window_y=trace_window_y,
+            ui_decision_trace_window_width=trace_window_width,
+            ui_decision_trace_window_height=trace_window_height,
         )
 
     def _send(self) -> None:

@@ -4,6 +4,7 @@ from collections.abc import Callable
 
 from app.core.sessions.reading_session import ReadingSessionManager
 from app.core.sessions.session_types import SessionRuntimeContext, SessionTurnSignals
+from app.core.tooling.runtime.action_runtime import ActionPlan, PlannedAction
 
 
 class ReadingSessionAdapter:
@@ -66,36 +67,34 @@ class ReadingSessionAdapter:
         executed_steps = 0
         duplicate_streak = 0
         require_confirmation_original = bool(context.get_require_confirmation())
+        execute_action_plan = context.execute_action_plan
+        if not callable(execute_action_plan):
+            context.trace("reading.blocked", "Autopilot unavailable: execute_action_plan callback missing.")
+            return ""
         try:
             # One-approval flow: bounded continuation executes without re-prompting.
             context.set_require_confirmation(False)
             for _ in range(remaining):
                 before_hashes = self._manager.chunk_hash_count
-                execute_result = context.invoke_tool(
-                    "action.execute_plan",
-                    args={
-                        "plan": {
-                            "description": "Continue reading article by scrolling down.",
-                            "needs_screen": False,
-                            "steps": [
-                                {
-                                    "kind": "scroll",
-                                    "x": None,
-                                    "y": None,
-                                    "text": "down:10",
-                                    "hwnd": None,
-                                    "confidence": 0.95,
-                                    "reason": "Continue reading content below.",
-                                }
-                            ],
-                        }
-                    },
+                execute_result = execute_action_plan(
+                    ActionPlan(
+                        description="Continue reading article by scrolling down.",
+                        needs_screen=False,
+                        steps=[
+                            PlannedAction(
+                                kind="scroll",
+                                x=None,
+                                y=None,
+                                text="down:10",
+                                hwnd=None,
+                                confidence=0.95,
+                                reason="Continue reading content below.",
+                            )
+                        ],
+                    )
                 )
-                if not execute_result.success:
-                    context.trace("reading.stop", "Autopilot scroll execution failed.")
-                    break
-                if not bool(execute_result.data.get("executed", False)):
-                    context.trace("reading.stop", "Autopilot scroll did not execute.")
+                if not bool(getattr(execute_result, "executed", False)):
+                    context.trace("reading.stop", f"Autopilot scroll execution failed: {getattr(execute_result, 'message', 'unknown')}")
                     break
 
                 executed_steps += 1

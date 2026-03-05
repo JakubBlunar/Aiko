@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 from pathlib import Path
 from typing import Any
@@ -78,6 +78,7 @@ class ActionSettings:
     require_confirmation: bool
     decision_mode: str
     max_actions_per_turn: int
+    mcp_repair_attempts: int
     min_confidence: float
     min_action_interval_seconds: float
     emergency_hotkey: str
@@ -116,6 +117,12 @@ class UiSettings:
     window_y: int | None
     window_width: int | None
     window_height: int | None
+    decision_trace_filters: dict[str, bool] = field(default_factory=dict)
+    decision_trace_limit: int | None = None
+    decision_trace_window_x: int | None = None
+    decision_trace_window_y: int | None = None
+    decision_trace_window_width: int | None = None
+    decision_trace_window_height: int | None = None
 
 
 @dataclass(slots=True)
@@ -378,6 +385,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             require_confirmation=bool(actions.get("require_confirmation", True)),
             decision_mode=str(actions.get("decision_mode", "explicit_only")),
             max_actions_per_turn=max(1, int(actions.get("max_actions_per_turn", 1))),
+            mcp_repair_attempts=max(0, min(int(actions.get("mcp_repair_attempts", 2)), 20)),
             min_confidence=max(0.0, min(float(actions.get("min_confidence", 0.75)), 1.0)),
             min_action_interval_seconds=max(
                 0.0,
@@ -417,6 +425,39 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             window_y=int(ui["window_y"]) if ui.get("window_y") is not None else None,
             window_width=int(ui["window_width"]) if ui.get("window_width") is not None else None,
             window_height=int(ui["window_height"]) if ui.get("window_height") is not None else None,
+            decision_trace_filters=(
+                {
+                    str(k): bool(v)
+                    for k, v in ui.get("decision_trace_filters", {}).items()
+                }
+                if isinstance(ui.get("decision_trace_filters"), dict)
+                else {}
+            ),
+            decision_trace_limit=(
+                int(ui["decision_trace_limit"])
+                if ui.get("decision_trace_limit") is not None
+                else None
+            ),
+            decision_trace_window_x=(
+                int(ui["decision_trace_window_x"])
+                if ui.get("decision_trace_window_x") is not None
+                else None
+            ),
+            decision_trace_window_y=(
+                int(ui["decision_trace_window_y"])
+                if ui.get("decision_trace_window_y") is not None
+                else None
+            ),
+            decision_trace_window_width=(
+                int(ui["decision_trace_window_width"])
+                if ui.get("decision_trace_window_width") is not None
+                else None
+            ),
+            decision_trace_window_height=(
+                int(ui["decision_trace_window_height"])
+                if ui.get("decision_trace_window_height") is not None
+                else None
+            ),
         ),
         tooling=ToolingBridgeSettings(
             config_default_path=str(tooling.get("config_default_path", "config/tooling.default.json")),
@@ -451,6 +492,12 @@ def save_runtime_preferences(
     window_y: int | None = None,
     window_width: int | None = None,
     window_height: int | None = None,
+    ui_decision_trace_filters: dict[str, bool] | None = None,
+    ui_decision_trace_limit: int | None = None,
+    ui_decision_trace_window_x: int | None = None,
+    ui_decision_trace_window_y: int | None = None,
+    ui_decision_trace_window_width: int | None = None,
+    ui_decision_trace_window_height: int | None = None,
     path: Path | None = None,
 ) -> None:
     target = path or USER_CONFIG_PATH
@@ -518,13 +565,33 @@ def save_runtime_preferences(
     if stt_prosody_include_in_prompt is not None:
         stt_updates["prosody_include_in_prompt"] = bool(stt_prosody_include_in_prompt)
 
+    ui_updates: dict[str, Any] = {}
     if any(value is not None for value in (window_x, window_y, window_width, window_height)):
-        updates["ui"] = {
-            "window_x": int(window_x) if window_x is not None else None,
-            "window_y": int(window_y) if window_y is not None else None,
-            "window_width": int(window_width) if window_width is not None else None,
-            "window_height": int(window_height) if window_height is not None else None,
+        ui_updates.update(
+            {
+                "window_x": int(window_x) if window_x is not None else None,
+                "window_y": int(window_y) if window_y is not None else None,
+                "window_width": int(window_width) if window_width is not None else None,
+                "window_height": int(window_height) if window_height is not None else None,
+            }
+        )
+    if ui_decision_trace_filters is not None:
+        ui_updates["decision_trace_filters"] = {
+            str(key): bool(value)
+            for key, value in ui_decision_trace_filters.items()
         }
+    if ui_decision_trace_limit is not None:
+        ui_updates["decision_trace_limit"] = max(20, min(int(ui_decision_trace_limit), 5000))
+    if ui_decision_trace_window_x is not None:
+        ui_updates["decision_trace_window_x"] = int(ui_decision_trace_window_x)
+    if ui_decision_trace_window_y is not None:
+        ui_updates["decision_trace_window_y"] = int(ui_decision_trace_window_y)
+    if ui_decision_trace_window_width is not None:
+        ui_updates["decision_trace_window_width"] = max(300, int(ui_decision_trace_window_width))
+    if ui_decision_trace_window_height is not None:
+        ui_updates["decision_trace_window_height"] = max(220, int(ui_decision_trace_window_height))
+    if ui_updates:
+        updates["ui"] = ui_updates
 
     updated_effective = _deep_merge(effective, updates)
     minimal_overrides = _deep_diff(base, updated_effective)

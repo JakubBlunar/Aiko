@@ -139,6 +139,7 @@ def _schema_to_executor_shape(input_schema: dict[str, Any]) -> dict[str, Any]:
     required = input_schema.get("required", []) if isinstance(input_schema, dict) else []
 
     mapped_props: dict[str, str] = {}
+    enum_hints: dict[str, list[str]] = {}
     if isinstance(properties, dict):
         for key, value in properties.items():
             key_name = str(key).strip()
@@ -160,6 +161,12 @@ def _schema_to_executor_shape(input_schema: dict[str, Any]) -> dict[str, Any]:
             if type_name in {"str", "int", "float", "bool", "dict", "list"}:
                 mapped_props[key_name] = type_name
 
+            raw_enum = value.get("enum")
+            if isinstance(raw_enum, list):
+                enum_values = [str(item).strip() for item in raw_enum if str(item).strip()]
+                if enum_values:
+                    enum_hints[key_name] = enum_values
+
     required_list: list[str] = []
     if isinstance(required, list):
         for item in required:
@@ -167,10 +174,13 @@ def _schema_to_executor_shape(input_schema: dict[str, Any]) -> dict[str, Any]:
             if text:
                 required_list.append(text)
 
-    return {
+    schema_shape = {
         "required": required_list,
         "properties": mapped_props,
     }
+    if enum_hints:
+        schema_shape["enum_hints"] = enum_hints
+    return schema_shape
 
 
 def _normalize_mcp_result_payload(result: dict[str, Any]) -> dict[str, Any]:

@@ -58,6 +58,22 @@ class ToolingRegistryExecutorTests(unittest.TestCase):
         self.assertTrue(result.requires_confirmation)
         self.assertIsNotNone(result.confirmation)
 
+    def test_executor_skips_confirmation_when_context_requests_bypass(self) -> None:
+        registry = ToolRegistry()
+        registry.register(_DummyTool(name="mut.tool", is_mutating=True))
+        cfg = ToolingConfig(policies=ToolPolicyConfig(full_auto=False, mutating_requires_confirmation=True))
+        executor = ToolExecutor(registry, cfg)
+
+        result = executor.invoke(
+            "mut.tool",
+            args={"value": 1},
+            context=ToolContext(metadata={"skip_mutating_confirmation": True}),
+        )
+
+        self.assertTrue(result.success)
+        self.assertFalse(result.requires_confirmation)
+        self.assertEqual(result.data.get("echo"), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
