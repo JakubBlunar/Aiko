@@ -84,6 +84,9 @@ class SttSettings:
     provider: str
     model: str
     language: str | None
+    diagnostic_record_seconds: float = 5.0
+    diagnostic_vad_filter: bool = True
+    diagnostic_initial_prompt: str = ""
 
 
 @dataclass(slots=True)
@@ -338,6 +341,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             provider=str(stt.get("provider", "faster_whisper")),
             model=str(stt.get("model", "base")),
             language=(str(stt.get("language")).strip() if stt.get("language") is not None else None),
+            diagnostic_record_seconds=max(1.0, min(float(stt.get("diagnostic_record_seconds", 5.0)), 30.0)),
+            diagnostic_vad_filter=bool(stt.get("diagnostic_vad_filter", True)),
+            diagnostic_initial_prompt=str(stt.get("diagnostic_initial_prompt", "") or "").strip(),
         ),
         tts=TtsSettings(
             provider=_required(tts, "provider"),
@@ -379,6 +385,9 @@ def save_runtime_preferences(
     tts_provider: str,
     tts_voice: str | None,
     stt_model: str | None = None,
+    stt_diagnostic_record_seconds: float | None = None,
+    stt_diagnostic_vad_filter: bool | None = None,
+    stt_diagnostic_initial_prompt: str | None = None,
     enable_microphone: bool,
     enable_system_audio: bool,
     enable_screen_context: bool,
@@ -426,6 +435,21 @@ def save_runtime_preferences(
         },
         "stt": {
             "model": str(stt_model or "").strip() or None,
+            "diagnostic_record_seconds": (
+                round(max(1.0, min(float(stt_diagnostic_record_seconds), 30.0)), 1)
+                if stt_diagnostic_record_seconds is not None
+                else None
+            ),
+            "diagnostic_vad_filter": (
+                bool(stt_diagnostic_vad_filter)
+                if stt_diagnostic_vad_filter is not None
+                else None
+            ),
+            "diagnostic_initial_prompt": (
+                str(stt_diagnostic_initial_prompt or "").strip()
+                if stt_diagnostic_initial_prompt is not None
+                else None
+            ),
         },
     }
 

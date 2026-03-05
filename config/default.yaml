@@ -58,6 +58,9 @@ stt:
   provider: "faster_whisper"
   model: "base"
   language: "en"
+  diagnostic_record_seconds: 5.0
+  diagnostic_vad_filter: true
+  diagnostic_initial_prompt: ""
 
 tts:
   provider: "piper"

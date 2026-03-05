@@ -353,24 +353,28 @@ class MainWindow(QMainWindow):
         self._stt_test_seconds_spin.setDecimals(1)
         self._stt_test_seconds_spin.setRange(1.0, 30.0)
         self._stt_test_seconds_spin.setSingleStep(0.5)
-        self._stt_test_seconds_spin.setValue(5.0)
+        self._stt_test_seconds_spin.setValue(float(self._settings.stt.diagnostic_record_seconds))
         stt_test_form.addRow("Record seconds:", self._stt_test_seconds_spin)
 
         self._stt_test_vad_checkbox = QCheckBox("Use Whisper VAD filter")
-        self._stt_test_vad_checkbox.setChecked(True)
+        self._stt_test_vad_checkbox.setChecked(bool(self._settings.stt.diagnostic_vad_filter))
         stt_test_form.addRow("Options:", self._stt_test_vad_checkbox)
 
         self._stt_test_prompt_input = QLineEdit()
         self._stt_test_prompt_input.setPlaceholderText("Optional STT initial prompt (domain hints)")
+        self._stt_test_prompt_input.setText(str(self._settings.stt.diagnostic_initial_prompt or ""))
         stt_test_form.addRow("Initial prompt:", self._stt_test_prompt_input)
         stt_testing_layout.addLayout(stt_test_form)
 
         stt_test_actions = QHBoxLayout()
         self._run_stt_test_button = QPushButton("Run STT Test")
         self._run_stt_test_button.clicked.connect(self._run_stt_test)
+        self._apply_stt_test_config_button = QPushButton("Apply STT Config")
+        self._apply_stt_test_config_button.clicked.connect(self._apply_stt_test_config)
         self._clear_stt_test_button = QPushButton("Clear Results")
         self._clear_stt_test_button.clicked.connect(lambda: self._stt_test_output.clear())
         stt_test_actions.addWidget(self._run_stt_test_button)
+        stt_test_actions.addWidget(self._apply_stt_test_config_button)
         stt_test_actions.addWidget(self._clear_stt_test_button)
         stt_test_actions.addStretch(1)
         stt_testing_layout.addLayout(stt_test_actions)
@@ -699,6 +703,14 @@ class MainWindow(QMainWindow):
         self._stt_test_thread = None
         self._stt_test_worker = None
 
+    def _apply_stt_test_config(self) -> None:
+        self._settings.stt.diagnostic_record_seconds = float(self._stt_test_seconds_spin.value())
+        self._settings.stt.diagnostic_vad_filter = bool(self._stt_test_vad_checkbox.isChecked())
+        self._settings.stt.diagnostic_initial_prompt = str(self._stt_test_prompt_input.text() or "").strip()
+        self._persist_preferences(include_stt_testing=True)
+        self._stt_test_status.setText("STT config saved to user config.")
+        self._append("System", "Saved STT diagnostic config to user preferences.")
+
     def _apply_calibration(self) -> None:
         self._session.set_vad_level_threshold(self._vad_threshold_spin.value())
         self._session.set_vad_silence_seconds(self._vad_silence_spin.value())
@@ -975,7 +987,7 @@ class MainWindow(QMainWindow):
         self._approve_action_button.setEnabled(has_pending)
         self._reject_action_button.setEnabled(has_pending)
 
-    def _persist_preferences(self) -> None:
+    def _persist_preferences(self, *, include_stt_testing: bool = False) -> None:
         save_runtime_preferences(
             chat_model=self._session.chat_model,
             thinking_model=self._session.thinking_model,
@@ -989,6 +1001,17 @@ class MainWindow(QMainWindow):
             tts_provider=self._session.tts_provider,
             tts_voice=self._session.tts_voice,
             stt_model=self._session.stt_model,
+            stt_diagnostic_record_seconds=(
+                float(self._stt_test_seconds_spin.value()) if include_stt_testing else None
+            ),
+            stt_diagnostic_vad_filter=(
+                bool(self._stt_test_vad_checkbox.isChecked()) if include_stt_testing else None
+            ),
+            stt_diagnostic_initial_prompt=(
+                str(self._stt_test_prompt_input.text() or "").strip()
+                if include_stt_testing
+                else None
+            ),
             enable_microphone=self._mic_checkbox.isChecked(),
             enable_system_audio=self._system_checkbox.isChecked(),
             enable_screen_context=self._screen_checkbox.isChecked(),
@@ -1039,6 +1062,7 @@ class MainWindow(QMainWindow):
         self._reject_action_button.setEnabled((not busy) and self._session.has_pending_action)
         self._reset_latency_button.setEnabled(not busy)
         self._run_stt_test_button.setEnabled((not busy) and self._stt_test_thread is None)
+        self._apply_stt_test_config_button.setEnabled(not busy)
         self._clear_stt_test_button.setEnabled(not busy)
 
     def _start_single_turn(self, *, mode: str, text: str = "", record_seconds: float = 5.0) -> None:
@@ -1152,6 +1176,7 @@ class MainWindow(QMainWindow):
         self._reject_action_button.setEnabled(False)
         self._reset_latency_button.setEnabled(False)
         self._run_stt_test_button.setEnabled(False)
+        self._apply_stt_test_config_button.setEnabled(False)
         self._clear_stt_test_button.setEnabled(False)
 
         self._live_thread.start()
@@ -1191,6 +1216,7 @@ class MainWindow(QMainWindow):
         self._reject_action_button.setEnabled(self._session.has_pending_action)
         self._reset_latency_button.setEnabled(True)
         self._run_stt_test_button.setEnabled(self._stt_test_thread is None)
+        self._apply_stt_test_config_button.setEnabled(True)
         self._clear_stt_test_button.setEnabled(True)
         self._status.set_service_status("ready")
         self._close_live_stream()
