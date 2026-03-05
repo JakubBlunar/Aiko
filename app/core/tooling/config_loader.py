@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 from pathlib import Path
 from typing import Any
-
-import yaml
 
 
 @dataclass(slots=True)
@@ -31,15 +30,26 @@ class ToolingConfig:
         return dict(value) if isinstance(value, dict) else {}
 
 
-_TOOLING_DEFAULT_PATH = Path(__file__).resolve().parents[3] / "config" / "tooling.default.yaml"
-_TOOLING_USER_PATH = Path(__file__).resolve().parents[3] / "config" / "tooling.user.yaml"
+_TOOLING_DEFAULT_PATH = Path(__file__).resolve().parents[3] / "config" / "tooling.default.json"
+_TOOLING_USER_PATH = Path(__file__).resolve().parents[3] / "config" / "tooling.user.json"
 
 
-def _read_yaml(path: Path) -> dict[str, Any]:
+def _read_config(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
-    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    payload = json.loads(path.read_text(encoding="utf-8"))
     return payload if isinstance(payload, dict) else {}
+
+
+def _read_merged(*paths: Path) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for path in paths:
+        try:
+            current = _read_config(path)
+        except Exception:
+            continue
+        merged = _deep_merge(merged, current)
+    return merged
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -69,8 +79,15 @@ def load_tooling_config(
     user_path: Path | None = None,
     runtime_overrides: dict[str, Any] | None = None,
 ) -> ToolingConfig:
-    base = _read_yaml(default_path or _TOOLING_DEFAULT_PATH)
-    user = _read_yaml(user_path or _TOOLING_USER_PATH)
+    if default_path is not None:
+        base = _read_config(default_path)
+    else:
+        base = _read_merged(_TOOLING_DEFAULT_PATH)
+
+    if user_path is not None:
+        user = _read_config(user_path)
+    else:
+        user = _read_merged(_TOOLING_USER_PATH)
     merged = _deep_merge(base, user)
 
     if runtime_overrides:

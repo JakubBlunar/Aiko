@@ -1,0 +1,104 @@
+{
+  "assistant": {
+    "name": "Assistant",
+    "mode": "natural_chat",
+    "remember_history": true,
+    "background": "",
+    "thinking_model": null
+  },
+  "autonomy": {
+    "enabled": false,
+    "mode": "interactive",
+    "proactive_conversation": true,
+    "allow_action_suggestions": true,
+    "allow_proactive_actions": false,
+    "max_strategy_chars": 180,
+    "auto_goal_switch": true,
+    "default_goal": "general_conversation",
+    "goal_switch_min_confidence": 0.75,
+    "agentic_max_auto_steps": 3,
+    "agentic_full_narration": false,
+    "agentic_narration_level": "summary",
+    "reading_session_memory_enabled": true,
+    "reading_max_scroll_steps": 6,
+    "reading_max_quotes": 4,
+    "reading_max_quote_chars": 500,
+    "reading_trusted_window_titles": [
+      "chrome",
+      "firefox",
+      "brave",
+      "edge",
+      "vscode",
+      "notepad"
+    ]
+  },
+  "ollama": {
+    "base_url": "http://127.0.0.1:11434",
+    "chat_model": "llama3.1:8b",
+    "temperature": 0.6
+  },
+  "audio": {
+    "sample_rate": 16000,
+    "channels": 1,
+    "enable_microphone": true,
+    "microphone_device": null,
+    "vad_level_threshold": 0.02,
+    "vad_silence_seconds": 1.0
+  },
+  "screen": {
+    "enable_screen_context": false,
+    "ocr_profile": "balanced",
+    "monitor_index": 2,
+    "ocr_max_side_px": 1280,
+    "capture_active_window_only": true,
+    "decision_mode": "model",
+    "decision_cooldown_seconds": 6,
+    "min_ocr_chars": 20,
+    "unchanged_reuse_seconds": 20,
+    "enable_uia": true
+  },
+  "actions": {
+    "enabled": false,
+    "dry_run": true,
+    "require_confirmation": true,
+    "decision_mode": "explicit_only",
+    "max_actions_per_turn": 10,
+    "min_confidence": 0.75,
+    "min_action_interval_seconds": 1.0,
+    "emergency_hotkey": "ctrl+alt+f12",
+    "allowlist_window_titles": []
+  },
+  "stt": {
+    "provider": "faster_whisper",
+    "model": "base",
+    "language": "en",
+    "diagnostic_record_seconds": 5.0,
+    "diagnostic_vad_filter": true,
+    "diagnostic_initial_prompt": "",
+    "prosody_enabled": false,
+    "prosody_include_in_prompt": true
+  },
+  "tts": {
+    "provider": "piper",
+    "voice": "en_US-lessac-medium",
+    "enabled": true,
+    "llasa_model": "NandemoGHS/Anime-Llasa-3B",
+    "llasa_codec_model": "HKUSTAudio/xcodec2",
+    "llasa_device": "cuda",
+    "llasa_temperature": 0.8,
+    "llasa_top_p": 0.95,
+    "llasa_max_length": 2048,
+    "llasa_max_vram_mb": 0
+  },
+  "ui": {
+    "window_x": null,
+    "window_y": null,
+    "window_width": null,
+    "window_height": null
+  },
+  "tooling": {
+    "config_default_path": "config/tooling.default.json",
+    "config_user_path": "config/tooling.user.json",
+    "enable_runtime_overrides": true
+  }
+}

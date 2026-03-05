@@ -106,8 +106,8 @@ def _app_settings() -> AppSettings:
         ),
         ui=UiSettings(window_x=None, window_y=None, window_width=None, window_height=None),
         tooling=ToolingBridgeSettings(
-            config_default_path="config/tooling.default.yaml",
-            config_user_path="config/tooling.user.yaml",
+            config_default_path="config/tooling.default.json",
+            config_user_path="config/tooling.user.json",
             enable_runtime_overrides=True,
         ),
     )

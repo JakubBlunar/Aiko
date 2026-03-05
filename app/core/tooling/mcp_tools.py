@@ -4,10 +4,18 @@ from collections.abc import Callable
 import json
 import time
 from typing import Any
+from typing import Protocol
 
 from app.core.tooling.contracts import Tool
-from app.core.tooling.mcp_client import MCPStdioClient
 from app.core.tooling.types import ToolContext, ToolError, ToolResult, ToolSpec
+
+
+class MCPClientLike(Protocol):
+    def list_tools(self, *, refresh: bool = False) -> list[dict[str, Any]]:
+        ...
+
+    def call_tool(self, *, name: str, args: dict[str, Any], timeout_ms: int = 10000) -> dict[str, Any]:
+        ...
 
 
 class MCPToolWrapper:
@@ -16,7 +24,7 @@ class MCPToolWrapper:
         *,
         spec: ToolSpec,
         mcp_tool_name: str,
-        client: MCPStdioClient,
+        client: MCPClientLike,
         timeout_ms: int,
     ) -> None:
         self.spec = spec
@@ -81,7 +89,7 @@ class MCPToolWrapper:
 
 def build_mcp_tools(
     *,
-    client: MCPStdioClient,
+    client: MCPClientLike,
     prefix: str,
     timeout_ms: int,
     mutating_tools: set[str],

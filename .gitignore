@@ -4,8 +4,8 @@ __pycache__/
 *.egg-info/
 build/
 dist/
-config/user.yaml
-config/*.user.yaml
+config/*.user.json
+config/user.json
 data/conversation_memory.jsonl
 data/crashlog.txt
 data/persona_profile.json

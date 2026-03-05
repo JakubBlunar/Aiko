@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 from typing import Any
-
-import yaml
 
 
 @dataclass(slots=True)
@@ -140,8 +139,8 @@ class AppSettings:
     tooling: ToolingBridgeSettings
 
 
-DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "default.yaml"
-USER_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "user.yaml"
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "default.json"
+USER_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "user.json"
 
 
 _SCREEN_PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
@@ -232,11 +231,22 @@ def _deep_diff(base: Any, value: Any) -> Any:
     return value
 
 
-def _read_yaml(path: Path) -> dict[str, Any]:
+def _read_config(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
-    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    raw = json.loads(path.read_text(encoding="utf-8"))
     return raw if isinstance(raw, dict) else {}
+
+
+def _read_merged_overrides(*paths: Path) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for path in paths:
+        try:
+            current = _read_config(path)
+        except Exception:
+            continue
+        merged = _deep_merge(merged, current)
+    return merged
 
 
 def _resolve_screen_settings(raw_screen: dict[str, Any], user_screen: dict[str, Any]) -> dict[str, Any]:
@@ -252,9 +262,11 @@ def _resolve_screen_settings(raw_screen: dict[str, Any], user_screen: dict[str, 
 
 
 def load_settings(config_path: Path | None = None) -> AppSettings:
-    path = config_path or DEFAULT_CONFIG_PATH
-    base = _read_yaml(path)
-    user = _read_yaml(USER_CONFIG_PATH)
+    if config_path is not None:
+        base = _read_config(config_path)
+    else:
+        base = _read_merged_overrides(DEFAULT_CONFIG_PATH)
+    user = _read_merged_overrides(USER_CONFIG_PATH)
     raw = _deep_merge(base, user)
 
     assistant = raw["assistant"]
@@ -407,8 +419,8 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             window_height=int(ui["window_height"]) if ui.get("window_height") is not None else None,
         ),
         tooling=ToolingBridgeSettings(
-            config_default_path=str(tooling.get("config_default_path", "config/tooling.default.yaml")),
-            config_user_path=str(tooling.get("config_user_path", "config/tooling.user.yaml")),
+            config_default_path=str(tooling.get("config_default_path", "config/tooling.default.json")),
+            config_user_path=str(tooling.get("config_user_path", "config/tooling.user.json")),
             enable_runtime_overrides=bool(tooling.get("enable_runtime_overrides", True)),
         ),
     )
@@ -444,8 +456,12 @@ def save_runtime_preferences(
     target = path or USER_CONFIG_PATH
     target.parent.mkdir(parents=True, exist_ok=True)
 
-    current_user = _read_yaml(target)
-    base = _read_yaml(DEFAULT_CONFIG_PATH)
+    current_user = _read_merged_overrides(
+        USER_CONFIG_PATH,
+    )
+    base = _read_merged_overrides(
+        DEFAULT_CONFIG_PATH,
+    )
     effective = _deep_merge(base, current_user)
 
     updates: dict[str, Any] = {
@@ -513,4 +529,4 @@ def save_runtime_preferences(
     updated_effective = _deep_merge(effective, updates)
     minimal_overrides = _deep_diff(base, updated_effective)
     payload = minimal_overrides if isinstance(minimal_overrides, dict) else {}
-    target.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    target.write_text(json.dumps(payload, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")

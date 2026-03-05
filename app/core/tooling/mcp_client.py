@@ -44,16 +44,23 @@ class MCPStdioClient:
         self._leftover: dict[int, dict[str, Any]] = {}
         self._started = False
         self._tools_cache: list[dict[str, Any]] = []
+        self._initialize_result: dict[str, Any] = {}
 
         atexit.register(self.stop)
 
     @property
     def started(self) -> bool:
-        return bool(self._started)
+        process = self._process
+        return bool(self._started and process is not None and process.poll() is None)
 
     def start(self) -> bool:
-        if self._started:
+        process = self._process
+        if self._started and process is not None and process.poll() is None:
             return True
+        if self._started and (process is None or process.poll() is not None):
+            # Process crashed/exited; allow a clean restart on next start call.
+            self._started = False
+            self._process = None
         if not self._command:
             self._trace("mcp.error", "MCP command is empty.")
             return False
@@ -95,6 +102,8 @@ class MCPStdioClient:
                 self.stop()
                 return False
 
+            self._initialize_result = dict(init_result)
+
             self._notify("notifications/initialized", {})
             self._tools_cache = self.list_tools(refresh=True)
         except Exception as exc:
@@ -124,6 +133,36 @@ class MCPStdioClient:
                     proc.wait(timeout=0.2)
             except Exception:
                 pass
+
+    def get_runtime_status(self) -> dict[str, Any]:
+        process = self._process
+        connected = bool(self._started and process is not None and process.poll() is None)
+        server_info = self._initialize_result.get("serverInfo", {})
+        capabilities = self._initialize_result.get("capabilities", {})
+        protocol_version = str(self._initialize_result.get("protocolVersion", "")).strip()
+
+        server_name = ""
+        server_version = ""
+        if isinstance(server_info, dict):
+            server_name = str(server_info.get("name", "")).strip()
+            server_version = str(server_info.get("version", "")).strip()
+
+        capability_keys: list[str] = []
+        if isinstance(capabilities, dict):
+            capability_keys = sorted(str(key).strip() for key in capabilities.keys() if str(key).strip())
+
+        return {
+            "connected": connected,
+            "command": self._command,
+            "args": list(self._args),
+            "framing_mode": self._framing_mode,
+            "protocol_version": protocol_version,
+            "server_name": server_name,
+            "server_version": server_version,
+            "capability_keys": capability_keys,
+            "tool_count": len(self._tools_cache),
+            "tool_names": [str(item.get("name", "")).strip() for item in self._tools_cache if isinstance(item, dict)],
+        }
 
     def list_tools(self, *, refresh: bool = False) -> list[dict[str, Any]]:
         if self._tools_cache and not refresh:

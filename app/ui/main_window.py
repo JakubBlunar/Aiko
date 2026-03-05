@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QSplitter,
     QTabWidget,
     QTextEdit,
     QVBoxLayout,
@@ -105,19 +106,25 @@ class MainWindow(QMainWindow):
         chat_layout = QVBoxLayout()
         chat_tab.setLayout(chat_layout)
 
-        self._chat_sections = QTabWidget()
-        chat_layout.addWidget(self._chat_sections, stretch=1)
+        self._chat_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._chat_splitter.setChildrenCollapsible(False)
+        chat_layout.addWidget(self._chat_splitter, stretch=1)
 
         conversation_page = QWidget()
         conversation_layout = QVBoxLayout()
         conversation_page.setLayout(conversation_layout)
+        self._conversation_panel = conversation_page
 
         session_info_page = QWidget()
         session_info_layout = QVBoxLayout()
         session_info_page.setLayout(session_info_layout)
+        self._session_info_panel = session_info_page
 
-        self._chat_sections.addTab(conversation_page, "Conversation")
-        self._chat_sections.addTab(session_info_page, "Session Info")
+        self._chat_splitter.addWidget(self._conversation_panel)
+        self._chat_splitter.addWidget(self._session_info_panel)
+        self._chat_splitter.setStretchFactor(0, 3)
+        self._chat_splitter.setStretchFactor(1, 2)
+        self._chat_splitter.setSizes([760, 420])
 
         conversation_header = QHBoxLayout()
         self._focus_chat_checkbox = QCheckBox("Focus Chat Mode")
@@ -147,6 +154,10 @@ class MainWindow(QMainWindow):
         self._session_filter_guardrails.setChecked(True)
         self._session_filter_guardrails.toggled.connect(self._apply_session_info_filters)
         info_filter_row.addWidget(self._session_filter_guardrails)
+        self._session_filter_mcp = QCheckBox("MCP")
+        self._session_filter_mcp.setChecked(True)
+        self._session_filter_mcp.toggled.connect(self._apply_session_info_filters)
+        info_filter_row.addWidget(self._session_filter_mcp)
         info_filter_row.addStretch(1)
         session_info_layout.addLayout(info_filter_row)
 
@@ -215,6 +226,22 @@ class MainWindow(QMainWindow):
         )
         self._latency_avg_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
         session_info_layout.addWidget(self._latency_avg_label)
+
+        self._mcp_status_group = QGroupBox("MCP Runtime")
+        mcp_layout = QVBoxLayout()
+        self._mcp_status_group.setLayout(mcp_layout)
+        self._mcp_status_label = QLabel("MCP: not initialized")
+        self._mcp_status_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        mcp_layout.addWidget(self._mcp_status_label)
+        self._mcp_servers_view = QTextEdit()
+        self._mcp_servers_view.setReadOnly(True)
+        self._mcp_servers_view.setMaximumHeight(170)
+        self._mcp_servers_view.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+            | Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
+        mcp_layout.addWidget(self._mcp_servers_view)
+        session_info_layout.addWidget(self._mcp_status_group)
         session_info_layout.addStretch(1)
 
         sources_group = QGroupBox("Sources & Devices")
@@ -1080,6 +1107,7 @@ class MainWindow(QMainWindow):
         self._refresh_goal_debug_label()
         self._refresh_tts_debug_label()
         self._refresh_tts_model_status_label()
+        self._refresh_mcp_status_label()
         if self._guardrail_controls_locked:
             self._reset_estop_button.setEnabled(False)
             self._approve_action_button.setEnabled(False)
@@ -1385,16 +1413,19 @@ class MainWindow(QMainWindow):
         self._conversation.clear()
 
     def _on_focus_chat_toggled(self, checked: bool) -> None:
-        self._chat_sections.setTabVisible(1, not bool(checked))
-        if checked:
-            self._chat_sections.setCurrentIndex(0)
-        self._chat_sections.tabBar().setVisible(not bool(checked))
+        hide_info = bool(checked)
+        self._session_info_panel.setVisible(not hide_info)
+        if hide_info:
+            self._chat_splitter.setSizes([1000, 0])
+        else:
+            self._chat_splitter.setSizes([760, 420])
 
     def _apply_session_info_filters(self) -> None:
         identity_visible = self._session_filter_identity.isChecked()
         model_visible = self._session_filter_model.isChecked()
         runtime_visible = self._session_filter_runtime.isChecked()
         guardrails_visible = self._session_filter_guardrails.isChecked()
+        mcp_visible = self._session_filter_mcp.isChecked()
 
         self._autonomy_label.setVisible(identity_visible)
         self._current_session_label.setVisible(identity_visible)
@@ -1410,25 +1441,78 @@ class MainWindow(QMainWindow):
 
         self._action_guardrail_label.setVisible(guardrails_visible)
         self._action_controls_widget.setVisible(guardrails_visible)
+        self._mcp_status_group.setVisible(mcp_visible)
+
+    def _refresh_mcp_status_label(self) -> None:
+        status = self._session.get_mcp_runtime_status()
+        enabled = bool(status.get("enabled", False))
+        server_count = int(status.get("server_count", 0) or 0)
+        connected_count = int(status.get("connected_count", 0) or 0)
+        auto_restart = bool(status.get("auto_restart", False))
+
+        if not enabled:
+            self._mcp_status_label.setText("MCP: disabled in tooling config")
+            self._mcp_servers_view.setPlainText("No MCP servers loaded.")
+            return
+
+        self._mcp_status_label.setText(
+            f"MCP: configured=yes | running={connected_count}/{server_count} | auto-restart={'on' if auto_restart else 'off'}"
+        )
+
+        servers = status.get("servers", [])
+        lines: list[str] = []
+        if isinstance(servers, list):
+            for idx, server in enumerate(servers, start=1):
+                if not isinstance(server, dict):
+                    continue
+                connected = bool(server.get("connected", False))
+                name = str(server.get("server_name", "")).strip() or "unknown"
+                version = str(server.get("server_version", "")).strip() or "n/a"
+                transport = str(server.get("transport", "stdio")).strip() or "stdio"
+                protocol = str(server.get("protocol_version", "")).strip() or "n/a"
+                command = str(server.get("command", "")).strip()
+                url = str(server.get("url", "")).strip()
+                args = [str(item) for item in server.get("args", []) if str(item).strip()]
+                framing = str(server.get("framing_mode", "")).strip() or "n/a"
+                cmd_preview = " ".join([command, *args]).strip()
+                endpoint_preview = url if transport in {"http", "streamable-http"} else (cmd_preview or "[none]")
+                lines.append(
+                    (
+                        f"[{idx}] {name} v{version} | {'running' if connected else 'not running'}\n"
+                        f"transport={transport} protocol={protocol} framing={framing}\n"
+                        f"configured endpoint={endpoint_preview}"
+                    )
+                )
+                error_text = str(server.get("error", "")).strip()
+                if error_text:
+                    lines.append(f"error={error_text}")
+
+        self._mcp_servers_view.setPlainText("\n\n".join(lines) if lines else "No MCP servers loaded.")
 
     def _append(self, speaker: str, text: str) -> None:
         speaker_label = str(speaker or "Assistant").strip() or "Assistant"
         safe_speaker = html.escape(speaker_label)
         safe_text = html.escape(str(text or "")).replace("\n", "<br>")
-        bubble_style = "background:#f6f8fa;"
+        bubble_bg = "#f6f8fa"
+        bubble_text_color = "#111827"
+        speaker_color = "#1f2937"
         if speaker_label.lower() in {"you", "user"}:
-            bubble_style = "background:#eaf3ff;"
+            bubble_bg = "#eaf3ff"
         elif speaker_label.lower() == "assistant":
-            bubble_style = "background:#f4f9ef;"
+            bubble_bg = "#f4f9ef"
         elif speaker_label.lower() == "system":
-            bubble_style = "background:#fff8e6;"
+            bubble_bg = "#334155"
+            bubble_text_color = "#f8fafc"
+            speaker_color = "#e2e8f0"
 
         self._conversation.append(
             (
-                "<div style='margin:8px 0;'>"
-                f"<div style='font-size:12px; color:#4a5568; margin-bottom:3px;'><b>{safe_speaker}</b></div>"
-                f"<div style='padding:8px 10px; border-radius:8px; {bubble_style}'>{safe_text}</div>"
-                "</div>"
+                "<table width='100%' cellspacing='0' cellpadding='0' style='margin:8px 0;'>"
+                "<tr><td "
+                f"style='background-color:{bubble_bg}; color:{bubble_text_color}; border-radius:8px; padding:8px 10px;'>"
+                f"<div style='font-size:12px; color:{speaker_color}; margin-bottom:4px;'><b>{safe_speaker}</b></div>"
+                f"<div style='color:{bubble_text_color};'>{safe_text}</div>"
+                "</td></tr></table>"
             )
         )
         self._scroll_conversation_to_bottom()

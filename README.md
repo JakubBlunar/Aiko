@@ -58,47 +58,59 @@ pip install -e .[ai]
 
 ## Configure
 
-Edit `config/default.yaml` to match your model names.
-Runtime UI preferences are saved automatically to `config/user.yaml` (device choices, source toggles, and VAD calibration).
+Edit `config/default.json` to match your model names.
+Runtime UI preferences are saved automatically to `config/user.json` (device choices, source toggles, and VAD calibration).
 Conversation memory is stored locally in `data/conversation_memory.jsonl` when `Remember Conversation` is enabled.
-You can override model per machine in `config/user.yaml`, for example:
+You can override model per machine in `config/user.json`, for example:
 
-```yaml
-ollama:
-	chat_model: "aqualaguna/gemma-3-27b-it-abliterated-GGUF:q4_k_m"
+```json
+{
+	"ollama": {
+		"chat_model": "aqualaguna/gemma-3-27b-it-abliterated-GGUF:q4_k_m"
+	}
+}
 ```
 
 Optional: configure a separate low-temperature `thinking_model` for decision tasks (like screen-capture gating):
 
-```yaml
-assistant:
-	thinking_model: "aqualaguna/gemma-3-27b-it-abliterated-GGUF:q4_k_m"
+```json
+{
+	"assistant": {
+		"thinking_model": "aqualaguna/gemma-3-27b-it-abliterated-GGUF:q4_k_m"
+	}
+}
 ```
 
 Optional: force speech recognition language to reduce wrong auto-detection (for example German mix-ups while speaking English):
 
-```yaml
-stt:
-	language: "en"
+```json
+{
+	"stt": {
+		"language": "en"
+	}
+}
 ```
 
 Optional: enable structured autonomy planning for more proactive turn-by-turn decision making:
 
-```yaml
-autonomy:
-	enabled: true
-	mode: "interactive"   # manual | interactive | automatic
-	agentic_narration_level: "summary"  # off | summary | full
-	proactive_conversation: true
-	allow_action_suggestions: true
-	allow_proactive_actions: false
-	max_strategy_chars: 180
-	auto_goal_switch: true
-	default_goal: "general_conversation"
-	goal_switch_min_confidence: 0.6
+```json
+{
+	"autonomy": {
+		"enabled": true,
+		"mode": "interactive",
+		"agentic_narration_level": "summary",
+		"proactive_conversation": true,
+		"allow_action_suggestions": true,
+		"allow_proactive_actions": false,
+		"max_strategy_chars": 180,
+		"auto_goal_switch": true,
+		"default_goal": "general_conversation",
+		"goal_switch_min_confidence": 0.6
+	}
+}
 ```
 
-Optional: enable Windows-MCP tool integration (local stdio mode):
+Optional: enable MCP tool integration (JSON `mcpServers` schema):
 
 1. Install prerequisites (Python 3.13+ recommended for `windows-mcp`, and `uv`).
 2. Verify server starts locally:
@@ -107,19 +119,75 @@ Optional: enable Windows-MCP tool integration (local stdio mode):
 uvx windows-mcp
 ```
 
-3. Enable MCP in `config/tooling.user.yaml`:
+3. Enable MCP loader in `config/tooling.user.json`:
 
-```yaml
-tools:
-	mcp:
-		enabled: true
-		command: "uvx"
-		args: ["windows-mcp"]
-		framing_mode: "newline-json"
-		prefix: "mcp.windows"
+```json
+{
+	"tools": {
+		"mcp": {
+			"enabled": true,
+			"servers_user_json_path": "config/mcp.servers.user.json",
+			"servers_json_path": "config/mcp.servers.json",
+			"framing_mode": "newline-json",
+			"auto_restart": true,
+			"restart_backoff_seconds": 4.0,
+			"max_restart_attempts": 5
+		}
+	}
+}
 ```
 
-If you keep a strict `enabled_tools` list in `config/tooling.user.yaml`, discovered MCP tools are auto-added at startup when `append_to_enabled_tools` is true (default in `tooling.default.yaml`).
+4. Define servers in your local, git-ignored file `config/mcp.servers.user.json` (preferred):
+
+```json
+{
+	"mcpServers": {
+		"windows": {
+			"transport": "stdio",
+			"command": "uvx",
+			"args": ["windows-mcp"],
+			"env": {}
+		},
+		"remote-prod": {
+			"transport": "http",
+			"url": "https://your-host/mcp",
+			"headers": {
+				"Authorization": "Bearer <token>"
+			}
+		}
+	}
+}
+```
+
+Optional fallback: define shared defaults in tracked `config/mcp.servers.json`:
+
+```json
+{
+	"mcpServers": {
+		"windows": {
+			"transport": "stdio",
+			"command": "uvx",
+			"args": ["windows-mcp"],
+			"env": {}
+		},
+		"remote-prod": {
+			"transport": "http",
+			"url": "https://your-host/mcp",
+			"headers": {
+				"Authorization": "Bearer <token>"
+			}
+		}
+	}
+}
+```
+
+Notes:
+- Loader precedence is: `servers_user_json_path` first, then `servers_json_path` fallback.
+- `transport: "stdio"` uses local process supervision and restart attempts.
+- `transport: "http"` uses reconnect attempts (same restart policy knobs) and expects a JSON-RPC-compatible MCP endpoint.
+- `framing_mode` applies to stdio servers only.
+
+If you keep a strict `enabled_tools` list in `config/tooling.user.json`, discovered MCP tools are auto-added at startup when `append_to_enabled_tools` is true (default in `tooling.default.json`).
 
 When enabled, the assistant infers current goal from dialogue and can switch between goals like
 `general_conversation`, `english_practice`, `coding_help`, `ui_automation`, `learning_coach`, and `troubleshooting`.
@@ -128,17 +196,20 @@ For Piper TTS, set `tts.voice` to your local Piper model path (example: `models/
 
 For Llasa TTS (including `NandemoGHS/Anime-Llasa-3B`), configure:
 
-```yaml
-tts:
-	provider: "llasa"
-	enabled: true
-	voice: "unused-for-llasa"
-	llasa_model: "NandemoGHS/Anime-Llasa-3B"
-	llasa_codec_model: "HKUSTAudio/xcodec2"
-	llasa_device: "cuda"
-	llasa_temperature: 0.8
-	llasa_top_p: 0.95
-	llasa_max_length: 2048
+```json
+{
+	"tts": {
+		"provider": "llasa",
+		"enabled": true,
+		"voice": "unused-for-llasa",
+		"llasa_model": "NandemoGHS/Anime-Llasa-3B",
+		"llasa_codec_model": "HKUSTAudio/xcodec2",
+		"llasa_device": "cuda",
+		"llasa_temperature": 0.8,
+		"llasa_top_p": 0.95,
+		"llasa_max_length": 2048
+	}
+}
 ```
 
 Notes:
@@ -206,7 +277,7 @@ python -m app.main
 - Personality profiles (`Friendly`, `Coach`, `Interviewer`) can be selected from the UI and are persisted to local user config.
 - Use `Clear Memory` in the UI to wipe stored conversation history instantly.
 - Use `Memory Viewer` to inspect a long history window and refresh or clear stored entries.
-- Use `Refresh Models` + `Model` dropdown to switch response models, and `Thinking Model` to choose a separate decision model (or `Use response model`) without editing YAML.
+- Use `Refresh Models` + `Model` dropdown to switch response models, and `Thinking Model` to choose a separate decision model (or `Use response model`) without editing config files manually.
 - A latency strip shows per-turn `capture`, `stt`, `llm`, `tts`, and `total` timings for quick model comparisons.
 - A second latency strip shows rolling averages over the last 10 turns for more stable model comparison.
 - Use `Reset Latency` to clear current and average timing stats before testing another model.
@@ -215,17 +286,20 @@ python -m app.main
 
 You can enable model-planned desktop actions (currently `click` and `type_text`) with strict guardrails in config:
 
-```yaml
-actions:
-	enabled: false
-	dry_run: true
-	require_confirmation: true
-	decision_mode: "explicit_only"   # explicit_only | all_turns
-	max_actions_per_turn: 1
-	min_confidence: 0.75
-	min_action_interval_seconds: 1.0
-	emergency_hotkey: "ctrl+alt+f12"
-	allowlist_window_titles: []       # e.g. ["Tic Tac Toe", "Chrome"]
+```json
+{
+	"actions": {
+		"enabled": false,
+		"dry_run": true,
+		"require_confirmation": true,
+		"decision_mode": "explicit_only",
+		"max_actions_per_turn": 1,
+		"min_confidence": 0.75,
+		"min_action_interval_seconds": 1.0,
+		"emergency_hotkey": "ctrl+alt+f12",
+		"allowlist_window_titles": []
+	}
+}
 ```
 
 - `dry_run: true` means the assistant will plan actions and report them, but never perform real input events.
