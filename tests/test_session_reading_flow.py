@@ -177,6 +177,18 @@ class SessionReadingFlowTests(unittest.TestCase):
         self.assertIn("I could not complete that action.", note)
         self.assertIn("failed after retries", note)
 
+    def test_memory_assistant_text_strips_action_metadata(self) -> None:
+        source = (
+            "I will send the Win+M shortcut to minimize VSCode! "
+            "[Action] Executed MCP tool 'mcp.windows.Shortcut'. Pressed Win+M."
+        )
+
+        cleaned = SessionController._build_memory_assistant_text(source)
+
+        self.assertIn("I will send the Win+M shortcut", cleaned)
+        self.assertNotIn("[Action]", cleaned)
+        self.assertNotIn("Executed MCP tool", cleaned)
+
     def test_approve_pending_action_combines_followups(self) -> None:
         controller = SessionController.__new__(SessionController)
         controller._settings = SimpleNamespace(actions=SimpleNamespace(require_confirmation=True))

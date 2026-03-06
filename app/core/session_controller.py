@@ -954,6 +954,12 @@ class SessionController:
             return "I could not complete that action."
         return f"I could not complete that action. {message}"
 
+    @staticmethod
+    def _build_memory_assistant_text(response: str) -> str:
+        cleaned = strip_action_meta_for_tts(str(response or ""))
+        cleaned = sanitize_assistant_text(cleaned)
+        return cleaned.strip()
+
     def _preview_tool_args(self, args: dict[str, object]) -> str:
         if not args:
             return "{}"
@@ -1589,7 +1595,11 @@ class SessionController:
         if self._remember_history:
             try:
                 self._memory.add(role="user", content=user_text)
-                self._memory.add(role="assistant", content=response)
+                assistant_memory_text = self._build_memory_assistant_text(response)
+                if assistant_memory_text:
+                    self._memory.add(role="assistant", content=assistant_memory_text)
+                else:
+                    self._trace("memory.write", "Skipped assistant memory entry (empty after action/meta stripping).")
             except Exception as exc:
                 log_handled_exception(exc, context="session.memory_write")
                 self._trace("memory.error", f"Failed to write conversation memory: {exc}")
