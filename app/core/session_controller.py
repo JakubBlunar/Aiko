@@ -10,35 +10,13 @@ import re
 import time
 from typing import Any
 
-from app.core.tooling.runtime.action_runtime import (
-    ActionExecutionResult,
-    GuardedActionExecutor,
-)
+from app.core.action_intent import has_action_intent
 from app.core.tooling.runtime.emergency_stop import EmergencyStopState, GlobalHotkeyListener
+from app.core.tooling.types import ToolError, ToolResult
 from app.audio.mic_capture import MicrophoneCapture
-from app.core.services.action_execution_service import ActionExecutionService
-from app.core.services.action_response_service import (
-    build_post_action_followup,
-    normalize_action_narration,
-)
-from app.core.conversation_memory import ConversationMemoryStore
 from app.core.crash_logging import log_event, log_handled_exception
-from app.core.sessions.chat_session import ChatSession
-from app.core.sessions.agentic_session import AgenticSessionConfig, AgenticSessionManager
-from app.core.sessions.agentic_session_adapter import AgenticSessionAdapter
-from app.core.sessions.reading_session import ReadingSessionConfig, ReadingSessionManager
-from app.core.sessions.reading_session_adapter import ReadingSessionAdapter
-from app.core.sessions.session_router import SessionRouter
-from app.core.sessions.session_types import (
-    SessionHandler,
-    SessionNativeToolFlowContext,
-    SessionRuntimeContext,
-    SessionToolPolicy,
-)
 from app.core.settings import AppSettings, OllamaSettings
 from app.core.services.response_text_service import extract_tts_reaction_tag, strip_action_meta_for_tts
-from app.core.services import native_tool_flow_service
-from app.core.services.startup_runtime_service import StartupRuntimeService
 from app.core.session_text_utils import (
     drain_tts_stream_chunks,
     extract_json_object,
@@ -47,22 +25,19 @@ from app.core.session_text_utils import (
     sanitize_assistant_text,
     sanitize_user_text,
 )
-from app.core.services.screen_context_service import ScreenContextService
-from app.core.tooling.mcp_client import MCPStdioClient
-from app.core.tooling.mcp_http_client import MCPHttpClient
-from app.core.tooling.mcp_tools import build_mcp_tools
-from app.core.tooling import ToolContext, ToolExecutor, ToolRegistry, load_tooling_config
-from app.core.tooling.tools import build_default_tools
-from app.core.tooling.tools.ocr_tools import OcrRuntime
-from app.core.tooling.tools.uia_tools import UiaRuntime
-from app.core.tooling.types import ToolError, ToolResult
-from app.core.turn_manager import TurnInput, TurnManager
+from app.llm.agno_agent import create_agent, run_agent
 from app.llm.ollama_client import OllamaClient
 from app.stt.prosody_fast import FastProsodyAnalyzer, ProsodyAnalysis
-from app.stt.whisper_service import WhisperService
-from app.tts.llasa_service import LlasaTtsService
-from app.tts.piper_service import PiperTtsService
-from app.vision.screen_capture import ScreenCaptureService
+from app.stt.realtime_stt_service import RealtimeSttService
+from app.tts.kokoro_service import KokoroTtsService
+
+
+class _StubMemory:
+    def clear(self) -> None:
+        pass
+
+    def recent_entries(self, max_entries: int = 10) -> list:
+        return []
 
 
 @dataclass(slots=True)
@@ -92,130 +67,44 @@ class TurnAutonomyPlan:
     action_intent: str = ""
 
 
-@dataclass(slots=True)
-class TurnOrchestrationPlan:
-    strategy: str
-    should_capture_screen: bool
-    should_plan_action: bool
-    requested_operations: tuple[str, ...]
-    action_intent: str = ""
-    reason: str = ""
-    confidence: float = 0.0
-
-    def has_operation(self, operation: str) -> bool:
-        return str(operation).strip().lower() in set(self.requested_operations)
-
-
 class SessionController:
     def __init__(self, settings: AppSettings) -> None:
         self._settings = settings
         # Initialize trace buffer first because background startup paths (e.g. MCP stderr)
         # can emit trace events before the controller has fully finished bootstrapping.
         self._decision_trace: deque[dict[str, str]] = deque(maxlen=500)
-        self._turn_manager = TurnManager()
         self._ollama = OllamaClient(settings.ollama)
         self._thinking_model = settings.assistant.thinking_model
         self._thinking_ollama: OllamaClient | None = None
         self._rebuild_thinking_client()
         self._microphone = MicrophoneCapture(settings.audio)
-        self._whisper = WhisperService(
-            model_name=settings.stt.model,
-            language=settings.stt.language,
-        )
+        self._realtime_stt = RealtimeSttService(settings.stt, settings.audio)
         self._prosody = FastProsodyAnalyzer(enabled=bool(settings.stt.prosody.enabled))
         self._prosody_include_in_prompt = bool(settings.stt.prosody.include_in_prompt)
-        self._screen = ScreenCaptureService(settings.screen)
         self._action_stop_state = EmergencyStopState()
         self._action_hotkey_listener = GlobalHotkeyListener(
             hotkey=settings.actions.emergency_hotkey,
             state=self._action_stop_state,
         )
-        self._action_executor = GuardedActionExecutor(settings.actions, self._action_stop_state)
-        self._memory = ConversationMemoryStore()
+        self._memory = _StubMemory()
+        self._mcp_servers = []
 
-        tooling_default_path = Path(settings.tooling.config_default_path)
-        tooling_user_path = Path(settings.tooling.config_user_path)
-        workspace_root = Path(__file__).resolve().parents[2]
-        if not tooling_default_path.is_absolute():
-            tooling_default_path = workspace_root / tooling_default_path
-        if not tooling_user_path.is_absolute():
-            tooling_user_path = workspace_root / tooling_user_path
-        self._tooling_config = load_tooling_config(
-            default_path=tooling_default_path,
-            user_path=tooling_user_path,
-        )
-        self._tool_registry = ToolRegistry()
-        self._mcp_servers: list[dict[str, Any]] = []
-        self._tool_registry.register_many(
-            build_default_tools(settings, self._tooling_config, memory_store=self._memory)
-        )
-        self._register_mcp_tools()
-        self._tool_executor = ToolExecutor(self._tool_registry, self._tooling_config)
-        self._tool_context = ToolContext(metadata={"source": "session_controller"})
-        history_cfg = self._tooling_config.tool_settings("history")
-        self._history_prompt_limit = self._coerce_int(
-            history_cfg.get("prompt_limit", history_cfg.get("default_limit", 12)),
-            default=12,
-            minimum=1,
-            maximum=400,
-        )
-        self._history_summary_enabled = bool(history_cfg.get("summary_enabled", True))
-        self._history_summary_limit = self._coerce_int(
-            history_cfg.get("summary_limit", max(self._history_prompt_limit * 3, 24)),
-            default=max(self._history_prompt_limit * 3, 24),
-            minimum=1,
-            maximum=400,
-        )
-        self._history_summary_max_chars = self._coerce_int(
-            history_cfg.get("summary_max_chars", 420),
-            default=420,
-            minimum=80,
-            maximum=2000,
-        )
-        self._history_summary_tail_limit = self._coerce_int(
-            history_cfg.get("summary_tail_limit", 8),
-            default=8,
-            minimum=1,
-            maximum=100,
-        )
-        self._startup_history_limit = self._coerce_int(
-            history_cfg.get("startup_history_limit", self._history_prompt_limit),
-            default=self._history_prompt_limit,
-            minimum=1,
-            maximum=400,
-        )
-        self._startup_context_prewarm_enabled = bool(history_cfg.get("preload_on_startup", True))
-        persona_cfg = self._tooling_config.tool_settings("persona")
-        self._persona_compact_enabled = bool(persona_cfg.get("compact_notes_enabled", True))
-        self._persona_compact_max_notes = self._coerce_int(
-            persona_cfg.get("compact_max_notes", 10),
-            default=10,
-            minimum=1,
-            maximum=40,
-        )
-        self._persona_compact_max_chars = self._coerce_int(
-            persona_cfg.get("compact_max_chars", 110),
-            default=110,
-            minimum=40,
-            maximum=400,
-        )
-        self._persona_filter_enabled = bool(persona_cfg.get("filter_notes_enabled", True))
-        self._persona_filter_max_notes = self._coerce_int(
-            persona_cfg.get("filter_max_notes", self._persona_compact_max_notes),
-            default=self._persona_compact_max_notes,
-            minimum=1,
-            maximum=60,
-        )
-        self._persona_filter_min_chars = self._coerce_int(
-            persona_cfg.get("filter_min_chars", 12),
-            default=12,
-            minimum=4,
-            maximum=120,
-        )
-        self._persona_filter_remove_generic_user_said = bool(
-            persona_cfg.get("filter_remove_generic_user_said", True)
+        storage_path = Path(__file__).resolve().parents[2] / "data" / "agno_sessions.db"
+        db_provider = getattr(settings.database, "provider", "sqlite") or "sqlite"
+        db_url = getattr(settings.database, "url", None)
+        self._agno_agent = create_agent(
+            chat_model=settings.ollama.chat_model,
+            base_url=settings.ollama.base_url,
+            temperature=float(settings.ollama.temperature),
+            add_tools=True,
+            add_mcp=True,
+            database_provider=db_provider,
+            database_url=db_url,
+            storage_path=storage_path,
         )
         self._tts = self._build_tts_service(settings)
+        self._agno_session_id = "main"
+        self._tts_playing = False
         self._vad_level_threshold = settings.audio.vad_level_threshold
         self._vad_silence_seconds = settings.audio.vad_silence_seconds
         self._microphone_device = settings.audio.microphone_device
@@ -229,139 +118,8 @@ class SessionController:
         self._open_windows: list[dict] = []
         self._all_windows: list[dict] = []
         self._foreground_window_title: str = ""
-        self._reading_session = ReadingSessionManager(
-            ReadingSessionConfig(
-                memory_enabled=bool(settings.autonomy.reading_session_memory_enabled),
-                max_scroll_steps=max(1, int(settings.autonomy.reading_max_scroll_steps)),
-                max_quotes=max(1, int(settings.autonomy.reading_max_quotes)),
-                max_quote_chars=max(120, int(settings.autonomy.reading_max_quote_chars)),
-                trusted_window_titles=list(settings.autonomy.reading_trusted_window_titles or []),
-            )
-        )
-        self._agentic_session = AgenticSessionManager(
-            AgenticSessionConfig(
-                enabled=bool(self._settings.autonomy.enabled),
-                max_auto_steps=max(1, int(getattr(self._settings.autonomy, "agentic_max_auto_steps", 3))),
-            )
-        )
-        autonomy_settings = self._settings.autonomy
-        session_policies_cfg = getattr(autonomy_settings, "session_tool_policies", None)
-        agentic_policy_cfg = getattr(session_policies_cfg, "agentic", None)
-        chat_policy_cfg = getattr(session_policies_cfg, "chat", None)
-        reading_policy_cfg = getattr(session_policies_cfg, "reading", None)
-        agentic_prefixes_raw = getattr(agentic_policy_cfg, "allowed_tool_prefixes", ("mcp.",))
-        if not isinstance(agentic_prefixes_raw, (list, tuple)):
-            agentic_prefixes_raw = ("mcp.",)
-        chat_prefixes_raw = getattr(chat_policy_cfg, "allowed_tool_prefixes", ("mcp.",))
-        if not isinstance(chat_prefixes_raw, (list, tuple)):
-            chat_prefixes_raw = ("mcp.",)
-        reading_prefixes_raw = getattr(reading_policy_cfg, "allowed_tool_prefixes", ("mcp.",))
-        if not isinstance(reading_prefixes_raw, (list, tuple)):
-            reading_prefixes_raw = ("mcp.",)
-        chat_policy = SessionToolPolicy(
-            native_tool_calls_enabled=bool(
-                getattr(chat_policy_cfg, "native_tool_calls_enabled", False)
-            ),
-            allowed_tool_prefixes=tuple(
-                str(item).strip().lower()
-                for item in chat_prefixes_raw
-                if str(item).strip()
-            ),
-            pre_execution_narration_default=bool(
-                getattr(chat_policy_cfg, "pre_execution_narration_default", False)
-            ),
-        )
-        agentic_policy = SessionToolPolicy(
-            native_tool_calls_enabled=bool(
-                getattr(agentic_policy_cfg, "native_tool_calls_enabled", True)
-            ),
-            allowed_tool_prefixes=tuple(
-                str(item).strip().lower()
-                for item in agentic_prefixes_raw
-                if str(item).strip()
-            ),
-            pre_execution_narration_default=bool(
-                getattr(agentic_policy_cfg, "pre_execution_narration_default", True)
-            ),
-        )
-        reading_policy = SessionToolPolicy(
-            native_tool_calls_enabled=bool(
-                getattr(reading_policy_cfg, "native_tool_calls_enabled", True)
-            ),
-            allowed_tool_prefixes=tuple(
-                str(item).strip().lower()
-                for item in reading_prefixes_raw
-                if str(item).strip()
-            ),
-            pre_execution_narration_default=bool(
-                getattr(reading_policy_cfg, "pre_execution_narration_default", False)
-            ),
-        )
-        self._session_handlers: dict[str, SessionHandler] = {
-            "chat": ChatSession(policy=chat_policy),
-            "reading": ReadingSessionAdapter(self._reading_session, policy=reading_policy),
-            "agentic": AgenticSessionAdapter(self._agentic_session, policy=agentic_policy),
-        }
-        self._session_router = SessionRouter(
-            supported_session_types=set(self._session_handlers.keys()),
-            default_session_type="chat",
-        )
-        self._active_session_type, _ = self._session_router.resolve(
-            inferred_session_type="chat",
-            inferred_goal=self._active_goal,
-            current_session_type="chat",
-        )
-        self._active_session = self._session_handlers[self._active_session_type]
-        self._ocr_runtime = OcrRuntime(settings.screen)
-        self._uia_runtime = UiaRuntime()
-        self._screen_context = ScreenContextService(
-            screen_settings=self._settings.screen,
-            planner_chat=lambda messages: (self._thinking_ollama or self._ollama).chat(messages),
-            history_messages=lambda limit: self._history_messages(limit=limit),
-            ocr_extract_elements=self._ocr_runtime.extract_elements,
-            ocr_extract_details=self._ocr_runtime.extract_details,
-            uia_get_foreground_elements=self._uia_runtime.get_foreground_elements,
-            uia_list_visible_windows=self._uia_runtime.list_visible_windows,
-            uia_list_all_windows=self._uia_runtime.list_all_windows,
-            trace=self._trace,
-            screen_capture_once_with_region=self._screen.capture_once_with_region,
-            screen_capture_once=self._screen.capture_once,
-        )
-        self._action_execution = ActionExecutionService(
-            actions_settings=self._settings.actions,
-            execute_action_plan=self._action_executor.execute_plan,
-            capture_screen_text=self._capture_screen_text,
-            invoke_tool=self._invoke_tool,
-            trace=self._trace,
-            screen_enabled=lambda: bool(self._state.screen_enabled),
-            active_goal=lambda: self._active_goal,
-            list_available_tools=self._tool_executor.list_available_tools,
-            list_available_tool_schemas=self._tool_executor.list_available_tool_schemas,
-            last_screen_elements=lambda: list(self._last_screen_elements),
-            all_windows=lambda: list(self._all_windows),
-        )
-        self._startup_runtime = StartupRuntimeService(
-            persona_snapshot=lambda max_notes: self._persona_snapshot(max_notes=max_notes),
-            history_messages=lambda limit: self._history_messages(limit=limit),
-            history_summary=lambda limit, max_chars: self._history_summary(limit=limit, max_chars=max_chars),
-            remember_history=lambda: bool(self._remember_history),
-            startup_context_prewarm_enabled=lambda: bool(self._startup_context_prewarm_enabled),
-            startup_history_limit=lambda: int(self._startup_history_limit),
-            history_summary_enabled=lambda: bool(self._history_summary_enabled),
-            history_summary_limit=lambda: int(self._history_summary_limit),
-            history_summary_max_chars=lambda: int(self._history_summary_max_chars),
-            ollama_list_models=self._ollama.list_models,
-            ollama_chat=lambda messages: self._ollama.chat(messages),
-            thinking_chat=lambda: (
-                (lambda messages: self._thinking_ollama.chat(messages)) if self._thinking_ollama else None,
-                self._thinking_model,
-            ),
-            chat_model=lambda: self.chat_model,
-            tts_getter=lambda: self._tts,
-            tts_status=self.get_tts_model_status,
-            mcp_runtime_status=self.get_mcp_runtime_status,
-            trace=self._trace,
-        )
+        self._last_screen_text = ""
+        self._last_screen_text_at = 0.0
         self._last_metrics: dict[str, float | str] = {
             "mode": "idle",
             "capture_ms": 0.0,
@@ -377,10 +135,10 @@ class SessionController:
             mic_enabled=settings.audio.enable_microphone,
             screen_enabled=settings.screen.enable_screen_context,
             autonomy_mode=self._autonomy_mode,
-            session_type=self._active_session_type,
+            session_type="chat",
         )
-        self._sync_action_confirmation_policy()
-        self._apply_persona_runtime_preferences()
+        self._startup_context_prewarm_enabled = False
+        self._startup_history_limit = 1
 
     @property
     def state(self) -> SessionState:
@@ -411,7 +169,7 @@ class SessionController:
 
     @property
     def stt_model(self) -> str:
-        return str(self._settings.stt.model or "base").strip() or "base"
+        return str(self._settings.stt.model or "large-v1").strip() or "large-v1"
 
     @property
     def prosody_enabled(self) -> bool:
@@ -437,17 +195,12 @@ class SessionController:
             return False
         if normalized == self.stt_model:
             return True
-
-        candidate = WhisperService(
-            model_name=normalized,
-            language=self._settings.stt.language,
-        )
+        self._settings.stt.model = normalized
+        candidate = RealtimeSttService(self._settings.stt, self._settings.audio)
         if not candidate.is_available:
             self._trace("stt.error", f"Failed to load STT model: {normalized}")
             return False
-
-        self._settings.stt.model = normalized
-        self._whisper = candidate
+        self._realtime_stt = candidate
         self._trace("stt.model", f"Switched STT model to {normalized}")
         return True
 
@@ -466,28 +219,18 @@ class SessionController:
 
     @property
     def tts_provider(self) -> str:
-        return (self._settings.tts.provider or "piper").strip().lower() or "piper"
+        return (self._settings.tts.provider or "kokoro").strip().lower() or "kokoro"
 
     def list_tts_providers(self) -> list[str]:
-        return ["piper", "llasa"]
+        return ["kokoro"]
 
     @property
     def tts_voice(self) -> str:
         return str(self._settings.tts.voice or "").strip()
 
     def list_tts_voices(self) -> list[str]:
-        workspace_root = Path(__file__).resolve().parents[2]
-        models_dir = workspace_root / "models"
-        voices: list[str] = []
-
-        if models_dir.exists():
-            for model_path in sorted(models_dir.glob("*.onnx")):
-                try:
-                    relative = model_path.relative_to(workspace_root).as_posix()
-                except Exception:
-                    relative = str(model_path)
-                voices.append(relative)
-
+        # Kokoro voice profiles from voices-v1.0.bin (common ones)
+        voices = ["af_heart", "af_bella", "af_nicole", "af_sarah", "am_adam", "am_michael", "bf_emma", "bf_isabella"]
         current = self.tts_voice
         if current and current not in voices:
             voices.insert(0, current)
@@ -501,11 +244,10 @@ class SessionController:
             return
 
         self._settings.tts.voice = normalized
-        if self.tts_provider == "piper":
-            try:
-                self._tts.stop()
-            except Exception:
-                pass
+        try:
+            self._tts.stop()
+        except Exception:
+            pass
         self._trace("tts.voice", f"Switched TTS voice to {normalized}")
 
     def get_tts_model_status(self) -> tuple[str, str]:
@@ -525,35 +267,115 @@ class SessionController:
         if not message:
             return False
         try:
+            self._tts_playing = True
             reaction = infer_tts_reaction(message)
-            self._tts.speak_async(message, reaction=reaction)
+            on_done = lambda: setattr(self, "_tts_playing", False)
+            self._tts.speak_async(message, reaction=reaction, on_done=on_done)
             return True
         except Exception as exc:
+            self._tts_playing = False
             self._trace("tts.error", f"TTS startup speak failed: {exc}")
             return False
 
     def build_startup_greeting(self) -> str:
-        return self._startup_runtime.build_startup_greeting()
+        return "Welcome back. Audio is ready."
 
     def prewarm_tts(self) -> None:
-        self._startup_runtime.prewarm_tts()
+        tts = self._tts
+        warmup_sync = getattr(tts, "warmup_sync", None)
+        if callable(warmup_sync):
+            try:
+                ok = bool(warmup_sync())
+                if not ok:
+                    state, details = self.get_tts_model_status()
+                    self._trace("tts.error", f"TTS warmup failed ({state}): {details}")
+            except Exception as exc:
+                self._trace("tts.error", f"TTS warmup failed: {exc}")
+            return
+        warmup_async = getattr(tts, "warmup_async", None)
+        if callable(warmup_async):
+            try:
+                warmup_async()
+            except Exception as exc:
+                self._trace("tts.error", f"TTS warmup async failed: {exc}")
 
     def prewarm_runtime(self, on_status: Callable[[str], None] | None = None) -> None:
-        self._startup_runtime.prewarm_runtime(on_status=on_status)
+        def report(message: str) -> None:
+            if on_status:
+                on_status(message)
+
+        report("Checking Ollama availability...")
+        try:
+            models = self._ollama.list_models()
+        except Exception as exc:
+            raise RuntimeError(f"Failed to reach Ollama server: {exc}") from exc
+
+        chat_model = self.chat_model
+        if chat_model not in models:
+            raise RuntimeError(
+                f"Configured chat model not found in Ollama: {chat_model}. Pull it first."
+            )
+
+        report(f"Warming response model: {chat_model}")
+        self._ollama.chat(self._build_startup_prewarm_messages())
+
+        if self._thinking_ollama is not None and self._thinking_model:
+            report(f"Warming thinking model: {self._thinking_model}")
+            self._thinking_ollama.chat([{"role": "user", "content": "Reply with OK."}])
+
+        report("Warming TTS models...")
+        tts = self._tts
+        warmup_sync = getattr(tts, "warmup_sync", None)
+        if callable(warmup_sync):
+            success = bool(warmup_sync())
+            if not success:
+                state, details = self.get_tts_model_status()
+                raise RuntimeError(f"TTS warmup failed ({state}): {details}")
+        else:
+            self.prewarm_tts()
+
+        self._check_mcp_runtime_prewarm(report)
+        report("Warmup complete")
+
+    def _build_startup_prewarm_messages(self) -> list[dict[str, str]]:
+        return [{"role": "user", "content": "Reply with OK."}]
+
+    def _check_mcp_runtime_prewarm(self, report: Callable[[str], None]) -> None:
+        try:
+            status = self.get_mcp_runtime_status()
+        except Exception as exc:
+            self._trace("mcp.error", f"Failed to read MCP runtime status during preload: {exc}")
+            raise RuntimeError(f"Failed to check MCP runtime: {exc}") from exc
+        if not isinstance(status, dict):
+            self._trace("mcp.error", "Invalid MCP runtime status payload during preload.")
+            raise RuntimeError("Invalid MCP runtime status payload.")
+        enabled = bool(status.get("enabled", False))
+        if not enabled:
+            report("MCP disabled; skipping MCP preload checks")
+            return
+        server_count = int(status.get("server_count", 0) or 0)
+        connected_count = int(status.get("connected_count", 0) or 0)
+        report(f"Checking MCP servers: {connected_count}/{server_count} running")
+        if server_count <= 0:
+            raise RuntimeError("MCP is enabled but no servers are configured or running.")
+        if connected_count <= 0:
+            raise RuntimeError("MCP is enabled but no MCP servers are running.")
+        if connected_count < server_count:
+            self._trace(
+                "mcp.warn",
+                f"MCP preload check partial readiness: {connected_count}/{server_count} server(s) running.",
+            )
 
     def set_tts_provider(self, provider: str) -> None:
-        normalized = (provider or "").strip().lower()
-        if normalized not in {"piper", "llasa"}:
-            normalized = "piper"
-
+        normalized = (provider or "").strip().lower() or "kokoro"
+        if normalized != "kokoro":
+            normalized = "kokoro"
         if normalized == self.tts_provider:
             return
-
         try:
             self._tts.stop()
         except Exception:
             pass
-
         self._settings.tts.provider = normalized
         self._tts = self._build_tts_service(self._settings)
         self._apply_persona_runtime_preferences()
@@ -614,10 +436,6 @@ class SessionController:
         self._autonomy_mode = normalized
         self._state.autonomy_mode = normalized
         self._sync_action_confirmation_policy()
-        if normalized == "automatic":
-            self._set_active_session("agentic")
-        elif self._active_session_type == "agentic" and normalized in {"manual", "interactive"}:
-            self._set_active_session("chat")
         self._trace("autonomy.mode", f"Switched autonomy mode {previous} -> {normalized}")
 
     def _sync_action_confirmation_policy(self) -> None:
@@ -646,7 +464,8 @@ class SessionController:
         )
 
     def set_active_session_type(self, session_type: str) -> None:
-        self._set_active_session(session_type)
+        """No-op: Agno manages conversation; session type is not used."""
+        _ = session_type
 
     def clear_conversation_memory(self) -> None:
         self._memory.clear()
@@ -657,7 +476,7 @@ class SessionController:
 
     @property
     def active_session_type(self) -> str:
-        return str(getattr(self, "_active_session_type", "chat") or "chat")
+        return "chat"
 
     def get_decision_trace(self, max_entries: int = 300) -> list[dict[str, str]]:
         capped = max(1, max_entries)
@@ -675,57 +494,21 @@ class SessionController:
 
     @property
     def emergency_stop_active(self) -> bool:
-        return self._action_executor.emergency_stopped
+        return self._action_stop_state.triggered
 
     def reset_emergency_stop(self) -> None:
-        self._action_executor.reset_emergency_stop()
+        self._action_stop_state.reset()
 
     @property
     def has_pending_action(self) -> bool:
-        return self._action_executor.has_pending_action
+        return False
 
     @property
     def pending_action_description(self) -> str:
-        pending = self._action_executor.pending_action
-        if pending is None:
-            return "none"
-        if pending.kind == "click":
-            return f"click x={pending.x} y={pending.y} conf={round(pending.confidence, 2)}"
-        if pending.kind == "type_text":
-            text = (pending.text or "").strip()
-            preview = text if len(text) <= 32 else f"{text[:29]}..."
-            return (
-                "type_text "
-                f"chars={len(text)} preview='{preview}' conf={round(pending.confidence, 2)}"
-            )
-        if pending.kind == "scroll":
-            mode = str(pending.text or "down:8").strip() or "down:8"
-            if pending.x is not None and pending.y is not None:
-                return f"scroll mode={mode} at=({pending.x}, {pending.y}) conf={round(pending.confidence, 2)}"
-            return f"scroll mode={mode} conf={round(pending.confidence, 2)}"
-        if pending.kind == "window_state":
-            state = str(pending.text or "restore").strip() or "restore"
-            return f"window_state={state} hwnd={pending.hwnd} conf={round(pending.confidence, 2)}"
-        return pending.kind
+        return "none"
 
     def approve_pending_action(self) -> tuple[str, str | None]:
-        result = self._action_executor.approve_pending_action()
-        self._trace("action.confirmation", result.message)
-        followups: list[str] = []
-        followup = build_post_action_followup(
-            result,
-            require_confirmation=self._settings.actions.require_confirmation,
-        )
-        if followup:
-            followups.append(followup)
-
-        if result.executed and self._settings.actions.require_confirmation:
-            reading_followup = self._continue_reading_after_approval()
-            if reading_followup:
-                followups.append(reading_followup)
-
-        combined = "\n\n".join(part.strip() for part in followups if str(part).strip())
-        return result.message, (combined if combined else None)
+        return ("No pending action.", None)
 
     @property
     def agentic_narration_level(self) -> str:
@@ -776,9 +559,7 @@ class SessionController:
         return compact
 
     def reject_pending_action(self) -> str:
-        result = self._action_executor.reject_pending_action()
-        self._trace("action.confirmation", result.message)
-        return result.message
+        return "No pending action."
 
     def start_action_hotkey_listener(self) -> bool:
         return self._action_hotkey_listener.start()
@@ -826,146 +607,28 @@ class SessionController:
         }
 
     def get_reading_status(self) -> dict[str, bool | int | str]:
-        reading = self._session_handlers.get("reading")
-        if reading is None:
-            return {
-                "active": False,
-                "window": "",
-                "chunks": 0,
-                "scroll_steps": 0,
-                "max_scroll_steps": 0,
-            }
-        return reading.get_status()
+        return {
+            "active": False,
+            "window": "",
+            "chunks": 0,
+            "scroll_steps": 0,
+            "max_scroll_steps": 0,
+        }
 
     def get_agentic_status(self) -> dict[str, bool | int | str]:
-        agentic = self._session_handlers.get("agentic")
-        if agentic is None:
-            return {
-                "active": False,
-                "objective": "",
-                "auto_steps": 0,
-                "max_auto_steps": 0,
-            }
-        return agentic.get_status()
+        return {
+            "active": False,
+            "objective": "",
+            "auto_steps": 0,
+            "max_auto_steps": 0,
+        }
 
     def get_mcp_runtime_status(self) -> dict[str, object]:
-        cfg = self._tooling_config.tool_settings("mcp")
-        enabled = bool(cfg.get("enabled", False))
-        auto_restart = bool(cfg.get("auto_restart", True))
-        restart_backoff_seconds = max(1.0, float(cfg.get("restart_backoff_seconds", 4.0)))
-        max_restart_attempts = max(1, int(cfg.get("max_restart_attempts", 5)))
-
-        servers: list[dict[str, object]] = []
-        for index, entry in enumerate(self._mcp_servers, start=1):
-            if not isinstance(entry, dict):
-                continue
-            client = entry.get("client")
-            transport = str(entry.get("transport", "stdio")).strip() or "stdio"
-            if (
-                client is not None
-                and hasattr(client, "get_runtime_status")
-                and callable(getattr(client, "get_runtime_status", None))
-            ):
-                try:
-                    client_status = client.get_runtime_status()
-                except Exception as exc:
-                    client_status = {
-                        "connected": False,
-                        "server_name": "",
-                        "server_version": "",
-                        "protocol_version": "",
-                        "capability_keys": [],
-                        "tool_names": [],
-                        "tool_count": 0,
-                        "command": str(entry.get("command", "")).strip(),
-                        "url": str(entry.get("url", "")).strip(),
-                        "args": list(entry.get("args", [])),
-                        "framing_mode": str(entry.get("framing_mode", "")),
-                        "error": str(exc),
-                    }
-
-                connected = bool(client_status.get("connected", False))
-                restart_attempts = int(entry.get("restart_attempts", 0) or 0)
-                last_restart_ts = float(entry.get("last_restart_ts", 0.0) or 0.0)
-                if (
-                    auto_restart
-                    and (not connected)
-                    and restart_attempts < max_restart_attempts
-                    and (time.time() - last_restart_ts) >= restart_backoff_seconds
-                ):
-                    entry["last_restart_ts"] = time.time()
-                    entry["restart_attempts"] = restart_attempts + 1
-                    try:
-                        restarted = bool(client.start())
-                    except Exception as exc:
-                        restarted = False
-                        self._trace(
-                            "mcp.error",
-                            f"MCP server restart threw exception for '{entry.get('name', 'unknown')}': {exc}",
-                        )
-                    if restarted:
-                        entry["error"] = ""
-                        self._trace(
-                            "mcp.start",
-                            (
-                                "Restarted MCP server "
-                                f"'{entry.get('name', 'unknown')}' "
-                                f"(attempt={entry['restart_attempts']}/{max_restart_attempts})."
-                            ),
-                        )
-                        try:
-                            client_status = client.get_runtime_status()
-                        except Exception:
-                            pass
-                    else:
-                        entry["error"] = "restart failed"
-            else:
-                client_status = {
-                    "connected": False,
-                    "server_name": "",
-                    "server_version": "",
-                    "protocol_version": "",
-                    "capability_keys": [],
-                    "tool_names": [],
-                    "tool_count": 0,
-                    "command": str(entry.get("command", "")).strip(),
-                    "url": str(entry.get("url", "")).strip(),
-                    "args": list(entry.get("args", [])),
-                    "framing_mode": str(entry.get("framing_mode", "")),
-                    "error": str(entry.get("error", "")).strip(),
-                }
-
-            servers.append(
-                {
-                    "id": str(entry.get("id", f"mcp-{transport}-{index}")),
-                    "transport": transport,
-                    "connected": bool(client_status.get("connected", False)),
-                    "command": str(client_status.get("command", "")).strip(),
-                    "url": str(client_status.get("url", "")).strip(),
-                    "args": [str(item) for item in client_status.get("args", []) if str(item).strip()],
-                    "framing_mode": str(client_status.get("framing_mode", "")).strip(),
-                    "server_name": str(client_status.get("server_name", "")).strip(),
-                    "server_version": str(client_status.get("server_version", "")).strip(),
-                    "protocol_version": str(client_status.get("protocol_version", "")).strip(),
-                    "capabilities": [str(item) for item in client_status.get("capability_keys", []) if str(item).strip()],
-                    "tool_count": int(client_status.get("tool_count", 0) or 0),
-                    "tool_names": [str(item) for item in client_status.get("tool_names", []) if str(item).strip()],
-                    "error": str(client_status.get("error", "")).strip(),
-                    "configured_name": str(entry.get("name", "")).strip(),
-                    "configured_prefix": str(entry.get("prefix", "")).strip(),
-                    "source": str(entry.get("source", "")).strip(),
-                    "restart_attempts": int(entry.get("restart_attempts", 0) or 0),
-                }
-            )
-
-        connected_count = sum(1 for item in servers if bool(item.get("connected", False)))
         return {
-            "enabled": enabled,
-            "server_count": len(servers),
-            "connected_count": connected_count,
-            "auto_restart": auto_restart,
-            "max_restart_attempts": max_restart_attempts,
-            "servers": servers,
+            "enabled": False,
+            "server_count": 0,
+            "connected_count": 0,
+            "servers": [],
         }
 
     def reset_latency_metrics(self) -> None:
@@ -1014,17 +677,6 @@ class SessionController:
         return f"<{type(value).__name__}>"
 
     @staticmethod
-    def _build_tts_action_failure_note(action_result: ActionExecutionResult | None) -> str:
-        if action_result is None:
-            return ""
-        if action_result.executed or action_result.requires_confirmation or not action_result.blocked:
-            return ""
-        message = str(action_result.message or "").strip()
-        if not message:
-            return "I could not complete that action."
-        return f"I could not complete that action. {message}"
-
-    @staticmethod
     def _build_memory_assistant_text(response: str) -> str:
         cleaned = strip_action_meta_for_tts(str(response or ""))
         cleaned = sanitize_assistant_text(cleaned)
@@ -1047,52 +699,13 @@ class SessionController:
         *,
         args: dict[str, object] | None = None,
         cancel_token: Callable[[], bool] | None = None,
-    ):
-        safe_args = dict(args or {})
-        self._trace("tool.invoke", f"{name} args={self._preview_tool_args(safe_args)}")
-        context = self._tool_context
-        actions = getattr(getattr(self, "_settings", None), "actions", None)
-        bypass_confirmation = (
-            str(name or "").strip().lower().startswith("mcp.")
-            and actions is not None
-            and not bool(getattr(actions, "require_confirmation", True))
+    ) -> ToolResult:
+        _ = cancel_token
+        self._trace("tool.invoke", f"{name} args={self._preview_tool_args(dict(args or {}))} (stubbed)")
+        return ToolResult(
+            success=False,
+            error=ToolError(code="stub", message="Tooling disabled; Agno-only mode."),
         )
-        if bypass_confirmation:
-            metadata = dict(getattr(self._tool_context, "metadata", {}) or {})
-            metadata["skip_mutating_confirmation"] = True
-            context = ToolContext(metadata=metadata)
-            self._trace("tool.policy", f"{name} mutating confirmation bypassed (automatic mode)")
-        started = time.perf_counter()
-        try:
-            result = self._tool_executor.invoke(
-                name,
-                args=safe_args,
-                context=context,
-                cancel_token=cancel_token,
-            )
-        except Exception as exc:
-            duration_ms = round((time.perf_counter() - started) * 1000.0, 1)
-            log_handled_exception(exc, context=f"session.tool_invoke:{name}")
-            self._trace("tool.error", f"{name} invoke crashed ms={duration_ms}: {exc}")
-            return ToolResult(
-                success=False,
-                duration_ms=duration_ms,
-                error=ToolError(
-                    code="tool_invoke_exception",
-                    message=f"Tool invocation crashed for '{name}': {exc}",
-                ),
-            )
-        duration_ms = round((time.perf_counter() - started) * 1000.0, 1)
-        if result.success:
-            data_keys = list(result.data.keys()) if isinstance(result.data, dict) else []
-            keys_preview = ",".join(data_keys[:6]) if data_keys else "none"
-            self._trace("tool.result", f"{name} success ms={duration_ms} keys={keys_preview}")
-        else:
-            if result.requires_confirmation:
-                self._trace("tool.confirmation", f"{name} confirmation required")
-            message = result.error.message if result.error else "unknown error"
-            self._trace("tool.error", f"{name} failed ms={duration_ms}: {message}")
-        return result
 
     def _history_messages(self, *, limit: int, offset: int = 0) -> list[dict[str, str]]:
         result = self._invoke_tool(
@@ -1247,8 +860,6 @@ class SessionController:
     ) -> str:
         turn_start = time.perf_counter()
         self._trace("pipeline.turn.start", f"mode={mode}")
-        self._trace_turn_action_policy()
-        self._tool_executor.reset_turn_budget()
         raw_user_text = str(user_text or "")
         user_text = sanitize_user_text(raw_user_text)
         if raw_user_text.strip() and not user_text:
@@ -1268,112 +879,7 @@ class SessionController:
         if raw_user_text != user_text:
             self._trace("stt.clean", f"Sanitized user text ({len(raw_user_text)} -> {len(user_text)} chars).")
 
-        steering_response = self._handle_steering_command(user_text)
-        if steering_response is not None:
-            self._set_last_metrics(
-                {
-                    "mode": mode,
-                    "capture_ms": round(capture_ms, 1),
-                    "stt_ms": round(stt_ms, 1),
-                    "llm_ms": 0.0,
-                    "tts_ms": 0.0,
-                    "total_ms": round((time.perf_counter() - turn_start) * 1000.0, 1),
-                }
-            )
-            return steering_response
-
-        if self._stop_agentic_for_emergency(source="turn_start"):
-            self._set_last_metrics(
-                {
-                    "mode": mode,
-                    "capture_ms": round(capture_ms, 1),
-                    "stt_ms": round(stt_ms, 1),
-                    "llm_ms": 0.0,
-                    "tts_ms": 0.0,
-                    "total_ms": round((time.perf_counter() - turn_start) * 1000.0, 1),
-                }
-            )
-            return (
-                "Emergency stop is active, so I stopped agentic mode and switched to chat. "
-                "Reset emergency stop before asking for automatic continuation again."
-            )
-
-        try:
-            persona_changed = self._persona_update_from_user_text(user_text)
-            if persona_changed:
-                self._persona_filter_notes(focus_text=user_text)
-                self._persona_compact_notes()
-                self._apply_persona_runtime_preferences()
-        except Exception as exc:
-            log_handled_exception(exc, context="session.persona_update")
-            self._trace("persona.error", f"Persona update failed: {exc}")
-
-        persona_snapshot = self._persona_snapshot(max_notes=6)
-
-        try:
-            self._update_goal_from_conversation(user_text=user_text)
-        except Exception as exc:
-            log_handled_exception(exc, context="session.goal_update")
-            self._trace("autonomy.goal.error", f"Goal update failed: {exc}")
-
-        try:
-            autonomy_plan = self._plan_turn_autonomy(user_text=user_text)
-        except Exception as exc:
-            log_handled_exception(exc, context="session.autonomy_plan")
-            self._trace("autonomy.plan.error", f"Plan generation failed: {exc}")
-            autonomy_plan = TurnAutonomyPlan(
-                strategy="Respond naturally, concise first, ask one focused follow-up when useful.",
-                should_use_screen=False,
-                should_plan_action=False,
-                ask_followup=True,
-                confidence=0.4,
-                action_intent="",
-            )
-        self._route_session_for_turn(user_text=user_text)
-        session_signals = self._active_session.detect_turn_signals(user_text)
-        screen_intent = self._is_screen_intent(user_text)
-        reading_intent = bool(session_signals.wants_screen_context)
-        continue_reading = bool(session_signals.wants_continue)
-        orchestration_plan = self._plan_turn_orchestration(
-            user_text=user_text,
-            autonomy_plan=autonomy_plan,
-            screen_intent=screen_intent,
-            reading_intent=reading_intent,
-            continue_reading=continue_reading,
-        )
-        autonomy_plan.strategy = orchestration_plan.strategy
-
-        screen_text = None
-        should_capture = False
-        decision_source = "none"
-        if orchestration_plan.should_capture_screen and self._state.screen_enabled:
-            should_capture = True
-            decision_source = "orchestrator"
-        elif not orchestration_plan.should_capture_screen:
-            should_capture, decision_source = self._should_capture_screen(user_text=user_text)
-
-        if orchestration_plan.has_operation("continue_session") and self._active_session.is_active():
-            should_capture = True
-            decision_source = "reading_session"
-
-        if should_capture:
-            screen_text = self._capture_screen_text(decision_source=decision_source)
-            self._active_session.on_screen_text(
-                user_text=user_text,
-                screen_text=screen_text,
-                foreground_window_title=self._foreground_window_title,
-                trace=self._trace,
-            )
-        elif decision_source == "disabled":
-            self._trace(
-                "screen.capture",
-                "Screen context is disabled. Enable 'Screen Context' to allow OCR capture.",
-            )
-        elif decision_source != "none":
-            self._trace(
-                "screen.capture",
-                f"Skipped screen capture (reason={decision_source}).",
-            )
+        screen_intent = False
 
         if screen_intent and not self._state.screen_enabled:
             self._set_last_metrics(
@@ -1391,113 +897,6 @@ class SessionController:
                 "Enable 'Screen Context' and click 'Apply Sources', then ask again."
             )
 
-        if screen_intent and should_capture and not screen_text:
-            self._set_last_metrics(
-                {
-                    "mode": mode,
-                    "capture_ms": round(capture_ms, 1),
-                    "stt_ms": round(stt_ms, 1),
-                    "llm_ms": 0.0,
-                    "tts_ms": 0.0,
-                    "total_ms": round((time.perf_counter() - turn_start) * 1000.0, 1),
-                }
-            )
-            return (
-                "I tried to read the screen, but OCR did not return readable text. "
-                "Try putting clear/high-contrast text in the active monitor and run Test OCR."
-            )
-
-        # Build structured screen context: give the main LLM real element coordinates
-        # so it never has to invent positions.
-        if screen_text and self._last_screen_elements:
-            el_lines = [
-                f'- "{e["text"]}" at ({e["cx"]}, {e["cy"]})'
-                for e in self._last_screen_elements[:60]
-                if str(e.get("text", "")).strip()
-            ]
-            if el_lines:
-                screen_context_for_llm = (
-                    "Detected UI elements (label → click coordinates):\n"
-                    + "\n".join(el_lines)
-                    + "\n\nFull text: " + screen_text
-                )
-            else:
-                screen_context_for_llm = screen_text
-        else:
-            screen_context_for_llm = screen_text
-
-        # Prepend open-windows / foreground-window context
-        win_header_parts: list[str] = []
-        if self._foreground_window_title:
-            win_header_parts.append(f"Foreground window: {self._foreground_window_title}")
-        if self._open_windows:
-            win_lines = []
-            for w in self._open_windows[:15]:
-                prefix = "[active] " if w.get("is_foreground") else ""
-                win_lines.append(f"  - {prefix}{w['title']}")
-            win_header_parts.append("Open windows:\n" + "\n".join(win_lines))
-        if win_header_parts:
-            screen_context_for_llm = "\n".join(win_header_parts) + "\n\n" + (screen_context_for_llm or "")
-
-        reading_context = self._active_session.build_prompt_context()
-        if reading_context:
-            screen_context_for_llm = ((screen_context_for_llm or "").strip() + "\n\n" + reading_context).strip()
-
-        # Build capability list so the model knows what it can do this turn.
-        caps = [f"tool:{name}" for name in self._tool_executor.list_available_tools()]
-        if self._settings.actions.enabled:
-            caps.extend(["click (pyautogui)", "type_text (pyautogui)"])
-
-        messages = self._turn_manager.build_chat_messages(
-            TurnInput(
-                user_text=user_text,
-                session_type=self._active_session_type,
-                user_vocal_tone=user_vocal_tone,
-                screen_text=screen_context_for_llm,
-                persona_background=str(persona_snapshot.get("assistant_background", "")),
-                persona_user_notes=list(persona_snapshot.get("user_notes", [])),
-                persona_response_style=str(persona_snapshot.get("response_style", "balanced")),
-                memory_messages=(
-                    self._history_messages(
-                        limit=(self._history_summary_tail_limit if self._history_summary_enabled else self._history_prompt_limit)
-                    )
-                    if self._remember_history
-                    else None
-                ),
-                memory_summary=(
-                    self._history_summary(
-                        limit=self._history_summary_limit,
-                        max_chars=self._history_summary_max_chars,
-                    )
-                    if (self._remember_history and self._history_summary_enabled)
-                    else None
-                ),
-                assistant_strategy=autonomy_plan.strategy,
-                active_goal=self._active_goal,
-                goal_description=self._active_goal_description,
-                available_capabilities=caps or None,
-                autonomy_mode=self._autonomy_mode,
-                action_confirmation_required=bool(self._settings.actions.require_confirmation),
-            )
-        )
-
-        generation_options: dict[str, object] = {
-            "num_predict": self._response_num_predict(),
-        }
-        session_tool_policy = self._active_session.tool_policy()
-        filtered_specs = self._tool_registry.filtered_specs(
-            enabled=self._tooling_config.enabled_tools,
-            disabled=self._tooling_config.disabled_tools,
-        )
-        ollama_tools = (
-            native_tool_flow_service.build_ollama_tool_definitions(
-                filtered_specs,
-                allowed_prefixes=session_tool_policy.allowed_tool_prefixes,
-            )
-            if bool(session_tool_policy.native_tool_calls_enabled)
-            else []
-        )
-
         stream_tts_used = False
         stream_tts_enqueued_chunks = 0
         llm_ms = 0.0
@@ -1508,95 +907,25 @@ class SessionController:
                 on_generation_status("AI is generating response...")
             self._trace("pipeline.llm.start", f"mode={mode} model={self.chat_model}")
             llm_started = time.perf_counter()
-            stream_tts_buffer = ""
-            enqueue_tts = getattr(self._tts, "enqueue_async", None)
-            # Reliability guard: keep token streaming in UI, but use full-response TTS playback.
-            can_stream_tts = False
+            message_for_agent = user_text
+            if user_vocal_tone and user_vocal_tone.strip():
+                message_for_agent = f"{user_text}\n\n[Vocal: {user_vocal_tone.strip()}]"
+            def _tool_status(name: str, summary: str) -> None:
+                if on_generation_status:
+                    msg = f"Tool: {name} - {summary[:80]}{'...' if len(summary) > 80 else ''}" if summary else f"Tool: {name}"
+                    on_generation_status(msg)
 
-            if ollama_tools:
-                flow_result = self._active_session.run_native_tool_flow(
-                    messages=messages,
-                    generation_options=generation_options,
-                    tools=ollama_tools,
-                    flow_context=SessionNativeToolFlowContext(
-                        trace=self._trace,
-                        chat_with_tools=self._ollama.chat_with_tools,
-                        on_token=on_token,
-                        stop_requested=stop_requested,
-                        narration_enabled=bool(
-                            getattr(session_tool_policy, "pre_execution_narration_default", True)
-                        ),
-                        speak_text=self.speak_text,
-                        build_pre_execution_summary=(
-                            lambda tool_calls: native_tool_flow_service.build_pre_execution_summary(
-                                tool_calls,
-                                preview_tool_args=self._preview_tool_args,
-                            )
-                        ),
-                        invoke_tool=self._invoke_tool,
-                        tool_result_to_message_content=native_tool_flow_service.tool_result_to_message_content,
-                        sanitize_text=sanitize_assistant_text,
-                    ),
-                )
-                if flow_result.handled:
-                    response = sanitize_assistant_text(flow_result.response)
-                    llm_ms = float(flow_result.llm_ms)
-                    tool_calls_executed = bool(flow_result.tool_calls_executed)
-                else:
-                    response = sanitize_assistant_text(
-                        self._ollama.chat(messages, options=generation_options)
-                    )
-                    llm_ms = (time.perf_counter() - llm_started) * 1000.0
-            elif on_token is None:
-                response = sanitize_assistant_text(
-                    self._ollama.chat(messages, options=generation_options)
-                )
-                llm_ms = (time.perf_counter() - llm_started) * 1000.0
-            else:
-                pieces: list[str] = []
-                for token in self._ollama.chat_stream(messages, options=generation_options):
-                    if stop_requested and stop_requested():
-                        break
-                    safe_token = sanitize_assistant_text(
-                        token,
-                        preserve_newlines=False,
-                        trim=False,
-                    )
-                    if not safe_token:
-                        continue
-                    pieces.append(safe_token)
-                    on_token(safe_token)
-                    if can_stream_tts:
-                        stream_tts_buffer += safe_token
-                        ready_chunks, stream_tts_buffer = drain_tts_stream_chunks(
-                            stream_tts_buffer,
-                            flush=False,
-                        )
-                        for chunk in ready_chunks:
-                            tts_chunk = prepare_tts_text(chunk)
-                            if tts_chunk and callable(enqueue_tts):
-                                queued_ok = bool(enqueue_tts(tts_chunk))
-                                if queued_ok:
-                                    stream_tts_used = True
-                                    stream_tts_enqueued_chunks += 1
-                                else:
-                                    self._trace("pipeline.tts.enqueue", "chunk enqueue failed")
-                response = "".join(pieces).strip()
-                llm_ms = (time.perf_counter() - llm_started) * 1000.0
-                if can_stream_tts and stream_tts_buffer.strip():
-                    ready_chunks, stream_tts_buffer = drain_tts_stream_chunks(
-                        stream_tts_buffer,
-                        flush=True,
-                    )
-                    for chunk in ready_chunks:
-                        tts_chunk = prepare_tts_text(chunk)
-                        if tts_chunk and callable(enqueue_tts):
-                            queued_ok = bool(enqueue_tts(tts_chunk))
-                            if queued_ok:
-                                stream_tts_used = True
-                                stream_tts_enqueued_chunks += 1
-                            else:
-                                self._trace("pipeline.tts.enqueue", "flush chunk enqueue failed")
+            response = run_agent(
+                self._agno_agent,
+                message_for_agent,
+                session_id=self._agno_session_id,
+                stream=False,
+                on_tool_use=_tool_status if on_generation_status else None,
+            )
+            response = sanitize_assistant_text(response)
+            llm_ms = (time.perf_counter() - llm_started) * 1000.0
+            if on_token and response:
+                on_token(response)
             self._trace(
                 "pipeline.llm.done",
                 f"mode={mode} chars={len(response)} llm_ms={round(llm_ms, 1)}",
@@ -1624,115 +953,12 @@ class SessionController:
             self._trace("pipeline.turn.stopped", f"mode={mode} stop_requested=true")
             return response
 
-        self._trace("pipeline.action.start", f"mode={mode}")
-        blocked_action_note: str = ""
-        try:
-            if bool(session_tool_policy.native_tool_calls_enabled):
-                if tool_calls_executed:
-                    self._trace("pipeline.action.skip", "native tool-calls already handled actions")
-                else:
-                    self._trace("pipeline.action.skip", "native tool-call policy active for this session")
-                action_result = None
-            elif tool_calls_executed:
-                self._trace("pipeline.action.skip", "native tool-calls already handled actions")
-                action_result = None
-            elif orchestration_plan.should_plan_action:
-                if not self._should_allow_action_execution(
-                    session_type=self._active_session_type,
-                    user_text=user_text,
-                    active_goal=self._active_goal,
-                ):
-                    self._trace(
-                        "pipeline.action.skip",
-                        "Action execution blocked by chat/goal policy.",
-                    )
-                    if (
-                        str(self._active_session_type or "").strip().lower() == "chat"
-                        and str(self._active_goal or "").strip().lower() == "coding_help"
-                    ):
-                        blocked_action_note = (
-                            "[Note] I stayed in coding-help mode and did not run desktop actions. "
-                            "If you want automation, switch to a goal/session that allows actions."
-                        )
-                    action_result = None
-                else:
-                    action_result = self._maybe_execute_action(
-                        user_text=user_text,
-                        assistant_reply=response,
-                        screen_text=screen_text,
-                        allow_planning_override=True,
-                        action_intent=orchestration_plan.action_intent,
-                        on_token=on_token,
-                    )
-            else:
-                self._trace("pipeline.action.skip", "deterministic planning decided no action")
-                action_result = None
-        except Exception as exc:
-            log_handled_exception(exc, context="session.action_execution")
-            self._trace("pipeline.action.error", str(exc))
-            action_result = ActionExecutionResult(
-                executed=False,
-                dry_run=False,
-                blocked=True,
-                requires_confirmation=False,
-                message="Action pipeline failed unexpectedly. See logs for details.",
-            )
-        self._trace(
-            "pipeline.action.done",
-            "executed" if action_result is not None else "skipped",
-        )
-
-        if action_result is not None and self._settings.actions.require_confirmation:
-            response = normalize_action_narration(response, action_result)
-
-        # Keep the pure conversational text for TTS — action status lines are UI-only.
+        # Action execution delegated to Agno (MCP/registry tools). No separate action pipeline.
+        # Keep the pure conversational text for TTS — strip any [plan]/[action] meta.
         llm_response_for_tts = strip_action_meta_for_tts(response)
-        tts_action_failure_note = self._build_tts_action_failure_note(action_result)
-        if tts_action_failure_note:
-            llm_response_for_tts = f"{llm_response_for_tts}\n\n{tts_action_failure_note}".strip()
 
-        if blocked_action_note:
-            if on_token:
-                on_token(f"\n\n{blocked_action_note}")
-            response = f"{response}\n\n{blocked_action_note}".strip()
-
-        if action_result is not None and action_result.message:
-            prefix = "[Action]" if action_result.executed or action_result.requires_confirmation else "[Note]"
-            action_suffix = f"\n\n{prefix} {action_result.message}"
-            if on_token:
-                on_token(action_suffix)
-            response = f"{response}{action_suffix}".strip()
-
-            post_action_followup = build_post_action_followup(
-                action_result,
-                require_confirmation=self._settings.actions.require_confirmation,
-            )
-            if post_action_followup:
-                followup_suffix = f"\n\n{post_action_followup}"
-                if on_token:
-                    on_token(followup_suffix)
-                response = f"{response}{followup_suffix}".strip()
-
-        if orchestration_plan.has_operation("include_session_evidence") or session_signals.wants_evidence:
-            evidence_suffix = self._active_session.build_evidence_block(self._trace)
-            if evidence_suffix:
-                response = f"{response}\n\n{evidence_suffix}".strip()
-                if on_token:
-                    on_token(f"\n\n{evidence_suffix}")
 
         response = sanitize_assistant_text(response)
-
-        if self._remember_history:
-            try:
-                self._memory.add(role="user", content=user_text)
-                assistant_memory_text = self._build_memory_assistant_text(response)
-                if assistant_memory_text:
-                    self._memory.add(role="assistant", content=assistant_memory_text)
-                else:
-                    self._trace("memory.write", "Skipped assistant memory entry (empty after action/meta stripping).")
-            except Exception as exc:
-                log_handled_exception(exc, context="session.memory_write")
-                self._trace("memory.error", f"Failed to write conversation memory: {exc}")
 
         tts_started = time.perf_counter()
         tts_ms = 0.0
@@ -1835,7 +1061,7 @@ class SessionController:
                 action_intent="",
             )
 
-        if AgenticSessionManager.is_agentic_intent(user_text):
+        if self._is_agentic_intent(user_text):
             return TurnAutonomyPlan(
                 strategy=(
                     "Confirm agentic mode is active and ask for the first objective. "
@@ -1863,7 +1089,7 @@ class SessionController:
         proactive = bool(turn_cfg.proactive_conversation)
         allow_action_suggestions = bool(turn_cfg.allow_action_suggestions)
         allow_proactive_actions = bool(turn_cfg.allow_proactive_actions)
-        explicit_action_intent = ActionExecutionService.has_action_intent(user_text)
+        explicit_action_intent = has_action_intent(user_text)
         wants_screen = self._is_screen_intent(user_text)
         should_plan_action = (
             bool(self._settings.actions.enabled)
@@ -1896,48 +1122,6 @@ class SessionController:
             self._trace("autonomy.mode", "Automatic mode forced action planning and disabled follow-up prompt.")
         return plan
 
-    def _plan_turn_orchestration(
-        self,
-        *,
-        user_text: str,
-        autonomy_plan: TurnAutonomyPlan,
-        screen_intent: bool,
-        reading_intent: bool,
-        continue_reading: bool,
-    ) -> TurnOrchestrationPlan:
-        if AgenticSessionManager.is_agentic_intent(user_text):
-            return TurnOrchestrationPlan(
-                strategy="Confirm switch to agentic mode and wait for the user's first objective.",
-                should_capture_screen=False,
-                should_plan_action=False,
-                requested_operations=tuple(),
-                action_intent="",
-                reason="agentic_switch_guard",
-                confidence=1.0,
-            )
-        requested_ops: list[str] = []
-        if reading_intent or continue_reading:
-            requested_ops.append("include_session_evidence")
-        if continue_reading:
-            requested_ops.append("continue_session")
-
-        should_capture = bool(
-            autonomy_plan.should_use_screen or screen_intent or continue_reading
-        )
-        return TurnOrchestrationPlan(
-            strategy=autonomy_plan.strategy,
-            should_capture_screen=should_capture,
-            should_plan_action=bool(autonomy_plan.should_plan_action),
-            requested_operations=tuple(requested_ops),
-            action_intent=(
-                str(autonomy_plan.action_intent or "").strip()
-                if autonomy_plan.should_plan_action
-                else ""
-            ),
-            reason="deterministic_fallback",
-            confidence=float(autonomy_plan.confidence),
-        )
-
     def _update_goal_from_conversation(self, *, user_text: str) -> None:
         if not self._settings.autonomy.enabled or not self._settings.autonomy.auto_goal_switch:
             return
@@ -1954,30 +1138,19 @@ class SessionController:
             )
             return
 
-        resolved_session_type, session_reason = self._session_router.resolve(
-            inferred_session_type=inferred.session_type,
-            inferred_goal=inferred.goal,
-            current_session_type=self._active_session_type,
-        )
-        previous_goal = self._active_goal
-        previous_session_type = self._active_session_type
         goal_changed = inferred.goal != self._active_goal
-        session_changed = resolved_session_type != self._active_session_type
-        if not goal_changed and not session_changed:
+        if not goal_changed:
             return
 
+        previous_goal = self._active_goal
         self._active_goal = inferred.goal
         self._active_goal_description = inferred.description
-        if session_changed:
-            self._set_active_session(resolved_session_type)
-
         self._trace(
             "autonomy.goal",
             (
                 f"Switched goal {previous_goal} -> {self._active_goal} "
                 f"(confidence={round(inferred.confidence, 2)}; reason={inferred.reason or 'n/a'}; "
-                f"desc={inferred.description or 'n/a'}; "
-                f"session={previous_session_type}->{self._active_session_type} via {session_reason})"
+                f"desc={inferred.description or 'n/a'})."
             ),
         )
 
@@ -1986,7 +1159,7 @@ class SessionController:
         if not normalized:
             return GoalInference(goal=self._active_goal, confidence=0.0, reason="empty_user_text")
 
-        if AgenticSessionManager.is_agentic_intent(user_text):
+        if self._is_agentic_intent(user_text):
             return GoalInference(
                 goal="ui_automation",
                 confidence=0.95,
@@ -2018,7 +1191,7 @@ class SessionController:
                 session_type="chat",
             )
 
-        if ActionExecutionService.has_action_intent(user_text):
+        if has_action_intent(user_text):
             return GoalInference(
                 goal="ui_automation",
                 confidence=0.68,
@@ -2035,86 +1208,32 @@ class SessionController:
             session_type="chat",
         )
 
-    def _set_active_session(
-        self,
-        session_type: str,
-        *,
-        explicit_user_intent: bool = False,
-        bypass_force_agentic: bool = False,
-    ) -> None:
-        normalized = str(session_type or "").strip().lower()
-        if normalized not in self._session_handlers:
-            normalized = "chat"
-        force_agentic = self._is_force_agentic_session_enabled()
-        if (
-            force_agentic
-            and not bypass_force_agentic
-            and not explicit_user_intent
-            and normalized != "agentic"
-            and "agentic" in self._session_handlers
-        ):
-            normalized = "agentic"
-        self._active_session_type = normalized
-        self._active_session = self._session_handlers[normalized]
-        state = getattr(self, "_state", None)
-        if state is not None:
-            setattr(state, "session_type", normalized)
-
-    def _is_force_agentic_session_enabled(self) -> bool:
-        settings = getattr(self, "_settings", None)
-        autonomy = getattr(settings, "autonomy", None) if settings is not None else None
-        return bool(getattr(autonomy, "force_agentic_session", False))
-
-    def _route_session_for_turn(self, *, user_text: str) -> None:
-        current_signals = self._active_session.detect_turn_signals(user_text)
-        if current_signals.wants_continue or current_signals.wants_screen_context or current_signals.wants_evidence:
-            return
-
-        for session_type, handler in self._session_handlers.items():
-            if session_type == self._active_session_type:
-                continue
-            signals = handler.detect_turn_signals(user_text)
-            if signals.wants_continue or signals.wants_screen_context or signals.wants_evidence:
-                previous = self._active_session_type
-                self._set_active_session(session_type, explicit_user_intent=True)
-                self._trace(
-                    "session.route",
-                    f"Switched active session {previous} -> {self._active_session_type} (intent route).",
-                )
-                return
-
-    def _should_capture_screen(self, *, user_text: str) -> tuple[bool, str]:
-        return self._screen_context.should_capture_screen(
-            user_text=user_text,
-            screen_enabled=bool(self._state.screen_enabled),
+    @staticmethod
+    def _is_agentic_intent(user_text: str) -> bool:
+        lowered = str(user_text or "").strip().lower()
+        if not lowered:
+            return False
+        tokens = (
+            "go fully automatic",
+            "fully automatic",
+            "enter agentic mode",
+            "start agentic session",
+            "agentic mode",
+            "work autonomously",
         )
+        return any(token in lowered for token in tokens)
 
-    @staticmethod
-    def _is_screen_intent(user_text: str) -> bool:
-        return ScreenContextService.is_screen_intent(user_text)
-
-    @staticmethod
-    def _should_allow_action_execution(*, session_type: str, user_text: str, active_goal: str = "") -> bool:
-        if AgenticSessionManager.is_agentic_intent(user_text):
-            return False
-        normalized_session = str(session_type or "").strip().lower()
-        if normalized_session != "chat":
-            return True
-        normalized_goal = str(active_goal or "").strip().lower()
-        if normalized_goal == "coding_help":
-            return False
-        return ActionExecutionService.has_action_intent(user_text)
-
-    def _capture_screen_text(self, *, decision_source: str) -> str | None:
-        result = self._screen_context.capture_screen_text(decision_source=decision_source)
-        self._last_screen_elements = list(result.elements)
-        self._foreground_window_title = str(result.foreground_window_title or "")
-        self._open_windows = list(result.open_windows)
-        self._all_windows = list(result.all_windows)
-        return result.text
+    def _is_screen_intent(self, user_text: str) -> bool:
+        """Stub: screen context disabled in Agno-only mode."""
+        return False
 
     def run_screen_ocr_diagnostic(self) -> dict[str, object]:
-        return self._screen_context.run_ocr_diagnostic()
+        """Stub: OCR disabled in Agno-only mode."""
+        return {
+            "ok": False,
+            "reason": "disabled",
+            "message": "Screen OCR is disabled in Agno-only mode.",
+        }
 
     def run_stt_diagnostic(
         self,
@@ -2130,11 +1249,11 @@ class SessionController:
                 "message": "Microphone source is disabled.",
             }
 
-        if not self._whisper.is_available:
+        if not self._realtime_stt.is_available:
             return {
                 "ok": False,
                 "reason": "stt-unavailable",
-                "message": "Whisper model is unavailable.",
+                "message": "RealtimeSTT is unavailable.",
             }
 
         duration = max(1.0, min(float(seconds), 30.0))
@@ -2145,11 +1264,7 @@ class SessionController:
         prosody: ProsodyAnalysis | None = None
         try:
             stt_started = time.perf_counter()
-            text = self._whisper.transcribe(
-                str(wav_path),
-                vad_filter=bool(vad_filter),
-                initial_prompt=(str(initial_prompt).strip() or None),
-            )
+            text = self._realtime_stt.transcribe(wav_path)
             stt_ms = (time.perf_counter() - stt_started) * 1000.0
             prosody = self._analyze_prosody(wav_path=str(wav_path), text=text or "")
         finally:
@@ -2239,29 +1354,8 @@ class SessionController:
 
     @staticmethod
     def _build_tts_service(settings: AppSettings):
-        provider = (settings.tts.provider or "piper").strip().lower()
-        if provider == "llasa":
-            return LlasaTtsService(settings.tts)
-        return PiperTtsService(settings.tts)
-
-    def _maybe_execute_action(
-        self,
-        *,
-        user_text: str,
-        assistant_reply: str,
-        screen_text: str | None,
-        allow_planning_override: bool = False,
-        action_intent: str = "",
-        on_token: Callable[[str], None] | None = None,
-    ) -> ActionExecutionResult | None:
-        return self._action_execution.maybe_execute_action(
-            user_text=user_text,
-            assistant_reply=assistant_reply,
-            screen_text=screen_text,
-            action_intent=action_intent,
-            allow_planning_override=allow_planning_override,
-            on_token=on_token,
-        )
+        provider = (settings.tts.provider or "kokoro").strip().lower()
+        return KokoroTtsService(settings.tts)
 
     def record_and_chat(
         self,
@@ -2272,22 +1366,19 @@ class SessionController:
         if not self._state.mic_enabled:
             raise RuntimeError("Microphone source is disabled. Enable it and try again.")
 
-        if not self._whisper.is_available:
+        if not self._realtime_stt.is_available:
             raise RuntimeError(
-                "Whisper is not installed. Install AI extras with: pip install -e .[ai]"
+                "RealtimeSTT is not available. Install with: pip install realtimestt"
             )
 
         capture_started = time.perf_counter()
-        wav_path = self._microphone.capture_to_wav(seconds=seconds)
+        text = self._realtime_stt.record_until_silence(
+            max_seconds=max(3.0, min(seconds, 30.0)),
+            silence_seconds=float(self._vad_silence_seconds),
+        )
         capture_ms = (time.perf_counter() - capture_started) * 1000.0
+        stt_ms = 0.0
         prosody: ProsodyAnalysis | None = None
-        try:
-            stt_started = time.perf_counter()
-            text = self._whisper.transcribe(str(wav_path))
-            stt_ms = (time.perf_counter() - stt_started) * 1000.0
-            prosody = self._analyze_prosody(wav_path=str(wav_path), text=text or "")
-        finally:
-            self._safe_unlink(wav_path)
 
         if not text:
             raise RuntimeError("No speech was detected from microphone audio.")
@@ -2350,9 +1441,9 @@ class SessionController:
         if not self._state.mic_enabled:
             raise RuntimeError("Microphone source is disabled. Enable it and try again.")
 
-        if not self._whisper.is_available:
+        if not self._realtime_stt.is_available:
             raise RuntimeError(
-                "Whisper is not installed. Install AI extras with: pip install -e .[ai]"
+                "RealtimeSTT is not available. Install with: pip install realtimestt"
             )
 
         live_level_threshold = max(0.004, float(self._vad_level_threshold) * 0.4)
@@ -2429,7 +1520,7 @@ class SessionController:
         on_token: Callable[[str], None] | None = None,
         on_generation_status: Callable[[str], None] | None = None,
     ) -> tuple[str, str] | None:
-        if not self._whisper.is_available:
+        if not self._realtime_stt.is_available:
             return None
 
         prosody: ProsodyAnalysis | None = None
@@ -2438,14 +1529,7 @@ class SessionController:
                 on_generation_status("transcribing")
             self._trace("pipeline.stt.start", f"capture_ms={round(capture_ms, 1)}")
             stt_started = time.perf_counter()
-            text = self._whisper.transcribe(
-                str(wav_path),
-                vad_filter=False,
-                initial_prompt=(
-                    "The speaker may say technical words such as pipeline, debugging, "
-                    "streaming, latency, microphone, transcription."
-                ),
-            )
+            text = self._realtime_stt.transcribe(wav_path)
             stt_ms = (time.perf_counter() - stt_started) * 1000.0
             prosody = self._analyze_prosody(wav_path=str(wav_path), text=text or "")
             self._trace("pipeline.stt.done", f"stt_ms={round(stt_ms, 1)} chars={len(text or '')}")
@@ -2521,69 +1605,13 @@ class SessionController:
     def _continue_session_after_approval(self) -> str:
         if self._stop_agentic_for_emergency(source="continue_after_approval"):
             return (
-                "Emergency stop is active, so I stopped agentic mode and switched to chat. "
-                "Reset emergency stop before resuming automation."
+                "Emergency stop is active. Reset emergency stop before resuming."
             )
-
-        actions_enabled = bool(getattr(self._settings.actions, "enabled", False))
-        state = getattr(self, "_state", None)
-        screen_enabled = bool(getattr(state, "screen_enabled", False))
-        require_confirmation = lambda: bool(getattr(self._settings.actions, "require_confirmation", True))
-        available_tools = (
-            self._tool_executor.list_available_tools
-            if hasattr(self, "_tool_executor") and self._tool_executor is not None
-            else (lambda: [])
-        )
-        autonomy_settings = getattr(self._settings, "autonomy", None)
-        narration_level = str(getattr(autonomy_settings, "agentic_narration_level", "summary") or "summary").strip().lower()
-        if narration_level not in {"full", "summary", "off"}:
-            narration_level = "summary"
-        narrate_callback = (
-            self._narrate_agentic_step
-            if narration_level == "full"
-            else None
-        )
-        runtime = SessionRuntimeContext(
-            actions_enabled=actions_enabled,
-            screen_enabled=screen_enabled,
-            foreground_window_title=str(self._foreground_window_title or ""),
-            get_require_confirmation=require_confirmation,
-            set_require_confirmation=lambda value: setattr(
-                self._settings.actions,
-                "require_confirmation",
-                bool(value),
-            ),
-            invoke_tool=self._invoke_tool,
-            capture_screen_text=self._capture_screen_text,
-            trace=self._trace,
-            active_goal=str(getattr(self, "_active_goal", "") or ""),
-            narration_level=narration_level,
-            available_tools=available_tools,
-            plan_agentic_step=self._plan_agentic_step,
-            narrate=narrate_callback,
-            execute_action_plan=self._action_executor.execute_plan,
-        )
-        return self._active_session.continue_after_approval(runtime)
+        return ""
 
     def _stop_agentic_for_emergency(self, *, source: str) -> bool:
         if not bool(getattr(self, "emergency_stop_active", False)):
             return False
-        if str(getattr(self, "_active_session_type", "chat") or "chat") != "agentic":
-            return False
-
-        stopped = False
-        try:
-            active_session = getattr(self, "_active_session", None)
-            if active_session is not None and hasattr(active_session, "stop"):
-                stopped = bool(active_session.stop(self._trace))
-        except Exception as exc:
-            self._trace("autonomy.safety.error", f"Failed to stop agentic session cleanly: {exc}")
-
-        handlers = getattr(self, "_session_handlers", {})
-        if isinstance(handlers, dict) and "chat" in handlers:
-            self._set_active_session("chat", bypass_force_agentic=True)
-        else:
-            self._active_session_type = "chat"
 
         mode = str(getattr(self, "_autonomy_mode", "interactive") or "interactive").strip().lower()
         if mode == "automatic":
@@ -2595,10 +1623,7 @@ class SessionController:
 
         self._trace(
             "autonomy.safety",
-            (
-                "Emergency stop is active; agentic session halted "
-                f"(source={source}, stopped={stopped})."
-            ),
+            f"Emergency stop is active (source={source}); mode set to interactive.",
         )
         return True
 
@@ -2617,7 +1642,7 @@ class SessionController:
         recent_events: list[dict[str, Any]],
         remaining_steps: int,
     ) -> dict[str, Any]:
-        available_tools = self._tool_executor.list_available_tools()
+        available_tools: list[str] = []
         objective_text = str(objective or "").strip() or str(self._active_goal or "").strip() or "general_assistance"
         compact_events = recent_events[-4:]
         screen_preview = str(screen_text or "")[:1800]
@@ -2740,29 +1765,7 @@ class SessionController:
             if target not in {"manual", "interactive", "automatic"}:
                 return "Unknown mode. Use: @mode manual|interactive|automatic"
             self.set_autonomy_mode(target)
-            return f"Autonomy mode set to {self._autonomy_mode}. Active session: {self._active_session_type}."
-
-        if lowered.startswith("@session"):
-            parts = text.split(maxsplit=1)
-            if len(parts) < 2:
-                return "Session command requires a value: @session chat|reading|agentic"
-            raw_target = str(parts[1]).strip()
-            session_parts = raw_target.split(maxsplit=1)
-            target = session_parts[0].strip()
-            objective = session_parts[1].strip() if len(session_parts) > 1 else ""
-            if target not in self._session_handlers:
-                return "Unknown session. Use: @session chat|reading|agentic"
-            self._set_active_session(target, explicit_user_intent=True)
-            if target == "agentic" and self._autonomy_mode != "automatic":
-                self.set_autonomy_mode("automatic")
-            if target == "agentic" and objective:
-                self._agentic_session.set_objective(objective=objective, trace=self._trace)
-            return f"Session switched to {self._active_session_type}. Mode: {self._autonomy_mode}."
-
-        if lowered.startswith("@stop session"):
-            was_active = self._active_session.stop(self._trace)
-            self._set_active_session("chat", explicit_user_intent=True)
-            return "Stopped active session and returned to chat." if was_active else "No active session to stop."
+            return f"Autonomy mode set to {self._autonomy_mode}."
 
         return None
 
@@ -2882,201 +1885,9 @@ class SessionController:
         return parsed
 
     def _register_mcp_tools(self) -> None:
-        cfg = self._tooling_config.tool_settings("mcp")
         self._mcp_servers = []
-        if not bool(cfg.get("enabled", False)):
-            self._trace("mcp.start", "MCP integration disabled by config.")
-            return
+        self._trace("mcp.start", "MCP integration disabled (Agno-only mode); tools come from Agno MCPTools.")
 
-        timeout_ms = int(cfg.get("timeout_ms", self._tooling_config.policies.default_timeout_ms))
-        startup_timeout_seconds = float(cfg.get("startup_timeout_seconds", 12.0))
-        default_framing_mode = self._normalize_mcp_framing_mode(cfg.get("framing_mode", "content-length"))
-        # Keep namespace stable in code; no user-facing prefix config needed.
-        base_prefix = "mcp.windows"
-
-        allowed_tools = set()
-        blocked_tools = set()
-        mutating_tools = set()
-        for item in cfg.get("allow_tools", []):
-            text = str(item).strip()
-            if text:
-                allowed_tools.add(text)
-        for item in cfg.get("block_tools", []):
-            text = str(item).strip()
-            if text:
-                blocked_tools.add(text)
-        for item in cfg.get("mutating_tools", []):
-            text = str(item).strip()
-            if text:
-                mutating_tools.add(text)
-
-        server_configs = self._load_mcp_servers_from_user_json(cfg=cfg)
-        if not server_configs:
-            server_configs = self._load_mcp_servers_from_json(cfg=cfg)
-        if not server_configs:
-            self._trace(
-                "mcp.error",
-                "MCP is enabled but no valid user JSON or fallback JSON mcpServers config was loaded. Skipping MCP startup.",
-            )
-            return
-
-        total_registered = 0
-        multiple_servers = len(server_configs) > 1
-        for index, server_cfg in enumerate(server_configs, start=1):
-            server_name = str(server_cfg.get("name", f"server-{index}")).strip() or f"server-{index}"
-            server_transport = str(server_cfg.get("transport", "stdio")).strip().lower() or "stdio"
-            server_command = str(server_cfg.get("command", "")).strip()
-            server_url = str(server_cfg.get("url", "")).strip()
-            server_args = [str(item).strip() for item in server_cfg.get("args", []) if str(item).strip()]
-            server_env = {str(k): str(v) for k, v in server_cfg.get("env", {}).items()} if isinstance(server_cfg.get("env", {}), dict) else {}
-            server_headers = {str(k): str(v) for k, v in server_cfg.get("headers", {}).items()} if isinstance(server_cfg.get("headers", {}), dict) else {}
-            server_source = str(server_cfg.get("source", "tools.mcp")).strip() or "tools.mcp"
-            server_framing_mode = self._normalize_mcp_framing_mode(
-                server_cfg.get("framing_mode", ""),
-                fallback=default_framing_mode,
-            )
-
-            if server_transport == "stdio" and not server_command:
-                self._trace("mcp.error", f"Skipping MCP stdio server '{server_name}' (missing command).")
-                self._mcp_servers.append(
-                    {
-                        "id": f"mcp-stdio-{index}",
-                        "name": server_name,
-                        "transport": server_transport,
-                        "command": server_command,
-                        "url": server_url,
-                        "args": server_args,
-                        "framing_mode": server_framing_mode,
-                        "prefix": base_prefix,
-                        "source": server_source,
-                        "client": None,
-                        "error": "missing command",
-                        "restart_attempts": 0,
-                        "last_restart_ts": 0.0,
-                    }
-                )
-                continue
-            if server_transport in {"http", "streamable-http"} and not server_url:
-                self._trace("mcp.error", f"Skipping MCP HTTP server '{server_name}' (missing url).")
-                self._mcp_servers.append(
-                    {
-                        "id": f"mcp-stdio-{index}",
-                        "name": server_name,
-                        "transport": server_transport,
-                        "command": server_command,
-                        "url": server_url,
-                        "args": server_args,
-                        "framing_mode": server_framing_mode,
-                        "prefix": base_prefix,
-                        "source": server_source,
-                        "client": None,
-                        "error": "missing url",
-                        "restart_attempts": 0,
-                        "last_restart_ts": 0.0,
-                    }
-                )
-                continue
-
-            server_prefix = base_prefix
-            if multiple_servers:
-                server_prefix = f"{base_prefix}.{self._slugify_mcp_server_name(server_name)}"
-
-            if server_transport in {"http", "streamable-http"}:
-                client = MCPHttpClient(
-                    url=server_url,
-                    headers=server_headers,
-                    startup_timeout_seconds=startup_timeout_seconds,
-                    request_timeout_seconds=max(1.0, float(timeout_ms) / 1000.0),
-                    trace=self._trace,
-                )
-            else:
-                client = MCPStdioClient(
-                    command=server_command,
-                    args=server_args,
-                    env=server_env,
-                    framing_mode=server_framing_mode,
-                    startup_timeout_seconds=startup_timeout_seconds,
-                    trace=self._trace,
-                )
-            if not client.start():
-                self._trace("mcp.error", f"MCP server '{server_name}' failed to start. Continuing.")
-                self._mcp_servers.append(
-                    {
-                        "id": f"mcp-stdio-{index}",
-                        "name": server_name,
-                        "transport": server_transport,
-                        "command": server_command,
-                        "url": server_url,
-                        "args": server_args,
-                        "framing_mode": server_framing_mode,
-                        "prefix": server_prefix,
-                        "source": server_source,
-                        "client": None,
-                        "error": "startup failed",
-                        "restart_attempts": 0,
-                        "last_restart_ts": 0.0,
-                    }
-                )
-                continue
-
-            tools = build_mcp_tools(
-                client=client,
-                prefix=server_prefix,
-                timeout_ms=timeout_ms,
-                mutating_tools=mutating_tools,
-                allowed_tools=allowed_tools,
-                blocked_tools=blocked_tools,
-            )
-            if not tools:
-                self._trace("mcp.start", f"No MCP tools discovered for server '{server_name}'.")
-                client.stop()
-                self._mcp_servers.append(
-                    {
-                        "id": f"mcp-stdio-{index}",
-                        "name": server_name,
-                        "transport": server_transport,
-                        "command": server_command,
-                        "url": server_url,
-                        "args": server_args,
-                        "framing_mode": server_framing_mode,
-                        "prefix": server_prefix,
-                        "source": server_source,
-                        "client": None,
-                        "error": "no tools discovered",
-                        "restart_attempts": 0,
-                        "last_restart_ts": 0.0,
-                    }
-                )
-                continue
-
-            self._tool_registry.register_many(tools)
-            total_registered += len(tools)
-            if self._tooling_config.enabled_tools and bool(cfg.get("append_to_enabled_tools", True)):
-                existing = set(self._tooling_config.enabled_tools)
-                for tool in tools:
-                    if tool.spec.name not in existing:
-                        self._tooling_config.enabled_tools.append(tool.spec.name)
-                        existing.add(tool.spec.name)
-
-            self._mcp_servers.append(
-                {
-                    "id": f"mcp-stdio-{index}",
-                    "name": server_name,
-                    "transport": server_transport,
-                    "command": server_command,
-                    "url": server_url,
-                    "args": server_args,
-                    "framing_mode": server_framing_mode,
-                    "prefix": server_prefix,
-                    "source": server_source,
-                    "client": client,
-                    "error": "",
-                    "restart_attempts": 0,
-                    "last_restart_ts": 0.0,
-                }
-            )
-
-        if total_registered <= 0:
-            self._trace("mcp.start", "No MCP tools registered from configured servers.")
-            return
-        self._trace("mcp.start", f"Registered {total_registered} MCP tool(s) across configured server(s).")
+    def _build_agno_tools_from_registry(self) -> list[Any]:
+        """Stub: Agno uses MCPTools only; no registry tools."""
+        return []

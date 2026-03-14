@@ -1,11 +1,46 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QObject, Qt, Signal, Slot
-from PySide6.QtWidgets import QDialog, QLabel, QProgressBar, QVBoxLayout
+from PySide6.QtWidgets import (
+    QDialog,
+    QDialogButtonBox,
+    QLabel,
+    QPlainTextEdit,
+    QProgressBar,
+    QPushButton,
+    QVBoxLayout,
+)
 
 from app.core.crash_logging import log_handled_exception
 from app.core.session_controller import SessionController
 from app.core.settings import AppSettings
+
+
+def show_startup_error(message: str, parent=None) -> None:
+    """Show a dialog with the error message in a selectable, copyable text area."""
+    dialog = QDialog(parent)
+    dialog.setWindowTitle("Startup warmup failed")
+    dialog.setMinimumSize(480, 280)
+    layout = QVBoxLayout(dialog)
+    layout.addWidget(QLabel("An error occurred during startup. You can select and copy the text below:"))
+    text = QPlainTextEdit(message.strip())
+    text.setReadOnly(True)
+    text.setPlaceholderText("")
+    layout.addWidget(text)
+    buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+    copy_btn = QPushButton("Copy to clipboard")
+    copy_btn.clicked.connect(lambda: _copy_text_to_clipboard(text.toPlainText()))
+    buttons.addButton(copy_btn, QDialogButtonBox.ButtonRole.ActionRole)
+    buttons.rejected.connect(dialog.reject)
+    layout.addWidget(buttons)
+    dialog.exec()
+
+
+def _copy_text_to_clipboard(text: str) -> None:
+    from PySide6.QtWidgets import QApplication
+    cb = QApplication.clipboard()
+    if cb is not None:
+        cb.setText(text)
 
 
 class StartupPreloaderDialog(QDialog):

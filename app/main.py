@@ -3,13 +3,13 @@ from __future__ import annotations
 import sys
 
 from PySide6.QtCore import QEventLoop, QThread
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication
 
 from app.core.crash_logging import install_global_exception_hooks
 from app.core.session_controller import SessionController
 from app.core.settings import load_settings
 from app.ui.main_window import MainWindow
-from app.ui.startup_preloader import StartupPreloaderDialog, StartupPrewarmWorker
+from app.ui.startup_preloader import StartupPreloaderDialog, StartupPrewarmWorker, show_startup_error
 
 
 def main() -> int:
@@ -53,20 +53,12 @@ def main() -> int:
     thread.wait(1500)
 
     if startup_error["message"]:
-        QMessageBox.critical(
-            None,
-            "Startup warmup failed",
-            str(startup_error["message"]),
-        )
+        show_startup_error(str(startup_error["message"]))
         return 1
 
     session = startup_session["session"]
     if session is None:
-        QMessageBox.critical(
-            None,
-            "Startup warmup failed",
-            "Startup did not return a ready session.",
-        )
+        show_startup_error("Startup did not return a ready session.")
         return 1
 
     window = MainWindow(settings, session=session)

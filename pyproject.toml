@@ -1,7 +1,7 @@
 [project]
 name = "english-speaking-assistant"
 version = "0.1.0"
-description = "Local Python desktop AI assistant for spoken English practice"
+description = "Local speech-to-speech + type-in assistant with RealtimeSTT, Kokoro TTS, and Agno (Ollama)"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -10,27 +10,30 @@ dependencies = [
   "sounddevice>=0.5.1",
   "numpy>=2.2.3",
   "mss>=10.0.0",
+  "agno>=1.2.6",
+  "openai>=1.0.0",
+  "realtimestt>=0.3.100",
+  "soundfile>=0.13.0",
+  "onnxruntime>=1.20.1",
+  "kokoro-onnx>=0.4.7",
+  "misaki",
+  "ollama>=0.3.0",
 ]
 
 [project.optional-dependencies]
-ai = [
-  "faster-whisper>=1.1.1",
+agent = [
+  "googlesearch-python",
+  "wikipedia",
+  "arxiv",
+]
+ocr = [
   "rapidocr-onnxruntime>=1.2.3",
 ]
-
-tts = [
-  "piper-tts>=1.3.0",
-]
-
 actions = [
   "pyautogui>=0.9.54",
 ]
-
-llasa = [
-  "transformers>=4.47.0",
-  "soundfile>=0.12.1",
-  "sentencepiece>=0.2.0",
-  "accelerate>=1.2.1",
+dev = [
+  "pytest>=8.0.0",
 ]
 
 [build-system]

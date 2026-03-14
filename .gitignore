@@ -11,3 +11,5 @@ data/crashlog.txt
 data/persona_profile.json
 models/
 *.wav
+*.log
+realtimesst.log

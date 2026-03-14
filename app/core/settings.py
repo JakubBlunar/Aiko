@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,12 @@ class OllamaSettings:
 
 
 @dataclass(slots=True)
+class DatabaseSettings:
+    provider: str  # "sqlite" | "postgres"
+    url: str | None  # for postgres: connection URL
+
+
+@dataclass(slots=True)
 class AudioSettings:
     sample_rate: int
     channels: int
@@ -21,6 +28,7 @@ class AudioSettings:
     microphone_device: int | None
     vad_level_threshold: float
     vad_silence_seconds: float
+    barge_in_enabled: bool = False
 
 
 @dataclass(slots=True)
@@ -144,13 +152,15 @@ class TtsSettings:
     provider: str
     voice: str
     enabled: bool
-    llasa_model: str
-    llasa_codec_model: str
-    llasa_device: str
-    llasa_temperature: float
-    llasa_top_p: float
-    llasa_max_length: int
-    llasa_max_vram_mb: int
+    kokoro_model_path: str
+    kokoro_voices_path: str
+    llasa_model: str = ""
+    llasa_codec_model: str = ""
+    llasa_device: str = "cuda"
+    llasa_temperature: float = 0.8
+    llasa_top_p: float = 0.95
+    llasa_max_length: int = 2048
+    llasa_max_vram_mb: int = 0
 
 
 @dataclass(slots=True)
@@ -180,6 +190,7 @@ class AppSettings:
     autonomy: AutonomySettings
     ollama: OllamaSettings
     audio: AudioSettings
+    database: DatabaseSettings
     screen: ScreenSettings
     actions: ActionSettings
     stt: SttSettings
@@ -209,6 +220,20 @@ _SCREEN_PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
         "min_ocr_chars": 20,
         "unchanged_reuse_seconds": 20,
     },
+}
+
+# Used when "screen" section is missing from config (slim default.json).
+_SCREEN_LOADER_DEFAULTS: dict[str, Any] = {
+    "enable_screen_context": False,
+    "ocr_profile": "balanced",
+    "monitor_index": 1,
+    "ocr_max_side_px": 1280,
+    "capture_active_window_only": True,
+    "decision_mode": "model",
+    "decision_cooldown_seconds": 6,
+    "min_ocr_chars": 20,
+    "unchanged_reuse_seconds": 20,
+    "enable_uia": True,
 }
 
 
@@ -371,17 +396,22 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
     user = _read_merged_overrides(USER_CONFIG_PATH)
     raw = _deep_merge(base, user)
 
-    assistant = raw["assistant"]
-    autonomy = raw.get("autonomy", {})
-    ollama = raw["ollama"]
-    audio = raw["audio"]
+    assistant = raw.get("assistant", {}) or {}
+    autonomy = raw.get("autonomy", {}) or {}
+    ollama = raw.get("ollama", {}) or {}
+    audio = raw.get("audio", {}) or {}
+    database = raw.get("database") or {}
+    raw_screen = raw.get("screen") or {}
+    if not isinstance(raw_screen, dict):
+        raw_screen = {}
+    raw_screen = _deep_merge(_SCREEN_LOADER_DEFAULTS, raw_screen)
     user_screen = user.get("screen", {}) if isinstance(user.get("screen", {}), dict) else {}
-    screen = _resolve_screen_settings(raw["screen"], user_screen)
-    actions = raw.get("actions", {})
-    stt = raw.get("stt", {})
-    tts = raw["tts"]
-    ui = raw.get("ui", {})
-    tooling = raw.get("tooling", {})
+    screen = _resolve_screen_settings(raw_screen, user_screen)
+    actions = raw.get("actions", {}) or {}
+    stt = raw.get("stt", {}) or {}
+    tts = raw.get("tts", {}) or {}
+    ui = raw.get("ui", {}) or {}
+    tooling = raw.get("tooling", {}) or {}
 
     turn_planning = autonomy.get("turn_planning", {}) if isinstance(autonomy.get("turn_planning", {}), dict) else {}
     stt_diagnostics = stt.get("diagnostics", {}) if isinstance(stt.get("diagnostics", {}), dict) else {}
@@ -468,6 +498,11 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             ),
             vad_level_threshold=float(audio.get("vad_level_threshold", 0.02)),
             vad_silence_seconds=float(audio.get("vad_silence_seconds", 1.0)),
+            barge_in_enabled=bool(audio.get("barge_in_enabled", False)),
+        ),
+        database=DatabaseSettings(
+            provider=str(database.get("provider", "sqlite")).strip().lower() or "sqlite",
+            url=(str(database["url"]).strip() if database.get("url") else None) or (str(os.environ.get("DATABASE_URL", "")).strip() or None),
         ),
         screen=ScreenSettings(
             enable_screen_context=bool(_required(screen, "enable_screen_context")),
@@ -515,9 +550,11 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             ),
         ),
         tts=TtsSettings(
-            provider=_required(tts, "provider"),
-            voice=_required(tts, "voice"),
-            enabled=bool(_required(tts, "enabled")),
+            provider=str(tts.get("provider", "kokoro")),
+            voice=str(tts.get("voice", "af_heart")),
+            enabled=bool(tts.get("enabled", True)),
+            kokoro_model_path=str(tts.get("kokoro_model_path", "kokoro-v1.0.onnx")),
+            kokoro_voices_path=str(tts.get("kokoro_voices_path", "voices-v1.0.bin")),
             llasa_model=str(tts.get("llasa_model", "NandemoGHS/Anime-Llasa-3B")),
             llasa_codec_model=str(tts.get("llasa_codec_model", "HKUSTAudio/xcodec2")),
             llasa_device=str(tts.get("llasa_device", "cuda")),

@@ -1,3 +1,5 @@
+"""Screen capture for tools (mss + optional active-window region)."""
+
 from __future__ import annotations
 
 import ctypes
@@ -5,12 +7,14 @@ from ctypes import wintypes
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    import numpy as np
+    pass
 
 from app.core.settings import ScreenSettings
 
 
 class ScreenCaptureService:
+    """Capture screen or active window as numpy array; used by screen tools and OCR diagnostic."""
+
     def __init__(self, settings: ScreenSettings) -> None:
         self._settings = settings
 
@@ -21,9 +25,8 @@ class ScreenCaptureService:
     def capture_once_with_region(
         self, *, active_window_only: bool | None = None
     ) -> tuple:
-        """Return ``(frame, region)`` where *region* is a dict with ``left``,
-        ``top``, ``width``, ``height`` in screen (logical pixel) coordinates.
-        Either value may be *None* if capture fails."""
+        """Return (frame, region) where region is a dict with left, top, width, height.
+        Either value may be None if capture fails."""
         try:
             import mss
             import numpy as np
