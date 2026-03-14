@@ -3,7 +3,7 @@ from __future__ import annotations
 import html
 
 from PySide6.QtCore import QEvent, QThread, QTimer, Qt
-from PySide6.QtGui import QCloseEvent, QTextCursor
+from PySide6.QtGui import QCloseEvent, QKeyEvent, QMouseEvent, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -36,6 +36,19 @@ from app.ui.stt_test_worker import SttTestWorker
 from app.ui.turn_worker import SingleTurnWorker
 
 
+_PTT_KEY_MAP: dict[str, Qt.Key] = {
+    "f2": Qt.Key.Key_F2,
+    "f3": Qt.Key.Key_F3,
+    "f4": Qt.Key.Key_F4,
+    "space": Qt.Key.Key_Space,
+}
+_PTT_MOUSE_MAP: dict[str, Qt.MouseButton] = {
+    "left": Qt.MouseButton.LeftButton,
+    "middle": Qt.MouseButton.MiddleButton,
+    "right": Qt.MouseButton.RightButton,
+}
+
+
 class MainWindow(QMainWindow):
     _STT_PROFILE_TO_MODEL: dict[str, str] = {
         "fast": "base",
@@ -64,6 +77,7 @@ class MainWindow(QMainWindow):
         self._live_noise_floor = 0.0
         self._wheel_guard_widgets: set[QWidget] = set()
         self._startup_greeting_done = False
+        self._ptt_app_filter_installed = False
 
         self.setWindowTitle(settings.assistant.name)
         self.resize(900, 640)
@@ -106,15 +120,15 @@ class MainWindow(QMainWindow):
         self._input.installEventFilter(self)
         self._send_button = QPushButton("Send")
         self._send_button.clicked.connect(self._send)
-        self._record_button = QPushButton("Record")
-        self._record_button.clicked.connect(self._record_and_send)
+        self._live_toggle_button = QPushButton("Start Live")
+        self._live_toggle_button.clicked.connect(self._on_live_toggle_clicked)
         self._clear_chat_button = QPushButton("Clear Chat")
         self._clear_chat_button.clicked.connect(self._clear_conversation_view)
         self._settings_button = QPushButton("Settings")
         self._settings_button.clicked.connect(self._open_settings)
         input_row.addWidget(self._input, stretch=1)
         input_row.addWidget(self._send_button)
-        input_row.addWidget(self._record_button)
+        input_row.addWidget(self._live_toggle_button)
         input_row.addWidget(self._clear_chat_button)
         input_row.addWidget(self._settings_button)
         conversation_layout.addLayout(input_row)
@@ -150,6 +164,36 @@ class MainWindow(QMainWindow):
         pass
 
     def eventFilter(self, watched: object, event: QEvent) -> bool:
+        if self._live_thread is not None and getattr(self._session, "live_input_mode", "") == "push_to_talk":
+            if event.type() == QEvent.Type.KeyPress and getattr(self._session, "live_ptt_type", "") == "keyboard":
+                key_name = (getattr(self._session, "live_ptt_key", None) or "f2").strip().lower()
+                qt_key = _PTT_KEY_MAP.get(key_name)
+                if qt_key is not None and isinstance(event, QKeyEvent) and event.key() == qt_key:
+                    if getattr(self._session, "live_ptt_toggle", False):
+                        self._session.set_ptt_active(not self._session.get_ptt_active())
+                    else:
+                        self._session.set_ptt_active(True)
+            elif event.type() == QEvent.Type.KeyRelease and getattr(self._session, "live_ptt_type", "") == "keyboard":
+                key_name = (getattr(self._session, "live_ptt_key", None) or "f2").strip().lower()
+                qt_key = _PTT_KEY_MAP.get(key_name)
+                if qt_key is not None and isinstance(event, QKeyEvent) and event.key() == qt_key:
+                    if not getattr(self._session, "live_ptt_toggle", False):
+                        self._session.set_ptt_active(False)
+            elif event.type() == QEvent.Type.MouseButtonPress and getattr(self._session, "live_ptt_type", "") == "mouse":
+                btn_name = (getattr(self._session, "live_ptt_mouse_button", None) or "right").strip().lower()
+                qt_btn = _PTT_MOUSE_MAP.get(btn_name)
+                if qt_btn is not None and isinstance(event, QMouseEvent) and event.button() == qt_btn:
+                    if getattr(self._session, "live_ptt_toggle", False):
+                        self._session.set_ptt_active(not self._session.get_ptt_active())
+                    else:
+                        self._session.set_ptt_active(True)
+            elif event.type() == QEvent.Type.MouseButtonRelease and getattr(self._session, "live_ptt_type", "") == "mouse":
+                btn_name = (getattr(self._session, "live_ptt_mouse_button", None) or "right").strip().lower()
+                qt_btn = _PTT_MOUSE_MAP.get(btn_name)
+                if qt_btn is not None and isinstance(event, QMouseEvent) and event.button() == qt_btn:
+                    if not getattr(self._session, "live_ptt_toggle", False):
+                        self._session.set_ptt_active(False)
+
         if watched is self._input and event.type() == QEvent.Type.KeyPress:
             key = getattr(event, "key", lambda: None)()
             modifiers = getattr(event, "modifiers", lambda: Qt.KeyboardModifier.NoModifier)()
@@ -545,8 +589,15 @@ class MainWindow(QMainWindow):
             remember_history=self._session.remember_history,
             autonomy_mode=self._session.autonomy_mode,
             microphone_device=self._session.microphone_device,
+            output_device=getattr(self._session, "output_device", None),
             vad_level_threshold=self._session.vad_level_threshold,
             vad_silence_seconds=self._session.vad_silence_seconds,
+            live_input_mode=getattr(self._session, "live_input_mode", None),
+            live_ptt_type=getattr(self._session, "live_ptt_type", None),
+            live_ptt_key=getattr(self._session, "live_ptt_key", None),
+            live_ptt_mouse_button=getattr(self._session, "live_ptt_mouse_button", None),
+            live_ptt_toggle=getattr(self._session, "live_ptt_toggle", None),
+            barge_in_enabled=self._session.barge_in_enabled() if hasattr(self._session, "barge_in_enabled") else None,
             action_min_interval_seconds=self._session.action_min_interval_seconds,
             tts_provider=self._session.tts_provider,
             tts_voice=self._session.tts_voice,
@@ -588,7 +639,7 @@ class MainWindow(QMainWindow):
     def _set_single_turn_controls_busy(self, busy: bool) -> None:
         self._guardrail_controls_locked = busy
         self._send_button.setEnabled(not busy)
-        self._record_button.setEnabled(not busy)
+        self._live_toggle_button.setEnabled(not busy)
         self._clear_chat_button.setEnabled(not busy)
         self._input.setEnabled(not busy)
         self._settings_button.setEnabled(not busy)
@@ -680,36 +731,44 @@ class MainWindow(QMainWindow):
         self._live_worker.stopped.connect(self._live_worker.deleteLater)
 
         self._send_button.setEnabled(False)
-        self._record_button.setEnabled(False)
+        self._live_toggle_button.setText("Stop Live")
+        self._live_toggle_button.setEnabled(True)
         self._clear_chat_button.setEnabled(False)
         self._input.setEnabled(False)
         self._settings_button.setEnabled(False)
-        stop_btn = getattr(self, "_stop_live_button", None)
-        if stop_btn is not None:
-            stop_btn.setEnabled(True)
+
+        if getattr(self._session, "live_input_mode", "") == "push_to_talk":
+            app = QApplication.instance()
+            if app is not None:
+                app.installEventFilter(self)
+                self._ptt_app_filter_installed = True
+        else:
+            self._ptt_app_filter_installed = False
 
         self._live_thread.start()
 
     def _stop_live_mode(self) -> None:
         if self._live_worker is not None:
             self._live_worker.stop()
-            stop_btn = getattr(self, "_stop_live_button", None)
-            if stop_btn is not None:
-                stop_btn.setEnabled(False)
+        self._live_toggle_button.setEnabled(False)
         self._status_label.setText("Stopping...")
 
     def _on_live_error(self, message: str) -> None:
         QMessageBox.critical(self, "Live mode error", message)
 
     def _on_live_stopped(self) -> None:
+        self._session.set_ptt_active(False)
+        if getattr(self, "_ptt_app_filter_installed", False):
+            app = QApplication.instance()
+            if app is not None:
+                app.removeEventFilter(self)
+            self._ptt_app_filter_installed = False
         self._send_button.setEnabled(True)
-        self._record_button.setEnabled(True)
+        self._live_toggle_button.setText("Start Live")
+        self._live_toggle_button.setEnabled(True)
         self._clear_chat_button.setEnabled(True)
         self._input.setEnabled(True)
         self._settings_button.setEnabled(True)
-        stop_btn = getattr(self, "_stop_live_button", None)
-        if stop_btn is not None:
-            stop_btn.setEnabled(False)
         self._status_label.setText(f"Ready | model: {self._session.chat_model}")
         self._close_live_stream()
         level_bar = getattr(self, "_input_level_bar", None)
@@ -748,13 +807,11 @@ class MainWindow(QMainWindow):
         if app is not None:
             app.quit()
 
-    def _record_and_send(self) -> None:
-        if self._turn_thread is not None:
-            return
+    def _on_live_toggle_clicked(self) -> None:
         if self._live_thread is not None:
-            self._append("System", "Stop Live mode before using Record 5s.")
-            return
-        self._start_single_turn(mode="record", record_seconds=5.0)
+            self._stop_live_mode()
+        else:
+            self._start_live_mode()
 
     def _clear_conversation_view(self) -> None:
         self._conversation.clear()

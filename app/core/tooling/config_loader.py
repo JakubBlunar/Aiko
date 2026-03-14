@@ -9,10 +9,8 @@ from typing import Any
 @dataclass(slots=True)
 class ToolPolicyConfig:
     full_auto: bool = False
-    read_only_auto: bool = True
     mutating_requires_confirmation: bool = True
     max_tool_calls_per_turn: int = 64
-    default_timeout_ms: int = 10000
 
 
 @dataclass(slots=True)
@@ -24,7 +22,7 @@ class ToolingConfig:
     runtime_overrides: dict[str, Any] = field(default_factory=dict)
 
     def tool_settings(self, namespace: str) -> dict[str, Any]:
-        """Return settings for a tool namespace, for example 'persona' or 'ocr'."""
+        """Return settings for a tool namespace, e.g. 'history' or 'ocr'."""
         key = str(namespace or "").strip().lower()
         value = self.tools.get(key, {})
         return dict(value) if isinstance(value, dict) else {}
@@ -96,10 +94,8 @@ def load_tooling_config(
     policies_raw = merged.get("policies", {}) if isinstance(merged.get("policies"), dict) else {}
     policies = ToolPolicyConfig(
         full_auto=bool(policies_raw.get("full_auto", False)),
-        read_only_auto=bool(policies_raw.get("read_only_auto", True)),
         mutating_requires_confirmation=bool(policies_raw.get("mutating_requires_confirmation", True)),
         max_tool_calls_per_turn=max(1, int(policies_raw.get("max_tool_calls_per_turn", 64))),
-        default_timeout_ms=max(100, int(policies_raw.get("default_timeout_ms", 10000))),
     )
 
     tools_raw = merged.get("tools", {}) if isinstance(merged.get("tools"), dict) else {}

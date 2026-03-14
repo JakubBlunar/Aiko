@@ -19,6 +19,16 @@ except Exception:
     webrtcvad = None
 
 
+def list_output_devices() -> list[tuple[int, str]]:
+    """Return list of (device_index, name) for devices with output channels."""
+    devices = sd.query_devices()
+    result: list[tuple[int, str]] = []
+    for index, device in enumerate(devices):
+        if int(device.get("max_output_channels", 0)) > 0:
+            result.append((index, str(device.get("name", f"Output {index}"))))
+    return result
+
+
 class MicrophoneCapture:
     def __init__(self, settings: AudioSettings) -> None:
         self._settings = settings
@@ -269,6 +279,54 @@ class MicrophoneCapture:
             return None
 
         return np.concatenate(captured, axis=0)
+
+    def capture_while_ptt_active(
+        self,
+        *,
+        ptt_active_getter: Callable[[], bool],
+        stop_requested: Callable[[], bool] | None = None,
+        on_audio_level: Callable[[float], None] | None = None,
+        max_seconds: float = 30.0,
+    ) -> tuple[Path, float] | None:
+        """Record while ptt_active_getter() returns True; write WAV and return (path, capture_ms) or None."""
+        sample_rate = self._settings.sample_rate
+        channels = self._settings.channels
+        chunk_frames = int(sample_rate * 0.1)
+        if chunk_frames <= 0:
+            return None
+        started_at = time.perf_counter()
+        captured: list[np.ndarray] = []
+
+        try:
+            with sd.InputStream(
+                samplerate=sample_rate,
+                channels=channels,
+                dtype="float32",
+                blocksize=chunk_frames,
+                device=self._device,
+            ) as stream:
+                while ptt_active_getter():
+                    if stop_requested and stop_requested():
+                        break
+                    elapsed = time.perf_counter() - started_at
+                    if elapsed >= max_seconds:
+                        break
+                    chunk, _ = stream.read(chunk_frames)
+                    if chunk is not None and chunk.size > 0:
+                        captured.append(chunk.copy())
+                    if on_audio_level:
+                        level = float(np.sqrt(np.mean(np.square(chunk))))
+                        on_audio_level(level)
+        except Exception:
+            return None
+
+        if not captured:
+            return None
+        samples = np.concatenate(captured, axis=0)
+        capture_ms = (time.perf_counter() - started_at) * 1000.0
+        wav_path = self.create_temp_wav_path(prefix="assistant_ptt_")
+        self.write_wav(samples=samples, target_path=wav_path)
+        return wav_path, capture_ms
 
     def capture_phrase_to_wav(
         self,

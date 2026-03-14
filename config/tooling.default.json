@@ -3,63 +3,19 @@
   "disabled_tools": [],
   "policies": {
     "full_auto": false,
-    "read_only_auto": true,
     "mutating_requires_confirmation": true,
-    "max_tool_calls_per_turn": 64,
-    "default_timeout_ms": 10000
+    "max_tool_calls_per_turn": 64
   },
   "runtime_overrides": {},
   "tools": {
     "history": {
       "default_limit": 50,
-      "max_limit": 400,
-      "prompt_limit": 20,
-      "summary_enabled": true,
-      "summary_limit": 80,
-      "summary_max_chars": 420,
-      "summary_tail_limit": 8,
-      "startup_history_limit": 20,
-      "preload_on_startup": true
-    },
-    "persona": {
-      "profile_path": "data/persona_profile.json",
-      "compact_notes_enabled": true,
-      "compact_max_notes": 10,
-      "compact_max_chars": 110,
-      "filter_notes_enabled": true,
-      "filter_max_notes": 50,
-      "filter_min_chars": 6,
-      "filter_remove_generic_user_said": true
+      "max_limit": 400
     },
     "mcp": {
       "enabled": false,
       "servers_user_json_path": "config/mcp.servers.user.json",
-      "servers_json_path": "config/mcp.servers.json",
-      "framing_mode": "newline-json",
-      "startup_timeout_seconds": 12.0,
-      "timeout_ms": 15000,
-      "auto_restart": true,
-      "restart_backoff_seconds": 4.0,
-      "max_restart_attempts": 5,
-      "append_to_enabled_tools": true,
-      "allow_tools": [],
-      "block_tools": [],
-      "mutating_tools": [
-        "Click",
-        "Type",
-        "Scroll",
-        "Move",
-        "Shortcut",
-        "App",
-        "Shell",
-        "MultiSelect",
-        "MultiEdit",
-        "Clipboard",
-        "Process",
-        "Notification",
-        "LockScreen",
-        "Registry"
-      ]
+      "servers_json_path": "config/mcp.servers.json"
     }
   }
 }

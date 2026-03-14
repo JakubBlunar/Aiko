@@ -51,12 +51,14 @@ class LivePracticeWorker(QObject):
                     continue
 
                 wav_path, capture_ms = item
+                if self._session.barge_in_enabled() and self._session.is_tts_playing():
+                    self._session.stop_tts()
                 self._processing.set()
                 try:
                     turn = self._session.process_live_capture(
                         wav_path=wav_path,
                         capture_ms=capture_ms,
-                        stop_requested=self._is_stop_requested,
+                        stop_requested=self._stop_requested_for_turn,
                         on_token=self.replying.emit,
                         on_generation_status=self.status.emit,
                     )
@@ -87,11 +89,19 @@ class LivePracticeWorker(QObject):
     def _is_stop_requested(self) -> bool:
         return self._stop_requested
 
+    def _has_pending_phrase(self) -> bool:
+        with self._pending_lock:
+            return len(self._pending) > 0
+
+    def _stop_requested_for_turn(self) -> bool:
+        if self._stop_requested:
+            return True
+        if self._session.barge_in_enabled() and self._has_pending_phrase():
+            return True
+        return False
+
     def _capture_loop(self) -> None:
         while not self._stop_requested:
-            # Pause while the processing loop is handling a turn so that
-            # speaker audio (TTS) is not captured and the audio device is
-            # not opened by two code paths simultaneously.
             if self._processing.is_set():
                 time.sleep(0.05)
                 continue
@@ -103,11 +113,24 @@ class LivePracticeWorker(QObject):
                 time.sleep(0.05)
                 continue
 
-            captured = self._session.capture_live_phrase(
-                stop_requested=self._is_stop_requested,
-                on_audio_level=self.level.emit,
-                on_generation_status=self.status.emit,
-            )
+            if self._session.live_input_mode == "push_to_talk":
+                while not self._stop_requested and not self._session.get_ptt_active():
+                    time.sleep(0.05)
+                if self._stop_requested:
+                    break
+                captured = self._session.capture_ptt_phrase(
+                    ptt_active_getter=lambda: self._session.get_ptt_active(),
+                    stop_requested=self._is_stop_requested,
+                    on_audio_level=self.level.emit,
+                    on_generation_status=self.status.emit,
+                )
+            else:
+                captured = self._session.capture_live_phrase(
+                    stop_requested=self._is_stop_requested,
+                    on_audio_level=self.level.emit,
+                    on_generation_status=self.status.emit,
+                )
+
             if self._stop_requested:
                 break
             if captured is None:

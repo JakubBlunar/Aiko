@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from app.core.conversation_memory import ConversationMemoryStore
 from app.core.settings import AppSettings
 from app.core.tooling.config_loader import ToolingConfig
@@ -11,37 +9,14 @@ from app.core.tooling.tools.history_tools import (
     HistoryReadSummaryTool,
     HistoryRuntime,
 )
-from app.core.tooling.tools.persona_tools import (
-    PersonaCompactNotesTool,
-    PersonaFilterNotesTool,
-    PersonaProfileRuntime,
-    PersonaReadSnapshotTool,
-    PersonaUpdateFromTextTool,
-)
-
-
 def build_default_tools(
     settings: AppSettings,
     tooling_config: ToolingConfig | None = None,
     memory_store: ConversationMemoryStore | None = None,
 ) -> list[Tool]:
     config = tooling_config or ToolingConfig()
-    persona_cfg = config.tool_settings("persona")
     history_cfg = config.tool_settings("history")
 
-    persona_path_raw = str(persona_cfg.get("profile_path", "")).strip()
-    persona_path: Path | None = None
-    if persona_path_raw:
-        candidate = Path(persona_path_raw)
-        if not candidate.is_absolute():
-            workspace_root = Path(__file__).resolve().parents[4]
-            candidate = workspace_root / candidate
-        persona_path = candidate
-
-    persona_runtime = PersonaProfileRuntime(
-        path=persona_path,
-        assistant_background=settings.assistant.background,
-    )
     history_runtime = HistoryRuntime(
         memory_store or ConversationMemoryStore(),
         default_limit=int(history_cfg.get("default_limit", 50)),
@@ -52,10 +27,6 @@ def build_default_tools(
         HistoryReadEntriesTool(history_runtime),
         HistoryReadSummaryTool(history_runtime),
         HistoryCompactSummaryTool(history_runtime),
-        PersonaUpdateFromTextTool(persona_runtime),
-        PersonaCompactNotesTool(persona_runtime),
-        PersonaFilterNotesTool(persona_runtime),
-        PersonaReadSnapshotTool(persona_runtime),
     ]
 
 

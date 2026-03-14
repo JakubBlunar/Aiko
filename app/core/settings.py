@@ -29,6 +29,12 @@ class AudioSettings:
     vad_level_threshold: float
     vad_silence_seconds: float
     barge_in_enabled: bool = False
+    output_device: int | None = None
+    live_input_mode: str = "voice_detection"
+    live_ptt_type: str = "keyboard"
+    live_ptt_key: str | None = None
+    live_ptt_mouse_button: str | None = None
+    live_ptt_toggle: bool = False
 
 
 @dataclass(slots=True)
@@ -55,7 +61,11 @@ class AssistantSettings:
     mode: str
     remember_history: bool
     background: str
-    thinking_model: str | None
+    background_path: str = ""  # If set, load multiline background from this file (relative to project root)
+    thinking_model: str | None = None
+    user_id: str = "default"  # Scopes Agno Learning (user profile + memory) per user
+    response_style: str = "balanced"  # balanced | concise | detailed (reply length)
+    tts_length_scale: float = 1.0  # TTS speed: 0.65–1.35, higher = slower
 
 
 @dataclass(slots=True)
@@ -394,6 +404,21 @@ def _parse_session_tool_policies(raw: object) -> SessionToolPoliciesSettings:
     )
 
 
+def _normalize_response_style(value: Any) -> str:
+    s = str(value or "balanced").strip().lower()
+    if s in ("balanced", "concise", "detailed"):
+        return s
+    return "balanced"
+
+
+def _normalize_tts_length_scale(value: Any) -> float:
+    try:
+        f = float(value if value is not None else 1.0)
+        return max(0.65, min(f, 1.35))
+    except (TypeError, ValueError):
+        return 1.0
+
+
 def load_settings(config_path: Path | None = None) -> AppSettings:
     if config_path is not None:
         base = _read_config(config_path)
@@ -449,11 +474,15 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             mode=_required(assistant, "mode"),
             remember_history=bool(_required(assistant, "remember_history")),
             background=str(assistant.get("background", "")).strip(),
+            background_path=str(assistant.get("background_path", "") or "").strip(),
             thinking_model=(
                 str(assistant.get("thinking_model")).strip()
                 if assistant.get("thinking_model") is not None
                 else None
             ),
+            user_id=str(assistant.get("user_id", "default") or "default").strip() or "default",
+            response_style=_normalize_response_style(assistant.get("response_style")),
+            tts_length_scale=_normalize_tts_length_scale(assistant.get("tts_length_scale")),
         ),
         autonomy=AutonomySettings(
             enabled=bool(autonomy.get("enabled", False)),
@@ -503,9 +532,17 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             microphone_device=(
                 int(audio["microphone_device"]) if audio.get("microphone_device") is not None else None
             ),
+            output_device=(
+                int(audio["output_device"]) if audio.get("output_device") is not None else None
+            ),
             vad_level_threshold=float(audio.get("vad_level_threshold", 0.02)),
             vad_silence_seconds=float(audio.get("vad_silence_seconds", 1.0)),
             barge_in_enabled=bool(audio.get("barge_in_enabled", False)),
+            live_input_mode=str(audio.get("live_input_mode", "voice_detection")).strip() or "voice_detection",
+            live_ptt_type=str(audio.get("live_ptt_type", "keyboard")).strip().lower() or "keyboard",
+            live_ptt_key=(str(audio["live_ptt_key"]).strip() or None) if audio.get("live_ptt_key") is not None else None,
+            live_ptt_mouse_button=(str(audio["live_ptt_mouse_button"]).strip().lower() or None) if audio.get("live_ptt_mouse_button") is not None else None,
+            live_ptt_toggle=bool(audio.get("live_ptt_toggle", False)),
         ),
         database=DatabaseSettings(
             provider=str(database.get("provider", "sqlite")).strip().lower() or "sqlite",
@@ -627,9 +664,16 @@ def save_runtime_preferences(
     remember_history: bool,
     autonomy_mode: str,
     microphone_device: int | None,
-    vad_level_threshold: float,
-    vad_silence_seconds: float,
-    action_min_interval_seconds: float,
+    output_device: int | None = None,
+    vad_level_threshold: float = 0.02,
+    vad_silence_seconds: float = 1.0,
+    live_input_mode: str | None = None,
+    live_ptt_type: str | None = None,
+    live_ptt_key: str | None = None,
+    live_ptt_mouse_button: str | None = None,
+    live_ptt_toggle: bool | None = None,
+    barge_in_enabled: bool | None = None,
+    action_min_interval_seconds: float = 1.0,
     tts_provider: str,
     tts_voice: str | None,
     stt_model: str | None = None,
@@ -682,6 +726,7 @@ def save_runtime_preferences(
         },
         "audio": {
             "microphone_device": microphone_device,
+            "output_device": output_device,
             "vad_level_threshold": round(vad_level_threshold, 4),
             "vad_silence_seconds": round(vad_silence_seconds, 2),
             "enable_microphone": bool(enable_microphone),
@@ -702,6 +747,19 @@ def save_runtime_preferences(
             "prosody": {},
         },
     }
+    audio_updates = updates["audio"]
+    if live_input_mode is not None:
+        audio_updates["live_input_mode"] = str(live_input_mode).strip() or "voice_detection"
+    if live_ptt_type is not None:
+        audio_updates["live_ptt_type"] = str(live_ptt_type).strip().lower() or "keyboard"
+    if live_ptt_key is not None:
+        audio_updates["live_ptt_key"] = (str(live_ptt_key).strip() or None)
+    if live_ptt_mouse_button is not None:
+        audio_updates["live_ptt_mouse_button"] = (str(live_ptt_mouse_button).strip().lower() or None)
+    if live_ptt_toggle is not None:
+        audio_updates["live_ptt_toggle"] = bool(live_ptt_toggle)
+    if barge_in_enabled is not None:
+        audio_updates["barge_in_enabled"] = bool(barge_in_enabled)
 
     stt_updates: dict[str, Any] = updates["stt"]
     diagnostics_updates = stt_updates["diagnostics"]

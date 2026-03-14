@@ -4,8 +4,13 @@ import re
 
 
 _REACTION_TAG_PATTERN = re.compile(
-    r"\[\[reaction:(neutral|excited|surprised|sad|angry|calm)\]\]",
+    r"\[\[reaction:(neutral|cheerful|excited|surprised|sad|angry|calm|serious|friendly|gentle|enthusiastic)\]\]",
     flags=re.IGNORECASE,
+)
+# At start of text only (for streaming): optional whitespace, then tag, then optional newlines
+_REACTION_AT_START_PATTERN = re.compile(
+    r"^\s*\[\[reaction:(neutral|cheerful|excited|surprised|sad|angry|calm|serious|friendly|gentle|enthusiastic)\]\]\s*\n*",
+    flags=re.IGNORECASE | re.MULTILINE,
 )
 _ACTION_META_LINE_PATTERN = re.compile(
     r"^(\[plan\]|\[action\]|system:\s*step\s+\d+|step\s+\d+\s*\(|awaiting confirmation)",
@@ -15,6 +20,18 @@ _INLINE_ACTION_META_PATTERN = re.compile(
     r"\s*\[(plan|action|note)\].*$",
     flags=re.IGNORECASE,
 )
+
+
+def parse_reaction_at_start(text: str) -> tuple[str | None, str]:
+    """If text starts with [[reaction:X]], return (X, rest). Otherwise (None, text).
+    Use for streaming: call with accumulated buffer; when tag is complete, strip it and use rest for TTS."""
+    source = str(text or "")
+    match = _REACTION_AT_START_PATTERN.match(source)
+    if not match:
+        return None, source
+    reaction = match.group(1).strip().lower()
+    rest = source[match.end() :].lstrip("\n")
+    return reaction, rest
 
 
 def extract_tts_reaction_tag(text: str) -> tuple[str | None, str]:

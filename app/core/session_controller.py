@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import re
+import threading
 import time
 from typing import Any
 
@@ -16,7 +17,11 @@ from app.core.tooling.types import ToolError, ToolResult
 from app.audio.mic_capture import MicrophoneCapture
 from app.core.crash_logging import log_event, log_handled_exception
 from app.core.settings import AppSettings, OllamaSettings
-from app.core.services.response_text_service import extract_tts_reaction_tag, strip_action_meta_for_tts
+from app.core.services.response_text_service import (
+    extract_tts_reaction_tag,
+    parse_reaction_at_start,
+    strip_action_meta_for_tts,
+)
 from app.core.session_text_utils import (
     drain_tts_stream_chunks,
     extract_json_object,
@@ -30,6 +35,22 @@ from app.llm.ollama_client import OllamaClient
 from app.stt.prosody_fast import FastProsodyAnalyzer, ProsodyAnalysis
 from app.stt.realtime_stt_service import RealtimeSttService
 from app.tts.kokoro_service import KokoroTtsService
+
+
+def _get_assistant_background(settings: AppSettings) -> str | None:
+    """Resolve assistant background: from background_path file if set and readable, else from background string."""
+    path_raw = (getattr(settings.assistant, "background_path", None) or "").strip()
+    if path_raw:
+        root = Path(__file__).resolve().parents[2]
+        path = (root / path_raw) if not Path(path_raw).is_absolute() else Path(path_raw)
+        if path.is_file():
+            try:
+                content = path.read_text(encoding="utf-8").strip()
+                if content:
+                    return content
+            except Exception:
+                pass
+    return (settings.assistant.background or "").strip() or None
 
 
 class _StubMemory:
@@ -96,18 +117,30 @@ class SessionController:
             chat_model=settings.ollama.chat_model,
             base_url=settings.ollama.base_url,
             temperature=float(settings.ollama.temperature),
+            assistant_background=_get_assistant_background(settings),
             add_tools=True,
             add_mcp=True,
             database_provider=db_provider,
             database_url=db_url,
             storage_path=storage_path,
         )
-        self._tts = self._build_tts_service(settings)
+        self._agno_user_id = settings.assistant.user_id or "default"
+        self._tts = self._build_tts_service(settings, output_device=self._output_device)
+        self._apply_assistant_preferences()
         self._agno_session_id = "main"
         self._tts_playing = False
+        self._pending_tts_chunks: list[tuple[str, str | None]] = []
+        self._tts_queue_lock = threading.Lock()
         self._vad_level_threshold = settings.audio.vad_level_threshold
         self._vad_silence_seconds = settings.audio.vad_silence_seconds
         self._microphone_device = settings.audio.microphone_device
+        self._output_device = getattr(settings.audio, "output_device", None)
+        self._live_input_mode = getattr(settings.audio, "live_input_mode", None) or "voice_detection"
+        self._live_ptt_type = getattr(settings.audio, "live_ptt_type", None) or "keyboard"
+        self._live_ptt_key = getattr(settings.audio, "live_ptt_key", None)
+        self._live_ptt_mouse_button = getattr(settings.audio, "live_ptt_mouse_button", None)
+        self._live_ptt_toggle = getattr(settings.audio, "live_ptt_toggle", False)
+        self._ptt_active = False
         self._remember_history = settings.assistant.remember_history
         self._autonomy_mode = str(getattr(settings.autonomy, "mode", "interactive") or "interactive").strip().lower()
         if self._autonomy_mode not in {"manual", "interactive", "automatic"}:
@@ -139,7 +172,6 @@ class SessionController:
         )
         self._startup_context_prewarm_enabled = False
         self._startup_history_limit = 1
-
     @property
     def state(self) -> SessionState:
         return self._state
@@ -158,6 +190,70 @@ class SessionController:
     @property
     def microphone_device(self) -> int | None:
         return self._microphone_device
+
+    def list_output_devices(self) -> list[tuple[int, str]]:
+        from app.audio.mic_capture import list_output_devices as _list
+        return _list()
+
+    def set_output_device(self, device_index: int | None) -> None:
+        self._output_device = device_index
+        set_od = getattr(self._tts, "set_output_device", None)
+        if set_od is not None:
+            set_od(device_index)
+
+    @property
+    def output_device(self) -> int | None:
+        return self._output_device
+
+    def barge_in_enabled(self) -> bool:
+        return bool(getattr(self._settings.audio, "barge_in_enabled", False))
+
+    def set_barge_in_enabled(self, enabled: bool) -> None:
+        self._settings.audio.barge_in_enabled = bool(enabled)
+
+    @property
+    def live_input_mode(self) -> str:
+        return self._live_input_mode
+
+    def set_live_input_mode(self, mode: str) -> None:
+        self._live_input_mode = (str(mode or "").strip() or "voice_detection").lower()
+        if self._live_input_mode not in ("voice_detection", "push_to_talk"):
+            self._live_input_mode = "voice_detection"
+
+    @property
+    def live_ptt_type(self) -> str:
+        return self._live_ptt_type
+
+    def set_live_ptt_type(self, ptt_type: str) -> None:
+        t = (str(ptt_type or "").strip().lower() or "keyboard")
+        self._live_ptt_type = t if t in ("keyboard", "mouse") else "keyboard"
+
+    @property
+    def live_ptt_key(self) -> str | None:
+        return self._live_ptt_key
+
+    def set_live_ptt_key(self, key: str | None) -> None:
+        self._live_ptt_key = (str(key).strip() or None) if key is not None else None
+
+    @property
+    def live_ptt_mouse_button(self) -> str | None:
+        return self._live_ptt_mouse_button
+
+    def set_live_ptt_mouse_button(self, button: str | None) -> None:
+        self._live_ptt_mouse_button = (str(button).strip().lower() or None) if button is not None else None
+
+    @property
+    def live_ptt_toggle(self) -> bool:
+        return self._live_ptt_toggle
+
+    def set_live_ptt_toggle(self, value: bool) -> None:
+        self._live_ptt_toggle = bool(value)
+
+    def get_ptt_active(self) -> bool:
+        return self._ptt_active
+
+    def set_ptt_active(self, active: bool) -> None:
+        self._ptt_active = bool(active)
 
     @property
     def vad_level_threshold(self) -> float:
@@ -260,22 +356,71 @@ class SessionController:
                 return "error", "Failed to read TTS status"
         return "ready", "TTS runtime available"
 
+    def _on_tts_chunk_done(self) -> None:
+        next_chunk: tuple[str, str | None] | None = None
+        with self._tts_queue_lock:
+            self._tts_playing = False
+            if self._pending_tts_chunks:
+                next_chunk = self._pending_tts_chunks.pop(0)
+                self._tts_playing = True
+        if next_chunk:
+            text, reaction = next_chunk
+            try:
+                self._tts.speak_async(
+                    text,
+                    reaction=reaction,
+                    on_done=self._on_tts_chunk_done,
+                )
+            except Exception as exc:
+                self._trace("tts.error", f"TTS queue speak failed: {exc}")
+                with self._tts_queue_lock:
+                    self._tts_playing = False
+
+    def _enqueue_tts_chunk(self, text: str, reaction: str | None = None) -> None:
+        if not (text or "").strip():
+            return
+        msg = prepare_tts_text(text.strip())
+        if not msg:
+            return
+        with self._tts_queue_lock:
+            self._pending_tts_chunks.append((msg, reaction))
+            if self._tts_playing:
+                return
+            self._tts_playing = True
+            chunk = self._pending_tts_chunks.pop(0)
+        try:
+            self._tts.speak_async(
+                chunk[0],
+                reaction=chunk[1],
+                on_done=self._on_tts_chunk_done,
+            )
+        except Exception as exc:
+            self._trace("tts.error", f"TTS queue speak failed: {exc}")
+            with self._tts_queue_lock:
+                self._tts_playing = False
+
+    def stop_tts(self) -> None:
+        with self._tts_queue_lock:
+            self._pending_tts_chunks.clear()
+            self._tts_playing = False
+        try:
+            self._tts.stop()
+        except Exception:
+            pass
+
+    def is_tts_playing(self) -> bool:
+        with self._tts_queue_lock:
+            return self._tts_playing or len(self._pending_tts_chunks) > 0
+
     def speak_text(self, text: str) -> bool:
         if not bool(getattr(self._settings.tts, "enabled", True)):
             return False
         message = prepare_tts_text(text)
         if not message:
             return False
-        try:
-            self._tts_playing = True
-            reaction = infer_tts_reaction(message)
-            on_done = lambda: setattr(self, "_tts_playing", False)
-            self._tts.speak_async(message, reaction=reaction, on_done=on_done)
-            return True
-        except Exception as exc:
-            self._tts_playing = False
-            self._trace("tts.error", f"TTS startup speak failed: {exc}")
-            return False
+        reaction = infer_tts_reaction(message)
+        self._enqueue_tts_chunk(message, reaction=reaction)
+        return True
 
     def build_startup_greeting(self) -> str:
         return "Welcome back. Audio is ready."
@@ -377,8 +522,8 @@ class SessionController:
         except Exception:
             pass
         self._settings.tts.provider = normalized
-        self._tts = self._build_tts_service(self._settings)
-        self._apply_persona_runtime_preferences()
+        self._tts = self._build_tts_service(self._settings, output_device=self._output_device)
+        self._apply_assistant_preferences()
         self._trace("tts.provider", f"Switched TTS provider to {normalized}")
 
     @property
@@ -811,38 +956,6 @@ class SessionController:
         fallback = " | ".join(parts)
         return fallback[: max(80, int(max_chars))].strip()
 
-    def _persona_compact_notes(self) -> None:
-        if not self._persona_compact_enabled:
-            return
-        result = self._invoke_tool(
-            "persona.compact_notes",
-            args={
-                "max_notes": self._persona_compact_max_notes,
-                "max_chars_per_note": self._persona_compact_max_chars,
-            },
-        )
-        if result.success:
-            removed = int(result.data.get("removed_count", 0) or 0)
-            if removed > 0:
-                self._trace("persona.compact", f"Compacted persona notes: removed={removed}")
-
-    def _persona_filter_notes(self, *, focus_text: str) -> None:
-        if not self._persona_filter_enabled:
-            return
-        result = self._invoke_tool(
-            "persona.filter_notes",
-            args={
-                "max_notes": self._persona_filter_max_notes,
-                "min_chars": self._persona_filter_min_chars,
-                "remove_generic_user_said": self._persona_filter_remove_generic_user_said,
-                "focus_text": focus_text,
-            },
-        )
-        if result.success:
-            removed = int(result.data.get("removed_count", 0) or 0)
-            if removed > 0:
-                self._trace("persona.filter", f"Filtered persona notes: removed={removed}")
-
     def chat_once(self, user_text: str) -> str:
         return self.chat_once_streaming(user_text=user_text, mode="typed")
 
@@ -898,7 +1011,7 @@ class SessionController:
             )
 
         stream_tts_used = False
-        stream_tts_enqueued_chunks = 0
+        stream_tts_enqueued_chunks: list[int] = [0]
         llm_ms = 0.0
         tool_calls_executed = False
 
@@ -915,13 +1028,62 @@ class SessionController:
                     msg = f"Tool: {name} - {summary[:80]}{'...' if len(summary) > 80 else ''}" if summary else f"Tool: {name}"
                     on_generation_status(msg)
 
-            response = run_agent(
-                self._agno_agent,
-                message_for_agent,
-                session_id=self._agno_session_id,
-                stream=False,
-                on_tool_use=_tool_status if on_generation_status else None,
-            )
+            use_stream_tts = mode == "live"
+            if use_stream_tts:
+                stream_buffer: list[str] = []
+                reply_mood: list[str | None] = [None]
+
+                def _on_content(delta: str) -> None:
+                    if not delta:
+                        return
+                    stream_buffer.append(delta)
+                    buf = "".join(stream_buffer)
+                    if reply_mood[0] is None:
+                        mood, rest = parse_reaction_at_start(buf)
+                        if mood is not None:
+                            reply_mood[0] = mood
+                            stream_buffer.clear()
+                            stream_buffer.append(rest)
+                            buf = rest
+                    chunks, remainder = drain_tts_stream_chunks(buf, flush=False)
+                    for sent in chunks:
+                        tts_text = prepare_tts_text(strip_action_meta_for_tts(sent))
+                        if tts_text:
+                            self._enqueue_tts_chunk(tts_text, reaction=reply_mood[0] or "neutral")
+                            stream_tts_enqueued_chunks[0] += 1
+                    stream_buffer.clear()
+                    stream_buffer.append(remainder)
+                    if on_token and buf:
+                        on_token(buf)
+
+                response = run_agent(
+                    self._agno_agent,
+                    message_for_agent,
+                    session_id=self._agno_session_id,
+                    user_id=self._agno_user_id,
+                    stream=True,
+                    on_content=_on_content,
+                    on_tool_use=_tool_status if on_generation_status else None,
+                    stop_requested=stop_requested,
+                )
+                buf = "".join(stream_buffer)
+                final_chunks, _ = drain_tts_stream_chunks(buf, flush=True)
+                for sent in final_chunks:
+                    tts_text = prepare_tts_text(strip_action_meta_for_tts(sent))
+                    if tts_text:
+                        self._enqueue_tts_chunk(tts_text, reaction=reply_mood[0] or "neutral")
+                        stream_tts_enqueued_chunks[0] += 1
+                stream_tts_used = True
+            else:
+                response = run_agent(
+                    self._agno_agent,
+                    message_for_agent,
+                    session_id=self._agno_session_id,
+                    user_id=self._agno_user_id,
+                    stream=False,
+                    on_tool_use=_tool_status if on_generation_status else None,
+                )
+
             response = sanitize_assistant_text(response)
             llm_ms = (time.perf_counter() - llm_started) * 1000.0
             if not response or not response.strip():
@@ -930,7 +1092,7 @@ class SessionController:
                     f"mode={mode} llm_ms={round(llm_ms, 1)} agent returned empty; check Agno/Ollama response shape",
                 )
                 response = "I didn’t get a reply from the model. Try again or check the console for details."
-            if on_token and response:
+            if on_token and response and not use_stream_tts:
                 on_token(response)
             self._trace(
                 "pipeline.llm.done",
@@ -969,31 +1131,29 @@ class SessionController:
         tts_started = time.perf_counter()
         tts_ms = 0.0
         should_speak_full_response = bool(response and not stream_tts_used)
-        if stream_tts_used and stream_tts_enqueued_chunks < 1:
+        if stream_tts_used and stream_tts_enqueued_chunks[0] < 1:
             self._trace("pipeline.tts.enqueue", "stream mode used but no chunks enqueued; fallback full TTS")
             should_speak_full_response = bool(response)
         self._trace(
             "pipeline.tts.plan",
             (
                 f"stream_used={stream_tts_used} "
-                f"queued_chunks={stream_tts_enqueued_chunks} "
+                f"queued_chunks={stream_tts_enqueued_chunks[0]} "
                 f"full_response={'yes' if should_speak_full_response else 'no'}"
             ),
         )
         if response and stream_tts_used:
-            has_pending_audio = getattr(self._tts, "has_pending_audio", None)
-            if callable(has_pending_audio):
-                try:
-                    should_speak_full_response = not bool(has_pending_audio())
-                except Exception:
-                    should_speak_full_response = True
+            try:
+                should_speak_full_response = not self.is_tts_playing()
+            except Exception:
+                should_speak_full_response = True
 
         if should_speak_full_response:
             try:
                 tts_text = prepare_tts_text(strip_action_meta_for_tts(llm_response_for_tts))
                 if tts_text:
                     reaction = explicit_reaction or infer_tts_reaction(llm_response_for_tts)
-                    self._tts.speak_async(tts_text, reaction=reaction)
+                    self._enqueue_tts_chunk(tts_text, reaction=reaction)
                     self._trace("pipeline.tts.reaction", f"reaction={reaction}")
                     self._trace("pipeline.tts.speak", f"chars={len(tts_text)}")
             except Exception as exc:
@@ -1014,9 +1174,8 @@ class SessionController:
         self._trace("pipeline.turn.done", f"mode={mode} total_ms={round((time.perf_counter() - turn_start) * 1000.0, 1)}")
         return response
 
-    def _apply_persona_runtime_preferences(self) -> None:
-        snapshot = self._persona_snapshot(max_notes=1)
-        length_scale = float(snapshot.get("tts_length_scale", 1.0) or 1.0)
+    def _apply_assistant_preferences(self) -> None:
+        length_scale = getattr(self._settings.assistant, "tts_length_scale", 1.0) or 1.0
         set_length_scale = getattr(self._tts, "set_length_scale", None)
         if callable(set_length_scale):
             try:
@@ -1025,35 +1184,12 @@ class SessionController:
                 pass
 
     def _response_num_predict(self) -> int:
-        style = str(self._persona_snapshot(max_notes=1).get("response_style", "balanced"))
+        style = str(getattr(self._settings.assistant, "response_style", "balanced") or "balanced").strip().lower()
         if style == "concise":
             return 96
         if style == "detailed":
             return 220
         return 140
-
-    def _persona_update_from_user_text(self, user_text: str) -> bool:
-        result = self._invoke_tool(
-            "persona.update_from_user_text",
-            args={"user_text": user_text},
-        )
-        if not result.success:
-            return False
-        return bool(result.data.get("changed", False))
-
-    def _persona_snapshot(self, *, max_notes: int) -> dict:
-        result = self._invoke_tool(
-            "persona.read_snapshot",
-            args={"max_notes": max_notes},
-        )
-        if not result.success:
-            return {
-                "assistant_background": self._settings.assistant.background,
-                "user_notes": [],
-                "response_style": "balanced",
-                "tts_length_scale": 1.0,
-            }
-        return result.data
 
     def _plan_turn_autonomy(self, *, user_text: str) -> TurnAutonomyPlan:
         default_strategy = "Respond naturally, concise first, ask one focused follow-up when useful."
@@ -1358,9 +1494,9 @@ class SessionController:
         )
 
     @staticmethod
-    def _build_tts_service(settings: AppSettings):
+    def _build_tts_service(settings: AppSettings, output_device: int | None = None):
         provider = (settings.tts.provider or "kokoro").strip().lower()
-        return KokoroTtsService(settings.tts)
+        return KokoroTtsService(settings.tts, output_device=output_device)
 
     def record_and_chat(
         self,
@@ -1515,6 +1651,32 @@ class SessionController:
             return None
 
         return wav_path, capture_ms
+
+    def capture_ptt_phrase(
+        self,
+        *,
+        ptt_active_getter: Callable[[], bool],
+        stop_requested: Callable[[], bool] | None = None,
+        on_audio_level: Callable[[float], None] | None = None,
+        on_generation_status: Callable[[str], None] | None = None,
+        max_seconds: float = 30.0,
+    ) -> tuple[Path, float] | None:
+        """Record while ptt_active_getter() is True; return (wav_path, capture_ms) or None."""
+        if not self._state.mic_enabled:
+            raise RuntimeError("Microphone source is disabled. Enable it and try again.")
+        if not self._realtime_stt.is_available:
+            raise RuntimeError(
+                "RealtimeSTT is not available. Install with: pip install realtimestt"
+            )
+        if on_generation_status:
+            on_generation_status("push-to-talk")
+        result = self._microphone.capture_while_ptt_active(
+            ptt_active_getter=ptt_active_getter,
+            stop_requested=stop_requested,
+            on_audio_level=on_audio_level,
+            max_seconds=max_seconds,
+        )
+        return result
 
     def process_live_capture(
         self,

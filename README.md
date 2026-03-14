@@ -106,6 +106,20 @@ RealtimeSTT will download Whisper `large-v1` on first use. No manual download re
 
 User overrides (model, voice, paths) go in `config/user.json`.
 
+## Customizing the persona
+
+**User persona** (what the agent knows about you) is handled by **Agno Learning**: User Profile and User Memory are stored in the same database as session history (`data/agno_sessions.db` by default) and injected into the agent automatically.
+
+Configure the assistant in `config/default.json` or `config/user.json` under `assistant`:
+
+| Key | Description |
+|-----|-------------|
+| `background` | Inline description of the assistant’s role (single line in JSON). Used when `background_path` is not set or the file cannot be read. |
+| `background_path` | Path to a **text file** (relative to project root) with multiline instructions, e.g. `data/assistant_background.txt`. If set and the file exists, its content is used instead of `background`. |
+| `user_id` | Optional; default `"default"`. Scopes Agno Learning per user. |
+| `response_style` | Optional; one of `balanced`, `concise`, `detailed`. Affects reply length. Default `balanced`. |
+| `tts_length_scale` | Optional; float in 0.65–1.35. Higher = slower TTS. Default `1.0`. |
+
 ## Run
 
 Use the project’s virtual environment so that `agno` and other dependencies are found. From the project root:
@@ -124,8 +138,14 @@ python -m app.main
 ## Usage
 
 - **Type** in the input field and press Enter or click Send to get a text + spoken reply.
-- **Record** using the Record button: speak, then stop; the transcript is sent to the agent and the reply is spoken.
+- **Live** — Click **Start Live** to use voice detection or push-to-talk: the app listens for your speech, transcribes it, sends it to the agent, and speaks the reply. Sentence chunks are spoken as they are generated (stream-to-speak). Use **Stop Live** when done.
 - Conversation history is kept in the session (Agno storage). Use Clear history in settings to reset.
+
+### Live mode: streaming, barge-in, and mood
+
+- **Streaming:** In Live mode the agent reply is streamed; each sentence is spoken as soon as it is ready, so you hear the start of the answer sooner.
+- **Mood:** The agent starts each reply with a mood tag (e.g. `[[reaction:cheerful]]`). TTS uses this to slightly adjust speaking speed (e.g. more energetic for “excited”, slower for “sad”).
+- **Barge-in:** In Settings → Audio you can enable **Allow barge-in**. When on, you can interrupt while the assistant is speaking: your new utterance stops playback and is processed as a correction or follow-up in the same conversation, so the agent keeps context.
 
 ## Optional: MCP tools
 

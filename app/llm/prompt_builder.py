@@ -13,7 +13,7 @@ BASE_SYSTEM_PROMPT = (
     "Do not force grammar corrections unless the user asks. "
     "When UI action approval mode is enabled, describe automation intent in future tense and do not claim an action is completed before system confirmation. "
     "At the end of every reply, append exactly one reaction tag in this format: "
-    "[[reaction:neutral]] using one of: neutral, excited, surprised, sad, angry, calm. "
+    "[[reaction:neutral]] using one of: neutral, cheerful, excited, surprised, sad, angry, calm, serious, friendly, gentle, enthusiastic. "
     "Keep the tag on its own at the very end. "
     + _NO_EMOJI_RULE
 )
@@ -25,9 +25,6 @@ class PromptContext:
     session_type: str | None = None
     user_vocal_tone: str | None = None
     screen_text: str | None = None
-    persona_background: str | None = None
-    persona_user_notes: list[str] | None = None
-    persona_response_style: str | None = None
     memory_messages: list[dict[str, str]] | None = None
     memory_summary: str | None = None
     assistant_strategy: str | None = None
@@ -39,34 +36,6 @@ class PromptContext:
 
 def build_messages(context: PromptContext) -> list[dict[str, str]]:
     system = BASE_SYSTEM_PROMPT
-
-    persona_lines: list[str] = []
-    background = str(context.persona_background or "").strip()
-    if background:
-        persona_lines.append(f"Assistant background: {background}")
-
-    notes = context.persona_user_notes or []
-    if notes:
-        persona_lines.append("Known user profile notes:")
-        for note in notes[-6:]:
-            cleaned = str(note).strip()
-            if cleaned:
-                persona_lines.append(f"- {cleaned}")
-
-    if persona_lines:
-        system = f"{system}\n\n" + "\n".join(persona_lines)
-
-    style = str(context.persona_response_style or "balanced").strip().lower()
-    if style == "concise":
-        system = (
-            f"{system}\n\n"
-            "Response style preference: concise. Keep replies to 1-2 short sentences unless user asks for detail."
-        )
-    elif style == "detailed":
-        system = (
-            f"{system}\n\n"
-            "Response style preference: detailed. Provide richer explanations while staying clear and structured."
-        )
 
     if context.available_capabilities:
         caps_str = ", ".join(context.available_capabilities)

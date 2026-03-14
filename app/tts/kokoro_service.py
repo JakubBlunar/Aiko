@@ -60,6 +60,27 @@ except Exception as e:
     espeak = None
 
 
+_REACTION_SPEED: dict[str, float] = {
+    "excited": 1.1,
+    "enthusiastic": 1.08,
+    "cheerful": 1.08,
+    "angry": 1.05,
+    "surprised": 1.05,
+    "friendly": 1.02,
+    "neutral": 1.0,
+    "calm": 0.95,
+    "serious": 0.95,
+    "sad": 0.92,
+    "gentle": 0.92,
+}
+
+
+def _reaction_to_speed(reaction: str | None) -> float:
+    if not (reaction or "").strip():
+        return 1.0
+    return _REACTION_SPEED.get((reaction or "").strip().lower(), 1.0)
+
+
 def _resolve_path(path: str | None, base: Path) -> Path:
     if not path:
         return base / "kokoro-v1.0.onnx"
@@ -70,8 +91,9 @@ def _resolve_path(path: str | None, base: Path) -> Path:
 class KokoroTtsService:
     """TTS using Kokoro ONNX + misaki G2P. Plays via sounddevice."""
 
-    def __init__(self, settings: TtsSettings) -> None:
+    def __init__(self, settings: TtsSettings, output_device: int | None = None) -> None:
         self._settings = settings
+        self._output_device = output_device
         self._lock = threading.Lock()
         self._kokoro: object | None = None
         self._g2p: object | None = None
@@ -146,6 +168,9 @@ class KokoroTtsService:
     def stop(self) -> None:
         self._stop_requested.set()
 
+    def set_output_device(self, device_index: int | None) -> None:
+        self._output_device = device_index
+
     def speak_async(
         self,
         text: str,
@@ -155,14 +180,20 @@ class KokoroTtsService:
         if not self._settings.enabled or not (text or "").strip():
             return
         self._stop_requested.clear()
+        speed = _reaction_to_speed(reaction)
         self._speech_thread = threading.Thread(
             target=self._speak_worker,
-            args=(text.strip(), on_done),
+            args=(text.strip(), on_done, speed),
             daemon=True,
         )
         self._speech_thread.start()
 
-    def _speak_worker(self, text: str, on_done: Callable[[], None] | None = None) -> None:
+    def _speak_worker(
+        self,
+        text: str,
+        on_done: Callable[[], None] | None = None,
+        speed: float = 1.0,
+    ) -> None:
         try:
             if not self._loaded.wait(timeout=30.0):
                 return
@@ -173,13 +204,22 @@ class KokoroTtsService:
                 return
             phonemes, _ = g2p(text)
             voice = (self._settings.voice or "af_heart").strip() or "af_heart"
-            samples, sample_rate = kokoro.create(phonemes, voice, is_phonemes=True)
+            try:
+                samples, sample_rate = kokoro.create(
+                    phonemes, voice, is_phonemes=True, speed=min(2.0, max(0.5, float(speed)))
+                )
+            except TypeError:
+                samples, sample_rate = kokoro.create(phonemes, voice, is_phonemes=True)
             if self._stop_requested.is_set():
                 return
             audio_data = np.asarray(samples, dtype=np.float32)
             if audio_data.size == 0:
                 return
-            sd.play(audio_data.reshape(-1, 1), sample_rate)
+            sd.play(
+                audio_data.reshape(-1, 1),
+                sample_rate,
+                device=self._output_device,
+            )
             sd.wait()
         except Exception as exc:
             self._last_error = str(exc)

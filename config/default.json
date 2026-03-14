@@ -4,7 +4,10 @@
     "mode": "natural_chat",
     "remember_history": true,
     "background": "",
-    "thinking_model": null
+    "background_path": "data/assistant_background.txt",
+    "thinking_model": null,
+    "response_style": "balanced",
+    "tts_length_scale": 1.0
   },
   "ollama": {
     "base_url": "http://127.0.0.1:11434",
