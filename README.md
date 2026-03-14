@@ -40,6 +40,18 @@ For Agno built-in tools (Google Search, Wikipedia, Arxiv):
 pip install -e ".[agent]"
 ```
 
+**If your `.venv` is corrupted or misbehaving**, recreate it from the project root (close the app first):
+
+```powershell
+Remove-Item -Recurse -Force .venv
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -e .
+.\.venv\Scripts\python -m spacy download en_core_web_sm
+```
+
+Then run the app with `.\.venv\Scripts\python -m app.main`.
+
 ### 3. Kokoro TTS dependencies
 
 If you see "Missing TTS dependencies" or "Missing kokoro_onnx, misaki, sounddevice, or numpy", install the project (which includes them) or the TTS packages explicitly:
@@ -90,6 +102,7 @@ RealtimeSTT will download Whisper `large-v1` on first use. No manual download re
 - **STT:** `stt.provider` (realtime_stt), `stt.model` (large-v1), `stt.language` (en)
 - **TTS:** `tts.provider` (kokoro), `tts.voice` (e.g. af_heart), `tts.kokoro_model_path`, `tts.kokoro_voices_path`
 - **MCP:** Optional. See `config/tooling.default.json` and `config/mcp.servers.json`; enable in `config/tooling.user.json` under `tools.mcp.enabled`
+- **Logging:** All app events and errors are logged to the console (stderr). Filter by level with the `LOG_LEVEL` environment variable (e.g. `DEBUG`, `INFO`, `WARNING`, `ERROR`) or set `logging.level` in `config/default.json` or `config/user.json`. Use `DEBUG` to see all pipeline/tool events for diagnosis; use `ERROR` to reduce noise.
 
 User overrides (model, voice, paths) go in `config/user.json`.
 

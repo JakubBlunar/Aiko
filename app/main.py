@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import os
 import sys
 
 from PySide6.QtCore import QEventLoop, QThread
 from PySide6.QtWidgets import QApplication
 
-from app.core.crash_logging import install_global_exception_hooks
+from app.core.crash_logging import configure_logging, install_global_exception_hooks
 from app.core.session_controller import SessionController
 from app.core.settings import load_settings
 from app.ui.main_window import MainWindow
@@ -15,6 +16,8 @@ from app.ui.startup_preloader import StartupPreloaderDialog, StartupPrewarmWorke
 def main() -> int:
     install_global_exception_hooks()
     settings = load_settings()
+    log_level = os.environ.get("LOG_LEVEL") or getattr(getattr(settings, "logging", None), "level", None)
+    configure_logging(log_level)
     app = QApplication(sys.argv)
 
     preloader = StartupPreloaderDialog(settings)
@@ -61,6 +64,7 @@ def main() -> int:
         show_startup_error("Startup did not return a ready session.")
         return 1
 
+    app.setQuitOnLastWindowClosed(True)
     window = MainWindow(settings, session=session)
     window.show()
     return app.exec()

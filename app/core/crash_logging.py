@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 import faulthandler
 import json
+import logging
+import os
 import sys
 import threading
 import traceback
@@ -15,6 +17,24 @@ CRASH_LOG_PATH = DATA_DIR / "crashlog.txt"
 
 _lock = threading.Lock()
 _fault_file = None
+_logger: logging.Logger | None = None
+
+
+def configure_logging(level_name: str | None = None) -> None:
+    """Configure app logger: console (stderr) with level from env LOG_LEVEL or argument. Call once at startup."""
+    global _logger
+    level = level_name or os.environ.get("LOG_LEVEL", "INFO")
+    if isinstance(level, str):
+        level = getattr(logging, level.upper(), logging.INFO)
+    if not isinstance(level, int):
+        level = logging.INFO
+    _logger = logging.getLogger("app")
+    _logger.setLevel(level)
+    _logger.handlers.clear()
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setLevel(level)
+    handler.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s [app] %(message)s"))
+    _logger.addHandler(handler)
 
 
 def _write_line(entry: dict[str, object]) -> None:
@@ -27,14 +47,29 @@ def _write_line(entry: dict[str, object]) -> None:
             handle.write(line + "\n")
 
 
+def _stage_to_level(stage: str) -> int:
+    if "error" in (stage or "").lower():
+        return logging.ERROR
+    return logging.INFO
+
+
 def log_event(stage: str, message: str) -> None:
-    _write_line(
-        {
-            "type": "event",
-            "stage": str(stage),
-            "message": str(message),
-        }
-    )
+    stage_text = str(stage)
+    message_text = str(message)
+    if _logger is not None:
+        level = _stage_to_level(stage_text)
+        _logger.log(level, "[%s] %s", stage_text, message_text)
+    if "error" in stage_text.lower():
+        try:
+            _write_line(
+                {
+                    "type": "event",
+                    "stage": stage_text,
+                    "message": message_text,
+                }
+            )
+        except Exception:
+            pass
 
 
 def log_exception(
@@ -45,15 +80,20 @@ def log_exception(
     context: str = "unhandled",
 ) -> None:
     formatted = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
-    _write_line(
-        {
-            "type": "exception",
-            "context": context,
-            "exception_type": exc_type.__name__,
-            "message": str(exc_value),
-            "traceback": formatted,
-        }
-    )
+    try:
+        _write_line(
+            {
+                "type": "exception",
+                "context": context,
+                "exception_type": exc_type.__name__,
+                "message": str(exc_value),
+                "traceback": formatted,
+            }
+        )
+    except Exception:
+        pass
+    if _logger is not None:
+        _logger.error("[%s] %s: %s", context, exc_type.__name__, exc_value, exc_info=(exc_type, exc_value, exc_traceback))
 
 
 def log_handled_exception(exc: BaseException, *, context: str) -> None:

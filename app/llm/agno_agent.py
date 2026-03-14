@@ -1,6 +1,7 @@
 """Agno-based agent with Ollama, optional storage and tools."""
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -119,6 +120,37 @@ def create_agent(
     return Agent(**kwargs)
 
 
+def _content_from_response(response: Any) -> str:
+    """Extract reply text from Agno run result (RunOutput or similar). Tries content, then messages."""
+    if response is None:
+        return ""
+    # Prefer .content
+    if hasattr(response, "content") and response.content is not None:
+        raw = str(response.content).strip()
+        if raw:
+            return raw
+    # Fallback: last assistant message in .messages
+    messages = getattr(response, "messages", None)
+    if messages and isinstance(messages, (list, tuple)) and len(messages) > 0:
+        for msg in reversed(messages):
+            if not hasattr(msg, "content"):
+                continue
+            role = getattr(msg, "role", None) or getattr(msg, "type", "")
+            if str(role).lower() != "assistant":
+                continue
+            raw = str(msg.content or "").strip()
+            if raw:
+                return raw
+    # Fallback: .text or string repr (avoid object repr)
+    raw = str(getattr(response, "text", None) or "").strip()
+    if raw:
+        return raw
+    raw = str(response).strip()
+    if raw and not raw.startswith("<") and "object at 0x" not in raw:
+        return raw
+    return ""
+
+
 def run_agent(
     agent: Any,
     message: str,
@@ -131,24 +163,27 @@ def run_agent(
     if agent is None:
         return ""
     try:
-        run_kwargs: dict[str, Any] = {"message": message.strip(), "stream": stream}
+        run_kwargs: dict[str, Any] = {"input": message.strip(), "stream": stream}
         if session_id:
             run_kwargs["session_id"] = session_id
         response = agent.run(**run_kwargs)
-        content = ""
-        if hasattr(response, "content") and response.content is not None:
-            content = (str(response.content) or "").strip()
-            if on_tool_use and getattr(response, "tool_calls", None):
-                for tc in response.tool_calls:
-                    name = getattr(tc, "name", None) or getattr(tc, "tool_name", None) or str(getattr(tc, "tool", tc))
-                    if isinstance(name, str):
-                        summary = getattr(tc, "result", None) or getattr(tc, "summary", None) or ""
-                        try:
-                            on_tool_use(name, str(summary)[:200] if summary else "")
-                        except Exception:
-                            pass
+        content = _content_from_response(response)
         if not content:
-            content = (str(response or "")).strip()
+            logging.getLogger("app").warning(
+                "agno run_agent: empty content from response type=%s attrs=%s",
+                type(response).__name__,
+                [a for a in dir(response) if not a.startswith("_")],
+            )
+        if on_tool_use and getattr(response, "tool_calls", None):
+            for tc in response.tool_calls:
+                name = getattr(tc, "name", None) or getattr(tc, "tool_name", None) or str(getattr(tc, "tool", tc))
+                if isinstance(name, str):
+                    summary = getattr(tc, "result", None) or getattr(tc, "summary", None) or ""
+                    try:
+                        on_tool_use(name, str(summary)[:200] if summary else "")
+                    except Exception:
+                        pass
         return content
-    except Exception:
-        return ""
+    except Exception as exc:
+        logging.getLogger("app").warning("agno run_agent failed: %s", exc, exc_info=True)
+        raise

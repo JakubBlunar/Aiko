@@ -5,6 +5,7 @@ import html
 from PySide6.QtCore import QEvent, QThread, QTimer, Qt
 from PySide6.QtGui import QCloseEvent, QTextCursor
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -743,6 +744,9 @@ class MainWindow(QMainWindow):
             self._live_thread.quit()
             self._live_thread.wait(1500)
         super().closeEvent(event)
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
 
     def _record_and_send(self) -> None:
         if self._turn_thread is not None:

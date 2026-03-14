@@ -46,5 +46,8 @@
     "config_default_path": "config/tooling.default.json",
     "config_user_path": "config/tooling.user.json",
     "enable_runtime_overrides": true
+  },
+  "logging": {
+    "level": "INFO"
   }
 }

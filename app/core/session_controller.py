@@ -924,6 +924,12 @@ class SessionController:
             )
             response = sanitize_assistant_text(response)
             llm_ms = (time.perf_counter() - llm_started) * 1000.0
+            if not response or not response.strip():
+                self._trace(
+                    "pipeline.llm.empty",
+                    f"mode={mode} llm_ms={round(llm_ms, 1)} agent returned empty; check Agno/Ollama response shape",
+                )
+                response = "I didn’t get a reply from the model. Try again or check the console for details."
             if on_token and response:
                 on_token(response)
             self._trace(
@@ -1333,11 +1339,10 @@ class SessionController:
                 "message": message_text,
             }
         )
-        if "error" in stage_text:
-            try:
-                log_event(stage_text, message_text)
-            except Exception:
-                pass
+        try:
+            log_event(stage_text, message_text)
+        except Exception:
+            pass
 
     def _rebuild_thinking_client(self) -> None:
         if not self._thinking_model:

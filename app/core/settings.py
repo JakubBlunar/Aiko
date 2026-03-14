@@ -185,6 +185,11 @@ class ToolingBridgeSettings:
 
 
 @dataclass(slots=True)
+class LoggingSettings:
+    level: str = "INFO"
+
+
+@dataclass(slots=True)
 class AppSettings:
     assistant: AssistantSettings
     autonomy: AutonomySettings
@@ -197,6 +202,7 @@ class AppSettings:
     tts: TtsSettings
     ui: UiSettings
     tooling: ToolingBridgeSettings
+    logging: LoggingSettings = field(default_factory=LoggingSettings)
 
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "default.json"
@@ -412,6 +418,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
     tts = raw.get("tts", {}) or {}
     ui = raw.get("ui", {}) or {}
     tooling = raw.get("tooling", {}) or {}
+    logging_raw = raw.get("logging", {}) or {}
 
     turn_planning = autonomy.get("turn_planning", {}) if isinstance(autonomy.get("turn_planning", {}), dict) else {}
     stt_diagnostics = stt.get("diagnostics", {}) if isinstance(stt.get("diagnostics", {}), dict) else {}
@@ -606,6 +613,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             config_default_path=str(tooling.get("config_default_path", "config/tooling.default.json")),
             config_user_path=str(tooling.get("config_user_path", "config/tooling.user.json")),
             enable_runtime_overrides=bool(tooling.get("enable_runtime_overrides", True)),
+        ),
+        logging=LoggingSettings(
+            level=str(logging_raw.get("level", "INFO")).strip().upper() or "INFO",
         ),
     )
 
