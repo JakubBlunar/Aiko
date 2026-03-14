@@ -14,6 +14,36 @@ class SessionTurnSignals:
 
 
 @dataclass(slots=True)
+class SessionToolPolicy:
+    native_tool_calls_enabled: bool = False
+    allowed_tool_prefixes: tuple[str, ...] = ()
+    pre_execution_narration_default: bool = True
+
+
+@dataclass(slots=True)
+class SessionNativeToolFlowContext:
+    trace: Callable[[str, str], None]
+    chat_with_tools: Callable[..., object] | None = None
+    on_token: Callable[[str], None] | None = None
+    stop_requested: Callable[[], bool] | None = None
+    narration_enabled: bool = True
+    speak_text: Callable[[str], bool] | None = None
+    build_pre_execution_summary: Callable[[list[Any]], str] | None = None
+    invoke_tool: Callable[..., object] | None = None
+    tool_result_to_message_content: Callable[[str, object], str] | None = None
+    sanitize_text: Callable[[str], str] | None = None
+
+
+@dataclass(slots=True)
+class SessionNativeToolFlowResult:
+    handled: bool = False
+    response: str = ""
+    llm_ms: float = 0.0
+    tool_calls_executed: bool = False
+    pre_execution_narration_emitted: bool = False
+
+
+@dataclass(slots=True)
 class SessionRuntimeContext:
     actions_enabled: bool
     screen_enabled: bool
@@ -35,6 +65,19 @@ class SessionHandler(Protocol):
     session_type: str
 
     def detect_turn_signals(self, user_text: str) -> SessionTurnSignals:
+        ...
+
+    def tool_policy(self) -> SessionToolPolicy:
+        ...
+
+    def run_native_tool_flow(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        generation_options: dict[str, Any],
+        tools: list[dict[str, Any]],
+        flow_context: SessionNativeToolFlowContext,
+    ) -> SessionNativeToolFlowResult:
         ...
 
     def on_screen_text(

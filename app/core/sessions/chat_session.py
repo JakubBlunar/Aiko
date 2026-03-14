@@ -2,15 +2,45 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from app.core.sessions.session_types import SessionRuntimeContext, SessionTurnSignals
+from app.core.sessions.session_types import (
+    SessionNativeToolFlowContext,
+    SessionNativeToolFlowResult,
+    SessionRuntimeContext,
+    SessionToolPolicy,
+    SessionTurnSignals,
+)
 
 
 class ChatSession:
     session_type = "chat"
 
+    def __init__(self, policy: SessionToolPolicy | None = None) -> None:
+        self._policy = policy or SessionToolPolicy(
+            native_tool_calls_enabled=False,
+            allowed_tool_prefixes=(),
+            pre_execution_narration_default=False,
+        )
+
     def detect_turn_signals(self, user_text: str) -> SessionTurnSignals:
         _ = user_text
         return SessionTurnSignals()
+
+    def tool_policy(self) -> SessionToolPolicy:
+        return self._policy
+
+    def run_native_tool_flow(
+        self,
+        *,
+        messages: list[dict[str, object]],
+        generation_options: dict[str, object],
+        tools: list[dict[str, object]],
+        flow_context: SessionNativeToolFlowContext,
+    ) -> SessionNativeToolFlowResult:
+        _ = messages
+        _ = generation_options
+        _ = tools
+        _ = flow_context
+        return SessionNativeToolFlowResult(handled=False)
 
     def on_screen_text(
         self,

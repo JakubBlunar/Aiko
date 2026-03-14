@@ -16,9 +16,6 @@ from app.core.tooling.runtime.action_runtime import (
 )
 from app.core.tooling.runtime.emergency_stop import EmergencyStopState, GlobalHotkeyListener
 from app.audio.mic_capture import MicrophoneCapture
-from app.core.planning.action_planner import ActionPlanner
-from app.core.planning.autonomy_planner import AutonomyPlanner, GoalInference
-from app.core.planning.turn_orchestrator import TurnAutonomyPlan, TurnOrchestrator, TurnOrchestratorPlan
 from app.core.services.action_execution_service import ActionExecutionService
 from app.core.services.action_response_service import (
     build_post_action_followup,
@@ -32,9 +29,15 @@ from app.core.sessions.agentic_session_adapter import AgenticSessionAdapter
 from app.core.sessions.reading_session import ReadingSessionConfig, ReadingSessionManager
 from app.core.sessions.reading_session_adapter import ReadingSessionAdapter
 from app.core.sessions.session_router import SessionRouter
-from app.core.sessions.session_types import SessionHandler, SessionRuntimeContext
+from app.core.sessions.session_types import (
+    SessionHandler,
+    SessionNativeToolFlowContext,
+    SessionRuntimeContext,
+    SessionToolPolicy,
+)
 from app.core.settings import AppSettings, OllamaSettings
 from app.core.services.response_text_service import extract_tts_reaction_tag, strip_action_meta_for_tts
+from app.core.services import native_tool_flow_service
 from app.core.services.startup_runtime_service import StartupRuntimeService
 from app.core.session_text_utils import (
     drain_tts_stream_chunks,
@@ -70,6 +73,39 @@ class SessionState:
     session_type: str
 
 
+@dataclass(slots=True)
+class GoalInference:
+    goal: str
+    confidence: float
+    reason: str
+    description: str = ""
+    session_type: str = "chat"
+
+
+@dataclass(slots=True)
+class TurnAutonomyPlan:
+    strategy: str
+    should_use_screen: bool
+    should_plan_action: bool
+    ask_followup: bool
+    confidence: float
+    action_intent: str = ""
+
+
+@dataclass(slots=True)
+class TurnOrchestrationPlan:
+    strategy: str
+    should_capture_screen: bool
+    should_plan_action: bool
+    requested_operations: tuple[str, ...]
+    action_intent: str = ""
+    reason: str = ""
+    confidence: float = 0.0
+
+    def has_operation(self, operation: str) -> bool:
+        return str(operation).strip().lower() in set(self.requested_operations)
+
+
 class SessionController:
     def __init__(self, settings: AppSettings) -> None:
         self._settings = settings
@@ -86,8 +122,8 @@ class SessionController:
             model_name=settings.stt.model,
             language=settings.stt.language,
         )
-        self._prosody = FastProsodyAnalyzer(enabled=bool(settings.stt.prosody_enabled))
-        self._prosody_include_in_prompt = bool(settings.stt.prosody_include_in_prompt)
+        self._prosody = FastProsodyAnalyzer(enabled=bool(settings.stt.prosody.enabled))
+        self._prosody_include_in_prompt = bool(settings.stt.prosody.include_in_prompt)
         self._screen = ScreenCaptureService(settings.screen)
         self._action_stop_state = EmergencyStopState()
         self._action_hotkey_listener = GlobalHotkeyListener(
@@ -208,10 +244,63 @@ class SessionController:
                 max_auto_steps=max(1, int(getattr(self._settings.autonomy, "agentic_max_auto_steps", 3))),
             )
         )
+        autonomy_settings = self._settings.autonomy
+        session_policies_cfg = getattr(autonomy_settings, "session_tool_policies", None)
+        agentic_policy_cfg = getattr(session_policies_cfg, "agentic", None)
+        chat_policy_cfg = getattr(session_policies_cfg, "chat", None)
+        reading_policy_cfg = getattr(session_policies_cfg, "reading", None)
+        agentic_prefixes_raw = getattr(agentic_policy_cfg, "allowed_tool_prefixes", ("mcp.",))
+        if not isinstance(agentic_prefixes_raw, (list, tuple)):
+            agentic_prefixes_raw = ("mcp.",)
+        chat_prefixes_raw = getattr(chat_policy_cfg, "allowed_tool_prefixes", ("mcp.",))
+        if not isinstance(chat_prefixes_raw, (list, tuple)):
+            chat_prefixes_raw = ("mcp.",)
+        reading_prefixes_raw = getattr(reading_policy_cfg, "allowed_tool_prefixes", ("mcp.",))
+        if not isinstance(reading_prefixes_raw, (list, tuple)):
+            reading_prefixes_raw = ("mcp.",)
+        chat_policy = SessionToolPolicy(
+            native_tool_calls_enabled=bool(
+                getattr(chat_policy_cfg, "native_tool_calls_enabled", False)
+            ),
+            allowed_tool_prefixes=tuple(
+                str(item).strip().lower()
+                for item in chat_prefixes_raw
+                if str(item).strip()
+            ),
+            pre_execution_narration_default=bool(
+                getattr(chat_policy_cfg, "pre_execution_narration_default", False)
+            ),
+        )
+        agentic_policy = SessionToolPolicy(
+            native_tool_calls_enabled=bool(
+                getattr(agentic_policy_cfg, "native_tool_calls_enabled", True)
+            ),
+            allowed_tool_prefixes=tuple(
+                str(item).strip().lower()
+                for item in agentic_prefixes_raw
+                if str(item).strip()
+            ),
+            pre_execution_narration_default=bool(
+                getattr(agentic_policy_cfg, "pre_execution_narration_default", True)
+            ),
+        )
+        reading_policy = SessionToolPolicy(
+            native_tool_calls_enabled=bool(
+                getattr(reading_policy_cfg, "native_tool_calls_enabled", True)
+            ),
+            allowed_tool_prefixes=tuple(
+                str(item).strip().lower()
+                for item in reading_prefixes_raw
+                if str(item).strip()
+            ),
+            pre_execution_narration_default=bool(
+                getattr(reading_policy_cfg, "pre_execution_narration_default", False)
+            ),
+        )
         self._session_handlers: dict[str, SessionHandler] = {
-            "chat": ChatSession(),
-            "reading": ReadingSessionAdapter(self._reading_session),
-            "agentic": AgenticSessionAdapter(self._agentic_session),
+            "chat": ChatSession(policy=chat_policy),
+            "reading": ReadingSessionAdapter(self._reading_session, policy=reading_policy),
+            "agentic": AgenticSessionAdapter(self._agentic_session, policy=agentic_policy),
         }
         self._session_router = SessionRouter(
             supported_session_types=set(self._session_handlers.keys()),
@@ -223,24 +312,6 @@ class SessionController:
             current_session_type="chat",
         )
         self._active_session = self._session_handlers[self._active_session_type]
-        self._turn_orchestrator = TurnOrchestrator(
-            planner_chat=lambda messages: (self._thinking_ollama or self._ollama).chat(messages),
-            history_messages=lambda limit: self._history_messages(limit=limit),
-            extract_json_object=extract_json_object,
-            trace=self._trace,
-        )
-        self._autonomy_planner = AutonomyPlanner(
-            planner_chat=lambda messages: (self._thinking_ollama or self._ollama).chat(messages),
-            history_messages=lambda limit: self._history_messages(limit=limit),
-            extract_json_object=extract_json_object,
-            trace=self._trace,
-        )
-        self._action_planner = ActionPlanner(
-            planner_chat=lambda messages: (self._thinking_ollama or self._ollama).chat(messages),
-            history_messages=lambda limit: self._history_messages(limit=limit),
-            extract_json_object=extract_json_object,
-            trace=self._trace,
-        )
         self._ocr_runtime = OcrRuntime(settings.screen)
         self._uia_runtime = UiaRuntime()
         self._screen_context = ScreenContextService(
@@ -258,7 +329,6 @@ class SessionController:
         )
         self._action_execution = ActionExecutionService(
             actions_settings=self._settings.actions,
-            action_planner=self._action_planner,
             execute_action_plan=self._action_executor.execute_plan,
             capture_screen_text=self._capture_screen_text,
             invoke_tool=self._invoke_tool,
@@ -349,7 +419,7 @@ class SessionController:
 
     def set_prosody_enabled(self, value: bool) -> None:
         enabled = bool(value)
-        self._settings.stt.prosody_enabled = enabled
+        self._settings.stt.prosody.enabled = enabled
         self._prosody.set_enabled(enabled)
 
     @property
@@ -358,7 +428,7 @@ class SessionController:
 
     def set_prosody_include_in_prompt(self, value: bool) -> None:
         include = bool(value)
-        self._settings.stt.prosody_include_in_prompt = include
+        self._settings.stt.prosody.include_in_prompt = include
         self._prosody_include_in_prompt = include
 
     def set_stt_model(self, model_name: str) -> bool:
@@ -1414,9 +1484,24 @@ class SessionController:
         generation_options: dict[str, object] = {
             "num_predict": self._response_num_predict(),
         }
+        session_tool_policy = self._active_session.tool_policy()
+        filtered_specs = self._tool_registry.filtered_specs(
+            enabled=self._tooling_config.enabled_tools,
+            disabled=self._tooling_config.disabled_tools,
+        )
+        ollama_tools = (
+            native_tool_flow_service.build_ollama_tool_definitions(
+                filtered_specs,
+                allowed_prefixes=session_tool_policy.allowed_tool_prefixes,
+            )
+            if bool(session_tool_policy.native_tool_calls_enabled)
+            else []
+        )
 
         stream_tts_used = False
         stream_tts_enqueued_chunks = 0
+        llm_ms = 0.0
+        tool_calls_executed = False
 
         try:
             if on_generation_status:
@@ -1427,10 +1512,46 @@ class SessionController:
             enqueue_tts = getattr(self._tts, "enqueue_async", None)
             # Reliability guard: keep token streaming in UI, but use full-response TTS playback.
             can_stream_tts = False
-            if on_token is None:
+
+            if ollama_tools:
+                flow_result = self._active_session.run_native_tool_flow(
+                    messages=messages,
+                    generation_options=generation_options,
+                    tools=ollama_tools,
+                    flow_context=SessionNativeToolFlowContext(
+                        trace=self._trace,
+                        chat_with_tools=self._ollama.chat_with_tools,
+                        on_token=on_token,
+                        stop_requested=stop_requested,
+                        narration_enabled=bool(
+                            getattr(session_tool_policy, "pre_execution_narration_default", True)
+                        ),
+                        speak_text=self.speak_text,
+                        build_pre_execution_summary=(
+                            lambda tool_calls: native_tool_flow_service.build_pre_execution_summary(
+                                tool_calls,
+                                preview_tool_args=self._preview_tool_args,
+                            )
+                        ),
+                        invoke_tool=self._invoke_tool,
+                        tool_result_to_message_content=native_tool_flow_service.tool_result_to_message_content,
+                        sanitize_text=sanitize_assistant_text,
+                    ),
+                )
+                if flow_result.handled:
+                    response = sanitize_assistant_text(flow_result.response)
+                    llm_ms = float(flow_result.llm_ms)
+                    tool_calls_executed = bool(flow_result.tool_calls_executed)
+                else:
+                    response = sanitize_assistant_text(
+                        self._ollama.chat(messages, options=generation_options)
+                    )
+                    llm_ms = (time.perf_counter() - llm_started) * 1000.0
+            elif on_token is None:
                 response = sanitize_assistant_text(
                     self._ollama.chat(messages, options=generation_options)
                 )
+                llm_ms = (time.perf_counter() - llm_started) * 1000.0
             else:
                 pieces: list[str] = []
                 for token in self._ollama.chat_stream(messages, options=generation_options):
@@ -1461,6 +1582,7 @@ class SessionController:
                                 else:
                                     self._trace("pipeline.tts.enqueue", "chunk enqueue failed")
                 response = "".join(pieces).strip()
+                llm_ms = (time.perf_counter() - llm_started) * 1000.0
                 if can_stream_tts and stream_tts_buffer.strip():
                     ready_chunks, stream_tts_buffer = drain_tts_stream_chunks(
                         stream_tts_buffer,
@@ -1475,7 +1597,6 @@ class SessionController:
                                 stream_tts_enqueued_chunks += 1
                             else:
                                 self._trace("pipeline.tts.enqueue", "flush chunk enqueue failed")
-            llm_ms = (time.perf_counter() - llm_started) * 1000.0
             self._trace(
                 "pipeline.llm.done",
                 f"mode={mode} chars={len(response)} llm_ms={round(llm_ms, 1)}",
@@ -1506,7 +1627,16 @@ class SessionController:
         self._trace("pipeline.action.start", f"mode={mode}")
         blocked_action_note: str = ""
         try:
-            if orchestration_plan.should_plan_action:
+            if bool(session_tool_policy.native_tool_calls_enabled):
+                if tool_calls_executed:
+                    self._trace("pipeline.action.skip", "native tool-calls already handled actions")
+                else:
+                    self._trace("pipeline.action.skip", "native tool-call policy active for this session")
+                action_result = None
+            elif tool_calls_executed:
+                self._trace("pipeline.action.skip", "native tool-calls already handled actions")
+                action_result = None
+            elif orchestration_plan.should_plan_action:
                 if not self._should_allow_action_execution(
                     session_type=self._active_session_type,
                     user_text=user_text,
@@ -1535,7 +1665,7 @@ class SessionController:
                         on_token=on_token,
                     )
             else:
-                self._trace("pipeline.action.skip", "orchestrator decided no action")
+                self._trace("pipeline.action.skip", "deterministic planning decided no action")
                 action_result = None
         except Exception as exc:
             log_handled_exception(exc, context="session.action_execution")
@@ -1694,9 +1824,10 @@ class SessionController:
         return result.data
 
     def _plan_turn_autonomy(self, *, user_text: str) -> TurnAutonomyPlan:
+        default_strategy = "Respond naturally, concise first, ask one focused follow-up when useful."
         if not self._settings.autonomy.enabled:
             return TurnAutonomyPlan(
-                strategy="Respond naturally, concise first, ask one focused follow-up when useful.",
+                strategy=default_strategy,
                 should_use_screen=False,
                 should_plan_action=False,
                 ask_followup=True,
@@ -1727,17 +1858,33 @@ class SessionController:
                 action_intent="",
             )
 
-        plan = self._autonomy_planner.plan_turn_autonomy(
-            user_text=user_text,
-            active_goal=self._active_goal,
-            active_goal_description=self._active_goal_description,
-            max_strategy_chars=int(self._settings.autonomy.max_strategy_chars),
-            proactive_conversation=bool(self._settings.autonomy.proactive_conversation),
-            allow_action_suggestions=bool(self._settings.autonomy.allow_action_suggestions),
-            allow_proactive_actions=bool(self._settings.autonomy.allow_proactive_actions),
-            actions_enabled=bool(self._settings.actions.enabled),
-            require_confirmation=bool(self._settings.actions.require_confirmation),
-            available_tool_names=self._tool_executor.list_available_tools(),
+        normalized = str(user_text or "").strip().lower()
+        turn_cfg = self._settings.autonomy.turn_planning
+        proactive = bool(turn_cfg.proactive_conversation)
+        allow_action_suggestions = bool(turn_cfg.allow_action_suggestions)
+        allow_proactive_actions = bool(turn_cfg.allow_proactive_actions)
+        explicit_action_intent = ActionExecutionService.has_action_intent(user_text)
+        wants_screen = self._is_screen_intent(user_text)
+        should_plan_action = (
+            bool(self._settings.actions.enabled)
+            and allow_action_suggestions
+            and (explicit_action_intent or allow_proactive_actions)
+        )
+        strategy = default_strategy
+        if "reading" in normalized or "continue" in normalized:
+            strategy = "Continue the active reading flow and summarize key points before the next step."
+        elif should_plan_action:
+            strategy = "Confirm the requested UI action, then execute safely and report the result."
+        elif proactive:
+            strategy = "Answer directly and ask one targeted follow-up if it helps move the task forward."
+
+        plan = TurnAutonomyPlan(
+            strategy=strategy[: max(40, int(turn_cfg.max_strategy_chars))],
+            should_use_screen=bool(wants_screen),
+            should_plan_action=bool(should_plan_action),
+            ask_followup=bool(proactive and not should_plan_action),
+            confidence=0.7 if should_plan_action else 0.6,
+            action_intent=(str(user_text or "").strip() if should_plan_action else ""),
         )
 
         if self._autonomy_mode == "automatic":
@@ -1757,9 +1904,9 @@ class SessionController:
         screen_intent: bool,
         reading_intent: bool,
         continue_reading: bool,
-    ) -> TurnOrchestratorPlan:
+    ) -> TurnOrchestrationPlan:
         if AgenticSessionManager.is_agentic_intent(user_text):
-            return TurnOrchestratorPlan(
+            return TurnOrchestrationPlan(
                 strategy="Confirm switch to agentic mode and wait for the user's first objective.",
                 should_capture_screen=False,
                 should_plan_action=False,
@@ -1768,14 +1915,27 @@ class SessionController:
                 reason="agentic_switch_guard",
                 confidence=1.0,
             )
-        return self._turn_orchestrator.plan_turn(
-            user_text=user_text,
-            active_goal=self._active_goal,
-            autonomy_plan=autonomy_plan,
-            require_confirmation=bool(self._settings.actions.require_confirmation),
-            screen_intent=screen_intent,
-            reading_intent=reading_intent,
-            continue_reading=continue_reading,
+        requested_ops: list[str] = []
+        if reading_intent or continue_reading:
+            requested_ops.append("include_session_evidence")
+        if continue_reading:
+            requested_ops.append("continue_session")
+
+        should_capture = bool(
+            autonomy_plan.should_use_screen or screen_intent or continue_reading
+        )
+        return TurnOrchestrationPlan(
+            strategy=autonomy_plan.strategy,
+            should_capture_screen=should_capture,
+            should_plan_action=bool(autonomy_plan.should_plan_action),
+            requested_operations=tuple(requested_ops),
+            action_intent=(
+                str(autonomy_plan.action_intent or "").strip()
+                if autonomy_plan.should_plan_action
+                else ""
+            ),
+            reason="deterministic_fallback",
+            confidence=float(autonomy_plan.confidence),
         )
 
     def _update_goal_from_conversation(self, *, user_text: str) -> None:
@@ -1799,11 +1959,6 @@ class SessionController:
             inferred_goal=inferred.goal,
             current_session_type=self._active_session_type,
         )
-        if resolved_session_type == "agentic" and self._active_session_type != "agentic":
-            explicit_agentic = AgenticSessionManager.is_agentic_intent(user_text)
-            if not explicit_agentic:
-                resolved_session_type = self._active_session_type
-                session_reason = f"{session_reason}+guarded_no_explicit_agentic"
         previous_goal = self._active_goal
         previous_session_type = self._active_session_type
         goal_changed = inferred.goal != self._active_goal
@@ -1827,15 +1982,88 @@ class SessionController:
         )
 
     def _infer_goal(self, *, user_text: str) -> GoalInference:
-        return self._autonomy_planner.infer_goal(user_text=user_text, active_goal=self._active_goal)
+        normalized = str(user_text or "").strip().lower()
+        if not normalized:
+            return GoalInference(goal=self._active_goal, confidence=0.0, reason="empty_user_text")
 
-    def _set_active_session(self, session_type: str) -> None:
+        if AgenticSessionManager.is_agentic_intent(user_text):
+            return GoalInference(
+                goal="ui_automation",
+                confidence=0.95,
+                reason="explicit_agentic_intent",
+                description="User asked for autonomous or agentic operation.",
+                session_type="agentic",
+            )
+
+        if (
+            "read" in normalized
+            or "article" in normalized
+            or "continue" in normalized
+            or "scroll" in normalized
+        ):
+            return GoalInference(
+                goal="reading_assistance",
+                confidence=0.72,
+                reason="reading_keywords",
+                description="User is asking to read or continue screen content.",
+                session_type="reading",
+            )
+
+        if any(token in normalized for token in ("code", "python", "bug", "test", "refactor")):
+            return GoalInference(
+                goal="coding_help",
+                confidence=0.7,
+                reason="coding_keywords",
+                description="User is asking for coding help.",
+                session_type="chat",
+            )
+
+        if ActionExecutionService.has_action_intent(user_text):
+            return GoalInference(
+                goal="ui_automation",
+                confidence=0.68,
+                reason="action_intent_detected",
+                description="User requested a desktop action.",
+                session_type="agentic",
+            )
+
+        return GoalInference(
+            goal="general_conversation",
+            confidence=0.55,
+            reason="default_conversation",
+            description="General conversational request.",
+            session_type="chat",
+        )
+
+    def _set_active_session(
+        self,
+        session_type: str,
+        *,
+        explicit_user_intent: bool = False,
+        bypass_force_agentic: bool = False,
+    ) -> None:
         normalized = str(session_type or "").strip().lower()
         if normalized not in self._session_handlers:
             normalized = "chat"
+        force_agentic = self._is_force_agentic_session_enabled()
+        if (
+            force_agentic
+            and not bypass_force_agentic
+            and not explicit_user_intent
+            and normalized != "agentic"
+            and "agentic" in self._session_handlers
+        ):
+            normalized = "agentic"
         self._active_session_type = normalized
         self._active_session = self._session_handlers[normalized]
-        self._state.session_type = normalized
+        state = getattr(self, "_state", None)
+        if state is not None:
+            setattr(state, "session_type", normalized)
+
+    def _is_force_agentic_session_enabled(self) -> bool:
+        settings = getattr(self, "_settings", None)
+        autonomy = getattr(settings, "autonomy", None) if settings is not None else None
+        return bool(getattr(autonomy, "force_agentic_session", False))
 
     def _route_session_for_turn(self, *, user_text: str) -> None:
         current_signals = self._active_session.detect_turn_signals(user_text)
@@ -1848,7 +2076,7 @@ class SessionController:
             signals = handler.detect_turn_signals(user_text)
             if signals.wants_continue or signals.wants_screen_context or signals.wants_evidence:
                 previous = self._active_session_type
-                self._set_active_session(session_type)
+                self._set_active_session(session_type, explicit_user_intent=True)
                 self._trace(
                     "session.route",
                     f"Switched active session {previous} -> {self._active_session_type} (intent route).",
@@ -2353,7 +2581,7 @@ class SessionController:
 
         handlers = getattr(self, "_session_handlers", {})
         if isinstance(handlers, dict) and "chat" in handlers:
-            self._set_active_session("chat")
+            self._set_active_session("chat", bypass_force_agentic=True)
         else:
             self._active_session_type = "chat"
 
@@ -2524,7 +2752,7 @@ class SessionController:
             objective = session_parts[1].strip() if len(session_parts) > 1 else ""
             if target not in self._session_handlers:
                 return "Unknown session. Use: @session chat|reading|agentic"
-            self._set_active_session(target)
+            self._set_active_session(target, explicit_user_intent=True)
             if target == "agentic" and self._autonomy_mode != "automatic":
                 self.set_autonomy_mode("automatic")
             if target == "agentic" and objective:
@@ -2533,7 +2761,7 @@ class SessionController:
 
         if lowered.startswith("@stop session"):
             was_active = self._active_session.stop(self._trace)
-            self._set_active_session("chat")
+            self._set_active_session("chat", explicit_user_intent=True)
             return "Stopped active session and returned to chat." if was_active else "No active session to stop."
 
         return None

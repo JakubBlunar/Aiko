@@ -51,19 +51,51 @@ class AssistantSettings:
 
 
 @dataclass(slots=True)
+class SessionToolPolicySettings:
+    native_tool_calls_enabled: bool = False
+    allowed_tool_prefixes: tuple[str, ...] = ()
+    pre_execution_narration_default: bool = False
+
+
+@dataclass(slots=True)
+class SessionToolPoliciesSettings:
+    agentic: SessionToolPolicySettings = field(
+        default_factory=lambda: SessionToolPolicySettings(
+            native_tool_calls_enabled=True,
+            allowed_tool_prefixes=("mcp.",),
+            pre_execution_narration_default=True,
+        )
+    )
+    chat: SessionToolPolicySettings = field(default_factory=SessionToolPolicySettings)
+    reading: SessionToolPolicySettings = field(
+        default_factory=lambda: SessionToolPolicySettings(
+            native_tool_calls_enabled=True,
+            allowed_tool_prefixes=("mcp.",),
+            pre_execution_narration_default=False,
+        )
+    )
+
+
+@dataclass(slots=True)
+class AutonomyTurnPlanningSettings:
+    proactive_conversation: bool = True
+    allow_action_suggestions: bool = True
+    allow_proactive_actions: bool = False
+    max_strategy_chars: int = 180
+
+
+@dataclass(slots=True)
 class AutonomySettings:
     enabled: bool
     mode: str
-    proactive_conversation: bool
-    allow_action_suggestions: bool
-    allow_proactive_actions: bool
-    max_strategy_chars: int
     auto_goal_switch: bool
     default_goal: str
     goal_switch_min_confidence: float
+    turn_planning: AutonomyTurnPlanningSettings = field(default_factory=AutonomyTurnPlanningSettings)
+    force_agentic_session: bool = False
     agentic_max_auto_steps: int = 3
-    agentic_full_narration: bool = False
     agentic_narration_level: str = "summary"
+    session_tool_policies: SessionToolPoliciesSettings = field(default_factory=SessionToolPoliciesSettings)
     reading_session_memory_enabled: bool = True
     reading_max_scroll_steps: int = 6
     reading_max_quotes: int = 4
@@ -90,11 +122,21 @@ class SttSettings:
     provider: str
     model: str
     language: str | None
-    diagnostic_record_seconds: float = 5.0
-    diagnostic_vad_filter: bool = True
-    diagnostic_initial_prompt: str = ""
-    prosody_enabled: bool = False
-    prosody_include_in_prompt: bool = True
+    diagnostics: "SttDiagnosticsSettings" = field(default_factory=lambda: SttDiagnosticsSettings())
+    prosody: "SttProsodySettings" = field(default_factory=lambda: SttProsodySettings())
+
+
+@dataclass(slots=True)
+class SttDiagnosticsSettings:
+    record_seconds: float = 5.0
+    vad_filter: bool = True
+    initial_prompt: str = ""
+
+
+@dataclass(slots=True)
+class SttProsodySettings:
+    enabled: bool = False
+    include_in_prompt: bool = True
 
 
 @dataclass(slots=True)
@@ -268,6 +310,59 @@ def _resolve_screen_settings(raw_screen: dict[str, Any], user_screen: dict[str, 
     return screen
 
 
+def _parse_session_tool_policy(
+    raw_policy: object,
+    *,
+    defaults: SessionToolPolicySettings,
+) -> SessionToolPolicySettings:
+    policy = raw_policy if isinstance(raw_policy, dict) else {}
+    prefixes_raw = policy.get("allowed_tool_prefixes", defaults.allowed_tool_prefixes)
+    if isinstance(prefixes_raw, (list, tuple)):
+        cleaned_prefixes = tuple(
+            str(item).strip().lower()
+            for item in prefixes_raw
+            if str(item).strip()
+        )
+    else:
+        cleaned_prefixes = defaults.allowed_tool_prefixes
+
+    return SessionToolPolicySettings(
+        native_tool_calls_enabled=bool(
+            policy.get("native_tool_calls_enabled", defaults.native_tool_calls_enabled)
+        ),
+        allowed_tool_prefixes=cleaned_prefixes,
+        pre_execution_narration_default=bool(
+            policy.get("pre_execution_narration_default", defaults.pre_execution_narration_default)
+        ),
+    )
+
+
+def _parse_session_tool_policies(raw: object) -> SessionToolPoliciesSettings:
+    payload = raw if isinstance(raw, dict) else {}
+
+    agentic_defaults = SessionToolPolicySettings(
+        native_tool_calls_enabled=True,
+        allowed_tool_prefixes=("mcp.",),
+        pre_execution_narration_default=True,
+    )
+    chat_defaults = SessionToolPolicySettings(
+        native_tool_calls_enabled=False,
+        allowed_tool_prefixes=("mcp.",),
+        pre_execution_narration_default=False,
+    )
+    reading_defaults = SessionToolPolicySettings(
+        native_tool_calls_enabled=True,
+        allowed_tool_prefixes=("mcp.",),
+        pre_execution_narration_default=False,
+    )
+
+    return SessionToolPoliciesSettings(
+        agentic=_parse_session_tool_policy(payload.get("agentic", {}), defaults=agentic_defaults),
+        chat=_parse_session_tool_policy(payload.get("chat", {}), defaults=chat_defaults),
+        reading=_parse_session_tool_policy(payload.get("reading", {}), defaults=reading_defaults),
+    )
+
+
 def load_settings(config_path: Path | None = None) -> AppSettings:
     if config_path is not None:
         base = _read_config(config_path)
@@ -288,24 +383,28 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
     ui = raw.get("ui", {})
     tooling = raw.get("tooling", {})
 
-    stt_diag_seconds_raw = stt.get("diagnostic_record_seconds", 5.0)
+    turn_planning = autonomy.get("turn_planning", {}) if isinstance(autonomy.get("turn_planning", {}), dict) else {}
+    stt_diagnostics = stt.get("diagnostics", {}) if isinstance(stt.get("diagnostics", {}), dict) else {}
+    stt_prosody = stt.get("prosody", {}) if isinstance(stt.get("prosody", {}), dict) else {}
+
+    stt_diag_seconds_raw = stt_diagnostics.get("record_seconds", 5.0)
     stt_diag_seconds = 5.0 if stt_diag_seconds_raw is None else float(stt_diag_seconds_raw)
-    stt_diag_vad_raw = stt.get("diagnostic_vad_filter", True)
+    stt_diag_vad_raw = stt_diagnostics.get("vad_filter", True)
     stt_diag_vad = True if stt_diag_vad_raw is None else bool(stt_diag_vad_raw)
-    stt_diag_prompt_raw = stt.get("diagnostic_initial_prompt", "")
+    stt_diag_prompt_raw = stt_diagnostics.get("initial_prompt", "")
     stt_diag_prompt = "" if stt_diag_prompt_raw is None else str(stt_diag_prompt_raw)
-    stt_prosody_enabled_raw = stt.get("prosody_enabled", False)
+    stt_prosody_enabled_raw = stt_prosody.get("enabled", False)
     stt_prosody_enabled = False if stt_prosody_enabled_raw is None else bool(stt_prosody_enabled_raw)
-    stt_prosody_prompt_raw = stt.get("prosody_include_in_prompt", True)
+    stt_prosody_prompt_raw = stt_prosody.get("include_in_prompt", True)
     stt_prosody_prompt = True if stt_prosody_prompt_raw is None else bool(stt_prosody_prompt_raw)
 
-    narration_level_raw = str(autonomy.get("agentic_narration_level", "")).strip().lower()
+    narration_level_raw = str(autonomy.get("agentic_narration_level", "summary")).strip().lower()
     if narration_level_raw not in {"full", "summary", "off"}:
-        narration_level_raw = (
-            "full"
-            if bool(autonomy.get("agentic_full_narration", False))
-            else "summary"
-        )
+        narration_level_raw = "summary"
+
+    session_tool_policies = _parse_session_tool_policies(
+        autonomy.get("session_tool_policies", {}),
+    )
 
     return AppSettings(
         assistant=AssistantSettings(
@@ -327,10 +426,6 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                 in {"manual", "interactive", "automatic"}
                 else "interactive"
             ),
-            proactive_conversation=bool(autonomy.get("proactive_conversation", True)),
-            allow_action_suggestions=bool(autonomy.get("allow_action_suggestions", True)),
-            allow_proactive_actions=bool(autonomy.get("allow_proactive_actions", False)),
-            max_strategy_chars=max(40, int(autonomy.get("max_strategy_chars", 180))),
             auto_goal_switch=bool(autonomy.get("auto_goal_switch", True)),
             default_goal=str(autonomy.get("default_goal", "general_conversation")).strip()
             or "general_conversation",
@@ -338,9 +433,16 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                 0.0,
                 min(float(autonomy.get("goal_switch_min_confidence", 0.6)), 1.0),
             ),
+            turn_planning=AutonomyTurnPlanningSettings(
+                proactive_conversation=bool(turn_planning.get("proactive_conversation", True)),
+                allow_action_suggestions=bool(turn_planning.get("allow_action_suggestions", True)),
+                allow_proactive_actions=bool(turn_planning.get("allow_proactive_actions", False)),
+                max_strategy_chars=max(40, int(turn_planning.get("max_strategy_chars", 180))),
+            ),
+            force_agentic_session=bool(autonomy.get("force_agentic_session", False)),
             agentic_max_auto_steps=max(1, min(int(autonomy.get("agentic_max_auto_steps", 3)), 20)),
-            agentic_full_narration=bool(autonomy.get("agentic_full_narration", False)),
             agentic_narration_level=narration_level_raw,
+            session_tool_policies=session_tool_policies,
             reading_session_memory_enabled=bool(autonomy.get("reading_session_memory_enabled", True)),
             reading_max_scroll_steps=max(1, min(int(autonomy.get("reading_max_scroll_steps", 6)), 30)),
             reading_max_quotes=max(1, min(int(autonomy.get("reading_max_quotes", 4)), 8)),
@@ -402,11 +504,15 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             provider=str(stt.get("provider", "faster_whisper")),
             model=str(stt.get("model", "base")),
             language=(str(stt.get("language")).strip() if stt.get("language") is not None else None),
-            diagnostic_record_seconds=max(1.0, min(stt_diag_seconds, 30.0)),
-            diagnostic_vad_filter=stt_diag_vad,
-            diagnostic_initial_prompt=stt_diag_prompt.strip(),
-            prosody_enabled=stt_prosody_enabled,
-            prosody_include_in_prompt=stt_prosody_prompt,
+            diagnostics=SttDiagnosticsSettings(
+                record_seconds=max(1.0, min(stt_diag_seconds, 30.0)),
+                vad_filter=stt_diag_vad,
+                initial_prompt=stt_diag_prompt.strip(),
+            ),
+            prosody=SttProsodySettings(
+                enabled=stt_prosody_enabled,
+                include_in_prompt=stt_prosody_prompt,
+            ),
         ),
         tts=TtsSettings(
             provider=_required(tts, "provider"),
@@ -544,26 +650,38 @@ def save_runtime_preferences(
             "provider": str(tts_provider or "piper").strip().lower() or "piper",
             "voice": str(tts_voice or "").strip(),
         },
-        "stt": {},
+        "stt": {
+            "diagnostics": {},
+            "prosody": {},
+        },
     }
 
     stt_updates: dict[str, Any] = updates["stt"]
+    diagnostics_updates = stt_updates["diagnostics"]
+    prosody_updates = stt_updates["prosody"]
     model_value = str(stt_model or "").strip()
     if model_value:
         stt_updates["model"] = model_value
     if stt_diagnostic_record_seconds is not None:
-        stt_updates["diagnostic_record_seconds"] = round(
+        diagnostics_updates["record_seconds"] = round(
             max(1.0, min(float(stt_diagnostic_record_seconds), 30.0)),
             1,
         )
     if stt_diagnostic_vad_filter is not None:
-        stt_updates["diagnostic_vad_filter"] = bool(stt_diagnostic_vad_filter)
+        diagnostics_updates["vad_filter"] = bool(stt_diagnostic_vad_filter)
     if stt_diagnostic_initial_prompt is not None:
-        stt_updates["diagnostic_initial_prompt"] = str(stt_diagnostic_initial_prompt or "").strip()
+        diagnostics_updates["initial_prompt"] = str(stt_diagnostic_initial_prompt or "").strip()
     if stt_prosody_enabled is not None:
-        stt_updates["prosody_enabled"] = bool(stt_prosody_enabled)
+        prosody_updates["enabled"] = bool(stt_prosody_enabled)
     if stt_prosody_include_in_prompt is not None:
-        stt_updates["prosody_include_in_prompt"] = bool(stt_prosody_include_in_prompt)
+        prosody_updates["include_in_prompt"] = bool(stt_prosody_include_in_prompt)
+
+    if not diagnostics_updates:
+        stt_updates.pop("diagnostics", None)
+    if not prosody_updates:
+        stt_updates.pop("prosody", None)
+    if not stt_updates:
+        updates.pop("stt", None)
 
     ui_updates: dict[str, Any] = {}
     if any(value is not None for value in (window_x, window_y, window_width, window_height)):

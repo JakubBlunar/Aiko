@@ -3,15 +3,26 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from app.core.sessions.reading_session import ReadingSessionManager
-from app.core.sessions.session_types import SessionRuntimeContext, SessionTurnSignals
+from app.core.sessions.session_types import (
+    SessionNativeToolFlowContext,
+    SessionNativeToolFlowResult,
+    SessionRuntimeContext,
+    SessionToolPolicy,
+    SessionTurnSignals,
+)
 from app.core.tooling.runtime.action_runtime import ActionPlan, PlannedAction
 
 
 class ReadingSessionAdapter:
     session_type = "reading"
 
-    def __init__(self, manager: ReadingSessionManager) -> None:
+    def __init__(self, manager: ReadingSessionManager, policy: SessionToolPolicy | None = None) -> None:
         self._manager = manager
+        self._policy = policy or SessionToolPolicy(
+            native_tool_calls_enabled=False,
+            allowed_tool_prefixes=(),
+            pre_execution_narration_default=False,
+        )
 
     @property
     def manager(self) -> ReadingSessionManager:
@@ -23,6 +34,23 @@ class ReadingSessionAdapter:
             wants_evidence=self._manager.is_reading_evidence_request(user_text),
             wants_continue=self._manager.is_continue_reading_request(user_text),
         )
+
+    def tool_policy(self) -> SessionToolPolicy:
+        return self._policy
+
+    def run_native_tool_flow(
+        self,
+        *,
+        messages: list[dict[str, object]],
+        generation_options: dict[str, object],
+        tools: list[dict[str, object]],
+        flow_context: SessionNativeToolFlowContext,
+    ) -> SessionNativeToolFlowResult:
+        _ = messages
+        _ = generation_options
+        _ = tools
+        _ = flow_context
+        return SessionNativeToolFlowResult(handled=False)
 
     def on_screen_text(
         self,

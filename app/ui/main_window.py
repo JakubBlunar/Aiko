@@ -445,11 +445,11 @@ class MainWindow(QMainWindow):
         self._stt_test_seconds_spin.setDecimals(1)
         self._stt_test_seconds_spin.setRange(1.0, 30.0)
         self._stt_test_seconds_spin.setSingleStep(0.5)
-        self._stt_test_seconds_spin.setValue(float(self._settings.stt.diagnostic_record_seconds))
+        self._stt_test_seconds_spin.setValue(float(self._settings.stt.diagnostics.record_seconds))
         stt_test_form.addRow("Record seconds:", self._stt_test_seconds_spin)
 
         self._stt_test_vad_checkbox = QCheckBox("Use Whisper VAD filter")
-        self._stt_test_vad_checkbox.setChecked(bool(self._settings.stt.diagnostic_vad_filter))
+        self._stt_test_vad_checkbox.setChecked(bool(self._settings.stt.diagnostics.vad_filter))
         stt_test_form.addRow("Options:", self._stt_test_vad_checkbox)
 
         self._stt_prosody_enabled_checkbox = QCheckBox("Enable fast prosody detection")
@@ -462,7 +462,7 @@ class MainWindow(QMainWindow):
 
         self._stt_test_prompt_input = QLineEdit()
         self._stt_test_prompt_input.setPlaceholderText("Optional STT initial prompt (domain hints)")
-        self._stt_test_prompt_input.setText(str(self._settings.stt.diagnostic_initial_prompt or ""))
+        self._stt_test_prompt_input.setText(str(self._settings.stt.diagnostics.initial_prompt or ""))
         stt_test_form.addRow("Initial prompt:", self._stt_test_prompt_input)
         stt_testing_layout.addLayout(stt_test_form)
 
@@ -869,13 +869,13 @@ class MainWindow(QMainWindow):
         self._stt_test_worker = None
 
     def _apply_stt_test_config(self) -> None:
-        self._settings.stt.diagnostic_record_seconds = float(self._stt_test_seconds_spin.value())
-        self._settings.stt.diagnostic_vad_filter = bool(self._stt_test_vad_checkbox.isChecked())
-        self._settings.stt.diagnostic_initial_prompt = str(self._stt_test_prompt_input.text() or "").strip()
-        self._settings.stt.prosody_enabled = bool(self._stt_prosody_enabled_checkbox.isChecked())
-        self._settings.stt.prosody_include_in_prompt = bool(self._stt_prosody_prompt_checkbox.isChecked())
-        self._session.set_prosody_enabled(self._settings.stt.prosody_enabled)
-        self._session.set_prosody_include_in_prompt(self._settings.stt.prosody_include_in_prompt)
+        self._settings.stt.diagnostics.record_seconds = float(self._stt_test_seconds_spin.value())
+        self._settings.stt.diagnostics.vad_filter = bool(self._stt_test_vad_checkbox.isChecked())
+        self._settings.stt.diagnostics.initial_prompt = str(self._stt_test_prompt_input.text() or "").strip()
+        self._settings.stt.prosody.enabled = bool(self._stt_prosody_enabled_checkbox.isChecked())
+        self._settings.stt.prosody.include_in_prompt = bool(self._stt_prosody_prompt_checkbox.isChecked())
+        self._session.set_prosody_enabled(self._settings.stt.prosody.enabled)
+        self._session.set_prosody_include_in_prompt(self._settings.stt.prosody.include_in_prompt)
         self._persist_preferences(include_stt_testing=True)
         self._stt_test_status.setText("STT config saved to user config.")
         self._append("System", "Saved STT diagnostic config to user preferences.")

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import re
+from typing import Any
 
-from app.core.planning.action_planner import ActionPlanner
-from app.core.tooling.runtime.action_runtime import ActionExecutionResult, ActionPlan
+from app.core.tooling.runtime.action_runtime import ActionExecutionResult, ActionPlan, PlannedAction
 
 
 class ActionExecutionService:
@@ -11,7 +12,6 @@ class ActionExecutionService:
         self,
         *,
         actions_settings: object,
-        action_planner: ActionPlanner,
         execute_action_plan: Callable[[ActionPlan], ActionExecutionResult],
         capture_screen_text: Callable[..., str | None],
         invoke_tool: Callable[..., object],
@@ -24,7 +24,6 @@ class ActionExecutionService:
         all_windows: Callable[[], list[dict]],
     ) -> None:
         self._actions_settings = actions_settings
-        self._action_planner = action_planner
         self._execute_action_plan = execute_action_plan
         self._capture_screen_text = capture_screen_text
         self._invoke_tool = invoke_tool
@@ -143,12 +142,61 @@ class ActionExecutionService:
 
     @staticmethod
     def has_action_intent(user_text: str) -> bool:
-        return ActionPlanner.has_action_intent(user_text)
+        normalized = (user_text or "").strip().lower()
+        if not normalized:
+            return False
+        triggers = (
+            "click",
+            "press",
+            "tap",
+            "type",
+            "write",
+            "fill",
+            "open",
+            "launch",
+            "start",
+            "select",
+            "choose",
+            "submit",
+            "send",
+            "scroll",
+            "focus",
+            "activate",
+            "switch to",
+            "switch",
+            "bring",
+            "move",
+            "drag",
+            "drop",
+            "minimize",
+            "minimise",
+            "maximize",
+            "restore",
+            "close",
+            "show",
+            "hide",
+            "resize",
+            "arrange",
+            "make active",
+            "bring to front",
+            "read on screen",
+            "read the article",
+        )
+        if any(token in normalized for token in triggers):
+            return True
+
+        return bool(
+            re.search(
+                r"\b(can you|could you|please|would you)\b.*\b(minimi[sz]e|maximi[sz]e|restore|focus|switch|open|close|activate|show|hide|resize|arrange)\b",
+                normalized,
+            )
+            or re.search(
+                r"\b(make|set)\b.*\b(active|foreground|front)\b",
+                normalized,
+            )
+        )
 
     def _detect_action_intent(self, user_text: str) -> bool:
-        detector = getattr(self._action_planner, "has_action_intent_with_model", None)
-        if callable(detector):
-            return bool(detector(user_text))
         return self.has_action_intent(user_text)
 
     @staticmethod
@@ -331,18 +379,208 @@ class ActionExecutionService:
         action_intent: str,
         tool_error_feedback: str | None = None,
     ) -> ActionPlan:
-        return self._action_planner.plan_action(
-            user_text=user_text,
-            assistant_reply=assistant_reply,
-            screen_text=screen_text,
-            action_intent=action_intent,
-            active_goal=self._active_goal(),
-            last_screen_elements=self._last_screen_elements(),
-            all_windows=self._all_windows(),
-            available_tool_names=self._list_available_tools(),
-            available_tool_schemas=self._list_available_tool_schemas(),
-            tool_error_feedback=tool_error_feedback,
+        _ = assistant_reply
+        _ = screen_text
+        normalized = str(action_intent or user_text or "").strip().lower()
+        available_tool_names = list(self._list_available_tools() or [])
+        available_tool_schemas = self._list_available_tool_schemas() or {}
+
+        tool_name = self._select_mcp_tool_name(
+            normalized_text=normalized,
+            available_tool_names=available_tool_names,
         )
+        if tool_name:
+            args = self._build_mcp_args(
+                tool_name=tool_name,
+                user_text=user_text,
+                action_intent=action_intent,
+                schemas=available_tool_schemas,
+                feedback=tool_error_feedback,
+            )
+            return ActionPlan(
+                steps=[
+                    PlannedAction(
+                        kind="mcp_tool",
+                        text=tool_name,
+                        meta=args,
+                        confidence=0.8,
+                        reason="Deterministic MCP action plan.",
+                    )
+                ],
+                description="Execute the requested app action using MCP.",
+                needs_screen=False,
+            )
+
+        windows = list(self._all_windows() or [])
+        if windows and any(token in normalized for token in ("minimize", "minimise", "maximize", "restore")):
+            target = next((item for item in windows if bool(item.get("is_foreground"))), windows[0])
+            state = "minimize" if ("minimize" in normalized or "minimise" in normalized) else "restore"
+            if "maximize" in normalized:
+                state = "maximize"
+            return ActionPlan(
+                steps=[
+                    PlannedAction(
+                        kind="window_state",
+                        hwnd=int(target.get("hwnd") or 0) or None,
+                        text=state,
+                        confidence=0.75,
+                        reason="Apply requested window state.",
+                    )
+                ],
+                description=f"Set window state to {state}.",
+                needs_screen=False,
+            )
+
+        if "scroll" in normalized:
+            direction = "up" if "up" in normalized else "down"
+            return ActionPlan(
+                steps=[
+                    PlannedAction(
+                        kind="scroll",
+                        text=f"{direction}:8",
+                        confidence=0.75,
+                        reason="Continue reading flow.",
+                    )
+                ],
+                description=f"Scroll {direction}.",
+                needs_screen=False,
+            )
+
+        return ActionPlan(
+            steps=[],
+            description="No deterministic action steps were inferred.",
+            needs_screen=False,
+        )
+
+    @staticmethod
+    def _select_mcp_tool_name(*, normalized_text: str, available_tool_names: list[str]) -> str:
+        mcp_tools = [name for name in available_tool_names if str(name).strip().lower().startswith("mcp.")]
+        if not mcp_tools:
+            return ""
+        if len(mcp_tools) == 1:
+            return str(mcp_tools[0])
+
+        if "notification" in normalized_text:
+            for name in mcp_tools:
+                if "notification" in str(name).lower():
+                    return str(name)
+        if any(token in normalized_text for token in ("window", "minimize", "minimise", "maximize", "switch", "focus", "active")):
+            for name in mcp_tools:
+                lower_name = str(name).lower()
+                if "window" in lower_name or lower_name.endswith(".app"):
+                    return str(name)
+        return str(mcp_tools[0])
+
+    def _build_mcp_args(
+        self,
+        *,
+        tool_name: str,
+        user_text: str,
+        action_intent: str,
+        schemas: dict[str, dict[str, object]],
+        feedback: str | None,
+    ) -> dict[str, object]:
+        schema = schemas.get(str(tool_name), {}) if isinstance(schemas, dict) else {}
+        required = schema.get("required", []) if isinstance(schema, dict) else []
+        properties = schema.get("properties", {}) if isinstance(schema, dict) else {}
+        enum_hints = schema.get("enum_hints", {}) if isinstance(schema, dict) else {}
+        normalized = str(action_intent or user_text or "").strip().lower()
+
+        args: dict[str, object] = {}
+        required_keys = [str(item).strip() for item in required if str(item).strip()] if isinstance(required, list) else []
+        all_keys = list(required_keys)
+        if isinstance(properties, dict):
+            for key in properties.keys():
+                key_text = str(key).strip()
+                if key_text and key_text not in all_keys:
+                    all_keys.append(key_text)
+
+        for key in all_keys:
+            lower_key = key.lower()
+            value: object | None = None
+            if lower_key in {"action", "mode", "state"}:
+                value = self._infer_mode_value(
+                    normalized_text=normalized,
+                    enum_hints=enum_hints,
+                    key=key,
+                )
+            elif lower_key in {"target", "window", "window_title"}:
+                value = self._extract_window_target(user_text)
+            elif lower_key == "title" and "notification" in str(tool_name).lower():
+                value = "Assistant"
+            elif lower_key == "message" and "notification" in str(tool_name).lower():
+                value = str(user_text or "").strip() or None
+
+            if value is not None and str(value).strip():
+                args[key] = value
+
+        if feedback:
+            key_name, allowed_values = self._parse_enum_feedback(feedback)
+            if key_name and allowed_values:
+                args[key_name] = allowed_values[0]
+
+        return args
+
+    @staticmethod
+    def _infer_mode_value(
+        *,
+        normalized_text: str,
+        enum_hints: object,
+        key: str,
+    ) -> str:
+        if "minimize" in normalized_text or "minimise" in normalized_text:
+            candidate = "minimize"
+        elif "maximize" in normalized_text:
+            candidate = "maximize"
+        elif "restore" in normalized_text:
+            candidate = "restore"
+        elif "switch" in normalized_text or "focus" in normalized_text or "active" in normalized_text:
+            candidate = "switch"
+        elif "launch" in normalized_text or "open" in normalized_text:
+            candidate = "launch"
+        else:
+            candidate = "switch"
+
+        if isinstance(enum_hints, dict):
+            allowed_raw = enum_hints.get(str(key), [])
+            if isinstance(allowed_raw, list):
+                allowed = [str(item).strip() for item in allowed_raw if str(item).strip()]
+                if allowed and candidate not in allowed:
+                    return candidate
+        return candidate
+
+    @staticmethod
+    def _extract_window_target(user_text: str) -> str:
+        text = str(user_text or "").strip()
+        quoted = re.findall(r"'([^']+)'|\"([^\"]+)\"", text)
+        if quoted:
+            for left, right in quoted:
+                value = (left or right or "").strip()
+                if value:
+                    return value
+        match = re.search(
+            r"\b(vscode|visual studio code|notepad|chrome|firefox|edge|terminal|calculator)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if match:
+            return str(match.group(1)).strip()
+        return "active window"
+
+    @staticmethod
+    def _parse_enum_feedback(feedback: str) -> tuple[str, list[str]]:
+        key_match = re.search(r"Invalid value for '([^']+)'", str(feedback or ""))
+        allowed_match = re.search(r"Allowed values:\s*\[([^\]]+)\]", str(feedback or ""))
+        key_name = str(key_match.group(1)).strip() if key_match else ""
+        if not allowed_match:
+            return key_name, []
+
+        allowed_values: list[str] = []
+        for raw in allowed_match.group(1).split(","):
+            cleaned = raw.strip().strip("'").strip('"')
+            if cleaned:
+                allowed_values.append(cleaned)
+        return key_name, allowed_values
 
     @staticmethod
     def summarize_action_plan_plain(

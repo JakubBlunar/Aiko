@@ -9,16 +9,41 @@
   "autonomy": {
     "enabled": false,
     "mode": "interactive",
-    "proactive_conversation": true,
-    "allow_action_suggestions": true,
-    "allow_proactive_actions": false,
-    "max_strategy_chars": 180,
+    "turn_planning": {
+      "proactive_conversation": true,
+      "allow_action_suggestions": true,
+      "allow_proactive_actions": false,
+      "max_strategy_chars": 180
+    },
     "auto_goal_switch": true,
     "default_goal": "general_conversation",
     "goal_switch_min_confidence": 0.75,
+    "force_agentic_session": false,
     "agentic_max_auto_steps": 3,
-    "agentic_full_narration": false,
     "agentic_narration_level": "summary",
+    "session_tool_policies": {
+      "agentic": {
+        "native_tool_calls_enabled": true,
+        "allowed_tool_prefixes": [
+          "mcp."
+        ],
+        "pre_execution_narration_default": true
+      },
+      "chat": {
+        "native_tool_calls_enabled": false,
+        "allowed_tool_prefixes": [
+          "mcp."
+        ],
+        "pre_execution_narration_default": false
+      },
+      "reading": {
+        "native_tool_calls_enabled": true,
+        "allowed_tool_prefixes": [
+          "mcp."
+        ],
+        "pre_execution_narration_default": false
+      }
+    },
     "reading_session_memory_enabled": true,
     "reading_max_scroll_steps": 6,
     "reading_max_quotes": 4,
@@ -73,11 +98,15 @@
     "provider": "faster_whisper",
     "model": "base",
     "language": "en",
-    "diagnostic_record_seconds": 5.0,
-    "diagnostic_vad_filter": true,
-    "diagnostic_initial_prompt": "",
-    "prosody_enabled": false,
-    "prosody_include_in_prompt": true
+    "diagnostics": {
+      "record_seconds": 5.0,
+      "vad_filter": true,
+      "initial_prompt": ""
+    },
+    "prosody": {
+      "enabled": false,
+      "include_in_prompt": true
+    }
   },
   "tts": {
     "provider": "piper",

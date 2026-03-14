@@ -4,10 +4,10 @@ import types
 import unittest
 from types import SimpleNamespace
 
+from app.core.sessions.chat_session import ChatSession
 from app.core.sessions.reading_session_adapter import ReadingSessionAdapter
 from app.core.sessions.reading_session import ReadingSessionConfig, ReadingSessionManager
-from app.core.session_controller import SessionController
-from app.core.planning.autonomy_planner import GoalInference
+from app.core.session_controller import GoalInference, SessionController
 from app.core.tooling.runtime.action_runtime import ActionExecutionResult
 from app.core.tooling.types import ToolResult
 
@@ -102,7 +102,6 @@ class SessionReadingFlowTests(unittest.TestCase):
 
     def test_orchestration_plan_agentic_switch_turn_never_requests_action(self) -> None:
         controller = SessionController.__new__(SessionController)
-        controller._turn_orchestrator = SimpleNamespace(plan_turn=lambda **_kwargs: None)
 
         plan = controller._plan_turn_orchestration(
             user_text="Switch to agentic mode.",
@@ -361,7 +360,7 @@ class SessionReadingFlowTests(unittest.TestCase):
         self.assertEqual(controller._state.autonomy_mode, "interactive")
         self.assertTrue(any("agentic session halted" in line for line in traces))
 
-    def test_goal_update_does_not_auto_switch_into_agentic_without_explicit_intent(self) -> None:
+    def test_goal_update_forces_agentic_session_when_enabled(self) -> None:
         controller = SessionController.__new__(SessionController)
         traces: list[str] = []
         controller._trace = lambda _stage, message: traces.append(str(message))
@@ -370,25 +369,50 @@ class SessionReadingFlowTests(unittest.TestCase):
                 enabled=True,
                 auto_goal_switch=True,
                 goal_switch_min_confidence=0.5,
+                force_agentic_session=True,
             )
         )
         controller._active_goal = "general_conversation"
         controller._active_goal_description = ""
         controller._active_session_type = "chat"
+        controller._session_handlers = {
+            "chat": ChatSession(),
+            "reading": SimpleNamespace(),
+            "agentic": SimpleNamespace(),
+        }
+        controller._state = SimpleNamespace(session_type="chat")
+        controller._active_session = controller._session_handlers["chat"]
         controller._session_router = SimpleNamespace(resolve=lambda **_kwargs: ("agentic", "model"))
-        controller._set_active_session = lambda session_type: setattr(controller, "_active_session_type", session_type)
         controller._infer_goal = lambda **_kwargs: GoalInference(
             goal="ui_automation",
             confidence=0.9,
             reason="user asked to minimize a window",
             description="Minimize the assistant window",
-            session_type="agentic",
+            session_type="reading",
         )
 
         controller._update_goal_from_conversation(user_text="Minimise your assistant window please.")
 
-        self.assertEqual(controller._active_session_type, "chat")
-        self.assertTrue(any("guarded_no_explicit_agentic" in line for line in traces))
+        self.assertEqual(controller._active_session_type, "agentic")
+        self.assertFalse(any("guarded_no_explicit_agentic" in line for line in traces))
+
+    def test_set_active_session_force_agentic_allows_explicit_override(self) -> None:
+        controller = SessionController.__new__(SessionController)
+        controller._settings = SimpleNamespace(
+            autonomy=SimpleNamespace(force_agentic_session=True)
+        )
+        controller._state = SimpleNamespace(session_type="chat")
+        controller._session_handlers = {
+            "chat": ChatSession(),
+            "reading": SimpleNamespace(),
+            "agentic": SimpleNamespace(),
+        }
+
+        controller._set_active_session("reading")
+        self.assertEqual(controller._active_session_type, "agentic")
+
+        controller._set_active_session("reading", explicit_user_intent=True)
+        self.assertEqual(controller._active_session_type, "reading")
 
 
 if __name__ == "__main__":

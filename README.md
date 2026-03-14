@@ -99,10 +99,12 @@ Optional: enable structured autonomy planning for more proactive turn-by-turn de
 		"enabled": true,
 		"mode": "interactive",
 		"agentic_narration_level": "summary",
-		"proactive_conversation": true,
-		"allow_action_suggestions": true,
-		"allow_proactive_actions": false,
-		"max_strategy_chars": 180,
+		"turn_planning": {
+			"proactive_conversation": true,
+			"allow_action_suggestions": true,
+			"allow_proactive_actions": false,
+			"max_strategy_chars": 180
+		},
 		"auto_goal_switch": true,
 		"default_goal": "general_conversation",
 		"goal_switch_min_confidence": 0.6
