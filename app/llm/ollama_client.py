@@ -28,8 +28,16 @@ class OllamaClient:
         self._settings = settings
         self._timeout_seconds = timeout_seconds
 
-    def chat(self, messages: list[dict[str, Any]], options: dict[str, object] | None = None) -> str:
-        return self.chat_with_tools(messages, options=options).content
+    def chat(
+        self,
+        messages: list[dict[str, Any]],
+        options: dict[str, object] | None = None,
+        model: str | None = None,
+        think: bool = False,
+    ) -> str:
+        return self.chat_with_tools(
+            messages, options=options, model=model, think=think
+        ).content
 
     def chat_with_tools(
         self,
@@ -37,27 +45,44 @@ class OllamaClient:
         *,
         options: dict[str, object] | None = None,
         tools: list[dict[str, Any]] | None = None,
+        model: str | None = None,
+        think: bool = False,
     ) -> OllamaChatResponse:
         merged_options: dict[str, object] = {"temperature": self._settings.temperature}
         if options:
             merged_options.update(options)
+        use_model = (model or "").strip() or self._settings.chat_model
         payload: dict[str, Any] = {
-            "model": self._settings.chat_model,
+            "model": use_model,
             "messages": messages,
             "stream": False,
             "options": merged_options,
         }
         if tools:
             payload["tools"] = tools
+        if think:
+            payload["think"] = True
         response = requests.post(
             f"{self._settings.base_url}/api/chat",
             json=payload,
             timeout=self._timeout_seconds,
         )
-        response.raise_for_status()
+        if not response.ok:
+            try:
+                err_body = response.text
+                if err_body and len(err_body) > 500:
+                    err_body = err_body[:500] + "..."
+            except Exception:
+                err_body = ""
+            msg = f"{response.status_code} {response.reason}"
+            if err_body:
+                msg += f" — {err_body}"
+            raise requests.HTTPError(msg, response=response)
         body = response.json()
         message = body.get("message", {}) if isinstance(body, dict) else {}
         content = str(message.get("content", "") or "")
+        # When think=True, Ollama may also return message.thinking (reasoning trace);
+        # we use content (final answer) for the response.
         return OllamaChatResponse(
             content=content,
             tool_calls=self._parse_tool_calls(message.get("tool_calls", [])),

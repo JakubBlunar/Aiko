@@ -34,10 +34,12 @@ python -m venv .venv
 pip install -e .
 ```
 
-For Agno built-in tools (Google Search, Wikipedia, Arxiv):
+For Agno toolkits (search, calculator, weather, etc.), see [Agno toolkits](#agno-toolkits-config-and-deps) below. Quick start:
 
 ```powershell
 pip install -e ".[agent]"
+# or install optional toolkit deps (DuckDuckGo, YouTube, OpenWeather, YFinance):
+pip install -e ".[agno-tools]"
 ```
 
 **If your `.venv` is corrupted or misbehaving**, recreate it from the project root (close the app first):
@@ -147,6 +149,38 @@ python -m app.main
 - **Mood:** The agent starts each reply with a mood tag (e.g. `[[reaction:cheerful]]`). TTS uses this to slightly adjust speaking speed (e.g. more energetic for “excited”, slower for “sad”).
 - **Barge-in:** In Settings → Audio you can enable **Allow barge-in**. When on, you can interrupt while the assistant is speaking: your new utterance stops playback and is processed as a correction or follow-up in the same conversation, so the agent keeps context.
 
+## Agno toolkits (config and deps)
+
+Which Agno toolkits the agent can use is set in **`config/tooling.default.json`** (and overrides in `config/tooling.user.json`) under **`agno_toolkits`**. Enabling a toolkit in config requires **installing its Python packages** (and setting any env vars) for it to load; if a toolkit fails, the app logs a copy-pastable `pip install ...` line.
+
+- **Packages and env vars:** See [docs/agno-toolkits-deps.md](docs/agno-toolkits-deps.md) for a table of toolkit id → pip packages and env vars (e.g. `openweather` needs `OPENWEATHER_API_KEY`; `youtube` needs `pip install youtube_transcript_api`).
+- **Optional install:** `pip install -e ".[agno-tools]"` installs deps for DuckDuckGo, YouTube, OpenWeather, and YFinance. Or install per-toolkit extras: `.[agno-duckduckgo]`, `.[agno-youtube]`, etc.
+
+**Toolkit parameters:** Some toolkits accept constructor options (e.g. YouTube: `languages`, `enable_get_video_captions`). You can pass them in config in two ways:
+
+1. **Option A — list of entries with optional params:**  
+   In `config/tooling.default.json` set `agno_toolkits` to a list where each entry is either a string (toolkit id) or an object with `id` and `params`:
+
+   ```json
+   "agno_toolkits": [
+     "calculator",
+     "duckduckgo",
+     { "id": "youtube", "params": { "languages": ["en"], "enable_get_video_captions": true } }
+   ]
+   ```
+
+2. **Option B — ids list + params map:**  
+   Set `agno_toolkits` to a list of id strings and `agno_toolkit_params` to a map from toolkit id to params:
+
+   ```json
+   "agno_toolkits": ["calculator", "youtube", "duckduckgo"],
+   "agno_toolkit_params": {
+     "youtube": { "languages": ["en"], "enable_get_video_captions": true }
+   }
+   ```
+
+   User overrides in `config/tooling.user.json` are merged (e.g. you can add or override params per toolkit).
+
 ## Optional: MCP tools
 
 To use MCP servers (e.g. windows-mcp) as agent tools:
@@ -156,6 +190,16 @@ To use MCP servers (e.g. windows-mcp) as agent tools:
 3. In `config/tooling.user.json` set `tools.mcp.enabled` to `true`.
 
 MCP tools are registered as Agno tools and called by the agent when needed.
+
+### Coding tools (read/edit files in chosen folders)
+
+To let the agent read and edit files under folders you choose:
+
+1. Install the coding MCP dependency: `pip install -e ".[coding-mcp]"`
+2. Open **Settings → Coding**, check **Enable coding tools**, click **Add folder…** and pick one or more workspace roots. Save (OK).
+3. Restart the app. The agent will have `coding_read_file`, `coding_list_dir`, `coding_search`, and `coding_apply_patch`; all paths are restricted to your chosen roots.
+
+Context and history are kept in check: tool-result compression and history length are configurable in `config/default.json` under `agent` (`num_history_runs`, `compress_tool_results`, etc.).
 
 ## Testing
 
@@ -171,4 +215,5 @@ python -m pytest tests/ -v
 - All processing is local (Ollama, Whisper, Kokoro).
 - Ensure Ollama is running before starting the app (`ollama serve` or start from tray).
 - If Kokoro fails to load, check that `kokoro-v1.0.onnx` and `voices-v1.0.bin` are in the configured path and that espeak-ng is installed.
-- Default config (`config/default.json`) includes only assistant, ollama, audio, stt, tts, ui, and tooling; user overrides go in `config/user.json`.
+- Default config (`config/default.json`) includes only assistant, agent, ollama, audio, stt, tts, ui, and tooling; user overrides go in `config/user.json`.
+- **Agent context:** `config/default.json` → `agent.num_history_runs` (how many past turns to send), `agent.compress_tool_results` (shrink large tool outputs). Lower history or enable compression if the agent slows down with long chats or many tool calls.

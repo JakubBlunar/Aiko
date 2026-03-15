@@ -43,6 +43,19 @@ def _copy_text_to_clipboard(text: str) -> None:
         cb.setText(text)
 
 
+_PRELOADER_STYLE = """
+    QDialog { background-color: #f1f5f9; }
+    QLabel { color: #0f172a; font-size: 15px; }
+    QProgressBar {
+        border: 1px solid #cbd5e1;
+        border-radius: 4px;
+        background-color: #ffffff;
+        text-align: center;
+    }
+    QProgressBar::chunk { background-color: #2563eb; border-radius: 3px; }
+"""
+
+
 class StartupPreloaderDialog(QDialog):
     def __init__(self, settings: AppSettings, parent=None) -> None:
         super().__init__(parent)
@@ -52,6 +65,7 @@ class StartupPreloaderDialog(QDialog):
         self.setModal(True)
         self.setWindowFlag(Qt.WindowType.WindowContextHelpButtonHint, False)
         self.resize(520, 140)
+        self.setStyleSheet(_PRELOADER_STYLE)
 
         layout = QVBoxLayout(self)
         self._title = QLabel("Initializing models...", self)

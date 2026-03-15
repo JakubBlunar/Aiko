@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chat</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      font-size: 15px;
+      margin: 0;
+      padding: 8px 10px;
+      background: #f1f5f9;
+      color: #0f172a;
+    }
+    .bubble {
+      margin: 8px 0;
+      border-radius: 8px;
+      padding: 8px 10px;
+      max-width: 100%;
+    }
+    .bubble .speaker {
+      font-size: 12px;
+      margin-bottom: 4px;
+      font-weight: bold;
+    }
+    .bubble .content {
+      word-wrap: break-word;
+      line-height: 1.4;
+    }
+    .bubble .content pre {
+      margin: 8px 0;
+      padding: 10px;
+      border-radius: 6px;
+      overflow-x: auto;
+      font-size: 13px;
+    }
+    .bubble .content code { font-family: ui-monospace, monospace; }
+    .bubble-user { background: #dbeafe; color: #1e3a8a; }
+    .bubble-user .speaker { color: #1e40af; }
+    .bubble-assistant { background: #dcfce7; color: #166534; }
+    .bubble-assistant .speaker { color: #15803d; }
+    .bubble-system { background: #334155; color: #f8fafc; }
+    .bubble-system .speaker { color: #e2e8f0; }
+    .bubble-default { background: #f1f5f9; color: #0f172a; }
+    .bubble-default .speaker { color: #475569; }
+  </style>
+</head>
+<body>
+  <div id="messages"></div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/javascript.min.js"></script>
+  <script>
+    function escapeHtml(s) {
+      if (s == null) return '';
+      const div = document.createElement('div');
+      div.textContent = s;
+      return div.innerHTML;
+    }
+    function speakerToClass(speaker) {
+      const s = (speaker || '').toLowerCase();
+      if (s === 'you' || s.startsWith('you ') || s === 'user') return 'bubble-user';
+      if (s === 'assistant' || s.startsWith('assistant ')) return 'bubble-assistant';
+      if (s === 'system') return 'bubble-system';
+      return 'bubble-default';
+    }
+    function appendMessage(speaker, contentHtml) {
+      const container = document.getElementById('messages');
+      const safeSpeaker = escapeHtml(speaker || 'Assistant');
+      const bubbleClass = speakerToClass(speaker);
+      const div = document.createElement('div');
+      div.className = 'bubble ' + bubbleClass;
+      div.innerHTML = '<div class="speaker">' + safeSpeaker + '</div><div class="content">' + (contentHtml || '') + '</div>';
+      container.appendChild(div);
+      div.querySelectorAll('pre code').forEach(function(block) {
+        if (typeof hljs !== 'undefined') hljs.highlightElement(block);
+      });
+      window.scrollTo(0, document.body.scrollHeight);
+    }
+    function clearMessages() {
+      document.getElementById('messages').innerHTML = '';
+    }
+  </script>
+</body>
+</html>

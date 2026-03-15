@@ -28,11 +28,34 @@ agent = [
   "wikipedia",
   "arxiv",
 ]
+agno-duckduckgo = [
+  "ddgs",
+]
+agno-youtube = [
+  "youtube_transcript_api",
+]
+agno-openweather = [
+  "requests",
+]
+agno-yfinance = [
+  "yfinance",
+]
+agno-tools = [
+  "ddgs",
+  "youtube_transcript_api",
+  "yfinance",
+]
 ocr = [
   "rapidocr-onnxruntime>=1.2.3",
 ]
 actions = [
   "pyautogui>=0.9.54",
+]
+coding-mcp = [
+  "mcp>=1.0.0",
+]
+chat-ui = [
+  "markdown>=3.5.0",
 ]
 dev = [
   "pytest>=8.0.0",

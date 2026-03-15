@@ -46,6 +46,11 @@ def extract_tts_reaction_tag(text: str) -> tuple[str | None, str]:
     return reaction, cleaned
 
 
+def strip_all_reaction_tags(text: str) -> str:
+    """Remove all [[reaction:X]] tags from text. Use for display/streaming so UI never shows tags."""
+    return _REACTION_TAG_PATTERN.sub("", str(text or ""))
+
+
 def strip_action_meta_for_tts(text: str) -> str:
     source = str(text or "")
     if not source:
@@ -82,3 +87,55 @@ def strip_action_meta_for_tts(text: str) -> str:
     cleaned = "\n".join(cleaned_lines)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
     return cleaned
+
+
+# Two-tier reply: [[spoken]]...[[/spoken]] and optional [[detail]]...[[/detail]]
+_SPOKEN_OPEN = "[[spoken]]"
+_SPOKEN_CLOSE = "[[/spoken]]"
+_DETAIL_OPEN = "[[detail]]"
+_DETAIL_CLOSE = "[[/detail]]"
+
+
+def parse_two_tier_reply(raw: str) -> tuple[str, str]:
+    """Split reply into (spoken_part, full_for_display). If no [[spoken]] block, whole reply is spoken.
+    full_for_display has tags stripped so it can be shown (and optionally markdown-rendered) in the transcript."""
+    source = str(raw or "").strip()
+    if not source:
+        return "", ""
+
+    # Find first [[spoken]] and [[/spoken]]
+    so = source.find(_SPOKEN_OPEN)
+    sc = source.find(_SPOKEN_CLOSE) if so >= 0 else -1
+
+    if so >= 0 and sc > so:
+        spoken_part = source[so + len(_SPOKEN_OPEN) : sc].strip()
+        # Build full_for_display: strip tags but keep content (spoken + detail)
+        before = source[:so].strip()
+        after = source[sc + len(_SPOKEN_CLOSE) :].strip()
+        # Remove [[detail]]...[[/detail]] from spoken_part (already done - spoken is between spoken tags)
+        # full_for_display = before (e.g. reaction) + spoken content + after (may contain detail block)
+        parts_for_display = []
+        if before:
+            parts_for_display.append(_strip_two_tier_tags(before))
+        parts_for_display.append(spoken_part)
+        if after:
+            parts_for_display.append(_strip_two_tier_tags(after))
+        full_for_display = "\n\n".join(p for p in parts_for_display if p).strip()
+    elif so >= 0 and sc < 0:
+        # [[spoken]] without closing: treat from [[spoken]] to end as spoken
+        spoken_part = source[so + len(_SPOKEN_OPEN) :].strip()
+        full_for_display = _strip_two_tier_tags(source)
+    else:
+        spoken_part = source
+        full_for_display = _strip_two_tier_tags(source)
+
+    return spoken_part, full_for_display
+
+
+def _strip_two_tier_tags(text: str) -> str:
+    """Remove [[spoken]]/[[/spoken]], [[detail]]/[[/detail]], and [[reaction:X]] tags but keep their content."""
+    s = str(text or "")
+    for tag in (_SPOKEN_OPEN, _SPOKEN_CLOSE, _DETAIL_OPEN, _DETAIL_CLOSE):
+        s = s.replace(tag, "")
+    s = _REACTION_TAG_PATTERN.sub("", s)
+    return s.strip()

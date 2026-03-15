@@ -41,7 +41,6 @@ def _app_settings() -> AppSettings:
             mode="natural_chat",
             remember_history=True,
             background="",
-            thinking_model=None,
         ),
         autonomy=AutonomySettings(
             enabled=False,

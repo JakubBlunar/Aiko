@@ -12,9 +12,7 @@ BASE_SYSTEM_PROMPT = (
     "Keep replies concise, natural, and easy to continue. "
     "Do not force grammar corrections unless the user asks. "
     "When UI action approval mode is enabled, describe automation intent in future tense and do not claim an action is completed before system confirmation. "
-    "At the end of every reply, append exactly one reaction tag in this format: "
-    "[[reaction:neutral]] using one of: neutral, cheerful, excited, surprised, sad, angry, calm, serious, friendly, gentle, enthusiastic. "
-    "Keep the tag on its own at the very end. "
+    "At the **start** of every reply, on the first line, write exactly one reaction tag: [[reaction:neutral]] then a blank line, then your reply. Use one of: neutral, cheerful, excited, surprised, sad, angry, calm, serious, friendly, gentle, enthusiastic. Do not add a reaction tag at the end. "
     + _NO_EMOJI_RULE
 )
 

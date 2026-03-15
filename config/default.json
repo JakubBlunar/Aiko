@@ -1,17 +1,22 @@
 {
+  "agent": {
+    "num_history_runs": 10,
+    "compress_tool_results": true,
+    "compress_tool_results_limit": 3,
+    "compress_token_limit": null
+  },
   "assistant": {
     "name": "Assistant",
     "mode": "natural_chat",
     "remember_history": true,
     "background": "",
     "background_path": "data/assistant_background.txt",
-    "thinking_model": null,
     "response_style": "balanced",
     "tts_length_scale": 1.0
   },
   "ollama": {
     "base_url": "http://127.0.0.1:11434",
-    "chat_model": "aqualaguna/gemma-3-27b-it-abliterated-GGUF:q3_k_m",
+    "chat_model": "jaahas/qwen3.5-uncensored:9b",
     "temperature": 0.6
   },
   "audio": {

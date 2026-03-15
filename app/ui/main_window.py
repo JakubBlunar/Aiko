@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import html
+import json
+import os
+from pathlib import Path
 
-from PySide6.QtCore import QEvent, QThread, QTimer, Qt
+from PySide6.QtCore import QEvent, QThread, QTimer, Qt, QUrl
 from PySide6.QtGui import QCloseEvent, QKeyEvent, QMouseEvent, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
-    QComboBox,
     QDoubleSpinBox,
     QFormLayout,
     QGridLayout,
@@ -30,10 +32,34 @@ from PySide6.QtWidgets import (
 from app.core.session_controller import SessionController
 from app.core.settings import AppSettings, save_runtime_preferences
 from app.ui.settings_dialog import SettingsDialog
+from app.ui.theme import (
+    BUBBLE_ASSISTANT_BG,
+    BUBBLE_ASSISTANT_SPEAKER,
+    BUBBLE_ASSISTANT_TEXT,
+    BUBBLE_DEFAULT_BG,
+    BUBBLE_DEFAULT_SPEAKER,
+    BUBBLE_DEFAULT_TEXT,
+    BUBBLE_SYSTEM_BG,
+    BUBBLE_SYSTEM_SPEAKER,
+    BUBBLE_SYSTEM_TEXT,
+    BUBBLE_USER_BG,
+    BUBBLE_USER_SPEAKER,
+    BUBBLE_USER_TEXT,
+    CONTENT_MARGIN,
+    SPACING,
+)
 from app.ui.live_worker import LivePracticeWorker
 from app.ui.ocr_test_worker import OcrTestWorker
 from app.ui.stt_test_worker import SttTestWorker
 from app.ui.turn_worker import SingleTurnWorker
+
+_USE_WEB_VIEW = False
+_QWebEngineView = None
+try:
+    from PySide6.QtWebEngineWidgets import QWebEngineView as _QWebEngineView
+    _USE_WEB_VIEW = _QWebEngineView is not None
+except Exception:
+    pass
 
 
 _PTT_KEY_MAP: dict[str, Qt.Key] = {
@@ -47,6 +73,14 @@ _PTT_MOUSE_MAP: dict[str, Qt.MouseButton] = {
     "middle": Qt.MouseButton.MiddleButton,
     "right": Qt.MouseButton.RightButton,
 }
+
+
+def _refresh_button_style(button: QPushButton) -> None:
+    """Reapply stylesheet after changing a dynamic property (e.g. danger)."""
+    style = button.style()
+    if style is not None:
+        style.unpolish(button)
+        style.polish(button)
 
 
 class MainWindow(QMainWindow):
@@ -90,41 +124,58 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(root)
 
         layout = QVBoxLayout()
+        layout.setContentsMargins(CONTENT_MARGIN, CONTENT_MARGIN, CONTENT_MARGIN, CONTENT_MARGIN)
+        layout.setSpacing(SPACING)
         root.setLayout(layout)
 
         conversation_page = QWidget()
         conversation_layout = QVBoxLayout()
+        conversation_layout.setSpacing(SPACING)
         conversation_page.setLayout(conversation_layout)
         self._conversation_panel = conversation_page
         layout.addWidget(conversation_page, stretch=1)
 
-        self._status_label = QLabel(f"Ready | model: {self._session.chat_model}")
+        self._status_label = QLabel(f"Ready | model: {self._session.effective_chat_model}")
         self._status_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self._status_label.setObjectName("statusStrip")
 
         conversation_layout.addWidget(QLabel("Conversation"))
-        self._conversation = QTextEdit()
-        self._conversation.setReadOnly(True)
-        self._conversation.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-            | Qt.TextInteractionFlag.TextSelectableByKeyboard
-        )
-        self._conversation.setStyleSheet("QTextEdit { font-size: 15px; line-height: 1.45; }")
-        conversation_layout.addWidget(self._conversation, stretch=1)
+        self._conversation = None
+        self._conversation_web = None
+        if _USE_WEB_VIEW and _QWebEngineView is not None:
+            self._conversation_web = _QWebEngineView()
+            self._conversation_web.setContextMenuPolicy(Qt.ContextMenuPolicy.DefaultContextMenu)
+            chat_html = Path(__file__).resolve().parents[2] / "resources" / "chat.html"
+            if chat_html.is_file():
+                self._conversation_web.setUrl(QUrl.fromLocalFile(str(chat_html)))
+            conversation_layout.addWidget(self._conversation_web, stretch=1)
+        else:
+            self._conversation = QTextEdit()
+            self._conversation.setReadOnly(True)
+            self._conversation.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse
+                | Qt.TextInteractionFlag.TextSelectableByKeyboard
+            )
+            conversation_layout.addWidget(self._conversation, stretch=1)
 
         input_row = QHBoxLayout()
+        input_row.setSpacing(SPACING)
         self._input = QTextEdit()
-        self._input.setPlaceholderText("Type what you want to say...")
-        self._input.setStyleSheet("QTextEdit { font-size: 15px; padding: 6px 8px; }")
+        self._input.setPlaceholderText("Type here… Enter to send, Shift+Enter for new line")
         self._input.setAcceptRichText(False)
         self._input.setFixedHeight(88)
         self._input.installEventFilter(self)
         self._send_button = QPushButton("Send")
+        self._send_button.setObjectName("sendButton")
         self._send_button.clicked.connect(self._send)
         self._live_toggle_button = QPushButton("Start Live")
+        self._live_toggle_button.setObjectName("liveToggleButton")
         self._live_toggle_button.clicked.connect(self._on_live_toggle_clicked)
         self._clear_chat_button = QPushButton("Clear Chat")
+        self._clear_chat_button.setObjectName("clearChatButton")
         self._clear_chat_button.clicked.connect(self._clear_conversation_view)
         self._settings_button = QPushButton("Settings")
+        self._settings_button.setObjectName("settingsButton")
         self._settings_button.clicked.connect(self._open_settings)
         input_row.addWidget(self._input, stretch=1)
         input_row.addWidget(self._send_button)
@@ -147,7 +198,7 @@ class MainWindow(QMainWindow):
         self._settings_dialog.activateWindow()
 
     def _on_settings_dialog_finished(self) -> None:
-        self._status_label.setText(f"Ready | model: {self._session.chat_model}")
+        self._status_label.setText(f"Ready | model: {self._session.effective_chat_model}")
 
     def _play_startup_greeting(self) -> None:
         if self._startup_greeting_done:
@@ -197,7 +248,11 @@ class MainWindow(QMainWindow):
         if watched is self._input and event.type() == QEvent.Type.KeyPress:
             key = getattr(event, "key", lambda: None)()
             modifiers = getattr(event, "modifiers", lambda: Qt.KeyboardModifier.NoModifier)()
-            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and bool(modifiers & Qt.KeyboardModifier.ControlModifier):
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                if modifiers & Qt.KeyboardModifier.ShiftModifier:
+                    # Shift+Enter: insert new line (let default behavior run)
+                    return False
+                # Enter: submit
                 self._send()
                 return True
 
@@ -224,7 +279,7 @@ class MainWindow(QMainWindow):
         return super().eventFilter(watched, event)
 
     def _refresh_status(self) -> None:
-        self._status_label.setText(f"Ready | model: {self._session.chat_model}")
+        self._status_label.setText(f"Ready | model: {self._session.effective_chat_model}")
 
     def _apply_sources(self) -> None:
         self._persist_preferences()
@@ -348,7 +403,7 @@ class MainWindow(QMainWindow):
         if btn is not None:
             btn.setText("Test OCR")
             btn.setEnabled(True)
-        self._status_label.setText(f"Ready | model: {self._session.chat_model}")
+        self._status_label.setText(f"Ready | model: {self._session.effective_chat_model}")
 
     def _on_test_ocr_thread_finished(self) -> None:
         self._ocr_test_thread = None
@@ -443,7 +498,7 @@ class MainWindow(QMainWindow):
         if btn is not None:
             btn.setEnabled(True)
             btn.setText("Run STT Test")
-        self._status_label.setText(f"Ready | model: {self._session.chat_model}")
+        self._status_label.setText(f"Ready | model: {self._session.effective_chat_model}")
 
     def _on_stt_test_thread_finished(self) -> None:
         self._stt_test_thread = None
@@ -512,12 +567,9 @@ class MainWindow(QMainWindow):
         pass
 
     def _refresh_models(self) -> None:
-        self._status_label.setText(f"Ready | model: {self._session.chat_model}")
+        self._status_label.setText(f"Ready | model: {self._session.effective_chat_model}")
 
     def _on_model_changed(self) -> None:
-        self._persist_preferences()
-
-    def _on_thinking_model_changed(self) -> None:
         self._persist_preferences()
 
     def _refresh_tts_providers(self) -> None:
@@ -585,7 +637,6 @@ class MainWindow(QMainWindow):
         state = self._session.state
         save_runtime_preferences(
             chat_model=self._session.chat_model,
-            thinking_model=self._session.thinking_model,
             remember_history=self._session.remember_history,
             autonomy_mode=self._session.autonomy_mode,
             microphone_device=self._session.microphone_device,
@@ -681,14 +732,14 @@ class MainWindow(QMainWindow):
         if not self._live_stream_open:
             self._append("Assistant", reply)
         self._close_live_stream()
-        self._status_label.setText(f"Ready | model: {self._session.chat_model}")
+        self._status_label.setText(f"Ready | model: {self._session.effective_chat_model}")
 
     def _on_voice_turn_done(self, user_text: str, reply: str) -> None:
         self._append("You (voice)", user_text)
         if not self._live_stream_open:
             self._append("Assistant", reply)
         self._close_live_stream()
-        self._status_label.setText(f"Ready | model: {self._session.chat_model}")
+        self._status_label.setText(f"Ready | model: {self._session.effective_chat_model}")
 
     def _on_single_turn_failed(self, message: str) -> None:
         title = "Voice error" if self._turn_mode == "record" else "Assistant error"
@@ -696,7 +747,7 @@ class MainWindow(QMainWindow):
 
     def _on_single_turn_finished(self) -> None:
         self._set_single_turn_controls_busy(False)
-        self._status_label.setText(f"Ready | model: {self._session.chat_model}")
+        self._status_label.setText(f"Ready | model: {self._session.effective_chat_model}")
 
     def _on_single_turn_thread_finished(self) -> None:
         self._turn_thread = None
@@ -732,6 +783,8 @@ class MainWindow(QMainWindow):
 
         self._send_button.setEnabled(False)
         self._live_toggle_button.setText("Stop Live")
+        self._live_toggle_button.setProperty("danger", True)
+        _refresh_button_style(self._live_toggle_button)
         self._live_toggle_button.setEnabled(True)
         self._clear_chat_button.setEnabled(False)
         self._input.setEnabled(False)
@@ -765,11 +818,13 @@ class MainWindow(QMainWindow):
             self._ptt_app_filter_installed = False
         self._send_button.setEnabled(True)
         self._live_toggle_button.setText("Start Live")
+        self._live_toggle_button.setProperty("danger", False)
+        _refresh_button_style(self._live_toggle_button)
         self._live_toggle_button.setEnabled(True)
         self._clear_chat_button.setEnabled(True)
         self._input.setEnabled(True)
         self._settings_button.setEnabled(True)
-        self._status_label.setText(f"Ready | model: {self._session.chat_model}")
+        self._status_label.setText(f"Ready | model: {self._session.effective_chat_model}")
         self._close_live_stream()
         level_bar = getattr(self, "_input_level_bar", None)
         if level_bar is not None:
@@ -790,22 +845,23 @@ class MainWindow(QMainWindow):
         self._persist_preferences()
         self._stop_live_mode()
         self._session.shutdown()
-        if self._turn_thread is not None:
-            self._turn_thread.quit()
-            self._turn_thread.wait(1500)
-        if self._ocr_test_thread is not None:
-            self._ocr_test_thread.quit()
-            self._ocr_test_thread.wait(1500)
-        if self._stt_test_thread is not None:
-            self._stt_test_thread.quit()
-            self._stt_test_thread.wait(1500)
-        if self._live_thread is not None:
-            self._live_thread.quit()
-            self._live_thread.wait(1500)
+        for thread in (
+            self._turn_thread,
+            self._ocr_test_thread,
+            self._stt_test_thread,
+            self._live_thread,
+        ):
+            if thread is not None:
+                thread.quit()
+                if not thread.wait(2000):
+                    thread.terminate()
+                    thread.wait(500)
         super().closeEvent(event)
         app = QApplication.instance()
         if app is not None:
-            app.quit()
+            QTimer.singleShot(0, app.quit)
+            # If something keeps the process alive, force exit so the console doesn't hang.
+            QTimer.singleShot(6000, lambda: os._exit(0))
 
     def _on_live_toggle_clicked(self) -> None:
         if self._live_thread is not None:
@@ -814,7 +870,10 @@ class MainWindow(QMainWindow):
             self._start_live_mode()
 
     def _clear_conversation_view(self) -> None:
-        self._conversation.clear()
+        if self._conversation_web is not None:
+            self._conversation_web.page().runJavaScript("clearMessages();")
+        elif self._conversation is not None:
+            self._conversation.clear()
 
     def _on_focus_chat_toggled(self, _checked: bool) -> None:
         pass
@@ -834,21 +893,38 @@ class MainWindow(QMainWindow):
         if "tool" in lower or lower.startswith("tool "):
             self._append("Background", s)
 
-    def _append(self, speaker: str, text: str) -> None:
+    def _append(self, speaker: str, text: str, assistant_model: str | None = None) -> None:
         speaker_label = str(speaker or "Assistant").strip() or "Assistant"
+        if speaker_label.lower() == "assistant" and assistant_model is None:
+            assistant_model = getattr(self._session, "effective_chat_model", None)
+        if assistant_model and speaker_label.lower() == "assistant":
+            speaker_label = f"Assistant ({assistant_model})"
+        if self._conversation_web is not None:
+            try:
+                from app.ui.markdown_renderer import markdown_to_html
+                content_html = markdown_to_html(text) if (speaker_label.lower() == "assistant" or speaker_label.lower().startswith("assistant ")) else html.escape(str(text or "")).replace("\n", "<br>")
+            except ImportError:
+                content_html = html.escape(str(text or "")).replace("\n", "<br>")
+            js = f"appendMessage({json.dumps(speaker_label)}, {json.dumps(content_html)});"
+            self._conversation_web.page().runJavaScript(js)
+            return
         safe_speaker = html.escape(speaker_label)
         safe_text = html.escape(str(text or "")).replace("\n", "<br>")
-        bubble_bg = "#f6f8fa"
-        bubble_text_color = "#111827"
-        speaker_color = "#1f2937"
+        bubble_bg = BUBBLE_DEFAULT_BG
+        bubble_text_color = BUBBLE_DEFAULT_TEXT
+        speaker_color = BUBBLE_DEFAULT_SPEAKER
         if speaker_label.lower() in {"you", "user"}:
-            bubble_bg = "#eaf3ff"
-        elif speaker_label.lower() == "assistant":
-            bubble_bg = "#f4f9ef"
+            bubble_bg = BUBBLE_USER_BG
+            bubble_text_color = BUBBLE_USER_TEXT
+            speaker_color = BUBBLE_USER_SPEAKER
+        elif speaker_label.lower() == "assistant" or speaker_label.lower().startswith("assistant "):
+            bubble_bg = BUBBLE_ASSISTANT_BG
+            bubble_text_color = BUBBLE_ASSISTANT_TEXT
+            speaker_color = BUBBLE_ASSISTANT_SPEAKER
         elif speaker_label.lower() == "system":
-            bubble_bg = "#334155"
-            bubble_text_color = "#f8fafc"
-            speaker_color = "#e2e8f0"
+            bubble_bg = BUBBLE_SYSTEM_BG
+            bubble_text_color = BUBBLE_SYSTEM_TEXT
+            speaker_color = BUBBLE_SYSTEM_SPEAKER
 
         self._conversation.append(
             (
@@ -863,8 +939,9 @@ class MainWindow(QMainWindow):
         self._scroll_conversation_to_bottom()
 
     def _scroll_conversation_to_bottom(self) -> None:
-        self._conversation.moveCursor(QTextCursor.MoveOperation.End)
-        self._conversation.ensureCursorVisible()
+        if self._conversation is not None:
+            self._conversation.moveCursor(QTextCursor.MoveOperation.End)
+            self._conversation.ensureCursorVisible()
 
     def _reset_live_stream(self, _text: str) -> None:
         if self._live_stream_open:
@@ -876,11 +953,12 @@ class MainWindow(QMainWindow):
         token = token or ""
         if not token:
             return
+        self._live_stream_buffer += token
+        if self._conversation_web is not None:
+            return
         if not self._live_stream_open:
             self._conversation.append(f"<b>{self._stream_speaker}:</b> ")
             self._live_stream_open = True
-
-        self._live_stream_buffer += token
         self._conversation.moveCursor(QTextCursor.MoveOperation.End)
         self._conversation.insertPlainText(token)
         self._conversation.ensureCursorVisible()

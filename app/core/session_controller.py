@@ -5,6 +5,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import logging
 from pathlib import Path
 import re
 import threading
@@ -12,6 +13,7 @@ import time
 from typing import Any
 
 from app.core.action_intent import has_action_intent
+from app.core.tooling import load_tooling_config, resolve_agno_toolkit_entries, save_coding_tooling
 from app.core.tooling.runtime.emergency_stop import EmergencyStopState, GlobalHotkeyListener
 from app.core.tooling.types import ToolError, ToolResult
 from app.audio.mic_capture import MicrophoneCapture
@@ -20,11 +22,12 @@ from app.core.settings import AppSettings, OllamaSettings
 from app.core.services.response_text_service import (
     extract_tts_reaction_tag,
     parse_reaction_at_start,
+    parse_two_tier_reply,
     strip_action_meta_for_tts,
+    strip_all_reaction_tags,
 )
 from app.core.session_text_utils import (
     drain_tts_stream_chunks,
-    extract_json_object,
     infer_tts_reaction,
     prepare_tts_text,
     sanitize_assistant_text,
@@ -95,9 +98,6 @@ class SessionController:
         # can emit trace events before the controller has fully finished bootstrapping.
         self._decision_trace: deque[dict[str, str]] = deque(maxlen=500)
         self._ollama = OllamaClient(settings.ollama)
-        self._thinking_model = settings.assistant.thinking_model
-        self._thinking_ollama: OllamaClient | None = None
-        self._rebuild_thinking_client()
         self._microphone = MicrophoneCapture(settings.audio)
         self._realtime_stt = RealtimeSttService(settings.stt, settings.audio)
         self._prosody = FastProsodyAnalyzer(enabled=bool(settings.stt.prosody.enabled))
@@ -113,18 +113,51 @@ class SessionController:
         storage_path = Path(__file__).resolve().parents[2] / "data" / "agno_sessions.db"
         db_provider = getattr(settings.database, "provider", "sqlite") or "sqlite"
         db_url = getattr(settings.database, "url", None)
+        root = Path(__file__).resolve().parents[2]
+        tooling_config = load_tooling_config(
+            default_path=root / (getattr(settings.tooling, "config_default_path", "config/tooling.default.json") or "config/tooling.default.json"),
+            user_path=root / (getattr(settings.tooling, "config_user_path", "config/tooling.user.json") or "config/tooling.user.json"),
+        )
+        agno_toolkit_entries = resolve_agno_toolkit_entries(tooling_config)
+        coding = tooling_config.tool_settings("coding")
+        coding_enabled = bool(coding.get("enabled", False))
+        coding_roots = coding.get("allowed_roots") or []
+        if not isinstance(coding_roots, list):
+            coding_roots = []
+        coding_allowed_roots = [str(p).strip() for p in coding_roots if str(p).strip()]
+        coding_files = coding.get("allowed_files") or []
+        coding_allowed_files = [str(p).strip() for p in coding_files if str(p).strip()] if isinstance(coding_files, list) else []
+        agent_settings = getattr(settings, "agent", None)
+        num_history_runs = int(agent_settings.num_history_runs) if agent_settings else 10
+        compress_tool_results = bool(agent_settings.compress_tool_results) if agent_settings else True
+        compress_limit = getattr(agent_settings, "compress_tool_results_limit", None) if agent_settings else None
+        compress_token_limit = getattr(agent_settings, "compress_token_limit", None) if agent_settings else None
+        chat_model = (settings.ollama.chat_model or "").strip() or "llama3.1:8b"
+        mcp_settings = tooling_config.tool_settings("mcp")
+        mcp_enabled = bool(mcp_settings.get("enabled", False))
+        self._effective_chat_model = chat_model
         self._agno_agent = create_agent(
-            chat_model=settings.ollama.chat_model,
+            chat_model=chat_model,
             base_url=settings.ollama.base_url,
             temperature=float(settings.ollama.temperature),
             assistant_background=_get_assistant_background(settings),
             add_tools=True,
-            add_mcp=True,
+            add_mcp=mcp_enabled,
             database_provider=db_provider,
             database_url=db_url,
             storage_path=storage_path,
+            agno_toolkit_entries=agno_toolkit_entries or None,
+            num_history_runs=num_history_runs,
+            compress_tool_results=compress_tool_results,
+            compress_tool_results_limit=compress_limit,
+            compress_token_limit=compress_token_limit,
+            coding_enabled=coding_enabled,
+            coding_allowed_roots=coding_allowed_roots or None,
+            coding_allowed_files=coding_allowed_files or None,
         )
         self._agno_user_id = settings.assistant.user_id or "default"
+        self._microphone_device = settings.audio.microphone_device
+        self._output_device = getattr(settings.audio, "output_device", None)
         self._tts = self._build_tts_service(settings, output_device=self._output_device)
         self._apply_assistant_preferences()
         self._agno_session_id = "main"
@@ -133,8 +166,6 @@ class SessionController:
         self._tts_queue_lock = threading.Lock()
         self._vad_level_threshold = settings.audio.vad_level_threshold
         self._vad_silence_seconds = settings.audio.vad_silence_seconds
-        self._microphone_device = settings.audio.microphone_device
-        self._output_device = getattr(settings.audio, "output_device", None)
         self._live_input_mode = getattr(settings.audio, "live_input_mode", None) or "voice_detection"
         self._live_ptt_type = getattr(settings.audio, "live_ptt_type", None) or "keyboard"
         self._live_ptt_key = getattr(settings.audio, "live_ptt_key", None)
@@ -455,18 +486,13 @@ class SessionController:
         except Exception as exc:
             raise RuntimeError(f"Failed to reach Ollama server: {exc}") from exc
 
-        chat_model = self.chat_model
-        if chat_model not in models:
+        effective = self.effective_chat_model
+        if effective not in models:
             raise RuntimeError(
-                f"Configured chat model not found in Ollama: {chat_model}. Pull it first."
+                f"Response model not found in Ollama: {effective}. Pull it first (e.g. ollama pull {effective})."
             )
-
-        report(f"Warming response model: {chat_model}")
-        self._ollama.chat(self._build_startup_prewarm_messages())
-
-        if self._thinking_ollama is not None and self._thinking_model:
-            report(f"Warming thinking model: {self._thinking_model}")
-            self._thinking_ollama.chat([{"role": "user", "content": "Reply with OK."}])
+        report(f"Warming response model: {effective}")
+        self._ollama.chat(self._build_startup_prewarm_messages(), model=effective)
 
         report("Warming TTS models...")
         tts = self._tts
@@ -530,12 +556,22 @@ class SessionController:
     def chat_model(self) -> str:
         return self._settings.ollama.chat_model
 
+    @property
+    def effective_chat_model(self) -> str:
+        """Model used for the reply."""
+        return getattr(self, "_effective_chat_model", None) or self._settings.ollama.chat_model
+
     def set_chat_model(self, model_name: str) -> None:
         model_name = (model_name or "").strip()
         if model_name:
             self._settings.ollama.chat_model = model_name
-            if not self._thinking_model:
-                self._rebuild_thinking_client()
+
+    def get_tooling_config_paths(self) -> tuple[Path, Path]:
+        """Return (default_path, user_path) for tooling config (e.g. for Settings Coding tab)."""
+        root = Path(__file__).resolve().parents[2]
+        default = root / (self._settings.tooling.config_default_path or "config/tooling.default.json")
+        user = root / (self._settings.tooling.config_user_path or "config/tooling.user.json")
+        return (default, user)
 
     def list_chat_models(self) -> list[str]:
         try:
@@ -547,18 +583,6 @@ class SessionController:
         if current and current not in models:
             models.insert(0, current)
         return models
-
-    @property
-    def thinking_model(self) -> str | None:
-        return self._thinking_model
-
-    def set_thinking_model(self, model_name: str | None) -> None:
-        candidate = (model_name or "").strip()
-        self._thinking_model = candidate or None
-        self._rebuild_thinking_client()
-
-    def list_thinking_models(self) -> list[str]:
-        return self.list_chat_models()
 
     @property
     def remember_history(self) -> bool:
@@ -1028,10 +1052,12 @@ class SessionController:
                     msg = f"Tool: {name} - {summary[:80]}{'...' if len(summary) > 80 else ''}" if summary else f"Tool: {name}"
                     on_generation_status(msg)
 
+            agent_to_use = self._agno_agent
             use_stream_tts = mode == "live"
             if use_stream_tts:
                 stream_buffer: list[str] = []
                 reply_mood: list[str | None] = [None]
+                last_ui_sent_len: list[int] = [0]
 
                 def _on_content(delta: str) -> None:
                     if not delta:
@@ -1053,11 +1079,15 @@ class SessionController:
                             stream_tts_enqueued_chunks[0] += 1
                     stream_buffer.clear()
                     stream_buffer.append(remainder)
-                    if on_token and buf:
-                        on_token(buf)
+                    if on_token and reply_mood[0] is not None:
+                        display_buf = strip_all_reaction_tags(buf)
+                        to_send = display_buf[last_ui_sent_len[0]:]
+                        if to_send:
+                            on_token(to_send)
+                        last_ui_sent_len[0] = len(display_buf)
 
                 response = run_agent(
-                    self._agno_agent,
+                    agent_to_use,
                     message_for_agent,
                     session_id=self._agno_session_id,
                     user_id=self._agno_user_id,
@@ -1076,7 +1106,7 @@ class SessionController:
                 stream_tts_used = True
             else:
                 response = run_agent(
-                    self._agno_agent,
+                    agent_to_use,
                     message_for_agent,
                     session_id=self._agno_session_id,
                     user_id=self._agno_user_id,
@@ -1092,8 +1122,11 @@ class SessionController:
                     f"mode={mode} llm_ms={round(llm_ms, 1)} agent returned empty; check Agno/Ollama response shape",
                 )
                 response = "I didn’t get a reply from the model. Try again or check the console for details."
-            if on_token and response and not use_stream_tts:
-                on_token(response)
+            llm_for_tts = strip_action_meta_for_tts(response)
+            spoken_part, full_for_display = parse_two_tier_reply(llm_for_tts)
+            display_for_ui = (sanitize_assistant_text(full_for_display).strip() if full_for_display.strip() else response) or response
+            if on_token and display_for_ui and not use_stream_tts:
+                on_token(display_for_ui)
             self._trace(
                 "pipeline.llm.done",
                 f"mode={mode} chars={len(response)} llm_ms={round(llm_ms, 1)}",
@@ -1116,17 +1149,14 @@ class SessionController:
         explicit_reaction, response = extract_tts_reaction_tag(response)
         if explicit_reaction:
             self._trace("pipeline.tts.reaction", f"explicit={explicit_reaction}")
+            display_for_ui = f"— {explicit_reaction}\n\n" + (display_for_ui or "")
 
         if stop_requested and stop_requested():
             self._trace("pipeline.turn.stopped", f"mode={mode} stop_requested=true")
-            return response
+            return display_for_ui
 
         # Action execution delegated to Agno (MCP/registry tools). No separate action pipeline.
-        # Keep the pure conversational text for TTS — strip any [plan]/[action] meta.
-        llm_response_for_tts = strip_action_meta_for_tts(response)
-
-
-        response = sanitize_assistant_text(response)
+        # Two-tier: spoken_part for TTS, full_for_display (display_for_ui) for transcript; already computed above.
 
         tts_started = time.perf_counter()
         tts_ms = 0.0
@@ -1150,9 +1180,10 @@ class SessionController:
 
         if should_speak_full_response:
             try:
-                tts_text = prepare_tts_text(strip_action_meta_for_tts(llm_response_for_tts))
+                tts_content = strip_all_reaction_tags(spoken_part) if spoken_part.strip() else strip_all_reaction_tags(llm_for_tts)
+                tts_text = prepare_tts_text(tts_content) if tts_content.strip() else ""
                 if tts_text:
-                    reaction = explicit_reaction or infer_tts_reaction(llm_response_for_tts)
+                    reaction = explicit_reaction or infer_tts_reaction(spoken_part or llm_for_tts)
                     self._enqueue_tts_chunk(tts_text, reaction=reaction)
                     self._trace("pipeline.tts.reaction", f"reaction={reaction}")
                     self._trace("pipeline.tts.speak", f"chars={len(tts_text)}")
@@ -1172,7 +1203,7 @@ class SessionController:
             "total_ms": round((time.perf_counter() - turn_start) * 1000.0, 1),
         })
         self._trace("pipeline.turn.done", f"mode={mode} total_ms={round((time.perf_counter() - turn_start) * 1000.0, 1)}")
-        return response
+        return display_for_ui
 
     def _apply_assistant_preferences(self) -> None:
         length_scale = getattr(self._settings.assistant, "tts_length_scale", 1.0) or 1.0
@@ -1479,19 +1510,6 @@ class SessionController:
             log_event(stage_text, message_text)
         except Exception:
             pass
-
-    def _rebuild_thinking_client(self) -> None:
-        if not self._thinking_model:
-            self._thinking_ollama = None
-            return
-
-        self._thinking_ollama = OllamaClient(
-            OllamaSettings(
-                base_url=self._settings.ollama.base_url,
-                chat_model=self._thinking_model,
-                temperature=0.1,
-            )
-        )
 
     @staticmethod
     def _build_tts_service(settings: AppSettings, output_device: int | None = None):
@@ -1809,110 +1827,14 @@ class SessionController:
         recent_events: list[dict[str, Any]],
         remaining_steps: int,
     ) -> dict[str, Any]:
-        available_tools: list[str] = []
-        objective_text = str(objective or "").strip() or str(self._active_goal or "").strip() or "general_assistance"
-        compact_events = recent_events[-4:]
-        screen_preview = str(screen_text or "")[:1800]
-        self._trace(
-            "agentic.plan.input",
-            (
-                f"objective={objective_text!r} remaining={max(1, int(remaining_steps))} "
-                f"tools={len(available_tools)} events={len(compact_events)} screen_chars={len(screen_preview)}"
-            ),
-        )
-
-        if not available_tools:
-            self._trace("agentic.plan.output", "done=true reason=no_tools")
-            return {
-                "done": True,
-                "progress_note": "No tools available, stopping autonomous continuation.",
-                "next_tool": "",
-                "next_args": {},
-            }
-
-        try:
-            raw = (self._thinking_ollama or self._ollama).chat(
-                [
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are an agentic continuation planner. "
-                            "Choose exactly one best next tool call to advance the objective, "
-                            "or mark done when objective appears complete. "
-                            "Return exactly one JSON object with keys: "
-                            "done (bool), progress_note (str), next_tool (str), next_args (object). "
-                            "Rules: use only tools listed in AVAILABLE_TOOLS; do not invent tool names; "
-                            "if uncertain, prefer observational tools before mutating actions."
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": (
-                            f"OBJECTIVE:\n{objective_text}\n\n"
-                            f"ACTIVE_GOAL:\n{self._active_goal}\n\n"
-                            f"REMAINING_STEPS:{max(1, int(remaining_steps))}\n\n"
-                            f"AVAILABLE_TOOLS:\n" + "\n".join(f"- {name}" for name in available_tools[:120]) + "\n\n"
-                            f"RECENT_EVENTS_JSON:\n{compact_events}\n\n"
-                            f"SCREEN_CONTEXT_PREVIEW:\n{screen_preview or '[none]'}"
-                        ),
-                    },
-                ]
-            )
-            payload = extract_json_object(raw)
-        except Exception as exc:
-            self._trace("agentic.plan.error", f"planner unavailable: {exc}")
-            payload = {}
-
-        if not isinstance(payload, dict):
-            payload = {}
-
-        done = bool(payload.get("done", False))
-        progress_note = str(payload.get("progress_note", "")).strip()
-        next_tool = str(payload.get("next_tool", "")).strip()
-        next_args = payload.get("next_args", {})
-        if not isinstance(next_args, dict):
-            next_args = {}
-
-        if not done and next_tool and next_tool not in available_tools:
-            self._trace("agentic.plan.error", f"planner chose unavailable tool: {next_tool}")
-            return {
-                "done": True,
-                "progress_note": (
-                    "Planner selected unavailable tool; stopping to avoid invalid execution."
-                ),
-                "next_tool": "",
-                "next_args": {},
-            }
-
-        if not done and not next_tool:
-            # Fallback: prefer non-mutating MCP context refresh if available.
-            for candidate in ("mcp.windows.Snapshot",):
-                if candidate in available_tools:
-                    self._trace("agentic.plan.output", f"done=false fallback_tool={candidate}")
-                    return {
-                        "done": False,
-                        "progress_note": progress_note or "Refreshing context before next action.",
-                        "next_tool": candidate,
-                        "next_args": {},
-                    }
-            self._trace("agentic.plan.output", "done=true reason=no_fallback")
-            return {
-                "done": True,
-                "progress_note": progress_note or "No safe fallback tool available.",
-                "next_tool": "",
-                "next_args": {},
-            }
-
-        self._trace(
-            "agentic.plan.output",
-            f"done={done} next_tool={next_tool or '[none]'} note={progress_note or '[none]'}",
-        )
-
+        # No separate planner: single agent handles conversation and tools.
+        # Return done so autonomy does not run a separate planning LLM.
+        self._trace("agentic.plan.output", "done=true reason=single_agent_no_planner")
         return {
-            "done": done,
-            "progress_note": progress_note,
-            "next_tool": next_tool,
-            "next_args": next_args,
+            "done": True,
+            "progress_note": "",
+            "next_tool": "",
+            "next_args": {},
         }
 
     def _continue_reading_after_approval(self) -> str:

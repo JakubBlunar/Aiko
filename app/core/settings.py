@@ -62,7 +62,6 @@ class AssistantSettings:
     remember_history: bool
     background: str
     background_path: str = ""  # If set, load multiline background from this file (relative to project root)
-    thinking_model: str | None = None
     user_id: str = "default"  # Scopes Agno Learning (user profile + memory) per user
     response_style: str = "balanced"  # balanced | concise | detailed (reply length)
     tts_length_scale: float = 1.0  # TTS speed: 0.65–1.35, higher = slower
@@ -200,6 +199,15 @@ class LoggingSettings:
 
 
 @dataclass(slots=True)
+class AgentSettings:
+    """Agent context and compression (num_history_runs, compress_tool_results)."""
+    num_history_runs: int = 10
+    compress_tool_results: bool = True
+    compress_tool_results_limit: int | None = 3
+    compress_token_limit: int | None = None
+
+
+@dataclass(slots=True)
 class AppSettings:
     assistant: AssistantSettings
     autonomy: AutonomySettings
@@ -213,6 +221,7 @@ class AppSettings:
     ui: UiSettings
     tooling: ToolingBridgeSettings
     logging: LoggingSettings = field(default_factory=LoggingSettings)
+    agent: AgentSettings = field(default_factory=AgentSettings)
 
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "default.json"
@@ -443,6 +452,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
     tts = raw.get("tts", {}) or {}
     ui = raw.get("ui", {}) or {}
     tooling = raw.get("tooling", {}) or {}
+    agent_raw = raw.get("agent", {}) or {}
     logging_raw = raw.get("logging", {}) or {}
 
     turn_planning = autonomy.get("turn_planning", {}) if isinstance(autonomy.get("turn_planning", {}), dict) else {}
@@ -475,11 +485,6 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             remember_history=bool(_required(assistant, "remember_history")),
             background=str(assistant.get("background", "")).strip(),
             background_path=str(assistant.get("background_path", "") or "").strip(),
-            thinking_model=(
-                str(assistant.get("thinking_model")).strip()
-                if assistant.get("thinking_model") is not None
-                else None
-            ),
             user_id=str(assistant.get("user_id", "default") or "default").strip() or "default",
             response_style=_normalize_response_style(assistant.get("response_style")),
             tts_length_scale=_normalize_tts_length_scale(assistant.get("tts_length_scale")),
@@ -651,6 +656,20 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             config_user_path=str(tooling.get("config_user_path", "config/tooling.user.json")),
             enable_runtime_overrides=bool(tooling.get("enable_runtime_overrides", True)),
         ),
+        agent=AgentSettings(
+            num_history_runs=max(1, min(int(agent_raw.get("num_history_runs", 10)), 50)),
+            compress_tool_results=bool(agent_raw.get("compress_tool_results", True)),
+            compress_tool_results_limit=(
+                int(agent_raw["compress_tool_results_limit"])
+                if agent_raw.get("compress_tool_results_limit") is not None
+                else None
+            ),
+            compress_token_limit=(
+                int(agent_raw["compress_token_limit"])
+                if agent_raw.get("compress_token_limit") is not None
+                else None
+            ),
+        ),
         logging=LoggingSettings(
             level=str(logging_raw.get("level", "INFO")).strip().upper() or "INFO",
         ),
@@ -660,7 +679,6 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
 def save_runtime_preferences(
     *,
     chat_model: str,
-    thinking_model: str | None,
     remember_history: bool,
     autonomy_mode: str,
     microphone_device: int | None,
@@ -714,7 +732,6 @@ def save_runtime_preferences(
         },
         "assistant": {
             "remember_history": bool(remember_history),
-            "thinking_model": thinking_model,
         },
         "autonomy": {
             "mode": (
