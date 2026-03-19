@@ -14,6 +14,7 @@ class OllamaSettings:
     temperature: float
     context_window: int | None = None  # None = auto-detect from Ollama API
     embedding_model: str = "qwen3-embedding:0.6b"
+    judge_model: str = "qwen2.5:0.5b"
 
 
 @dataclass(slots=True)
@@ -195,6 +196,12 @@ class AgentSettings:
 
 
 @dataclass(slots=True)
+class McpServerSettings:
+    enabled: bool = True
+    port: int = 6274
+
+
+@dataclass(slots=True)
 class AppSettings:
     assistant: AssistantSettings
     autonomy: AutonomySettings
@@ -208,6 +215,7 @@ class AppSettings:
     tooling: ToolingBridgeSettings
     logging: LoggingSettings = field(default_factory=LoggingSettings)
     agent: AgentSettings = field(default_factory=AgentSettings)
+    mcp_server: McpServerSettings = field(default_factory=McpServerSettings)
 
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "default.json"
@@ -376,6 +384,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
     tooling = raw.get("tooling", {}) or {}
     agent_raw = raw.get("agent", {}) or {}
     logging_raw = raw.get("logging", {}) or {}
+    mcp_server_raw = raw.get("mcp_server", {}) or {}
 
     turn_planning = autonomy.get("turn_planning", {}) if isinstance(autonomy.get("turn_planning", {}), dict) else {}
     stt_diagnostics = stt.get("diagnostics", {}) if isinstance(stt.get("diagnostics", {}), dict) else {}
@@ -452,6 +461,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             temperature=float(_required(ollama, "temperature")),
             context_window=(int(ollama["context_window"]) if ollama.get("context_window") is not None else None),
             embedding_model=str(ollama.get("embedding_model", "qwen3-embedding:0.6b")).strip() or "qwen3-embedding:0.6b",
+            judge_model=str(ollama.get("judge_model", "qwen2.5:0.5b")).strip() or "qwen2.5:0.5b",
         ),
         audio=AudioSettings(
             sample_rate=int(_required(audio, "sample_rate")),
@@ -587,6 +597,10 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
         ),
         logging=LoggingSettings(
             level=str(logging_raw.get("level", "INFO")).strip().upper() or "INFO",
+        ),
+        mcp_server=McpServerSettings(
+            enabled=bool(mcp_server_raw.get("enabled", True)),
+            port=max(1, int(mcp_server_raw.get("port", 6274))),
         ),
     )
 

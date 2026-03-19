@@ -198,6 +198,11 @@ class StyleBertVits2TtsService:
 
     def stop(self) -> None:
         self._stop_requested.set()
+        try:
+            if sd is not None:
+                sd.stop()
+        except Exception:
+            pass
 
     def set_output_device(self, device_index: int | None) -> None:
         self._output_device = device_index

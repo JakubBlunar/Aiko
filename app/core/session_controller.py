@@ -143,6 +143,7 @@ class SessionController:
                 chat_model=chat_model,
                 base_url=settings.ollama.base_url,
                 temperature=float(settings.ollama.temperature),
+                judge_model=getattr(settings.ollama, "judge_model", None) or None,
                 assistant_background=_get_assistant_background(settings),
                 add_tools=True,
                 add_mcp=mcp_enabled,
@@ -202,6 +203,19 @@ class SessionController:
         }
         self._metrics_history: deque[dict[str, float | str]] = deque(maxlen=10)
         self._live_no_speech_streak = 0
+
+        self._mcp_server_runner = None
+        if settings.mcp_server.enabled:
+            try:
+                from app.mcp.server import create_mcp_server
+                from app.mcp.runner import McpServerRunner
+                mcp_srv = create_mcp_server(self, port=settings.mcp_server.port)
+                self._mcp_server_runner = McpServerRunner(mcp_srv, port=settings.mcp_server.port)
+                self._mcp_server_runner.start()
+            except Exception:
+                logging.getLogger("app").warning("Failed to start embedded MCP server", exc_info=True)
+
+        self._message_listeners: list[Callable[[str, str], None]] = []
 
         self._state = SessionState(
             mic_enabled=settings.audio.enable_microphone,
@@ -504,7 +518,33 @@ class SessionController:
         return True
 
     def build_startup_greeting(self) -> str:
-        return "Welcome back. Audio is ready."
+        """Generate a short personalized greeting using the LLM."""
+        try:
+            from langchain_core.messages import SystemMessage, HumanMessage
+            llm = getattr(self._agent, "_llm", None)
+            if llm is None:
+                return "Welcome back. Audio is ready."
+            sys_msg = getattr(self._agent, "_system_message", "") or ""
+            prompt = [
+                SystemMessage(content=sys_msg),
+                HumanMessage(
+                    content="The user just opened the app. Generate a single short greeting sentence "
+                    "(max 15 words) to welcome them back. Stay in character. "
+                    "Do NOT use [[reaction:...]] tags or any formatting. Just the greeting text."
+                ),
+            ]
+            result = llm.invoke(prompt)
+            text = (getattr(result, "content", "") or "").strip()
+            text = text.strip('"').strip("'").strip()
+            if not text or len(text) > 200:
+                return "Welcome back. Audio is ready."
+            log = logging.getLogger("app")
+            log.info("Model startup greeting: %s", text)
+            return text
+        except Exception as exc:
+            log = logging.getLogger("app")
+            log.warning("Startup greeting generation failed: %s", exc)
+            return "Welcome back. Audio is ready."
 
     def prewarm_tts(self) -> None:
         tts = self._tts
@@ -771,7 +811,25 @@ class SessionController:
         self._action_hotkey_listener.stop()
 
     def shutdown(self) -> None:
+        if self._mcp_server_runner is not None:
+            try:
+                self._mcp_server_runner.stop()
+            except Exception:
+                pass
+        try:
+            self._tts.stop()
+        except Exception:
+            pass
+        try:
+            self._realtime_stt.stop_context()
+        except Exception:
+            pass
         self.stop_action_hotkey_listener()
+        try:
+            from app.llm.langchain_agent import shutdown_mcp
+            shutdown_mcp()
+        except Exception:
+            pass
 
     def get_last_metrics(self) -> dict[str, float | str]:
         return dict(self._last_metrics)
@@ -997,6 +1055,17 @@ class SessionController:
         fallback = " | ".join(parts)
         return fallback[: max(80, int(max_chars))].strip()
 
+    def add_message_listener(self, callback: Callable[[str, str], None]) -> None:
+        """Register a callback(speaker, text) invoked for every user/assistant message."""
+        self._message_listeners.append(callback)
+
+    def _notify_message(self, speaker: str, text: str) -> None:
+        for cb in self._message_listeners:
+            try:
+                cb(speaker, text)
+            except Exception:
+                pass
+
     def chat_once(self, user_text: str) -> str:
         return self.chat_once_streaming(user_text=user_text, mode="typed")
 
@@ -1053,6 +1122,7 @@ class SessionController:
 
             agent_to_use = self._agent
             use_stream_tts = mode == "live"
+            typed_accumulated: list[str] = []
             if use_stream_tts:
                 from io import StringIO
                 stream_io = StringIO()
@@ -1107,13 +1177,31 @@ class SessionController:
                         stream_tts_enqueued_chunks[0] += 1
                 stream_tts_used = True
             else:
+                typed_buf: list[str] = []
+                typed_ui_sent: list[int] = [0]
+
+                def _on_typed_content(delta: str) -> None:
+                    if not delta:
+                        return
+                    typed_accumulated.append(delta)
+                    typed_buf.append(delta)
+                    if on_token:
+                        full = "".join(typed_buf)
+                        display = strip_all_reaction_tags(full)
+                        unsent = display[typed_ui_sent[0]:]
+                        if unsent:
+                            on_token(unsent)
+                            typed_ui_sent[0] = len(display)
+
                 response = run_agent(
                     agent_to_use,
                     message_for_agent,
                     session_id=self._session_id,
                     user_id=self._user_id,
-                    stream=False,
+                    stream=True,
+                    on_content=_on_typed_content,
                     on_tool_use=_tool_status if on_generation_status else None,
+                    stop_requested=stop_requested,
                 )
 
             response = sanitize_assistant_text(response)
@@ -1127,7 +1215,8 @@ class SessionController:
             llm_for_tts = strip_action_meta_for_tts(response)
             spoken_part, full_for_display = parse_two_tier_reply(llm_for_tts)
             display_for_ui = (sanitize_assistant_text(full_for_display).strip() if full_for_display.strip() else response) or response
-            if on_token and display_for_ui and not use_stream_tts:
+            already_streamed = use_stream_tts or (mode == "typed" and bool(typed_accumulated))
+            if on_token and display_for_ui and not already_streamed:
                 on_token(display_for_ui)
             self._trace(
                 "pipeline.llm.done",

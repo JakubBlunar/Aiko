@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "assistant": {
+      "url": "http://localhost:6274/sse"
+    }
+  }
+}

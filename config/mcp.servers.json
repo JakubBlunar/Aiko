@@ -4,8 +4,7 @@
       "command": "npx",
       "args": [
         "@playwright/mcp@latest",
-        "--browser", "firefox",
-        "--user-data-dir", "data/browser-profile"
+        "--config", "config/playwright.config.json"
       ]
     }
   }

@@ -210,6 +210,21 @@ class ChatDatabase:
         ).fetchone()
         return row[0] if row else 0
 
+    def clear_messages(self, session_id: str) -> int:
+        """Delete all messages (and their embeddings) for a session. Returns deleted count."""
+        conn = self._get_conn()
+        conn.execute(
+            "DELETE FROM message_embeddings WHERE session_id = ?", (session_id,)
+        )
+        cursor = conn.execute(
+            "DELETE FROM messages WHERE session_id = ?", (session_id,)
+        )
+        conn.execute(
+            "DELETE FROM session_summaries WHERE session_id = ?", (session_id,)
+        )
+        conn.commit()
+        return cursor.rowcount
+
     # ── Embeddings ──
 
     def add_embedding(

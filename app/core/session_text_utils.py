@@ -119,6 +119,8 @@ def prepare_tts_text(text: str) -> str:
     cleaned = re.sub(r"\*(.+?)\*", r"\1", cleaned)
     cleaned = re.sub(r"__(.+?)__", r"\1", cleaned)
     cleaned = re.sub(r"_(.+?)_", r"\1", cleaned)
+    # Remove any remaining [[...]] tags (reaction, spoken, detail, etc.)
+    cleaned = re.sub(r"\[\[[^\]]*\]\]", "", cleaned)
     # Remove brackets
     cleaned = cleaned.replace("[", "").replace("]", "")
     # Replace very long numbers with a speakable placeholder

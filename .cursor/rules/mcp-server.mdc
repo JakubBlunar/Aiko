@@ -1,0 +1,52 @@
+---
+description: Guide for using the embedded MCP server to interact with and debug the live assistant app
+alwaysApply: true
+---
+
+# Embedded MCP Server
+
+The assistant app runs an MCP server on `http://localhost:6274/sse` (when enabled in config). Cursor connects to it via `.cursor/mcp.json` — the tools appear as native MCP tools you can call directly, no Python scripts needed.
+
+## Available MCP Tools
+
+| Tool | Purpose |
+|------|---------|
+| `send_message(message, skip_tts?)` | Send text to the assistant; returns the full response. UI updates live. Set `skip_tts=true` during testing. |
+| `get_status()` | Model name, context window, tool count, TTS engine, metrics. |
+| `list_agent_tools()` | All tools the agent has (browser, search_history, etc.). |
+| `get_last_response_detail()` | Last response timing breakdown (llm_ms, tts_ms, etc.). |
+| `clear_history()` | Reset conversation session. |
+| `get_browser_snapshot()` | Accessibility tree of the current browser page (what the agent sees). |
+| `get_browser_screenshot()` | Screenshot of the current browser page. |
+| `get_browser_url()` | Current tabs and URLs. |
+| `get_browser_console()` | Recent console messages (errors, warnings). |
+
+## Debugging Workflow
+
+1. Start the app: `python -m app.main`
+2. Call `get_status` to confirm connection and see the loaded model/tools.
+3. Call `send_message` with `skip_tts=true` to test agent behavior without audio.
+4. If the agent used browser tools, call `get_browser_snapshot` or `get_browser_screenshot` to see what happened.
+5. Call `get_last_response_detail` to check timing (slow llm_ms = model issue, slow tts_ms = TTS issue).
+6. Check the terminal output for `Stream pass complete:` and `Nudging agent:` log lines to understand the tool-calling flow.
+
+## Adding Custom Debug Tools
+
+If the existing tools don't cover your debugging need, add new ones in `app/mcp/server.py`. The server has full access to `SessionController` and all internals. Example:
+
+```python
+@mcp.tool()
+def get_system_prompt() -> str:
+    """Return the current system prompt sent to the LLM."""
+    agent = getattr(session, "_agent", None)
+    return agent._system_message if agent else "No agent"
+```
+
+Add whatever tool you need (inspect message history, dump TTS queue, check embeddings, call internal methods, etc.), then restart the app. The tool appears automatically in Cursor. You are encouraged to create tools on the fly to diagnose issues.
+
+## Key Behavior Notes
+
+- Messages sent via MCP appear in the UI as "You (MCP)" and "Assistant".
+- The agent may call tools with zero text content; the retry mechanism nudges it for a spoken summary.
+- If retries still produce no text, a raw LLM call (without tools) forces a summary.
+- The `_extract_text()` helper handles both string and list-type AI message content.

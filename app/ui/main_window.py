@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import time as _time
 
-from PySide6.QtCore import QEvent, QThread, QTimer, Qt, QUrl
+from PySide6.QtCore import QEvent, QThread, QTimer, Qt, QUrl, Signal
 from PySide6.QtGui import QCloseEvent, QKeyEvent, QMouseEvent, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
@@ -84,6 +84,8 @@ def _refresh_button_style(button: QPushButton) -> None:
 
 
 class MainWindow(QMainWindow):
+    _external_message = Signal(str, str)
+
     _STT_PROFILE_TO_MODEL: dict[str, str] = {
         "fast": "base",
         "accurate": "small",
@@ -195,6 +197,8 @@ class MainWindow(QMainWindow):
         conversation_layout.addWidget(self._status_label)
 
         self._settings_dialog = None
+        self._external_message.connect(self._on_external_message)
+        self._session.add_message_listener(self._emit_external_message)
         QTimer.singleShot(250, self._play_startup_greeting)
 
     def _open_settings(self) -> None:
@@ -208,16 +212,30 @@ class MainWindow(QMainWindow):
     def _on_settings_dialog_finished(self) -> None:
         self._status_label.setText(self._ready_status_text())
 
+    def _emit_external_message(self, speaker: str, text: str) -> None:
+        """Thread-safe bridge: emit the Qt signal from any thread."""
+        self._external_message.emit(speaker, text)
+
+    def _on_external_message(self, speaker: str, text: str) -> None:
+        """Handle external messages (MCP) on the GUI thread."""
+        if text:
+            self._append(speaker, text)
+
     def _play_startup_greeting(self) -> None:
         if self._startup_greeting_done:
             return
         self._startup_greeting_done = True
         if self._live_thread is not None or self._turn_thread is not None:
             return
-        greeting = self._session.build_startup_greeting()
-        ok = self._session.speak_text(greeting)
-        if ok:
-            self._append("System", f"Startup greeting played: {greeting}")
+        import threading
+
+        def _generate_and_speak() -> None:
+            greeting = self._session.build_startup_greeting()
+            ok = self._session.speak_text(greeting)
+            if ok:
+                self._external_message.emit("Assistant", greeting)
+
+        threading.Thread(target=_generate_and_speak, daemon=True, name="startup-greeting").start()
 
     def _setup_wheel_guard(self) -> None:
         pass
@@ -628,6 +646,9 @@ class MainWindow(QMainWindow):
             self._append("System", "Stop Live mode before sending typed messages.")
             return
 
+        if self._session.is_tts_playing():
+            self._session.stop_tts()
+
         self._append("You", text)
         self._input.setPlainText("")
         self._start_single_turn(mode="typed", text=text)
@@ -804,8 +825,9 @@ class MainWindow(QMainWindow):
         app = QApplication.instance()
         if app is not None:
             QTimer.singleShot(0, app.quit)
-            # If something keeps the process alive, force exit so the console doesn't hang.
-            QTimer.singleShot(6000, lambda: os._exit(0))
+        # Force-exit via threading.Timer (works even after the Qt event loop is gone)
+        import threading as _threading
+        _threading.Timer(3.0, lambda: os._exit(0)).start()
 
     def _on_live_toggle_clicked(self) -> None:
         if self._live_thread is not None:

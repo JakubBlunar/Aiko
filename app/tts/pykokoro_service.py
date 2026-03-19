@@ -21,6 +21,12 @@ except ImportError:
 _pykokoro_available = False
 try:
     from pykokoro import KokoroPipeline, PipelineConfig, GenerationConfig  # noqa: F401
+    # Disable automatic lang inference from voice-name prefix.
+    # Without this, voices like jf_nezumi cause the SSMD parser to load a
+    # Japanese spaCy model even when we explicitly set lang="en-us", because
+    # the pipeline treats "en-us" as the unchanged default and overrides it.
+    import pykokoro.pipeline as _pykokoro_pipeline_mod
+    _pykokoro_pipeline_mod._default_lang_from_voice = lambda cfg: cfg
     _pykokoro_available = True
 except ImportError:
     KokoroPipeline = None  # type: ignore[assignment,misc]
@@ -119,6 +125,11 @@ class PyKokoroTtsService:
 
     def stop(self) -> None:
         self._stop_requested.set()
+        try:
+            if sd is not None:
+                sd.stop()
+        except Exception:
+            pass
 
     def set_output_device(self, device_index: int | None) -> None:
         self._output_device = device_index
@@ -167,6 +178,7 @@ class PyKokoroTtsService:
             voice = (self._settings.voice or "af_heart").strip() or "af_heart"
             gen_config = GenerationConfig(
                 speed=min(2.0, max(0.5, float(speed))),
+                lang="en-us",
             )
             result = pipeline.run(text, voice=voice, generation=gen_config)
             audio = np.asarray(result.audio, dtype=np.float32)

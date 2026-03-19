@@ -9,11 +9,41 @@ if TYPE_CHECKING:
     from app.core.chat_database import ChatDatabase
     from app.llm.embedding_service import EmbeddingService
 
+
+def _extract_text(content: Any) -> str:
+    """Extract plain text from an AI message content field.
+
+    Handles both string content and list-of-blocks format
+    (e.g. [{"type": "text", "text": "..."}]).
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                parts.append(str(block.get("text", "")))
+        return " ".join(p for p in parts if p)
+    return str(content) if content else ""
+
+
 # Voice-friendly instructions: replies are spoken via TTS.
 _BASE_INSTRUCTIONS = """\
 You are in a voice conversation. Your replies will be read aloud by text-to-speech, so write for listening: use short, clear sentences and natural, conversational phrasing. Avoid long bullet lists, code blocks, or markdown that sounds awkward when spoken; if the user needs detail, give a brief spoken summary.
 
 For greetings (e.g. "Hello!", "Hi"), casual chat, or when the user has already asked a complete question, always reply directly in character—do not invoke any tools or ask for user input. Only use tools when you need to search, calculate, look something up, or perform a specific action the user requested. Do not use emojis or special characters.
+
+CONVERSATION FLOW: You have already greeted the user at startup. Do NOT greet again in any reply — just continue the conversation naturally. Never start a reply with "Hewo!", "Hello!", "Hi!", or any greeting. Jump straight into your response content.
+
+TOOL USE RULES — follow strictly:
+1. When the user asks you to perform an action (open a page, click a link, search, etc.), you MUST actually call the appropriate tool. NEVER just describe or narrate what you would do — actually do it by invoking the tool.
+2. Before calling a tool, write ONE short sentence about what you will do (e.g. "Let me open that for you!"). Keep it brief.
+3. After tools finish, give a concise summary of what happened. Do NOT repeat your greeting, introduction, or what you said before. Continue naturally as if mid-conversation.
+4. If one tool call is not enough, call multiple tools in sequence. Do not stop after announcing your intent — follow through with actual tool calls until the task is complete.
+5. NEVER say "let me click on that" or "I'll open that now" without ACTUALLY calling browser_click, browser_navigate, or the relevant tool in the same response.
+6. Your entire response (narration + tool results + summary) forms ONE reply to the user. Do NOT greet again or re-introduce yourself between tool calls. Only greet once at the very start.
 
 At the **start** of every reply, on the first line, write exactly one reaction tag: [[reaction:neutral]] then a blank line, then your reply. Use one of: neutral, cheerful, excited, surprised, sad, angry, calm, serious, friendly, gentle, enthusiastic. Do not repeat the tag at the end of your reply.
 
@@ -64,18 +94,112 @@ def _get_langchain_tools(
     return tools
 
 
+class _McpManager:
+    """Keeps MCP server sessions alive on a background event loop.
+
+    Persistent sessions are created for each server so the Playwright
+    browser process (and its state) survives across multiple tool calls.
+    """
+
+    def __init__(self, connections: dict[str, dict[str, Any]]) -> None:
+        import asyncio
+        import concurrent.futures
+        import threading
+
+        self._loop = asyncio.new_event_loop()
+        self._tools: list[Any] = []
+        self._stop_event: asyncio.Future | None = None  # type: ignore[type-arg]
+        ready: concurrent.futures.Future[list[Any]] = concurrent.futures.Future()
+
+        def _run_loop() -> None:
+            asyncio.set_event_loop(self._loop)
+            try:
+                self._loop.run_until_complete(self._serve(connections, ready))
+            except (Exception, BaseExceptionGroup):
+                pass
+
+        self._thread = threading.Thread(target=_run_loop, daemon=True, name="mcp-loop")
+        self._thread.start()
+        self._tools = ready.result(timeout=60)
+
+    async def _serve(
+        self,
+        connections: dict[str, dict[str, Any]],
+        ready: Any,
+    ) -> None:
+        import contextlib
+        from langchain_mcp_adapters.client import create_session
+        from langchain_mcp_adapters.tools import load_mcp_tools
+
+        all_tools: list[Any] = []
+        async with contextlib.AsyncExitStack() as stack:
+            for name, conn in connections.items():
+                session = await stack.enter_async_context(create_session(conn))
+                await session.initialize()
+                tools = await load_mcp_tools(session, server_name=name)
+                all_tools.extend(tools)
+            ready.set_result(all_tools)
+            self._stop_event = self._loop.create_future()
+            await self._stop_event
+
+    @property
+    def tools(self) -> list[Any]:
+        return list(self._tools)
+
+    def run_coro(self, coro: Any) -> Any:
+        """Submit a coroutine to the persistent loop and block for the result."""
+        import asyncio
+
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return future.result(timeout=120)
+
+    def shutdown(self) -> None:
+        if self._stop_event is not None:
+            try:
+                self._loop.call_soon_threadsafe(self._stop_event.set_result, None)
+            except Exception:
+                pass
+        self._thread.join(timeout=5)
+        try:
+            self._loop.call_soon_threadsafe(self._loop.stop)
+        except Exception:
+            pass
+
+
+_mcp_manager: _McpManager | None = None
+
+
+def _make_sync_tool(tool: Any, manager: _McpManager) -> Any:
+    """Wrap an async-only StructuredTool so it runs on the persistent MCP event loop."""
+    import inspect
+
+    if getattr(tool, "func", None) is not None:
+        return tool
+    coro_fn = getattr(tool, "coroutine", None)
+    if coro_fn is None or not inspect.iscoroutinefunction(coro_fn):
+        return tool
+
+    def _sync_wrapper(**kwargs: Any) -> Any:
+        return manager.run_coro(coro_fn(**kwargs))
+
+    tool.func = _sync_wrapper
+    if hasattr(tool, "handle_tool_error"):
+        tool.handle_tool_error = True
+    return tool
+
+
 def _load_mcp_tools(
     root: Path,
     mcp_config: dict[str, Any],
 ) -> list[Any]:
-    """Load MCP tools from config (servers_json_path, servers_user_json_path)."""
+    """Load MCP tools from config. Starts a persistent background loop for MCP servers."""
+    global _mcp_manager
+    log = logging.getLogger("app.llm.langchain_agent")
     tools: list[Any] = []
     try:
-        from langchain_mcp_adapters.client import MultiServerMCPClient
+        from langchain_mcp_adapters.client import MultiServerMCPClient  # noqa: F401
     except ImportError:
-        logging.getLogger("app.llm.langchain_agent").warning(
-            "langchain-mcp-adapters not installed; MCP tools disabled."
-        )
+        log.warning("langchain-mcp-adapters not installed; MCP tools disabled.")
         return tools
 
     servers: dict[str, dict[str, Any]] = {}
@@ -100,8 +224,6 @@ def _load_mcp_tools(
         return tools
 
     try:
-        import asyncio
-
         connections: dict[str, dict[str, Any]] = {}
         for name, cfg in servers.items():
             transport = str(cfg.get("transport", "stdio")).strip().lower()
@@ -123,11 +245,20 @@ def _load_mcp_tools(
                     conn["env"] = env
                 connections[name] = conn
         if connections:
-            client = MultiServerMCPClient(connections)
-            tools = asyncio.run(client.get_tools())
+            _mcp_manager = _McpManager(connections)
+            tools = [_make_sync_tool(t, _mcp_manager) for t in _mcp_manager.tools]
+            log.info("Loaded %d MCP tools: %s", len(tools), [t.name for t in tools])
     except Exception as e:
-        logging.getLogger("app.llm.langchain_agent").warning("Failed to load MCP tools: %s", e)
+        log.warning("Failed to load MCP tools: %s", e)
     return tools
+
+
+def shutdown_mcp() -> None:
+    """Stop the persistent MCP event loop. Call on application exit."""
+    global _mcp_manager
+    if _mcp_manager is not None:
+        _mcp_manager.shutdown()
+        _mcp_manager = None
 
 
 def _add_history_search_tool(
@@ -162,6 +293,7 @@ def create_agent(
     chat_model: str = "llama3.1:8b",
     base_url: str = "http://127.0.0.1:11434",
     temperature: float = 0.6,
+    judge_model: str | None = None,
     instructions: str | None = None,
     assistant_background: str | None = None,
     storage_path: Path | None = None,
@@ -209,7 +341,22 @@ def create_agent(
         base_url=base_url,
         temperature=temperature,
         num_ctx=resolved_ctx,
+        client_kwargs={"timeout": 300.0},
+        keep_alive="10m",
     )
+
+    judge_llm = None
+    if judge_model:
+        judge_llm = ChatOllama(
+            model=judge_model,
+            base_url=base_url,
+            temperature=0.0,
+            num_ctx=4096,
+            client_kwargs={"timeout": 30.0},
+            keep_alive="10m",
+        )
+        log.info("Judge model configured: %s", judge_model)
+
     instr = (instructions or _BASE_INSTRUCTIONS).strip()
     if (assistant_background or "").strip():
         instr = f"{instr}\n\nAssistant background: {assistant_background.strip()}"
@@ -240,16 +387,14 @@ def create_agent(
 
     agent = llm
     if create_react_agent is not None and tools_list:
-        try:
-            agent = create_react_agent(llm, tools_list, prompt=instr)
-        except TypeError:
-            agent = create_react_agent(llm, tools_list)
+        agent = create_react_agent(llm, tools_list)
     elif tools_list:
         agent = llm.bind_tools(tools_list)
 
     return _AgentWrapper(
         agent=agent,
         llm=llm,
+        judge_llm=judge_llm,
         tools=tools_list,
         system_message=instr,
         storage_path=storage_path,
@@ -289,9 +434,11 @@ class _AgentWrapper:
         compress_tool_results_limit: int | None = None,
         chat_db: "ChatDatabase | None" = None,
         embedding_service: "EmbeddingService | None" = None,
+        judge_llm: Any = None,
     ) -> None:
         self._agent = agent
         self._llm = llm
+        self._judge_llm = judge_llm
         self._tools = tools
         self._system_message = system_message
         self._storage_path = storage_path
@@ -314,6 +461,7 @@ class _AgentWrapper:
         user_id: str | None = None,
         stream: bool = False,
         stream_events: bool = False,
+        force_plain_llm: bool = False,
     ) -> Any:
         """Run the agent. Returns response object or stream iterator."""
         from langchain_core.messages import HumanMessage
@@ -326,7 +474,7 @@ class _AgentWrapper:
         messages.append(HumanMessage(content=input.strip()))
 
         if stream or stream_events:
-            return self._stream_run(session_key, messages, stream_events)
+            return self._stream_run(session_key, messages, stream_events, force_plain_llm=force_plain_llm)
         return self._invoke_run(session_key, messages)
 
     def save_turn(self, session_id: str, user_id: str | None, user_text: str, ai_text: str) -> None:
@@ -528,14 +676,237 @@ class _AgentWrapper:
                 break
         return _RunOutput(messages=out_messages)
 
-    def _stream_run(self, session_key: str, messages: list[Any], stream_events: bool) -> Any:
+    def _stream_run(
+        self, session_key: str, messages: list[Any], stream_events: bool,
+        *, force_plain_llm: bool = False,
+    ) -> Any:
         from langchain_core.messages import SystemMessage
 
         sys_content = self._build_system_message(session_key)
         full: list[Any] = [SystemMessage(content=sys_content)] + messages
-        if stream_events and self._has_react_agent and self._tools:
-            return self._agent.stream_events({"messages": full}, version="v2")
-        return self._llm.stream(full)
+        self._log.info(
+            "stream_run: react=%s tools=%d msgs=%d sys_chars=%d force_plain=%s",
+            self._has_react_agent, len(self._tools), len(full), len(sys_content), force_plain_llm,
+        )
+        if not force_plain_llm and self._has_react_agent and self._tools:
+            return ("react_stream", self._react_stream_with_retry(full))
+        return ("llm_stream", self._llm.stream(full))
+
+    _TOOL_INTENT_PATTERNS = [
+        r"let me (navigate|open|search|click|browse|type|take|check|look|find|go to|play)",
+        r"i'?ll (navigate|open|search|click|browse|type|take|go to|find|play)",
+        r"navigat(e|ing)\s+to",
+        r"search(ing)?\s+(for|on|youtube|google)",
+        r"open(ing)?\s+(the|a|google|youtube|that|this)",
+        r"(find|play|look up)\s+.{3,20}\s+(for you|on youtube|on google|right now)",
+    ]
+
+    def _has_tool_intent(self, text: str) -> bool:
+        import re
+        text_lower = text.lower()
+        return any(re.search(p, text_lower) for p in self._TOOL_INTENT_PATTERNS)
+
+    _JUDGE_SYSTEM = (
+        "You are a concise quality-control judge for an AI assistant's tool-using conversation turn. "
+        "You will receive a summary of what the assistant did during one turn and must decide the next step.\n\n"
+        "Reply with EXACTLY one JSON object (no markdown fences, no extra text):\n"
+        '{"verdict": "<VERDICT>", "nudge": "<message or empty>"}\n\n'
+        "Possible verdicts:\n"
+        '- "complete": The assistant finished the task and gave the user a useful spoken response. nudge must be "".\n'
+        '- "needs_summary": Tools were called successfully but the assistant never gave a spoken answer. '
+        "nudge = a short instruction telling the assistant to summarize results in speech.\n"
+        '- "needs_tools": The assistant said it would use tools but never actually called any. '
+        "nudge = a short instruction telling it to actually call the tools.\n"
+        '- "needs_continuation": The assistant started calling tools but didn\'t finish the task. '
+        "nudge = a short instruction telling it to continue.\n\n"
+        "IMPORTANT: The nudge must be a brief, direct instruction (1-2 sentences). "
+        "Always include: do NOT repeat any greeting or introduction."
+    )
+
+    def _judge_nudge(
+        self,
+        user_request: str,
+        tool_calls: int,
+        tool_names: list[str],
+        ai_text: str,
+        last_ai: str,
+    ) -> str:
+        """Use the small judge model to decide whether/what nudge is needed.
+
+        Returns empty string if the turn is complete, otherwise the nudge message.
+        Falls back to regex-based heuristics if judge model is unavailable.
+        """
+        if not self._judge_llm:
+            return self._judge_nudge_fallback(tool_calls, tool_names, ai_text, last_ai)
+
+        from langchain_core.messages import SystemMessage, HumanMessage as JHuman
+
+        summary_parts = [f"User request: {user_request[:200]}"]
+        summary_parts.append(f"Tool calls made: {tool_calls} ({', '.join(tool_names[:10]) or 'none'})")
+        if ai_text:
+            summary_parts.append(f"Assistant's spoken text: {ai_text[:300]}")
+        else:
+            summary_parts.append("Assistant's spoken text: (none)")
+        if last_ai and last_ai != ai_text:
+            summary_parts.append(f"Last AI message: {last_ai[:200]}")
+
+        prompt = [
+            SystemMessage(content=self._JUDGE_SYSTEM),
+            JHuman(content="\n".join(summary_parts)),
+        ]
+
+        try:
+            import json as _json
+            result = self._judge_llm.invoke(prompt)
+            raw = _extract_text(getattr(result, "content", "")).strip()
+            raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+            self._log.info("Judge raw response: %s", raw[:200])
+            parsed = _json.loads(raw)
+            verdict = parsed.get("verdict", "complete")
+            nudge = (parsed.get("nudge") or "").strip()
+            if verdict == "complete" or not nudge:
+                self._log.info("Judge verdict: %s (no nudge needed)", verdict)
+                return ""
+            self._log.info("Judge verdict: %s, nudge: %s", verdict, nudge[:100])
+            return nudge
+        except Exception as exc:
+            self._log.warning("Judge model failed (%s), falling back to heuristics", exc)
+            return self._judge_nudge_fallback(tool_calls, tool_names, ai_text, last_ai)
+
+    def _judge_nudge_fallback(
+        self,
+        tool_calls: int,
+        tool_names: list[str],
+        ai_text: str,
+        last_ai: str,
+    ) -> str:
+        """Regex-based fallback when judge model is unavailable."""
+        if tool_calls == 0 and self._has_tool_intent(ai_text):
+            return (
+                "You said you would use browser tools but didn't call any. "
+                "Please actually call the appropriate tool now."
+            )
+        if tool_calls > 0 and not ai_text:
+            return (
+                "Good, you called tools but didn't provide a spoken response. "
+                "Briefly summarize what you did and what the result is. "
+                "Do NOT repeat any greeting or introduction. "
+                "Reply with text ONLY, do NOT call any more tools."
+            )
+        if tool_calls > 0 and self._has_tool_intent(last_ai):
+            return (
+                "You started the task but didn't finish. "
+                "Continue calling tools to complete it. "
+                "Do NOT greet again or repeat your introduction."
+            )
+        return ""
+
+    def _stream_and_collect(
+        self, stream_iter: Any, msgs_out: list[Any], stats: dict[str, Any],
+    ) -> Any:
+        """Yield updates from *stream_iter* while collecting stats into *stats*."""
+        tool_count = 0
+        tool_names: list[str] = []
+        last_ai = ""
+
+        for update in stream_iter:
+            for _node, node_data in update.items():
+                for m in (node_data.get("messages", []) if isinstance(node_data, dict) else []):
+                    msgs_out.append(m)
+                    if getattr(m, "type", None) == "ai":
+                        tc = getattr(m, "tool_calls", None)
+                        if tc:
+                            tool_count += len(tc)
+                            for call in tc:
+                                tool_names.append(call.get("name", "?"))
+                        c = _extract_text(getattr(m, "content", ""))
+                        if c.strip():
+                            last_ai = c
+            yield update
+
+        stats["tool_calls"] = tool_count
+        stats["tool_names"] = tool_names
+        stats["last_ai"] = last_ai
+        all_text = " ".join(
+            _extract_text(getattr(m, "content", ""))
+            for m in msgs_out if getattr(m, "type", None) == "ai"
+        ).strip()
+        stats["all_ai_text"] = all_text
+
+    def _react_stream_with_retry(self, messages: list[Any]) -> Any:
+        """Stream react agent with retry, using judge model to decide nudges.
+
+        After the first pass, the judge model analyzes the turn and decides:
+        - complete: no action needed
+        - needs_summary / needs_tools / needs_continuation: retry with nudge
+
+        Falls back to regex heuristics if judge model is unavailable.
+        If after the retry the model still produced no text, a text-only
+        LLM call (no tools) forces a spoken summary.
+        """
+        from langchain_core.messages import HumanMessage
+
+        user_request = ""
+        for m in reversed(messages):
+            if getattr(m, "type", None) == "human":
+                user_request = _extract_text(getattr(m, "content", ""))
+                break
+
+        all_streamed: list[Any] = []
+        stats: dict[str, Any] = {}
+
+        yield from self._stream_and_collect(
+            self._agent.stream({"messages": messages}, stream_mode="updates"),
+            all_streamed, stats,
+        )
+
+        tc = stats.get("tool_calls", 0)
+        names = stats.get("tool_names", [])
+        ai_text = stats.get("all_ai_text", "")
+        last_ai = stats.get("last_ai", "")
+
+        self._log.info(
+            "Stream pass complete: tool_calls=%d tools=%s ai_text_len=%d last=%r",
+            tc, names, len(ai_text), last_ai[:80],
+        )
+
+        nudge = self._judge_nudge(user_request, tc, names, ai_text, last_ai)
+
+        if not nudge:
+            return
+
+        self._log.info("Nudging agent: %s", nudge)
+        retry_msgs = list(messages) + all_streamed
+        retry_msgs.append(HumanMessage(content=nudge))
+
+        retry_streamed: list[Any] = []
+        retry_stats: dict[str, Any] = {}
+        yield from self._stream_and_collect(
+            self._agent.stream({"messages": retry_msgs}, stream_mode="updates"),
+            retry_streamed, retry_stats,
+        )
+
+        retry_ai_text = retry_stats.get("all_ai_text", "")
+        self._log.info(
+            "Retry pass complete: tool_calls=%d ai_text_len=%d",
+            retry_stats.get("tool_calls", 0), len(retry_ai_text),
+        )
+
+        if retry_ai_text:
+            return
+
+        self._log.info("Retry produced no text; forcing text-only summary via raw LLM")
+        summary_msgs = list(messages) + all_streamed + retry_streamed
+        summary_msgs.append(HumanMessage(
+            content="Now give a brief spoken summary of everything you just did and what the result was. "
+            "Do NOT repeat any greeting or introduction. Continue naturally. "
+            "Reply with text ONLY. Do NOT call any tools."
+        ))
+        for chunk in self._llm.stream(summary_msgs):
+            content = _extract_text(getattr(chunk, "content", ""))
+            if content:
+                from langchain_core.messages import AIMessageChunk
+                yield {"agent": {"messages": [AIMessageChunk(content=content)]}}
 
 
 class _RunOutput:
@@ -575,6 +946,7 @@ def run_agent(
     try:
         if stream:
             accumulated: list[str] = []
+            tool_calls_seen: list[str] = []
             run_result = agent.run(
                 message.strip(),
                 session_id=session_id,
@@ -582,31 +954,104 @@ def run_agent(
                 stream=True,
                 stream_events=True,
             )
+            log = logging.getLogger("app.llm.langchain_agent")
             try:
-                for event in run_result:
-                    if stop_requested and stop_requested():
-                        break
-                    kind = event.get("event") if isinstance(event, dict) else getattr(event, "event", None)
-                    if kind in ("on_chat_model_stream", "on_llm_stream", "on_llm_new_token"):
-                        chunk = event.get("data", {}).get("chunk") if isinstance(event, dict) else getattr(event, "data", None)
-                        if chunk and hasattr(chunk, "content") and chunk.content:
-                            delta = str(chunk.content)
-                            accumulated.append(delta)
-                            if on_content:
-                                try:
-                                    on_content(delta)
-                                except Exception:
-                                    pass
-                    if kind and "tool" in str(kind).lower() and on_tool_use:
-                        name = event.get("name") if isinstance(event, dict) else getattr(event, "name", None)
-                        if name:
-                            try:
-                                on_tool_use(name, "")
-                            except Exception:
-                                pass
-            except Exception:
-                pass
+                stream_kind, stream_iter = run_result
+                log.info("Stream started: kind=%s", stream_kind)
+                if stream_kind == "react_stream":
+                    first_narration_done = False
+                    for update in stream_iter:
+                        if stop_requested and stop_requested():
+                            break
+                        for node_name, node_data in update.items():
+                            msgs = node_data.get("messages", []) if isinstance(node_data, dict) else []
+                            for m in msgs:
+                                mtype = getattr(m, "type", None)
+                                tc = getattr(m, "tool_calls", None)
+                                raw_content = getattr(m, "content", "")
+                                content = _extract_text(raw_content)
+                                log.debug(
+                                    "react node=%s type=%s tool_calls=%s content=%r",
+                                    node_name, mtype, tc or "none", content[:100],
+                                )
+                                if mtype == "ai":
+                                    if tc:
+                                        if not first_narration_done and content.strip():
+                                            first_narration_done = True
+                                            accumulated.append(content)
+                                            if on_content:
+                                                try:
+                                                    on_content(content)
+                                                except Exception:
+                                                    pass
+                                        for call in tc:
+                                            name = call.get("name", "tool")
+                                            tool_calls_seen.append(name)
+                                            if on_tool_use:
+                                                try:
+                                                    on_tool_use(name, "")
+                                                except Exception:
+                                                    pass
+                                    elif content.strip():
+                                        accumulated.append(content)
+                                        if on_content:
+                                            try:
+                                                on_content(content)
+                                            except Exception:
+                                                pass
+                else:
+                    for chunk in stream_iter:
+                        if stop_requested and stop_requested():
+                            break
+                        if hasattr(chunk, "content") and chunk.content:
+                            delta = _extract_text(chunk.content)
+                            if delta.strip():
+                                accumulated.append(delta)
+                                if on_content:
+                                    try:
+                                        on_content(delta)
+                                    except Exception:
+                                        pass
+            except Exception as exc:
+                log.warning("Streaming error: %s", exc, exc_info=True)
+                if not accumulated and stream_kind == "react_stream":
+                    log.info("React stream failed; retrying with plain LLM (no tools)")
+                    try:
+                        _, plain_iter = agent.run(
+                            message.strip(),
+                            session_id=session_id,
+                            user_id=user_id,
+                            stream=True,
+                            stream_events=True,
+                            force_plain_llm=True,
+                        )
+                        for chunk in plain_iter:
+                            if stop_requested and stop_requested():
+                                break
+                            if hasattr(chunk, "content") and chunk.content:
+                                delta = _extract_text(chunk.content)
+                                if delta.strip():
+                                    accumulated.append(delta)
+                                    if on_content:
+                                        try:
+                                            on_content(delta)
+                                        except Exception:
+                                            pass
+                    except Exception as fallback_exc:
+                        log.warning("Plain LLM fallback also failed: %s", fallback_exc)
             ai_text = "".join(accumulated)
+            if not ai_text.strip() and tool_calls_seen:
+                log.info(
+                    "No AI text but %d tool calls made (%s); generating fallback",
+                    len(tool_calls_seen), tool_calls_seen,
+                )
+                fallback = f"I used {', '.join(tool_calls_seen)} to help with your request."
+                if on_content:
+                    try:
+                        on_content(fallback)
+                    except Exception:
+                        pass
+                ai_text = fallback
             if ai_text and hasattr(agent, "save_turn"):
                 try:
                     agent.save_turn(session_id, user_id, message.strip(), ai_text)

@@ -4,12 +4,11 @@ import re
 
 
 _REACTION_TAG_PATTERN = re.compile(
-    r"\[\[reaction:(neutral|cheerful|excited|surprised|sad|angry|calm|serious|friendly|gentle|enthusiastic)\]\]",
+    r"\[\[reaction:(\w+)\]\]",
     flags=re.IGNORECASE,
 )
-# At start of text only (for streaming): optional whitespace, then tag, then optional newlines
 _REACTION_AT_START_PATTERN = re.compile(
-    r"^\s*\[\[reaction:(neutral|cheerful|excited|surprised|sad|angry|calm|serious|friendly|gentle|enthusiastic)\]\]\s*\n*",
+    r"^\s*\[\[reaction:(\w+)\]\]\s*\n*",
     flags=re.IGNORECASE | re.MULTILINE,
 )
 _ACTION_META_LINE_PATTERN = re.compile(

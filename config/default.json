@@ -16,6 +16,7 @@
   "ollama": {
     "base_url": "http://127.0.0.1:11434",
     "chat_model": "jaahas/qwen3.5-uncensored:9b",
+    "judge_model": "qwen2.5:0.5b",
     "temperature": 0.6,
     "context_window": null,
     "embedding_model": "qwen3-embedding:0.6b"
@@ -62,5 +63,9 @@
   },
   "logging": {
     "level": "INFO"
+  },
+  "mcp_server": {
+    "enabled": true,
+    "port": 6274
   }
 }

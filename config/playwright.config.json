@@ -1,0 +1,22 @@
+{
+  "browser": {
+    "browserName": "firefox",
+    "userDataDir": "data/browser-profile",
+    "launchOptions": {
+      "firefoxUserPrefs": {
+        "dom.webdriver.enabled": false,
+        "useragentoverride.enabled": true,
+        "privacy.resistFingerprinting": false,
+        "media.peerconnection.enabled": true,
+        "webgl.disabled": false
+      }
+    },
+    "contextOptions": {
+      "viewport": { "width": 1920, "height": 1080 },
+      "locale": "en-US",
+      "timezoneId": "Europe/Bratislava",
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0",
+      "ignoreHTTPSErrors": true
+    }
+  }
+}

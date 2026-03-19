@@ -24,7 +24,7 @@ Agent with Tools (LangGraph):
 from langgraph.prebuilt import create_react_agent
 from langchain_community.chat_models import ChatOpenAI
 
-agent = create_react_agent(llm, tools=[...], state_modifier="You are a helpful assistant.")
+agent = create_react_agent(llm, tools=[...])
 result = agent.invoke({"messages": [HumanMessage(content="Search for X")]})
 ```
 

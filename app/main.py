@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import os
 import sys
+import warnings
+
+warnings.filterwarnings("ignore", message="urllib3.*chardet.*charset_normalizer")
 
 from PySide6.QtCore import QEventLoop, QThread
 from PySide6.QtWidgets import QApplication
