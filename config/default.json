@@ -16,7 +16,9 @@
   "ollama": {
     "base_url": "http://127.0.0.1:11434",
     "chat_model": "jaahas/qwen3.5-uncensored:9b",
-    "temperature": 0.6
+    "temperature": 0.6,
+    "context_window": null,
+    "embedding_model": "qwen3-embedding:0.6b"
   },
   "audio": {
     "sample_rate": 16000,

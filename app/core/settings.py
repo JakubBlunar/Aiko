@@ -12,6 +12,8 @@ class OllamaSettings:
     base_url: str
     chat_model: str
     temperature: float
+    context_window: int | None = None  # None = auto-detect from Ollama API
+    embedding_model: str = "qwen3-embedding:0.6b"
 
 
 @dataclass(slots=True)
@@ -442,6 +444,8 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             base_url=_required(ollama, "base_url"),
             chat_model=_required(ollama, "chat_model"),
             temperature=float(_required(ollama, "temperature")),
+            context_window=(int(ollama["context_window"]) if ollama.get("context_window") is not None else None),
+            embedding_model=str(ollama.get("embedding_model", "qwen3-embedding:0.6b")).strip() or "qwen3-embedding:0.6b",
         ),
         audio=AudioSettings(
             sample_rate=int(_required(audio, "sample_rate")),

@@ -140,7 +140,7 @@ class MainWindow(QMainWindow):
         self._conversation_panel = conversation_page
         layout.addWidget(conversation_page, stretch=1)
 
-        self._status_label = QLabel(f"Ready | model: {self._session.effective_chat_model}")
+        self._status_label = QLabel(self._ready_status_text())
         self._status_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
         self._status_label.setObjectName("statusStrip")
 
@@ -203,7 +203,7 @@ class MainWindow(QMainWindow):
         self._settings_dialog.activateWindow()
 
     def _on_settings_dialog_finished(self) -> None:
-        self._status_label.setText(f"Ready | model: {self._session.effective_chat_model}")
+        self._status_label.setText(self._ready_status_text())
 
     def _play_startup_greeting(self) -> None:
         if self._startup_greeting_done:
@@ -283,8 +283,14 @@ class MainWindow(QMainWindow):
             return True
         return super().eventFilter(watched, event)
 
+    def _ready_status_text(self) -> str:
+        model = self._session.effective_chat_model
+        ctx = self._session.context_window_size
+        ctx_str = f" | ctx: {ctx // 1024}K" if ctx and ctx >= 1024 else (f" | ctx: {ctx}" if ctx else "")
+        return f"Ready | model: {model}{ctx_str}"
+
     def _refresh_status(self) -> None:
-        self._status_label.setText(f"Ready | model: {self._session.effective_chat_model}")
+        self._status_label.setText(self._ready_status_text())
 
     def _apply_sources(self) -> None:
         self._persist_preferences()
@@ -433,7 +439,7 @@ class MainWindow(QMainWindow):
         if btn is not None:
             btn.setEnabled(True)
             btn.setText("Run STT Test")
-        self._status_label.setText(f"Ready | model: {self._session.effective_chat_model}")
+        self._status_label.setText(self._ready_status_text())
 
     def _on_stt_test_thread_finished(self) -> None:
         self._stt_test_thread = None
@@ -496,7 +502,7 @@ class MainWindow(QMainWindow):
         pass
 
     def _refresh_models(self) -> None:
-        self._status_label.setText(f"Ready | model: {self._session.effective_chat_model}")
+        self._status_label.setText(self._ready_status_text())
 
     def _on_model_changed(self) -> None:
         self._persist_preferences()
@@ -668,14 +674,14 @@ class MainWindow(QMainWindow):
         if not self._live_stream_open:
             self._append("Assistant", reply)
         self._close_live_stream()
-        self._status_label.setText(f"Ready | model: {self._session.effective_chat_model}")
+        self._status_label.setText(self._ready_status_text())
 
     def _on_voice_turn_done(self, user_text: str, reply: str) -> None:
         self._append("You (voice)", user_text)
         if not self._live_stream_open:
             self._append("Assistant", reply)
         self._close_live_stream()
-        self._status_label.setText(f"Ready | model: {self._session.effective_chat_model}")
+        self._status_label.setText(self._ready_status_text())
 
     def _on_single_turn_failed(self, message: str) -> None:
         title = "Voice error" if self._turn_mode == "record" else "Assistant error"
@@ -683,7 +689,7 @@ class MainWindow(QMainWindow):
 
     def _on_single_turn_finished(self) -> None:
         self._set_single_turn_controls_busy(False)
-        self._status_label.setText(f"Ready | model: {self._session.effective_chat_model}")
+        self._status_label.setText(self._ready_status_text())
 
     def _on_single_turn_thread_finished(self) -> None:
         self._turn_thread = None
@@ -760,7 +766,7 @@ class MainWindow(QMainWindow):
         self._clear_chat_button.setEnabled(True)
         self._input.setEnabled(True)
         self._settings_button.setEnabled(True)
-        self._status_label.setText(f"Ready | model: {self._session.effective_chat_model}")
+        self._status_label.setText(self._ready_status_text())
         self._close_live_stream()
         level_bar = getattr(self, "_input_level_bar", None)
         if level_bar is not None:

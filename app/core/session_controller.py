@@ -32,6 +32,8 @@ from app.core.session_text_utils import (
     sanitize_assistant_text,
     sanitize_user_text,
 )
+from app.core.chat_database import ChatDatabase
+from app.llm.embedding_service import EmbeddingService
 from app.llm.langchain_agent import create_agent, run_agent
 from app.llm.ollama_client import OllamaClient
 from app.stt.prosody_fast import FastProsodyAnalyzer, ProsodyAnalysis
@@ -124,8 +126,14 @@ class SessionController:
         mcp_enabled = bool(mcp_settings.get("enabled", False))
         self._effective_chat_model = chat_model
 
-        # Parallelize heavy initialization: STT model load and agent creation run concurrently.
-        # TTS already spawns its own daemon thread for model loading.
+        self._chat_db = ChatDatabase(storage_path)
+        self._embedding_service = EmbeddingService(
+            base_url=settings.ollama.base_url,
+            model=settings.ollama.embedding_model,
+            database=self._chat_db,
+        )
+        context_window_override = getattr(settings.ollama, "context_window", None)
+
         with ThreadPoolExecutor(max_workers=2, thread_name_prefix="init") as pool:
             stt_future: Future[RealtimeSttService] = pool.submit(
                 RealtimeSttService, settings.stt, settings.audio,
@@ -148,11 +156,20 @@ class SessionController:
                 compress_token_limit=compress_token_limit,
                 mcp_config=mcp_settings if mcp_enabled else None,
                 project_root=root,
+                context_window=context_window_override,
+                chat_db=self._chat_db,
+                embedding_service=self._embedding_service,
             )
             self._realtime_stt = stt_future.result()
             self._agent = agent_future.result()
 
         self._user_id = settings.assistant.user_id or "default"
+        threading.Thread(
+            target=self._embedding_service.backfill_embeddings,
+            args=(f"{self._user_id}:main",),
+            daemon=True,
+            name="embedding-backfill",
+        ).start()
         self._microphone_device = settings.audio.microphone_device
         self._output_device = getattr(settings.audio, "output_device", None)
         self._tts = self._build_tts_service(settings, output_device=self._output_device)
@@ -550,6 +567,14 @@ class SessionController:
     def effective_chat_model(self) -> str:
         """Model used for the reply."""
         return getattr(self, "_effective_chat_model", None) or self._settings.ollama.chat_model
+
+    @property
+    def context_window_size(self) -> int:
+        """Detected or configured context window in tokens."""
+        agent = getattr(self, "_agent", None)
+        if agent and hasattr(agent, "_context_window"):
+            return agent._context_window
+        return getattr(self._settings.ollama, "context_window", None) or 0
 
     def set_chat_model(self, model_name: str) -> None:
         model_name = (model_name or "").strip()
@@ -1094,6 +1119,13 @@ class SessionController:
                 "pipeline.llm.done",
                 f"mode={mode} chars={len(response)} llm_ms={round(llm_ms, 1)}",
             )
+            if hasattr(self._agent, "summarize_if_needed"):
+                threading.Thread(
+                    target=self._agent.summarize_if_needed,
+                    args=(self._session_id, self._user_id),
+                    daemon=True,
+                    name="summary-gen",
+                ).start()
         except Exception as exc:
             self._trace("pipeline.llm.error", str(exc))
             self._set_last_metrics({

@@ -3,7 +3,11 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.core.chat_database import ChatDatabase
+    from app.llm.embedding_service import EmbeddingService
 
 # Voice-friendly instructions: replies are spoken via TTS.
 _BASE_INSTRUCTIONS = """\
@@ -19,6 +23,30 @@ When your reply would be long (e.g. after reading a file, listing code, or givin
 
 def _default_storage_path() -> Path:
     return Path(__file__).resolve().parents[2] / "data" / "chat_sessions.db"
+
+
+def detect_context_window(base_url: str, model: str) -> int:
+    """Query Ollama /api/show to read the model's context window size."""
+    import requests
+    try:
+        resp = requests.post(
+            f"{base_url.rstrip('/')}/api/show",
+            json={"name": model},
+            timeout=5,
+        )
+        resp.raise_for_status()
+        info = resp.json()
+        model_info = info.get("model_info", {})
+        for key, val in model_info.items():
+            if "context_length" in key:
+                return int(val)
+        params = info.get("parameters", "")
+        for line in params.splitlines():
+            if "num_ctx" in line:
+                return int(line.split()[-1])
+    except Exception:
+        pass
+    return 8192
 
 
 def _get_langchain_tools(
@@ -99,6 +127,33 @@ def _load_mcp_tools(
     return tools
 
 
+def _add_history_search_tool(
+    tools: list[Any],
+    embedding_service: "EmbeddingService",
+    chat_db: "ChatDatabase",
+) -> list[Any]:
+    """Register a search_history LangChain tool the LLM can invoke."""
+    try:
+        from langchain_core.tools import tool
+    except ImportError:
+        return tools
+
+    @tool
+    def search_history(query: str) -> str:
+        """Search past conversation history for relevant messages. Use when the user
+        asks about something discussed earlier or references past context."""
+        results = embedding_service.search(query, top_k=5)
+        if not results:
+            return "No relevant past messages found."
+        parts: list[str] = []
+        for r in results:
+            preview = r.content[:500] + ("..." if len(r.content) > 500 else "")
+            parts.append(f"[{r.role}] ({r.created_at}): {preview}")
+        return "\n\n".join(parts)
+
+    return tools + [search_history]
+
+
 def create_agent(
     *,
     chat_model: str = "llama3.1:8b",
@@ -119,6 +174,9 @@ def create_agent(
     compress_token_limit: int | None = None,
     mcp_config: dict[str, Any] | None = None,
     project_root: Path | None = None,
+    context_window: int | None = None,
+    chat_db: "ChatDatabase | None" = None,
+    embedding_service: "EmbeddingService | None" = None,
 ) -> Any:
     """Create a LangChain agent with Ollama, storage, optional tools and MCP. Create once and reuse."""
     try:
@@ -138,10 +196,15 @@ def create_agent(
     storage_path.parent.mkdir(parents=True, exist_ok=True)
     root = project_root or Path(__file__).resolve().parents[2]
 
+    resolved_ctx = context_window or detect_context_window(base_url, chat_model)
+    log = logging.getLogger("app.llm.langchain_agent")
+    log.info("Context window for %s: %d tokens", chat_model, resolved_ctx)
+
     llm = ChatOllama(
         model=chat_model,
         base_url=base_url,
         temperature=temperature,
+        num_ctx=resolved_ctx,
     )
     instr = (instructions or _BASE_INSTRUCTIONS).strip()
     if (assistant_background or "").strip():
@@ -155,9 +218,11 @@ def create_agent(
     if add_tools:
         tools_list = _get_langchain_tools(toolkit_entries, mcp_tools)
 
+    if embedding_service and chat_db:
+        tools_list = _add_history_search_tool(tools_list, embedding_service, chat_db)
+
     num_history = num_history_runs if num_history_runs is not None else 10
 
-    # Build agent: use LangGraph create_react_agent or LC agent with bind_tools.
     use_react = False
     try:
         from langgraph.prebuilt import create_react_agent
@@ -178,7 +243,6 @@ def create_agent(
     elif tools_list:
         agent = llm.bind_tools(tools_list)
 
-    # Wrap with session/history and expose run-style API.
     return _AgentWrapper(
         agent=agent,
         llm=llm,
@@ -189,11 +253,21 @@ def create_agent(
         database_url=database_url,
         num_history_runs=num_history,
         use_react_agent=use_react and bool(tools_list),
+        context_window=resolved_ctx,
+        compress_tool_results=compress_tool_results,
+        compress_tool_results_limit=compress_tool_results_limit,
+        chat_db=chat_db,
+        embedding_service=embedding_service,
     )
 
 
 class _AgentWrapper:
-    """Wraps LangChain/LangGraph agent with session history and run() API."""
+    """Wraps LangChain/LangGraph agent with session history, token-aware trimming, and run() API."""
+
+    _RESPONSE_TOKEN_RESERVE = 1024
+    _TOOL_RESULT_MAX_CHARS = 2000
+    _TOOL_RESULT_HEAD = 500
+    _TOOL_RESULT_TAIL = 200
 
     def __init__(
         self,
@@ -206,6 +280,11 @@ class _AgentWrapper:
         database_url: str | None,
         num_history_runs: int,
         use_react_agent: bool = False,
+        context_window: int = 8192,
+        compress_tool_results: bool = True,
+        compress_tool_results_limit: int | None = None,
+        chat_db: "ChatDatabase | None" = None,
+        embedding_service: "EmbeddingService | None" = None,
     ) -> None:
         self._agent = agent
         self._llm = llm
@@ -216,6 +295,12 @@ class _AgentWrapper:
         self._database_url = database_url
         self._num_history_runs = num_history_runs
         self._has_react_agent = use_react_agent and hasattr(agent, "invoke")
+        self._context_window = context_window
+        self._compress_tool_results = compress_tool_results
+        self._compress_tool_results_limit = compress_tool_results_limit
+        self._chat_db = chat_db
+        self._embedding_service = embedding_service
+        self._log = logging.getLogger("app.llm.langchain_agent")
 
     def run(
         self,
@@ -227,7 +312,7 @@ class _AgentWrapper:
         stream_events: bool = False,
     ) -> Any:
         """Run the agent. Returns response object or stream iterator."""
-        from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+        from langchain_core.messages import HumanMessage
 
         session_key = session_id or "main"
         if user_id:
@@ -240,28 +325,79 @@ class _AgentWrapper:
             return self._stream_run(session_key, messages, stream_events)
         return self._invoke_run(session_key, messages)
 
+    def save_turn(self, session_id: str, user_id: str | None, user_text: str, ai_text: str) -> None:
+        """Persist a user+AI turn after streaming (which doesn't auto-save)."""
+        session_key = session_id or "main"
+        if user_id:
+            session_key = f"{user_id}:{session_key}"
+        self._persist_turn(session_key, user_text, ai_text)
+
     def _get_history_messages(self, session_key: str) -> list[Any]:
         from langchain_core.messages import HumanMessage, AIMessage
+        from app.llm.token_utils import estimate_tokens, estimate_messages_tokens
 
-        history = self._get_chat_history(session_key)
-        lang_messages: list[Any] = []
-        for msg in history:
-            if hasattr(msg, "type"):
-                if msg.type == "human":
-                    lang_messages.append(HumanMessage(content=msg.content))
-                elif msg.type == "ai":
-                    lang_messages.append(AIMessage(content=msg.content))
-            elif isinstance(msg, dict):
-                role = (msg.get("role") or msg.get("type") or "").lower()
-                content = msg.get("content") or msg.get("text") or ""
-                if role in ("user", "human"):
-                    lang_messages.append(HumanMessage(content=content))
-                elif role == "assistant" or role == "ai":
+        if self._chat_db:
+            max_rows = (self._num_history_runs * 2) if self._num_history_runs else 40
+            rows = self._chat_db.get_messages(session_key, limit=max_rows)
+            lang_messages: list[Any] = []
+            for row in rows:
+                if row.role == "user":
+                    lang_messages.append(HumanMessage(content=row.content))
+                elif row.role == "assistant":
+                    content = self._compress_content(row.content) if self._compress_tool_results else row.content
                     lang_messages.append(AIMessage(content=content))
-        max_messages = (self._num_history_runs * 2) if self._num_history_runs else 40
-        return lang_messages[-max_messages:]
+        else:
+            history = self._get_chat_history_legacy(session_key)
+            lang_messages = []
+            for msg in history:
+                if hasattr(msg, "type"):
+                    if msg.type == "human":
+                        lang_messages.append(HumanMessage(content=msg.content))
+                    elif msg.type == "ai":
+                        content = self._compress_content(msg.content) if self._compress_tool_results else msg.content
+                        lang_messages.append(AIMessage(content=content))
+            max_messages = (self._num_history_runs * 2) if self._num_history_runs else 40
+            lang_messages = lang_messages[-max_messages:]
 
-    def _get_chat_history(self, session_key: str) -> list[Any]:
+        budget = (
+            self._context_window
+            - estimate_tokens(self._system_message)
+            - self._RESPONSE_TOKEN_RESERVE
+        )
+        summary = self._load_summary(session_key)
+        if summary:
+            budget -= estimate_tokens(summary)
+
+        while lang_messages and estimate_messages_tokens(lang_messages) > budget:
+            evicted = lang_messages.pop(0)
+            self._handle_evicted_message(session_key, evicted)
+
+        return lang_messages
+
+    def _compress_content(self, content: str) -> str:
+        if len(content) <= self._TOOL_RESULT_MAX_CHARS:
+            return content
+        head = content[: self._TOOL_RESULT_HEAD]
+        tail = content[-self._TOOL_RESULT_TAIL :]
+        return f"{head}\n\n... [truncated, {len(content)} chars total] ...\n\n{tail}"
+
+    def _handle_evicted_message(self, session_key: str, message: Any) -> None:
+        """Accumulate evicted messages for periodic summarisation."""
+        pass
+
+    def _load_summary(self, session_key: str) -> str:
+        if not self._chat_db:
+            return ""
+        row = self._chat_db.get_latest_summary(session_key)
+        return row.summary if row else ""
+
+    def _build_system_message(self, session_key: str) -> str:
+        summary = self._load_summary(session_key)
+        if summary:
+            return f"{self._system_message}\n\nPrior conversation summary: {summary}"
+        return self._system_message
+
+    def _get_chat_history_legacy(self, session_key: str) -> list[Any]:
         try:
             from langchain_community.chat_message_histories import SQLChatMessageHistory
         except ImportError:
@@ -279,10 +415,29 @@ class _AgentWrapper:
         except Exception:
             return []
 
-    def _save_messages(self, session_key: str, messages: list[Any]) -> None:
+    def _persist_turn(self, session_key: str, user_text: str, ai_text: str) -> None:
+        """Save a user+AI message pair to the chat database and compute embeddings."""
+        from app.llm.token_utils import estimate_tokens
+
+        if self._chat_db:
+            user_id = self._chat_db.add_message(
+                session_key, "user", user_text, estimate_tokens(user_text),
+            )
+            ai_id = self._chat_db.add_message(
+                session_key, "assistant", ai_text, estimate_tokens(ai_text),
+            )
+            if self._embedding_service:
+                try:
+                    self._embedding_service.embed_and_store(user_id, session_key, user_text)
+                    self._embedding_service.embed_and_store(ai_id, session_key, ai_text)
+                except Exception as exc:
+                    self._log.debug("Embedding failed for turn: %s", exc)
+        else:
+            self._save_messages_legacy(session_key, user_text, ai_text)
+
+    def _save_messages_legacy(self, session_key: str, user_text: str, ai_text: str) -> None:
         try:
             from langchain_community.chat_message_histories import SQLChatMessageHistory
-            from langchain_core.messages import HumanMessage, AIMessage
         except ImportError:
             return
         conn_str = "sqlite:///" + str(self._storage_path).replace("\\", "/")
@@ -294,18 +449,66 @@ class _AgentWrapper:
                 connection_string=conn_str,
                 table_name="message_store",
             )
-            for msg in messages:
-                if isinstance(msg, HumanMessage):
-                    history.add_user_message(msg.content)
-                elif isinstance(msg, AIMessage):
-                    history.add_ai_message(msg.content)
+            history.add_user_message(user_text)
+            history.add_ai_message(ai_text)
         except Exception:
             pass
+
+    def summarize_if_needed(self, session_id: str, user_id: str | None = None) -> None:
+        """Generate a rolling summary if the conversation has grown significantly since the last one."""
+        if not self._chat_db:
+            return
+        session_key = session_id or "main"
+        if user_id:
+            session_key = f"{user_id}:{session_key}"
+
+        existing = self._chat_db.get_latest_summary(session_key)
+        total = self._chat_db.get_message_count(session_key)
+        already_summarized = existing.messages_summarized if existing else 0
+        unsummarized = total - already_summarized
+
+        if unsummarized < 10:
+            return
+
+        from app.llm.token_utils import estimate_tokens
+        rows = self._chat_db.get_messages(session_key)
+        old_rows = rows[:already_summarized + unsummarized - 6]
+        if not old_rows:
+            return
+
+        text_parts: list[str] = []
+        if existing:
+            text_parts.append(f"Previous summary: {existing.summary}")
+        for r in old_rows[-20:]:
+            text_parts.append(f"{r.role}: {r.content[:300]}")
+        context = "\n".join(text_parts)
+
+        prompt = (
+            "Summarize this conversation history in 2-3 concise sentences. "
+            "Preserve key facts, decisions, user preferences, and important details. "
+            "Be specific -- include names, tools, technical choices, and outcomes.\n\n"
+            f"{context}"
+        )
+        try:
+            from langchain_core.messages import HumanMessage
+            result = self._llm.invoke([HumanMessage(content=prompt)])
+            summary_text = (getattr(result, "content", "") or "").strip()
+            if summary_text:
+                self._chat_db.save_summary(
+                    session_key,
+                    summary_text,
+                    estimate_tokens(summary_text),
+                    total - 6,
+                )
+                self._log.info("Generated conversation summary (%d messages summarized)", total - 6)
+        except Exception as exc:
+            self._log.warning("Summary generation failed: %s", exc)
 
     def _invoke_run(self, session_key: str, messages: list[Any]) -> Any:
         from langchain_core.messages import SystemMessage, AIMessage
 
-        full: list[Any] = [SystemMessage(content=self._system_message)] + messages
+        sys_content = self._build_system_message(session_key)
+        full: list[Any] = [SystemMessage(content=sys_content)] + messages
         if self._has_react_agent and self._tools:
             result = self._agent.invoke({"messages": full})
             out_messages = result.get("messages", result) if isinstance(result, dict) else getattr(result, "messages", [])
@@ -314,21 +517,20 @@ class _AgentWrapper:
             if not isinstance(out_messages, list):
                 out_messages = [out_messages]
 
-        # Append last AI message to history
         for m in reversed(out_messages):
             if hasattr(m, "content") and getattr(m, "type", None) == "ai":
-                messages.append(m)
-                self._save_messages(session_key, messages[-2:])  # user + ai
+                user_text = messages[-1].content if messages else ""
+                self._persist_turn(session_key, user_text, m.content or "")
                 break
         return _RunOutput(messages=out_messages)
 
     def _stream_run(self, session_key: str, messages: list[Any], stream_events: bool) -> Any:
-        from langchain_core.messages import SystemMessage, AIMessage
+        from langchain_core.messages import SystemMessage
 
-        full: list[Any] = [SystemMessage(content=self._system_message)] + messages
+        sys_content = self._build_system_message(session_key)
+        full: list[Any] = [SystemMessage(content=sys_content)] + messages
         if stream_events and self._has_react_agent and self._tools:
             return self._agent.stream_events({"messages": full}, version="v2")
-        # Simple stream: llm.stream
         return self._llm.stream(full)
 
 
@@ -380,7 +582,6 @@ def run_agent(
                 for event in run_result:
                     if stop_requested and stop_requested():
                         break
-                    # Event can be dict or object with event type and content.
                     kind = event.get("event") if isinstance(event, dict) else getattr(event, "event", None)
                     if kind in ("on_chat_model_stream", "on_llm_stream", "on_llm_new_token"):
                         chunk = event.get("data", {}).get("chunk") if isinstance(event, dict) else getattr(event, "data", None)
@@ -401,7 +602,13 @@ def run_agent(
                                 pass
             except Exception:
                 pass
-            return "".join(accumulated)
+            ai_text = "".join(accumulated)
+            if ai_text and hasattr(agent, "save_turn"):
+                try:
+                    agent.save_turn(session_id, user_id, message.strip(), ai_text)
+                except Exception:
+                    pass
+            return ai_text
 
         response = agent.run(
             message.strip(),
