@@ -106,13 +106,21 @@ class SettingsDialog(QDialog):
         self._refresh_output_devices()
         form.addRow("Output device:", self._output_device_combo)
 
+        self._tts_provider_combo = QComboBox()
+        self._tts_provider_combo.setMinimumWidth(180)
+        providers = self._session.list_tts_providers()
+        current_provider = self._session.tts_provider
+        for p in providers:
+            self._tts_provider_combo.addItem(p, p)
+        idx = self._tts_provider_combo.findData(current_provider)
+        if idx >= 0:
+            self._tts_provider_combo.setCurrentIndex(idx)
+        self._tts_provider_combo.currentIndexChanged.connect(self._on_provider_changed)
+        form.addRow("TTS engine:", self._tts_provider_combo)
+
         self._voice_combo = QComboBox()
         self._voice_combo.setMinimumWidth(180)
-        for v in self._session.list_tts_voices():
-            self._voice_combo.addItem(v, v)
-        idx = self._voice_combo.findData(self._session.tts_voice) or self._voice_combo.findText(self._session.tts_voice)
-        if idx >= 0:
-            self._voice_combo.setCurrentIndex(idx)
+        self._populate_voices()
         form.addRow("TTS voice:", self._voice_combo)
         layout.addLayout(form)
 
@@ -212,6 +220,22 @@ class SettingsDialog(QDialog):
                     self._output_device_combo.setCurrentIndex(i)
                     break
 
+    def _populate_voices(self) -> None:
+        self._voice_combo.clear()
+        for v in self._session.list_tts_voices():
+            self._voice_combo.addItem(v, v)
+        idx = self._voice_combo.findData(self._session.tts_voice)
+        if idx < 0:
+            idx = self._voice_combo.findText(self._session.tts_voice)
+        if idx >= 0:
+            self._voice_combo.setCurrentIndex(idx)
+
+    def _on_provider_changed(self) -> None:
+        provider = self._tts_provider_combo.currentData()
+        if provider:
+            self._session.set_tts_provider(str(provider))
+            self._populate_voices()
+
     def _on_live_input_mode_changed(self) -> None:
         is_ptt = (self._live_input_combo.currentData() or "") == "push_to_talk"
         self._ptt_type_keyboard.setEnabled(is_ptt)
@@ -269,6 +293,9 @@ class SettingsDialog(QDialog):
     def accept(self) -> None:
         self._session.set_chat_model(str(self._model_combo.currentData() or self._session.chat_model))
         self._session.update_sources(mic=self._mic_checkbox.isChecked())
+        selected_provider = str(self._tts_provider_combo.currentData() or self._session.tts_provider)
+        if selected_provider != self._session.tts_provider:
+            self._session.set_tts_provider(selected_provider)
         self._session.set_tts_voice(str(self._voice_combo.currentData() or self._voice_combo.currentText() or self._session.tts_voice))
         in_dev = self._input_device_combo.currentData()
         self._session.set_microphone_device(in_dev)

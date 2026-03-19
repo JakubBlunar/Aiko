@@ -13,7 +13,8 @@
       "max_limit": 400
     },
     "mcp": {
-      "enabled": false
+      "enabled": true,
+      "servers_json_path": "config/mcp.servers.json"
     }
   }
 }

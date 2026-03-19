@@ -374,19 +374,35 @@ class SessionController:
         return (self._settings.tts.provider or "kokoro").strip().lower() or "kokoro"
 
     def list_tts_providers(self) -> list[str]:
-        return ["kokoro"]
+        providers = ["kokoro"]
+        try:
+            from pykokoro import KokoroPipeline  # noqa: F401
+            providers.append("pykokoro")
+        except ImportError:
+            pass
+        try:
+            from style_bert_vits2.tts_model import TTSModel  # noqa: F401
+            providers.append("style-bert-vits2")
+        except ImportError:
+            pass
+        return providers
 
     @property
     def tts_voice(self) -> str:
         return str(self._settings.tts.voice or "").strip()
 
     def list_tts_voices(self) -> list[str]:
-        # Kokoro voice profiles from voices-v1.0.bin (common ones)
-        voices = ["af_heart", "af_bella", "af_nicole", "af_sarah", "am_adam", "am_michael", "bf_emma", "bf_isabella", "jf_nezumi", "jf_alpha"]
-        current = self.tts_voice
-        if current and current not in voices:
-            voices.insert(0, current)
-        return voices
+        list_fn = getattr(self._tts, "list_voices", None)
+        if callable(list_fn):
+            try:
+                voices = list_fn()
+                current = self.tts_voice
+                if current and current not in voices:
+                    voices.insert(0, current)
+                return voices
+            except Exception:
+                pass
+        return [self.tts_voice] if self.tts_voice else ["af_heart"]
 
     def set_tts_voice(self, voice: str) -> None:
         normalized = str(voice or "").strip().replace("\\", "/")
@@ -425,15 +441,15 @@ class SessionController:
 
     def _start_tts_with_lookahead(self, text: str, reaction: str | None) -> None:
         """Start playing a chunk and pre-generate the next one in parallel."""
-        generate = getattr(self._tts, "_generate_audio", None)
+        generate = getattr(self._tts, "generate_audio", None)
         peek: tuple[str, str | None] | None = None
         with self._tts_queue_lock:
             if self._pending_tts_chunks:
                 peek = self._pending_tts_chunks[0]
 
         if peek is not None and callable(generate):
-            from app.tts.kokoro_service import _reaction_to_speed
-            speed = _reaction_to_speed(peek[1])
+            r2s = getattr(self._tts, "reaction_to_speed", None)
+            speed = r2s(peek[1]) if callable(r2s) else 1.0
             threading.Thread(
                 target=generate, args=(peek[0], speed),
                 daemon=True, name="tts-lookahead",
@@ -546,8 +562,6 @@ class SessionController:
 
     def set_tts_provider(self, provider: str) -> None:
         normalized = (provider or "").strip().lower() or "kokoro"
-        if normalized != "kokoro":
-            normalized = "kokoro"
         if normalized == self.tts_provider:
             return
         try:
@@ -1493,6 +1507,18 @@ class SessionController:
     @staticmethod
     def _build_tts_service(settings: AppSettings, output_device: int | None = None):
         provider = (settings.tts.provider or "kokoro").strip().lower()
+        if provider == "pykokoro":
+            try:
+                from app.tts.pykokoro_service import PyKokoroTtsService
+                return PyKokoroTtsService(settings.tts, output_device=output_device)
+            except Exception:
+                pass
+        elif provider == "style-bert-vits2":
+            try:
+                from app.tts.style_bert_vits2_service import StyleBertVits2TtsService
+                return StyleBertVits2TtsService(settings.tts, output_device=output_device)
+            except Exception:
+                pass
         return KokoroTtsService(settings.tts, output_device=output_device)
 
     def record_and_chat(

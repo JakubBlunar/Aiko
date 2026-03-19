@@ -71,7 +71,7 @@ def _load_mcp_tools(
     """Load MCP tools from config (servers_json_path, servers_user_json_path)."""
     tools: list[Any] = []
     try:
-        from langchain_mcp_adapters import MultiServerMCPClient
+        from langchain_mcp_adapters.client import MultiServerMCPClient
     except ImportError:
         logging.getLogger("app.llm.langchain_agent").warning(
             "langchain-mcp-adapters not installed; MCP tools disabled."
@@ -100,8 +100,9 @@ def _load_mcp_tools(
         return tools
 
     try:
-        from langchain_mcp_adapters import StdioConnection
-        connections: dict[str, Any] = {}
+        import asyncio
+
+        connections: dict[str, dict[str, Any]] = {}
         for name, cfg in servers.items():
             transport = str(cfg.get("transport", "stdio")).strip().lower()
             if transport == "stdio":
@@ -112,16 +113,18 @@ def _load_mcp_tools(
                 args_list = [str(a) for a in args] if isinstance(args, list) else []
                 env = cfg.get("env")
                 if not isinstance(env, dict):
-                    env = {}
-                connections[name] = StdioConnection(
-                    transport="stdio",
-                    command=str(cmd),
-                    args=args_list,
-                    env=env or None,
-                )
+                    env = None
+                conn: dict[str, Any] = {
+                    "transport": "stdio",
+                    "command": str(cmd),
+                    "args": args_list,
+                }
+                if env:
+                    conn["env"] = env
+                connections[name] = conn
         if connections:
-            client = MultiServerMCPClient(connections=connections)
-            tools = client.get_tools()
+            client = MultiServerMCPClient(connections)
+            tools = asyncio.run(client.get_tools())
     except Exception as e:
         logging.getLogger("app.llm.langchain_agent").warning("Failed to load MCP tools: %s", e)
     return tools
@@ -180,16 +183,17 @@ def create_agent(
 ) -> Any:
     """Create a LangChain agent with Ollama, storage, optional tools and MCP. Create once and reuse."""
     try:
-        from langchain_community.chat_models.ollama import ChatOllama
+        from langchain_ollama import ChatOllama
     except ImportError:
         try:
-            from langchain_community.chat_models import ChatOllama
+            from langchain_community.chat_models.ollama import ChatOllama
         except ImportError:
             try:
-                from langchain_community.llms.ollama import ChatOllama
+                from langchain_community.chat_models import ChatOllama
             except ImportError:
                 raise RuntimeError(
-                    "langchain-community not installed or ChatOllama not found; pip install langchain-community"
+                    "langchain-ollama (or langchain-community) not installed; "
+                    "pip install langchain-ollama"
                 ) from None
 
     storage_path = storage_path or _default_storage_path()
@@ -237,7 +241,7 @@ def create_agent(
     agent = llm
     if create_react_agent is not None and tools_list:
         try:
-            agent = create_react_agent(llm, tools_list, state_modifier=instr)
+            agent = create_react_agent(llm, tools_list, prompt=instr)
         except TypeError:
             agent = create_react_agent(llm, tools_list)
     elif tools_list:
@@ -265,9 +269,9 @@ class _AgentWrapper:
     """Wraps LangChain/LangGraph agent with session history, token-aware trimming, and run() API."""
 
     _RESPONSE_TOKEN_RESERVE = 1024
-    _TOOL_RESULT_MAX_CHARS = 2000
-    _TOOL_RESULT_HEAD = 500
-    _TOOL_RESULT_TAIL = 200
+    _TOOL_RESULT_MAX_CHARS = 8000
+    _TOOL_RESULT_HEAD = 3000
+    _TOOL_RESULT_TAIL = 500
 
     def __init__(
         self,

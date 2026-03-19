@@ -113,6 +113,8 @@ class MainWindow(QMainWindow):
         self._message_count = 0
         self._max_visible_messages = 200
         self._pending_tokens: list[str] = []
+        self._web_page_ready = False
+        self._pending_js: list[str] = []
         self._stream_flush_timer = QTimer(self)
         self._stream_flush_timer.setInterval(60)
         self._stream_flush_timer.timeout.connect(self._flush_stream_tokens)
@@ -150,6 +152,7 @@ class MainWindow(QMainWindow):
         if _USE_WEB_VIEW and _QWebEngineView is not None:
             self._conversation_web = _QWebEngineView()
             self._conversation_web.setContextMenuPolicy(Qt.ContextMenuPolicy.DefaultContextMenu)
+            self._conversation_web.loadFinished.connect(self._on_web_page_loaded)
             chat_html = Path(__file__).resolve().parents[2] / "resources" / "chat.html"
             if chat_html.is_file():
                 self._conversation_web.setUrl(QUrl.fromLocalFile(str(chat_html)))
@@ -827,9 +830,24 @@ class MainWindow(QMainWindow):
         cursor.removeSelectedText()
         self._message_count = self._max_visible_messages
 
+    def _on_web_page_loaded(self, ok: bool) -> None:
+        self._web_page_ready = ok
+        if ok and self._pending_js:
+            for js in self._pending_js:
+                self._conversation_web.page().runJavaScript(js)
+            self._pending_js.clear()
+
+    def _run_web_js(self, js: str) -> None:
+        if self._conversation_web is None:
+            return
+        if self._web_page_ready:
+            self._conversation_web.page().runJavaScript(js)
+        else:
+            self._pending_js.append(js)
+
     def _clear_conversation_view(self) -> None:
         if self._conversation_web is not None:
-            self._conversation_web.page().runJavaScript("clearMessages();")
+            self._run_web_js("clearMessages();")
         elif self._conversation is not None:
             self._conversation.clear()
         self._message_count = 0
@@ -865,7 +883,7 @@ class MainWindow(QMainWindow):
             except ImportError:
                 content_html = html.escape(str(text or "")).replace("\n", "<br>")
             js = f"appendMessage({json.dumps(speaker_label)}, {json.dumps(content_html)});"
-            self._conversation_web.page().runJavaScript(js)
+            self._run_web_js(js)
             return
         safe_speaker = html.escape(speaker_label)
         safe_text = html.escape(str(text or "")).replace("\n", "<br>")

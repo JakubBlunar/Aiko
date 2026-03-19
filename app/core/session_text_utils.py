@@ -123,25 +123,10 @@ def prepare_tts_text(text: str) -> str:
     cleaned = cleaned.replace("[", "").replace("]", "")
     # Replace very long numbers with a speakable placeholder
     cleaned = re.sub(r"\d{7,}", "a large number", cleaned)
+    # Strip tildes -- Kokoro reads them literally
+    cleaned = cleaned.replace("~", "")
     cleaned = " ".join(cleaned.split())
-    return _add_tts_expressiveness(cleaned)
-
-
-def _add_tts_expressiveness(text: str) -> str:
-    """Soften flat sentence endings with ~ for a more expressive anime cadence.
-
-    Only affects short, casual sentences that end with a plain period.
-    """
-    if not text:
-        return text
-    words = text.split()
-    if len(words) > 18:
-        return text
-    if text.endswith(("!", "?", "~", "...")):
-        return text
-    if text.endswith("."):
-        return text[:-1] + "~"
-    return text
+    return cleaned
 
 
 def infer_tts_reaction(text: str) -> str:
@@ -172,7 +157,7 @@ def drain_tts_stream_chunks(buffer: str, *, flush: bool) -> tuple[list[str], str
     chunks: list[str] = []
     start = 0
     for index, ch in enumerate(text):
-        if ch not in ".!?~\n":
+        if ch not in ".!?\n":
             continue
 
         candidate = text[start : index + 1].strip()

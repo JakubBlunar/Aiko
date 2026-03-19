@@ -76,6 +76,7 @@ _REACTION_SPEED: dict[str, float] = {
 
 
 def _reaction_to_speed(reaction: str | None) -> float:
+    """Module-level helper (kept for backward compat)."""
     if not (reaction or "").strip():
         return 1.0
     return _REACTION_SPEED.get((reaction or "").strip().lower(), 1.0)
@@ -171,6 +172,17 @@ class KokoroTtsService:
     def set_output_device(self, device_index: int | None) -> None:
         self._output_device = device_index
 
+    def list_voices(self) -> list[str]:
+        return [
+            "af_heart", "af_bella", "af_nicole", "af_sarah",
+            "am_adam", "am_michael",
+            "bf_emma", "bf_isabella",
+            "jf_nezumi", "jf_alpha",
+        ]
+
+    def reaction_to_speed(self, reaction: str | None) -> float:
+        return _reaction_to_speed(reaction)
+
     def speak_async(
         self,
         text: str,
@@ -180,7 +192,7 @@ class KokoroTtsService:
         if not self._settings.enabled or not (text or "").strip():
             return
         self._stop_requested.clear()
-        speed = _reaction_to_speed(reaction)
+        speed = self.reaction_to_speed(reaction)
         self._speech_thread = threading.Thread(
             target=self._speak_worker,
             args=(text.strip(), on_done, speed),
@@ -188,7 +200,7 @@ class KokoroTtsService:
         )
         self._speech_thread.start()
 
-    def _generate_audio(self, text: str, speed: float = 1.0) -> tuple[np.ndarray, int] | None:
+    def generate_audio(self, text: str, speed: float = 1.0) -> tuple[np.ndarray, int] | None:
         """Run G2P + Kokoro inference, returning (audio_array, sample_rate) or None."""
         if not self._loaded.wait(timeout=30.0):
             return None
@@ -219,7 +231,7 @@ class KokoroTtsService:
         try:
             if sd is None:
                 return
-            result = self._generate_audio(text, speed)
+            result = self.generate_audio(text, speed)
             if result is None or self._stop_requested.is_set():
                 return
             audio_data, sample_rate = result

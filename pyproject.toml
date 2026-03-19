@@ -52,6 +52,12 @@ actions = [
 chat-ui = [
   "markdown>=3.5.0",
 ]
+tts-pykokoro = [
+  "pykokoro>=0.6.0",
+]
+tts-sbv2 = [
+  "style-bert-vits2>=2.5.0",
+]
 dev = [
   "pytest>=8.0.0",
 ]

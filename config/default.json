@@ -42,7 +42,13 @@
     "voice": "af_heart",
     "enabled": true,
     "kokoro_model_path": "models/kokoro-v1.0.onnx",
-    "kokoro_voices_path": "models/voices-v1.0.bin"
+    "kokoro_voices_path": "models/voices-v1.0.bin",
+    "pykokoro_pause_mode": "auto",
+    "sbv2_model_path": "",
+    "sbv2_device": "cpu",
+    "sbv2_language": "EN",
+    "sbv2_style": "Neutral",
+    "sbv2_style_weight": 1.0
   },
   "ui": {
     "window_x": null,

@@ -8,7 +8,11 @@ config/*.user.json
 config/user.json
 data/conversation_memory.jsonl
 data/crashlog.txt
+data/*.db
+data/*.db-shm
+data/*.db-wal
 models/
+data/browser-profile/
 *.wav
 *.log
 realtimesst.log
