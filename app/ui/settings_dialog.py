@@ -1,8 +1,9 @@
 """Minimal settings dialog for S2S assistant."""
 from __future__ import annotations
 
-from pathlib import Path
+import threading
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -50,11 +51,8 @@ class SettingsDialog(QDialog):
         form = QFormLayout(widget)
         self._model_combo = QComboBox()
         self._model_combo.setMinimumWidth(200)
-        for name in self._session.list_chat_models():
-            self._model_combo.addItem(name, name)
-        idx = self._model_combo.findData(self._session.chat_model)
-        if idx >= 0:
-            self._model_combo.setCurrentIndex(idx)
+        current = self._session.chat_model
+        self._model_combo.addItem(current or "Loading...", current)
         form.addRow("Model:", self._model_combo)
         btn_row = QHBoxLayout()
         self._clear_btn = QPushButton("Clear history")
@@ -62,7 +60,32 @@ class SettingsDialog(QDialog):
         btn_row.addWidget(self._clear_btn)
         btn_row.addStretch()
         form.addRow("", btn_row)
+        self._load_models_async()
         return widget
+
+    def _load_models_async(self) -> None:
+        def _fetch() -> None:
+            models = self._session.list_chat_models()
+            self._fetched_models = models
+        self._fetched_models: list[str] = []
+        threading.Thread(target=_fetch, daemon=True, name="fetch-models").start()
+        self._model_poll = QTimer(self)
+        self._model_poll.setInterval(100)
+        self._model_poll.timeout.connect(self._populate_models)
+        self._model_poll.start()
+
+    def _populate_models(self) -> None:
+        models = getattr(self, "_fetched_models", None)
+        if not models:
+            return
+        self._model_poll.stop()
+        current = self._session.chat_model
+        self._model_combo.clear()
+        for name in models:
+            self._model_combo.addItem(name, name)
+        idx = self._model_combo.findData(current)
+        if idx >= 0:
+            self._model_combo.setCurrentIndex(idx)
 
     def _build_audio_tab(self) -> QWidget:
         widget = QWidget()
@@ -200,8 +223,45 @@ class SettingsDialog(QDialog):
     def showEvent(self, event) -> None:
         super().showEvent(event)
         if self._tabs.currentWidget():
-            self._refresh_input_devices()
-            self._refresh_output_devices()
+            self._refresh_devices_async()
+
+    def _refresh_devices_async(self) -> None:
+        def _fetch() -> None:
+            self._fetched_input_devices = self._session.list_microphone_devices()
+            self._fetched_output_devices = self._session.list_output_devices()
+        self._fetched_input_devices: list[tuple[int, str]] | None = None
+        self._fetched_output_devices: list[tuple[int, str]] | None = None
+        threading.Thread(target=_fetch, daemon=True, name="fetch-devices").start()
+        if not hasattr(self, "_device_poll"):
+            self._device_poll = QTimer(self)
+            self._device_poll.setInterval(100)
+            self._device_poll.timeout.connect(self._populate_devices)
+        self._device_poll.start()
+
+    def _populate_devices(self) -> None:
+        if self._fetched_input_devices is None or self._fetched_output_devices is None:
+            return
+        self._device_poll.stop()
+        self._populate_input_devices(self._fetched_input_devices)
+        self._populate_output_devices(self._fetched_output_devices)
+
+    def _populate_input_devices(self, devices: list[tuple[int, str]]) -> None:
+        self._input_device_combo.clear()
+        self._input_device_combo.addItem("(Default)", None)
+        current = self._session.microphone_device
+        for idx, name in devices:
+            self._input_device_combo.addItem(name, idx)
+            if idx == current:
+                self._input_device_combo.setCurrentIndex(self._input_device_combo.count() - 1)
+
+    def _populate_output_devices(self, devices: list[tuple[int, str]]) -> None:
+        self._output_device_combo.clear()
+        self._output_device_combo.addItem("(Default)", None)
+        current = getattr(self._session, "output_device", None)
+        for idx, name in devices:
+            self._output_device_combo.addItem(name, idx)
+            if idx == current:
+                self._output_device_combo.setCurrentIndex(self._output_device_combo.count() - 1)
 
     def _clear_history(self) -> None:
         self._session.clear_conversation_memory()

@@ -188,6 +188,28 @@ class KokoroTtsService:
         )
         self._speech_thread.start()
 
+    def _generate_audio(self, text: str, speed: float = 1.0) -> tuple[np.ndarray, int] | None:
+        """Run G2P + Kokoro inference, returning (audio_array, sample_rate) or None."""
+        if not self._loaded.wait(timeout=30.0):
+            return None
+        with self._lock:
+            kokoro = self._kokoro
+            g2p = self._g2p
+        if kokoro is None or g2p is None or np is None:
+            return None
+        phonemes, _ = g2p(text)
+        voice = (self._settings.voice or "af_heart").strip() or "af_heart"
+        try:
+            samples, sample_rate = kokoro.create(
+                phonemes, voice, is_phonemes=True, speed=min(2.0, max(0.5, float(speed)))
+            )
+        except TypeError:
+            samples, sample_rate = kokoro.create(phonemes, voice, is_phonemes=True)
+        audio_data = np.asarray(samples, dtype=np.float32)
+        if audio_data.size == 0:
+            return None
+        return audio_data, sample_rate
+
     def _speak_worker(
         self,
         text: str,
@@ -195,26 +217,12 @@ class KokoroTtsService:
         speed: float = 1.0,
     ) -> None:
         try:
-            if not self._loaded.wait(timeout=30.0):
+            if sd is None:
                 return
-            with self._lock:
-                kokoro = self._kokoro
-                g2p = self._g2p
-            if kokoro is None or g2p is None or np is None or sd is None:
+            result = self._generate_audio(text, speed)
+            if result is None or self._stop_requested.is_set():
                 return
-            phonemes, _ = g2p(text)
-            voice = (self._settings.voice or "af_heart").strip() or "af_heart"
-            try:
-                samples, sample_rate = kokoro.create(
-                    phonemes, voice, is_phonemes=True, speed=min(2.0, max(0.5, float(speed)))
-                )
-            except TypeError:
-                samples, sample_rate = kokoro.create(phonemes, voice, is_phonemes=True)
-            if self._stop_requested.is_set():
-                return
-            audio_data = np.asarray(samples, dtype=np.float32)
-            if audio_data.size == 0:
-                return
+            audio_data, sample_rate = result
             sd.play(
                 audio_data.reshape(-1, 1),
                 sample_rate,

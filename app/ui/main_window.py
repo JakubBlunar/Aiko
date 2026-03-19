@@ -4,6 +4,7 @@ import html
 import json
 import os
 from pathlib import Path
+import time as _time
 
 from PySide6.QtCore import QEvent, QThread, QTimer, Qt, QUrl
 from PySide6.QtGui import QCloseEvent, QKeyEvent, QMouseEvent, QTextCursor
@@ -112,6 +113,13 @@ class MainWindow(QMainWindow):
         self._wheel_guard_widgets: set[QWidget] = set()
         self._startup_greeting_done = False
         self._ptt_app_filter_installed = False
+        self._message_count = 0
+        self._max_visible_messages = 200
+        self._pending_tokens: list[str] = []
+        self._stream_flush_timer = QTimer(self)
+        self._stream_flush_timer.setInterval(60)
+        self._stream_flush_timer.timeout.connect(self._flush_stream_tokens)
+        self._last_audio_level_time = 0.0
 
         self.setWindowTitle(settings.assistant.name)
         self.resize(900, 640)
@@ -633,9 +641,11 @@ class MainWindow(QMainWindow):
         trace_window_y: int | None = None,
         trace_window_width: int | None = None,
         trace_window_height: int | None = None,
+        sync: bool = False,
     ) -> None:
+        import threading
         state = self._session.state
-        save_runtime_preferences(
+        kwargs = dict(
             chat_model=self._session.chat_model,
             remember_history=self._session.remember_history,
             autonomy_mode=self._session.autonomy_mode,
@@ -672,6 +682,13 @@ class MainWindow(QMainWindow):
             ui_decision_trace_window_width=trace_window_width,
             ui_decision_trace_window_height=trace_window_height,
         )
+        if sync:
+            save_runtime_preferences(**kwargs)
+        else:
+            threading.Thread(
+                target=save_runtime_preferences, kwargs=kwargs,
+                daemon=True, name="save-prefs",
+            ).start()
 
     def _send(self) -> None:
         if self._turn_thread is not None:
@@ -842,7 +859,7 @@ class MainWindow(QMainWindow):
         self._live_thread = None
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        self._persist_preferences()
+        self._persist_preferences(sync=True)
         self._stop_live_mode()
         self._session.shutdown()
         for thread in (
@@ -869,11 +886,29 @@ class MainWindow(QMainWindow):
         else:
             self._start_live_mode()
 
+    def _trim_old_messages(self) -> None:
+        if self._conversation is None or self._message_count <= self._max_visible_messages:
+            return
+        doc = self._conversation.document()
+        excess = self._message_count - self._max_visible_messages
+        cursor = QTextCursor(doc)
+        cursor.movePosition(QTextCursor.MoveOperation.Start)
+        for _ in range(excess):
+            table = cursor.currentTable()
+            if table is not None:
+                table.removeRows(0, table.rows())
+                continue
+            if not cursor.movePosition(QTextCursor.MoveOperation.Down, QTextCursor.MoveMode.KeepAnchor):
+                break
+        cursor.removeSelectedText()
+        self._message_count = self._max_visible_messages
+
     def _clear_conversation_view(self) -> None:
         if self._conversation_web is not None:
             self._conversation_web.page().runJavaScript("clearMessages();")
         elif self._conversation is not None:
             self._conversation.clear()
+        self._message_count = 0
 
     def _on_focus_chat_toggled(self, _checked: bool) -> None:
         pass
@@ -936,6 +971,8 @@ class MainWindow(QMainWindow):
                 "</td></tr></table>"
             )
         )
+        self._message_count += 1
+        self._trim_old_messages()
         self._scroll_conversation_to_bottom()
 
     def _scroll_conversation_to_bottom(self) -> None:
@@ -956,11 +993,21 @@ class MainWindow(QMainWindow):
         self._live_stream_buffer += token
         if self._conversation_web is not None:
             return
+        self._pending_tokens.append(token)
+        if not self._stream_flush_timer.isActive():
+            self._stream_flush_timer.start()
+
+    def _flush_stream_tokens(self) -> None:
+        if not self._pending_tokens:
+            self._stream_flush_timer.stop()
+            return
+        chunk = "".join(self._pending_tokens)
+        self._pending_tokens.clear()
         if not self._live_stream_open:
             self._conversation.append(f"<b>{self._stream_speaker}:</b> ")
             self._live_stream_open = True
         self._conversation.moveCursor(QTextCursor.MoveOperation.End)
-        self._conversation.insertPlainText(token)
+        self._conversation.insertPlainText(chunk)
         self._conversation.ensureCursorVisible()
 
     def _on_live_replied(self, text: str) -> None:
@@ -971,11 +1018,18 @@ class MainWindow(QMainWindow):
         self._refresh_goal_debug_label()
 
     def _close_live_stream(self, _text: str | None = None) -> None:
+        if self._pending_tokens:
+            self._flush_stream_tokens()
+        self._stream_flush_timer.stop()
         if self._live_stream_open:
             self._scroll_conversation_to_bottom()
         self._live_stream_open = False
 
     def _on_live_audio_level(self, level: float) -> None:
+        now = _time.monotonic()
+        if now - self._last_audio_level_time < 0.20:
+            return
+        self._last_audio_level_time = now
         threshold = max(self._session.vad_level_threshold, 1e-6)
         if level < threshold:
             self._live_noise_floor = (self._live_noise_floor * 0.95) + (level * 0.05)

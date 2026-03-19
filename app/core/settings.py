@@ -330,11 +330,24 @@ def _deep_diff(base: Any, value: Any) -> Any:
     return value
 
 
+_config_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
 def _read_config(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
+    key = str(path)
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    cached = _config_cache.get(key)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
     raw = json.loads(path.read_text(encoding="utf-8"))
-    return raw if isinstance(raw, dict) else {}
+    result = raw if isinstance(raw, dict) else {}
+    _config_cache[key] = (mtime, result)
+    return result
 
 
 def _read_merged_overrides(*paths: Path) -> dict[str, Any]:

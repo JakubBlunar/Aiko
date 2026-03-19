@@ -36,12 +36,29 @@ class ConversationMemoryStore:
         with self._path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(asdict(entry), ensure_ascii=False) + "\n")
 
+    @staticmethod
+    def _tail_lines(path: Path, n: int) -> list[str]:
+        """Read the last *n* lines from a JSONL file without loading the whole file."""
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return []
+        if size == 0:
+            return []
+        buf_size = min(size, max(4096, n * 512))
+        with path.open("rb") as fh:
+            fh.seek(max(0, size - buf_size))
+            tail = fh.read().decode("utf-8", errors="replace")
+        lines = tail.splitlines()
+        if fh.tell() > buf_size:
+            lines = lines[1:]
+        return lines[-n:]
+
     def recent_messages(self, max_messages: int = 12) -> list[dict[str, str]]:
         if not self._path.exists():
             return []
 
-        lines = self._path.read_text(encoding="utf-8").splitlines()
-        selected = lines[-max(1, max_messages) :]
+        selected = self._tail_lines(self._path, max(1, max_messages))
 
         output: list[dict[str, str]] = []
         for line in selected:
@@ -59,8 +76,7 @@ class ConversationMemoryStore:
         if not self._path.exists():
             return []
 
-        lines = self._path.read_text(encoding="utf-8").splitlines()
-        selected = lines[-max(1, max_entries) :]
+        selected = self._tail_lines(self._path, max(1, max_entries))
 
         output: list[MemoryEntry] = []
         for line in selected:

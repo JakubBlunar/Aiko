@@ -102,12 +102,17 @@ class FastProsodyAnalyzer:
         )
 
     @staticmethod
-    def _read_wav_mono_float(path: str) -> tuple[int, np.ndarray]:
+    def _read_wav_mono_float(path: str, *, max_seconds: float = 4.5) -> tuple[int, np.ndarray]:
         with wave.open(path, "rb") as wf:
             sr = int(wf.getframerate())
             channels = int(wf.getnchannels())
             sampwidth = int(wf.getsampwidth())
             nframes = int(wf.getnframes())
+            max_frames = int(sr * max_seconds) * channels
+            if nframes > max_frames:
+                skip = nframes - max_frames
+                wf.setpos(skip)
+                nframes = max_frames
             raw = wf.readframes(nframes)
 
         if sampwidth == 2:
@@ -122,7 +127,6 @@ class FastProsodyAnalyzer:
         if channels > 1:
             data = data.reshape(-1, channels).mean(axis=1)
 
-        # Remove DC offset and clip just in case.
         data = data - float(np.mean(data))
         data = np.clip(data, -1.0, 1.0)
         return sr, data

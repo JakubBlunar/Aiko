@@ -228,7 +228,6 @@ class _AgentWrapper:
     ) -> Any:
         """Run the agent. Returns response object or stream iterator."""
         from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
-        from langchain_core.runnables import RunnablePassthrough
 
         session_key = session_id or "main"
         if user_id:
@@ -259,7 +258,8 @@ class _AgentWrapper:
                     lang_messages.append(HumanMessage(content=content))
                 elif role == "assistant" or role == "ai":
                     lang_messages.append(AIMessage(content=content))
-        return lang_messages[- self._num_history_runs * 2 :] if self._num_history_runs else lang_messages
+        max_messages = (self._num_history_runs * 2) if self._num_history_runs else 40
+        return lang_messages[-max_messages:]
 
     def _get_chat_history(self, session_key: str) -> list[Any]:
         try:

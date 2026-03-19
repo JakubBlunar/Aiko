@@ -93,13 +93,12 @@ class TurnAutonomyPlan:
 
 class SessionController:
     def __init__(self, settings: AppSettings) -> None:
+        from concurrent.futures import ThreadPoolExecutor, Future
+
         self._settings = settings
-        # Initialize trace buffer first because background startup paths (e.g. MCP stderr)
-        # can emit trace events before the controller has fully finished bootstrapping.
         self._decision_trace: deque[dict[str, str]] = deque(maxlen=500)
         self._ollama = OllamaClient(settings.ollama)
         self._microphone = MicrophoneCapture(settings.audio)
-        self._realtime_stt = RealtimeSttService(settings.stt, settings.audio)
         self._prosody = FastProsodyAnalyzer(enabled=bool(settings.stt.prosody.enabled))
         self._prosody_include_in_prompt = bool(settings.stt.prosody.include_in_prompt)
         self._action_stop_state = EmergencyStopState()
@@ -128,24 +127,35 @@ class SessionController:
         mcp_settings = tooling_config.tool_settings("mcp")
         mcp_enabled = bool(mcp_settings.get("enabled", False))
         self._effective_chat_model = chat_model
-        self._agent = create_agent(
-            chat_model=chat_model,
-            base_url=settings.ollama.base_url,
-            temperature=float(settings.ollama.temperature),
-            assistant_background=_get_assistant_background(settings),
-            add_tools=True,
-            add_mcp=mcp_enabled,
-            database_provider=db_provider,
-            database_url=db_url,
-            storage_path=storage_path,
-            toolkit_entries=toolkit_entries or None,
-            num_history_runs=num_history_runs,
-            compress_tool_results=compress_tool_results,
-            compress_tool_results_limit=compress_limit,
-            compress_token_limit=compress_token_limit,
-            mcp_config=mcp_settings if mcp_enabled else None,
-            project_root=root,
-        )
+
+        # Parallelize heavy initialization: STT model load and agent creation run concurrently.
+        # TTS already spawns its own daemon thread for model loading.
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="init") as pool:
+            stt_future: Future[RealtimeSttService] = pool.submit(
+                RealtimeSttService, settings.stt, settings.audio,
+            )
+            agent_future: Future = pool.submit(
+                create_agent,
+                chat_model=chat_model,
+                base_url=settings.ollama.base_url,
+                temperature=float(settings.ollama.temperature),
+                assistant_background=_get_assistant_background(settings),
+                add_tools=True,
+                add_mcp=mcp_enabled,
+                database_provider=db_provider,
+                database_url=db_url,
+                storage_path=storage_path,
+                toolkit_entries=toolkit_entries or None,
+                num_history_runs=num_history_runs,
+                compress_tool_results=compress_tool_results,
+                compress_tool_results_limit=compress_limit,
+                compress_token_limit=compress_token_limit,
+                mcp_config=mcp_settings if mcp_enabled else None,
+                project_root=root,
+            )
+            self._realtime_stt = stt_future.result()
+            self._agent = agent_future.result()
+
         self._user_id = settings.assistant.user_id or "default"
         self._microphone_device = settings.audio.microphone_device
         self._output_device = getattr(settings.audio, "output_device", None)
@@ -194,6 +204,13 @@ class SessionController:
         )
         self._startup_context_prewarm_enabled = False
         self._startup_history_limit = 1
+        self._models_cache: list[str] | None = None
+        self._models_cache_time = 0.0
+        self._input_devices_cache: list[tuple[int, str]] | None = None
+        self._input_devices_cache_time = 0.0
+        self._output_devices_cache: list[tuple[int, str]] | None = None
+        self._output_devices_cache_time = 0.0
+        self._cache_ttl = 60.0
     @property
     def state(self) -> SessionState:
         return self._state
@@ -202,8 +219,14 @@ class SessionController:
         self._state.mic_enabled = mic
         self._state.screen_enabled = screen
 
-    def list_microphone_devices(self) -> list[tuple[int, str]]:
-        return self._microphone.list_input_devices()
+    def list_microphone_devices(self, *, refresh: bool = False) -> list[tuple[int, str]]:
+        now = time.monotonic()
+        if not refresh and self._input_devices_cache is not None and (now - self._input_devices_cache_time) < self._cache_ttl:
+            return list(self._input_devices_cache)
+        devices = self._microphone.list_input_devices()
+        self._input_devices_cache = list(devices)
+        self._input_devices_cache_time = now
+        return devices
 
     def set_microphone_device(self, device_index: int | None) -> None:
         self._microphone_device = device_index
@@ -213,9 +236,15 @@ class SessionController:
     def microphone_device(self) -> int | None:
         return self._microphone_device
 
-    def list_output_devices(self) -> list[tuple[int, str]]:
+    def list_output_devices(self, *, refresh: bool = False) -> list[tuple[int, str]]:
+        now = time.monotonic()
+        if not refresh and self._output_devices_cache is not None and (now - self._output_devices_cache_time) < self._cache_ttl:
+            return list(self._output_devices_cache)
         from app.audio.mic_capture import list_output_devices as _list
-        return _list()
+        devices = _list()
+        self._output_devices_cache = list(devices)
+        self._output_devices_cache_time = now
+        return devices
 
     def set_output_device(self, device_index: int | None) -> None:
         self._output_device = device_index
@@ -387,16 +416,34 @@ class SessionController:
                 self._tts_playing = True
         if next_chunk:
             text, reaction = next_chunk
-            try:
-                self._tts.speak_async(
-                    text,
-                    reaction=reaction,
-                    on_done=self._on_tts_chunk_done,
-                )
-            except Exception as exc:
-                self._trace("tts.error", f"TTS queue speak failed: {exc}")
-                with self._tts_queue_lock:
-                    self._tts_playing = False
+            self._start_tts_with_lookahead(text, reaction)
+
+    def _start_tts_with_lookahead(self, text: str, reaction: str | None) -> None:
+        """Start playing a chunk and pre-generate the next one in parallel."""
+        generate = getattr(self._tts, "_generate_audio", None)
+        peek: tuple[str, str | None] | None = None
+        with self._tts_queue_lock:
+            if self._pending_tts_chunks:
+                peek = self._pending_tts_chunks[0]
+
+        if peek is not None and callable(generate):
+            from app.tts.kokoro_service import _reaction_to_speed
+            speed = _reaction_to_speed(peek[1])
+            threading.Thread(
+                target=generate, args=(peek[0], speed),
+                daemon=True, name="tts-lookahead",
+            ).start()
+
+        try:
+            self._tts.speak_async(
+                text,
+                reaction=reaction,
+                on_done=self._on_tts_chunk_done,
+            )
+        except Exception as exc:
+            self._trace("tts.error", f"TTS queue speak failed: {exc}")
+            with self._tts_queue_lock:
+                self._tts_playing = False
 
     def _enqueue_tts_chunk(self, text: str, reaction: str | None = None) -> None:
         if not (text or "").strip():
@@ -410,16 +457,7 @@ class SessionController:
                 return
             self._tts_playing = True
             chunk = self._pending_tts_chunks.pop(0)
-        try:
-            self._tts.speak_async(
-                chunk[0],
-                reaction=chunk[1],
-                on_done=self._on_tts_chunk_done,
-            )
-        except Exception as exc:
-            self._trace("tts.error", f"TTS queue speak failed: {exc}")
-            with self._tts_queue_lock:
-                self._tts_playing = False
+        self._start_tts_with_lookahead(chunk[0], chunk[1])
 
     def stop_tts(self) -> None:
         with self._tts_queue_lock:
@@ -564,7 +602,10 @@ class SessionController:
         user = root / (self._settings.tooling.config_user_path or "config/tooling.user.json")
         return (default, user)
 
-    def list_chat_models(self) -> list[str]:
+    def list_chat_models(self, *, refresh: bool = False) -> list[str]:
+        now = time.monotonic()
+        if not refresh and self._models_cache is not None and (now - self._models_cache_time) < self._cache_ttl:
+            return list(self._models_cache)
         try:
             models = self._ollama.list_models()
         except Exception:
@@ -573,6 +614,8 @@ class SessionController:
         current = self.chat_model
         if current and current not in models:
             models.insert(0, current)
+        self._models_cache = list(models)
+        self._models_cache_time = now
         return models
 
     @property
@@ -1046,21 +1089,23 @@ class SessionController:
             agent_to_use = self._agent
             use_stream_tts = mode == "live"
             if use_stream_tts:
-                stream_buffer: list[str] = []
+                from io import StringIO
+                stream_io = StringIO()
                 reply_mood: list[str | None] = [None]
                 last_ui_sent_len: list[int] = [0]
 
                 def _on_content(delta: str) -> None:
                     if not delta:
                         return
-                    stream_buffer.append(delta)
-                    buf = "".join(stream_buffer)
+                    stream_io.write(delta)
+                    buf = stream_io.getvalue()
                     if reply_mood[0] is None:
                         mood, rest = parse_reaction_at_start(buf)
                         if mood is not None:
                             reply_mood[0] = mood
-                            stream_buffer.clear()
-                            stream_buffer.append(rest)
+                            stream_io.seek(0)
+                            stream_io.truncate()
+                            stream_io.write(rest)
                             buf = rest
                     chunks, remainder = drain_tts_stream_chunks(buf, flush=False)
                     for sent in chunks:
@@ -1068,8 +1113,9 @@ class SessionController:
                         if tts_text:
                             self._enqueue_tts_chunk(tts_text, reaction=reply_mood[0] or "neutral")
                             stream_tts_enqueued_chunks[0] += 1
-                    stream_buffer.clear()
-                    stream_buffer.append(remainder)
+                    stream_io.seek(0)
+                    stream_io.truncate()
+                    stream_io.write(remainder)
                     if on_token and reply_mood[0] is not None:
                         display_buf = strip_all_reaction_tags(buf)
                         to_send = display_buf[last_ui_sent_len[0]:]
@@ -1087,7 +1133,7 @@ class SessionController:
                     on_tool_use=_tool_status if on_generation_status else None,
                     stop_requested=stop_requested,
                 )
-                buf = "".join(stream_buffer)
+                buf = stream_io.getvalue()
                 final_chunks, _ = drain_tts_stream_chunks(buf, flush=True)
                 for sent in final_chunks:
                     tts_text = prepare_tts_text(strip_action_meta_for_tts(sent))
@@ -1497,10 +1543,12 @@ class SessionController:
                 "message": message_text,
             }
         )
-        try:
-            log_event(stage_text, message_text)
-        except Exception:
-            pass
+        logger = logging.getLogger("app")
+        if logger.isEnabledFor(logging.DEBUG) or "error" in stage_text.lower():
+            try:
+                log_event(stage_text, message_text)
+            except Exception:
+                pass
 
     @staticmethod
     def _build_tts_service(settings: AppSettings, output_device: int | None = None):

@@ -20,9 +20,6 @@ dependencies = [
   "onnxruntime>=1.20.1",
   "kokoro-onnx>=0.4.7",
   "misaki",
-  "num2words>=0.5.13",
-  "spacy>=3.7.0",
-  "ollama>=0.3.0",
 ]
 
 [project.optional-dependencies]
@@ -37,9 +34,7 @@ agno-duckduckgo = [
 agno-youtube = [
   "youtube_transcript_api",
 ]
-agno-openweather = [
-  "requests",
-]
+agno-openweather = []
 agno-yfinance = [
   "yfinance",
 ]

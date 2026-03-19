@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from collections.abc import Callable
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QCloseEvent, QMoveEvent, QResizeEvent
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -145,6 +145,15 @@ class DecisionTraceDialog(QDialog):
         self._status = QLabel("")
         layout.addWidget(self._status)
 
+        self._persist_debounce = QTimer(self)
+        self._persist_debounce.setSingleShot(True)
+        self._persist_debounce.setInterval(400)
+        self._persist_debounce.timeout.connect(self._do_persist_state)
+        self._geometry_debounce = QTimer(self)
+        self._geometry_debounce.setSingleShot(True)
+        self._geometry_debounce.setInterval(500)
+        self._geometry_debounce.timeout.connect(self._persist_geometry_state)
+
         self._refresh()
 
     def _selected_filters(self) -> dict[str, bool]:
@@ -152,6 +161,9 @@ class DecisionTraceDialog(QDialog):
 
     def _on_filters_changed(self) -> None:
         self._refresh()
+        self._persist_debounce.start()
+
+    def _do_persist_state(self) -> None:
         if callable(self._persist_state):
             self._persist_state(self._selected_filters(), int(self._limit_spin.value()))
 
@@ -161,11 +173,11 @@ class DecisionTraceDialog(QDialog):
 
     def moveEvent(self, event: QMoveEvent) -> None:
         super().moveEvent(event)
-        self._persist_geometry_state()
+        self._geometry_debounce.start()
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
-        self._persist_geometry_state()
+        self._geometry_debounce.start()
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._persist_geometry_state()
