@@ -1,6 +1,6 @@
 # English Speaking Assistant
 
-Local speech-to-speech + type-in assistant: talk or type to the agent, get text and spoken response in real time. Uses RealtimeSTT (Whisper + Silero VAD), Kokoro TTS, and Agno with Ollama.
+Local speech-to-speech + type-in assistant: talk or type to the agent, get text and spoken response in real time. Uses RealtimeSTT (Whisper + Silero VAD), Kokoro TTS, and LangChain with Ollama.
 
 ## Requirements
 
@@ -10,7 +10,7 @@ Local speech-to-speech + type-in assistant: talk or type to the agent, get text 
 - A local Ollama model (e.g. `llama3.1:8b`)
 - Microphone and speakers
 
-The app uses **Ollama** for the LLM; Agno still needs the `openai` package for internal types (installed automatically with the project).
+The app uses **Ollama** for the LLM via LangChain; the `openai` package is installed for compatibility.
 
 ## Setup
 
@@ -34,13 +34,7 @@ python -m venv .venv
 pip install -e .
 ```
 
-For Agno toolkits (search, calculator, weather, etc.), see [Agno toolkits](#agno-toolkits-config-and-deps) below. Quick start:
-
-```powershell
-pip install -e ".[agent]"
-# or install optional toolkit deps (DuckDuckGo, YouTube, OpenWeather, YFinance):
-pip install -e ".[agno-tools]"
-```
+For optional toolkits (search, calculator, etc.), see [Toolkits](#toolkits-config-and-deps) below. Tool registry is config-driven; install optional deps only for the toolkits you enable.
 
 **If your `.venv` is corrupted or misbehaving**, recreate it from the project root (close the app first):
 
@@ -110,7 +104,7 @@ User overrides (model, voice, paths) go in `config/user.json`.
 
 ## Customizing the persona
 
-**User persona** (what the agent knows about you) is handled by **Agno Learning**: User Profile and User Memory are stored in the same database as session history (`data/agno_sessions.db` by default) and injected into the agent automatically.
+Session history is stored in `data/chat_sessions.db` by default. User persona (optional) can be added later via a user-context store.
 
 Configure the assistant in `config/default.json` or `config/user.json` under `assistant`:
 
@@ -118,7 +112,7 @@ Configure the assistant in `config/default.json` or `config/user.json` under `as
 |-----|-------------|
 | `background` | Inline description of the assistant’s role (single line in JSON). Used when `background_path` is not set or the file cannot be read. |
 | `background_path` | Path to a **text file** (relative to project root) with multiline instructions, e.g. `data/assistant_background.txt`. If set and the file exists, its content is used instead of `background`. |
-| `user_id` | Optional; default `"default"`. Scopes Agno Learning per user. |
+| `user_id` | Optional; default `"default"`. Scopes session/user context per user. |
 | `response_style` | Optional; one of `balanced`, `concise`, `detailed`. Affects reply length. Default `balanced`. |
 | `tts_length_scale` | Optional; float in 0.65–1.35. Higher = slower TTS. Default `1.0`. |
 
@@ -141,7 +135,7 @@ python -m app.main
 
 - **Type** in the input field and press Enter or click Send to get a text + spoken reply.
 - **Live** — Click **Start Live** to use voice detection or push-to-talk: the app listens for your speech, transcribes it, sends it to the agent, and speaks the reply. Sentence chunks are spoken as they are generated (stream-to-speak). Use **Stop Live** when done.
-- Conversation history is kept in the session (Agno storage). Use Clear history in settings to reset.
+- Conversation history is kept in the session (LangChain chat history). Use Clear history in settings to reset.
 
 ### Live mode: streaming, barge-in, and mood
 
@@ -149,37 +143,11 @@ python -m app.main
 - **Mood:** The agent starts each reply with a mood tag (e.g. `[[reaction:cheerful]]`). TTS uses this to slightly adjust speaking speed (e.g. more energetic for “excited”, slower for “sad”).
 - **Barge-in:** In Settings → Audio you can enable **Allow barge-in**. When on, you can interrupt while the assistant is speaking: your new utterance stops playback and is processed as a correction or follow-up in the same conversation, so the agent keeps context.
 
-## Agno toolkits (config and deps)
+## Toolkits (config and deps)
 
-Which Agno toolkits the agent can use is set in **`config/tooling.default.json`** (and overrides in `config/tooling.user.json`) under **`agno_toolkits`**. Enabling a toolkit in config requires **installing its Python packages** (and setting any env vars) for it to load; if a toolkit fails, the app logs a copy-pastable `pip install ...` line.
+Which toolkits the agent can use is set in **`config/tooling.default.json`** (and overrides in `config/tooling.user.json`) under **`toolkits`** (or backward-compat **`agno_toolkits`**). The tool registry is config-driven; by default no toolkits are loaded. See [docs/toolkits-deps.md](docs/toolkits-deps.md) for adding toolkits and their dependencies.
 
-- **Packages and env vars:** See [docs/agno-toolkits-deps.md](docs/agno-toolkits-deps.md) for a table of toolkit id → pip packages and env vars (e.g. `openweather` needs `OPENWEATHER_API_KEY`; `youtube` needs `pip install youtube_transcript_api`).
-- **Optional install:** `pip install -e ".[agno-tools]"` installs deps for DuckDuckGo, YouTube, OpenWeather, and YFinance. Or install per-toolkit extras: `.[agno-duckduckgo]`, `.[agno-youtube]`, etc.
-
-**Toolkit parameters:** Some toolkits accept constructor options (e.g. YouTube: `languages`, `enable_get_video_captions`). You can pass them in config in two ways:
-
-1. **Option A — list of entries with optional params:**  
-   In `config/tooling.default.json` set `agno_toolkits` to a list where each entry is either a string (toolkit id) or an object with `id` and `params`:
-
-   ```json
-   "agno_toolkits": [
-     "calculator",
-     "duckduckgo",
-     { "id": "youtube", "params": { "languages": ["en"], "enable_get_video_captions": true } }
-   ]
-   ```
-
-2. **Option B — ids list + params map:**  
-   Set `agno_toolkits` to a list of id strings and `agno_toolkit_params` to a map from toolkit id to params:
-
-   ```json
-   "agno_toolkits": ["calculator", "youtube", "duckduckgo"],
-   "agno_toolkit_params": {
-     "youtube": { "languages": ["en"], "enable_get_video_captions": true }
-   }
-   ```
-
-   User overrides in `config/tooling.user.json` are merged (e.g. you can add or override params per toolkit).
+**Toolkit parameters:** Use `toolkits` (list of ids or `{ "id": "...", "params": {} }`) and optional **`toolkit_params`** (map from toolkit id to params). User overrides in `config/tooling.user.json` are merged.
 
 ## Optional: MCP tools
 
@@ -189,17 +157,9 @@ To use MCP servers (e.g. windows-mcp) as agent tools:
 2. Define servers in `config/mcp.servers.json` or `config/mcp.servers.user.json`.
 3. In `config/tooling.user.json` set `tools.mcp.enabled` to `true`.
 
-MCP tools are registered as Agno tools and called by the agent when needed.
+MCP tools are loaded via LangChain MCP adapters and called by the agent when needed.
 
-### Coding tools (read/edit files in chosen folders)
-
-To let the agent read and edit files under folders you choose:
-
-1. Install the coding MCP dependency: `pip install -e ".[coding-mcp]"`
-2. Open **Settings → Coding**, check **Enable coding tools**, click **Add folder…** and pick one or more workspace roots. Save (OK).
-3. Restart the app. The agent will have `coding_read_file`, `coding_list_dir`, `coding_search`, and `coding_apply_patch`; all paths are restricted to your chosen roots.
-
-Context and history are kept in check: tool-result compression and history length are configurable in `config/default.json` under `agent` (`num_history_runs`, `compress_tool_results`, etc.).
+Context and history are configurable in `config/default.json` under `agent` (`num_history_runs`, `compress_tool_results`, etc.).
 
 ## Testing
 

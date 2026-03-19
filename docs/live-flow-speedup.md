@@ -39,7 +39,7 @@ Often saves **2–8+ seconds** for long answers.
 
 **Changes:**
 
-- **agno_agent.py**: When `stream=True`, do not use a single `agent.run()` returning a string. Call `agent.run(..., stream=True)`, get an iterator of events, and for each event with content (e.g. `RunEvent.run_content`), call an `on_token`/`on_content` callback with the delta. Optionally return the full concatenated content at the end for transcript/metrics.
+- **langchain_agent.py**: When `stream=True`, call `agent.run(..., stream=True)` and iterate over stream events; for each event with content (e.g. `on_chat_model_stream`), call `on_content` with the delta. Return the full concatenated content at the end for transcript/metrics.
 - **session_controller.chat_once_streaming**: For live (or all) mode:
   - Call `run_agent(..., stream=True, on_content=...)`.
   - Maintain a buffer of streamed content; on each chunk call `drain_tts_stream_chunks(buffer, flush=False)` and for each drained sentence call `_tts.speak_async(chunk)` (or enqueue so TTS runs in order). On stream end call `drain_tts_stream_chunks(buffer, flush=True)` and speak any remainder.
@@ -97,7 +97,7 @@ Often saves **2–8+ seconds** for long answers.
 
 ## Recommended order of implementation
 
-1. **Stream LLM → TTS** (stream-to-speak) — biggest win; requires Agno stream handling and a TTS chunk queue.
+1. **Stream LLM → TTS** (stream-to-speak) — biggest win; requires LangChain agent stream handling and a TTS chunk queue.
 2. **Prosody optional in live** — quick config/skip to save a small fixed delay.
 3. **Faster STT profile for live** — optional setting for users who prefer speed over accuracy.
 4. **TTS queue and warmup** — do as part of (1) and at startup.
@@ -108,7 +108,7 @@ Often saves **2–8+ seconds** for long answers.
 
 | Proposal | Effort | Latency saved | Notes |
 |----------|--------|----------------|--------|
-| Stream LLM → TTS | Medium | 2–8+ s (time to first sentence) | Need stream handling in agno_agent + session and ordered TTS queue. |
+| Stream LLM → TTS | Medium | 2–8+ s (time to first sentence) | Need stream handling in langchain_agent + session and ordered TTS queue. |
 | Skip/optional prosody in live | Low | ~50–200 ms | Config or live-only skip. |
 | Faster STT model for live | Low–medium | ~0.5–1.5 s | Optional “fast” / “live” STT model. |
 | TTS queue + warmup | Low (with 1) | First chunk faster, no overlap | Part of stream-to-speak. |

@@ -6,24 +6,6 @@ from pathlib import Path
 from typing import Any
 
 
-def save_coding_tooling(
-    user_path: Path,
-    *,
-    enabled: bool,
-    allowed_roots: list[str],
-) -> None:
-    """Merge tools.coding into tooling.user.json and write. allowed_roots should be absolute paths."""
-    current = _read_config(user_path)
-    tools = dict(current.get("tools", {}) if isinstance(current.get("tools"), dict) else {})
-    tools["coding"] = {
-        "enabled": enabled,
-        "allowed_roots": [str(p).strip() for p in allowed_roots if str(p).strip()],
-    }
-    current["tools"] = tools
-    user_path.parent.mkdir(parents=True, exist_ok=True)
-    user_path.write_text(json.dumps(current, indent=2), encoding="utf-8")
-
-
 @dataclass(slots=True)
 class ToolPolicyConfig:
     full_auto: bool = False
@@ -49,6 +31,8 @@ def _agno_params_raw(value: Any) -> dict[str, dict[str, Any]]:
 class ToolingConfig:
     enabled_tools: list[str] = field(default_factory=list)
     disabled_tools: list[str] = field(default_factory=list)
+    toolkits: list[Any] = field(default_factory=list)
+    toolkit_params: dict[str, dict[str, Any]] = field(default_factory=dict)
     agno_toolkits: list[Any] = field(default_factory=list)
     agno_toolkit_params: dict[str, dict[str, Any]] = field(default_factory=dict)
     policies: ToolPolicyConfig = field(default_factory=ToolPolicyConfig)
@@ -133,47 +117,55 @@ def load_tooling_config(
     )
 
     tools_raw = merged.get("tools", {}) if isinstance(merged.get("tools"), dict) else {}
-    tools: dict[str, dict[str, Any]] = {}
+    tools_dict: dict[str, dict[str, Any]] = {}
     for key, value in tools_raw.items():
-        if isinstance(value, dict):
-            tools[str(key).strip().lower()] = dict(value)
+        if isinstance(value, dict) and str(key).strip().lower() != "coding":
+            tools_dict[str(key).strip().lower()] = dict(value)
 
-    agno_toolkits = _agno_entries_raw(merged.get("agno_toolkits", []))
-    agno_params = _agno_params_raw(merged.get("agno_toolkit_params", {}))
+    toolkits = _agno_entries_raw(merged.get("toolkits", merged.get("agno_toolkits", [])))
+    toolkit_params = _agno_params_raw(merged.get("toolkit_params", merged.get("agno_toolkit_params", {})))
 
     return ToolingConfig(
         enabled_tools=_as_list(merged.get("enabled_tools", [])),
         disabled_tools=_as_list(merged.get("disabled_tools", [])),
-        agno_toolkits=agno_toolkits,
-        agno_toolkit_params=agno_params,
+        toolkits=toolkits,
+        toolkit_params=toolkit_params,
+        agno_toolkits=toolkits,
+        agno_toolkit_params=toolkit_params,
         policies=policies,
-        tools=tools,
+        tools=tools_dict,
         runtime_overrides=(runtime_overrides or {}),
     )
 
 
-def resolve_agno_toolkit_entries(config: ToolingConfig) -> list[tuple[str, dict[str, Any]]]:
+def resolve_toolkit_entries(config: ToolingConfig) -> list[tuple[str, dict[str, Any]]]:
     """
-    Resolve agno_toolkits (Option A: list of ids or { id, params }) and agno_toolkit_params (Option B)
-    into a list of (toolkit_id, params_dict). User params (Option B) override per-id params from entries.
+    Resolve toolkits (list of ids or { id, params }) and toolkit_params into
+    a list of (toolkit_id, params_dict). Backward compatible with agno_toolkits.
     """
+    entries = config.toolkits if config.toolkits else config.agno_toolkits
+    params_map = config.toolkit_params if config.toolkit_params else config.agno_toolkit_params
     result: list[tuple[str, dict[str, Any]]] = []
     seen: set[str] = set()
-    for entry in config.agno_toolkits:
+    for entry in entries:
         if isinstance(entry, str):
             tid = (entry or "").strip()
             if tid and tid not in seen:
                 seen.add(tid)
-                params = dict(config.agno_toolkit_params.get(tid, {}))
-                result.append((tid, params))
+                result.append((tid, dict(params_map.get(tid, {}))))
         elif isinstance(entry, dict):
             tid = (entry.get("id") or entry.get("toolkit_id") or "").strip()
             if not tid:
                 continue
             params = dict(entry.get("params", {})) if isinstance(entry.get("params"), dict) else {}
-            if tid in config.agno_toolkit_params:
-                _deep_merge(params, config.agno_toolkit_params[tid])
+            if tid in params_map:
+                _deep_merge(params, params_map[tid])
             if tid not in seen:
                 seen.add(tid)
                 result.append((tid, params))
     return result
+
+
+def resolve_agno_toolkit_entries(config: ToolingConfig) -> list[tuple[str, dict[str, Any]]]:
+    """Backward-compatible alias for resolve_toolkit_entries."""
+    return resolve_toolkit_entries(config)

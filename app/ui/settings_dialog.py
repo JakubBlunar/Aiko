@@ -23,7 +23,6 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.session_controller import SessionController
-from app.core.tooling import load_tooling_config, save_coding_tooling
 
 
 class SettingsDialog(QDialog):
@@ -36,7 +35,6 @@ class SettingsDialog(QDialog):
         self._tabs = QTabWidget()
         self._tabs.addTab(self._build_model_tab(), "Model")
         self._tabs.addTab(self._build_audio_tab(), "Audio")
-        self._tabs.addTab(self._build_coding_tab(), "Coding")
         layout.addWidget(self._tabs)
 
         layout.addWidget(QLabel(""))
@@ -158,61 +156,6 @@ class SettingsDialog(QDialog):
         layout.addStretch()
         return widget
 
-    def _build_coding_tab(self) -> QWidget:
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        self._coding_enabled_checkbox = QCheckBox("Enable coding tools (read/edit files in chosen folders)")
-        layout.addWidget(self._coding_enabled_checkbox)
-        layout.addWidget(QLabel("Allowed workspace roots (coding tools only access these folders):"))
-        self._coding_roots_list = QListWidget()
-        self._coding_roots_list.setMinimumHeight(120)
-        layout.addWidget(self._coding_roots_list)
-        btn_row = QHBoxLayout()
-        add_btn = QPushButton("Add folder…")
-        add_btn.clicked.connect(self._coding_add_folder)
-        remove_btn = QPushButton("Remove selected")
-        remove_btn.clicked.connect(self._coding_remove_selected)
-        btn_row.addWidget(add_btn)
-        btn_row.addWidget(remove_btn)
-        btn_row.addStretch()
-        layout.addLayout(btn_row)
-        layout.addWidget(QLabel("Changes apply after restart."))
-        layout.addStretch()
-        self._load_coding_settings()
-        return widget
-
-    def _load_coding_settings(self) -> None:
-        try:
-            default_path, user_path = self._session.get_tooling_config_paths()
-            config = load_tooling_config(default_path=default_path, user_path=user_path)
-            coding = config.tool_settings("coding")
-            self._coding_enabled_checkbox.setChecked(bool(coding.get("enabled", False)))
-            roots = coding.get("allowed_roots") or []
-            if not isinstance(roots, list):
-                roots = []
-            self._coding_roots_list.clear()
-            for p in roots:
-                s = str(p).strip()
-                if s:
-                    self._coding_roots_list.addItem(QListWidgetItem(s))
-        except Exception:
-            self._coding_enabled_checkbox.setChecked(False)
-            self._coding_roots_list.clear()
-
-    def _coding_add_folder(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Choose workspace root")
-        if path:
-            path = str(Path(path).resolve())
-            for i in range(self._coding_roots_list.count()):
-                if self._coding_roots_list.item(i).text() == path:
-                    return
-            self._coding_roots_list.addItem(QListWidgetItem(path))
-
-    def _coding_remove_selected(self) -> None:
-        row = self._coding_roots_list.currentRow()
-        if row >= 0:
-            self._coding_roots_list.takeItem(row)
-
     def _refresh_input_devices(self) -> None:
         self._input_device_combo.clear()
         devices = self._session.list_microphone_devices()
@@ -286,17 +229,4 @@ class SettingsDialog(QDialog):
             self._session.set_live_ptt_toggle(self._ptt_toggle_checkbox.isChecked())
         if hasattr(self._session, "set_barge_in_enabled"):
             self._session.set_barge_in_enabled(self._barge_in_checkbox.isChecked())
-        try:
-            _, user_path = self._session.get_tooling_config_paths()
-            roots = [
-                str(Path(self._coding_roots_list.item(i).text()).resolve())
-                for i in range(self._coding_roots_list.count())
-            ]
-            save_coding_tooling(
-                user_path,
-                enabled=self._coding_enabled_checkbox.isChecked(),
-                allowed_roots=roots,
-            )
-        except Exception:
-            pass
         super().accept()

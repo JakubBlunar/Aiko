@@ -1,7 +1,7 @@
 [project]
 name = "english-speaking-assistant"
 version = "0.1.0"
-description = "Local speech-to-speech + type-in assistant with RealtimeSTT, Kokoro TTS, and Agno (Ollama)"
+description = "Local speech-to-speech + type-in assistant with RealtimeSTT, Kokoro TTS, and LangChain (Ollama)"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -10,8 +10,11 @@ dependencies = [
   "sounddevice>=0.5.1",
   "numpy>=2.2.3",
   "mss>=10.0.0",
-  "agno>=1.2.6",
   "openai>=1.0.0",
+  "langchain>=0.3.0",
+  "langchain-community>=0.3.0",
+  "langchain-core>=0.3.0",
+  "langchain-mcp-adapters>=0.1.0",
   "realtimestt>=0.3.100",
   "soundfile>=0.13.0",
   "onnxruntime>=1.20.1",
@@ -50,9 +53,6 @@ ocr = [
 ]
 actions = [
   "pyautogui>=0.9.54",
-]
-coding-mcp = [
-  "mcp>=1.0.0",
 ]
 chat-ui = [
   "markdown>=3.5.0",

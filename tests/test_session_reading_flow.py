@@ -69,7 +69,7 @@ class SessionControllerFlowTests(unittest.TestCase):
         self.assertNotIn("Executed MCP tool", cleaned)
 
     def test_approve_pending_action_returns_message_and_none_followup(self) -> None:
-        # Agno-only: no action executor; approve returns stub message.
+        # No action executor; approve returns stub message.
         controller = SessionController.__new__(SessionController)
         controller._trace = lambda *_args, **_kwargs: None
 

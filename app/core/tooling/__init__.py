@@ -2,7 +2,7 @@ from app.core.tooling.config_loader import (
     ToolingConfig,
     load_tooling_config,
     resolve_agno_toolkit_entries,
-    save_coding_tooling,
+    resolve_toolkit_entries,
 )
 from app.core.tooling.contracts import Tool
 from app.core.tooling.executor import ToolExecutor
@@ -29,5 +29,5 @@ __all__ = [
     "ToolingConfig",
     "load_tooling_config",
     "resolve_agno_toolkit_entries",
-    "save_coding_tooling",
+    "resolve_toolkit_entries",
 ]

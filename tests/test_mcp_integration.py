@@ -219,7 +219,7 @@ class MCPIntegrationTests(unittest.TestCase):
         self.assertEqual(tools[0].spec.name, "mcp.windows.Snapshot")
         self.assertFalse(tools[0].spec.is_mutating)
 
-    @unittest.skip("Agno-only: get_mcp_runtime_status is stubbed; no MCP restart logic")
+    @unittest.skip("get_mcp_runtime_status is stubbed; no MCP restart logic")
     def test_controller_mcp_status_attempts_restart_when_disconnected(self) -> None:
         controller = SessionController.__new__(SessionController)
         controller._trace = lambda *_args, **_kwargs: None

@@ -13,7 +13,7 @@ import time
 from typing import Any
 
 from app.core.action_intent import has_action_intent
-from app.core.tooling import load_tooling_config, resolve_agno_toolkit_entries, save_coding_tooling
+from app.core.tooling import load_tooling_config, resolve_toolkit_entries
 from app.core.tooling.runtime.emergency_stop import EmergencyStopState, GlobalHotkeyListener
 from app.core.tooling.types import ToolError, ToolResult
 from app.audio.mic_capture import MicrophoneCapture
@@ -33,7 +33,7 @@ from app.core.session_text_utils import (
     sanitize_assistant_text,
     sanitize_user_text,
 )
-from app.llm.agno_agent import create_agent, run_agent
+from app.llm.langchain_agent import create_agent, run_agent
 from app.llm.ollama_client import OllamaClient
 from app.stt.prosody_fast import FastProsodyAnalyzer, ProsodyAnalysis
 from app.stt.realtime_stt_service import RealtimeSttService
@@ -110,7 +110,7 @@ class SessionController:
         self._memory = _StubMemory()
         self._mcp_servers = []
 
-        storage_path = Path(__file__).resolve().parents[2] / "data" / "agno_sessions.db"
+        storage_path = Path(__file__).resolve().parents[2] / "data" / "chat_sessions.db"
         db_provider = getattr(settings.database, "provider", "sqlite") or "sqlite"
         db_url = getattr(settings.database, "url", None)
         root = Path(__file__).resolve().parents[2]
@@ -118,15 +118,7 @@ class SessionController:
             default_path=root / (getattr(settings.tooling, "config_default_path", "config/tooling.default.json") or "config/tooling.default.json"),
             user_path=root / (getattr(settings.tooling, "config_user_path", "config/tooling.user.json") or "config/tooling.user.json"),
         )
-        agno_toolkit_entries = resolve_agno_toolkit_entries(tooling_config)
-        coding = tooling_config.tool_settings("coding")
-        coding_enabled = bool(coding.get("enabled", False))
-        coding_roots = coding.get("allowed_roots") or []
-        if not isinstance(coding_roots, list):
-            coding_roots = []
-        coding_allowed_roots = [str(p).strip() for p in coding_roots if str(p).strip()]
-        coding_files = coding.get("allowed_files") or []
-        coding_allowed_files = [str(p).strip() for p in coding_files if str(p).strip()] if isinstance(coding_files, list) else []
+        toolkit_entries = resolve_toolkit_entries(tooling_config)
         agent_settings = getattr(settings, "agent", None)
         num_history_runs = int(agent_settings.num_history_runs) if agent_settings else 10
         compress_tool_results = bool(agent_settings.compress_tool_results) if agent_settings else True
@@ -136,7 +128,7 @@ class SessionController:
         mcp_settings = tooling_config.tool_settings("mcp")
         mcp_enabled = bool(mcp_settings.get("enabled", False))
         self._effective_chat_model = chat_model
-        self._agno_agent = create_agent(
+        self._agent = create_agent(
             chat_model=chat_model,
             base_url=settings.ollama.base_url,
             temperature=float(settings.ollama.temperature),
@@ -146,21 +138,20 @@ class SessionController:
             database_provider=db_provider,
             database_url=db_url,
             storage_path=storage_path,
-            agno_toolkit_entries=agno_toolkit_entries or None,
+            toolkit_entries=toolkit_entries or None,
             num_history_runs=num_history_runs,
             compress_tool_results=compress_tool_results,
             compress_tool_results_limit=compress_limit,
             compress_token_limit=compress_token_limit,
-            coding_enabled=coding_enabled,
-            coding_allowed_roots=coding_allowed_roots or None,
-            coding_allowed_files=coding_allowed_files or None,
+            mcp_config=mcp_settings if mcp_enabled else None,
+            project_root=root,
         )
-        self._agno_user_id = settings.assistant.user_id or "default"
+        self._user_id = settings.assistant.user_id or "default"
         self._microphone_device = settings.audio.microphone_device
         self._output_device = getattr(settings.audio, "output_device", None)
         self._tts = self._build_tts_service(settings, output_device=self._output_device)
         self._apply_assistant_preferences()
-        self._agno_session_id = "main"
+        self._session_id = "main"
         self._tts_playing = False
         self._pending_tts_chunks: list[tuple[str, str | None]] = []
         self._tts_queue_lock = threading.Lock()
@@ -633,7 +624,7 @@ class SessionController:
         )
 
     def set_active_session_type(self, session_type: str) -> None:
-        """No-op: Agno manages conversation; session type is not used."""
+        """No-op: LangChain agent manages conversation; session type is not used."""
         _ = session_type
 
     def clear_conversation_memory(self) -> None:
@@ -873,7 +864,7 @@ class SessionController:
         self._trace("tool.invoke", f"{name} args={self._preview_tool_args(dict(args or {}))} (stubbed)")
         return ToolResult(
             success=False,
-            error=ToolError(code="stub", message="Tooling disabled; Agno-only mode."),
+            error=ToolError(code="stub", message="Tooling disabled; agent-only mode."),
         )
 
     def _history_messages(self, *, limit: int, offset: int = 0) -> list[dict[str, str]]:
@@ -1052,7 +1043,7 @@ class SessionController:
                     msg = f"Tool: {name} - {summary[:80]}{'...' if len(summary) > 80 else ''}" if summary else f"Tool: {name}"
                     on_generation_status(msg)
 
-            agent_to_use = self._agno_agent
+            agent_to_use = self._agent
             use_stream_tts = mode == "live"
             if use_stream_tts:
                 stream_buffer: list[str] = []
@@ -1089,8 +1080,8 @@ class SessionController:
                 response = run_agent(
                     agent_to_use,
                     message_for_agent,
-                    session_id=self._agno_session_id,
-                    user_id=self._agno_user_id,
+                    session_id=self._session_id,
+                    user_id=self._user_id,
                     stream=True,
                     on_content=_on_content,
                     on_tool_use=_tool_status if on_generation_status else None,
@@ -1108,8 +1099,8 @@ class SessionController:
                 response = run_agent(
                     agent_to_use,
                     message_for_agent,
-                    session_id=self._agno_session_id,
-                    user_id=self._agno_user_id,
+                    session_id=self._session_id,
+                    user_id=self._user_id,
                     stream=False,
                     on_tool_use=_tool_status if on_generation_status else None,
                 )
@@ -1119,7 +1110,7 @@ class SessionController:
             if not response or not response.strip():
                 self._trace(
                     "pipeline.llm.empty",
-                    f"mode={mode} llm_ms={round(llm_ms, 1)} agent returned empty; check Agno/Ollama response shape",
+                    f"mode={mode} llm_ms={round(llm_ms, 1)} agent returned empty; check LangChain/Ollama response shape",
                 )
                 response = "I didn’t get a reply from the model. Try again or check the console for details."
             llm_for_tts = strip_action_meta_for_tts(response)
@@ -1155,7 +1146,7 @@ class SessionController:
             self._trace("pipeline.turn.stopped", f"mode={mode} stop_requested=true")
             return display_for_ui
 
-        # Action execution delegated to Agno (MCP/registry tools). No separate action pipeline.
+        # Action execution delegated to agent (MCP/registry tools). No separate action pipeline.
         # Two-tier: spoken_part for TTS, full_for_display (display_for_ui) for transcript; already computed above.
 
         tts_started = time.perf_counter()
@@ -1397,15 +1388,15 @@ class SessionController:
         return any(token in lowered for token in tokens)
 
     def _is_screen_intent(self, user_text: str) -> bool:
-        """Stub: screen context disabled in Agno-only mode."""
+        """Stub: screen context disabled in agent-only mode."""
         return False
 
     def run_screen_ocr_diagnostic(self) -> dict[str, object]:
-        """Stub: OCR disabled in Agno-only mode."""
+        """Stub: OCR disabled in agent-only mode."""
         return {
             "ok": False,
             "reason": "disabled",
-            "message": "Screen OCR is disabled in Agno-only mode.",
+            "message": "Screen OCR is disabled in agent-only mode.",
         }
 
     def run_stt_diagnostic(
@@ -1975,8 +1966,8 @@ class SessionController:
 
     def _register_mcp_tools(self) -> None:
         self._mcp_servers = []
-        self._trace("mcp.start", "MCP integration disabled (Agno-only mode); tools come from Agno MCPTools.")
+        self._trace("mcp.start", "MCP tools loaded from config when enabled.")
 
     def _build_agno_tools_from_registry(self) -> list[Any]:
-        """Stub: Agno uses MCPTools only; no registry tools."""
+        """Stub: agent uses MCP tools from config; no registry tools."""
         return []
