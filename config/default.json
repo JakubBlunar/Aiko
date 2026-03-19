@@ -7,7 +7,6 @@
   },
   "assistant": {
     "name": "Assistant",
-    "mode": "natural_chat",
     "remember_history": true,
     "background": "",
     "background_path": "data/assistant_background.txt",
@@ -33,7 +32,6 @@
     "url": null
   },
   "stt": {
-    "provider": "realtime_stt",
     "model": "large-v1",
     "language": "en"
   },
@@ -52,8 +50,7 @@
   },
   "tooling": {
     "config_default_path": "config/tooling.default.json",
-    "config_user_path": "config/tooling.user.json",
-    "enable_runtime_overrides": true
+    "config_user_path": "config/tooling.user.json"
   },
   "logging": {
     "level": "INFO"

@@ -38,27 +38,8 @@ class AudioSettings:
 
 
 @dataclass(slots=True)
-class ScreenSettings:
-    enable_screen_context: bool
-    ocr_profile: str
-    monitor_index: int
-    ocr_max_side_px: int
-    capture_active_window_only: bool
-    decision_mode: str
-    decision_cooldown_seconds: int
-    min_ocr_chars: int
-    unchanged_reuse_seconds: int
-    enable_uia: bool = True
-
-
-def list_screen_ocr_profiles() -> list[str]:
-    return ["fast", "balanced"]
-
-
-@dataclass(slots=True)
 class AssistantSettings:
     name: str
-    mode: str
     remember_history: bool
     background: str
     background_path: str = ""  # If set, load multiline background from this file (relative to project root)
@@ -136,7 +117,6 @@ class ActionSettings:
 
 @dataclass(slots=True)
 class SttSettings:
-    provider: str
     model: str
     language: str | None
     diagnostics: "SttDiagnosticsSettings" = field(default_factory=lambda: SttDiagnosticsSettings())
@@ -190,7 +170,6 @@ class UiSettings:
 class ToolingBridgeSettings:
     config_default_path: str
     config_user_path: str
-    enable_runtime_overrides: bool
 
 
 @dataclass(slots=True)
@@ -214,7 +193,6 @@ class AppSettings:
     ollama: OllamaSettings
     audio: AudioSettings
     database: DatabaseSettings
-    screen: ScreenSettings
     actions: ActionSettings
     stt: SttSettings
     tts: TtsSettings
@@ -226,65 +204,6 @@ class AppSettings:
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "default.json"
 USER_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "user.json"
-
-
-_SCREEN_PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
-    "fast": {
-        "ocr_max_side_px": 1024,
-        "capture_active_window_only": True,
-        "decision_mode": "keywords",
-        "decision_cooldown_seconds": 2,
-        "min_ocr_chars": 12,
-        "unchanged_reuse_seconds": 8,
-    },
-    "balanced": {
-        "ocr_max_side_px": 1280,
-        "capture_active_window_only": True,
-        "decision_mode": "model",
-        "decision_cooldown_seconds": 6,
-        "min_ocr_chars": 20,
-        "unchanged_reuse_seconds": 20,
-    },
-}
-
-# Used when "screen" section is missing from config (slim default.json).
-_SCREEN_LOADER_DEFAULTS: dict[str, Any] = {
-    "enable_screen_context": False,
-    "ocr_profile": "balanced",
-    "monitor_index": 1,
-    "ocr_max_side_px": 1280,
-    "capture_active_window_only": True,
-    "decision_mode": "model",
-    "decision_cooldown_seconds": 6,
-    "min_ocr_chars": 20,
-    "unchanged_reuse_seconds": 20,
-    "enable_uia": True,
-}
-
-
-def normalize_screen_ocr_profile(profile: str | None) -> str:
-    normalized = str(profile or "balanced").strip().lower() or "balanced"
-    if normalized not in _SCREEN_PROFILE_DEFAULTS:
-        return "balanced"
-    return normalized
-
-
-def get_screen_ocr_profile_defaults(profile: str | None) -> dict[str, Any]:
-    normalized = normalize_screen_ocr_profile(profile)
-    return dict(_SCREEN_PROFILE_DEFAULTS[normalized])
-
-
-def apply_screen_ocr_profile(screen: ScreenSettings, profile: str | None) -> str:
-    normalized = normalize_screen_ocr_profile(profile)
-    defaults = _SCREEN_PROFILE_DEFAULTS[normalized]
-    screen.ocr_profile = normalized
-    screen.ocr_max_side_px = int(defaults["ocr_max_side_px"])
-    screen.capture_active_window_only = bool(defaults["capture_active_window_only"])
-    screen.decision_mode = str(defaults["decision_mode"])
-    screen.decision_cooldown_seconds = int(defaults["decision_cooldown_seconds"])
-    screen.min_ocr_chars = int(defaults["min_ocr_chars"])
-    screen.unchanged_reuse_seconds = int(defaults["unchanged_reuse_seconds"])
-    return normalized
 
 
 def _required(section: dict[str, Any], key: str) -> Any:
@@ -359,18 +278,6 @@ def _read_merged_overrides(*paths: Path) -> dict[str, Any]:
             continue
         merged = _deep_merge(merged, current)
     return merged
-
-
-def _resolve_screen_settings(raw_screen: dict[str, Any], user_screen: dict[str, Any]) -> dict[str, Any]:
-    screen = dict(raw_screen)
-    profile = normalize_screen_ocr_profile(screen.get("ocr_profile", "balanced"))
-    screen["ocr_profile"] = profile
-
-    profile_defaults = _SCREEN_PROFILE_DEFAULTS[profile]
-    for key, value in profile_defaults.items():
-        if key not in user_screen:
-            screen[key] = value
-    return screen
 
 
 def _parse_session_tool_policy(
@@ -454,12 +361,6 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
     ollama = raw.get("ollama", {}) or {}
     audio = raw.get("audio", {}) or {}
     database = raw.get("database") or {}
-    raw_screen = raw.get("screen") or {}
-    if not isinstance(raw_screen, dict):
-        raw_screen = {}
-    raw_screen = _deep_merge(_SCREEN_LOADER_DEFAULTS, raw_screen)
-    user_screen = user.get("screen", {}) if isinstance(user.get("screen", {}), dict) else {}
-    screen = _resolve_screen_settings(raw_screen, user_screen)
     actions = raw.get("actions", {}) or {}
     stt = raw.get("stt", {}) or {}
     tts = raw.get("tts", {}) or {}
@@ -494,7 +395,6 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
     return AppSettings(
         assistant=AssistantSettings(
             name=_required(assistant, "name"),
-            mode=_required(assistant, "mode"),
             remember_history=bool(_required(assistant, "remember_history")),
             background=str(assistant.get("background", "")).strip(),
             background_path=str(assistant.get("background_path", "") or "").strip(),
@@ -566,18 +466,6 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             provider=str(database.get("provider", "sqlite")).strip().lower() or "sqlite",
             url=(str(database["url"]).strip() if database.get("url") else None) or (str(os.environ.get("DATABASE_URL", "")).strip() or None),
         ),
-        screen=ScreenSettings(
-            enable_screen_context=bool(_required(screen, "enable_screen_context")),
-            ocr_profile=str(screen.get("ocr_profile", "balanced")),
-            monitor_index=int(screen.get("monitor_index", 1)),
-            ocr_max_side_px=max(0, int(screen.get("ocr_max_side_px", 1600))),
-            capture_active_window_only=bool(screen.get("capture_active_window_only", False)),
-            decision_mode=str(screen.get("decision_mode", "model")),
-            decision_cooldown_seconds=int(screen.get("decision_cooldown_seconds", 8)),
-            min_ocr_chars=max(0, int(screen.get("min_ocr_chars", 20))),
-            unchanged_reuse_seconds=max(0, int(screen.get("unchanged_reuse_seconds", 30))),
-            enable_uia=bool(screen.get("enable_uia", True)),
-        ),
         actions=ActionSettings(
             enabled=bool(actions.get("enabled", False)),
             dry_run=bool(actions.get("dry_run", True)),
@@ -598,7 +486,6 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             ],
         ),
         stt=SttSettings(
-            provider=str(stt.get("provider", "faster_whisper")),
             model=str(stt.get("model", "base")),
             language=(str(stt.get("language")).strip() if stt.get("language") is not None else None),
             diagnostics=SttDiagnosticsSettings(
@@ -667,7 +554,6 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
         tooling=ToolingBridgeSettings(
             config_default_path=str(tooling.get("config_default_path", "config/tooling.default.json")),
             config_user_path=str(tooling.get("config_user_path", "config/tooling.user.json")),
-            enable_runtime_overrides=bool(tooling.get("enable_runtime_overrides", True)),
         ),
         agent=AgentSettings(
             num_history_runs=max(1, min(int(agent_raw.get("num_history_runs", 10)), 50)),
@@ -714,8 +600,6 @@ def save_runtime_preferences(
     stt_prosody_enabled: bool | None = None,
     stt_prosody_include_in_prompt: bool | None = None,
     enable_microphone: bool,
-    enable_screen_context: bool,
-    screen_ocr_profile: str | None = None,
     window_x: int | None = None,
     window_y: int | None = None,
     window_width: int | None = None,
@@ -760,10 +644,6 @@ def save_runtime_preferences(
             "vad_level_threshold": round(vad_level_threshold, 4),
             "vad_silence_seconds": round(vad_silence_seconds, 2),
             "enable_microphone": bool(enable_microphone),
-        },
-        "screen": {
-            "enable_screen_context": bool(enable_screen_context),
-            "ocr_profile": normalize_screen_ocr_profile(screen_ocr_profile),
         },
         "actions": {
             "min_action_interval_seconds": round(max(0.0, action_min_interval_seconds), 2),

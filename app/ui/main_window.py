@@ -50,7 +50,6 @@ from app.ui.theme import (
     SPACING,
 )
 from app.ui.live_worker import LivePracticeWorker
-from app.ui.ocr_test_worker import OcrTestWorker
 from app.ui.stt_test_worker import SttTestWorker
 from app.ui.turn_worker import SingleTurnWorker
 
@@ -98,8 +97,6 @@ class MainWindow(QMainWindow):
         self._live_worker: LivePracticeWorker | None = None
         self._turn_thread: QThread | None = None
         self._turn_worker: SingleTurnWorker | None = None
-        self._ocr_test_thread: QThread | None = None
-        self._ocr_test_worker: OcrTestWorker | None = None
         self._stt_test_thread: QThread | None = None
         self._stt_test_worker: SttTestWorker | None = None
         self._turn_mode: str | None = None
@@ -347,76 +344,6 @@ class MainWindow(QMainWindow):
             trace_window_height=height,
         )
 
-    def _test_ocr(self) -> None:
-        if self._ocr_test_thread is not None:
-            return
-
-        btn = getattr(self, "_test_ocr_button", None)
-        if btn is not None:
-            btn.setEnabled(False)
-            btn.setText("Test OCR (Running...)")
-        self._status_label.setText("OCR test running...")
-
-        self._ocr_test_thread = QThread(self)
-        self._ocr_test_worker = OcrTestWorker(self._session)
-        self._ocr_test_worker.moveToThread(self._ocr_test_thread)
-
-        self._ocr_test_thread.started.connect(self._ocr_test_worker.run)
-        self._ocr_test_worker.done.connect(self._on_test_ocr_done)
-        self._ocr_test_worker.failed.connect(self._on_test_ocr_failed)
-        self._ocr_test_worker.finished.connect(self._on_test_ocr_finished)
-        self._ocr_test_worker.finished.connect(self._ocr_test_thread.quit)
-        self._ocr_test_thread.finished.connect(self._on_test_ocr_thread_finished)
-        self._ocr_test_thread.finished.connect(self._ocr_test_thread.deleteLater)
-        self._ocr_test_worker.finished.connect(self._ocr_test_worker.deleteLater)
-        self._ocr_test_thread.start()
-
-    def _on_test_ocr_done(self, result: dict) -> None:
-        ok = bool(result.get("ok", False))
-        if not ok:
-            QMessageBox.warning(
-                self,
-                "OCR diagnostic",
-                str(result.get("message") or "OCR diagnostic failed."),
-            )
-            return
-
-        chars = int(result.get("chars") or 0)
-        lines = int(result.get("line_count") or 0)
-        min_chars = int(result.get("min_chars") or 0)
-        passes_min = bool(result.get("passes_min_chars", False))
-        confidence = float(result.get("avg_confidence") or 0.0)
-        text = str(result.get("text") or "")
-
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Icon.Information)
-        box.setWindowTitle("OCR diagnostic")
-        box.setText(
-            "Screen OCR capture succeeded.\n"
-            f"Chars: {chars} | Lines: {lines} | Avg confidence: {confidence:.2f} | "
-            f"Min chars pass: {'yes' if passes_min else f'no ({chars} < {min_chars})'}"
-        )
-        box.setDetailedText(text)
-        box.setStandardButtons(QMessageBox.StandardButton.Ok)
-        box.exec()
-
-        preview = text[:300] + ("..." if len(text) > 300 else "")
-        self._append("System", f"OCR test result: {preview}")
-
-    def _on_test_ocr_failed(self, message: str) -> None:
-        QMessageBox.warning(self, "OCR diagnostic", message or "OCR diagnostic failed.")
-
-    def _on_test_ocr_finished(self) -> None:
-        btn = getattr(self, "_test_ocr_button", None)
-        if btn is not None:
-            btn.setText("Test OCR")
-            btn.setEnabled(True)
-        self._status_label.setText(f"Ready | model: {self._session.effective_chat_model}")
-
-    def _on_test_ocr_thread_finished(self) -> None:
-        self._ocr_test_thread = None
-        self._ocr_test_worker = None
-
     def _run_stt_test(self) -> None:
         if self._stt_test_thread is not None:
             return
@@ -568,12 +495,6 @@ class MainWindow(QMainWindow):
     def _refresh_audio_devices(self) -> None:
         pass
 
-    def _refresh_ocr_profiles(self) -> None:
-        pass
-
-    def _on_ocr_profile_changed(self) -> None:
-        pass
-
     def _refresh_models(self) -> None:
         self._status_label.setText(f"Ready | model: {self._session.effective_chat_model}")
 
@@ -669,8 +590,6 @@ class MainWindow(QMainWindow):
             stt_prosody_enabled=None,
             stt_prosody_include_in_prompt=None,
             enable_microphone=state.mic_enabled,
-            enable_screen_context=state.screen_enabled,
-            screen_ocr_profile=getattr(self._settings.screen, "ocr_profile", "balanced"),
             window_x=self.x(),
             window_y=self.y(),
             window_width=self.width(),
@@ -864,7 +783,6 @@ class MainWindow(QMainWindow):
         self._session.shutdown()
         for thread in (
             self._turn_thread,
-            self._ocr_test_thread,
             self._stt_test_thread,
             self._live_thread,
         ):

@@ -4,7 +4,6 @@ from collections.abc import Callable
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import json
 import logging
 from pathlib import Path
 import re
@@ -67,7 +66,6 @@ class _StubMemory:
 @dataclass(slots=True)
 class SessionState:
     mic_enabled: bool
-    screen_enabled: bool
     autonomy_mode: str
     session_type: str
 
@@ -84,7 +82,6 @@ class GoalInference:
 @dataclass(slots=True)
 class TurnAutonomyPlan:
     strategy: str
-    should_use_screen: bool
     should_plan_action: bool
     ask_followup: bool
     confidence: float
@@ -107,7 +104,6 @@ class SessionController:
             state=self._action_stop_state,
         )
         self._memory = _StubMemory()
-        self._mcp_servers = []
 
         storage_path = Path(__file__).resolve().parents[2] / "data" / "chat_sessions.db"
         db_provider = getattr(settings.database, "provider", "sqlite") or "sqlite"
@@ -179,12 +175,6 @@ class SessionController:
             self._autonomy_mode = "interactive"
         self._active_goal = settings.autonomy.default_goal
         self._active_goal_description: str = ""
-        self._last_screen_elements: list[dict] = []
-        self._open_windows: list[dict] = []
-        self._all_windows: list[dict] = []
-        self._foreground_window_title: str = ""
-        self._last_screen_text = ""
-        self._last_screen_text_at = 0.0
         self._last_metrics: dict[str, float | str] = {
             "mode": "idle",
             "capture_ms": 0.0,
@@ -198,7 +188,6 @@ class SessionController:
 
         self._state = SessionState(
             mic_enabled=settings.audio.enable_microphone,
-            screen_enabled=settings.screen.enable_screen_context,
             autonomy_mode=self._autonomy_mode,
             session_type="chat",
         )
@@ -215,9 +204,8 @@ class SessionController:
     def state(self) -> SessionState:
         return self._state
 
-    def update_sources(self, *, mic: bool, screen: bool) -> None:
+    def update_sources(self, *, mic: bool) -> None:
         self._state.mic_enabled = mic
-        self._state.screen_enabled = screen
 
     def list_microphone_devices(self, *, refresh: bool = False) -> list[tuple[int, str]]:
         now = time.monotonic()
@@ -534,37 +522,10 @@ class SessionController:
         else:
             self.prewarm_tts()
 
-        self._check_mcp_runtime_prewarm(report)
         report("Warmup complete")
 
     def _build_startup_prewarm_messages(self) -> list[dict[str, str]]:
         return [{"role": "user", "content": "Reply with OK."}]
-
-    def _check_mcp_runtime_prewarm(self, report: Callable[[str], None]) -> None:
-        try:
-            status = self.get_mcp_runtime_status()
-        except Exception as exc:
-            self._trace("mcp.error", f"Failed to read MCP runtime status during preload: {exc}")
-            raise RuntimeError(f"Failed to check MCP runtime: {exc}") from exc
-        if not isinstance(status, dict):
-            self._trace("mcp.error", "Invalid MCP runtime status payload during preload.")
-            raise RuntimeError("Invalid MCP runtime status payload.")
-        enabled = bool(status.get("enabled", False))
-        if not enabled:
-            report("MCP disabled; skipping MCP preload checks")
-            return
-        server_count = int(status.get("server_count", 0) or 0)
-        connected_count = int(status.get("connected_count", 0) or 0)
-        report(f"Checking MCP servers: {connected_count}/{server_count} running")
-        if server_count <= 0:
-            raise RuntimeError("MCP is enabled but no servers are configured or running.")
-        if connected_count <= 0:
-            raise RuntimeError("MCP is enabled but no MCP servers are running.")
-        if connected_count < server_count:
-            self._trace(
-                "mcp.warn",
-                f"MCP preload check partial readiness: {connected_count}/{server_count} server(s) running.",
-            )
 
     def set_tts_provider(self, provider: str) -> None:
         normalized = (provider or "").strip().lower() or "kokoro"
@@ -772,15 +733,6 @@ class SessionController:
 
     def shutdown(self) -> None:
         self.stop_action_hotkey_listener()
-        for entry in self._mcp_servers:
-            client = entry.get("client") if isinstance(entry, dict) else None
-            if client is None:
-                continue
-            try:
-                client.stop()
-            except Exception:
-                pass
-        self._mcp_servers = []
 
     def get_last_metrics(self) -> dict[str, float | str]:
         return dict(self._last_metrics)
@@ -824,14 +776,6 @@ class SessionController:
             "objective": "",
             "auto_steps": 0,
             "max_auto_steps": 0,
-        }
-
-    def get_mcp_runtime_status(self) -> dict[str, object]:
-        return {
-            "enabled": False,
-            "server_count": 0,
-            "connected_count": 0,
-            "servers": [],
         }
 
     def reset_latency_metrics(self) -> None:
@@ -1050,24 +994,6 @@ class SessionController:
         if raw_user_text != user_text:
             self._trace("stt.clean", f"Sanitized user text ({len(raw_user_text)} -> {len(user_text)} chars).")
 
-        screen_intent = False
-
-        if screen_intent and not self._state.screen_enabled:
-            self._set_last_metrics(
-                {
-                    "mode": mode,
-                    "capture_ms": round(capture_ms, 1),
-                    "stt_ms": round(stt_ms, 1),
-                    "llm_ms": 0.0,
-                    "tts_ms": 0.0,
-                    "total_ms": round((time.perf_counter() - turn_start) * 1000.0, 1),
-                }
-            )
-            return (
-                "I can’t read your screen right now because Screen Context is OFF. "
-                "Enable 'Screen Context' and click 'Apply Sources', then ask again."
-            )
-
         stream_tts_used = False
         stream_tts_enqueued_chunks: list[int] = [0]
         llm_ms = 0.0
@@ -1264,7 +1190,6 @@ class SessionController:
         if not self._settings.autonomy.enabled:
             return TurnAutonomyPlan(
                 strategy=default_strategy,
-                should_use_screen=False,
                 should_plan_action=False,
                 ask_followup=True,
                 confidence=0.4,
@@ -1277,7 +1202,6 @@ class SessionController:
                     "Confirm agentic mode is active and ask for the first objective. "
                     "Do not propose or perform UI actions in this turn."
                 ),
-                should_use_screen=False,
                 should_plan_action=False,
                 ask_followup=True,
                 confidence=1.0,
@@ -1287,7 +1211,6 @@ class SessionController:
         if self._autonomy_mode == "manual":
             return TurnAutonomyPlan(
                 strategy="Respond naturally and avoid autonomous actions unless explicitly requested.",
-                should_use_screen=False,
                 should_plan_action=False,
                 ask_followup=True,
                 confidence=0.8,
@@ -1300,7 +1223,6 @@ class SessionController:
         allow_action_suggestions = bool(turn_cfg.allow_action_suggestions)
         allow_proactive_actions = bool(turn_cfg.allow_proactive_actions)
         explicit_action_intent = has_action_intent(user_text)
-        wants_screen = self._is_screen_intent(user_text)
         should_plan_action = (
             bool(self._settings.actions.enabled)
             and allow_action_suggestions
@@ -1316,7 +1238,6 @@ class SessionController:
 
         plan = TurnAutonomyPlan(
             strategy=strategy[: max(40, int(turn_cfg.max_strategy_chars))],
-            should_use_screen=bool(wants_screen),
             should_plan_action=bool(should_plan_action),
             ask_followup=bool(proactive and not should_plan_action),
             confidence=0.7 if should_plan_action else 0.6,
@@ -1325,7 +1246,6 @@ class SessionController:
 
         if self._autonomy_mode == "automatic":
             plan.ask_followup = False
-            plan.should_use_screen = bool(self._state.screen_enabled)
             plan.should_plan_action = bool(self._settings.actions.enabled)
             if plan.should_plan_action and not plan.action_intent:
                 plan.action_intent = "Execute the next best UI step for the active objective."
@@ -1432,18 +1352,6 @@ class SessionController:
             "work autonomously",
         )
         return any(token in lowered for token in tokens)
-
-    def _is_screen_intent(self, user_text: str) -> bool:
-        """Stub: screen context disabled in agent-only mode."""
-        return False
-
-    def run_screen_ocr_diagnostic(self) -> dict[str, object]:
-        """Stub: OCR disabled in agent-only mode."""
-        return {
-            "ok": False,
-            "reason": "disabled",
-            "message": "Screen OCR is disabled in agent-only mode.",
-        }
 
     def run_stt_diagnostic(
         self,
@@ -1903,118 +1811,6 @@ class SessionController:
             path.unlink(missing_ok=True)
         except Exception:
             return
-
-    @staticmethod
-    def _slugify_mcp_server_name(name: str) -> str:
-        text = re.sub(r"[^a-zA-Z0-9]+", "_", str(name or "").strip().lower()).strip("_")
-        return text or "server"
-
-    @staticmethod
-    def _normalize_mcp_framing_mode(value: object, *, fallback: str = "content-length") -> str:
-        text = str(value or "").strip().lower()
-        if text in {"content-length", "newline-json"}:
-            return text
-        return str(fallback or "content-length").strip().lower() or "content-length"
-
-    @staticmethod
-    def _parse_mcp_servers_payload(payload: object) -> list[dict[str, Any]]:
-        if not isinstance(payload, dict):
-            return []
-        servers_raw = payload.get("mcpServers", {})
-        if not isinstance(servers_raw, dict):
-            return []
-
-        parsed: list[dict[str, Any]] = []
-        for name, raw in servers_raw.items():
-            server_name = str(name or "").strip()
-            if not server_name or not isinstance(raw, dict):
-                continue
-            transport = str(raw.get("transport", "stdio")).strip().lower() or "stdio"
-            if transport not in {"stdio", "http", "streamable-http"}:
-                continue
-
-            command = str(raw.get("command", "")).strip()
-            url = str(raw.get("url", "")).strip()
-            if transport == "stdio" and not command:
-                continue
-            if transport in {"http", "streamable-http"} and not url:
-                continue
-
-            args = raw.get("args", [])
-            env = raw.get("env", {})
-            headers = raw.get("headers", {})
-            parsed.append(
-                {
-                    "name": server_name,
-                    "transport": transport,
-                    "command": command,
-                    "url": url,
-                    "args": [str(item).strip() for item in args if str(item).strip()] if isinstance(args, list) else [],
-                    "env": {str(k): str(v) for k, v in env.items()} if isinstance(env, dict) else {},
-                    "headers": {str(k): str(v) for k, v in headers.items()} if isinstance(headers, dict) else {},
-                    "framing_mode": str(raw.get("framing_mode", "")).strip().lower(),
-                }
-            )
-        return parsed
-
-    def _load_mcp_servers_from_json(self, *, cfg: dict[str, Any]) -> list[dict[str, Any]]:
-        path_raw = str(cfg.get("servers_json_path", "")).strip()
-        if not path_raw:
-            return []
-
-        path = Path(path_raw)
-        if not path.is_absolute():
-            workspace_root = Path(__file__).resolve().parents[2]
-            path = workspace_root / path
-        if not path.exists():
-            self._trace("mcp.error", f"Configured MCP servers JSON file not found: {path}")
-            return []
-
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except Exception as exc:
-            self._trace("mcp.error", f"Failed to parse MCP servers JSON ({path}): {exc}")
-            return []
-
-        parsed = self._parse_mcp_servers_payload(payload)
-        if not parsed:
-            self._trace("mcp.error", f"No valid mcpServers entries found in: {path}")
-            return []
-
-        for item in parsed:
-            item["source"] = str(path)
-        return parsed
-
-    def _load_mcp_servers_from_user_json(self, *, cfg: dict[str, Any]) -> list[dict[str, Any]]:
-        path_raw = str(cfg.get("servers_user_json_path", "")).strip()
-        if not path_raw:
-            return []
-
-        path = Path(path_raw)
-        if not path.is_absolute():
-            workspace_root = Path(__file__).resolve().parents[2]
-            path = workspace_root / path
-        if not path.exists():
-            return []
-
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except Exception as exc:
-            self._trace("mcp.error", f"Failed to parse MCP servers user JSON ({path}): {exc}")
-            return []
-
-        parsed = self._parse_mcp_servers_payload(payload)
-        if not parsed:
-            self._trace("mcp.error", f"No valid mcpServers entries found in user JSON: {path}")
-            return []
-
-        for item in parsed:
-            item["source"] = str(path)
-        return parsed
-
-    def _register_mcp_tools(self) -> None:
-        self._mcp_servers = []
-        self._trace("mcp.start", "MCP tools loaded from config when enabled.")
 
     def _build_agno_tools_from_registry(self) -> list[Any]:
         """Stub: agent uses MCP tools from config; no registry tools."""

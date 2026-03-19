@@ -1,9 +1,6 @@
 {
-  "enabled_tools": [],
-  "disabled_tools": [],
   "toolkits": [],
   "toolkit_params": {},
-  "agno_toolkits": [],
   "policies": {
     "full_auto": false,
     "mutating_requires_confirmation": true,
@@ -16,9 +13,7 @@
       "max_limit": 400
     },
     "mcp": {
-      "enabled": false,
-      "servers_user_json_path": "config/mcp.servers.user.json",
-      "servers_json_path": "config/mcp.servers.json"
+      "enabled": false
     }
   }
 }

@@ -268,7 +268,7 @@ class SettingsDialog(QDialog):
 
     def accept(self) -> None:
         self._session.set_chat_model(str(self._model_combo.currentData() or self._session.chat_model))
-        self._session.update_sources(mic=self._mic_checkbox.isChecked(), screen=False)
+        self._session.update_sources(mic=self._mic_checkbox.isChecked())
         self._session.set_tts_voice(str(self._voice_combo.currentData() or self._voice_combo.currentText() or self._session.tts_voice))
         in_dev = self._input_device_combo.currentData()
         self._session.set_microphone_device(in_dev)

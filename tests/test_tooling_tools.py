@@ -14,7 +14,6 @@ from app.core.settings import (
     AutonomySettings,
     DatabaseSettings,
     OllamaSettings,
-    ScreenSettings,
     SttDiagnosticsSettings,
     SttProsodySettings,
     SttSettings,
@@ -30,7 +29,6 @@ from app.core.tooling.tools.history_tools import (
     HistoryReadSummaryTool,
     HistoryRuntime,
 )
-from app.core.tooling.tools.ocr_tools import OcrExtractElementsTool, OcrRuntime
 from app.core.tooling.types import ToolContext
 
 
@@ -38,7 +36,6 @@ def _app_settings() -> AppSettings:
     return AppSettings(
         assistant=AssistantSettings(
             name="Assistant",
-            mode="natural_chat",
             remember_history=True,
             background="",
         ),
@@ -67,18 +64,6 @@ def _app_settings() -> AppSettings:
             barge_in_enabled=False,
         ),
         database=DatabaseSettings(provider="sqlite", url=None),
-        screen=ScreenSettings(
-            enable_screen_context=True,
-            ocr_profile="balanced",
-            monitor_index=1,
-            ocr_max_side_px=1280,
-            capture_active_window_only=True,
-            decision_mode="model",
-            decision_cooldown_seconds=6,
-            min_ocr_chars=20,
-            unchanged_reuse_seconds=20,
-            enable_uia=True,
-        ),
         actions=ActionSettings(
             enabled=False,
             dry_run=True,
@@ -92,7 +77,6 @@ def _app_settings() -> AppSettings:
             allowlist_window_titles=[],
         ),
         stt=SttSettings(
-            provider="faster_whisper",
             model="base",
             language="en",
             diagnostics=SttDiagnosticsSettings(),
@@ -116,7 +100,6 @@ def _app_settings() -> AppSettings:
         tooling=ToolingBridgeSettings(
             config_default_path="config/tooling.default.json",
             config_user_path="config/tooling.user.json",
-            enable_runtime_overrides=True,
         ),
     )
 
@@ -128,12 +111,6 @@ class ToolingToolsTests(unittest.TestCase):
         self.assertIn("history.read_entries", names)
         self.assertIn("history.read_summary", names)
         self.assertIn("history.compact_summary", names)
-
-    def test_ocr_tool_missing_image_is_validation_error(self) -> None:
-        tool = OcrExtractElementsTool(OcrRuntime(_app_settings().screen))
-        result = tool.run(ToolContext(), {})
-        self.assertFalse(result.success)
-        self.assertEqual(result.error.code, "missing_image")
 
     def test_history_tools_limit_and_offset(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
