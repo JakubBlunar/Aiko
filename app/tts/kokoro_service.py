@@ -223,6 +223,9 @@ class KokoroTtsService:
             if result is None or self._stop_requested.is_set():
                 return
             audio_data, sample_rate = result
+            silence_samples = int(sample_rate * 0.15)
+            silence = np.zeros(silence_samples, dtype=np.float32)
+            audio_data = np.concatenate([audio_data, silence])
             sd.play(
                 audio_data.reshape(-1, 1),
                 sample_rate,

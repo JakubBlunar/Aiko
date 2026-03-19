@@ -365,7 +365,7 @@ class SessionController:
 
     def list_tts_voices(self) -> list[str]:
         # Kokoro voice profiles from voices-v1.0.bin (common ones)
-        voices = ["af_heart", "af_bella", "af_nicole", "af_sarah", "am_adam", "am_michael", "bf_emma", "bf_isabella"]
+        voices = ["af_heart", "af_bella", "af_nicole", "af_sarah", "am_adam", "am_michael", "bf_emma", "bf_isabella", "jf_nezumi", "jf_alpha"]
         current = self.tts_voice
         if current and current not in voices:
             voices.insert(0, current)
