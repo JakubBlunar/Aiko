@@ -40,6 +40,22 @@ class MicrophoneCapture:
     def stop(self) -> None:
         return
 
+    def read_chunk(self, chunk_ms: int = 80) -> bytes | None:
+        """Read a short PCM16 chunk from the microphone for wake word detection."""
+        try:
+            frames = int(self._settings.sample_rate * chunk_ms / 1000.0)
+            recording = sd.rec(
+                frames,
+                samplerate=self._settings.sample_rate,
+                channels=1,
+                dtype=np.int16,
+                device=self._device,
+            )
+            sd.wait()
+            return recording.tobytes()
+        except Exception:
+            return None
+
     def capture_seconds(self, seconds: float = 5.0) -> np.ndarray:
         frames = int(self._settings.sample_rate * seconds)
         recording = sd.rec(

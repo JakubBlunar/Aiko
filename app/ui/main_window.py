@@ -32,6 +32,8 @@ from PySide6.QtWidgets import (
 
 from app.core.session_controller import SessionController
 from app.core.settings import AppSettings, save_runtime_preferences
+from app.ui.decision_trace_dialog import DecisionTraceDialog
+from app.ui.memory_viewer_dialog import MemoryViewerDialog
 from app.ui.settings_dialog import SettingsDialog
 from app.ui.theme import (
     BUBBLE_ASSISTANT_BG,
@@ -62,12 +64,18 @@ except Exception:
     pass
 
 
-_PTT_KEY_MAP: dict[str, Qt.Key] = {
-    "f2": Qt.Key.Key_F2,
-    "f3": Qt.Key.Key_F3,
-    "f4": Qt.Key.Key_F4,
-    "space": Qt.Key.Key_Space,
+_PTT_KEY_MAP: dict[str, tuple[Qt.Key, Qt.KeyboardModifier]] = {
+    "f2": (Qt.Key.Key_F2, Qt.KeyboardModifier.NoModifier),
+    "f3": (Qt.Key.Key_F3, Qt.KeyboardModifier.NoModifier),
+    "f4": (Qt.Key.Key_F4, Qt.KeyboardModifier.NoModifier),
+    "space": (Qt.Key.Key_Space, Qt.KeyboardModifier.NoModifier),
+    "ctrl+space": (Qt.Key.Key_Space, Qt.KeyboardModifier.ControlModifier),
 }
+_MODIFIER_MASK = (
+    Qt.KeyboardModifier.ControlModifier
+    | Qt.KeyboardModifier.AltModifier
+    | Qt.KeyboardModifier.ShiftModifier
+)
 _PTT_MOUSE_MAP: dict[str, Qt.MouseButton] = {
     "left": Qt.MouseButton.LeftButton,
     "middle": Qt.MouseButton.MiddleButton,
@@ -137,18 +145,58 @@ class MainWindow(QMainWindow):
         layout.setSpacing(SPACING)
         root.setLayout(layout)
 
+        main_splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        sidebar = QWidget()
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(0, 0, 0, 0)
+        sidebar_layout.setSpacing(4)
+        sidebar_layout.addWidget(QLabel("Sessions"))
+        self._session_list = self._build_session_list_widget()
+        sidebar_layout.addWidget(self._session_list, stretch=1)
+        new_btn = QPushButton("New conversation")
+        new_btn.clicked.connect(self._new_session)
+        sidebar_layout.addWidget(new_btn)
+        sidebar.setMaximumWidth(220)
+        sidebar.setMinimumWidth(120)
+        main_splitter.addWidget(sidebar)
+
         conversation_page = QWidget()
         conversation_layout = QVBoxLayout()
         conversation_layout.setSpacing(SPACING)
         conversation_page.setLayout(conversation_layout)
         self._conversation_panel = conversation_page
-        layout.addWidget(conversation_page, stretch=1)
+        main_splitter.addWidget(conversation_page)
+        main_splitter.setStretchFactor(0, 0)
+        main_splitter.setStretchFactor(1, 1)
+        main_splitter.setSizes([180, 720])
+        layout.addWidget(main_splitter, stretch=1)
 
         self._status_label = QLabel(self._ready_status_text())
         self._status_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
         self._status_label.setObjectName("statusStrip")
 
         conversation_layout.addWidget(QLabel("Conversation"))
+
+        search_row = QHBoxLayout()
+        search_row.setSpacing(SPACING)
+        self._search_input = QLineEdit()
+        self._search_input.setPlaceholderText("Search conversation history...")
+        self._search_input.setClearButtonEnabled(True)
+        self._search_input.returnPressed.connect(self._do_search)
+        search_row.addWidget(self._search_input, stretch=1)
+        self._search_btn = QPushButton("Search")
+        self._search_btn.clicked.connect(self._do_search)
+        search_row.addWidget(self._search_btn)
+        conversation_layout.addLayout(search_row)
+
+        from PySide6.QtWidgets import QListWidget
+        self._search_results = QListWidget()
+        self._search_results.setMaximumHeight(120)
+        self._search_results.setVisible(False)
+        self._search_results.itemDoubleClicked.connect(self._on_search_result_clicked)
+        conversation_layout.addWidget(self._search_results)
+
         self._conversation = None
         self._conversation_web = None
         if _USE_WEB_VIEW and _QWebEngineView is not None:
@@ -244,16 +292,16 @@ class MainWindow(QMainWindow):
         if self._live_thread is not None and getattr(self._session, "live_input_mode", "") == "push_to_talk":
             if event.type() == QEvent.Type.KeyPress and getattr(self._session, "live_ptt_type", "") == "keyboard":
                 key_name = (getattr(self._session, "live_ptt_key", None) or "f2").strip().lower()
-                qt_key = _PTT_KEY_MAP.get(key_name)
-                if qt_key is not None and isinstance(event, QKeyEvent) and event.key() == qt_key:
+                entry = _PTT_KEY_MAP.get(key_name)
+                if entry is not None and isinstance(event, QKeyEvent) and event.key() == entry[0] and (event.modifiers() & _MODIFIER_MASK) == entry[1]:
                     if getattr(self._session, "live_ptt_toggle", False):
                         self._session.set_ptt_active(not self._session.get_ptt_active())
                     else:
                         self._session.set_ptt_active(True)
             elif event.type() == QEvent.Type.KeyRelease and getattr(self._session, "live_ptt_type", "") == "keyboard":
                 key_name = (getattr(self._session, "live_ptt_key", None) or "f2").strip().lower()
-                qt_key = _PTT_KEY_MAP.get(key_name)
-                if qt_key is not None and isinstance(event, QKeyEvent) and event.key() == qt_key:
+                entry = _PTT_KEY_MAP.get(key_name)
+                if entry is not None and isinstance(event, QKeyEvent) and event.key() == entry[0] and (event.modifiers() & _MODIFIER_MASK) == entry[1]:
                     if not getattr(self._session, "live_ptt_toggle", False):
                         self._session.set_ptt_active(False)
             elif event.type() == QEvent.Type.MouseButtonPress and getattr(self._session, "live_ptt_type", "") == "mouse":
@@ -320,6 +368,94 @@ class MainWindow(QMainWindow):
     def _clear_memory(self) -> None:
         self._session.clear_conversation_memory()
         self._append("System", "Conversation memory cleared.")
+
+    # ── Session sidebar ──
+
+    def _build_session_list_widget(self):
+        from PySide6.QtWidgets import QListWidget, QMenu, QInputDialog
+        lst = QListWidget()
+        lst.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        lst.customContextMenuRequested.connect(self._session_context_menu)
+        lst.itemClicked.connect(self._on_session_clicked)
+        self._refresh_session_list(lst)
+        return lst
+
+    def _refresh_session_list(self, lst=None):
+        lst = lst or self._session_list
+        lst.clear()
+        db = getattr(self._session, "_chat_db", None)
+        if db is None:
+            return
+        sessions = db.list_sessions()
+        current_key = self._session.session_key
+        if not sessions:
+            from PySide6.QtWidgets import QListWidgetItem
+            item = QListWidgetItem("main")
+            item.setData(Qt.ItemDataRole.UserRole, current_key)
+            lst.addItem(item)
+            return
+        for s in sessions:
+            from PySide6.QtWidgets import QListWidgetItem
+            sid = s["session_id"]
+            count = s["message_count"]
+            label = sid.split(":")[-1] if ":" in sid else sid
+            item = QListWidgetItem(f"{label} ({count} msgs)")
+            item.setData(Qt.ItemDataRole.UserRole, sid)
+            lst.addItem(item)
+            if sid == current_key:
+                item.setSelected(True)
+
+    def _on_session_clicked(self, item):
+        sid = item.data(Qt.ItemDataRole.UserRole)
+        if not sid:
+            return
+        parts = sid.split(":", 1)
+        session_id = parts[-1] if len(parts) > 1 else parts[0]
+        self._session.switch_session(session_id)
+        self._clear_conversation_view()
+        self._load_session_history(sid)
+
+    def _load_session_history(self, session_key: str):
+        db = getattr(self._session, "_chat_db", None)
+        if db is None:
+            return
+        msgs = db.get_messages(session_key, limit=50)
+        for m in msgs:
+            speaker = "You" if m.role == "user" else "Assistant" if m.role == "assistant" else "System"
+            self._append(speaker, m.content)
+
+    def _new_session(self):
+        new_id = self._session.new_session()
+        self._clear_conversation_view()
+        self._append("System", f"New conversation started ({new_id}).")
+        self._refresh_session_list()
+
+    def _session_context_menu(self, pos):
+        from PySide6.QtWidgets import QMenu
+        item = self._session_list.itemAt(pos)
+        if item is None:
+            return
+        sid = item.data(Qt.ItemDataRole.UserRole)
+        menu = QMenu(self)
+        delete_action = menu.addAction("Delete")
+        export_action = menu.addAction("Export as JSON")
+        action = menu.exec(self._session_list.mapToGlobal(pos))
+        if action == delete_action:
+            db = getattr(self._session, "_chat_db", None)
+            if db:
+                db.delete_session(sid)
+                self._refresh_session_list()
+                if sid == self._session.session_key:
+                    self._clear_conversation_view()
+        elif action == export_action:
+            db = getattr(self._session, "_chat_db", None)
+            if db:
+                from PySide6.QtWidgets import QFileDialog
+                path, _ = QFileDialog.getSaveFileName(self, "Export Session", f"{sid}.json", "JSON (*.json)")
+                if path:
+                    import json as _json
+                    data = db.export_session(sid)
+                    Path(path).write_text(_json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
     def _open_memory_viewer(self) -> None:
         if self._memory_dialog is None:
@@ -868,6 +1004,37 @@ class MainWindow(QMainWindow):
         else:
             self._pending_js.append(js)
 
+    def _do_search(self) -> None:
+        query = self._search_input.text().strip()
+        if not query:
+            self._search_results.setVisible(False)
+            return
+        db = getattr(self._session, "_chat_db", None)
+        if db is None:
+            return
+        session_id = getattr(self._session, "_session_id", "main")
+        user_id = getattr(self._session, "_user_id", "default")
+        key = f"{user_id}:{session_id}" if user_id else session_id
+        try:
+            from app.core.chat_database import MessageRow
+            all_msgs = db.get_messages(key)
+            q_lower = query.lower()
+            matches = [m for m in all_msgs if q_lower in m.content.lower()]
+            self._search_results.clear()
+            if not matches:
+                self._search_results.setVisible(False)
+                return
+            for m in matches[-20:]:
+                preview = m.content[:100].replace("\n", " ")
+                self._search_results.addItem(f"[{m.role}] {m.created_at[:16]}: {preview}")
+            self._search_results.setVisible(True)
+        except Exception:
+            self._search_results.setVisible(False)
+
+    def _on_search_result_clicked(self, item) -> None:
+        self._search_results.setVisible(False)
+        self._search_input.clear()
+
     def _clear_conversation_view(self) -> None:
         if self._conversation_web is not None:
             self._run_web_js("clearMessages();")
@@ -893,35 +1060,56 @@ class MainWindow(QMainWindow):
         if "tool" in lower or lower.startswith("tool "):
             self._append("Background", s)
 
+    @staticmethod
+    def _classify_speaker(label: str) -> str:
+        """Return 'user', 'assistant', 'system', or 'default' for a speaker label."""
+        lower = label.lower()
+        if lower in {"you", "user"} or lower.startswith("you ") or lower.startswith("user "):
+            return "user"
+        if lower == "assistant" or lower.startswith("assistant "):
+            return "assistant"
+        if lower == "system":
+            return "system"
+        return "default"
+
     def _append(self, speaker: str, text: str, assistant_model: str | None = None) -> None:
         speaker_label = str(speaker or "Assistant").strip() or "Assistant"
-        if speaker_label.lower() == "assistant" and assistant_model is None:
+        kind = self._classify_speaker(speaker_label)
+        if kind == "assistant" and assistant_model is None:
             assistant_model = getattr(self._session, "effective_chat_model", None)
         if assistant_model and speaker_label.lower() == "assistant":
             speaker_label = f"Assistant ({assistant_model})"
+        is_assistant = kind == "assistant"
         if self._conversation_web is not None:
             try:
                 from app.ui.markdown_renderer import markdown_to_html
-                content_html = markdown_to_html(text) if (speaker_label.lower() == "assistant" or speaker_label.lower().startswith("assistant ")) else html.escape(str(text or "")).replace("\n", "<br>")
+                content_html = markdown_to_html(text) if is_assistant else html.escape(str(text or "")).replace("\n", "<br>")
             except ImportError:
                 content_html = html.escape(str(text or "")).replace("\n", "<br>")
             js = f"appendMessage({json.dumps(speaker_label)}, {json.dumps(content_html)});"
             self._run_web_js(js)
             return
         safe_speaker = html.escape(speaker_label)
-        safe_text = html.escape(str(text or "")).replace("\n", "<br>")
+        if is_assistant:
+            try:
+                from app.ui.markdown_renderer import markdown_to_html
+                safe_text = markdown_to_html(text)
+            except ImportError:
+                safe_text = html.escape(str(text or "")).replace("\n", "<br>")
+        else:
+            safe_text = html.escape(str(text or "")).replace("\n", "<br>")
         bubble_bg = BUBBLE_DEFAULT_BG
         bubble_text_color = BUBBLE_DEFAULT_TEXT
         speaker_color = BUBBLE_DEFAULT_SPEAKER
-        if speaker_label.lower() in {"you", "user"}:
+        if kind == "user":
             bubble_bg = BUBBLE_USER_BG
             bubble_text_color = BUBBLE_USER_TEXT
             speaker_color = BUBBLE_USER_SPEAKER
-        elif speaker_label.lower() == "assistant" or speaker_label.lower().startswith("assistant "):
+        elif kind == "assistant":
             bubble_bg = BUBBLE_ASSISTANT_BG
             bubble_text_color = BUBBLE_ASSISTANT_TEXT
             speaker_color = BUBBLE_ASSISTANT_SPEAKER
-        elif speaker_label.lower() == "system":
+        elif kind == "system":
             bubble_bg = BUBBLE_SYSTEM_BG
             bubble_text_color = BUBBLE_SYSTEM_TEXT
             speaker_color = BUBBLE_SYSTEM_SPEAKER
@@ -957,6 +1145,13 @@ class MainWindow(QMainWindow):
             return
         self._live_stream_buffer += token
         if self._conversation_web is not None:
+            if not self._live_stream_open:
+                speaker = self._stream_speaker or "Assistant"
+                self._run_web_js(f"startStreamBubble({json.dumps(speaker)});")
+                self._live_stream_open = True
+            self._pending_tokens.append(token)
+            if not self._stream_flush_timer.isActive():
+                self._stream_flush_timer.start()
             return
         self._pending_tokens.append(token)
         if not self._stream_flush_timer.isActive():
@@ -968,6 +1163,9 @@ class MainWindow(QMainWindow):
             return
         chunk = "".join(self._pending_tokens)
         self._pending_tokens.clear()
+        if self._conversation_web is not None:
+            self._run_web_js(f"appendStreamToken({json.dumps(chunk)});")
+            return
         if not self._live_stream_open:
             self._conversation.append(f"<b>{self._stream_speaker}:</b> ")
             self._live_stream_open = True
@@ -978,14 +1176,25 @@ class MainWindow(QMainWindow):
     def _on_live_replied(self, text: str) -> None:
         if not self._live_stream_open:
             self._append("Assistant", text)
-        self._close_live_stream()
+            self._close_live_stream()
+        else:
+            self._close_live_stream(final_text=text)
         self._refresh_latency_strip()
         self._refresh_goal_debug_label()
 
-    def _close_live_stream(self, _text: str | None = None) -> None:
+    def _close_live_stream(self, _text: str | None = None, *, final_text: str | None = None) -> None:
         if self._pending_tokens:
             self._flush_stream_tokens()
         self._stream_flush_timer.stop()
+        if self._live_stream_open and self._conversation_web is not None and final_text:
+            try:
+                from app.ui.markdown_renderer import markdown_to_html
+                content_html = markdown_to_html(final_text)
+            except ImportError:
+                content_html = html.escape(str(final_text or "")).replace("\n", "<br>")
+            self._run_web_js(f"finalizeStreamBubble({json.dumps(content_html)});")
+        elif self._live_stream_open and self._conversation_web is not None:
+            self._run_web_js("finalizeStreamBubble(null);")
         if self._live_stream_open:
             self._scroll_conversation_to_bottom()
         self._live_stream_open = False

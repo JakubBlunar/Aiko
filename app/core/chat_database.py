@@ -251,8 +251,12 @@ class ChatDatabase:
         ).fetchone()
         return row[0] if row else 0
 
-    def clear_messages(self, session_id: str) -> int:
-        """Delete all messages (and their embeddings) for a session. Returns deleted count."""
+    def clear_messages(self, session_id: str, *, full_reset: bool = False) -> int:
+        """Delete all messages (and their embeddings) for a session. Returns deleted count.
+
+        When *full_reset* is True, also clears personality notes and recent topics
+        so the assistant has no residual memory of the session.
+        """
         conn = self._get_conn()
         conn.execute(
             "DELETE FROM message_embeddings WHERE session_id = ?", (session_id,)
@@ -263,6 +267,13 @@ class ChatDatabase:
         conn.execute(
             "DELETE FROM session_summaries WHERE session_id = ?", (session_id,)
         )
+        if full_reset:
+            conn.execute(
+                "DELETE FROM personality_notes WHERE session_id = ?", (session_id,)
+            )
+            conn.execute(
+                "DELETE FROM recent_topics WHERE session_id = ?", (session_id,)
+            )
         conn.commit()
         return cursor.rowcount
 
@@ -477,3 +488,29 @@ class ChatDatabase:
             (session_id, session_id),
         )
         conn.commit()
+
+    # ── Session management ──
+
+    def list_sessions(self) -> list[dict[str, Any]]:
+        """Return all distinct sessions with message count and last activity."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT session_id, COUNT(*) AS msg_count, MAX(created_at) AS last_at "
+            "FROM messages GROUP BY session_id ORDER BY last_at DESC"
+        ).fetchall()
+        return [
+            {"session_id": r[0], "message_count": r[1], "last_activity": r[2]}
+            for r in rows
+        ]
+
+    def delete_session(self, session_id: str) -> None:
+        """Remove all data for a session (messages, embeddings, summaries, notes, topics)."""
+        self.clear_messages(session_id, full_reset=True)
+
+    def export_session(self, session_id: str) -> list[dict[str, str]]:
+        """Export a session's messages as a list of dicts."""
+        msgs = self.get_messages(session_id)
+        return [
+            {"role": m.role, "content": m.content, "created_at": m.created_at}
+            for m in msgs
+        ]

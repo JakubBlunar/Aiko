@@ -13,13 +13,25 @@ if TYPE_CHECKING:
 log = logging.getLogger("app.mcp.server")
 
 
+_session_ref: "SessionController | None" = None
+
+
+def _get_mcp_manager() -> Any | None:
+    """Get the MCP manager from the active session's agent."""
+    if _session_ref is None:
+        return None
+    agent = getattr(_session_ref, "_agent", None)
+    if agent is None:
+        return None
+    return getattr(agent, "mcp_manager", None)
+
+
 def _find_mcp_tool(name: str) -> Any | None:
     """Look up a Playwright MCP tool by name from the running manager."""
-    from app.llm.langchain_agent import _mcp_manager
-
-    if _mcp_manager is None:
+    manager = _get_mcp_manager()
+    if manager is None:
         return None
-    for t in _mcp_manager.tools:
+    for t in manager.tools:
         if getattr(t, "name", None) == name:
             return t
     return None
@@ -27,12 +39,11 @@ def _find_mcp_tool(name: str) -> Any | None:
 
 def _call_mcp_tool(name: str, **kwargs: Any) -> str:
     """Call a Playwright MCP tool synchronously via the persistent event loop."""
-    from app.llm.langchain_agent import _mcp_manager
-
+    manager = _get_mcp_manager()
     tool = _find_mcp_tool(name)
     if tool is None:
         return f"Tool '{name}' not available (no browser session or MCP manager not running)."
-    if _mcp_manager is None:
+    if manager is None:
         return "MCP manager not running."
     coro_fn = getattr(tool, "coroutine", None)
     if coro_fn is None:
@@ -40,11 +51,13 @@ def _call_mcp_tool(name: str, **kwargs: Any) -> str:
         if func is not None:
             return str(func(**kwargs))
         return f"Tool '{name}' has no callable."
-    return str(_mcp_manager.run_coro(coro_fn(**kwargs)))
+    return str(manager.run_coro(coro_fn(**kwargs)))
 
 
 def create_mcp_server(session: SessionController, port: int = 6274) -> FastMCP:
     """Build a FastMCP server wired to the live *session*."""
+    global _session_ref
+    _session_ref = session
 
     mcp = FastMCP("assistant", host="127.0.0.1", port=port)
 
@@ -73,8 +86,6 @@ def create_mcp_server(session: SessionController, port: int = 6274) -> FastMCP:
     @mcp.tool()
     def get_status() -> str:
         """Get current assistant status: model, context window, tools, TTS, last metrics."""
-        from app.llm.langchain_agent import _mcp_manager
-
         agent = getattr(session, "_agent", None)
         tool_names: list[str] = []
         if agent and hasattr(agent, "_tools"):
@@ -88,7 +99,7 @@ def create_mcp_server(session: SessionController, port: int = 6274) -> FastMCP:
             "tts_enabled": session._settings.tts.enabled,
             "agent_tools_count": len(tool_names),
             "agent_tools": tool_names,
-            "mcp_manager_active": _mcp_manager is not None,
+            "mcp_manager_active": _get_mcp_manager() is not None,
             "last_metrics": session.get_last_metrics(),
         }
         return json.dumps(info, indent=2, default=str)
@@ -123,7 +134,7 @@ def create_mcp_server(session: SessionController, port: int = 6274) -> FastMCP:
         uid = getattr(session, "_user_id", "default")
         key = f"{uid}:{sid}" if uid else sid
         try:
-            db.clear_messages(key)
+            db.clear_messages(key, full_reset=True)
             return f"History cleared for session '{key}'."
         except Exception as exc:
             return f"Failed to clear history: {exc}"
@@ -193,9 +204,7 @@ def create_mcp_server(session: SessionController, port: int = 6274) -> FastMCP:
         }
         return json.dumps(info, indent=2, default=str)
 
-    try:
-        tool_count = len(mcp._tool_manager._tools)
-    except Exception:
-        tool_count = -1
-    log.info("MCP server created with %d tools", tool_count)
+    agent = getattr(session, "_agent", None)
+    tool_count = len(agent._tools) if agent and hasattr(agent, "_tools") else 0
+    log.info("MCP server created with %d agent tools", tool_count)
     return mcp

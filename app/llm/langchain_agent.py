@@ -5,6 +5,8 @@ import logging
 from pathlib import Path
 from typing import Any, Callable, TYPE_CHECKING
 
+from app.llm.prompt_builder import VOICE_INSTRUCTIONS
+
 if TYPE_CHECKING:
     from app.core.chat_database import ChatDatabase
     from app.llm.embedding_service import EmbeddingService
@@ -29,40 +31,7 @@ def _extract_text(content: Any) -> str:
     return str(content) if content else ""
 
 
-# Voice-friendly instructions: replies are spoken via TTS.
-_BASE_INSTRUCTIONS = """\
-You are having a real conversation with a person. Talk like a real friend would — not like an assistant reading a script. Your replies are spoken aloud via TTS, so write for the ear: short sentences, natural rhythm, conversational tone.
-
-You already greeted the user at startup. Never greet again. Jump straight into your response.
-
-HOW TO BE NATURAL:
-- React to what the user SAID before talking about yourself. Acknowledge their words first.
-- Match their energy: if they're brief, be brief. If they're excited, match it.
-- Vary your responses. Don't always use the same structure. Sometimes a short "Yeah, that tracks" is better than three paragraphs.
-- Don't end every reply with a question. Sometimes just share a thought, react, or sit with what they said.
-- Have opinions. Say "I think..." or "honestly..." instead of always validating.
-- Use natural filler when it fits: "hmm", "oh!", "actually...", "wait..."
-- Avoid repeating phrases you've already used in this conversation.
-
-AVOID THESE PATTERNS (they sound robotic):
-- Starting every reply the same way
-- Always ending with "What do you think?" or "What would you like to do?"
-- Restating what the user just said back to them
-- Giving a mini-essay when a sentence would do
-- Listing things when talking naturally would be better
-
-FORMATTING:
-- Start every reply with [[reaction:X]] on its own line (one of: neutral, cheerful, excited, surprised, sad, angry, calm, serious, friendly, gentle, enthusiastic), then a blank line, then your reply.
-- For long replies, put a spoken summary (1-3 sentences) in [[spoken]]...[[/spoken]] and longer content in [[detail]]...[[/detail]]. Only [[spoken]] is read aloud. Use markdown freely inside [[detail]].
-- Do not use emojis or special characters. No tildes.
-
-TOOL USE:
-1. When asked to perform an action, ACTUALLY call the tool. Never just describe what you would do.
-2. Before calling a tool, write ONE short sentence about what you'll do. Keep it brief.
-3. After tools finish, summarize the result naturally. Don't repeat what you said before.
-4. Chain multiple tools if needed. Follow through until the task is done.
-5. Never narrate a tool action without actually calling the tool.
-"""
+_BASE_INSTRUCTIONS = VOICE_INSTRUCTIONS
 
 
 def _default_storage_path() -> Path:
@@ -130,7 +99,9 @@ class _McpManager:
             try:
                 self._loop.run_until_complete(self._serve(connections, ready))
             except (Exception, BaseExceptionGroup):
-                pass
+                logging.getLogger("app.llm.langchain_agent").exception(
+                    "MCP event loop failed — tools from this MCP session may be unavailable"
+                )
 
         self._thread = threading.Thread(target=_run_loop, daemon=True, name="mcp-loop")
         self._thread.start()
@@ -180,9 +151,6 @@ class _McpManager:
             pass
 
 
-_mcp_manager: _McpManager | None = None
-
-
 def _make_sync_tool(tool: Any, manager: _McpManager) -> Any:
     """Wrap an async-only StructuredTool so it runs on the persistent MCP event loop."""
     import inspect
@@ -205,16 +173,16 @@ def _make_sync_tool(tool: Any, manager: _McpManager) -> Any:
 def _load_mcp_tools(
     root: Path,
     mcp_config: dict[str, Any],
-) -> list[Any]:
-    """Load MCP tools from config. Starts a persistent background loop for MCP servers."""
-    global _mcp_manager
+) -> tuple[list[Any], _McpManager | None]:
+    """Load MCP tools from config. Returns (tools, manager)."""
     log = logging.getLogger("app.llm.langchain_agent")
     tools: list[Any] = []
+    manager: _McpManager | None = None
     try:
         from langchain_mcp_adapters.client import MultiServerMCPClient  # noqa: F401
     except ImportError:
         log.warning("langchain-mcp-adapters not installed; MCP tools disabled.")
-        return tools
+        return tools, None
 
     servers: dict[str, dict[str, Any]] = {}
     for key in ("servers_json_path", "servers_user_json_path"):
@@ -235,7 +203,7 @@ def _load_mcp_tools(
                     servers[name] = dict(cfg)
 
     if not servers:
-        return tools
+        return tools, None
 
     try:
         connections: dict[str, dict[str, Any]] = {}
@@ -259,20 +227,12 @@ def _load_mcp_tools(
                     conn["env"] = env
                 connections[name] = conn
         if connections:
-            _mcp_manager = _McpManager(connections)
-            tools = [_make_sync_tool(t, _mcp_manager) for t in _mcp_manager.tools]
+            manager = _McpManager(connections)
+            tools = [_make_sync_tool(t, manager) for t in manager.tools]
             log.info("Loaded %d MCP tools: %s", len(tools), [t.name for t in tools])
     except Exception as e:
         log.warning("Failed to load MCP tools: %s", e)
-    return tools
-
-
-def shutdown_mcp() -> None:
-    """Stop the persistent MCP event loop. Call on application exit."""
-    global _mcp_manager
-    if _mcp_manager is not None:
-        _mcp_manager.shutdown()
-        _mcp_manager = None
+    return tools, manager
 
 
 def _add_history_search_tool(
@@ -307,6 +267,7 @@ def create_agent(
     chat_model: str = "llama3.1:8b",
     base_url: str = "http://127.0.0.1:11434",
     temperature: float = 0.6,
+    timeout: int = 300,
     judge_model: str | None = None,
     instructions: str | None = None,
     assistant_background: str | None = None,
@@ -356,7 +317,7 @@ def create_agent(
         base_url=base_url,
         temperature=temperature,
         num_ctx=resolved_ctx,
-        client_kwargs={"timeout": 300.0},
+        client_kwargs={"timeout": float(timeout)},
         keep_alive="10m",
     )
 
@@ -367,6 +328,7 @@ def create_agent(
             base_url=base_url,
             temperature=0.0,
             num_ctx=4096,
+            format="json",
             client_kwargs={"timeout": 30.0},
             keep_alive="10m",
         )
@@ -377,8 +339,9 @@ def create_agent(
         instr = f"{instr}\n\nAssistant background: {assistant_background.strip()}"
 
     mcp_tools: list[Any] = []
+    mcp_mgr: _McpManager | None = None
     if add_mcp and mcp_config:
-        mcp_tools = _load_mcp_tools(root, mcp_config)
+        mcp_tools, mcp_mgr = _load_mcp_tools(root, mcp_config)
 
     tools_list: list[Any] = []
     if add_tools:
@@ -423,6 +386,7 @@ def create_agent(
         chat_db=chat_db,
         embedding_service=embedding_service,
         personality_token_budget=personality_token_budget,
+        mcp_manager=mcp_mgr,
     )
 
 
@@ -452,6 +416,7 @@ class _AgentWrapper:
         embedding_service: "EmbeddingService | None" = None,
         judge_llm: Any = None,
         personality_token_budget: int = 300,
+        mcp_manager: _McpManager | None = None,
     ) -> None:
         self._agent = agent
         self._llm = llm
@@ -465,11 +430,25 @@ class _AgentWrapper:
         self._has_react_agent = use_react_agent and hasattr(agent, "invoke")
         self._context_window = context_window
         self._compress_tool_results = compress_tool_results
-        self._compress_tool_results_limit = compress_tool_results_limit
+        if compress_tool_results_limit is not None and compress_tool_results_limit > 0:
+            self._TOOL_RESULT_MAX_CHARS = compress_tool_results_limit
+            self._TOOL_RESULT_HEAD = max(500, int(compress_tool_results_limit * 0.75))
+            self._TOOL_RESULT_TAIL = max(200, int(compress_tool_results_limit * 0.1))
         self._chat_db = chat_db
         self._embedding_service = embedding_service
         self._personality_token_budget = personality_token_budget
+        self._mcp_manager = mcp_manager
         self._log = logging.getLogger("app.llm.langchain_agent")
+
+    @property
+    def mcp_manager(self) -> _McpManager | None:
+        return self._mcp_manager
+
+    def shutdown_mcp(self) -> None:
+        """Stop the persistent MCP event loop owned by this agent."""
+        if self._mcp_manager is not None:
+            self._mcp_manager.shutdown()
+            self._mcp_manager = None
 
     def run(
         self,
@@ -703,11 +682,13 @@ class _AgentWrapper:
             self._log.warning("Summary generation failed: %s", exc)
 
     _PERSONALITY_JUDGE_PROMPT = (
-        "You analyze conversations and extract personality observations about the user.\n\n"
+        "You are a JSON-only analysis tool. You MUST respond with a single JSON object and nothing else. "
+        "No commentary, no markdown, no tags, no preamble — only valid JSON.\n\n"
+        "Task: Analyze conversations and extract personality observations about the user.\n\n"
         "You will receive:\n"
         "1. Existing personality notes (may be empty)\n"
         "2. Recent conversation messages\n\n"
-        "Output a JSON array of personality notes. Each note is an object:\n"
+        "Each note is an object: "
         '{"category": "<cat>", "note": "<observation>", "confidence": <0.0-1.0>}\n\n'
         "Categories: user_preference, relationship, tone, topic_interest, inside_reference\n\n"
         "Rules:\n"
@@ -718,7 +699,7 @@ class _AgentWrapper:
         "- Drop notes that are clearly wrong or irrelevant\n"
         "- Max 40 notes total. Be concise — each note should be one short sentence.\n"
         "- Also output recent_topics: a JSON array of 3-5 topic strings discussed recently.\n\n"
-        'Output format (no markdown fences, just raw JSON):\n'
+        'Respond with ONLY this JSON structure:\n'
         '{"notes": [...], "recent_topics": [...]}'
     )
 
@@ -759,8 +740,10 @@ class _AgentWrapper:
 
         try:
             import json as _json
+            import re as _re
             result = self._judge_llm.invoke(prompt)
             raw = _extract_text(getattr(result, "content", "")).strip()
+            raw = _re.sub(r"\[\[reaction:\w+\]\]", "", raw).strip()
             raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
             self._log.info("Personality judge raw (%d chars): %s", len(raw), raw[:200])
             parsed = _json.loads(raw)
@@ -846,9 +829,10 @@ class _AgentWrapper:
         return any(re.search(p, text_lower) for p in self._TOOL_INTENT_PATTERNS)
 
     _JUDGE_SYSTEM = (
-        "You are a concise quality-control judge for an AI assistant's tool-using conversation turn. "
-        "You will receive a summary of what the assistant did during one turn and must decide the next step.\n\n"
-        "Reply with EXACTLY one JSON object (no markdown fences, no extra text):\n"
+        "You are a JSON-only quality-control judge. You MUST respond with a single JSON object and nothing else. "
+        "No commentary, no markdown, no tags, no preamble — only valid JSON.\n\n"
+        "Task: Decide whether an AI assistant's conversation turn is complete.\n\n"
+        "Reply with EXACTLY one JSON object:\n"
         '{"verdict": "<VERDICT>", "nudge": "<message or empty>"}\n\n'
         "Possible verdicts:\n"
         '- "complete": The assistant finished the task and gave the user a useful spoken response. nudge must be "".\n'
@@ -896,8 +880,10 @@ class _AgentWrapper:
 
         try:
             import json as _json
+            import re as _re
             result = self._judge_llm.invoke(prompt)
             raw = _extract_text(getattr(result, "content", "")).strip()
+            raw = _re.sub(r"\[\[reaction:\w+\]\]", "", raw).strip()
             raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
             self._log.info("Judge raw response: %s", raw[:200])
             parsed = _json.loads(raw)

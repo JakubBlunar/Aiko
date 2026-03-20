@@ -24,9 +24,9 @@ class OllamaChatResponse:
 
 
 class OllamaClient:
-    def __init__(self, settings: OllamaSettings, timeout_seconds: int = 90) -> None:
+    def __init__(self, settings: OllamaSettings, timeout_seconds: int | None = None) -> None:
         self._settings = settings
-        self._timeout_seconds = timeout_seconds
+        self._timeout_seconds = timeout_seconds if timeout_seconds is not None else settings.timeout
 
     def chat(
         self,

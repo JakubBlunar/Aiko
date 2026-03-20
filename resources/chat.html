@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Chat</title>
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
+  <link rel="stylesheet" href="vendor/hljs/github.min.css">
   <style>
     * { box-sizing: border-box; }
     body {
@@ -50,9 +50,9 @@
 </head>
 <body>
   <div id="messages"></div>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/javascript.min.js"></script>
+  <script src="vendor/hljs/highlight.min.js"></script>
+  <script src="vendor/hljs/python.min.js"></script>
+  <script src="vendor/hljs/javascript.min.js"></script>
   <script>
     function escapeHtml(s) {
       if (s == null) return '';
@@ -82,6 +82,44 @@
     }
     function clearMessages() {
       document.getElementById('messages').innerHTML = '';
+    }
+
+    var _streamBubble = null;
+    var _streamContent = null;
+
+    function startStreamBubble(speaker) {
+      finalizeStreamBubble(null);
+      var container = document.getElementById('messages');
+      var safeSpeaker = escapeHtml(speaker || 'Assistant');
+      var bubbleClass = speakerToClass(speaker);
+      var div = document.createElement('div');
+      div.className = 'bubble ' + bubbleClass;
+      div.innerHTML = '<div class="speaker">' + safeSpeaker + '</div><div class="content stream-pending"></div>';
+      container.appendChild(div);
+      _streamBubble = div;
+      _streamContent = div.querySelector('.stream-pending');
+      window.scrollTo(0, document.body.scrollHeight);
+    }
+
+    function appendStreamToken(token) {
+      if (!_streamContent) return;
+      _streamContent.textContent += token;
+      window.scrollTo(0, document.body.scrollHeight);
+    }
+
+    function finalizeStreamBubble(contentHtml) {
+      if (_streamBubble && _streamContent) {
+        if (contentHtml != null) {
+          _streamContent.classList.remove('stream-pending');
+          _streamContent.innerHTML = contentHtml;
+          _streamBubble.querySelectorAll('pre code').forEach(function(block) {
+            if (typeof hljs !== 'undefined') hljs.highlightElement(block);
+          });
+        }
+      }
+      _streamBubble = null;
+      _streamContent = null;
+      window.scrollTo(0, document.body.scrollHeight);
     }
   </script>
 </body>

@@ -143,6 +143,7 @@ class SessionController:
                 chat_model=chat_model,
                 base_url=settings.ollama.base_url,
                 temperature=float(settings.ollama.temperature),
+                timeout=settings.ollama.timeout,
                 judge_model=getattr(settings.ollama, "judge_model", None) or None,
                 assistant_background=_get_assistant_background(settings),
                 add_tools=True,
@@ -781,6 +782,22 @@ class SessionController:
         self._memory.clear()
 
     @property
+    def session_key(self) -> str:
+        return f"{self._user_id}:{self._session_id}" if self._user_id else self._session_id
+
+    def switch_session(self, session_id: str) -> None:
+        """Switch to a different conversation session."""
+        self._session_id = session_id
+        self._memory.clear()
+
+    def new_session(self) -> str:
+        """Create and switch to a new session. Returns the new session ID."""
+        import uuid
+        new_id = str(uuid.uuid4())[:8]
+        self.switch_session(new_id)
+        return new_id
+
+    @property
     def active_goal(self) -> str:
         return self._active_goal
 
@@ -893,8 +910,8 @@ class SessionController:
             pass
         self.stop_action_hotkey_listener()
         try:
-            from app.llm.langchain_agent import shutdown_mcp
-            shutdown_mcp()
+            if self._agent is not None:
+                self._agent.shutdown_mcp()
         except Exception:
             pass
 
@@ -1172,7 +1189,6 @@ class SessionController:
         stream_tts_used = False
         stream_tts_enqueued_chunks: list[int] = [0]
         llm_ms = 0.0
-        tool_calls_executed = False
 
         try:
             if on_generation_status:
@@ -1188,27 +1204,30 @@ class SessionController:
                     on_generation_status(msg)
 
             agent_to_use = self._agent
-            use_stream_tts = mode == "live"
+            tts_enabled = bool(getattr(self._settings.tts, "enabled", True))
+            use_stream_tts = tts_enabled
             typed_accumulated: list[str] = []
-            if use_stream_tts:
-                from io import StringIO
-                stream_io = StringIO()
-                reply_mood: list[str | None] = [None]
-                last_ui_sent_len: list[int] = [0]
 
-                def _on_content(delta: str) -> None:
-                    if not delta:
-                        return
-                    stream_io.write(delta)
-                    buf = stream_io.getvalue()
-                    if reply_mood[0] is None:
-                        mood, rest = parse_reaction_at_start(buf)
-                        if mood is not None:
-                            reply_mood[0] = mood
-                            stream_io.seek(0)
-                            stream_io.truncate()
-                            stream_io.write(rest)
-                            buf = rest
+            from io import StringIO
+            stream_io = StringIO()
+            reply_mood: list[str | None] = [None]
+            last_ui_sent_len: list[int] = [0]
+
+            def _on_content(delta: str) -> None:
+                if not delta:
+                    return
+                typed_accumulated.append(delta)
+                stream_io.write(delta)
+                buf = stream_io.getvalue()
+                if reply_mood[0] is None:
+                    mood, rest = parse_reaction_at_start(buf)
+                    if mood is not None:
+                        reply_mood[0] = mood
+                        stream_io.seek(0)
+                        stream_io.truncate()
+                        stream_io.write(rest)
+                        buf = rest
+                if use_stream_tts:
                     chunks, remainder = drain_tts_stream_chunks(buf, flush=False)
                     for sent in chunks:
                         tts_text = prepare_tts_text(strip_action_meta_for_tts(sent))
@@ -1218,23 +1237,26 @@ class SessionController:
                     stream_io.seek(0)
                     stream_io.truncate()
                     stream_io.write(remainder)
-                    if on_token and reply_mood[0] is not None:
-                        display_buf = strip_all_reaction_tags(buf)
-                        to_send = display_buf[last_ui_sent_len[0]:]
-                        if to_send:
-                            on_token(to_send)
-                        last_ui_sent_len[0] = len(display_buf)
+                if on_token:
+                    display_buf = strip_all_reaction_tags(
+                        buf if reply_mood[0] is not None else "".join(typed_accumulated)
+                    )
+                    to_send = display_buf[last_ui_sent_len[0]:]
+                    if to_send:
+                        on_token(to_send)
+                    last_ui_sent_len[0] = len(display_buf)
 
-                response = run_agent(
-                    agent_to_use,
-                    message_for_agent,
-                    session_id=self._session_id,
-                    user_id=self._user_id,
-                    stream=True,
-                    on_content=_on_content,
-                    on_tool_use=_tool_status if on_generation_status else None,
-                    stop_requested=stop_requested,
-                )
+            response = run_agent(
+                agent_to_use,
+                message_for_agent,
+                session_id=self._session_id,
+                user_id=self._user_id,
+                stream=True,
+                on_content=_on_content,
+                on_tool_use=_tool_status if on_generation_status else None,
+                stop_requested=stop_requested,
+            )
+            if use_stream_tts:
                 buf = stream_io.getvalue()
                 final_chunks, _ = drain_tts_stream_chunks(buf, flush=True)
                 for sent in final_chunks:
@@ -1243,33 +1265,6 @@ class SessionController:
                         self._enqueue_tts_chunk(tts_text, reaction=reply_mood[0] or "neutral")
                         stream_tts_enqueued_chunks[0] += 1
                 stream_tts_used = True
-            else:
-                typed_buf: list[str] = []
-                typed_ui_sent: list[int] = [0]
-
-                def _on_typed_content(delta: str) -> None:
-                    if not delta:
-                        return
-                    typed_accumulated.append(delta)
-                    typed_buf.append(delta)
-                    if on_token:
-                        full = "".join(typed_buf)
-                        display = strip_all_reaction_tags(full)
-                        unsent = display[typed_ui_sent[0]:]
-                        if unsent:
-                            on_token(unsent)
-                            typed_ui_sent[0] = len(display)
-
-                response = run_agent(
-                    agent_to_use,
-                    message_for_agent,
-                    session_id=self._session_id,
-                    user_id=self._user_id,
-                    stream=True,
-                    on_content=_on_typed_content,
-                    on_tool_use=_tool_status if on_generation_status else None,
-                    stop_requested=stop_requested,
-                )
 
             response = sanitize_assistant_text(response)
             llm_ms = (time.perf_counter() - llm_started) * 1000.0
@@ -1358,9 +1353,15 @@ class SessionController:
                 tts_text = prepare_tts_text(tts_content) if tts_content.strip() else ""
                 if tts_text:
                     reaction = explicit_reaction or infer_tts_reaction(spoken_part or llm_for_tts)
-                    self._enqueue_tts_chunk(tts_text, reaction=reaction)
+                    sentence_chunks, leftover = drain_tts_stream_chunks(tts_text, flush=True)
+                    if not sentence_chunks:
+                        sentence_chunks = [tts_text]
+                    for chunk in sentence_chunks:
+                        chunk = chunk.strip()
+                        if chunk:
+                            self._enqueue_tts_chunk(chunk, reaction=reaction)
                     self._trace("pipeline.tts.reaction", f"reaction={reaction}")
-                    self._trace("pipeline.tts.speak", f"chars={len(tts_text)}")
+                    self._trace("pipeline.tts.speak", f"chars={len(tts_text)} chunks={len(sentence_chunks)}")
             except Exception as exc:
                 self._trace("tts.error", f"TTS speak failed: {exc}")
                 self._trace("pipeline.tts.error", str(exc))

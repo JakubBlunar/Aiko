@@ -14,16 +14,20 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QPushButton,
     QRadioButton,
+    QSpinBox,
     QTabWidget,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
 from app.core.session_controller import SessionController
+from app.core.settings import save_runtime_preferences
 
 
 class SettingsDialog(QDialog):
@@ -36,6 +40,7 @@ class SettingsDialog(QDialog):
         self._tabs = QTabWidget()
         self._tabs.addTab(self._build_model_tab(), "Model")
         self._tabs.addTab(self._build_audio_tab(), "Audio")
+        self._tabs.addTab(self._build_advanced_tab(), "Advanced")
         layout.addWidget(self._tabs)
 
         layout.addWidget(QLabel(""))
@@ -129,6 +134,7 @@ class SettingsDialog(QDialog):
         self._live_input_combo = QComboBox()
         self._live_input_combo.addItem("Voice detection", "voice_detection")
         self._live_input_combo.addItem("Push-to-talk", "push_to_talk")
+        self._live_input_combo.addItem("Wake word", "wake_word")
         live_input_mode = getattr(self._session, "live_input_mode", None) or "voice_detection"
         idx = self._live_input_combo.findData(live_input_mode)
         if idx >= 0:
@@ -184,6 +190,67 @@ class SettingsDialog(QDialog):
         self._ptt_type_mouse.toggled.connect(self._on_live_input_mode_changed)
         self._on_live_input_mode_changed()
         layout.addWidget(live_group)
+        layout.addStretch()
+        return widget
+
+    def _build_advanced_tab(self) -> QWidget:
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        settings = self._session._settings
+
+        stt_group = QGroupBox("Speech-to-Text")
+        stt_form = QFormLayout(stt_group)
+        self._stt_model_edit = QLineEdit(getattr(settings.stt, "model", ""))
+        stt_form.addRow("STT model:", self._stt_model_edit)
+        self._stt_language_edit = QLineEdit(getattr(settings.stt, "language", "en"))
+        stt_form.addRow("Language:", self._stt_language_edit)
+        layout.addWidget(stt_group)
+
+        agent_group = QGroupBox("Agent")
+        agent_form = QFormLayout(agent_group)
+        agent_settings = getattr(settings, "agent", None)
+        self._history_depth_spin = QSpinBox()
+        self._history_depth_spin.setRange(1, 100)
+        self._history_depth_spin.setValue(getattr(agent_settings, "num_history_runs", 10) if agent_settings else 10)
+        agent_form.addRow("History depth (turns):", self._history_depth_spin)
+
+        self._response_style_combo = QComboBox()
+        for style in ("conversational", "concise", "detailed", "technical"):
+            self._response_style_combo.addItem(style, style)
+        current_style = getattr(settings.assistant, "response_style", "conversational")
+        idx = self._response_style_combo.findData(current_style)
+        if idx >= 0:
+            self._response_style_combo.setCurrentIndex(idx)
+        agent_form.addRow("Response style:", self._response_style_combo)
+
+        self._autonomy_combo = QComboBox()
+        for mode in ("disabled", "manual", "interactive", "automatic"):
+            self._autonomy_combo.addItem(mode, mode)
+        current_autonomy = getattr(settings.autonomy, "mode", "disabled")
+        idx = self._autonomy_combo.findData(current_autonomy)
+        if idx >= 0:
+            self._autonomy_combo.setCurrentIndex(idx)
+        agent_form.addRow("Autonomy mode:", self._autonomy_combo)
+        layout.addWidget(agent_group)
+
+        personality_group = QGroupBox("Personality")
+        personality_form = QFormLayout(personality_group)
+        self._assistant_name_edit = QLineEdit(getattr(settings.assistant, "name", ""))
+        personality_form.addRow("Assistant name:", self._assistant_name_edit)
+        layout.addWidget(personality_group)
+
+        misc_group = QGroupBox("Miscellaneous")
+        misc_form = QFormLayout(misc_group)
+        self._log_level_combo = QComboBox()
+        for level in ("DEBUG", "INFO", "WARNING", "ERROR"):
+            self._log_level_combo.addItem(level, level)
+        current_level = getattr(settings.logging, "level", "INFO") if hasattr(settings, "logging") else "INFO"
+        idx = self._log_level_combo.findData(current_level)
+        if idx >= 0:
+            self._log_level_combo.setCurrentIndex(idx)
+        misc_form.addRow("Log level:", self._log_level_combo)
+        layout.addWidget(misc_group)
+
         layout.addStretch()
         return widget
 
@@ -316,4 +383,27 @@ class SettingsDialog(QDialog):
             self._session.set_live_ptt_toggle(self._ptt_toggle_checkbox.isChecked())
         if hasattr(self._session, "set_barge_in_enabled"):
             self._session.set_barge_in_enabled(self._barge_in_checkbox.isChecked())
+        settings = self._session._settings
+        stt_model = self._stt_model_edit.text().strip()
+        if stt_model and hasattr(settings.stt, "model"):
+            settings.stt.model = stt_model
+        stt_lang = self._stt_language_edit.text().strip()
+        if stt_lang and hasattr(settings.stt, "language"):
+            settings.stt.language = stt_lang
+        agent_settings = getattr(settings, "agent", None)
+        if agent_settings and hasattr(agent_settings, "num_history_runs"):
+            agent_settings.num_history_runs = self._history_depth_spin.value()
+        if hasattr(settings.assistant, "response_style"):
+            settings.assistant.response_style = self._response_style_combo.currentData() or "conversational"
+        if hasattr(settings.autonomy, "mode"):
+            settings.autonomy.mode = self._autonomy_combo.currentData() or "disabled"
+        name = self._assistant_name_edit.text().strip()
+        if hasattr(settings.assistant, "name"):
+            settings.assistant.name = name
+        if hasattr(settings, "logging") and hasattr(settings.logging, "level"):
+            settings.logging.level = self._log_level_combo.currentData() or "INFO"
+        try:
+            save_runtime_preferences(settings)
+        except Exception:
+            pass
         super().accept()

@@ -15,6 +15,7 @@ class OllamaSettings:
     context_window: int | None = None  # None = auto-detect from Ollama API
     embedding_model: str = "qwen3-embedding:0.6b"
     judge_model: str = "qwen2.5:0.5b"
+    timeout: int = 300  # HTTP timeout in seconds (shared by all Ollama clients)
 
 
 @dataclass(slots=True)
@@ -468,6 +469,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             context_window=(int(ollama["context_window"]) if ollama.get("context_window") is not None else None),
             embedding_model=str(ollama.get("embedding_model", "qwen3-embedding:0.6b")).strip() or "qwen3-embedding:0.6b",
             judge_model=str(ollama.get("judge_model", "qwen2.5:0.5b")).strip() or "qwen2.5:0.5b",
+            timeout=int(ollama.get("timeout", 300)),
         ),
         audio=AudioSettings(
             sample_rate=int(_required(audio, "sample_rate")),

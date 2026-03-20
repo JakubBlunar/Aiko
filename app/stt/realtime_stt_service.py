@@ -108,6 +108,7 @@ class RealtimeSttService:
         max_seconds: float = 15.0,
         silence_seconds: float = 1.2,
         chunk_seconds: float = 0.2,
+        device: int | None = None,
     ) -> str:
         """
         Record from microphone, feed to RealtimeSTT, until silence or max_seconds.
@@ -115,6 +116,8 @@ class RealtimeSttService:
         """
         if self._recorder is None or np is None or sd is None:
             return ""
+        if device is None:
+            device = self._audio_settings.microphone_device
         sample_rate = self._audio_settings.sample_rate
         channels = self._audio_settings.channels
         chunk_frames = int(sample_rate * chunk_seconds) * channels
@@ -134,6 +137,7 @@ class RealtimeSttService:
                 dtype=np.int16,
                 blocksize=chunk_frames,
                 callback=callback,
+                device=device,
             ):
                 while (time.perf_counter() - start) < max_seconds:
                     time.sleep(chunk_seconds)

@@ -102,6 +102,8 @@ class KokoroTtsService:
         self._stop_requested = threading.Event()
         self._speech_thread: threading.Thread | None = None
         self._loaded = threading.Event()
+        self._audio_cache: dict[str, tuple] = {}
+        self._cache_lock = threading.Lock()
         if Kokoro is not None and en is not None and espeak is not None and np is not None and sd is not None:
             threading.Thread(target=self._load_models, daemon=True, name="kokoro-load").start()
         else:
@@ -168,6 +170,8 @@ class KokoroTtsService:
 
     def stop(self) -> None:
         self._stop_requested.set()
+        with self._cache_lock:
+            self._audio_cache.clear()
         try:
             if sd is not None:
                 sd.stop()
@@ -205,8 +209,20 @@ class KokoroTtsService:
         )
         self._speech_thread.start()
 
+    def _cache_key(self, text: str, speed: float) -> str:
+        return f"{text}||{speed:.3f}"
+
     def generate_audio(self, text: str, speed: float = 1.0) -> tuple[np.ndarray, int] | None:
-        """Run G2P + Kokoro inference, returning (audio_array, sample_rate) or None."""
+        """Run G2P + Kokoro inference, returning (audio_array, sample_rate) or None.
+
+        Results are cached so that lookahead generation is not wasted.
+        """
+        key = self._cache_key(text, speed)
+        with self._cache_lock:
+            cached = self._audio_cache.get(key)
+            if cached is not None:
+                return cached
+
         if not self._loaded.wait(timeout=30.0):
             return None
         with self._lock:
@@ -225,7 +241,13 @@ class KokoroTtsService:
         audio_data = np.asarray(samples, dtype=np.float32)
         if audio_data.size == 0:
             return None
-        return audio_data, sample_rate
+        result = (audio_data, sample_rate)
+        with self._cache_lock:
+            self._audio_cache[key] = result
+            if len(self._audio_cache) > 8:
+                oldest = next(iter(self._audio_cache))
+                del self._audio_cache[oldest]
+        return result
 
     def _speak_worker(
         self,
@@ -240,6 +262,8 @@ class KokoroTtsService:
             if result is None or self._stop_requested.is_set():
                 return
             audio_data, sample_rate = result
+            with self._cache_lock:
+                self._audio_cache.pop(self._cache_key(text, speed), None)
             silence_samples = int(sample_rate * 0.15)
             silence = np.zeros(silence_samples, dtype=np.float32)
             audio_data = np.concatenate([audio_data, silence])

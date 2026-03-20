@@ -10,6 +10,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 
 from app.core.crash_logging import log_handled_exception
 from app.core.session_controller import SessionController
+from app.stt.wake_word import WakeWordDetector
 
 
 class LivePracticeWorker(QObject):
@@ -29,15 +30,22 @@ class LivePracticeWorker(QObject):
         self._pending_lock = threading.Lock()
         self._pending: deque[tuple[Path, float]] = deque()
         self._max_pending = 2
-        # Set while a captured phrase is being processed (STT -> LLM -> TTS).
-        # The capture thread pauses during this window so TTS audio isn't
-        # picked up by the microphone and the audio device isn't shared.
         self._processing = threading.Event()
         self._last_activity = time.monotonic()
         self._last_proactive = 0.0
         self._unanswered_proactive = 0
         self._max_unanswered = 3
         self._log = logging.getLogger("app.ui.live_worker")
+        self._wake_detector: WakeWordDetector | None = None
+        if session.live_input_mode == "wake_word" and WakeWordDetector.is_available:
+            wake_cfg = getattr(session._settings, "stt", None)
+            model_name = getattr(wake_cfg, "wake_word_model", "hey_jarvis") if wake_cfg else "hey_jarvis"
+            threshold = getattr(wake_cfg, "wake_word_threshold", 0.5) if wake_cfg else 0.5
+            self._wake_detector = WakeWordDetector(
+                model_name=model_name,
+                threshold=threshold,
+                sample_rate=session._settings.audio.sample_rate,
+            )
 
     @Slot()
     def run(self) -> None:
@@ -172,6 +180,20 @@ class LivePracticeWorker(QObject):
                     break
                 captured = self._session.capture_ptt_phrase(
                     ptt_active_getter=lambda: self._session.get_ptt_active(),
+                    stop_requested=self._is_stop_requested,
+                    on_audio_level=self.level.emit,
+                    on_generation_status=self.status.emit,
+                )
+            elif self._session.live_input_mode == "wake_word" and self._wake_detector and self._wake_detector.loaded:
+                self.status.emit("waiting for wake word")
+                detected = self._wake_detector.wait_for_wake_word(
+                    audio_source=lambda: self._session._microphone.read_chunk(),
+                    stop_requested=self._is_stop_requested,
+                )
+                if not detected or self._stop_requested:
+                    continue
+                self.status.emit("listening")
+                captured = self._session.capture_live_phrase(
                     stop_requested=self._is_stop_requested,
                     on_audio_level=self.level.emit,
                     on_generation_status=self.status.emit,
