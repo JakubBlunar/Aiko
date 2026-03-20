@@ -166,6 +166,9 @@ class SessionController:
             self._realtime_stt = stt_future.result()
             self._agent = agent_future.result()
 
+        if hasattr(self._agent, "persist_enabled"):
+            self._agent.persist_enabled = settings.assistant.remember_history
+
         self._user_id = settings.assistant.user_id or "default"
         threading.Thread(
             target=self._embedding_service.backfill_embeddings,
@@ -175,6 +178,11 @@ class SessionController:
         ).start()
         self._microphone_device = settings.audio.microphone_device
         self._output_device = getattr(settings.audio, "output_device", None)
+        from app.audio.earcons import EarconPlayer
+        self._earcons = EarconPlayer(
+            enabled=getattr(settings.audio, "earcons_enabled", True),
+            output_device=self._output_device,
+        )
         self._tts = self._build_tts_service(settings, output_device=self._output_device)
         self._apply_assistant_preferences()
         self._session_id = "main"
@@ -732,6 +740,8 @@ class SessionController:
 
     def set_remember_history(self, value: bool) -> None:
         self._remember_history = bool(value)
+        if hasattr(self._agent, "persist_enabled"):
+            self._agent.persist_enabled = bool(value)
 
     @property
     def autonomy_mode(self) -> str:
@@ -779,6 +789,8 @@ class SessionController:
         _ = session_type
 
     def clear_conversation_memory(self) -> None:
+        if self._chat_db is not None:
+            self._chat_db.clear_messages(self.session_key, full_reset=True)
         self._memory.clear()
 
     @property
@@ -975,6 +987,12 @@ class SessionController:
         self._metrics_history.append(dict(metrics))
 
     def get_conversation_memory(self, max_entries: int = 200) -> list[dict[str, str]]:
+        if self._chat_db is not None:
+            rows = self._chat_db.get_messages(self.session_key, limit=max_entries)
+            return [
+                {"role": r.role, "content": r.content, "timestamp": r.created_at}
+                for r in rows
+            ]
         return self._history_entries(limit=max_entries)
 
     @staticmethod
@@ -1193,6 +1211,7 @@ class SessionController:
         try:
             if on_generation_status:
                 on_generation_status("AI is generating response...")
+            self._earcons.play("thinking")
             self._trace("pipeline.llm.start", f"mode={mode} model={self.chat_model}")
             llm_started = time.perf_counter()
             message_for_agent = user_text
@@ -1284,7 +1303,7 @@ class SessionController:
                 "pipeline.llm.done",
                 f"mode={mode} chars={len(response)} llm_ms={round(llm_ms, 1)}",
             )
-            if hasattr(self._agent, "summarize_if_needed"):
+            if self._remember_history and hasattr(self._agent, "summarize_if_needed"):
                 def _post_turn_maintenance() -> None:
                     self._agent.summarize_if_needed(self._session_id, self._user_id)
                     if hasattr(self._agent, "update_personality"):
@@ -1879,6 +1898,7 @@ class SessionController:
         if not self._realtime_stt.is_available:
             return None
 
+        self._earcons.play("listening")
         prosody: ProsodyAnalysis | None = None
         try:
             if on_generation_status:

@@ -34,7 +34,8 @@
     "microphone_device": null,
     "vad_level_threshold": 0.02,
     "vad_silence_seconds": 1.0,
-    "barge_in_enabled": false
+    "barge_in_enabled": false,
+    "earcons_enabled": true
   },
   "database": {
     "provider": "sqlite",

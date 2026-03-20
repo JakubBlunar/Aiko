@@ -197,6 +197,14 @@ class MainWindow(QMainWindow):
         self._search_results.itemDoubleClicked.connect(self._on_search_result_clicked)
         conversation_layout.addWidget(self._search_results)
 
+        self._topics_strip = QLabel("")
+        self._topics_strip.setWordWrap(True)
+        self._topics_strip.setStyleSheet(
+            "font-size: 11px; color: #64748b; padding: 2px 4px;"
+        )
+        self._topics_strip.setVisible(False)
+        conversation_layout.addWidget(self._topics_strip)
+
         self._conversation = None
         self._conversation_web = None
         if _USE_WEB_VIEW and _QWebEngineView is not None:
@@ -245,9 +253,37 @@ class MainWindow(QMainWindow):
         conversation_layout.addWidget(self._status_label)
 
         self._settings_dialog = None
+        self._memory_dialog: MemoryViewerDialog | None = None
+        self._trace_dialog: DecisionTraceDialog | None = None
+
+        menu_bar = self.menuBar()
+        view_menu = menu_bar.addMenu("View")
+        view_menu.addAction("Memory Viewer", self._open_memory_viewer)
+        view_menu.addAction("Decision Trace", self._open_trace_viewer)
+
+        help_menu = menu_bar.addMenu("Help")
+        help_menu.addAction("Keyboard Shortcuts", self._show_shortcuts_help)
+
         self._external_message.connect(self._on_external_message)
         self._session.add_message_listener(self._emit_external_message)
         QTimer.singleShot(250, self._play_startup_greeting)
+
+    def _show_shortcuts_help(self) -> None:
+        shortcuts = (
+            "<b>Keyboard Shortcuts</b><br><br>"
+            "<table cellpadding='4'>"
+            "<tr><td><b>Enter</b></td><td>Send message</td></tr>"
+            "<tr><td><b>Shift+Enter</b></td><td>New line in input</td></tr>"
+            "<tr><td><b>F2</b> (or configured PTT key)</td><td>Push-to-talk (hold)</td></tr>"
+            "<tr><td><b>Ctrl+Space</b></td><td>Push-to-talk alternate</td></tr>"
+            "<tr><td><b>Escape</b></td><td>Stop TTS / cancel</td></tr>"
+            "</table>"
+        )
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Keyboard Shortcuts")
+        msg.setTextFormat(Qt.TextFormat.RichText)
+        msg.setText(shortcuts)
+        msg.exec()
 
     def _open_settings(self) -> None:
         if self._settings_dialog is None:
@@ -285,8 +321,7 @@ class MainWindow(QMainWindow):
 
         threading.Thread(target=_generate_and_speak, daemon=True, name="startup-greeting").start()
 
-    def _setup_wheel_guard(self) -> None:
-        pass
+    
 
     def eventFilter(self, watched: object, event: QEvent) -> bool:
         if self._live_thread is not None and getattr(self._session, "live_input_mode", "") == "push_to_talk":
@@ -398,8 +433,20 @@ class MainWindow(QMainWindow):
             from PySide6.QtWidgets import QListWidgetItem
             sid = s["session_id"]
             count = s["message_count"]
+            last = s.get("last_activity", "")
             label = sid.split(":")[-1] if ":" in sid else sid
-            item = QListWidgetItem(f"{label} ({count} msgs)")
+            time_str = ""
+            if last:
+                try:
+                    from datetime import datetime
+                    dt = datetime.fromisoformat(last.replace("Z", "+00:00"))
+                    time_str = dt.strftime("%m/%d %H:%M")
+                except Exception:
+                    time_str = last[:10]
+            display = f"{label} ({count} msgs)"
+            if time_str:
+                display += f"\n  {time_str}"
+            item = QListWidgetItem(display)
             item.setData(Qt.ItemDataRole.UserRole, sid)
             lst.addItem(item)
             if sid == current_key:
@@ -422,7 +469,22 @@ class MainWindow(QMainWindow):
         msgs = db.get_messages(session_key, limit=50)
         for m in msgs:
             speaker = "You" if m.role == "user" else "Assistant" if m.role == "assistant" else "System"
-            self._append(speaker, m.content)
+            self._append(speaker, m.content, timestamp=m.created_at)
+        self._refresh_topics_strip(session_key)
+
+    def _refresh_topics_strip(self, session_key: str | None = None):
+        db = getattr(self._session, "_chat_db", None)
+        if db is None:
+            self._topics_strip.setVisible(False)
+            return
+        key = session_key or self._session.session_key
+        topics = db.get_recent_topics(key, limit=10)
+        if not topics:
+            self._topics_strip.setVisible(False)
+            return
+        chips = " \u00b7 ".join(t.topic for t in topics[:8])
+        self._topics_strip.setText(f"Topics: {chips}")
+        self._topics_strip.setVisible(True)
 
     def _new_session(self):
         new_id = self._session.new_session()
@@ -693,27 +755,9 @@ class MainWindow(QMainWindow):
     def _refresh_model_debug_label(self) -> None:
         pass
 
-    def _refresh_goal_debug_label(self) -> None:
-        pass
-
-    def _refresh_tts_debug_label(self) -> None:
-        pass
-
-    def _refresh_stt_debug_label(self) -> None:
-        pass
-
-    def _refresh_tts_model_status_label(self) -> None:
-        pass
-
-    def _refresh_action_guardrail_label(self) -> None:
-        state = "ACTIVE" if self._session.emergency_stop_active else "inactive"
-        reading = self._session.get_reading_status()
-        reading_state = "active" if bool(reading.get("active", False)) else "idle"
-        reading_chunks = int(reading.get("chunks", 0) or 0)
-        reading_steps = int(reading.get("scroll_steps", 0) or 0)
-        reading_max_steps = int(reading.get("max_scroll_steps", 0) or 0)
-        # Debug/guardrail labels removed in S2S UI
-        pass
+    def _refresh_goal_debug_label(self) -> None: pass
+    def _refresh_action_guardrail_label(self) -> None: pass
+    def _refresh_latency_strip(self) -> None: pass
 
     def _persist_preferences(
         self,
@@ -1016,7 +1060,6 @@ class MainWindow(QMainWindow):
         user_id = getattr(self._session, "_user_id", "default")
         key = f"{user_id}:{session_id}" if user_id else session_id
         try:
-            from app.core.chat_database import MessageRow
             all_msgs = db.get_messages(key)
             q_lower = query.lower()
             matches = [m for m in all_msgs if q_lower in m.content.lower()]
@@ -1024,16 +1067,30 @@ class MainWindow(QMainWindow):
             if not matches:
                 self._search_results.setVisible(False)
                 return
+            from PySide6.QtWidgets import QListWidgetItem
             for m in matches[-20:]:
                 preview = m.content[:100].replace("\n", " ")
-                self._search_results.addItem(f"[{m.role}] {m.created_at[:16]}: {preview}")
+                item = QListWidgetItem(f"[{m.role}] {m.created_at[:16]}: {preview}")
+                item.setData(Qt.ItemDataRole.UserRole, {"role": m.role, "content": m.content, "created_at": m.created_at})
+                self._search_results.addItem(item)
             self._search_results.setVisible(True)
         except Exception:
             self._search_results.setVisible(False)
 
     def _on_search_result_clicked(self, item) -> None:
+        data = item.data(Qt.ItemDataRole.UserRole)
+        if data and isinstance(data, dict):
+            role = data.get("role", "?").title()
+            content = data.get("content", "")
+            created = data.get("created_at", "")[:16]
+            msg = QMessageBox(self)
+            msg.setWindowTitle(f"Message from {role} ({created})")
+            msg.setText(content[:2000])
+            msg.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.TextSelectableByKeyboard
+            )
+            msg.exec()
         self._search_results.setVisible(False)
-        self._search_input.clear()
 
     def _clear_conversation_view(self) -> None:
         if self._conversation_web is not None:
@@ -1042,14 +1099,7 @@ class MainWindow(QMainWindow):
             self._conversation.clear()
         self._message_count = 0
 
-    def _on_focus_chat_toggled(self, _checked: bool) -> None:
-        pass
-
-    def _apply_session_info_filters(self) -> None:
-        pass
-
-    def _refresh_mcp_status_label(self) -> None:
-        pass
+    
 
     def _on_status_for_transcript(self, status: str) -> None:
         """Append tool-use (and similar) status messages to the transcript."""
@@ -1058,7 +1108,25 @@ class MainWindow(QMainWindow):
             return
         lower = s.lower()
         if "tool" in lower or lower.startswith("tool "):
-            self._append("Background", s)
+            self._append_tool_output(s)
+            return
+
+    def _append_tool_output(self, text: str) -> None:
+        """Show tool output in a collapsible block."""
+        preview = text[:80].replace("\n", " ")
+        if len(text) > 80:
+            preview += "..."
+        if self._conversation_web is not None:
+            content_html = (
+                f"<details><summary style='cursor:pointer;font-size:12px;color:#64748b;'>"
+                f"{html.escape(preview)}</summary>"
+                f"<pre style='white-space:pre-wrap;font-size:11px;color:#475569;margin:4px 0;'>"
+                f"{html.escape(text)}</pre></details>"
+            )
+            js = f"appendMessage('Background', {json.dumps(content_html)});"
+            self._run_web_js(js)
+            return
+        self._append("Background", preview)
 
     @staticmethod
     def _classify_speaker(label: str) -> str:
@@ -1072,7 +1140,7 @@ class MainWindow(QMainWindow):
             return "system"
         return "default"
 
-    def _append(self, speaker: str, text: str, assistant_model: str | None = None) -> None:
+    def _append(self, speaker: str, text: str, assistant_model: str | None = None, timestamp: str | None = None) -> None:
         speaker_label = str(speaker or "Assistant").strip() or "Assistant"
         kind = self._classify_speaker(speaker_label)
         if kind == "assistant" and assistant_model is None:
@@ -1080,13 +1148,21 @@ class MainWindow(QMainWindow):
         if assistant_model and speaker_label.lower() == "assistant":
             speaker_label = f"Assistant ({assistant_model})"
         is_assistant = kind == "assistant"
+        ts_display = ""
+        if timestamp:
+            try:
+                from datetime import datetime
+                dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                ts_display = dt.strftime("%H:%M")
+            except Exception:
+                ts_display = timestamp
         if self._conversation_web is not None:
             try:
                 from app.ui.markdown_renderer import markdown_to_html
                 content_html = markdown_to_html(text) if is_assistant else html.escape(str(text or "")).replace("\n", "<br>")
             except ImportError:
                 content_html = html.escape(str(text or "")).replace("\n", "<br>")
-            js = f"appendMessage({json.dumps(speaker_label)}, {json.dumps(content_html)});"
+            js = f"appendMessage({json.dumps(speaker_label)}, {json.dumps(content_html)}, {json.dumps(ts_display)});"
             self._run_web_js(js)
             return
         safe_speaker = html.escape(speaker_label)
@@ -1114,12 +1190,13 @@ class MainWindow(QMainWindow):
             bubble_text_color = BUBBLE_SYSTEM_TEXT
             speaker_color = BUBBLE_SYSTEM_SPEAKER
 
+        ts_html = f"<span style='float:right; font-size:10px; color:#94a3b8;'>{html.escape(ts_display)}</span>" if ts_display else ""
         self._conversation.append(
             (
                 "<table width='100%' cellspacing='0' cellpadding='0' style='margin:8px 0;'>"
                 "<tr><td "
                 f"style='background-color:{bubble_bg}; color:{bubble_text_color}; border-radius:8px; padding:8px 10px;'>"
-                f"<div style='font-size:12px; color:{speaker_color}; margin-bottom:4px;'><b>{safe_speaker}</b></div>"
+                f"<div style='font-size:12px; color:{speaker_color}; margin-bottom:4px;'><b>{safe_speaker}</b>{ts_html}</div>"
                 f"<div style='color:{bubble_text_color};'>{safe_text}</div>"
                 "</td></tr></table>"
             )
@@ -1231,11 +1308,7 @@ class MainWindow(QMainWindow):
                 f"Mic raw={level:.4f} | floor={self._live_noise_floor:.4f} | threshold={threshold:.4f} | {state}"
             )
 
-    def _refresh_latency_strip(self) -> None:
-        pass
-
-    def _refresh_autonomy_controls(self) -> None:
-        pass
+    
 
     def _on_autonomy_mode_changed(self) -> None:
         self._persist_preferences()

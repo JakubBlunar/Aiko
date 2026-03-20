@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from datetime import datetime
 from PySide6.QtCore import Qt
-
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
     QPushButton,
-    QSpinBox,
     QTextEdit,
     QVBoxLayout,
 )
@@ -17,44 +18,43 @@ from app.core.session_controller import SessionController
 
 
 class MemoryViewerDialog(QDialog):
+    """Shows what the assistant has learned: personality notes, topics, and summary."""
+
     def __init__(self, session: SessionController, parent=None) -> None:
         super().__init__(parent)
         self._session = session
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
-
-        self.setWindowTitle("Memory Viewer")
-        self.resize(900, 680)
+        self.setWindowTitle("What I Know About You")
+        self.resize(700, 520)
 
         layout = QVBoxLayout(self)
 
         controls = QHBoxLayout()
-        controls.addWidget(QLabel("Show last entries:"))
-
-        self._limit_spin = QSpinBox()
-        self._limit_spin.setRange(20, 2000)
-        self._limit_spin.setSingleStep(20)
-        self._limit_spin.setValue(400)
-        controls.addWidget(self._limit_spin)
-
         self._refresh_button = QPushButton("Refresh")
         self._refresh_button.clicked.connect(self._refresh)
         controls.addWidget(self._refresh_button)
-
-        self._clear_button = QPushButton("Clear Memory")
-        self._clear_button.clicked.connect(self._clear)
-        controls.addWidget(self._clear_button)
+        self._delete_button = QPushButton("Delete Selected Note")
+        self._delete_button.clicked.connect(self._delete_selected)
+        controls.addWidget(self._delete_button)
         controls.addStretch(1)
-
         layout.addLayout(controls)
 
-        self._text = QTextEdit()
-        self._text.setReadOnly(True)
-        self._text.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-            | Qt.TextInteractionFlag.TextSelectableByKeyboard
-        )
-        layout.addWidget(self._text, stretch=1)
+        layout.addWidget(QLabel("Personality Notes:"))
+        self._notes_list = QListWidget()
+        self._notes_list.setAlternatingRowColors(True)
+        layout.addWidget(self._notes_list, stretch=2)
+
+        layout.addWidget(QLabel("Recent Topics:"))
+        self._topics_label = QLabel("")
+        self._topics_label.setWordWrap(True)
+        layout.addWidget(self._topics_label)
+
+        layout.addWidget(QLabel("Conversation Summary:"))
+        self._summary_text = QTextEdit()
+        self._summary_text.setReadOnly(True)
+        self._summary_text.setMaximumHeight(100)
+        layout.addWidget(self._summary_text, stretch=1)
 
         self._status = QLabel("")
         layout.addWidget(self._status)
@@ -62,31 +62,51 @@ class MemoryViewerDialog(QDialog):
         self._refresh()
 
     def _refresh(self) -> None:
-        limit = self._limit_spin.value()
-        entries = self._session.get_conversation_memory(max_entries=limit)
-
-        if not entries:
-            self._text.setPlainText("No stored conversation memory yet.")
-            self._status.setText("Entries: 0")
+        db = getattr(self._session, "_chat_db", None)
+        if db is None:
+            self._status.setText("No database available.")
             return
 
-        lines: list[str] = []
-        for entry in entries:
-            role = str(entry.get("role", "")).title()
-            content = str(entry.get("content", ""))
-            stamp = str(entry.get("timestamp", ""))
-            stamp_view = stamp
-            try:
-                stamp_view = datetime.fromisoformat(stamp.replace("Z", "+00:00")).strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                )
-            except Exception:
-                pass
-            lines.append(f"[{stamp_view}] {role}: {content}")
+        session_key = self._session.session_key
 
-        self._text.setPlainText("\n\n".join(lines))
-        self._status.setText(f"Entries: {len(entries)}")
+        notes = db.get_personality_notes(session_key, min_confidence=0.0)
+        self._notes_list.clear()
+        for n in notes:
+            cat = (n.category or "general").replace("_", " ").title()
+            label = f"[{cat}] {n.note}  (confidence: {n.confidence:.2f})"
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, n.id)
+            self._notes_list.addItem(item)
 
-    def _clear(self) -> None:
-        self._session.clear_conversation_memory()
+        topics = db.get_recent_topics(session_key, limit=15)
+        if topics:
+            self._topics_label.setText(", ".join(t.topic for t in topics))
+        else:
+            self._topics_label.setText("(none)")
+
+        summary_row = db.get_latest_summary(session_key)
+        if summary_row:
+            self._summary_text.setPlainText(summary_row.summary)
+        else:
+            self._summary_text.setPlainText("(no summary yet)")
+
+        self._status.setText(f"{len(notes)} notes, {len(topics)} topics")
+
+    def _delete_selected(self) -> None:
+        item = self._notes_list.currentItem()
+        if item is None:
+            return
+        note_id = item.data(Qt.ItemDataRole.UserRole)
+        if note_id is None:
+            return
+        db = getattr(self._session, "_chat_db", None)
+        if db is None:
+            return
+        try:
+            conn = db._get_conn()
+            conn.execute("DELETE FROM personality_notes WHERE id = ?", (note_id,))
+            conn.commit()
+        except Exception as exc:
+            QMessageBox.warning(self, "Error", f"Could not delete note: {exc}")
+            return
         self._refresh()

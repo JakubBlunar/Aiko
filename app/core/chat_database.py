@@ -376,6 +376,8 @@ class ChatDatabase:
         summary: str,
         summary_tokens: int,
         messages_summarized: int,
+        *,
+        keep_latest: int = 3,
     ) -> None:
         conn = self._get_conn()
         conn.execute(
@@ -383,6 +385,12 @@ class ChatDatabase:
             "VALUES (?, ?, ?, ?, ?)",
             (session_id, summary, summary_tokens, messages_summarized, _now_iso()),
         )
+        if keep_latest and keep_latest > 0:
+            conn.execute(
+                "DELETE FROM session_summaries WHERE session_id = ? AND id NOT IN "
+                "(SELECT id FROM session_summaries WHERE session_id = ? ORDER BY updated_at DESC LIMIT ?)",
+                (session_id, session_id, keep_latest),
+            )
         conn.commit()
 
     # ── Personality Notes ──

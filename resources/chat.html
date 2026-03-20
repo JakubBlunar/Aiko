@@ -46,6 +46,13 @@
     .bubble-system .speaker { color: #e2e8f0; }
     .bubble-default { background: #f1f5f9; color: #0f172a; }
     .bubble-default .speaker { color: #475569; }
+    .bubble .timestamp {
+      font-size: 10px;
+      color: #94a3b8;
+      float: right;
+      margin-top: 2px;
+    }
+    .bubble-system .timestamp { color: #94a3b8; }
   </style>
 </head>
 <body>
@@ -67,13 +74,17 @@
       if (s === 'system') return 'bubble-system';
       return 'bubble-default';
     }
-    function appendMessage(speaker, contentHtml) {
+    function appendMessage(speaker, contentHtml, timestamp) {
       const container = document.getElementById('messages');
       const safeSpeaker = escapeHtml(speaker || 'Assistant');
       const bubbleClass = speakerToClass(speaker);
       const div = document.createElement('div');
       div.className = 'bubble ' + bubbleClass;
-      div.innerHTML = '<div class="speaker">' + safeSpeaker + '</div><div class="content">' + (contentHtml || '') + '</div>';
+      var tsHtml = '';
+      if (timestamp) {
+        tsHtml = '<span class="timestamp">' + escapeHtml(timestamp) + '</span>';
+      }
+      div.innerHTML = '<div class="speaker">' + safeSpeaker + tsHtml + '</div><div class="content">' + (contentHtml || '') + '</div>';
       container.appendChild(div);
       div.querySelectorAll('pre code').forEach(function(block) {
         if (typeof hljs !== 'undefined') hljs.highlightElement(block);

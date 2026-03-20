@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QGroupBox,
@@ -239,6 +240,26 @@ class SettingsDialog(QDialog):
         personality_form.addRow("Assistant name:", self._assistant_name_edit)
         layout.addWidget(personality_group)
 
+        proactive_group = QGroupBox("Proactive Behaviour")
+        proactive_form = QFormLayout(proactive_group)
+        self._proactive_silence_spin = QDoubleSpinBox()
+        self._proactive_silence_spin.setRange(10.0, 600.0)
+        self._proactive_silence_spin.setSingleStep(5.0)
+        self._proactive_silence_spin.setSuffix(" s")
+        self._proactive_silence_spin.setValue(
+            getattr(agent_settings, "proactive_silence_seconds", 45.0) if agent_settings else 45.0
+        )
+        proactive_form.addRow("Silence before proactive:", self._proactive_silence_spin)
+        self._proactive_cooldown_spin = QDoubleSpinBox()
+        self._proactive_cooldown_spin.setRange(30.0, 600.0)
+        self._proactive_cooldown_spin.setSingleStep(10.0)
+        self._proactive_cooldown_spin.setSuffix(" s")
+        self._proactive_cooldown_spin.setValue(
+            getattr(agent_settings, "proactive_cooldown_seconds", 120.0) if agent_settings else 120.0
+        )
+        proactive_form.addRow("Cooldown between proactive:", self._proactive_cooldown_spin)
+        layout.addWidget(proactive_group)
+
         misc_group = QGroupBox("Miscellaneous")
         misc_form = QFormLayout(misc_group)
         self._log_level_combo = QComboBox()
@@ -400,6 +421,10 @@ class SettingsDialog(QDialog):
         name = self._assistant_name_edit.text().strip()
         if hasattr(settings.assistant, "name"):
             settings.assistant.name = name
+        if agent_settings and hasattr(agent_settings, "proactive_silence_seconds"):
+            agent_settings.proactive_silence_seconds = self._proactive_silence_spin.value()
+        if agent_settings and hasattr(agent_settings, "proactive_cooldown_seconds"):
+            agent_settings.proactive_cooldown_seconds = self._proactive_cooldown_spin.value()
         if hasattr(settings, "logging") and hasattr(settings.logging, "level"):
             settings.logging.level = self._log_level_combo.currentData() or "INFO"
         try:

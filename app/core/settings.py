@@ -39,6 +39,7 @@ class AudioSettings:
     live_ptt_key: str | None = None
     live_ptt_mouse_button: str | None = None
     live_ptt_toggle: bool = False
+    earcons_enabled: bool = True
 
 
 @dataclass(slots=True)

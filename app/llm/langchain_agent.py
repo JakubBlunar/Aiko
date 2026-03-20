@@ -352,6 +352,9 @@ def create_agent(
     if add_tools:
         tools_list = _get_langchain_tools(toolkit_entries, mcp_tools)
 
+    from app.llm.builtin_tools import _make_tools
+    tools_list.extend(_make_tools(chat_db=chat_db))
+
     if embedding_service and chat_db:
         tools_list = _add_history_search_tool(tools_list, embedding_service, chat_db)
 
@@ -451,7 +454,16 @@ class _AgentWrapper:
         self._personality_token_budget = personality_token_budget
         self._mcp_manager = mcp_manager
         self._cached_system_message: str | None = None
+        self._persist_enabled: bool = True
         self._log = logging.getLogger("app.llm.langchain_agent")
+
+    @property
+    def persist_enabled(self) -> bool:
+        return self._persist_enabled
+
+    @persist_enabled.setter
+    def persist_enabled(self, value: bool) -> None:
+        self._persist_enabled = bool(value)
 
     @property
     def mcp_manager(self) -> _McpManager | None:
@@ -485,7 +497,7 @@ class _AgentWrapper:
             if ref is not None:
                 ref[0] = session_key
 
-        messages = self._get_history_messages(session_key)
+        messages = self._get_history_messages(session_key, user_input=input.strip())
         messages.append(HumanMessage(content=input.strip()))
 
         if stream or stream_events:
@@ -499,7 +511,7 @@ class _AgentWrapper:
             session_key = f"{user_id}:{session_key}"
         self._persist_turn(session_key, user_text, ai_text)
 
-    def _get_history_messages(self, session_key: str) -> list[Any]:
+    def _get_history_messages(self, session_key: str, *, user_input: str = "") -> list[Any]:
         from langchain_core.messages import HumanMessage, AIMessage
         from app.llm.token_utils import estimate_tokens, estimate_messages_tokens
 
@@ -526,7 +538,7 @@ class _AgentWrapper:
             max_messages = (self._num_history_runs * 2) if self._num_history_runs else 40
             lang_messages = lang_messages[-max_messages:]
 
-        sys_content = self._build_system_message(session_key)
+        sys_content = self._build_system_message(session_key, user_input=user_input)
         self._cached_system_message = sys_content
         budget = (
             self._context_window
@@ -559,7 +571,7 @@ class _AgentWrapper:
         row = self._chat_db.get_latest_summary(session_key)
         return row.summary if row else ""
 
-    def _build_system_message(self, session_key: str) -> str:
+    def _build_system_message(self, session_key: str, *, user_input: str = "") -> str:
         parts = [self._system_message]
 
         summary = self._load_summary(session_key)
@@ -571,25 +583,42 @@ class _AgentWrapper:
             budget = getattr(self, "_personality_token_budget", 300)
             notes = self._chat_db.get_personality_notes(session_key, min_confidence=0.4)
             if notes:
-                note_lines: list[str] = []
+                from collections import defaultdict
+                grouped: dict[str, list[str]] = defaultdict(list)
                 used_tokens = 0
                 for n in notes:
-                    line = f"- {n.note}"
+                    line = n.note
                     line_tokens = estimate_tokens(line)
                     if used_tokens + line_tokens > budget:
                         break
-                    note_lines.append(line)
+                    cat = (n.category or "general").replace("_", " ").title()
+                    grouped[cat].append(line)
                     used_tokens += line_tokens
-                if note_lines:
-                    parts.append(
-                        "What you know about the user (use naturally, don't list them back):\n"
-                        + "\n".join(note_lines)
-                    )
+                if grouped:
+                    section_lines = ["What you know about the user (use naturally, don't list them back):"]
+                    for cat, items in grouped.items():
+                        section_lines.append(f"  {cat}: {'; '.join(items)}")
+                    parts.append("\n".join(section_lines))
 
             topics = self._chat_db.get_recent_topics(session_key, limit=10)
             if topics:
                 topic_list = ", ".join(t.topic for t in topics[:8])
                 parts.append(f"Avoid repeating these recent topics (find something fresh): {topic_list}")
+
+        if user_input and self._embedding_service:
+            try:
+                hits = self._embedding_service.search(
+                    user_input, session_id=session_key, top_k=3, max_candidates=300,
+                )
+                relevant = [h for h in hits if h.score >= 0.7]
+                if relevant:
+                    ctx_lines = ["Relevant past context (referenced for continuity, do not quote back):"]
+                    for h in relevant:
+                        preview = h.content[:200]
+                        ctx_lines.append(f"  [{h.role}]: {preview}")
+                    parts.append("\n".join(ctx_lines))
+            except Exception:
+                pass
 
         return "\n\n".join(parts)
 
@@ -613,6 +642,8 @@ class _AgentWrapper:
 
     def _persist_turn(self, session_key: str, user_text: str, ai_text: str) -> None:
         """Save a user+AI message pair to the chat database and compute embeddings."""
+        if not self._persist_enabled:
+            return
         from app.llm.token_utils import estimate_tokens
 
         if self._chat_db:
