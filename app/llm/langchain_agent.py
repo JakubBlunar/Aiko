@@ -246,11 +246,15 @@ def _add_history_search_tool(
     except ImportError:
         return tools
 
+    _current_session: list[str | None] = [None]
+
     @tool
     def search_history(query: str) -> str:
         """Search past conversation history for relevant messages. Use when the user
         asks about something discussed earlier or references past context."""
-        results = embedding_service.search(query, top_k=5)
+        results = embedding_service.search(
+            query, session_id=_current_session[0], top_k=5,
+        )
         if not results:
             return "No relevant past messages found."
         parts: list[str] = []
@@ -259,6 +263,7 @@ def _add_history_search_tool(
             parts.append(f"[{r.role}] ({r.created_at}): {preview}")
         return "\n\n".join(parts)
 
+    search_history._session_ref = _current_session  # type: ignore[attr-defined]
     return tools + [search_history]
 
 
@@ -383,6 +388,7 @@ def create_agent(
         context_window=resolved_ctx,
         compress_tool_results=compress_tool_results,
         compress_tool_results_limit=compress_tool_results_limit,
+        compress_token_limit=compress_token_limit,
         chat_db=chat_db,
         embedding_service=embedding_service,
         personality_token_budget=personality_token_budget,
@@ -412,6 +418,7 @@ class _AgentWrapper:
         context_window: int = 8192,
         compress_tool_results: bool = True,
         compress_tool_results_limit: int | None = None,
+        compress_token_limit: int | None = None,
         chat_db: "ChatDatabase | None" = None,
         embedding_service: "EmbeddingService | None" = None,
         judge_llm: Any = None,
@@ -434,10 +441,16 @@ class _AgentWrapper:
             self._TOOL_RESULT_MAX_CHARS = compress_tool_results_limit
             self._TOOL_RESULT_HEAD = max(500, int(compress_tool_results_limit * 0.75))
             self._TOOL_RESULT_TAIL = max(200, int(compress_tool_results_limit * 0.1))
+        if compress_token_limit is not None and compress_token_limit > 0:
+            chars = int(compress_token_limit * 3.5)
+            self._TOOL_RESULT_MAX_CHARS = chars
+            self._TOOL_RESULT_HEAD = max(500, int(chars * 0.75))
+            self._TOOL_RESULT_TAIL = max(200, int(chars * 0.1))
         self._chat_db = chat_db
         self._embedding_service = embedding_service
         self._personality_token_budget = personality_token_budget
         self._mcp_manager = mcp_manager
+        self._cached_system_message: str | None = None
         self._log = logging.getLogger("app.llm.langchain_agent")
 
     @property
@@ -466,6 +479,11 @@ class _AgentWrapper:
         session_key = session_id or "main"
         if user_id:
             session_key = f"{user_id}:{session_key}"
+
+        for t in self._tools:
+            ref = getattr(t, "_session_ref", None)
+            if ref is not None:
+                ref[0] = session_key
 
         messages = self._get_history_messages(session_key)
         messages.append(HumanMessage(content=input.strip()))
@@ -508,17 +526,18 @@ class _AgentWrapper:
             max_messages = (self._num_history_runs * 2) if self._num_history_runs else 40
             lang_messages = lang_messages[-max_messages:]
 
+        sys_content = self._build_system_message(session_key)
+        self._cached_system_message = sys_content
         budget = (
             self._context_window
-            - estimate_tokens(self._system_message)
+            - estimate_tokens(sys_content)
             - self._RESPONSE_TOKEN_RESERVE
         )
-        summary = self._load_summary(session_key)
-        if summary:
-            budget -= estimate_tokens(summary)
 
-        while lang_messages and estimate_messages_tokens(lang_messages) > budget:
+        running_tokens = estimate_messages_tokens(lang_messages)
+        while lang_messages and running_tokens > budget:
             evicted = lang_messages.pop(0)
+            running_tokens -= estimate_tokens(getattr(evicted, "content", "") or "") + 4
             self._handle_evicted_message(session_key, evicted)
 
         return lang_messages
@@ -648,15 +667,18 @@ class _AgentWrapper:
             return
 
         from app.llm.token_utils import estimate_tokens
-        rows = self._chat_db.get_messages(session_key)
-        old_rows = rows[:already_summarized + unsummarized - 6]
+        end_of_old = already_summarized + unsummarized - 6
+        fetch_start = max(0, end_of_old - 20)
+        old_rows = self._chat_db.get_messages(
+            session_key, offset=fetch_start, limit=end_of_old - fetch_start,
+        )
         if not old_rows:
             return
 
         text_parts: list[str] = []
         if existing:
             text_parts.append(f"Previous summary: {existing.summary}")
-        for r in old_rows[-20:]:
+        for r in old_rows:
             text_parts.append(f"{r.role}: {r.content[:300]}")
         context = "\n".join(text_parts)
 
@@ -781,7 +803,8 @@ class _AgentWrapper:
     def _invoke_run(self, session_key: str, messages: list[Any]) -> Any:
         from langchain_core.messages import SystemMessage, AIMessage
 
-        sys_content = self._build_system_message(session_key)
+        sys_content = getattr(self, "_cached_system_message", None) or self._build_system_message(session_key)
+        self._cached_system_message = None
         full: list[Any] = [SystemMessage(content=sys_content)] + messages
         if self._has_react_agent and self._tools:
             result = self._agent.invoke({"messages": full})
@@ -804,7 +827,8 @@ class _AgentWrapper:
     ) -> Any:
         from langchain_core.messages import SystemMessage
 
-        sys_content = self._build_system_message(session_key)
+        sys_content = getattr(self, "_cached_system_message", None) or self._build_system_message(session_key)
+        self._cached_system_message = None
         full: list[Any] = [SystemMessage(content=sys_content)] + messages
         self._log.info(
             "stream_run: react=%s tools=%d msgs=%d sys_chars=%d force_plain=%s",

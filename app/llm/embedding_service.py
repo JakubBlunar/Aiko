@@ -73,15 +73,20 @@ class EmbeddingService:
         *,
         session_id: str | None = None,
         top_k: int = 5,
+        max_candidates: int = 500,
     ) -> list[SearchResult]:
-        """Find the top-K most semantically similar messages to the query."""
+        """Find the top-K most semantically similar messages to the query.
+
+        *max_candidates* caps how many embeddings are loaded from the DB to
+        keep search time bounded in long conversations.
+        """
         if not self._db:
             return []
         query_vec = self.embed(query)
         if query_vec is None:
             return []
 
-        stored = self._db.get_all_embeddings(session_id)
+        stored = self._db.get_all_embeddings(session_id, max_rows=max_candidates)
         if not stored:
             return []
 

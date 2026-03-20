@@ -227,9 +227,29 @@ class ChatDatabase:
         session_id: str,
         *,
         limit: int | None = None,
+        offset: int | None = None,
     ) -> list[MessageRow]:
+        """Return messages for a session, ordered by id (oldest first).
+
+        *limit* — return at most this many rows (taken from the end, i.e. most recent).
+        *offset* — skip the first *offset* rows (oldest), then return the rest (or *limit* of them).
+        When both are given, *offset* rows are skipped first, then *limit* rows are taken
+        from the end of the remaining set.
+        """
         conn = self._get_conn()
-        if limit:
+        if offset and limit:
+            rows = conn.execute(
+                "SELECT id, session_id, role, content, token_count, created_at "
+                "FROM messages WHERE session_id = ? ORDER BY id LIMIT ? OFFSET ?",
+                (session_id, limit, offset),
+            ).fetchall()
+        elif offset:
+            rows = conn.execute(
+                "SELECT id, session_id, role, content, token_count, created_at "
+                "FROM messages WHERE session_id = ? ORDER BY id LIMIT -1 OFFSET ?",
+                (session_id, offset),
+            ).fetchall()
+        elif limit:
             rows = conn.execute(
                 "SELECT id, session_id, role, content, token_count, created_at "
                 "FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT ?",
@@ -293,20 +313,31 @@ class ChatDatabase:
         )
         conn.commit()
 
-    def get_all_embeddings(self, session_id: str | None = None) -> list[EmbeddingRow]:
+    def get_all_embeddings(
+        self,
+        session_id: str | None = None,
+        *,
+        max_rows: int | None = None,
+    ) -> list[EmbeddingRow]:
+        """Return embedding rows, optionally scoped to a session and capped.
+
+        When *max_rows* is set, only the most recent *max_rows* embeddings are
+        returned (by message_id descending), keeping search cost bounded.
+        """
         conn = self._get_conn()
+        limit_clause = f" LIMIT {int(max_rows)}" if max_rows and max_rows > 0 else ""
         if session_id:
             rows = conn.execute(
                 "SELECT me.message_id, me.session_id, me.embedding, m.content, m.role, me.created_at "
                 "FROM message_embeddings me JOIN messages m ON me.message_id = m.id "
-                "WHERE me.session_id = ? ORDER BY me.message_id",
+                f"WHERE me.session_id = ? ORDER BY me.message_id DESC{limit_clause}",
                 (session_id,),
             ).fetchall()
         else:
             rows = conn.execute(
                 "SELECT me.message_id, me.session_id, me.embedding, m.content, m.role, me.created_at "
                 "FROM message_embeddings me JOIN messages m ON me.message_id = m.id "
-                "ORDER BY me.message_id",
+                f"ORDER BY me.message_id DESC{limit_clause}",
             ).fetchall()
         return [
             EmbeddingRow(
