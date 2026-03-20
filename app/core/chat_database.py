@@ -11,7 +11,7 @@ from typing import Any
 
 import numpy as np
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 _CREATE_TABLES = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -46,6 +46,25 @@ CREATE TABLE IF NOT EXISTS session_summaries (
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_summaries_session ON session_summaries(session_id, updated_at);
+
+CREATE TABLE IF NOT EXISTS personality_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    category TEXT NOT NULL,
+    note TEXT NOT NULL,
+    confidence REAL NOT NULL DEFAULT 0.8,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_personality_session ON personality_notes(session_id, confidence);
+
+CREATE TABLE IF NOT EXISTS recent_topics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    topic TEXT NOT NULL,
+    used_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_topics_session ON recent_topics(session_id, used_at);
 """
 
 
@@ -76,6 +95,25 @@ class SummaryRow:
     summary_tokens: int
     messages_summarized: int
     updated_at: str
+
+
+@dataclass(slots=True)
+class PersonalityNoteRow:
+    id: int
+    session_id: str
+    category: str
+    note: str
+    confidence: float
+    created_at: str
+    updated_at: str
+
+
+@dataclass(slots=True)
+class RecentTopicRow:
+    id: int
+    session_id: str
+    topic: str
+    used_at: str
 
 
 def _now_iso() -> str:
@@ -116,6 +154,9 @@ class ChatDatabase:
         row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
         if row is None:
             conn.execute("INSERT INTO schema_version (version) VALUES (?)", (_SCHEMA_VERSION,))
+            conn.commit()
+        elif row[0] < _SCHEMA_VERSION:
+            conn.execute("UPDATE schema_version SET version = ?", (_SCHEMA_VERSION,))
             conn.commit()
 
     def _migrate_langchain_history(self) -> None:
@@ -299,5 +340,140 @@ class ChatDatabase:
             "INSERT INTO session_summaries (session_id, summary, summary_tokens, messages_summarized, updated_at) "
             "VALUES (?, ?, ?, ?, ?)",
             (session_id, summary, summary_tokens, messages_summarized, _now_iso()),
+        )
+        conn.commit()
+
+    # ── Personality Notes ──
+
+    def get_personality_notes(
+        self,
+        session_id: str,
+        *,
+        min_confidence: float = 0.0,
+        limit: int | None = None,
+    ) -> list[PersonalityNoteRow]:
+        conn = self._get_conn()
+        query = (
+            "SELECT id, session_id, category, note, confidence, created_at, updated_at "
+            "FROM personality_notes WHERE session_id = ? AND confidence >= ? "
+            "ORDER BY confidence DESC, updated_at DESC"
+        )
+        params: list[Any] = [session_id, min_confidence]
+        if limit:
+            query += " LIMIT ?"
+            params.append(limit)
+        rows = conn.execute(query, params).fetchall()
+        return [PersonalityNoteRow(*r) for r in rows]
+
+    def upsert_personality_note(
+        self,
+        session_id: str,
+        category: str,
+        note: str,
+        confidence: float,
+    ) -> int:
+        """Insert or update a personality note. Matches on session_id + note text similarity."""
+        conn = self._get_conn()
+        now = _now_iso()
+        existing = conn.execute(
+            "SELECT id FROM personality_notes WHERE session_id = ? AND category = ? AND note = ?",
+            (session_id, category, note),
+        ).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE personality_notes SET confidence = ?, updated_at = ? WHERE id = ?",
+                (confidence, now, existing[0]),
+            )
+            conn.commit()
+            return existing[0]
+        cursor = conn.execute(
+            "INSERT INTO personality_notes (session_id, category, note, confidence, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (session_id, category, note, confidence, now, now),
+        )
+        conn.commit()
+        return cursor.lastrowid  # type: ignore[return-value]
+
+    def replace_personality_notes(
+        self,
+        session_id: str,
+        notes: list[tuple[str, str, float]],
+    ) -> None:
+        """Replace all personality notes for a session with a new set.
+
+        Each tuple is (category, note, confidence).
+        """
+        conn = self._get_conn()
+        now = _now_iso()
+        conn.execute("DELETE FROM personality_notes WHERE session_id = ?", (session_id,))
+        for category, note, confidence in notes:
+            conn.execute(
+                "INSERT INTO personality_notes (session_id, category, note, confidence, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (session_id, category, note, confidence, now, now),
+            )
+        conn.commit()
+
+    def decay_personality_notes(
+        self,
+        session_id: str,
+        decay_rate: float,
+        prune_threshold: float,
+    ) -> int:
+        """Decay all notes by decay_rate, prune those below threshold. Returns pruned count."""
+        conn = self._get_conn()
+        now = _now_iso()
+        conn.execute(
+            "UPDATE personality_notes SET confidence = confidence - ?, updated_at = ? "
+            "WHERE session_id = ?",
+            (decay_rate, now, session_id),
+        )
+        cursor = conn.execute(
+            "DELETE FROM personality_notes WHERE session_id = ? AND confidence < ?",
+            (session_id, prune_threshold),
+        )
+        conn.commit()
+        return cursor.rowcount
+
+    def cap_personality_notes(self, session_id: str, max_notes: int) -> int:
+        """Keep only the top max_notes by confidence. Returns deleted count."""
+        conn = self._get_conn()
+        excess_ids = conn.execute(
+            "SELECT id FROM personality_notes WHERE session_id = ? "
+            "ORDER BY confidence DESC, updated_at DESC LIMIT -1 OFFSET ?",
+            (session_id, max_notes),
+        ).fetchall()
+        if not excess_ids:
+            return 0
+        id_list = [r[0] for r in excess_ids]
+        placeholders = ",".join("?" * len(id_list))
+        cursor = conn.execute(
+            f"DELETE FROM personality_notes WHERE id IN ({placeholders})", id_list
+        )
+        conn.commit()
+        return cursor.rowcount
+
+    # ── Recent Topics ──
+
+    def get_recent_topics(self, session_id: str, limit: int = 20) -> list[RecentTopicRow]:
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT id, session_id, topic, used_at FROM recent_topics "
+            "WHERE session_id = ? ORDER BY used_at DESC LIMIT ?",
+            (session_id, limit),
+        ).fetchall()
+        return [RecentTopicRow(*r) for r in rows]
+
+    def add_recent_topic(self, session_id: str, topic: str) -> None:
+        conn = self._get_conn()
+        conn.execute(
+            "INSERT INTO recent_topics (session_id, topic, used_at) VALUES (?, ?, ?)",
+            (session_id, topic, _now_iso()),
+        )
+        # Keep only last 20 per session
+        conn.execute(
+            "DELETE FROM recent_topics WHERE session_id = ? AND id NOT IN "
+            "(SELECT id FROM recent_topics WHERE session_id = ? ORDER BY used_at DESC LIMIT 20)",
+            (session_id, session_id),
         )
         conn.commit()

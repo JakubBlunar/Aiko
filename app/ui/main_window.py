@@ -740,6 +740,7 @@ class MainWindow(QMainWindow):
         self._live_worker.heard.connect(self._reset_live_stream)
         self._live_worker.replying.connect(self._append_live_stream_token)
         self._live_worker.replied.connect(self._on_live_replied)
+        self._live_worker.proactive.connect(lambda text: self._append("Assistant", text))
         self._live_worker.failed.connect(self._on_live_error)
         self._live_worker.stopped.connect(self._on_live_stopped)
         self._live_worker.stopped.connect(self._live_thread.quit)

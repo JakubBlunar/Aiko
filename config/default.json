@@ -3,7 +3,13 @@
     "num_history_runs": 10,
     "compress_tool_results": true,
     "compress_tool_results_limit": 3,
-    "compress_token_limit": null
+    "compress_token_limit": null,
+    "personality_prune_threshold": 0.15,
+    "personality_decay_rate": 0.1,
+    "personality_max_notes": 40,
+    "personality_token_budget": 300,
+    "proactive_silence_seconds": 45,
+    "proactive_cooldown_seconds": 120
   },
   "assistant": {
     "name": "Assistant",

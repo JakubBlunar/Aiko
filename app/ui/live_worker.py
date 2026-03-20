@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections import deque
 from pathlib import Path
 import threading
@@ -17,6 +18,7 @@ class LivePracticeWorker(QObject):
     heard = Signal(str)
     replying = Signal(str)
     replied = Signal(str)
+    proactive = Signal(str)
     failed = Signal(str)
     stopped = Signal()
 
@@ -27,14 +29,20 @@ class LivePracticeWorker(QObject):
         self._pending_lock = threading.Lock()
         self._pending: deque[tuple[Path, float]] = deque()
         self._max_pending = 2
-        # Set while a captured phrase is being processed (STT → LLM → TTS).
+        # Set while a captured phrase is being processed (STT -> LLM -> TTS).
         # The capture thread pauses during this window so TTS audio isn't
         # picked up by the microphone and the audio device isn't shared.
         self._processing = threading.Event()
+        self._last_activity = time.monotonic()
+        self._last_proactive = 0.0
+        self._unanswered_proactive = 0
+        self._max_unanswered = 3
+        self._log = logging.getLogger("app.ui.live_worker")
 
     @Slot()
     def run(self) -> None:
         self.status.emit("listening")
+        self._last_activity = time.monotonic()
         capture_thread = threading.Thread(
             target=self._capture_loop, daemon=True, name="live-capture"
         )
@@ -47,8 +55,12 @@ class LivePracticeWorker(QObject):
                         item = self._pending.popleft()
 
                 if item is None:
+                    self._maybe_proactive()
                     time.sleep(0.05)
                     continue
+
+                self._last_activity = time.monotonic()
+                self._unanswered_proactive = 0
 
                 wav_path, capture_ms = item
                 if self._session.barge_in_enabled() and self._session.is_tts_playing():
@@ -73,6 +85,7 @@ class LivePracticeWorker(QObject):
                 self.heard.emit(user_text)
                 self.replied.emit(reply_text)
                 self.status.emit("listening")
+                self._last_activity = time.monotonic()
         except Exception as exc:
             log_handled_exception(exc, context="ui.live_worker")
             self.failed.emit(str(exc))
@@ -99,6 +112,45 @@ class LivePracticeWorker(QObject):
         if self._session.barge_in_enabled() and self._has_pending_phrase():
             return True
         return False
+
+    def _maybe_proactive(self) -> None:
+        """Check if we should generate a proactive message during silence."""
+        if self._processing.is_set() or self._session.is_tts_playing():
+            return
+        if self._unanswered_proactive >= self._max_unanswered:
+            return
+
+        now = time.monotonic()
+        silence_threshold = getattr(
+            self._session._settings.agent, "proactive_silence_seconds", 45.0
+        )
+        cooldown = getattr(
+            self._session._settings.agent, "proactive_cooldown_seconds", 120.0
+        )
+
+        idle_duration = now - self._last_activity
+        since_last_proactive = now - self._last_proactive
+
+        if idle_duration < silence_threshold:
+            return
+        if since_last_proactive < cooldown:
+            return
+
+        self._log.info(
+            "Silence %.0fs > threshold %.0fs, generating proactive message (attempt %d/%d)",
+            idle_duration, silence_threshold,
+            self._unanswered_proactive + 1, self._max_unanswered,
+        )
+
+        msg = self._session.generate_proactive_message()
+        if msg:
+            self._session.speak_text(msg)
+            self.proactive.emit(msg)
+            self._last_proactive = time.monotonic()
+            self._unanswered_proactive += 1
+            self._last_activity = time.monotonic()
+        else:
+            self._last_proactive = time.monotonic()
 
     def _capture_loop(self) -> None:
         while not self._stop_requested:

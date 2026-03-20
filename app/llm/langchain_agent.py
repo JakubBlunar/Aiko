@@ -31,23 +31,37 @@ def _extract_text(content: Any) -> str:
 
 # Voice-friendly instructions: replies are spoken via TTS.
 _BASE_INSTRUCTIONS = """\
-You are in a voice conversation. Your replies will be read aloud by text-to-speech, so write for listening: use short, clear sentences and natural, conversational phrasing. Avoid long bullet lists, code blocks, or markdown that sounds awkward when spoken; if the user needs detail, give a brief spoken summary.
+You are having a real conversation with a person. Talk like a real friend would — not like an assistant reading a script. Your replies are spoken aloud via TTS, so write for the ear: short sentences, natural rhythm, conversational tone.
 
-For greetings (e.g. "Hello!", "Hi"), casual chat, or when the user has already asked a complete question, always reply directly in character—do not invoke any tools or ask for user input. Only use tools when you need to search, calculate, look something up, or perform a specific action the user requested. Do not use emojis or special characters.
+You already greeted the user at startup. Never greet again. Jump straight into your response.
 
-CONVERSATION FLOW: You have already greeted the user at startup. Do NOT greet again in any reply — just continue the conversation naturally. Never start a reply with "Hewo!", "Hello!", "Hi!", or any greeting. Jump straight into your response content.
+HOW TO BE NATURAL:
+- React to what the user SAID before talking about yourself. Acknowledge their words first.
+- Match their energy: if they're brief, be brief. If they're excited, match it.
+- Vary your responses. Don't always use the same structure. Sometimes a short "Yeah, that tracks" is better than three paragraphs.
+- Don't end every reply with a question. Sometimes just share a thought, react, or sit with what they said.
+- Have opinions. Say "I think..." or "honestly..." instead of always validating.
+- Use natural filler when it fits: "hmm", "oh!", "actually...", "wait..."
+- Avoid repeating phrases you've already used in this conversation.
 
-TOOL USE RULES — follow strictly:
-1. When the user asks you to perform an action (open a page, click a link, search, etc.), you MUST actually call the appropriate tool. NEVER just describe or narrate what you would do — actually do it by invoking the tool.
-2. Before calling a tool, write ONE short sentence about what you will do (e.g. "Let me open that for you!"). Keep it brief.
-3. After tools finish, give a concise summary of what happened. Do NOT repeat your greeting, introduction, or what you said before. Continue naturally as if mid-conversation.
-4. If one tool call is not enough, call multiple tools in sequence. Do not stop after announcing your intent — follow through with actual tool calls until the task is complete.
-5. NEVER say "let me click on that" or "I'll open that now" without ACTUALLY calling browser_click, browser_navigate, or the relevant tool in the same response.
-6. Your entire response (narration + tool results + summary) forms ONE reply to the user. Do NOT greet again or re-introduce yourself between tool calls. Only greet once at the very start.
+AVOID THESE PATTERNS (they sound robotic):
+- Starting every reply the same way
+- Always ending with "What do you think?" or "What would you like to do?"
+- Restating what the user just said back to them
+- Giving a mini-essay when a sentence would do
+- Listing things when talking naturally would be better
 
-At the **start** of every reply, on the first line, write exactly one reaction tag: [[reaction:neutral]] then a blank line, then your reply. Use one of: neutral, cheerful, excited, surprised, sad, angry, calm, serious, friendly, gentle, enthusiastic. Do not repeat the tag at the end of your reply.
+FORMATTING:
+- Start every reply with [[reaction:X]] on its own line (one of: neutral, cheerful, excited, surprised, sad, angry, calm, serious, friendly, gentle, enthusiastic), then a blank line, then your reply.
+- For long replies, put a spoken summary (1-3 sentences) in [[spoken]]...[[/spoken]] and longer content in [[detail]]...[[/detail]]. Only [[spoken]] is read aloud. Use markdown freely inside [[detail]].
+- Do not use emojis or special characters. No tildes.
 
-When your reply would be long (e.g. after reading a file, listing code, or giving step-by-step details), use two-tier format so the user hears a brief summary and can read the rest in the chat: put a short spoken summary (1–3 sentences, natural for listening) inside [[spoken]]...[[/spoken]], and put longer content (code, long lists, excerpts) in [[detail]]...[[/detail]]. If you do not use these tags, the entire reply is read aloud. You may use markdown in your replies; use it especially in [[detail]] for code (fenced code blocks with language, e.g. ```python), lists, and structure. The chat UI will render it with formatting and code highlighting.
+TOOL USE:
+1. When asked to perform an action, ACTUALLY call the tool. Never just describe what you would do.
+2. Before calling a tool, write ONE short sentence about what you'll do. Keep it brief.
+3. After tools finish, summarize the result naturally. Don't repeat what you said before.
+4. Chain multiple tools if needed. Follow through until the task is done.
+5. Never narrate a tool action without actually calling the tool.
 """
 
 
@@ -312,6 +326,7 @@ def create_agent(
     context_window: int | None = None,
     chat_db: "ChatDatabase | None" = None,
     embedding_service: "EmbeddingService | None" = None,
+    personality_token_budget: int = 300,
 ) -> Any:
     """Create a LangChain agent with Ollama, storage, optional tools and MCP. Create once and reuse."""
     try:
@@ -407,6 +422,7 @@ def create_agent(
         compress_tool_results_limit=compress_tool_results_limit,
         chat_db=chat_db,
         embedding_service=embedding_service,
+        personality_token_budget=personality_token_budget,
     )
 
 
@@ -435,6 +451,7 @@ class _AgentWrapper:
         chat_db: "ChatDatabase | None" = None,
         embedding_service: "EmbeddingService | None" = None,
         judge_llm: Any = None,
+        personality_token_budget: int = 300,
     ) -> None:
         self._agent = agent
         self._llm = llm
@@ -451,6 +468,7 @@ class _AgentWrapper:
         self._compress_tool_results_limit = compress_tool_results_limit
         self._chat_db = chat_db
         self._embedding_service = embedding_service
+        self._personality_token_budget = personality_token_budget
         self._log = logging.getLogger("app.llm.langchain_agent")
 
     def run(
@@ -544,10 +562,38 @@ class _AgentWrapper:
         return row.summary if row else ""
 
     def _build_system_message(self, session_key: str) -> str:
+        parts = [self._system_message]
+
         summary = self._load_summary(session_key)
         if summary:
-            return f"{self._system_message}\n\nPrior conversation summary: {summary}"
-        return self._system_message
+            parts.append(f"Prior conversation summary: {summary}")
+
+        if self._chat_db:
+            from app.llm.token_utils import estimate_tokens
+            budget = getattr(self, "_personality_token_budget", 300)
+            notes = self._chat_db.get_personality_notes(session_key, min_confidence=0.4)
+            if notes:
+                note_lines: list[str] = []
+                used_tokens = 0
+                for n in notes:
+                    line = f"- {n.note}"
+                    line_tokens = estimate_tokens(line)
+                    if used_tokens + line_tokens > budget:
+                        break
+                    note_lines.append(line)
+                    used_tokens += line_tokens
+                if note_lines:
+                    parts.append(
+                        "What you know about the user (use naturally, don't list them back):\n"
+                        + "\n".join(note_lines)
+                    )
+
+            topics = self._chat_db.get_recent_topics(session_key, limit=10)
+            if topics:
+                topic_list = ", ".join(t.topic for t in topics[:8])
+                parts.append(f"Avoid repeating these recent topics (find something fresh): {topic_list}")
+
+        return "\n\n".join(parts)
 
     def _get_chat_history_legacy(self, session_key: str) -> list[Any]:
         try:
@@ -655,6 +701,99 @@ class _AgentWrapper:
                 self._log.info("Generated conversation summary (%d messages summarized)", total - 6)
         except Exception as exc:
             self._log.warning("Summary generation failed: %s", exc)
+
+    _PERSONALITY_JUDGE_PROMPT = (
+        "You analyze conversations and extract personality observations about the user.\n\n"
+        "You will receive:\n"
+        "1. Existing personality notes (may be empty)\n"
+        "2. Recent conversation messages\n\n"
+        "Output a JSON array of personality notes. Each note is an object:\n"
+        '{"category": "<cat>", "note": "<observation>", "confidence": <0.0-1.0>}\n\n'
+        "Categories: user_preference, relationship, tone, topic_interest, inside_reference\n\n"
+        "Rules:\n"
+        "- Keep existing notes that are still accurate (same text, same or higher confidence)\n"
+        "- Merge related notes into one (e.g. 'likes rock' + evidence of Dragonforce → 'loves power metal, especially Dragonforce')\n"
+        "- Update notes that are contradicted by recent conversation\n"
+        "- Add new observations from recent messages\n"
+        "- Drop notes that are clearly wrong or irrelevant\n"
+        "- Max 40 notes total. Be concise — each note should be one short sentence.\n"
+        "- Also output recent_topics: a JSON array of 3-5 topic strings discussed recently.\n\n"
+        'Output format (no markdown fences, just raw JSON):\n'
+        '{"notes": [...], "recent_topics": [...]}'
+    )
+
+    def update_personality(
+        self,
+        session_id: str,
+        user_id: str | None = None,
+        *,
+        decay_rate: float = 0.1,
+        prune_threshold: float = 0.15,
+        max_notes: int = 40,
+    ) -> None:
+        """Use the judge model to analyze recent conversation and update personality notes."""
+        if not self._chat_db or not self._judge_llm:
+            return
+        session_key = session_id or "main"
+        if user_id:
+            session_key = f"{user_id}:{session_key}"
+
+        recent = self._chat_db.get_messages(session_key, limit=20)
+        if len(recent) < 6:
+            return
+
+        existing = self._chat_db.get_personality_notes(session_key)
+        existing_text = ""
+        if existing:
+            lines = [f"- [{n.category}] {n.note} (confidence: {n.confidence:.1f})" for n in existing]
+            existing_text = "Existing notes:\n" + "\n".join(lines)
+
+        conv_lines = [f"{r.role}: {r.content[:200]}" for r in recent[-14:]]
+        conv_text = "Recent conversation:\n" + "\n".join(conv_lines)
+
+        from langchain_core.messages import SystemMessage, HumanMessage
+        prompt = [
+            SystemMessage(content=self._PERSONALITY_JUDGE_PROMPT),
+            HumanMessage(content=f"{existing_text}\n\n{conv_text}"),
+        ]
+
+        try:
+            import json as _json
+            result = self._judge_llm.invoke(prompt)
+            raw = _extract_text(getattr(result, "content", "")).strip()
+            raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+            self._log.info("Personality judge raw (%d chars): %s", len(raw), raw[:200])
+            parsed = _json.loads(raw)
+
+            notes_data = parsed.get("notes", [])
+            if not isinstance(notes_data, list):
+                self._log.warning("Personality judge returned invalid notes format")
+                return
+
+            note_tuples: list[tuple[str, str, float]] = []
+            for item in notes_data[:max_notes]:
+                if not isinstance(item, dict):
+                    continue
+                cat = str(item.get("category", "topic_interest")).strip()
+                note = str(item.get("note", "")).strip()
+                conf = float(item.get("confidence", 0.7))
+                if note and cat:
+                    note_tuples.append((cat, note, max(0.0, min(1.0, conf))))
+
+            if note_tuples:
+                self._chat_db.replace_personality_notes(session_key, note_tuples)
+                self._log.info("Updated %d personality notes", len(note_tuples))
+
+            topics = parsed.get("recent_topics", [])
+            if isinstance(topics, list):
+                for t in topics[:10]:
+                    topic_str = str(t).strip()
+                    if topic_str:
+                        self._chat_db.add_recent_topic(session_key, topic_str)
+
+        except Exception as exc:
+            self._log.warning("Personality update failed: %s", exc)
+            self._chat_db.decay_personality_notes(session_key, decay_rate, prune_threshold)
 
     def _invoke_run(self, session_key: str, messages: list[Any]) -> Any:
         from langchain_core.messages import SystemMessage, AIMessage

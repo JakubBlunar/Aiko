@@ -160,6 +160,7 @@ class SessionController:
                 context_window=context_window_override,
                 chat_db=self._chat_db,
                 embedding_service=self._embedding_service,
+                personality_token_budget=settings.agent.personality_token_budget,
             )
             self._realtime_stt = stt_future.result()
             self._agent = agent_future.result()
@@ -545,6 +546,72 @@ class SessionController:
             log = logging.getLogger("app")
             log.warning("Startup greeting generation failed: %s", exc)
             return "Welcome back. Audio is ready."
+
+    def generate_proactive_message(self) -> str | None:
+        """Generate a proactive conversation starter using personality notes and recent topics."""
+        try:
+            from langchain_core.messages import SystemMessage, HumanMessage
+
+            llm = getattr(self._agent, "_llm", None)
+            chat_db = getattr(self._agent, "_chat_db", None)
+            if llm is None or chat_db is None:
+                return None
+
+            session_key = f"{self._user_id}:{self._session_id}" if self._user_id else self._session_id
+
+            notes = chat_db.get_personality_notes(session_key, min_confidence=0.15)
+            if not notes:
+                return None
+
+            strong = [n for n in notes if n.confidence >= 0.7]
+            fading = [n for n in notes if 0.15 <= n.confidence < 0.4]
+            topics = chat_db.get_recent_topics(session_key, limit=10)
+
+            note_lines = []
+            for n in (strong[:5] + fading[:3]):
+                note_lines.append(f"- {n.note} (confidence: {n.confidence:.1f})")
+
+            topic_list = ", ".join(t.topic for t in topics[:8]) if topics else "none yet"
+
+            sys_msg = getattr(self._agent, "_system_message", "") or ""
+            prompt = [
+                SystemMessage(content=sys_msg),
+                HumanMessage(
+                    content="The user has been quiet for a while. Start a brief, natural conversation.\n\n"
+                    f"What you know about them:\n" + "\n".join(note_lines) + "\n\n"
+                    f"Recent topics to AVOID (don't repeat): {topic_list}\n\n"
+                    "Rules:\n"
+                    "- Write 1-2 short spoken sentences. Be casual and natural.\n"
+                    "- Pick something interesting from what you know, or bring up a fading memory.\n"
+                    "- Do NOT use [[reaction:...]] tags or formatting. Just the text.\n"
+                    "- Do NOT ask 'is there anything I can help with?' — be specific and interesting.\n"
+                    "- If a fading memory is available, you can reference it naturally like 'oh, by the way...'"
+                ),
+            ]
+
+            result = llm.invoke(prompt)
+            text = (getattr(result, "content", "") or "").strip()
+            text = text.strip('"').strip("'").strip()
+
+            if not text or len(text) > 300:
+                return None
+
+            if topics:
+                import re
+                for t in topics[:5]:
+                    if t.topic.lower() in text.lower():
+                        return None
+
+            chat_db.add_recent_topic(session_key, text[:60])
+
+            log = logging.getLogger("app")
+            log.info("Proactive message generated: %s", text[:80])
+            return text
+
+        except Exception as exc:
+            log = logging.getLogger("app")
+            log.warning("Proactive message generation failed: %s", exc)
+            return None
 
     def prewarm_tts(self) -> None:
         tts = self._tts
@@ -1223,11 +1290,20 @@ class SessionController:
                 f"mode={mode} chars={len(response)} llm_ms={round(llm_ms, 1)}",
             )
             if hasattr(self._agent, "summarize_if_needed"):
+                def _post_turn_maintenance() -> None:
+                    self._agent.summarize_if_needed(self._session_id, self._user_id)
+                    if hasattr(self._agent, "update_personality"):
+                        self._agent.update_personality(
+                            self._session_id,
+                            self._user_id,
+                            decay_rate=self._settings.agent.personality_decay_rate,
+                            prune_threshold=self._settings.agent.personality_prune_threshold,
+                            max_notes=self._settings.agent.personality_max_notes,
+                        )
                 threading.Thread(
-                    target=self._agent.summarize_if_needed,
-                    args=(self._session_id, self._user_id),
+                    target=_post_turn_maintenance,
                     daemon=True,
-                    name="summary-gen",
+                    name="post-turn-maintenance",
                 ).start()
         except Exception as exc:
             self._trace("pipeline.llm.error", str(exc))

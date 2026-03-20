@@ -188,11 +188,17 @@ class LoggingSettings:
 
 @dataclass(slots=True)
 class AgentSettings:
-    """Agent context and compression (num_history_runs, compress_tool_results)."""
+    """Agent context, compression, personality evolution, and proactive conversation."""
     num_history_runs: int = 10
     compress_tool_results: bool = True
     compress_tool_results_limit: int | None = 3
     compress_token_limit: int | None = None
+    personality_prune_threshold: float = 0.15
+    personality_decay_rate: float = 0.1
+    personality_max_notes: int = 40
+    personality_token_budget: int = 300
+    proactive_silence_seconds: float = 45.0
+    proactive_cooldown_seconds: float = 120.0
 
 
 @dataclass(slots=True)
@@ -594,6 +600,12 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                 if agent_raw.get("compress_token_limit") is not None
                 else None
             ),
+            personality_prune_threshold=max(0.0, min(float(agent_raw.get("personality_prune_threshold", 0.15)), 1.0)),
+            personality_decay_rate=max(0.0, min(float(agent_raw.get("personality_decay_rate", 0.1)), 0.5)),
+            personality_max_notes=max(5, min(int(agent_raw.get("personality_max_notes", 40)), 100)),
+            personality_token_budget=max(50, min(int(agent_raw.get("personality_token_budget", 300)), 1000)),
+            proactive_silence_seconds=max(10.0, float(agent_raw.get("proactive_silence_seconds", 45.0))),
+            proactive_cooldown_seconds=max(30.0, float(agent_raw.get("proactive_cooldown_seconds", 120.0))),
         ),
         logging=LoggingSettings(
             level=str(logging_raw.get("level", "INFO")).strip().upper() or "INFO",
