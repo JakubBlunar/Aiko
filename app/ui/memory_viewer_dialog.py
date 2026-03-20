@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -15,18 +16,30 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.session_controller import SessionController
+from app.ui.geometry_mixin import PersistentGeometryMixin
 
 
-class MemoryViewerDialog(QDialog):
+class MemoryViewerDialog(PersistentGeometryMixin, QDialog):
     """Shows what the assistant has learned: personality notes, topics, and summary."""
 
-    def __init__(self, session: SessionController, parent=None) -> None:
+    def __init__(
+        self,
+        session: SessionController,
+        parent=None,
+        *,
+        initial_geometry: dict[str, int] | None = None,
+        persist_geometry: Callable[[dict[str, int]], None] | None = None,
+    ) -> None:
         super().__init__(parent)
         self._session = session
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         self.setWindowTitle("What I Know About You")
-        self.resize(700, 520)
+        self.init_geometry(
+            initial=initial_geometry,
+            default_width=700, default_height=520,
+            persist_callback=persist_geometry,
+        )
 
         layout = QVBoxLayout(self)
 

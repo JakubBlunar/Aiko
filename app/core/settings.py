@@ -173,6 +173,7 @@ class UiSettings:
     decision_trace_window_y: int | None = None
     decision_trace_window_width: int | None = None
     decision_trace_window_height: int | None = None
+    dialog_geometries: dict[str, dict[str, int]] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -581,6 +582,15 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                 if ui.get("decision_trace_window_height") is not None
                 else None
             ),
+            dialog_geometries=(
+                {
+                    str(k): {str(ik): int(iv) for ik, iv in v.items()}
+                    for k, v in ui.get("dialog_geometries", {}).items()
+                    if isinstance(v, dict)
+                }
+                if isinstance(ui.get("dialog_geometries"), dict)
+                else {}
+            ),
         ),
         tooling=ToolingBridgeSettings(
             config_default_path=str(tooling.get("config_default_path", "config/tooling.default.json")),
@@ -653,6 +663,7 @@ def save_runtime_preferences(
     ui_decision_trace_window_y: int | None = None,
     ui_decision_trace_window_width: int | None = None,
     ui_decision_trace_window_height: int | None = None,
+    ui_dialog_geometries: dict[str, dict[str, int]] | None = None,
     path: Path | None = None,
 ) -> None:
     target = path or USER_CONFIG_PATH
@@ -768,6 +779,14 @@ def save_runtime_preferences(
         ui_updates["decision_trace_window_width"] = max(300, int(ui_decision_trace_window_width))
     if ui_decision_trace_window_height is not None:
         ui_updates["decision_trace_window_height"] = max(220, int(ui_decision_trace_window_height))
+    if ui_dialog_geometries is not None:
+        existing = dict(effective.get("ui", {}).get("dialog_geometries", {}))
+        existing.update(ui_dialog_geometries)
+        ui_updates["dialog_geometries"] = {
+            str(k): {str(ik): int(iv) for ik, iv in v.items()}
+            for k, v in existing.items()
+            if isinstance(v, dict)
+        }
     if ui_updates:
         updates["ui"] = ui_updates
 

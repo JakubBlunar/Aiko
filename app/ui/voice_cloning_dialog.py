@@ -5,6 +5,7 @@ import os
 import shutil
 import tempfile
 import threading
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
@@ -26,6 +27,8 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QVBoxLayout,
 )
+
+from app.ui.geometry_mixin import PersistentGeometryMixin
 
 
 _VOICES_DIR = Path(__file__).resolve().parents[2] / "voices"
@@ -67,10 +70,17 @@ class _WorkerSignals(QObject):
     error = Signal(str)
 
 
-class VoiceCloningDialog(QDialog):
+class VoiceCloningDialog(PersistentGeometryMixin, QDialog):
     """Upload audio, preview cloned voice, save/manage voice embeddings."""
 
-    def __init__(self, session_controller, parent=None) -> None:
+    def __init__(
+        self,
+        session_controller,
+        parent=None,
+        *,
+        initial_geometry: dict[str, int] | None = None,
+        persist_geometry: Callable[[dict[str, int]], None] | None = None,
+    ) -> None:
         super().__init__(parent)
         self._session = session_controller
         self._signals = _WorkerSignals()
@@ -84,7 +94,11 @@ class VoiceCloningDialog(QDialog):
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         self.setWindowTitle("Voice Cloning (Pocket TTS)")
-        self.resize(640, 620)
+        self.init_geometry(
+            initial=initial_geometry,
+            default_width=640, default_height=620,
+            persist_callback=persist_geometry,
+        )
         self._build_ui()
         self._refresh_saved_voices()
 

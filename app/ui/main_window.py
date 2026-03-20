@@ -293,7 +293,11 @@ class MainWindow(QMainWindow):
 
     def _open_settings(self) -> None:
         if self._settings_dialog is None:
-            self._settings_dialog = SettingsDialog(self._session, self)
+            self._settings_dialog = SettingsDialog(
+                self._session, self,
+                initial_geometry=self._settings.ui.dialog_geometries.get("settings"),
+                persist_geometry=lambda geo: self._persist_dialog_geometry("settings", geo),
+            )
             self._settings_dialog.finished.connect(self._on_settings_dialog_finished)
         self._settings_dialog.show()
         self._settings_dialog.raise_()
@@ -540,7 +544,11 @@ class MainWindow(QMainWindow):
 
     def _open_memory_viewer(self) -> None:
         if self._memory_dialog is None:
-            self._memory_dialog = MemoryViewerDialog(self._session, None)
+            self._memory_dialog = MemoryViewerDialog(
+                self._session, None,
+                initial_geometry=self._settings.ui.dialog_geometries.get("memory_viewer"),
+                persist_geometry=lambda geo: self._persist_dialog_geometry("memory_viewer", geo),
+            )
             self._memory_dialog.finished.connect(self._on_memory_dialog_closed)
         self._memory_dialog.show()
         self._memory_dialog.raise_()
@@ -552,7 +560,11 @@ class MainWindow(QMainWindow):
     def _open_voice_cloning(self) -> None:
         if self._voice_cloning_dialog is None:
             from app.ui.voice_cloning_dialog import VoiceCloningDialog
-            self._voice_cloning_dialog = VoiceCloningDialog(self._session, parent=None)
+            self._voice_cloning_dialog = VoiceCloningDialog(
+                self._session, parent=None,
+                initial_geometry=self._settings.ui.dialog_geometries.get("voice_cloning"),
+                persist_geometry=lambda geo: self._persist_dialog_geometry("voice_cloning", geo),
+            )
             self._voice_cloning_dialog.finished.connect(self._on_voice_cloning_closed)
         self._voice_cloning_dialog.show()
         self._voice_cloning_dialog.raise_()
@@ -599,6 +611,10 @@ class MainWindow(QMainWindow):
             trace_window_width=width,
             trace_window_height=height,
         )
+
+    def _persist_dialog_geometry(self, key: str, geo: dict[str, int]) -> None:
+        self._settings.ui.dialog_geometries[key] = geo
+        self._persist_preferences(dialog_geometries={key: geo})
 
     def _run_stt_test(self) -> None:
         if self._stt_test_thread is not None:
@@ -800,6 +816,7 @@ class MainWindow(QMainWindow):
         trace_window_y: int | None = None,
         trace_window_width: int | None = None,
         trace_window_height: int | None = None,
+        dialog_geometries: dict[str, dict[str, int]] | None = None,
         sync: bool = False,
     ) -> None:
         import threading
@@ -840,6 +857,7 @@ class MainWindow(QMainWindow):
             ui_decision_trace_window_y=trace_window_y,
             ui_decision_trace_window_width=trace_window_width,
             ui_decision_trace_window_height=trace_window_height,
+            ui_dialog_geometries=dialog_geometries,
         )
         if sync:
             save_runtime_preferences(**kwargs)

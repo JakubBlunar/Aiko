@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
@@ -29,13 +30,26 @@ from PySide6.QtWidgets import (
 
 from app.core.session_controller import SessionController
 from app.core.settings import save_runtime_preferences
+from app.ui.geometry_mixin import PersistentGeometryMixin
 
 
-class SettingsDialog(QDialog):
-    def __init__(self, session: SessionController, parent=None) -> None:
+class SettingsDialog(PersistentGeometryMixin, QDialog):
+    def __init__(
+        self,
+        session: SessionController,
+        parent=None,
+        *,
+        initial_geometry: dict[str, int] | None = None,
+        persist_geometry: Callable[[dict[str, int]], None] | None = None,
+    ) -> None:
         super().__init__(parent)
         self._session = session
         self.setWindowTitle("Settings")
+        self.init_geometry(
+            initial=initial_geometry,
+            default_width=640, default_height=480,
+            persist_callback=persist_geometry,
+        )
         layout = QVBoxLayout(self)
 
         self._tabs = QTabWidget()
