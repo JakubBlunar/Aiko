@@ -576,7 +576,12 @@ class _AgentWrapper:
         return row.summary if row else ""
 
     def _build_system_message(self, session_key: str, *, user_input: str = "") -> str:
-        parts = [self._system_message]
+        from datetime import datetime as _dt
+        now = _dt.now().astimezone()
+        parts = [
+            self._system_message,
+            f"Current time: {now.strftime('%A, %B %d, %Y %I:%M %p %Z')}",
+        ]
 
         summary = self._load_summary(session_key)
         if summary:
