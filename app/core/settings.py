@@ -149,11 +149,6 @@ class TtsSettings:
     kokoro_model_path: str
     kokoro_voices_path: str
     pykokoro_pause_mode: str = "auto"
-    sbv2_model_path: str = ""
-    sbv2_device: str = "cpu"
-    sbv2_language: str = "EN"
-    sbv2_style: str = "Neutral"
-    sbv2_style_weight: float = 1.0
     llasa_model: str = ""
     llasa_codec_model: str = ""
     llasa_device: str = "cuda"
@@ -537,11 +532,6 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             kokoro_model_path=str(tts.get("kokoro_model_path", "kokoro-v1.0.onnx")),
             kokoro_voices_path=str(tts.get("kokoro_voices_path", "voices-v1.0.bin")),
             pykokoro_pause_mode=str(tts.get("pykokoro_pause_mode", "auto")),
-            sbv2_model_path=str(tts.get("sbv2_model_path", "")),
-            sbv2_device=str(tts.get("sbv2_device", "cpu")),
-            sbv2_language=str(tts.get("sbv2_language", "EN")),
-            sbv2_style=str(tts.get("sbv2_style", "Neutral")),
-            sbv2_style_weight=float(tts.get("sbv2_style_weight", 1.0)),
             llasa_model=str(tts.get("llasa_model", "NandemoGHS/Anime-Llasa-3B")),
             llasa_codec_model=str(tts.get("llasa_codec_model", "HKUSTAudio/xcodec2")),
             llasa_device=str(tts.get("llasa_device", "cuda")),

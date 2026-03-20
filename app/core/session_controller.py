@@ -405,11 +405,6 @@ class SessionController:
         except ImportError:
             pass
         try:
-            from style_bert_vits2.tts_model import TTSModel  # noqa: F401
-            providers.append("style-bert-vits2")
-        except ImportError:
-            pass
-        try:
             from pocket_tts import TTSModel as _PocketModel  # noqa: F401
             providers.append("pocket-tts")
         except ImportError:
@@ -1723,12 +1718,6 @@ class SessionController:
             try:
                 from app.tts.pykokoro_service import PyKokoroTtsService
                 return PyKokoroTtsService(settings.tts, output_device=output_device)
-            except Exception:
-                pass
-        elif provider == "style-bert-vits2":
-            try:
-                from app.tts.style_bert_vits2_service import StyleBertVits2TtsService
-                return StyleBertVits2TtsService(settings.tts, output_device=output_device)
             except Exception:
                 pass
         elif provider == "pocket-tts":

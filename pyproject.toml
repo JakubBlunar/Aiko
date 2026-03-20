@@ -57,9 +57,6 @@ chat-ui = [
 tts-pykokoro = [
   "pykokoro>=0.6.0",
 ]
-tts-sbv2 = [
-  "style-bert-vits2>=2.5.0",
-]
 tts-pocket = [
   "pocket-tts>=1.1.0",
   "pydub>=0.25.0",
