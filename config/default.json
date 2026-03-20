@@ -2,7 +2,7 @@
   "agent": {
     "num_history_runs": 10,
     "compress_tool_results": true,
-    "compress_tool_results_limit": 3,
+    "compress_tool_results_limit": null,
     "compress_token_limit": null,
     "personality_prune_threshold": 0.15,
     "personality_decay_rate": 0.1,
@@ -56,7 +56,10 @@
     "sbv2_device": "cpu",
     "sbv2_language": "EN",
     "sbv2_style": "Neutral",
-    "sbv2_style_weight": 1.0
+    "sbv2_style_weight": 1.0,
+    "pocket_tts_voice": "alba",
+    "pocket_tts_temp": 0.7,
+    "pocket_tts_custom_voices_dir": ""
   },
   "ui": {
     "window_x": null,

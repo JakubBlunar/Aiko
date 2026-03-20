@@ -161,6 +161,9 @@ class TtsSettings:
     llasa_top_p: float = 0.95
     llasa_max_length: int = 2048
     llasa_max_vram_mb: int = 0
+    pocket_tts_voice: str = "alba"
+    pocket_tts_temp: float = 0.7
+    pocket_tts_custom_voices_dir: str = ""
 
 
 @dataclass(slots=True)
@@ -193,7 +196,7 @@ class AgentSettings:
     """Agent context, compression, personality evolution, and proactive conversation."""
     num_history_runs: int = 10
     compress_tool_results: bool = True
-    compress_tool_results_limit: int | None = 3
+    compress_tool_results_limit: int | None = None
     compress_token_limit: int | None = None
     personality_prune_threshold: float = 0.15
     personality_decay_rate: float = 0.1
@@ -546,6 +549,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             llasa_top_p=float(tts.get("llasa_top_p", 0.95)),
             llasa_max_length=max(256, int(tts.get("llasa_max_length", 2048))),
             llasa_max_vram_mb=max(0, int(tts.get("llasa_max_vram_mb", 0))),
+            pocket_tts_voice=str(tts.get("pocket_tts_voice", "alba")),
+            pocket_tts_temp=float(tts.get("pocket_tts_temp", 0.7)),
+            pocket_tts_custom_voices_dir=str(tts.get("pocket_tts_custom_voices_dir", "")),
         ),
         ui=UiSettings(
             window_x=int(ui["window_x"]) if ui.get("window_x") is not None else None,
@@ -644,6 +650,8 @@ def save_runtime_preferences(
     stt_diagnostic_initial_prompt: str | None = None,
     stt_prosody_enabled: bool | None = None,
     stt_prosody_include_in_prompt: bool | None = None,
+    pocket_tts_voice: str | None = None,
+    pocket_tts_temp: float | None = None,
     enable_microphone: bool,
     window_x: int | None = None,
     window_y: int | None = None,
@@ -696,6 +704,8 @@ def save_runtime_preferences(
         "tts": {
             "provider": str(tts_provider or "piper").strip().lower() or "piper",
             "voice": str(tts_voice or "").strip(),
+            **({"pocket_tts_voice": str(pocket_tts_voice).strip()} if pocket_tts_voice else {}),
+            **({"pocket_tts_temp": round(float(pocket_tts_temp), 2)} if pocket_tts_temp is not None else {}),
         },
         "stt": {
             "diagnostics": {},

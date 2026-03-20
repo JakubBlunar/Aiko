@@ -255,11 +255,17 @@ class MainWindow(QMainWindow):
         self._settings_dialog = None
         self._memory_dialog: MemoryViewerDialog | None = None
         self._trace_dialog: DecisionTraceDialog | None = None
+        self._voice_cloning_dialog = None
 
         menu_bar = self.menuBar()
         view_menu = menu_bar.addMenu("View")
         view_menu.addAction("Memory Viewer", self._open_memory_viewer)
         view_menu.addAction("Decision Trace", self._open_trace_viewer)
+        try:
+            from pocket_tts import TTSModel as _PT  # noqa: F401
+            view_menu.addAction("Voice Cloning", self._open_voice_cloning)
+        except ImportError:
+            pass
 
         help_menu = menu_bar.addMenu("Help")
         help_menu.addAction("Keyboard Shortcuts", self._show_shortcuts_help)
@@ -387,11 +393,24 @@ class MainWindow(QMainWindow):
             return True
         return super().eventFilter(watched, event)
 
+    def _format_tokens(self, tokens: int) -> str:
+        if tokens >= 1024:
+            return f"{tokens / 1024:.1f}K"
+        return str(tokens) if tokens else "0"
+
+    def _ctx_status_part(self) -> str:
+        total = self._session.context_window_size
+        used = self._session.context_tokens_used
+        if not total:
+            return ""
+        total_str = self._format_tokens(total)
+        if used > 0:
+            return f" | ctx: {self._format_tokens(used)} / {total_str}"
+        return f" | ctx: {total_str}"
+
     def _ready_status_text(self) -> str:
         model = self._session.effective_chat_model
-        ctx = self._session.context_window_size
-        ctx_str = f" | ctx: {ctx // 1024}K" if ctx and ctx >= 1024 else (f" | ctx: {ctx}" if ctx else "")
-        return f"Ready | model: {model}{ctx_str}"
+        return f"Ready | model: {model}{self._ctx_status_part()}"
 
     def _refresh_status(self) -> None:
         self._status_label.setText(self._ready_status_text())
@@ -529,6 +548,18 @@ class MainWindow(QMainWindow):
 
     def _on_memory_dialog_closed(self) -> None:
         self._memory_dialog = None
+
+    def _open_voice_cloning(self) -> None:
+        if self._voice_cloning_dialog is None:
+            from app.ui.voice_cloning_dialog import VoiceCloningDialog
+            self._voice_cloning_dialog = VoiceCloningDialog(self._session, parent=None)
+            self._voice_cloning_dialog.finished.connect(self._on_voice_cloning_closed)
+        self._voice_cloning_dialog.show()
+        self._voice_cloning_dialog.raise_()
+        self._voice_cloning_dialog.activateWindow()
+
+    def _on_voice_cloning_closed(self) -> None:
+        self._voice_cloning_dialog = None
 
     def _open_trace_viewer(self) -> None:
         if self._trace_dialog is None:
@@ -790,6 +821,8 @@ class MainWindow(QMainWindow):
             action_min_interval_seconds=self._session.action_min_interval_seconds,
             tts_provider=self._session.tts_provider,
             tts_voice=self._session.tts_voice,
+            pocket_tts_voice=getattr(self._session._settings.tts, "pocket_tts_voice", None),
+            pocket_tts_temp=getattr(self._session._settings.tts, "pocket_tts_temp", None),
             stt_model=self._session.stt_model,
             stt_diagnostic_record_seconds=None,
             stt_diagnostic_vad_filter=None,
@@ -849,7 +882,10 @@ class MainWindow(QMainWindow):
         self._stream_speaker = "Assistant"
         self._reset_live_stream("")
         self._set_single_turn_controls_busy(True)
-        self._status_label.setText("Recording..." if mode == "record" else "AI is generating response...")
+        if mode == "record":
+            self._status_label.setText("Recording...")
+        else:
+            self._status_label.setText(f"Generating...{self._ctx_status_part()}")
 
         self._turn_thread = QThread(self)
         self._turn_worker = SingleTurnWorker(
@@ -861,7 +897,7 @@ class MainWindow(QMainWindow):
         self._turn_worker.moveToThread(self._turn_thread)
 
         self._turn_thread.started.connect(self._turn_worker.run)
-        self._turn_worker.status.connect(self._status_label.setText)
+        self._turn_worker.status.connect(self._on_worker_status)
         self._turn_worker.status.connect(self._on_status_for_transcript)
         self._turn_worker.replying.connect(self._append_live_stream_token)
         self._turn_worker.typed_done.connect(self._on_typed_turn_done)
@@ -913,7 +949,7 @@ class MainWindow(QMainWindow):
         self._live_worker.moveToThread(self._live_thread)
 
         self._live_thread.started.connect(self._live_worker.run)
-        self._live_worker.status.connect(self._status_label.setText)
+        self._live_worker.status.connect(self._on_worker_status)
         self._live_worker.status.connect(self._on_status_for_transcript)
         self._live_worker.level.connect(self._on_live_audio_level)
         self._live_worker.heard.connect(lambda text: self._append("You (live)", text))
@@ -989,9 +1025,16 @@ class MainWindow(QMainWindow):
         self._live_thread = None
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        import threading as _threading
+        _threading.Timer(5.0, lambda: os._exit(0)).start()
+
         self._persist_preferences(sync=True)
         self._stop_live_mode()
-        self._session.shutdown()
+
+        shutdown_thread = _threading.Thread(target=self._session.shutdown, daemon=True)
+        shutdown_thread.start()
+        shutdown_thread.join(timeout=3.0)
+
         for thread in (
             self._turn_thread,
             self._stt_test_thread,
@@ -999,16 +1042,13 @@ class MainWindow(QMainWindow):
         ):
             if thread is not None:
                 thread.quit()
-                if not thread.wait(2000):
+                if not thread.wait(1500):
                     thread.terminate()
                     thread.wait(500)
         super().closeEvent(event)
         app = QApplication.instance()
         if app is not None:
             QTimer.singleShot(0, app.quit)
-        # Force-exit via threading.Timer (works even after the Qt event loop is gone)
-        import threading as _threading
-        _threading.Timer(3.0, lambda: os._exit(0)).start()
 
     def _on_live_toggle_clicked(self) -> None:
         if self._live_thread is not None:
@@ -1100,6 +1140,18 @@ class MainWindow(QMainWindow):
         self._message_count = 0
 
     
+
+    def _on_worker_status(self, status: str) -> None:
+        """Enrich worker status strings with context usage info."""
+        s = (status or "").strip()
+        if not s or s == "ready":
+            return
+        lower = s.lower()
+        if lower.startswith("listening") or lower.startswith("recording"):
+            self._status_label.setText(s)
+            return
+        ctx = self._ctx_status_part()
+        self._status_label.setText(f"{s}{ctx}" if ctx else s)
 
     def _on_status_for_transcript(self, status: str) -> None:
         """Append tool-use (and similar) status messages to the transcript."""

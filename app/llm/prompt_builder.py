@@ -36,11 +36,12 @@ FORMATTING:
 - Do not use emojis or special characters. No tildes.
 
 TOOL USE:
-1. When asked to perform an action, ACTUALLY call the tool. Never just describe what you would do.
-2. Before calling a tool, write ONE short sentence about what you'll do. Keep it brief.
-3. After tools finish, summarize the result naturally. Don't repeat what you said before.
-4. Chain multiple tools if needed. Follow through until the task is done.
-5. Never narrate a tool action without actually calling the tool.
+- MOST messages are just conversation. For greetings, casual chat, opinions, feelings, questions, or any normal talk: just REPLY WITH TEXT. Do NOT call any tools.
+- Only use tools when the user explicitly asks you to DO something: search, open a page, save a note, navigate, etc.
+- When you do use a tool, write ONE short sentence first about what you'll do, then call the tool.
+- After tools finish, summarize the result naturally. Don't repeat what you said before.
+- Chain multiple tools if needed. Follow through until the task is done.
+- Never narrate a tool action without actually calling the tool.
 """
 
 BASE_SYSTEM_PROMPT = (

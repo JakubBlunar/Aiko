@@ -128,6 +128,17 @@ class SettingsDialog(QDialog):
         self._voice_combo.setMinimumWidth(180)
         self._populate_voices()
         form.addRow("TTS voice:", self._voice_combo)
+
+        self._pocket_temp_spin = QDoubleSpinBox()
+        self._pocket_temp_spin.setRange(0.1, 1.5)
+        self._pocket_temp_spin.setSingleStep(0.05)
+        self._pocket_temp_spin.setValue(
+            getattr(self._session._settings.tts, "pocket_tts_temp", 0.7)
+        )
+        self._pocket_temp_label = QLabel("Temperature:")
+        form.addRow(self._pocket_temp_label, self._pocket_temp_spin)
+        self._update_pocket_tts_visibility()
+
         layout.addLayout(form)
 
         live_group = QGroupBox("Live input")
@@ -318,11 +329,17 @@ class SettingsDialog(QDialog):
         if idx >= 0:
             self._voice_combo.setCurrentIndex(idx)
 
+    def _update_pocket_tts_visibility(self) -> None:
+        is_pocket = (self._tts_provider_combo.currentData() or "") == "pocket-tts"
+        self._pocket_temp_spin.setVisible(is_pocket)
+        self._pocket_temp_label.setVisible(is_pocket)
+
     def _on_provider_changed(self) -> None:
         provider = self._tts_provider_combo.currentData()
         if provider:
             self._session.set_tts_provider(str(provider))
             self._populate_voices()
+        self._update_pocket_tts_visibility()
 
     def _on_live_input_mode_changed(self) -> None:
         is_ptt = (self._live_input_combo.currentData() or "") == "push_to_talk"
@@ -385,6 +402,8 @@ class SettingsDialog(QDialog):
         if selected_provider != self._session.tts_provider:
             self._session.set_tts_provider(selected_provider)
         self._session.set_tts_voice(str(self._voice_combo.currentData() or self._voice_combo.currentText() or self._session.tts_voice))
+        if hasattr(self._session._settings.tts, "pocket_tts_temp"):
+            self._session._settings.tts.pocket_tts_temp = self._pocket_temp_spin.value()
         in_dev = self._input_device_combo.currentData()
         self._session.set_microphone_device(in_dev)
         if hasattr(self._session, "set_output_device"):
@@ -428,7 +447,21 @@ class SettingsDialog(QDialog):
         if hasattr(settings, "logging") and hasattr(settings.logging, "level"):
             settings.logging.level = self._log_level_combo.currentData() or "INFO"
         try:
-            save_runtime_preferences(settings)
+            save_runtime_preferences(
+                chat_model=self._session.chat_model,
+                remember_history=getattr(settings.assistant, "remember_history", True),
+                autonomy_mode=getattr(settings.autonomy, "mode", "interactive"),
+                microphone_device=getattr(self._session, "microphone_device", None),
+                output_device=getattr(self._session, "output_device", None),
+                vad_level_threshold=getattr(self._session, "vad_level_threshold", 0.02),
+                vad_silence_seconds=getattr(self._session, "vad_silence_seconds", 1.0),
+                action_min_interval_seconds=getattr(self._session, "action_min_interval_seconds", 1.0),
+                tts_provider=self._session.tts_provider,
+                tts_voice=self._session.tts_voice,
+                pocket_tts_voice=getattr(settings.tts, "pocket_tts_voice", None),
+                pocket_tts_temp=getattr(settings.tts, "pocket_tts_temp", None),
+                enable_microphone=getattr(self._session, "_mic_enabled", True),
+            )
         except Exception:
             pass
         super().accept()

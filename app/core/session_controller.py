@@ -409,10 +409,18 @@ class SessionController:
             providers.append("style-bert-vits2")
         except ImportError:
             pass
+        try:
+            from pocket_tts import TTSModel as _PocketModel  # noqa: F401
+            providers.append("pocket-tts")
+        except ImportError:
+            pass
         return providers
 
     @property
     def tts_voice(self) -> str:
+        provider = getattr(self._settings.tts, "provider", "")
+        if provider == "pocket-tts":
+            return str(getattr(self._settings.tts, "pocket_tts_voice", "alba") or "alba").strip()
         return str(self._settings.tts.voice or "").strip()
 
     def list_tts_voices(self) -> list[str]:
@@ -432,9 +440,17 @@ class SessionController:
         normalized = str(voice or "").strip().replace("\\", "/")
         if not normalized:
             return
+
+        provider = getattr(self._settings.tts, "provider", "")
+        if provider == "pocket-tts":
+            set_voice = getattr(self._tts, "set_voice", None)
+            if callable(set_voice) and set_voice(normalized):
+                self._settings.tts.pocket_tts_voice = normalized
+                self._trace("tts.voice", f"Switched Pocket TTS voice to {normalized}")
+                return
+
         if normalized == self.tts_voice:
             return
-
         self._settings.tts.voice = normalized
         try:
             self._tts.stop()
@@ -706,6 +722,14 @@ class SessionController:
             return agent._context_window
         return getattr(self._settings.ollama, "context_window", None) or 0
 
+    @property
+    def context_tokens_used(self) -> int:
+        """Estimated tokens used (system + history + reserve) as of last turn."""
+        agent = getattr(self, "_agent", None)
+        if agent and hasattr(agent, "_last_context_tokens"):
+            return agent._last_context_tokens
+        return 0
+
     def set_chat_model(self, model_name: str) -> None:
         model_name = (model_name or "").strip()
         if model_name:
@@ -917,7 +941,10 @@ class SessionController:
         except Exception:
             pass
         try:
-            self._realtime_stt.stop_context()
+            import threading as _th
+            t = _th.Thread(target=self._realtime_stt.stop_context, daemon=True)
+            t.start()
+            t.join(timeout=2.0)
         except Exception:
             pass
         self.stop_action_hotkey_listener()
@@ -1304,21 +1331,24 @@ class SessionController:
                 f"mode={mode} chars={len(response)} llm_ms={round(llm_ms, 1)}",
             )
             if self._remember_history and hasattr(self._agent, "summarize_if_needed"):
-                def _post_turn_maintenance() -> None:
-                    self._agent.summarize_if_needed(self._session_id, self._user_id)
-                    if hasattr(self._agent, "update_personality"):
-                        self._agent.update_personality(
-                            self._session_id,
-                            self._user_id,
-                            decay_rate=self._settings.agent.personality_decay_rate,
-                            prune_threshold=self._settings.agent.personality_prune_threshold,
-                            max_notes=self._settings.agent.personality_max_notes,
-                        )
                 threading.Thread(
-                    target=_post_turn_maintenance,
+                    target=self._agent.summarize_if_needed,
+                    args=(self._session_id, self._user_id),
                     daemon=True,
-                    name="post-turn-maintenance",
+                    name="post-turn-summarize",
                 ).start()
+                if hasattr(self._agent, "update_personality"):
+                    threading.Thread(
+                        target=self._agent.update_personality,
+                        args=(self._session_id, self._user_id),
+                        kwargs={
+                            "decay_rate": self._settings.agent.personality_decay_rate,
+                            "prune_threshold": self._settings.agent.personality_prune_threshold,
+                            "max_notes": self._settings.agent.personality_max_notes,
+                        },
+                        daemon=True,
+                        name="post-turn-personality",
+                    ).start()
         except Exception as exc:
             self._trace("pipeline.llm.error", str(exc))
             self._set_last_metrics({
@@ -1360,11 +1390,8 @@ class SessionController:
                 f"full_response={'yes' if should_speak_full_response else 'no'}"
             ),
         )
-        if response and stream_tts_used:
-            try:
-                should_speak_full_response = not self.is_tts_playing()
-            except Exception:
-                should_speak_full_response = True
+        if stream_tts_used and stream_tts_enqueued_chunks[0] > 0:
+            should_speak_full_response = False
 
         if should_speak_full_response:
             try:
@@ -1702,6 +1729,12 @@ class SessionController:
             try:
                 from app.tts.style_bert_vits2_service import StyleBertVits2TtsService
                 return StyleBertVits2TtsService(settings.tts, output_device=output_device)
+            except Exception:
+                pass
+        elif provider == "pocket-tts":
+            try:
+                from app.tts.pocket_tts_service import PocketTtsService
+                return PocketTtsService(settings.tts, output_device=output_device)
             except Exception:
                 pass
         return KokoroTtsService(settings.tts, output_device=output_device)

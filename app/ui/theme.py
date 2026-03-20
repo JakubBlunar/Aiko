@@ -66,10 +66,11 @@ QMainWindow, QDialog {{
     background-color: {WINDOW_BG};
 }}
 QWidget {{
-    background-color: transparent;
+    background-color: {WINDOW_BG};
     color: {TEXT_PRIMARY};
 }}
 QLabel {{
+    background-color: transparent;
     color: {TEXT_PRIMARY};
     font-size: {FONT_SIZE_BASE}px;
 }}
@@ -170,6 +171,10 @@ QGroupBox {{
     border-radius: 6px;
     margin-top: 12px;
     padding-top: 10px;
+    background-color: {WINDOW_BG};
+}}
+QGroupBox QWidget {{
+    background-color: transparent;
 }}
 QGroupBox::title {{
     subcontrol-origin: margin;
@@ -184,6 +189,9 @@ QTabWidget::pane {{
     border-radius: 6px;
     top: -1px;
     background-color: {SURFACE_BG};
+}}
+QTabWidget QWidget {{
+    background-color: transparent;
 }}
 QTabBar::tab {{
     background-color: #e2e8f0;
@@ -225,6 +233,76 @@ QScrollBar::handle:vertical:hover {{
 }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
     height: 0;
+}}
+QListWidget {{
+    background-color: {INPUT_BG};
+    color: {TEXT_PRIMARY};
+    border: 1px solid {BORDER};
+    border-radius: 6px;
+    padding: 4px;
+    font-size: {FONT_SIZE_BASE}px;
+    outline: none;
+}}
+QListWidget::item {{
+    color: {TEXT_PRIMARY};
+    padding: 4px 6px;
+    border-radius: 4px;
+}}
+QListWidget::item:selected {{
+    background-color: {ACCENT};
+    color: #ffffff;
+}}
+QListWidget::item:hover:!selected {{
+    background-color: #e2e8f0;
+}}
+QListWidget::item:alternate {{
+    background-color: {WINDOW_BG};
+}}
+QSpinBox, QDoubleSpinBox {{
+    background-color: {INPUT_BG};
+    color: {TEXT_PRIMARY};
+    border: 1px solid {BORDER};
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: {FONT_SIZE_BASE}px;
+}}
+QSpinBox:focus, QDoubleSpinBox:focus {{
+    border-color: {ACCENT};
+}}
+QSpinBox::up-button, QDoubleSpinBox::up-button,
+QSpinBox::down-button, QDoubleSpinBox::down-button {{
+    background-color: {SURFACE_BG};
+    border: none;
+    width: 16px;
+}}
+QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{
+    background-color: #e2e8f0;
+}}
+QCheckBox {{
+    color: {TEXT_PRIMARY};
+    font-size: {FONT_SIZE_BASE}px;
+    spacing: 6px;
+}}
+QCheckBox::indicator {{
+    width: 16px;
+    height: 16px;
+    border: 1px solid {BORDER};
+    border-radius: 3px;
+    background-color: {INPUT_BG};
+}}
+QCheckBox::indicator:checked {{
+    background-color: {ACCENT};
+    border-color: {ACCENT};
+}}
+QCheckBox::indicator:hover {{
+    border-color: {ACCENT};
+}}
+QMessageBox {{
+    background-color: {WINDOW_BG};
+}}
+QMessageBox QLabel {{
+    color: {TEXT_PRIMARY};
 }}
 QDialogButtonBox QPushButton {{
     min-width: 80px;

@@ -5,6 +5,8 @@ import sys
 import warnings
 
 warnings.filterwarnings("ignore", message="urllib3.*chardet.*charset_normalizer")
+warnings.filterwarnings("ignore", message="Couldn't find ffmpeg")
+warnings.filterwarnings("ignore", message="Couldn't find ffprobe")
 
 from PySide6.QtCore import QEventLoop, QThread
 from PySide6.QtWidgets import QApplication
@@ -18,6 +20,9 @@ from app.ui.theme import get_light_palette, get_stylesheet
 
 
 def main() -> int:
+    import signal
+    signal.signal(signal.SIGINT, lambda *_: os._exit(1))
+
     install_global_exception_hooks()
     settings = load_settings()
     log_level = os.environ.get("LOG_LEVEL") or getattr(getattr(settings, "logging", None), "level", None)

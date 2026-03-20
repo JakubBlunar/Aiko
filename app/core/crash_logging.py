@@ -20,6 +20,16 @@ _fault_file = None
 _logger: logging.Logger | None = None
 
 
+class _SpamFilter(logging.Filter):
+    """Suppress repetitive library errors that cannot be fixed upstream."""
+
+    _SUPPRESSED = ("BrokenPipeError", "pipe has been ended", "poll_connection")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not any(tok in msg for tok in self._SUPPRESSED)
+
+
 def configure_logging(level_name: str | None = None) -> None:
     """Configure app logger: console (stderr) with level from env LOG_LEVEL or argument. Call once at startup."""
     global _logger
@@ -31,10 +41,23 @@ def configure_logging(level_name: str | None = None) -> None:
     _logger = logging.getLogger("app")
     _logger.setLevel(level)
     _logger.handlers.clear()
+    _logger.propagate = False
     handler = logging.StreamHandler(sys.stderr)
     handler.setLevel(level)
     handler.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s [app] %(message)s"))
     _logger.addHandler(handler)
+
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.setLevel(logging.WARNING)
+    root_handler = logging.StreamHandler(sys.stderr)
+    root_handler.setLevel(logging.WARNING)
+    root_handler.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s [%(name)s] %(message)s"))
+    root_handler.addFilter(_SpamFilter())
+    root.addHandler(root_handler)
+
+    for noisy in ("RealtimeSTT", "audio_recorder", "multiprocessing"):
+        logging.getLogger(noisy).setLevel(logging.CRITICAL)
 
 
 def _write_line(entry: dict[str, object]) -> None:

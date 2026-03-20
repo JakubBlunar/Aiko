@@ -45,7 +45,11 @@ class RealtimeSttService:
         self._lock = threading.Lock()
         self._last_error: str | None = None
         if AudioToTextRecorder is not None:
-            self._recorder = self._create_recorder()
+            try:
+                self._recorder = self._create_recorder()
+            except Exception as exc:
+                self._last_error = f"RealtimeSTT init failed: {exc}"
+                self._recorder = None
         else:
             self._last_error = "RealtimeSTT (AudioToTextRecorder) not installed"
 
@@ -101,7 +105,10 @@ class RealtimeSttService:
     def stop_context(self) -> None:
         """Exit recorder context."""
         if self._recorder is not None and hasattr(self._recorder, "__exit__"):
-            self._recorder.__exit__(None, None, None)
+            try:
+                self._recorder.__exit__(None, None, None)
+            except (BrokenPipeError, OSError, EOFError):
+                pass
 
     def record_until_silence(
         self,

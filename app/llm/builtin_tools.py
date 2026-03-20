@@ -117,8 +117,9 @@ def _make_tools(chat_db: Any = None, db_path: Path | None = None) -> list[Any]:
 
         @tool
         def save_note(text: str) -> str:
-            """Save a note or reminder for the user. Use when the user says
-            'remember this', 'remind me', or wants to save something for later."""
+            """Save a note or reminder. ONLY use when the user explicitly says
+            'remember this', 'save this', 'remind me', or 'make a note'.
+            Do NOT call this during normal conversation."""
             try:
                 conn = _notes_db._get_conn()
                 conn.execute(

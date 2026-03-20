@@ -334,7 +334,7 @@ def create_agent(
             temperature=0.0,
             num_ctx=4096,
             format="json",
-            client_kwargs={"timeout": 30.0},
+            client_kwargs={"timeout": 120.0},
             keep_alive="10m",
         )
         log.info("Judge model configured: %s", judge_model)
@@ -455,6 +455,7 @@ class _AgentWrapper:
         self._mcp_manager = mcp_manager
         self._cached_system_message: str | None = None
         self._persist_enabled: bool = True
+        self._last_context_tokens: int = 0
         self._log = logging.getLogger("app.llm.langchain_agent")
 
     @property
@@ -551,6 +552,9 @@ class _AgentWrapper:
             evicted = lang_messages.pop(0)
             running_tokens -= estimate_tokens(getattr(evicted, "content", "") or "") + 4
             self._handle_evicted_message(session_key, evicted)
+
+        sys_tokens = estimate_tokens(sys_content)
+        self._last_context_tokens = sys_tokens + running_tokens + self._RESPONSE_TOKEN_RESERVE
 
         return lang_messages
 
@@ -914,6 +918,10 @@ class _AgentWrapper:
         Returns empty string if the turn is complete, otherwise the nudge message.
         Falls back to regex-based heuristics if judge model is unavailable.
         """
+        if ai_text.strip() and tool_calls == 0 and not self._has_tool_intent(ai_text):
+            self._log.info("Judge fast-path: text present, no tools, no tool intent → complete")
+            return ""
+
         if not self._judge_llm:
             return self._judge_nudge_fallback(tool_calls, tool_names, ai_text, last_ai)
 
@@ -944,14 +952,43 @@ class _AgentWrapper:
             parsed = _json.loads(raw)
             verdict = parsed.get("verdict", "complete")
             nudge = (parsed.get("nudge") or "").strip()
-            if verdict == "complete" or not nudge:
-                self._log.info("Judge verdict: %s (no nudge needed)", verdict)
+            if verdict == "complete":
+                self._log.info("Judge verdict: complete (no nudge needed)")
                 return ""
+            if not nudge:
+                nudge = self._default_nudge_for_verdict(verdict, tool_calls)
+                if not nudge:
+                    self._log.info("Judge verdict: %s but no nudge generated, treating as complete", verdict)
+                    return ""
             self._log.info("Judge verdict: %s, nudge: %s", verdict, nudge[:100])
             return nudge
         except Exception as exc:
             self._log.warning("Judge model failed (%s), falling back to heuristics", exc)
             return self._judge_nudge_fallback(tool_calls, tool_names, ai_text, last_ai)
+
+    _VERDICT_DEFAULT_NUDGES = {
+        "needs_summary": (
+            "Good, you called tools but didn't provide a spoken response. "
+            "Briefly summarize what you did and what the result is. "
+            "Do NOT repeat any greeting or introduction. "
+            "Reply with text ONLY, do NOT call any more tools."
+        ),
+        "needs_tools": (
+            "You said you would use tools but didn't call any. "
+            "Please actually call the appropriate tool now."
+        ),
+        "needs_continuation": (
+            "You started the task but didn't finish. "
+            "Continue calling tools to complete it. "
+            "Do NOT greet again or repeat your introduction."
+        ),
+    }
+
+    def _default_nudge_for_verdict(self, verdict: str, tool_calls: int) -> str:
+        """Generate a default nudge when the judge verdict is non-complete but nudge text is empty."""
+        if verdict == "needs_summary" and tool_calls == 0:
+            return ""
+        return self._VERDICT_DEFAULT_NUDGES.get(verdict, "")
 
     def _judge_nudge_fallback(
         self,
@@ -1126,6 +1163,7 @@ def run_agent(
     try:
         if stream:
             accumulated: list[str] = []
+            _seen_ai_text: set[str] = set()
             tool_calls_seen: list[str] = []
             run_result = agent.run(
                 message.strip(),
@@ -1157,13 +1195,16 @@ def run_agent(
                                 if mtype == "ai":
                                     if tc:
                                         if not first_narration_done and content.strip():
-                                            first_narration_done = True
-                                            accumulated.append(content)
-                                            if on_content:
-                                                try:
-                                                    on_content(content)
-                                                except Exception:
-                                                    pass
+                                            _key = content.strip()
+                                            if _key not in _seen_ai_text:
+                                                first_narration_done = True
+                                                _seen_ai_text.add(_key)
+                                                accumulated.append(content)
+                                                if on_content:
+                                                    try:
+                                                        on_content(content)
+                                                    except Exception:
+                                                        pass
                                         for call in tc:
                                             name = call.get("name", "tool")
                                             tool_calls_seen.append(name)
@@ -1173,12 +1214,15 @@ def run_agent(
                                                 except Exception:
                                                     pass
                                     elif content.strip():
-                                        accumulated.append(content)
-                                        if on_content:
-                                            try:
-                                                on_content(content)
-                                            except Exception:
-                                                pass
+                                        _key = content.strip()
+                                        if _key not in _seen_ai_text:
+                                            _seen_ai_text.add(_key)
+                                            accumulated.append(content)
+                                            if on_content:
+                                                try:
+                                                    on_content(content)
+                                                except Exception:
+                                                    pass
                 else:
                     for chunk in stream_iter:
                         if stop_requested and stop_requested():
