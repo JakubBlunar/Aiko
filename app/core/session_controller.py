@@ -162,6 +162,8 @@ class SessionController:
                 chat_db=self._chat_db,
                 embedding_service=self._embedding_service,
                 personality_token_budget=settings.agent.personality_token_budget,
+                archive_path=storage_path.parent / "archive.db" if settings.agent.archive_enabled else None,
+                embedding_model=settings.ollama.embedding_model,
             )
             self._realtime_stt = stt_future.result()
             self._agent = agent_future.result()
@@ -176,6 +178,15 @@ class SessionController:
             daemon=True,
             name="embedding-backfill",
         ).start()
+
+        if settings.agent.archive_enabled:
+            archive_path = storage_path.parent / "archive.db"
+            threading.Thread(
+                target=self._run_archival,
+                args=(settings.agent.archive_days_threshold, archive_path),
+                daemon=True,
+                name="db-archival",
+            ).start()
         self._microphone_device = settings.audio.microphone_device
         self._output_device = getattr(settings.audio, "output_device", None)
         from app.audio.earcons import EarconPlayer
@@ -567,6 +578,14 @@ class SessionController:
             log.warning("Startup greeting generation failed: %s", exc)
             return "Welcome back. Audio is ready."
 
+    def _run_archival(self, days_threshold: int, archive_path: Path) -> None:
+        try:
+            count = self._chat_db.archive_old_messages(days_threshold, archive_path)
+            if count > 0:
+                log.info("Archived %d messages older than %d days to %s", count, days_threshold, archive_path)
+        except Exception as exc:
+            log.warning("Database archival failed: %s", exc)
+
     def generate_proactive_message(self) -> str | None:
         """Generate a proactive conversation starter using personality notes and recent topics."""
         try:
@@ -593,11 +612,17 @@ class SessionController:
 
             topic_list = ", ".join(t.topic for t in topics[:8]) if topics else "none yet"
 
+            from datetime import datetime as _dt
+            now = _dt.now().astimezone()
+            time_ctx = now.strftime("%A %I:%M %p")
+
             sys_msg = getattr(self._agent, "_system_message", "") or ""
             prompt = [
                 SystemMessage(content=sys_msg),
                 HumanMessage(
                     content="The user has been quiet for a while. Start a brief, natural conversation.\n\n"
+                    f"Current time: {time_ctx}. Consider this for natural timing "
+                    "(e.g. don't bring up morning routines at night).\n\n"
                     f"What you know about them:\n" + "\n".join(note_lines) + "\n\n"
                     f"Recent topics to AVOID (don't repeat): {topic_list}\n\n"
                     "Rules:\n"
@@ -1434,8 +1459,10 @@ class SessionController:
         style = str(getattr(self._settings.assistant, "response_style", "balanced") or "balanced").strip().lower()
         if style == "concise":
             return 96
-        if style == "detailed":
+        if style in ("detailed", "technical"):
             return 220
+        if style == "conversational":
+            return 160
         return 140
 
     def _plan_turn_autonomy(self, *, user_text: str) -> TurnAutonomyPlan:

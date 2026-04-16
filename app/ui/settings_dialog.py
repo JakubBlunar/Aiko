@@ -241,9 +241,9 @@ class SettingsDialog(PersistentGeometryMixin, QDialog):
         agent_form.addRow("History depth (turns):", self._history_depth_spin)
 
         self._response_style_combo = QComboBox()
-        for style in ("conversational", "concise", "detailed", "technical"):
+        for style in ("balanced", "conversational", "concise", "detailed", "technical"):
             self._response_style_combo.addItem(style, style)
-        current_style = getattr(settings.assistant, "response_style", "conversational")
+        current_style = getattr(settings.assistant, "response_style", "balanced")
         idx = self._response_style_combo.findData(current_style)
         if idx >= 0:
             self._response_style_combo.setCurrentIndex(idx)

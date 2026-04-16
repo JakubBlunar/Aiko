@@ -49,7 +49,7 @@ class AssistantSettings:
     background: str
     background_path: str = ""  # If set, load multiline background from this file (relative to project root)
     user_id: str = "default"  # Scopes Agno Learning (user profile + memory) per user
-    response_style: str = "balanced"  # balanced | concise | detailed (reply length)
+    response_style: str = "balanced"  # balanced | conversational | concise | detailed | technical
     tts_length_scale: float = 1.0  # TTS speed: 0.65–1.35, higher = slower
 
 
@@ -200,6 +200,8 @@ class AgentSettings:
     personality_token_budget: int = 300
     proactive_silence_seconds: float = 45.0
     proactive_cooldown_seconds: float = 120.0
+    archive_enabled: bool = True
+    archive_days_threshold: int = 30
 
 
 @dataclass(slots=True)
@@ -358,7 +360,7 @@ def _parse_session_tool_policies(raw: object) -> SessionToolPoliciesSettings:
 
 def _normalize_response_style(value: Any) -> str:
     s = str(value or "balanced").strip().lower()
-    if s in ("balanced", "concise", "detailed"):
+    if s in ("balanced", "conversational", "concise", "detailed", "technical"):
         return s
     return "balanced"
 
@@ -615,6 +617,8 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             personality_token_budget=max(50, min(int(agent_raw.get("personality_token_budget", 300)), 1000)),
             proactive_silence_seconds=max(10.0, float(agent_raw.get("proactive_silence_seconds", 45.0))),
             proactive_cooldown_seconds=max(30.0, float(agent_raw.get("proactive_cooldown_seconds", 120.0))),
+            archive_enabled=bool(agent_raw.get("archive_enabled", True)),
+            archive_days_threshold=max(7, min(int(agent_raw.get("archive_days_threshold", 30)), 365)),
         ),
         logging=LoggingSettings(
             level=str(logging_raw.get("level", "INFO")).strip().upper() or "INFO",
@@ -703,7 +707,7 @@ def save_runtime_preferences(
             "min_action_interval_seconds": round(max(0.0, action_min_interval_seconds), 2),
         },
         "tts": {
-            "provider": str(tts_provider or "piper").strip().lower() or "piper",
+            "provider": str(tts_provider or "kokoro").strip().lower() or "kokoro",
             "voice": str(tts_voice or "").strip(),
             **({"pocket_tts_voice": str(pocket_tts_voice).strip()} if pocket_tts_voice else {}),
             **({"pocket_tts_temp": round(float(pocket_tts_temp), 2)} if pocket_tts_temp is not None else {}),

@@ -553,3 +553,76 @@ class ChatDatabase:
             {"role": m.role, "content": m.content, "created_at": m.created_at}
             for m in msgs
         ]
+
+    def archive_old_messages(self, days_threshold: int, archive_path: Path) -> int:
+        """Move messages (and their embeddings) older than *days_threshold* days to *archive_path*.
+
+        Session summaries for affected sessions are copied (not moved).
+        Personality notes and recent topics stay in the active DB.
+        Returns the number of archived messages.
+        """
+        from datetime import timedelta
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days_threshold)).isoformat()
+
+        conn = self._get_conn()
+        old_ids = [
+            r[0] for r in conn.execute(
+                "SELECT id FROM messages WHERE created_at < ?", (cutoff,)
+            ).fetchall()
+        ]
+        if not old_ids:
+            return 0
+
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        arch = sqlite3.connect(str(archive_path))
+        arch.execute("PRAGMA journal_mode=WAL")
+        arch.execute("PRAGMA foreign_keys=ON")
+        arch.executescript(_CREATE_TABLES)
+
+        batch_size = 200
+        archived = 0
+        for i in range(0, len(old_ids), batch_size):
+            batch = old_ids[i : i + batch_size]
+            placeholders = ",".join("?" * len(batch))
+
+            rows = conn.execute(
+                f"SELECT id, session_id, role, content, token_count, created_at "
+                f"FROM messages WHERE id IN ({placeholders})", batch,
+            ).fetchall()
+            if rows:
+                arch.executemany(
+                    "INSERT OR IGNORE INTO messages (id, session_id, role, content, token_count, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)", rows,
+                )
+
+            emb_rows = conn.execute(
+                f"SELECT id, message_id, session_id, embedding, created_at "
+                f"FROM message_embeddings WHERE message_id IN ({placeholders})", batch,
+            ).fetchall()
+            if emb_rows:
+                arch.executemany(
+                    "INSERT OR IGNORE INTO message_embeddings (id, message_id, session_id, embedding, created_at) "
+                    "VALUES (?, ?, ?, ?, ?)", emb_rows,
+                )
+
+            conn.execute(f"DELETE FROM message_embeddings WHERE message_id IN ({placeholders})", batch)
+            conn.execute(f"DELETE FROM messages WHERE id IN ({placeholders})", batch)
+            archived += len(rows)
+
+        affected_sessions = {
+            r[1] for r in conn.execute(
+                "SELECT DISTINCT id, session_id FROM messages"
+            ).fetchall()
+        }
+        for r in conn.execute("SELECT session_id, summary, summary_tokens, messages_summarized, updated_at FROM session_summaries").fetchall():
+            arch.execute(
+                "INSERT OR IGNORE INTO session_summaries (session_id, summary, summary_tokens, messages_summarized, updated_at) "
+                "VALUES (?, ?, ?, ?, ?)", r,
+            )
+
+        arch.commit()
+        arch.close()
+        conn.commit()
+        conn.execute("VACUUM")
+
+        return archived

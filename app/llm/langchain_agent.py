@@ -267,6 +267,46 @@ def _add_history_search_tool(
     return tools + [search_history]
 
 
+def _add_archive_search_tool(
+    tools: list[Any],
+    archive_path: Path,
+    base_url: str,
+    embedding_model: str,
+) -> list[Any]:
+    """Register a search_archive tool that queries the archive database."""
+    if not archive_path.is_file():
+        return tools
+    try:
+        from langchain_core.tools import tool
+    except ImportError:
+        return tools
+    from app.core.chat_database import ChatDatabase
+    from app.llm.embedding_service import EmbeddingService
+
+    archive_db = ChatDatabase(archive_path)
+    archive_embed = EmbeddingService(
+        base_url=base_url,
+        model=embedding_model,
+        database=archive_db,
+    )
+
+    @tool
+    def search_archive(query: str) -> str:
+        """Search the conversation archive for older messages not in recent history.
+        Use when the user asks about something from a while ago or references
+        past context that isn't in the current conversation."""
+        results = archive_embed.search(query, session_id=None, top_k=5, max_candidates=500)
+        if not results:
+            return "No relevant archived messages found."
+        parts: list[str] = []
+        for r in results:
+            preview = r.content[:500] + ("..." if len(r.content) > 500 else "")
+            parts.append(f"[{r.role}] ({r.created_at}): {preview}")
+        return "\n\n".join(parts)
+
+    return tools + [search_archive]
+
+
 def create_agent(
     *,
     chat_model: str = "llama3.1:8b",
@@ -293,6 +333,8 @@ def create_agent(
     chat_db: "ChatDatabase | None" = None,
     embedding_service: "EmbeddingService | None" = None,
     personality_token_budget: int = 300,
+    archive_path: Path | None = None,
+    embedding_model: str = "qwen3-embedding:0.6b",
 ) -> Any:
     """Create a LangChain agent with Ollama, storage, optional tools and MCP. Create once and reuse."""
     try:
@@ -357,6 +399,9 @@ def create_agent(
 
     if embedding_service and chat_db:
         tools_list = _add_history_search_tool(tools_list, embedding_service, chat_db)
+
+    if archive_path:
+        tools_list = _add_archive_search_tool(tools_list, archive_path, base_url, embedding_model)
 
     num_history = num_history_runs if num_history_runs is not None else 10
 
@@ -456,6 +501,7 @@ class _AgentWrapper:
         self._cached_system_message: str | None = None
         self._persist_enabled: bool = True
         self._last_context_tokens: int = 0
+        self._eviction_buffer: list[str] = []
         self._log = logging.getLogger("app.llm.langchain_agent")
 
     @property
@@ -566,8 +612,11 @@ class _AgentWrapper:
         return f"{head}\n\n... [truncated, {len(content)} chars total] ...\n\n{tail}"
 
     def _handle_evicted_message(self, session_key: str, message: Any) -> None:
-        """Accumulate evicted messages for periodic summarisation."""
-        pass
+        """Buffer evicted messages so the next system prompt includes a brief recap."""
+        role = getattr(message, "type", "unknown")
+        content = str(getattr(message, "content", "") or "")[:200]
+        if content.strip():
+            self._eviction_buffer.append(f"{role}: {content}")
 
     def _load_summary(self, session_key: str) -> str:
         if not self._chat_db:
@@ -586,6 +635,11 @@ class _AgentWrapper:
         summary = self._load_summary(session_key)
         if summary:
             parts.append(f"Prior conversation summary: {summary}")
+            if self._chat_db:
+                last_few = self._chat_db.get_messages(session_key, limit=4)
+                if last_few:
+                    recap_lines = [f"  {m.role}: {m.content[:150]}" for m in last_few]
+                    parts.append("Last exchange before this session:\n" + "\n".join(recap_lines))
 
         if self._chat_db:
             from app.llm.token_utils import estimate_tokens
@@ -628,6 +682,13 @@ class _AgentWrapper:
                     parts.append("\n".join(ctx_lines))
             except Exception:
                 pass
+
+        if self._eviction_buffer:
+            recap = "\n".join(self._eviction_buffer[-6:])
+            if len(recap) > 500:
+                recap = recap[:500] + "..."
+            parts.append(f"Recently dropped from context (brief recap):\n{recap}")
+            self._eviction_buffer.clear()
 
         return "\n\n".join(parts)
 
@@ -825,9 +886,16 @@ class _AgentWrapper:
                 if note and cat:
                     note_tuples.append((cat, note, max(0.0, min(1.0, conf))))
 
-            if note_tuples:
+            min_safe = max(1, len(existing) // 2) if existing else 0
+            if note_tuples and len(note_tuples) >= min_safe:
                 self._chat_db.replace_personality_notes(session_key, note_tuples)
                 self._log.info("Updated %d personality notes", len(note_tuples))
+            elif existing:
+                self._log.warning(
+                    "Personality judge returned too few notes (%d vs %d existing); keeping current notes",
+                    len(note_tuples), len(existing),
+                )
+                self._chat_db.decay_personality_notes(session_key, decay_rate, prune_threshold)
 
             topics = parsed.get("recent_topics", [])
             if isinstance(topics, list):

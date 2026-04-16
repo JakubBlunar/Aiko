@@ -9,7 +9,9 @@
     "personality_max_notes": 40,
     "personality_token_budget": 300,
     "proactive_silence_seconds": 45,
-    "proactive_cooldown_seconds": 120
+    "proactive_cooldown_seconds": 120,
+    "archive_enabled": true,
+    "archive_days_threshold": 30
   },
   "assistant": {
     "name": "Assistant",

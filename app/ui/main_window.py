@@ -7,7 +7,7 @@ from pathlib import Path
 import time as _time
 
 from PySide6.QtCore import QEvent, QThread, QTimer, Qt, QUrl, Signal
-from PySide6.QtGui import QCloseEvent, QKeyEvent, QMouseEvent, QTextCursor
+from PySide6.QtGui import QCloseEvent, QKeyEvent, QKeySequence, QMouseEvent, QShortcut, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -19,11 +19,13 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
     QScrollArea,
     QSplitter,
+    QSystemTrayIcon,
     QTabWidget,
     QTextEdit,
     QVBoxLayout,
@@ -194,6 +196,7 @@ class MainWindow(QMainWindow):
         self._search_results = QListWidget()
         self._search_results.setMaximumHeight(120)
         self._search_results.setVisible(False)
+        self._search_results.itemClicked.connect(self._on_search_result_scroll)
         self._search_results.itemDoubleClicked.connect(self._on_search_result_clicked)
         conversation_layout.addWidget(self._search_results)
 
@@ -270,9 +273,56 @@ class MainWindow(QMainWindow):
         help_menu = menu_bar.addMenu("Help")
         help_menu.addAction("Keyboard Shortcuts", self._show_shortcuts_help)
 
+        QShortcut(QKeySequence(Qt.Key.Key_Escape), self).activated.connect(self._shortcut_stop_tts)
+        QShortcut(QKeySequence("Ctrl+L"), self).activated.connect(lambda: self._input.setFocus())
+        QShortcut(QKeySequence("Ctrl+F"), self).activated.connect(lambda: self._search_input.setFocus())
+        QShortcut(QKeySequence("Ctrl+,"), self).activated.connect(self._open_settings)
+        QShortcut(QKeySequence("Ctrl+N"), self).activated.connect(self._new_session)
+        QShortcut(QKeySequence("Ctrl+M"), self).activated.connect(self._on_live_toggle_clicked)
+
         self._external_message.connect(self._on_external_message)
         self._session.add_message_listener(self._emit_external_message)
+
+        self._setup_system_tray()
+        self._force_quit = False
+
         QTimer.singleShot(250, self._play_startup_greeting)
+
+    def _setup_system_tray(self) -> None:
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            self._tray_icon = None
+            return
+        self._tray_icon = QSystemTrayIcon(self)
+        app_icon = self.windowIcon()
+        if not app_icon.isNull():
+            self._tray_icon.setIcon(app_icon)
+        else:
+            self._tray_icon.setIcon(self.style().standardIcon(self.style().StandardPixmap.SP_ComputerIcon))
+        tray_menu = QMenu()
+        tray_menu.addAction("Show / Hide", self._toggle_window_visibility)
+        tray_menu.addAction("Toggle Live", self._on_live_toggle_clicked)
+        tray_menu.addSeparator()
+        tray_menu.addAction("Quit", self._tray_quit)
+        self._tray_icon.setContextMenu(tray_menu)
+        self._tray_icon.activated.connect(self._on_tray_activated)
+        self._tray_icon.setToolTip(self.windowTitle())
+        self._tray_icon.show()
+
+    def _toggle_window_visibility(self) -> None:
+        if self.isVisible():
+            self.hide()
+        else:
+            self.show()
+            self.raise_()
+            self.activateWindow()
+
+    def _on_tray_activated(self, reason) -> None:
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            self._toggle_window_visibility()
+
+    def _tray_quit(self) -> None:
+        self._force_quit = True
+        self.close()
 
     def _show_shortcuts_help(self) -> None:
         shortcuts = (
@@ -280,9 +330,15 @@ class MainWindow(QMainWindow):
             "<table cellpadding='4'>"
             "<tr><td><b>Enter</b></td><td>Send message</td></tr>"
             "<tr><td><b>Shift+Enter</b></td><td>New line in input</td></tr>"
+            "<tr><td><b>Escape</b></td><td>Stop TTS playback</td></tr>"
+            "<tr><td><b>Ctrl+L</b></td><td>Focus input field</td></tr>"
+            "<tr><td><b>Ctrl+F</b></td><td>Focus search bar</td></tr>"
+            "<tr><td><b>Ctrl+,</b></td><td>Open settings</td></tr>"
+            "<tr><td><b>Ctrl+N</b></td><td>New conversation</td></tr>"
+            "<tr><td><b>Ctrl+M</b></td><td>Toggle live mode</td></tr>"
+            "<tr><td colspan='2'><hr></td></tr>"
             "<tr><td><b>F2</b> (or configured PTT key)</td><td>Push-to-talk (hold)</td></tr>"
             "<tr><td><b>Ctrl+Space</b></td><td>Push-to-talk alternate</td></tr>"
-            "<tr><td><b>Escape</b></td><td>Stop TTS / cancel</td></tr>"
             "</table>"
         )
         msg = QMessageBox(self)
@@ -290,6 +346,10 @@ class MainWindow(QMainWindow):
         msg.setTextFormat(Qt.TextFormat.RichText)
         msg.setText(shortcuts)
         msg.exec()
+
+    def _shortcut_stop_tts(self) -> None:
+        if self._session.is_tts_playing():
+            self._session.stop_tts()
 
     def _open_settings(self) -> None:
         if self._settings_dialog is None:
@@ -516,14 +576,14 @@ class MainWindow(QMainWindow):
         self._refresh_session_list()
 
     def _session_context_menu(self, pos):
-        from PySide6.QtWidgets import QMenu
         item = self._session_list.itemAt(pos)
         if item is None:
             return
         sid = item.data(Qt.ItemDataRole.UserRole)
         menu = QMenu(self)
         delete_action = menu.addAction("Delete")
-        export_action = menu.addAction("Export as JSON")
+        export_json_action = menu.addAction("Export as JSON")
+        export_md_action = menu.addAction("Export as Markdown")
         action = menu.exec(self._session_list.mapToGlobal(pos))
         if action == delete_action:
             db = getattr(self._session, "_chat_db", None)
@@ -532,7 +592,7 @@ class MainWindow(QMainWindow):
                 self._refresh_session_list()
                 if sid == self._session.session_key:
                     self._clear_conversation_view()
-        elif action == export_action:
+        elif action == export_json_action:
             db = getattr(self._session, "_chat_db", None)
             if db:
                 from PySide6.QtWidgets import QFileDialog
@@ -541,6 +601,19 @@ class MainWindow(QMainWindow):
                     import json as _json
                     data = db.export_session(sid)
                     Path(path).write_text(_json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        elif action == export_md_action:
+            db = getattr(self._session, "_chat_db", None)
+            if db:
+                from PySide6.QtWidgets import QFileDialog
+                path, _ = QFileDialog.getSaveFileName(self, "Export Session", f"{sid}.md", "Markdown (*.md)")
+                if path:
+                    msgs = db.get_messages(sid)
+                    lines = [f"# Session: {sid}\n"]
+                    for m in msgs:
+                        ts = m.created_at[:16] if m.created_at else ""
+                        speaker = "User" if m.role == "user" else "Assistant"
+                        lines.append(f"**{speaker}** ({ts}):\n{m.content}\n\n---\n")
+                    Path(path).write_text("\n".join(lines), encoding="utf-8")
 
     def _open_memory_viewer(self) -> None:
         if self._memory_dialog is None:
@@ -804,7 +877,26 @@ class MainWindow(QMainWindow):
 
     def _refresh_goal_debug_label(self) -> None: pass
     def _refresh_action_guardrail_label(self) -> None: pass
-    def _refresh_latency_strip(self) -> None: pass
+    def _refresh_latency_strip(self) -> None:
+        m = self._session.get_last_metrics()
+        if not m or m.get("mode") == "idle":
+            return
+        parts = []
+        llm = m.get("llm_ms", 0)
+        tts = m.get("tts_ms", 0)
+        stt = m.get("stt_ms", 0)
+        total = m.get("total_ms", 0)
+        if stt:
+            parts.append(f"STT {stt:.0f}ms")
+        if llm:
+            parts.append(f"LLM {llm:.0f}ms")
+        if tts:
+            parts.append(f"TTS {tts:.0f}ms")
+        if total:
+            parts.append(f"total {total:.0f}ms")
+        if parts:
+            timing = " | ".join(parts)
+            self._status_label.setText(f"Ready | {timing}{self._ctx_status_part()}")
 
     def _persist_preferences(
         self,
@@ -932,14 +1024,14 @@ class MainWindow(QMainWindow):
         if not self._live_stream_open:
             self._append("Assistant", reply)
         self._close_live_stream()
-        self._status_label.setText(self._ready_status_text())
+        self._refresh_latency_strip()
 
     def _on_voice_turn_done(self, user_text: str, reply: str) -> None:
         self._append("You (voice)", user_text)
         if not self._live_stream_open:
             self._append("Assistant", reply)
         self._close_live_stream()
-        self._status_label.setText(self._ready_status_text())
+        self._refresh_latency_strip()
 
     def _on_single_turn_failed(self, message: str) -> None:
         title = "Voice error" if self._turn_mode == "record" else "Assistant error"
@@ -947,7 +1039,7 @@ class MainWindow(QMainWindow):
 
     def _on_single_turn_finished(self) -> None:
         self._set_single_turn_controls_busy(False)
-        self._status_label.setText(self._ready_status_text())
+        self._refresh_latency_strip()
 
     def _on_single_turn_thread_finished(self) -> None:
         self._turn_thread = None
@@ -1043,8 +1135,16 @@ class MainWindow(QMainWindow):
         self._live_thread = None
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if not self._force_quit and self._tray_icon is not None and self._tray_icon.isVisible():
+            event.ignore()
+            self.hide()
+            return
+
         import threading as _threading
         _threading.Timer(5.0, lambda: os._exit(0)).start()
+
+        if self._tray_icon is not None:
+            self._tray_icon.hide()
 
         self._persist_preferences(sync=True)
         self._stop_live_mode()
@@ -1108,6 +1208,7 @@ class MainWindow(QMainWindow):
 
     def _do_search(self) -> None:
         query = self._search_input.text().strip()
+        self._last_search_query = query
         if not query:
             self._search_results.setVisible(False)
             return
@@ -1134,6 +1235,25 @@ class MainWindow(QMainWindow):
             self._search_results.setVisible(True)
         except Exception:
             self._search_results.setVisible(False)
+
+    def _on_search_result_scroll(self, item) -> None:
+        data = item.data(Qt.ItemDataRole.UserRole)
+        if not data or not isinstance(data, dict):
+            return
+        content = data.get("content", "")
+        snippet = content[:80].replace("\n", " ").strip()
+        if not snippet:
+            return
+        if self._conversation_web is not None:
+            js = f"window.find({json.dumps(snippet)});"
+            self._run_web_js(js)
+        elif self._conversation is not None:
+            cursor = self._conversation.textCursor()
+            cursor.movePosition(QTextCursor.MoveOperation.Start)
+            self._conversation.setTextCursor(cursor)
+            found = self._conversation.find(snippet)
+            if found:
+                self._conversation.ensureCursorVisible()
 
     def _on_search_result_clicked(self, item) -> None:
         data = item.data(Qt.ItemDataRole.UserRole)

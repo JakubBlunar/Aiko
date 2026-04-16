@@ -35,13 +35,17 @@ class EmbeddingService:
         self._model = model
         self._db = database
         self._embedding_cache: list[EmbeddingRow] | None = None
+        self._last_embed: tuple[str, np.ndarray] | None = None
 
     def set_database(self, database: ChatDatabase) -> None:
         self._db = database
         self._embedding_cache = None
+        self._last_embed = None
 
     def embed(self, text: str) -> np.ndarray | None:
         """Generate an embedding vector for a single text string."""
+        if self._last_embed is not None and self._last_embed[0] == text:
+            return self._last_embed[1]
         import requests
         try:
             resp = requests.post(
@@ -53,7 +57,9 @@ class EmbeddingService:
             data = resp.json()
             embeddings = data.get("embeddings") or []
             if embeddings and len(embeddings) > 0:
-                return np.array(embeddings[0], dtype=np.float32)
+                vec = np.array(embeddings[0], dtype=np.float32)
+                self._last_embed = (text, vec)
+                return vec
         except Exception as exc:
             log.warning("Embedding failed: %s", exc)
         return None
