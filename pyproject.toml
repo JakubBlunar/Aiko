@@ -65,11 +65,14 @@ tts-pocket = [
 wake-word = [
   "openwakeword>=0.6.0",
 ]
+persona = [
+  "PySide6-Addons>=6.8.0",
+]
 dev = [
   "pytest>=8.0.0",
 ]
 all = [
-  "english-speaking-assistant[agent,agno-tools,ocr,actions,chat-ui,tts-pykokoro,tts-pocket,wake-word,dev]",
+  "english-speaking-assistant[agent,agno-tools,ocr,actions,chat-ui,tts-pykokoro,tts-pocket,wake-word,persona,dev]",
 ]
 
 [build-system]

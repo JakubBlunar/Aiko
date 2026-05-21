@@ -263,6 +263,7 @@ class SessionController:
                 logging.getLogger("app").warning("Failed to start embedded MCP server", exc_info=True)
 
         self._message_listeners: list[Callable[[str, str], None]] = []
+        self._tts_state_listeners: list[Callable[..., None]] = []
 
         self._state = SessionState(
             mic_enabled=settings.audio.enable_microphone,
@@ -523,6 +524,52 @@ class SessionController:
         if next_chunk:
             text, reaction = next_chunk
             self._start_tts_with_lookahead(text, reaction)
+        else:
+            self._notify_tts_state("end")
+
+    def _synthetic_tts_envelope(self, text: str, fps: int = 60) -> list[float]:
+        """Generate a placeholder mouth envelope when no PCM is available.
+
+        Roughly approximates a speaking mouth by modulating a low-frequency
+        sine wave for the estimated duration of the utterance.
+        """
+        import math
+
+        chars = max(1, len(text or ""))
+        duration = min(20.0, max(0.4, chars * 0.06))
+        total = int(duration * fps)
+        return [
+            float(0.45 + 0.4 * math.sin(i * 0.55) + 0.15 * math.sin(i * 0.21))
+            * 0.7
+            for i in range(total)
+        ]
+
+    def _compute_tts_envelope(
+        self, audio: Any, sample_rate: int, fps: int = 60, gain: float = 1.0
+    ) -> list[float]:
+        """Reduce a PCM array to a 0..1 mouth-open envelope sampled at ``fps``."""
+        try:
+            import numpy as _np  # local import: keeps SessionController import-time light
+        except Exception:
+            return []
+        try:
+            arr = _np.asarray(audio).astype(_np.float32).reshape(-1)
+        except Exception:
+            return []
+        if arr.size == 0 or sample_rate <= 0:
+            return []
+        hop = max(1, int(sample_rate / max(1, fps)))
+        # Vectorised RMS per ``hop`` window.
+        usable = (arr.size // hop) * hop
+        if usable <= 0:
+            return [float(min(1.0, abs(arr.max()) * gain))]
+        windows = arr[:usable].reshape(-1, hop)
+        rms = _np.sqrt(_np.mean(windows * windows, axis=1) + 1e-9)
+        peak = float(rms.max()) if rms.size else 1.0
+        if peak <= 0:
+            return [0.0] * int(rms.size)
+        normalised = (rms / peak) * float(gain)
+        return [float(min(1.0, v)) for v in normalised.tolist()]
 
     def _start_tts_with_lookahead(self, text: str, reaction: str | None) -> None:
         """Start playing a chunk and pre-generate the next one in parallel."""
@@ -540,6 +587,30 @@ class SessionController:
                 daemon=True, name="tts-lookahead",
             ).start()
 
+        envelope: list[float] = []
+        sample_rate = 24000
+        if callable(generate):
+            try:
+                r2s = getattr(self._tts, "reaction_to_speed", None)
+                speed = r2s(reaction) if callable(r2s) else 1.0
+                result = generate(text, speed)
+                if result is not None:
+                    audio_data, sample_rate = result
+                    envelope = self._compute_tts_envelope(audio_data, int(sample_rate))
+            except Exception as exc:
+                self._trace("tts.envelope.error", f"envelope compute failed: {exc}")
+
+        if not envelope:
+            envelope = self._synthetic_tts_envelope(text)
+
+        self._notify_tts_state(
+            "start",
+            text=text,
+            reaction=reaction or "",
+            envelope=envelope,
+            sample_rate=int(sample_rate),
+        )
+
         try:
             self._tts.speak_async(
                 text,
@@ -550,6 +621,7 @@ class SessionController:
             self._trace("tts.error", f"TTS queue speak failed: {exc}")
             with self._tts_queue_lock:
                 self._tts_playing = False
+            self._notify_tts_state("end")
 
     def _enqueue_tts_chunk(self, text: str, reaction: str | None = None) -> None:
         if not (text or "").strip():
@@ -568,11 +640,14 @@ class SessionController:
     def stop_tts(self) -> None:
         with self._tts_queue_lock:
             self._pending_tts_chunks.clear()
+            was_playing = self._tts_playing
             self._tts_playing = False
         try:
             self._tts.stop()
         except Exception:
             pass
+        if was_playing:
+            self._notify_tts_state("end")
 
     def is_tts_playing(self) -> bool:
         with self._tts_queue_lock:
@@ -618,6 +693,7 @@ class SessionController:
             return "Welcome back. Audio is ready."
 
     def _run_archival(self, days_threshold: int, archive_path: Path) -> None:
+        log = logging.getLogger("app")
         try:
             count = self._chat_db.archive_old_messages(days_threshold, archive_path)
             if count > 0:
@@ -1454,6 +1530,22 @@ class SessionController:
         for cb in self._message_listeners:
             try:
                 cb(speaker, text)
+            except Exception:
+                pass
+
+    def add_tts_state_listener(self, callback: Callable[..., None]) -> None:
+        """Register a callback(event, **kwargs) for TTS chunk lifecycle events.
+
+        ``event`` is one of ``"start"`` or ``"end"``. For ``"start"`` kwargs
+        are ``text``, ``reaction``, ``envelope`` (list[float], 0..1, 60 fps),
+        and ``sample_rate``. For ``"end"`` no kwargs are passed.
+        """
+        self._tts_state_listeners.append(callback)
+
+    def _notify_tts_state(self, event: str, **kwargs: Any) -> None:
+        for cb in self._tts_state_listeners:
+            try:
+                cb(event, **kwargs)
             except Exception:
                 pass
 

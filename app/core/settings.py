@@ -10,10 +10,10 @@ from typing import Any
 @dataclass(slots=True)
 class OllamaSettings:
     base_url: str
-    embedding_base_url: str = ""  # empty = use base_url
-    proactive_planner_base_url: str = ""  # empty = use base_url
     chat_model: str
     temperature: float
+    embedding_base_url: str = ""  # empty = use base_url
+    proactive_planner_base_url: str = ""  # empty = use base_url
     context_window: int | None = None  # None = auto-detect from Ollama API
     embedding_model: str = "qwen3-embedding:0.6b"
     judge_model: str = "qwen2.5:0.5b"
@@ -227,6 +227,38 @@ class McpServerSettings:
 
 
 @dataclass(slots=True)
+class PersonaSettings:
+    """Live2D persona avatar configuration."""
+
+    enabled: bool = False
+    mode: str = "embedded"  # "embedded" | "overlay"
+    model_path: str = "data/avatars/hiyori/Hiyori.model3.json"
+    scale: float = 0.25
+    anchor: str = "bottom-center"
+    mirror: bool = False
+    lip_sync_gain: float = 1.2
+    expression_map: dict = field(default_factory=dict)
+    overlay_x: int | None = None
+    overlay_y: int | None = None
+    overlay_width: int | None = None
+    overlay_height: int | None = None
+
+
+_DEFAULT_EXPRESSION_MAP: dict[str, str] = {
+    "neutral": "",
+    "cheerful": "F01",
+    "excited": "F02",
+    "friendly": "F03",
+    "calm": "F04",
+    "serious": "F05",
+    "sad": "F06",
+    "gentle": "F07",
+    "angry": "F08",
+    "surprised": "F08",
+}
+
+
+@dataclass(slots=True)
 class AppSettings:
     assistant: AssistantSettings
     autonomy: AutonomySettings
@@ -241,6 +273,7 @@ class AppSettings:
     logging: LoggingSettings = field(default_factory=LoggingSettings)
     agent: AgentSettings = field(default_factory=AgentSettings)
     mcp_server: McpServerSettings = field(default_factory=McpServerSettings)
+    persona: PersonaSettings = field(default_factory=PersonaSettings)
 
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "default.json"
@@ -410,6 +443,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
     agent_raw = raw.get("agent", {}) or {}
     logging_raw = raw.get("logging", {}) or {}
     mcp_server_raw = raw.get("mcp_server", {}) or {}
+    persona_raw = raw.get("persona", {}) or {}
 
     turn_planning = autonomy.get("turn_planning", {}) if isinstance(autonomy.get("turn_planning", {}), dict) else {}
     stt_diagnostics = stt.get("diagnostics", {}) if isinstance(stt.get("diagnostics", {}), dict) else {}
@@ -667,6 +701,39 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             enabled=bool(mcp_server_raw.get("enabled", True)),
             port=max(1, int(mcp_server_raw.get("port", 6274))),
         ),
+        persona=_parse_persona(persona_raw),
+    )
+
+
+def _parse_persona(raw: dict[str, Any]) -> PersonaSettings:
+    mode = str(raw.get("mode", "embedded")).strip().lower()
+    if mode not in {"embedded", "overlay"}:
+        mode = "embedded"
+    expression_map_raw = raw.get("expression_map") or {}
+    if isinstance(expression_map_raw, dict):
+        expression_map = {
+            str(k).strip().lower(): str(v or "").strip()
+            for k, v in expression_map_raw.items()
+            if str(k).strip()
+        }
+    else:
+        expression_map = {}
+    merged_map = dict(_DEFAULT_EXPRESSION_MAP)
+    merged_map.update(expression_map)
+    return PersonaSettings(
+        enabled=bool(raw.get("enabled", False)),
+        mode=mode,
+        model_path=str(raw.get("model_path", "data/avatars/hiyori/Hiyori.model3.json") or "").strip()
+        or "data/avatars/hiyori/Hiyori.model3.json",
+        scale=max(0.05, min(float(raw.get("scale", 0.25) or 0.25), 2.0)),
+        anchor=str(raw.get("anchor", "bottom-center") or "bottom-center").strip().lower(),
+        mirror=bool(raw.get("mirror", False)),
+        lip_sync_gain=max(0.1, min(float(raw.get("lip_sync_gain", 1.2) or 1.2), 4.0)),
+        expression_map=merged_map,
+        overlay_x=int(raw["overlay_x"]) if raw.get("overlay_x") is not None else None,
+        overlay_y=int(raw["overlay_y"]) if raw.get("overlay_y") is not None else None,
+        overlay_width=int(raw["overlay_width"]) if raw.get("overlay_width") is not None else None,
+        overlay_height=int(raw["overlay_height"]) if raw.get("overlay_height") is not None else None,
     )
 
 
@@ -708,6 +775,15 @@ def save_runtime_preferences(
     ui_decision_trace_window_width: int | None = None,
     ui_decision_trace_window_height: int | None = None,
     ui_dialog_geometries: dict[str, dict[str, int]] | None = None,
+    persona_enabled: bool | None = None,
+    persona_mode: str | None = None,
+    persona_model_path: str | None = None,
+    persona_scale: float | None = None,
+    persona_anchor: str | None = None,
+    persona_mirror: bool | None = None,
+    persona_lip_sync_gain: float | None = None,
+    persona_expression_map: dict[str, str] | None = None,
+    persona_overlay_geometry: dict[str, int] | None = None,
     path: Path | None = None,
 ) -> None:
     target = path or USER_CONFIG_PATH
@@ -833,6 +909,44 @@ def save_runtime_preferences(
         }
     if ui_updates:
         updates["ui"] = ui_updates
+
+    persona_updates: dict[str, Any] = {}
+    if persona_enabled is not None:
+        persona_updates["enabled"] = bool(persona_enabled)
+    if persona_mode is not None:
+        mode_norm = str(persona_mode).strip().lower()
+        persona_updates["mode"] = mode_norm if mode_norm in {"embedded", "overlay"} else "embedded"
+    if persona_model_path is not None:
+        persona_updates["model_path"] = str(persona_model_path).strip()
+    if persona_scale is not None:
+        persona_updates["scale"] = max(0.05, min(float(persona_scale), 2.0))
+    if persona_anchor is not None:
+        persona_updates["anchor"] = str(persona_anchor).strip().lower() or "bottom-center"
+    if persona_mirror is not None:
+        persona_updates["mirror"] = bool(persona_mirror)
+    if persona_lip_sync_gain is not None:
+        persona_updates["lip_sync_gain"] = max(0.1, min(float(persona_lip_sync_gain), 4.0))
+    if persona_expression_map is not None:
+        persona_updates["expression_map"] = {
+            str(k).strip().lower(): str(v or "").strip()
+            for k, v in persona_expression_map.items()
+            if str(k).strip()
+        }
+    if persona_overlay_geometry is not None:
+        persona_updates.update(
+            {
+                "overlay_x": int(persona_overlay_geometry["x"])
+                if "x" in persona_overlay_geometry else None,
+                "overlay_y": int(persona_overlay_geometry["y"])
+                if "y" in persona_overlay_geometry else None,
+                "overlay_width": int(persona_overlay_geometry["width"])
+                if "width" in persona_overlay_geometry else None,
+                "overlay_height": int(persona_overlay_geometry["height"])
+                if "height" in persona_overlay_geometry else None,
+            }
+        )
+    if persona_updates:
+        updates["persona"] = persona_updates
 
     updated_effective = _deep_merge(effective, updates)
     minimal_overrides = _deep_diff(base, updated_effective)

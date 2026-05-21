@@ -90,5 +90,26 @@
   "mcp_server": {
     "enabled": true,
     "port": 6274
+  },
+  "persona": {
+    "enabled": false,
+    "mode": "embedded",
+    "model_path": "data/avatars/hiyori/Hiyori.model3.json",
+    "scale": 0.25,
+    "anchor": "bottom-center",
+    "mirror": false,
+    "lip_sync_gain": 1.2,
+    "expression_map": {
+      "neutral": "",
+      "cheerful": "F01",
+      "excited": "F02",
+      "friendly": "F03",
+      "calm": "F04",
+      "serious": "F05",
+      "sad": "F06",
+      "gentle": "F07",
+      "angry": "F08",
+      "surprised": "F08"
+    }
   }
 }

@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QGridLayout,
     QGroupBox,
@@ -34,6 +35,14 @@ from PySide6.QtWidgets import (
 
 from app.core.session_controller import SessionController
 from app.core.settings import AppSettings, save_runtime_preferences
+from app.ui.avatar_panel import (
+    AvatarOverlayWindow,
+    AvatarPanel,
+    cubism_core_available,
+    serialize_config,
+    status_message as avatar_status_message,
+    webengine_available,
+)
 from app.ui.decision_trace_dialog import DecisionTraceDialog
 from app.ui.memory_viewer_dialog import MemoryViewerDialog
 from app.ui.settings_dialog import SettingsDialog
@@ -95,6 +104,7 @@ def _refresh_button_style(button: QPushButton) -> None:
 
 class MainWindow(QMainWindow):
     _external_message = Signal(str, str)
+    _tts_state = Signal(str, "QVariant")
 
     _STT_PROFILE_TO_MODEL: dict[str, str] = {
         "fast": "base",
@@ -148,6 +158,18 @@ class MainWindow(QMainWindow):
         root.setLayout(layout)
 
         main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._main_splitter = main_splitter
+
+        self._persona_panel: AvatarPanel | None = None
+        self._persona_overlay: AvatarOverlayWindow | None = None
+        self._persona_container = QWidget()
+        persona_layout = QVBoxLayout(self._persona_container)
+        persona_layout.setContentsMargins(0, 0, 0, 0)
+        persona_layout.setSpacing(0)
+        self._persona_container.setMinimumWidth(240)
+        self._persona_container.setMaximumWidth(520)
+        self._persona_container.setVisible(False)
+        main_splitter.addWidget(self._persona_container)
 
         sidebar = QWidget()
         sidebar_layout = QVBoxLayout(sidebar)
@@ -170,8 +192,9 @@ class MainWindow(QMainWindow):
         self._conversation_panel = conversation_page
         main_splitter.addWidget(conversation_page)
         main_splitter.setStretchFactor(0, 0)
-        main_splitter.setStretchFactor(1, 1)
-        main_splitter.setSizes([180, 720])
+        main_splitter.setStretchFactor(1, 0)
+        main_splitter.setStretchFactor(2, 1)
+        main_splitter.setSizes([0, 180, 720])
         layout.addWidget(main_splitter, stretch=1)
 
         self._status_label = QLabel(self._ready_status_text())
@@ -270,6 +293,20 @@ class MainWindow(QMainWindow):
         except ImportError:
             pass
 
+        view_menu.addSeparator()
+        self._persona_toggle_action = view_menu.addAction(
+            "Show Persona", self._toggle_persona_visibility
+        )
+        self._persona_toggle_action.setCheckable(True)
+        self._persona_popout_action = view_menu.addAction(
+            "Pop out Persona", self._toggle_persona_popout
+        )
+        self._persona_popout_action.setCheckable(True)
+        view_menu.addAction("Choose persona model...", self._choose_persona_model)
+        view_menu.addAction(
+            "Download Live2D runtime...", self._show_persona_download_hint
+        )
+
         help_menu = menu_bar.addMenu("Help")
         help_menu.addAction("Keyboard Shortcuts", self._show_shortcuts_help)
 
@@ -282,6 +319,9 @@ class MainWindow(QMainWindow):
 
         self._external_message.connect(self._on_external_message)
         self._session.add_message_listener(self._emit_external_message)
+
+        self._tts_state_signal_setup()
+        self._setup_persona()
 
         self._setup_system_tray()
         self._force_quit = False
@@ -365,6 +405,20 @@ class MainWindow(QMainWindow):
 
     def _on_settings_dialog_finished(self) -> None:
         self._status_label.setText(self._ready_status_text())
+        self._refresh_persona_from_settings()
+
+    def _refresh_persona_from_settings(self) -> None:
+        persona = getattr(self._settings, "persona", None)
+        if persona is None or self._persona_panel is None:
+            return
+        self._persona_panel.set_model(persona.model_path, serialize_config(persona))
+        desired_overlay = persona.mode == "overlay" and persona.enabled
+        if desired_overlay != self._persona_popout_action.isChecked():
+            self._persona_popout_action.setChecked(desired_overlay)
+            self._set_persona_popped_out(desired_overlay)
+        if not desired_overlay:
+            self._persona_container.setVisible(bool(persona.enabled))
+            self._persona_toggle_action.setChecked(bool(persona.enabled))
 
     def _emit_external_message(self, speaker: str, text: str) -> None:
         """Thread-safe bridge: emit the Qt signal from any thread."""
@@ -951,6 +1005,13 @@ class MainWindow(QMainWindow):
             ui_decision_trace_window_height=trace_window_height,
             ui_dialog_geometries=dialog_geometries,
         )
+        if self._persona_overlay is not None and self._persona_popout_action.isChecked():
+            kwargs["persona_overlay_geometry"] = {
+                "x": int(self._persona_overlay.x()),
+                "y": int(self._persona_overlay.y()),
+                "width": int(self._persona_overlay.width()),
+                "height": int(self._persona_overlay.height()),
+            }
         if sync:
             save_runtime_preferences(**kwargs)
         else:
@@ -1135,6 +1196,172 @@ class MainWindow(QMainWindow):
 
     def _on_live_thread_finished(self) -> None:
         self._live_thread = None
+
+    # ------------------------------------------------------------------
+    # Persona avatar
+    # ------------------------------------------------------------------
+    def _tts_state_signal_setup(self) -> None:
+        self._tts_state.connect(self._on_tts_state)
+        self._session.add_tts_state_listener(self._forward_tts_state)
+
+    def _forward_tts_state(self, event: str, **kwargs) -> None:
+        """Listener invoked on background TTS thread; marshal to GUI thread."""
+        try:
+            self._tts_state.emit(str(event), dict(kwargs))
+        except Exception:
+            pass
+
+    def _on_tts_state(self, event: str, payload: dict) -> None:
+        if self._persona_panel is not None:
+            try:
+                self._persona_panel.on_tts_event(event, **(payload or {}))
+            except Exception:
+                pass
+
+    def _setup_persona(self) -> None:
+        persona = getattr(self._settings, "persona", None)
+        if persona is None:
+            return
+        if not webengine_available():
+            if persona.enabled:
+                self._status_label.setText(
+                    "Persona disabled: QtWebEngine not installed (pip install PySide6-WebEngine)."
+                )
+            self._persona_toggle_action.setEnabled(False)
+            self._persona_popout_action.setEnabled(False)
+            return
+
+        self._persona_panel = AvatarPanel(self._persona_container)
+        self._persona_container.layout().addWidget(self._persona_panel)
+        self._persona_panel.errorReported.connect(self._on_persona_error)
+
+        if not cubism_core_available():
+            self._status_label.setText(
+                f"Persona requires Live2D Cubism Core ({avatar_status_message()}). "
+                "Run scripts/fetch_live2d_core.py."
+            )
+
+        self._persona_panel.set_model(persona.model_path, serialize_config(persona))
+
+        self._persona_toggle_action.setChecked(bool(persona.enabled))
+        if persona.enabled:
+            if persona.mode == "overlay":
+                self._persona_popout_action.setChecked(True)
+                QTimer.singleShot(0, lambda: self._set_persona_popped_out(True))
+            else:
+                self._persona_container.setVisible(True)
+
+    def _toggle_persona_visibility(self) -> None:
+        if self._persona_panel is None:
+            self._show_persona_download_hint()
+            return
+        if self._persona_popout_action.isChecked():
+            if self._persona_overlay is not None:
+                if self._persona_overlay.isVisible():
+                    self._persona_overlay.hide()
+                    self._persona_toggle_action.setChecked(False)
+                else:
+                    self._persona_overlay.show()
+                    self._persona_toggle_action.setChecked(True)
+            return
+        visible = not self._persona_container.isVisible()
+        self._persona_container.setVisible(visible)
+        self._persona_toggle_action.setChecked(visible)
+
+    def _toggle_persona_popout(self) -> None:
+        if self._persona_panel is None:
+            self._show_persona_download_hint()
+            self._persona_popout_action.setChecked(False)
+            return
+        self._set_persona_popped_out(self._persona_popout_action.isChecked())
+
+    def _set_persona_popped_out(self, popped_out: bool) -> None:
+        if self._persona_panel is None:
+            return
+        if popped_out:
+            if self._persona_overlay is None:
+                self._persona_overlay = AvatarOverlayWindow(self)
+                self._persona_overlay.closed.connect(self._on_persona_overlay_closed)
+                self._persona_panel.bridge.dragReceived.connect(
+                    self._on_persona_bridge_drag
+                )
+            self._persona_panel.setParent(None)
+            self._persona_overlay.set_content(self._persona_panel)
+            persona = getattr(self._settings, "persona", None)
+            geo = self._persona_overlay
+            if persona is not None and persona.overlay_x is not None and persona.overlay_y is not None:
+                geo.move(int(persona.overlay_x), int(persona.overlay_y))
+            if persona is not None and persona.overlay_width and persona.overlay_height:
+                geo.resize(int(persona.overlay_width), int(persona.overlay_height))
+            self._persona_overlay.show()
+            self._persona_container.setVisible(False)
+        else:
+            if self._persona_overlay is not None:
+                self._persona_overlay.set_content(None)
+                self._persona_overlay.hide()
+            self._persona_panel.setParent(self._persona_container)
+            self._persona_container.layout().addWidget(self._persona_panel)
+            self._persona_container.setVisible(self._persona_toggle_action.isChecked())
+            self._persona_panel.set_overlay_mode(False)
+
+    def _on_persona_overlay_closed(self) -> None:
+        self._persona_popout_action.setChecked(False)
+        self._set_persona_popped_out(False)
+
+    def _on_persona_bridge_drag(self, dx: int, dy: int) -> None:
+        if self._persona_overlay is not None:
+            self._persona_overlay.apply_bridge_drag(int(dx), int(dy))
+
+    def _on_persona_error(self, message: str) -> None:
+        if message:
+            self._status_label.setText(f"Persona: {message}")
+
+    def _choose_persona_model(self) -> None:
+        if self._persona_panel is None:
+            self._show_persona_download_hint()
+            return
+        persona = getattr(self._settings, "persona", None)
+        start = persona.model_path if persona else "data/avatars"
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose Live2D model", start, "Live2D model (*.model3.json)"
+        )
+        if not path:
+            return
+        project_root = Path(__file__).resolve().parents[2]
+        try:
+            rel = str(Path(path).resolve().relative_to(project_root)).replace("\\", "/")
+        except Exception:
+            rel = path
+        if persona is not None:
+            persona.model_path = rel
+        self._persona_panel.set_model(rel, serialize_config(persona) if persona else {})
+        try:
+            save_runtime_preferences(
+                chat_model=self._session.chat_model,
+                remember_history=getattr(self._settings.assistant, "remember_history", True),
+                autonomy_mode=getattr(self._settings.autonomy, "mode", "interactive"),
+                microphone_device=getattr(self._session, "microphone_device", None),
+                output_device=getattr(self._session, "output_device", None),
+                action_min_interval_seconds=getattr(self._session, "action_min_interval_seconds", 1.0),
+                tts_provider=self._session.tts_provider,
+                tts_voice=self._session.tts_voice,
+                enable_microphone=getattr(self._session, "_mic_enabled", True),
+                persona_model_path=rel,
+            )
+        except Exception:
+            pass
+
+    def _show_persona_download_hint(self) -> None:
+        QMessageBox.information(
+            self,
+            "Live2D runtime",
+            (
+                "The Live2D persona needs the Cubism Core runtime and a model.\n\n"
+                "1. Run:    python scripts/fetch_live2d_core.py --sample\n"
+                "2. Restart the app.\n"
+                "3. Open Settings -> Persona and enable the avatar."
+            ),
+        )
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if not self._force_quit and self._tray_icon is not None and self._tray_icon.isVisible():
