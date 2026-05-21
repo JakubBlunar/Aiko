@@ -10,11 +10,14 @@ from typing import Any
 @dataclass(slots=True)
 class OllamaSettings:
     base_url: str
+    embedding_base_url: str = ""  # empty = use base_url
+    proactive_planner_base_url: str = ""  # empty = use base_url
     chat_model: str
     temperature: float
     context_window: int | None = None  # None = auto-detect from Ollama API
     embedding_model: str = "qwen3-embedding:0.6b"
     judge_model: str = "qwen2.5:0.5b"
+    proactive_planner_model: str = ""  # empty = use judge_model for proactive director
     timeout: int = 300  # HTTP timeout in seconds (shared by all Ollama clients)
 
 
@@ -200,8 +203,21 @@ class AgentSettings:
     personality_token_budget: int = 300
     proactive_silence_seconds: float = 45.0
     proactive_cooldown_seconds: float = 120.0
+    proactive_planner_enabled: bool = True
+    proactive_use_main_for_utterance: bool = False
+    proactive_context_messages: int = 10
+    proactive_background_interval_seconds: float = 90.0
+    proactive_background_stale_seconds: float = 120.0
+    proactive_brain_advise_main: bool = True
+    proactive_brain_drive_speech: bool = True
+    proactive_brain_influence_autonomy: bool = False
+    proactive_brain_request_actions_via_main: bool = False
+    proactive_speech_requires_live: bool = True
     archive_enabled: bool = True
     archive_days_threshold: int = 30
+    browser_snapshot_compress: bool = True
+    browser_snapshot_max_chars: int | None = None
+    browser_snapshot_max_text_run: int | None = None
 
 
 @dataclass(slots=True)
@@ -466,11 +482,14 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
         ),
         ollama=OllamaSettings(
             base_url=_required(ollama, "base_url"),
+            embedding_base_url=str(ollama.get("embedding_base_url", "") or "").strip(),
+            proactive_planner_base_url=str(ollama.get("proactive_planner_base_url", "") or "").strip(),
             chat_model=_required(ollama, "chat_model"),
             temperature=float(_required(ollama, "temperature")),
             context_window=(int(ollama["context_window"]) if ollama.get("context_window") is not None else None),
             embedding_model=str(ollama.get("embedding_model", "qwen3-embedding:0.6b")).strip() or "qwen3-embedding:0.6b",
             judge_model=str(ollama.get("judge_model", "qwen2.5:0.5b")).strip() or "qwen2.5:0.5b",
+            proactive_planner_model=str(ollama.get("proactive_planner_model", "") or "").strip(),
             timeout=int(ollama.get("timeout", 300)),
         ),
         audio=AudioSettings(
@@ -617,8 +636,29 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             personality_token_budget=max(50, min(int(agent_raw.get("personality_token_budget", 300)), 1000)),
             proactive_silence_seconds=max(10.0, float(agent_raw.get("proactive_silence_seconds", 45.0))),
             proactive_cooldown_seconds=max(30.0, float(agent_raw.get("proactive_cooldown_seconds", 120.0))),
+            proactive_planner_enabled=bool(agent_raw.get("proactive_planner_enabled", True)),
+            proactive_use_main_for_utterance=bool(agent_raw.get("proactive_use_main_for_utterance", False)),
+            proactive_context_messages=max(2, min(int(agent_raw.get("proactive_context_messages", 10)), 40)),
+            proactive_background_interval_seconds=max(20.0, float(agent_raw.get("proactive_background_interval_seconds", 90.0))),
+            proactive_background_stale_seconds=max(30.0, float(agent_raw.get("proactive_background_stale_seconds", 120.0))),
+            proactive_brain_advise_main=bool(agent_raw.get("proactive_brain_advise_main", True)),
+            proactive_brain_drive_speech=bool(agent_raw.get("proactive_brain_drive_speech", True)),
+            proactive_brain_influence_autonomy=bool(agent_raw.get("proactive_brain_influence_autonomy", False)),
+            proactive_brain_request_actions_via_main=bool(agent_raw.get("proactive_brain_request_actions_via_main", False)),
+            proactive_speech_requires_live=bool(agent_raw.get("proactive_speech_requires_live", True)),
             archive_enabled=bool(agent_raw.get("archive_enabled", True)),
             archive_days_threshold=max(7, min(int(agent_raw.get("archive_days_threshold", 30)), 365)),
+            browser_snapshot_compress=bool(agent_raw.get("browser_snapshot_compress", True)),
+            browser_snapshot_max_chars=(
+                int(agent_raw["browser_snapshot_max_chars"])
+                if agent_raw.get("browser_snapshot_max_chars") is not None
+                else None
+            ),
+            browser_snapshot_max_text_run=(
+                int(agent_raw["browser_snapshot_max_text_run"])
+                if agent_raw.get("browser_snapshot_max_text_run") is not None
+                else None
+            ),
         ),
         logging=LoggingSettings(
             level=str(logging_raw.get("level", "INFO")).strip().upper() or "INFO",

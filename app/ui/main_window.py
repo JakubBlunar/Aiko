@@ -1092,6 +1092,7 @@ class MainWindow(QMainWindow):
             self._ptt_app_filter_installed = False
 
         self._live_thread.start()
+        self._session.set_live_voice_session_active(True)
 
     def _stop_live_mode(self) -> None:
         if self._live_worker is not None:
@@ -1103,6 +1104,7 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "Live mode error", message)
 
     def _on_live_stopped(self) -> None:
+        self._session.set_live_voice_session_active(False)
         self._session.set_ptt_active(False)
         if getattr(self, "_ptt_app_filter_installed", False):
             app = QApplication.instance()

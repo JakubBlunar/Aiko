@@ -35,6 +35,14 @@ from app.core.session_text_utils import (
 from app.core.chat_database import ChatDatabase
 from app.llm.embedding_service import EmbeddingService
 from app.llm.langchain_agent import create_agent, run_agent
+from app.llm.proactive_planner import (
+    DIRECTOR_SYSTEM_PROMPT,
+    ProactiveDirectorPlan,
+    build_director_user_message,
+    build_utterance_expand_prompt,
+    extract_json_object_from_text,
+    parse_director_json,
+)
 from app.llm.ollama_client import OllamaClient
 from app.stt.prosody_fast import FastProsodyAnalyzer, ProsodyAnalysis
 from app.stt.realtime_stt_service import RealtimeSttService
@@ -90,6 +98,15 @@ class TurnAutonomyPlan:
     action_intent: str = ""
 
 
+@dataclass
+class _DirectorCache:
+    """Thread-safe cache for proactive director (mutate only under _director_lock)."""
+
+    plan: ProactiveDirectorPlan | None = None
+    built_monotonic: float = 0.0
+    speak_assistant_seq: int = -1
+
+
 class SessionController:
     def __init__(self, settings: AppSettings) -> None:
         from concurrent.futures import ThreadPoolExecutor, Future
@@ -121,14 +138,19 @@ class SessionController:
         compress_tool_results = bool(agent_settings.compress_tool_results) if agent_settings else True
         compress_limit = getattr(agent_settings, "compress_tool_results_limit", None) if agent_settings else None
         compress_token_limit = getattr(agent_settings, "compress_token_limit", None) if agent_settings else None
+        browser_snapshot_compress = bool(getattr(agent_settings, "browser_snapshot_compress", True)) if agent_settings else True
+        browser_snapshot_max_chars = getattr(agent_settings, "browser_snapshot_max_chars", None) if agent_settings else None
+        browser_snapshot_max_text_run = getattr(agent_settings, "browser_snapshot_max_text_run", None) if agent_settings else None
         chat_model = (settings.ollama.chat_model or "").strip() or "llama3.1:8b"
         mcp_settings = tooling_config.tool_settings("mcp")
         mcp_enabled = bool(mcp_settings.get("enabled", False))
         self._effective_chat_model = chat_model
+        embedding_base_url = (getattr(settings.ollama, "embedding_base_url", "") or "").strip() or settings.ollama.base_url
+        proactive_planner_base_url = (getattr(settings.ollama, "proactive_planner_base_url", "") or "").strip() or settings.ollama.base_url
 
         self._chat_db = ChatDatabase(storage_path)
         self._embedding_service = EmbeddingService(
-            base_url=settings.ollama.base_url,
+            base_url=embedding_base_url,
             model=settings.ollama.embedding_model,
             database=self._chat_db,
         )
@@ -142,6 +164,7 @@ class SessionController:
                 create_agent,
                 chat_model=chat_model,
                 base_url=settings.ollama.base_url,
+                embedding_base_url=embedding_base_url,
                 temperature=float(settings.ollama.temperature),
                 timeout=settings.ollama.timeout,
                 judge_model=getattr(settings.ollama, "judge_model", None) or None,
@@ -156,6 +179,9 @@ class SessionController:
                 compress_tool_results=compress_tool_results,
                 compress_tool_results_limit=compress_limit,
                 compress_token_limit=compress_token_limit,
+                browser_snapshot_compress=browser_snapshot_compress,
+                browser_snapshot_max_chars=browser_snapshot_max_chars,
+                browser_snapshot_max_text_run=browser_snapshot_max_text_run,
                 mcp_config=mcp_settings if mcp_enabled else None,
                 project_root=root,
                 context_window=context_window_override,
@@ -252,6 +278,19 @@ class SessionController:
         self._output_devices_cache: list[tuple[int, str]] | None = None
         self._output_devices_cache_time = 0.0
         self._cache_ttl = 60.0
+
+        self._live_voice_session_active = False
+        self._turn_in_progress = False
+        self._assistant_turn_seq = 0
+        self._director_lock = threading.Lock()
+        self._director_shutdown = threading.Event()
+        self._director_post_turn = threading.Event()
+        self._director_thread: threading.Thread | None = None
+        self._director_cache = _DirectorCache()
+        self._director_last_run_monotonic = 0.0
+        self._director_planner_llm: Any | None = None
+        self._start_director_background_thread()
+
     @property
     def state(self) -> SessionState:
         return self._state
@@ -586,8 +625,172 @@ class SessionController:
         except Exception as exc:
             log.warning("Database archival failed: %s", exc)
 
-    def generate_proactive_message(self) -> str | None:
-        """Generate a proactive conversation starter using personality notes and recent topics."""
+    def set_live_voice_session_active(self, active: bool) -> None:
+        """True while Start Live is running; used to gate proactive TTS."""
+        self._live_voice_session_active = bool(active)
+
+    def _start_director_background_thread(self) -> None:
+        if not getattr(self._settings.agent, "proactive_planner_enabled", False):
+            return
+        if self._director_thread is not None and self._director_thread.is_alive():
+            return
+        self._director_thread = threading.Thread(
+            target=self._director_thread_main,
+            daemon=True,
+            name="proactive-director",
+        )
+        self._director_thread.start()
+
+    def _signal_director_post_turn(self) -> None:
+        if not getattr(self._settings.agent, "proactive_planner_enabled", False):
+            return
+        self._start_director_background_thread()
+        self._director_post_turn.set()
+
+    def _director_thread_main(self) -> None:
+        log = logging.getLogger("app.proactive_director")
+        while not self._director_shutdown.is_set():
+            interval = max(20.0, float(getattr(self._settings.agent, "proactive_background_interval_seconds", 90.0)))
+            wake = self._director_post_turn.wait(timeout=min(0.5, interval))
+            if self._director_shutdown.is_set():
+                break
+            if not getattr(self._settings.agent, "proactive_planner_enabled", False):
+                if wake:
+                    self._director_post_turn.clear()
+                continue
+            if wake:
+                self._director_post_turn.clear()
+            now = time.monotonic()
+            if not wake and (now - self._director_last_run_monotonic) < interval:
+                continue
+            if self._turn_in_progress:
+                continue
+            try:
+                self._run_director_once()
+            except Exception as exc:
+                log.warning("Director run failed: %s", exc)
+            self._director_last_run_monotonic = time.monotonic()
+
+    def _get_director_planner_llm(self) -> Any | None:
+        if self._director_planner_llm is not None:
+            return self._director_planner_llm
+        try:
+            from langchain_ollama import ChatOllama
+        except ImportError:
+            try:
+                from langchain_community.chat_models.ollama import ChatOllama
+            except ImportError:
+                from langchain_community.chat_models import ChatOllama
+        name = (getattr(self._settings.ollama, "proactive_planner_model", "") or "").strip()
+        if not name:
+            name = (self._settings.ollama.judge_model or "").strip() or "qwen2.5:0.5b"
+        timeout = int(getattr(self._settings.ollama, "timeout", 300) or 300)
+        self._director_planner_llm = ChatOllama(
+            model=name,
+            base_url=(getattr(self._settings.ollama, "proactive_planner_base_url", "") or "").strip() or self._settings.ollama.base_url,
+            temperature=0.0,
+            num_ctx=4096,
+            client_kwargs={"timeout": float(timeout)},
+            keep_alive="5m",
+        )
+        return self._director_planner_llm
+
+    def _run_director_once(self) -> None:
+        planner = self._get_director_planner_llm()
+        if planner is None:
+            return
+        chat_db = self._chat_db
+        session_key = self.session_key
+        n = max(2, min(int(getattr(self._settings.agent, "proactive_context_messages", 10)), 40))
+        rows = chat_db.get_messages(session_key, limit=n)
+        lines: list[str] = []
+        for row in rows:
+            role = (row.role or "?").strip().upper()
+            preview = (row.content or "").strip().replace("\n", " ")
+            if len(preview) > 400:
+                preview = preview[:397] + "..."
+            lines.append(f"{role}: {preview}")
+        notes = chat_db.get_personality_notes(session_key, min_confidence=0.15)
+        note_lines = [f"- {n.note} (confidence: {n.confidence:.1f})" for n in notes[:8]]
+        topics = chat_db.get_recent_topics(session_key, limit=10)
+        topic_list = ", ".join(t.topic for t in topics[:8]) if topics else "none yet"
+        now = datetime.now(timezone.utc).astimezone()
+        time_ctx = now.strftime("%A %I:%M %p")
+        user_msg = build_director_user_message(
+            time_ctx=time_ctx,
+            transcript_lines=lines,
+            note_lines=note_lines,
+            topic_list=topic_list,
+            live_voice=self._live_voice_session_active,
+        )
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        resp = planner.invoke([SystemMessage(content=DIRECTOR_SYSTEM_PROMPT), HumanMessage(content=user_msg)])
+        raw = (getattr(resp, "content", "") or "").strip()
+        plan = parse_director_json(extract_json_object_from_text(raw))
+        if not self._live_voice_session_active:
+            plan.speak = False
+            plan.draft_line = ""
+            plan.utterance_seed = ""
+        seq = self._assistant_turn_seq
+        with self._director_lock:
+            self._director_cache.plan = plan
+            self._director_cache.built_monotonic = time.monotonic()
+            self._director_cache.speak_assistant_seq = seq
+
+    def _take_director_hint_and_clear_cache(self) -> str:
+        """Read director hints for the next user turn, then clear cache (not persisted as user text)."""
+        if not getattr(self._settings.agent, "proactive_brain_advise_main", True):
+            with self._director_lock:
+                self._director_cache = _DirectorCache()
+            return ""
+        with self._director_lock:
+            plan = self._director_cache.plan
+            hint = (plan.hints_for_next_user_turn.strip()[:800] if plan else "") or ""
+            self._director_cache = _DirectorCache()
+            return hint
+
+    def _expand_proactive_utterance(self, plan: ProactiveDirectorPlan, topics: list[Any]) -> str | None:
+        if plan.draft_line.strip():
+            text = plan.draft_line.strip()
+        elif plan.utterance_seed.strip():
+            if getattr(self._settings.agent, "proactive_use_main_for_utterance", False):
+                llm = getattr(self._agent, "_llm", None)
+                if llm is None:
+                    return None
+                from langchain_core.messages import HumanMessage, SystemMessage
+
+                prompt = [
+                    SystemMessage(content="You write short spoken lines for a voice assistant."),
+                    HumanMessage(content=build_utterance_expand_prompt(seed=plan.utterance_seed, avoid=plan.avoid)),
+                ]
+                result = llm.invoke(prompt)
+                text = (getattr(result, "content", "") or "").strip()
+            else:
+                planner = self._get_director_planner_llm()
+                if planner is None:
+                    return None
+                from langchain_core.messages import HumanMessage, SystemMessage
+
+                prompt = [
+                    SystemMessage(content="You write short spoken lines for a voice assistant."),
+                    HumanMessage(content=build_utterance_expand_prompt(seed=plan.utterance_seed, avoid=plan.avoid)),
+                ]
+                result = planner.invoke(prompt)
+                text = (getattr(result, "content", "") or "").strip()
+        else:
+            return None
+        text = text.strip('"').strip("'").strip()
+        if not text or len(text) > 300:
+            return None
+        if topics:
+            for t in topics[:5]:
+                if t.topic.lower() in text.lower():
+                    return None
+        return text
+
+    def _legacy_generate_proactive_message(self) -> str | None:
+        """Original proactive path (main LLM + personality notes required)."""
         try:
             from langchain_core.messages import SystemMessage, HumanMessage
 
@@ -596,7 +799,7 @@ class SessionController:
             if llm is None or chat_db is None:
                 return None
 
-            session_key = f"{self._user_id}:{self._session_id}" if self._user_id else self._session_id
+            session_key = self.session_key
 
             notes = chat_db.get_personality_notes(session_key, min_confidence=0.15)
             if not notes:
@@ -612,8 +815,7 @@ class SessionController:
 
             topic_list = ", ".join(t.topic for t in topics[:8]) if topics else "none yet"
 
-            from datetime import datetime as _dt
-            now = _dt.now().astimezone()
+            now = datetime.now(timezone.utc).astimezone()
             time_ctx = now.strftime("%A %I:%M %p")
 
             sys_msg = getattr(self._agent, "_system_message", "") or ""
@@ -642,7 +844,6 @@ class SessionController:
                 return None
 
             if topics:
-                import re
                 for t in topics[:5]:
                     if t.topic.lower() in text.lower():
                         return None
@@ -657,6 +858,44 @@ class SessionController:
             log = logging.getLogger("app")
             log.warning("Proactive message generation failed: %s", exc)
             return None
+
+    def generate_proactive_message(self) -> str | None:
+        """Proactive TTS line: director cache when enabled, else legacy main-LLM path."""
+        ag = self._settings.agent
+        if getattr(ag, "proactive_speech_requires_live", True) and not self._live_voice_session_active:
+            return None
+        chat_db = getattr(self._agent, "_chat_db", None)
+        if chat_db is None:
+            return None
+        session_key = self.session_key
+        topics = chat_db.get_recent_topics(session_key, limit=10)
+        stale_s = max(30.0, float(getattr(ag, "proactive_background_stale_seconds", 120.0)))
+
+        if getattr(ag, "proactive_planner_enabled", False) and getattr(ag, "proactive_brain_drive_speech", True):
+            with self._director_lock:
+                cache = self._director_cache
+                plan = cache.plan
+                built = cache.built_monotonic
+                speak_seq = cache.speak_assistant_seq
+            if (
+                plan
+                and plan.speak
+                and speak_seq == self._assistant_turn_seq
+                and (time.monotonic() - built) <= stale_s
+            ):
+                text = self._expand_proactive_utterance(plan, topics)
+                if text:
+                    chat_db.add_recent_topic(session_key, text[:60])
+                    with self._director_lock:
+                        if self._director_cache.plan is plan:
+                            self._director_cache.plan.speak = False
+                            self._director_cache.plan.draft_line = ""
+                            self._director_cache.plan.utterance_seed = ""
+                    logging.getLogger("app").info("Proactive director message: %s", text[:80])
+                    return text
+            return None
+
+        return self._legacy_generate_proactive_message()
 
     def prewarm_tts(self) -> None:
         tts = self._tts
@@ -973,6 +1212,9 @@ class SessionController:
                 self._agent.shutdown_mcp()
         except Exception:
             pass
+        self._director_shutdown.set()
+        if self._director_thread is not None and self._director_thread.is_alive():
+            self._director_thread.join(timeout=2.5)
 
     def get_last_metrics(self) -> dict[str, float | str]:
         return dict(self._last_metrics)
@@ -1254,135 +1496,151 @@ class SessionController:
         stream_tts_used = False
         stream_tts_enqueued_chunks: list[int] = [0]
         llm_ms = 0.0
+        turn_completed_ok = False
 
+        self._turn_in_progress = True
+        director_hint = ""
         try:
-            if on_generation_status:
-                on_generation_status("AI is generating response...")
-            self._earcons.play("thinking")
-            self._trace("pipeline.llm.start", f"mode={mode} model={self.chat_model}")
-            llm_started = time.perf_counter()
-            message_for_agent = user_text
-            if user_vocal_tone and user_vocal_tone.strip():
-                message_for_agent = f"{user_text}\n\n[Vocal: {user_vocal_tone.strip()}]"
-            def _tool_status(name: str, summary: str) -> None:
+            director_hint = self._take_director_hint_and_clear_cache()
+            try:
                 if on_generation_status:
-                    msg = f"Tool: {name} - {summary[:80]}{'...' if len(summary) > 80 else ''}" if summary else f"Tool: {name}"
-                    on_generation_status(msg)
+                    on_generation_status("AI is generating response...")
+                self._earcons.play("thinking")
+                self._trace("pipeline.llm.start", f"mode={mode} model={self.chat_model}")
+                llm_started = time.perf_counter()
+                message_for_agent = user_text
+                if director_hint:
+                    message_for_agent = f"[Director hint: {director_hint}]\n\n{user_text}"
+                if user_vocal_tone and user_vocal_tone.strip():
+                    message_for_agent = f"{message_for_agent}\n\n[Vocal: {user_vocal_tone.strip()}]"
 
-            agent_to_use = self._agent
-            tts_enabled = bool(getattr(self._settings.tts, "enabled", True))
-            use_stream_tts = tts_enabled
-            typed_accumulated: list[str] = []
+                def _tool_status(name: str, summary: str) -> None:
+                    if on_generation_status:
+                        msg = f"Tool: {name} - {summary[:80]}{'...' if len(summary) > 80 else ''}" if summary else f"Tool: {name}"
+                        on_generation_status(msg)
 
-            from io import StringIO
-            stream_io = StringIO()
-            reply_mood: list[str | None] = [None]
-            last_ui_sent_len: list[int] = [0]
+                agent_to_use = self._agent
+                tts_enabled = bool(getattr(self._settings.tts, "enabled", True))
+                use_stream_tts = tts_enabled
+                typed_accumulated: list[str] = []
 
-            def _on_content(delta: str) -> None:
-                if not delta:
-                    return
-                typed_accumulated.append(delta)
-                stream_io.write(delta)
-                buf = stream_io.getvalue()
-                if reply_mood[0] is None:
-                    mood, rest = parse_reaction_at_start(buf)
-                    if mood is not None:
-                        reply_mood[0] = mood
+                from io import StringIO
+                stream_io = StringIO()
+                reply_mood: list[str | None] = [None]
+                last_ui_sent_len: list[int] = [0]
+
+                def _on_content(delta: str) -> None:
+                    if not delta:
+                        return
+                    typed_accumulated.append(delta)
+                    stream_io.write(delta)
+                    buf = stream_io.getvalue()
+                    if reply_mood[0] is None:
+                        mood, rest = parse_reaction_at_start(buf)
+                        if mood is not None:
+                            reply_mood[0] = mood
+                            stream_io.seek(0)
+                            stream_io.truncate()
+                            stream_io.write(rest)
+                            buf = rest
+                    if use_stream_tts:
+                        chunks, remainder = drain_tts_stream_chunks(buf, flush=False)
+                        for sent in chunks:
+                            tts_text = prepare_tts_text(strip_action_meta_for_tts(sent))
+                            if tts_text:
+                                self._enqueue_tts_chunk(tts_text, reaction=reply_mood[0] or "neutral")
+                                stream_tts_enqueued_chunks[0] += 1
                         stream_io.seek(0)
                         stream_io.truncate()
-                        stream_io.write(rest)
-                        buf = rest
+                        stream_io.write(remainder)
+                    if on_token:
+                        display_buf = strip_all_reaction_tags(
+                            buf if reply_mood[0] is not None else "".join(typed_accumulated)
+                        )
+                        to_send = display_buf[last_ui_sent_len[0]:]
+                        if to_send:
+                            on_token(to_send)
+                        last_ui_sent_len[0] = len(display_buf)
+
+                response = run_agent(
+                    agent_to_use,
+                    message_for_agent,
+                    session_id=self._session_id,
+                    user_id=self._user_id,
+                    stream=True,
+                    on_content=_on_content,
+                    on_tool_use=_tool_status if on_generation_status else None,
+                    stop_requested=stop_requested,
+                    user_text_for_persist=user_text,
+                )
+                turn_completed_ok = True
                 if use_stream_tts:
-                    chunks, remainder = drain_tts_stream_chunks(buf, flush=False)
-                    for sent in chunks:
+                    buf = stream_io.getvalue()
+                    final_chunks, _ = drain_tts_stream_chunks(buf, flush=True)
+                    for sent in final_chunks:
                         tts_text = prepare_tts_text(strip_action_meta_for_tts(sent))
                         if tts_text:
                             self._enqueue_tts_chunk(tts_text, reaction=reply_mood[0] or "neutral")
                             stream_tts_enqueued_chunks[0] += 1
-                    stream_io.seek(0)
-                    stream_io.truncate()
-                    stream_io.write(remainder)
-                if on_token:
-                    display_buf = strip_all_reaction_tags(
-                        buf if reply_mood[0] is not None else "".join(typed_accumulated)
+                    stream_tts_used = True
+
+                response = sanitize_assistant_text(response)
+                llm_ms = (time.perf_counter() - llm_started) * 1000.0
+                if not response or not response.strip():
+                    self._trace(
+                        "pipeline.llm.empty",
+                        f"mode={mode} llm_ms={round(llm_ms, 1)} agent returned empty; check LangChain/Ollama response shape",
                     )
-                    to_send = display_buf[last_ui_sent_len[0]:]
-                    if to_send:
-                        on_token(to_send)
-                    last_ui_sent_len[0] = len(display_buf)
-
-            response = run_agent(
-                agent_to_use,
-                message_for_agent,
-                session_id=self._session_id,
-                user_id=self._user_id,
-                stream=True,
-                on_content=_on_content,
-                on_tool_use=_tool_status if on_generation_status else None,
-                stop_requested=stop_requested,
-            )
-            if use_stream_tts:
-                buf = stream_io.getvalue()
-                final_chunks, _ = drain_tts_stream_chunks(buf, flush=True)
-                for sent in final_chunks:
-                    tts_text = prepare_tts_text(strip_action_meta_for_tts(sent))
-                    if tts_text:
-                        self._enqueue_tts_chunk(tts_text, reaction=reply_mood[0] or "neutral")
-                        stream_tts_enqueued_chunks[0] += 1
-                stream_tts_used = True
-
-            response = sanitize_assistant_text(response)
-            llm_ms = (time.perf_counter() - llm_started) * 1000.0
-            if not response or not response.strip():
+                    response = "I didn’t get a reply from the model. Try again or check the console for details."
+                llm_for_tts = strip_action_meta_for_tts(response)
+                spoken_part, full_for_display = parse_two_tier_reply(llm_for_tts)
+                display_for_ui = (sanitize_assistant_text(full_for_display).strip() if full_for_display.strip() else response) or response
+                already_streamed = use_stream_tts or (mode == "typed" and bool(typed_accumulated))
+                if on_token and display_for_ui and not already_streamed:
+                    on_token(display_for_ui)
                 self._trace(
-                    "pipeline.llm.empty",
-                    f"mode={mode} llm_ms={round(llm_ms, 1)} agent returned empty; check LangChain/Ollama response shape",
+                    "pipeline.llm.done",
+                    f"mode={mode} chars={len(response)} llm_ms={round(llm_ms, 1)}",
                 )
-                response = "I didn’t get a reply from the model. Try again or check the console for details."
-            llm_for_tts = strip_action_meta_for_tts(response)
-            spoken_part, full_for_display = parse_two_tier_reply(llm_for_tts)
-            display_for_ui = (sanitize_assistant_text(full_for_display).strip() if full_for_display.strip() else response) or response
-            already_streamed = use_stream_tts or (mode == "typed" and bool(typed_accumulated))
-            if on_token and display_for_ui and not already_streamed:
-                on_token(display_for_ui)
-            self._trace(
-                "pipeline.llm.done",
-                f"mode={mode} chars={len(response)} llm_ms={round(llm_ms, 1)}",
-            )
-            if self._remember_history and hasattr(self._agent, "summarize_if_needed"):
-                threading.Thread(
-                    target=self._agent.summarize_if_needed,
-                    args=(self._session_id, self._user_id),
-                    daemon=True,
-                    name="post-turn-summarize",
-                ).start()
-                if hasattr(self._agent, "update_personality"):
+                if self._remember_history and hasattr(self._agent, "summarize_if_needed"):
                     threading.Thread(
-                        target=self._agent.update_personality,
+                        target=self._agent.summarize_if_needed,
                         args=(self._session_id, self._user_id),
-                        kwargs={
-                            "decay_rate": self._settings.agent.personality_decay_rate,
-                            "prune_threshold": self._settings.agent.personality_prune_threshold,
-                            "max_notes": self._settings.agent.personality_max_notes,
-                        },
                         daemon=True,
-                        name="post-turn-personality",
+                        name="post-turn-summarize",
                     ).start()
-        except Exception as exc:
-            self._trace("pipeline.llm.error", str(exc))
-            self._set_last_metrics({
-                "mode": mode,
-                "capture_ms": round(capture_ms, 1),
-                "stt_ms": round(stt_ms, 1),
-                "llm_ms": 0.0,
-                "tts_ms": 0.0,
-                "total_ms": round((time.perf_counter() - turn_start) * 1000.0, 1),
-            })
-            return (
-                "I could not reach Ollama. Please make sure it is running and the model is available. "
-                f"Details: {exc}"
-            )
+                    if hasattr(self._agent, "update_personality"):
+                        threading.Thread(
+                            target=self._agent.update_personality,
+                            args=(self._session_id, self._user_id),
+                            kwargs={
+                                "decay_rate": self._settings.agent.personality_decay_rate,
+                                "prune_threshold": self._settings.agent.personality_prune_threshold,
+                                "max_notes": self._settings.agent.personality_max_notes,
+                            },
+                            daemon=True,
+                            name="post-turn-personality",
+                        ).start()
+            except Exception as exc:
+                self._trace("pipeline.llm.error", str(exc))
+                self._set_last_metrics({
+                    "mode": mode,
+                    "capture_ms": round(capture_ms, 1),
+                    "stt_ms": round(stt_ms, 1),
+                    "llm_ms": 0.0,
+                    "tts_ms": 0.0,
+                    "total_ms": round((time.perf_counter() - turn_start) * 1000.0, 1),
+                })
+                return (
+                    "I could not reach Ollama. Please make sure it is running and the model is available. "
+                    f"Details: {exc}"
+                )
+        finally:
+            self._turn_in_progress = False
+
+        if turn_completed_ok:
+            self._assistant_turn_seq += 1
+            self._signal_director_post_turn()
 
         explicit_reaction, response = extract_tts_reaction_tag(response)
         if explicit_reaction:

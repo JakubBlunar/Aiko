@@ -62,6 +62,12 @@ def detect_context_window(base_url: str, model: str) -> int:
     return 8192
 
 
+# Ollama often reports a model's maximum training context (e.g. 262144). Passing that as num_ctx
+# makes every request pay for a huge KV reservation / slow prefill. Cap only when the user did
+# not set ollama.context_window explicitly (see create_agent).
+_MAX_AUTO_DETECT_CONTEXT_TOKENS = 65536
+
+
 def _get_langchain_tools(
     toolkit_entries: list[tuple[str, dict[str, Any]]] | None,
     mcp_tools: list[Any],
@@ -170,9 +176,37 @@ def _make_sync_tool(tool: Any, manager: _McpManager) -> Any:
     return tool
 
 
+def _is_browser_snapshot_tool_name(name: str) -> bool:
+    return name == "browser_snapshot" or name.endswith("_browser_snapshot")
+
+
+def _wrap_browser_snapshot_tool(tool: Any, snapshot_options: Any) -> None:
+    """Mutate *tool* so its sync ``func`` compresses string results (Playwright MCP).
+
+    Stores the pre-compression callable on ``_snapshot_raw_func`` so the embedded
+    MCP server can compress once from the raw snapshot (same settings as agent).
+    """
+    from app.llm.browser_snapshot_compress import compress_browser_snapshot_with_options
+
+    name = str(getattr(tool, "name", "") or "")
+    if not _is_browser_snapshot_tool_name(name):
+        return
+    inner = getattr(tool, "func", None)
+    if inner is None:
+        return
+    setattr(tool, "_snapshot_raw_func", inner)
+
+    def _wrapped_func(**kwargs: Any) -> Any:
+        raw = inner(**kwargs)
+        return compress_browser_snapshot_with_options(str(raw), snapshot_options)
+
+    tool.func = _wrapped_func
+
+
 def _load_mcp_tools(
     root: Path,
     mcp_config: dict[str, Any],
+    snapshot_options: Any | None = None,
 ) -> tuple[list[Any], _McpManager | None]:
     """Load MCP tools from config. Returns (tools, manager)."""
     log = logging.getLogger("app.llm.langchain_agent")
@@ -229,6 +263,9 @@ def _load_mcp_tools(
         if connections:
             manager = _McpManager(connections)
             tools = [_make_sync_tool(t, manager) for t in manager.tools]
+            if snapshot_options is not None and snapshot_options.enabled:
+                for t in tools:
+                    _wrap_browser_snapshot_tool(t, snapshot_options)
             log.info("Loaded %d MCP tools: %s", len(tools), [t.name for t in tools])
     except Exception as e:
         log.warning("Failed to load MCP tools: %s", e)
@@ -311,6 +348,7 @@ def create_agent(
     *,
     chat_model: str = "llama3.1:8b",
     base_url: str = "http://127.0.0.1:11434",
+    embedding_base_url: str | None = None,
     temperature: float = 0.6,
     timeout: int = 300,
     judge_model: str | None = None,
@@ -327,6 +365,9 @@ def create_agent(
     compress_tool_results: bool = True,
     compress_tool_results_limit: int | None = None,
     compress_token_limit: int | None = None,
+    browser_snapshot_compress: bool = True,
+    browser_snapshot_max_chars: int | None = None,
+    browser_snapshot_max_text_run: int | None = None,
     mcp_config: dict[str, Any] | None = None,
     project_root: Path | None = None,
     context_window: int | None = None,
@@ -355,9 +396,21 @@ def create_agent(
     storage_path.parent.mkdir(parents=True, exist_ok=True)
     root = project_root or Path(__file__).resolve().parents[2]
 
-    resolved_ctx = context_window or detect_context_window(base_url, chat_model)
+    detected_ctx = detect_context_window(base_url, chat_model)
+    if context_window is not None:
+        resolved_ctx = max(2048, int(context_window))
+    else:
+        resolved_ctx = max(2048, min(int(detected_ctx), _MAX_AUTO_DETECT_CONTEXT_TOKENS))
     log = logging.getLogger("app.llm.langchain_agent")
-    log.info("Context window for %s: %d tokens", chat_model, resolved_ctx)
+    if context_window is None and detected_ctx > resolved_ctx:
+        log.info(
+            "Context window for %s: using %d tokens (Ollama reports %d; set ollama.context_window to use more)",
+            chat_model,
+            resolved_ctx,
+            detected_ctx,
+        )
+    else:
+        log.info("Context window for %s: %d tokens", chat_model, resolved_ctx)
 
     llm = ChatOllama(
         model=chat_model,
@@ -388,7 +441,16 @@ def create_agent(
     mcp_tools: list[Any] = []
     mcp_mgr: _McpManager | None = None
     if add_mcp and mcp_config:
-        mcp_tools, mcp_mgr = _load_mcp_tools(root, mcp_config)
+        from app.llm.browser_snapshot_compress import browser_snapshot_options_from_agent_settings
+
+        snapshot_opts = browser_snapshot_options_from_agent_settings(
+            browser_snapshot_compress=browser_snapshot_compress,
+            browser_snapshot_max_chars=browser_snapshot_max_chars,
+            browser_snapshot_max_text_run=browser_snapshot_max_text_run,
+            compress_tool_results_limit=compress_tool_results_limit,
+            compress_token_limit=compress_token_limit,
+        )
+        mcp_tools, mcp_mgr = _load_mcp_tools(root, mcp_config, snapshot_options=snapshot_opts)
 
     tools_list: list[Any] = []
     if add_tools:
@@ -401,7 +463,8 @@ def create_agent(
         tools_list = _add_history_search_tool(tools_list, embedding_service, chat_db)
 
     if archive_path:
-        tools_list = _add_archive_search_tool(tools_list, archive_path, base_url, embedding_model)
+        archive_embedding_base_url = (embedding_base_url or "").strip() or base_url
+        tools_list = _add_archive_search_tool(tools_list, archive_path, archive_embedding_base_url, embedding_model)
 
     num_history = num_history_runs if num_history_runs is not None else 10
 
@@ -1229,6 +1292,7 @@ def run_agent(
     on_content: Callable[[str], None] | None = None,
     on_tool_use: Any = None,
     stop_requested: Callable[[], bool] | None = None,
+    user_text_for_persist: str | None = None,
 ) -> str:
     """Run the agent and return the response content. Supports stream and callbacks."""
     if agent is None:
@@ -1351,7 +1415,12 @@ def run_agent(
                 ai_text = fallback
             if ai_text and hasattr(agent, "save_turn"):
                 try:
-                    agent.save_turn(session_id, user_id, message.strip(), ai_text)
+                    persist_user = (
+                        user_text_for_persist.strip()
+                        if user_text_for_persist is not None
+                        else message.strip()
+                    )
+                    agent.save_turn(session_id, user_id, persist_user, ai_text)
                 except Exception:
                     pass
             return ai_text

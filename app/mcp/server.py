@@ -10,6 +10,11 @@ from mcp.server.fastmcp import FastMCP
 if TYPE_CHECKING:
     from app.core.session_controller import SessionController
 
+from app.llm.browser_snapshot_compress import (
+    browser_snapshot_options_from_agent_settings,
+    compress_browser_snapshot_with_options,
+)
+
 log = logging.getLogger("app.mcp.server")
 
 
@@ -148,8 +153,23 @@ def create_mcp_server(session: SessionController, port: int = 6274) -> FastMCP:
         """Get the accessibility tree / text snapshot of the current browser page.
 
         This is the same view the agent sees when deciding what to click.
+        Compression uses the same agent settings as the LangChain snapshot tool.
         """
-        return _call_mcp_tool("browser_snapshot")
+        tool = _find_mcp_tool("browser_snapshot")
+        raw_fn = getattr(tool, "_snapshot_raw_func", None) if tool is not None else None
+        if raw_fn is not None:
+            raw = str(raw_fn(**{}))
+        else:
+            raw = _call_mcp_tool("browser_snapshot")
+        ag = session._settings.agent
+        opts = browser_snapshot_options_from_agent_settings(
+            browser_snapshot_compress=ag.browser_snapshot_compress,
+            browser_snapshot_max_chars=ag.browser_snapshot_max_chars,
+            browser_snapshot_max_text_run=ag.browser_snapshot_max_text_run,
+            compress_tool_results_limit=ag.compress_tool_results_limit,
+            compress_token_limit=ag.compress_token_limit,
+        )
+        return compress_browser_snapshot_with_options(raw, opts)
 
     @mcp.tool()
     def get_browser_screenshot() -> str:

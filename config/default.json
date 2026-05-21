@@ -11,7 +11,20 @@
     "proactive_silence_seconds": 45,
     "proactive_cooldown_seconds": 120,
     "archive_enabled": true,
-    "archive_days_threshold": 30
+    "archive_days_threshold": 30,
+    "browser_snapshot_compress": true,
+    "browser_snapshot_max_chars": null,
+    "browser_snapshot_max_text_run": null,
+    "proactive_planner_enabled": true,
+    "proactive_use_main_for_utterance": false,
+    "proactive_context_messages": 10,
+    "proactive_background_interval_seconds": 20,
+    "proactive_background_stale_seconds": 120,
+    "proactive_brain_advise_main": true,
+    "proactive_brain_drive_speech": true,
+    "proactive_brain_influence_autonomy": false,
+    "proactive_brain_request_actions_via_main": false,
+    "proactive_speech_requires_live": true
   },
   "assistant": {
     "name": "Assistant",
@@ -23,11 +36,14 @@
   },
   "ollama": {
     "base_url": "http://127.0.0.1:11434",
+    "embedding_base_url": "",
+    "proactive_planner_base_url": "",
     "chat_model": "jaahas/qwen3.5-uncensored:9b",
     "judge_model": "qwen2.5:0.5b",
     "temperature": 0.6,
     "context_window": null,
-    "embedding_model": "qwen3-embedding:0.6b"
+    "embedding_model": "qwen3-embedding:0.6b",
+    "proactive_planner_model": "qwen2.5:0.5b"
   },
   "audio": {
     "sample_rate": 16000,

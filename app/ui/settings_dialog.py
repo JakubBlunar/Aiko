@@ -47,7 +47,7 @@ class SettingsDialog(PersistentGeometryMixin, QDialog):
         self.setWindowTitle("Settings")
         self.init_geometry(
             initial=initial_geometry,
-            default_width=640, default_height=480,
+            default_width=640, default_height=560,
             persist_callback=persist_geometry,
         )
         layout = QVBoxLayout(self)
@@ -283,6 +283,63 @@ class SettingsDialog(PersistentGeometryMixin, QDialog):
             getattr(agent_settings, "proactive_cooldown_seconds", 120.0) if agent_settings else 120.0
         )
         proactive_form.addRow("Cooldown between proactive:", self._proactive_cooldown_spin)
+        self._proactive_planner_enabled = QCheckBox("Enable background director (JSON planner)")
+        self._proactive_planner_enabled.setChecked(
+            bool(getattr(agent_settings, "proactive_planner_enabled", True)) if agent_settings else True
+        )
+        proactive_form.addRow("", self._proactive_planner_enabled)
+        self._proactive_planner_model_edit = QLineEdit(
+            str(getattr(settings.ollama, "proactive_planner_model", "") or "")
+        )
+        self._proactive_planner_model_edit.setPlaceholderText("blank = same as judge model")
+        proactive_form.addRow("Planner Ollama model:", self._proactive_planner_model_edit)
+        self._proactive_context_spin = QSpinBox()
+        self._proactive_context_spin.setRange(2, 40)
+        self._proactive_context_spin.setValue(
+            int(getattr(agent_settings, "proactive_context_messages", 10)) if agent_settings else 10
+        )
+        proactive_form.addRow("Transcript lines for planner:", self._proactive_context_spin)
+        self._proactive_bg_interval_spin = QDoubleSpinBox()
+        self._proactive_bg_interval_spin.setRange(20.0, 600.0)
+        self._proactive_bg_interval_spin.setSingleStep(10.0)
+        self._proactive_bg_interval_spin.setSuffix(" s")
+        self._proactive_bg_interval_spin.setValue(
+            float(getattr(agent_settings, "proactive_background_interval_seconds", 90.0)) if agent_settings else 90.0
+        )
+        proactive_form.addRow("Director refresh interval:", self._proactive_bg_interval_spin)
+        self._proactive_stale_spin = QDoubleSpinBox()
+        self._proactive_stale_spin.setRange(30.0, 600.0)
+        self._proactive_stale_spin.setSingleStep(10.0)
+        self._proactive_stale_spin.setSuffix(" s")
+        self._proactive_stale_spin.setValue(
+            float(getattr(agent_settings, "proactive_background_stale_seconds", 120.0)) if agent_settings else 120.0
+        )
+        proactive_form.addRow("Plan max age for speech:", self._proactive_stale_spin)
+        self._proactive_use_main_utterance = QCheckBox("Expand proactive lines with main chat model")
+        self._proactive_use_main_utterance.setChecked(
+            bool(getattr(agent_settings, "proactive_use_main_for_utterance", False)) if agent_settings else False
+        )
+        proactive_form.addRow("", self._proactive_use_main_utterance)
+        self._proactive_advise_main = QCheckBox("Pass planner hints to main model (not saved as user text)")
+        self._proactive_advise_main.setChecked(
+            bool(getattr(agent_settings, "proactive_brain_advise_main", True)) if agent_settings else True
+        )
+        proactive_form.addRow("", self._proactive_advise_main)
+        self._proactive_drive_speech = QCheckBox("Director can trigger proactive speech")
+        self._proactive_drive_speech.setChecked(
+            bool(getattr(agent_settings, "proactive_brain_drive_speech", True)) if agent_settings else True
+        )
+        proactive_form.addRow("", self._proactive_drive_speech)
+        self._proactive_speech_live_only = QCheckBox("Proactive speech only during Start Live")
+        self._proactive_speech_live_only.setChecked(
+            bool(getattr(agent_settings, "proactive_speech_requires_live", True)) if agent_settings else True
+        )
+        proactive_form.addRow("", self._proactive_speech_live_only)
+        self._proactive_influence_autonomy = QCheckBox("Planner suggested_steps influence autonomy (reserved)")
+        self._proactive_influence_autonomy.setChecked(
+            bool(getattr(agent_settings, "proactive_brain_influence_autonomy", False)) if agent_settings else False
+        )
+        proactive_form.addRow("", self._proactive_influence_autonomy)
         layout.addWidget(proactive_group)
 
         misc_group = QGroupBox("Miscellaneous")
@@ -458,6 +515,26 @@ class SettingsDialog(PersistentGeometryMixin, QDialog):
             agent_settings.proactive_silence_seconds = self._proactive_silence_spin.value()
         if agent_settings and hasattr(agent_settings, "proactive_cooldown_seconds"):
             agent_settings.proactive_cooldown_seconds = self._proactive_cooldown_spin.value()
+        if agent_settings and hasattr(agent_settings, "proactive_planner_enabled"):
+            agent_settings.proactive_planner_enabled = self._proactive_planner_enabled.isChecked()
+        if hasattr(settings, "ollama") and hasattr(settings.ollama, "proactive_planner_model"):
+            settings.ollama.proactive_planner_model = self._proactive_planner_model_edit.text().strip()
+        if agent_settings and hasattr(agent_settings, "proactive_context_messages"):
+            agent_settings.proactive_context_messages = self._proactive_context_spin.value()
+        if agent_settings and hasattr(agent_settings, "proactive_background_interval_seconds"):
+            agent_settings.proactive_background_interval_seconds = float(self._proactive_bg_interval_spin.value())
+        if agent_settings and hasattr(agent_settings, "proactive_background_stale_seconds"):
+            agent_settings.proactive_background_stale_seconds = float(self._proactive_stale_spin.value())
+        if agent_settings and hasattr(agent_settings, "proactive_use_main_for_utterance"):
+            agent_settings.proactive_use_main_for_utterance = self._proactive_use_main_utterance.isChecked()
+        if agent_settings and hasattr(agent_settings, "proactive_brain_advise_main"):
+            agent_settings.proactive_brain_advise_main = self._proactive_advise_main.isChecked()
+        if agent_settings and hasattr(agent_settings, "proactive_brain_drive_speech"):
+            agent_settings.proactive_brain_drive_speech = self._proactive_drive_speech.isChecked()
+        if agent_settings and hasattr(agent_settings, "proactive_speech_requires_live"):
+            agent_settings.proactive_speech_requires_live = self._proactive_speech_live_only.isChecked()
+        if agent_settings and hasattr(agent_settings, "proactive_brain_influence_autonomy"):
+            agent_settings.proactive_brain_influence_autonomy = self._proactive_influence_autonomy.isChecked()
         if hasattr(settings, "logging") and hasattr(settings.logging, "level"):
             settings.logging.level = self._log_level_combo.currentData() or "INFO"
         try:
