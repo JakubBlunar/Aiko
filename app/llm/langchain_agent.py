@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Callable, TYPE_CHECKING
+from typing import Any, Callable, Iterable, TYPE_CHECKING
 
 from app.llm.prompt_builder import VOICE_INSTRUCTIONS
 
@@ -376,6 +376,11 @@ def create_agent(
     personality_token_budget: int = 300,
     archive_path: Path | None = None,
     embedding_model: str = "qwen3-embedding:0.6b",
+    tool_dispatch_mode: str = "controller",
+    tool_iterations_max: int = 3,
+    triage_judge_enabled: bool = True,
+    triage_judge_timeout_seconds: float = 0.5,
+    session_policy_resolver: Callable[[str], set[str] | None] | None = None,
 ) -> Any:
     """Create a LangChain agent with Ollama, storage, optional tools and MCP. Create once and reuse."""
     try:
@@ -468,25 +473,46 @@ def create_agent(
 
     num_history = num_history_runs if num_history_runs is not None else 10
 
-    use_react = False
-    try:
-        from langgraph.prebuilt import create_react_agent
-        use_react = True
-    except ImportError:
-        try:
-            from langchain.agents import create_react_agent
-            use_react = True
-        except ImportError:
-            create_react_agent = None
+    dispatch_mode = str(tool_dispatch_mode or "controller").strip().lower()
+    if dispatch_mode not in {"controller", "plain_only", "legacy_react"}:
+        dispatch_mode = "controller"
 
-    agent = llm
-    if create_react_agent is not None and tools_list:
-        agent = create_react_agent(llm, tools_list)
-    elif tools_list:
-        agent = llm.bind_tools(tools_list)
+    controller = None
+    legacy_agent: Any = llm
+    use_legacy_react = False
+
+    if dispatch_mode == "legacy_react" and tools_list:
+        # Old behaviour preserved as an escape hatch.
+        try:
+            from langgraph.prebuilt import create_react_agent
+            legacy_agent = create_react_agent(llm, tools_list)
+            use_legacy_react = True
+        except ImportError:
+            try:
+                from langchain.agents import create_react_agent
+                legacy_agent = create_react_agent(llm, tools_list)
+                use_legacy_react = True
+            except ImportError:
+                log.warning("legacy_react requested but create_react_agent unavailable; falling back to controller.")
+                dispatch_mode = "controller"
+
+    if dispatch_mode == "controller" and tools_list:
+        from app.llm.agent_controller import AgentController
+
+        controller = AgentController(
+            llm,
+            tools_list,
+            judge_llm=judge_llm,
+            iterations_max=int(tool_iterations_max),
+            triage_judge_enabled=bool(triage_judge_enabled),
+            triage_judge_timeout=float(triage_judge_timeout_seconds),
+            session_policy_resolver=session_policy_resolver,
+        )
+    elif dispatch_mode == "plain_only":
+        log.info("Agent tool dispatch: plain_only — tools registered but never dispatched.")
 
     return _AgentWrapper(
-        agent=agent,
+        agent=legacy_agent,
         llm=llm,
         judge_llm=judge_llm,
         tools=tools_list,
@@ -495,7 +521,7 @@ def create_agent(
         database_provider=database_provider,
         database_url=database_url,
         num_history_runs=num_history,
-        use_react_agent=use_react and bool(tools_list),
+        use_react_agent=use_legacy_react,
         context_window=resolved_ctx,
         compress_tool_results=compress_tool_results,
         compress_tool_results_limit=compress_tool_results_limit,
@@ -504,6 +530,8 @@ def create_agent(
         embedding_service=embedding_service,
         personality_token_budget=personality_token_budget,
         mcp_manager=mcp_mgr,
+        controller=controller,
+        dispatch_mode=dispatch_mode,
     )
 
 
@@ -535,6 +563,8 @@ class _AgentWrapper:
         judge_llm: Any = None,
         personality_token_budget: int = 300,
         mcp_manager: _McpManager | None = None,
+        controller: Any = None,
+        dispatch_mode: str = "controller",
     ) -> None:
         self._agent = agent
         self._llm = llm
@@ -561,6 +591,8 @@ class _AgentWrapper:
         self._embedding_service = embedding_service
         self._personality_token_budget = personality_token_budget
         self._mcp_manager = mcp_manager
+        self._controller = controller
+        self._dispatch_mode = str(dispatch_mode or "controller").strip().lower()
         self._cached_system_message: str | None = None
         self._persist_enabled: bool = True
         self._last_context_tokens: int = 0
@@ -594,6 +626,7 @@ class _AgentWrapper:
         stream: bool = False,
         stream_events: bool = False,
         force_plain_llm: bool = False,
+        session_type: str = "chat",
     ) -> Any:
         """Run the agent. Returns response object or stream iterator."""
         from langchain_core.messages import HumanMessage
@@ -607,11 +640,19 @@ class _AgentWrapper:
             if ref is not None:
                 ref[0] = session_key
 
-        messages = self._get_history_messages(session_key, user_input=input.strip())
-        messages.append(HumanMessage(content=input.strip()))
+        user_text = input.strip()
+        messages = self._get_history_messages(session_key, user_input=user_text)
+        messages.append(HumanMessage(content=user_text))
 
         if stream or stream_events:
-            return self._stream_run(session_key, messages, stream_events, force_plain_llm=force_plain_llm)
+            return self._stream_run(
+                session_key,
+                messages,
+                stream_events,
+                force_plain_llm=force_plain_llm,
+                user_text=user_text,
+                session_type=session_type,
+            )
         return self._invoke_run(session_key, messages)
 
     def save_turn(self, session_id: str, user_id: str | None, user_text: str, ai_text: str) -> None:
@@ -995,6 +1036,8 @@ class _AgentWrapper:
     def _stream_run(
         self, session_key: str, messages: list[Any], stream_events: bool,
         *, force_plain_llm: bool = False,
+        user_text: str = "",
+        session_type: str = "chat",
     ) -> Any:
         from langchain_core.messages import SystemMessage
 
@@ -1002,11 +1045,22 @@ class _AgentWrapper:
         self._cached_system_message = None
         full: list[Any] = [SystemMessage(content=sys_content)] + messages
         self._log.info(
-            "stream_run: react=%s tools=%d msgs=%d sys_chars=%d force_plain=%s",
-            self._has_react_agent, len(self._tools), len(full), len(sys_content), force_plain_llm,
+            "stream_run: dispatch=%s react=%s tools=%d msgs=%d sys_chars=%d force_plain=%s session_type=%s",
+            self._dispatch_mode, self._has_react_agent, len(self._tools), len(full),
+            len(sys_content), force_plain_llm, session_type,
         )
-        if not force_plain_llm and self._has_react_agent and self._tools:
+
+        if force_plain_llm or self._dispatch_mode == "plain_only" or not self._tools:
+            return ("llm_stream", self._llm.stream(full))
+
+        if self._controller is not None:
+            return self._controller.stream(
+                full, user_text=user_text, session_type=session_type,
+            )
+
+        if self._has_react_agent:
             return ("react_stream", self._react_stream_with_retry(full))
+
         return ("llm_stream", self._llm.stream(full))
 
     _TOOL_INTENT_PATTERNS = [
@@ -1034,11 +1088,11 @@ class _AgentWrapper:
         '- "needs_summary": Tools were called successfully but the assistant never gave a spoken answer. '
         "nudge = a short instruction telling the assistant to summarize results in speech.\n"
         '- "needs_tools": The assistant said it would use tools but never actually called any. '
-        "nudge = a short instruction telling it to actually call the tools.\n"
-        '- "needs_continuation": The assistant started calling tools but didn\'t finish the task. '
-        "nudge = a short instruction telling it to continue.\n\n"
+        "nudge = a short instruction telling it to actually call the tools.\n\n"
         "IMPORTANT: The nudge must be a brief, direct instruction (1-2 sentences). "
-        "Always include: do NOT repeat any greeting or introduction."
+        "Always include: do NOT repeat any greeting or introduction.\n"
+        "NEVER ask the assistant to continue calling more tools. If a turn ran tools "
+        "but feels incomplete, mark it complete -- the user will follow up."
     )
 
     def _judge_nudge(
@@ -1113,11 +1167,6 @@ class _AgentWrapper:
             "You said you would use tools but didn't call any. "
             "Please actually call the appropriate tool now."
         ),
-        "needs_continuation": (
-            "You started the task but didn't finish. "
-            "Continue calling tools to complete it. "
-            "Do NOT greet again or repeat your introduction."
-        ),
     }
 
     def _default_nudge_for_verdict(self, verdict: str, tool_calls: int) -> str:
@@ -1145,12 +1194,6 @@ class _AgentWrapper:
                 "Briefly summarize what you did and what the result is. "
                 "Do NOT repeat any greeting or introduction. "
                 "Reply with text ONLY, do NOT call any more tools."
-            )
-        if tool_calls > 0 and self._has_tool_intent(last_ai):
-            return (
-                "You started the task but didn't finish. "
-                "Continue calling tools to complete it. "
-                "Do NOT greet again or repeat your introduction."
             )
         return ""
 
@@ -1191,11 +1234,14 @@ class _AgentWrapper:
 
         After the first pass, the judge model analyzes the turn and decides:
         - complete: no action needed
-        - needs_summary / needs_tools / needs_continuation: retry with nudge
+        - needs_summary / needs_tools: retry with nudge
 
         Falls back to regex heuristics if judge model is unavailable.
         If after the retry the model still produced no text, a text-only
         LLM call (no tools) forces a spoken summary.
+
+        NOTE: This path is only used when ``agent.tool_dispatch_mode ==
+        "legacy_react"``. The new ``AgentController`` is the default.
         """
         from langchain_core.messages import HumanMessage
 
@@ -1293,6 +1339,7 @@ def run_agent(
     on_tool_use: Any = None,
     stop_requested: Callable[[], bool] | None = None,
     user_text_for_persist: str | None = None,
+    session_type: str = "chat",
 ) -> str:
     """Run the agent and return the response content. Supports stream and callbacks."""
     if agent is None:
@@ -1308,6 +1355,7 @@ def run_agent(
                 user_id=user_id,
                 stream=True,
                 stream_events=True,
+                session_type=session_type,
             )
             log = logging.getLogger("app.llm.langchain_agent")
             try:
@@ -1385,6 +1433,7 @@ def run_agent(
                             stream=True,
                             stream_events=True,
                             force_plain_llm=True,
+                            session_type=session_type,
                         )
                         for chunk in plain_iter:
                             if stop_requested and stop_requested():

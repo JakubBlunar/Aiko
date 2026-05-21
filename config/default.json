@@ -24,7 +24,11 @@
     "proactive_brain_drive_speech": true,
     "proactive_brain_influence_autonomy": false,
     "proactive_brain_request_actions_via_main": false,
-    "proactive_speech_requires_live": true
+    "proactive_speech_requires_live": true,
+    "tool_dispatch_mode": "controller",
+    "tool_iterations_max": 3,
+    "triage_judge_enabled": true,
+    "triage_judge_timeout_seconds": 0.5
   },
   "assistant": {
     "name": "Assistant",

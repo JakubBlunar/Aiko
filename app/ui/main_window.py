@@ -166,9 +166,12 @@ class MainWindow(QMainWindow):
         persona_layout = QVBoxLayout(self._persona_container)
         persona_layout.setContentsMargins(0, 0, 0, 0)
         persona_layout.setSpacing(0)
-        self._persona_container.setMinimumWidth(240)
-        self._persona_container.setMaximumWidth(520)
+        self._persona_container.setMinimumWidth(220)
+        self._persona_container.setMaximumWidth(900)
         self._persona_container.setVisible(False)
+        self._persona_default_width: int = 340
+        self._persona_min_width: int = 220
+        self._persona_max_width: int = 900
         main_splitter.addWidget(self._persona_container)
 
         sidebar = QWidget()
@@ -417,8 +420,10 @@ class MainWindow(QMainWindow):
             self._persona_popout_action.setChecked(desired_overlay)
             self._set_persona_popped_out(desired_overlay)
         if not desired_overlay:
-            self._persona_container.setVisible(bool(persona.enabled))
-            self._persona_toggle_action.setChecked(bool(persona.enabled))
+            visible = bool(persona.enabled)
+            self._persona_container.setVisible(visible)
+            self._persona_toggle_action.setChecked(visible)
+            self._apply_persona_pane_layout(visible)
 
     def _emit_external_message(self, speaker: str, text: str) -> None:
         """Thread-safe bridge: emit the Qt signal from any thread."""
@@ -1012,6 +1017,17 @@ class MainWindow(QMainWindow):
                 "width": int(self._persona_overlay.width()),
                 "height": int(self._persona_overlay.height()),
             }
+        if (
+            self._persona_panel is not None
+            and not (self._persona_popout_action and self._persona_popout_action.isChecked())
+            and self._persona_container.isVisible()
+        ):
+            try:
+                sizes = self._main_splitter.sizes()
+                if sizes and sizes[0] > 0:
+                    kwargs["persona_embedded_width"] = int(sizes[0])
+            except Exception:
+                pass
         if sync:
             save_runtime_preferences(**kwargs)
         else:
@@ -1218,6 +1234,60 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
+    def _persona_pane_target_width(self) -> int:
+        persona = getattr(self._settings, "persona", None)
+        saved = getattr(persona, "embedded_width", None) if persona is not None else None
+        target = int(saved) if saved else int(self._persona_default_width)
+        return max(self._persona_min_width, min(target, self._persona_max_width))
+
+    def _apply_persona_pane_layout(self, visible: bool) -> None:
+        """Make the embedded persona pane actually visible without forcing
+        the user to drag the splitter or resize the window.
+
+        - When showing: allocate the saved (or default) width to the persona
+          pane, shift width from the conversation pane, and grow the window
+          if the conversation pane would otherwise be squashed below a
+          comfortable minimum.
+        - When hiding: collapse the persona slot back to 0 and give the
+          freed width to the conversation pane.
+        """
+        splitter = getattr(self, "_main_splitter", None)
+        if splitter is None or splitter.count() < 3:
+            return
+
+        sizes = list(splitter.sizes())
+        if len(sizes) < 3:
+            return
+
+        persona_width = sizes[0]
+        sidebar_width = sizes[1]
+        conv_width = sizes[2]
+        total = persona_width + sidebar_width + conv_width
+        if total <= 0:
+            total = splitter.width() or (self.width() - 32)
+
+        min_conv = 360
+
+        if visible:
+            target_persona = self._persona_pane_target_width()
+            current_window_width = self.width()
+            needed = target_persona + sidebar_width + min_conv + 24
+            if current_window_width < needed:
+                new_w = min(needed, self.screen().availableGeometry().width() - 40)
+                self.resize(new_w, self.height())
+                QApplication.processEvents()
+                sizes = list(splitter.sizes())
+                if len(sizes) < 3:
+                    return
+                sidebar_width = sizes[1]
+                conv_width = sizes[2]
+                total = sum(sizes) or new_w
+            new_conv = max(min_conv, total - target_persona - sidebar_width)
+            splitter.setSizes([target_persona, sidebar_width, new_conv])
+        else:
+            new_conv = max(min_conv, conv_width + persona_width)
+            splitter.setSizes([0, sidebar_width, new_conv])
+
     def _setup_persona(self) -> None:
         persona = getattr(self._settings, "persona", None)
         if persona is None:
@@ -1250,6 +1320,7 @@ class MainWindow(QMainWindow):
                 QTimer.singleShot(0, lambda: self._set_persona_popped_out(True))
             else:
                 self._persona_container.setVisible(True)
+                QTimer.singleShot(0, lambda: self._apply_persona_pane_layout(True))
 
     def _toggle_persona_visibility(self) -> None:
         if self._persona_panel is None:
@@ -1267,6 +1338,7 @@ class MainWindow(QMainWindow):
         visible = not self._persona_container.isVisible()
         self._persona_container.setVisible(visible)
         self._persona_toggle_action.setChecked(visible)
+        self._apply_persona_pane_layout(visible)
 
     def _toggle_persona_popout(self) -> None:
         if self._persona_panel is None:
@@ -1295,14 +1367,17 @@ class MainWindow(QMainWindow):
                 geo.resize(int(persona.overlay_width), int(persona.overlay_height))
             self._persona_overlay.show()
             self._persona_container.setVisible(False)
+            self._apply_persona_pane_layout(False)
         else:
             if self._persona_overlay is not None:
                 self._persona_overlay.set_content(None)
                 self._persona_overlay.hide()
             self._persona_panel.setParent(self._persona_container)
             self._persona_container.layout().addWidget(self._persona_panel)
-            self._persona_container.setVisible(self._persona_toggle_action.isChecked())
+            visible = self._persona_toggle_action.isChecked()
+            self._persona_container.setVisible(visible)
             self._persona_panel.set_overlay_mode(False)
+            self._apply_persona_pane_layout(visible)
 
     def _on_persona_overlay_closed(self) -> None:
         self._persona_popout_action.setChecked(False)

@@ -190,6 +190,13 @@ class SessionController:
                 personality_token_budget=settings.agent.personality_token_budget,
                 archive_path=storage_path.parent / "archive.db" if settings.agent.archive_enabled else None,
                 embedding_model=settings.ollama.embedding_model,
+                tool_dispatch_mode=getattr(settings.agent, "tool_dispatch_mode", "controller"),
+                tool_iterations_max=int(getattr(settings.agent, "tool_iterations_max", 3)),
+                triage_judge_enabled=bool(getattr(settings.agent, "triage_judge_enabled", True)),
+                triage_judge_timeout_seconds=float(
+                    getattr(settings.agent, "triage_judge_timeout_seconds", 0.5)
+                ),
+                session_policy_resolver=self._resolve_session_tool_policy,
             )
             self._realtime_stt = stt_future.result()
             self._agent = agent_future.result()
@@ -674,9 +681,21 @@ class SessionController:
             prompt = [
                 SystemMessage(content=sys_msg),
                 HumanMessage(
-                    content="The user just opened the app. Generate a single short greeting sentence "
-                    "(max 15 words) to welcome them back. Stay in character. "
-                    "Do NOT use [[reaction:...]] tags or any formatting. Just the greeting text."
+                    content=(
+                        "The user just opened the app. Generate a single short greeting "
+                        "sentence (max 12 words) acknowledging that they are back. Stay "
+                        "in character.\n\n"
+                        "STRICT RULES:\n"
+                        "- Do NOT offer to do anything ('help with', 'show you', 'dive in', "
+                        "'work on', 'ready to', 'let me know', 'what can I do').\n"
+                        "- Do NOT imply you were doing an activity while they were away "
+                        "('making tea', 'reading', 'waiting', 'looking at').\n"
+                        "- Do NOT ask any question.\n"
+                        "- Just acknowledge their presence. Good examples: "
+                        "'Hey, welcome back.', \"You're back.\", 'Hi again.', "
+                        "'Good to see you.'\n"
+                        "- No [[reaction:...]] tags. No quotes. No emoji. No formatting."
+                    )
                 ),
             ]
             result = llm.invoke(prompt)
@@ -1146,6 +1165,40 @@ class SessionController:
     def set_active_session_type(self, session_type: str) -> None:
         """No-op: LangChain agent manages conversation; session type is not used."""
         _ = session_type
+
+    def _resolve_session_tool_policy(self, session_type: str) -> set[str] | None:
+        """Return the set of tool names allowed for ``session_type``.
+
+        Returning ``None`` means no filtering -- every tool is in scope.
+        Returning an empty set means tools are blocked for this session.
+
+        Today the ``session_tool_policies.allowed_tool_prefixes`` config is
+        treated as informational unless a session lists explicit, literal
+        tool-name prefixes (anything other than ``"mcp."``, which historically
+        does not match real tool names). This keeps the agent functional out
+        of the box while letting power users opt into hard restrictions.
+        """
+        try:
+            policies = self._settings.autonomy.session_tool_policies
+        except Exception:
+            return None
+        policy = getattr(policies, str(session_type or "chat").lower(), None)
+        if policy is None:
+            return None
+        prefixes = tuple(getattr(policy, "allowed_tool_prefixes", ()) or ())
+        if not prefixes:
+            return None
+        meaningful = tuple(p for p in prefixes if p and p != "mcp.")
+        if not meaningful:
+            return None
+        agent = getattr(self, "_agent", None)
+        tools = list(getattr(agent, "_tools", []) or [])
+        return {
+            getattr(t, "name", "")
+            for t in tools
+            if any(getattr(t, "name", "").startswith(p) for p in meaningful)
+            or "*" in meaningful
+        }
 
     def clear_conversation_memory(self) -> None:
         if self._chat_db is not None:
@@ -1664,6 +1717,7 @@ class SessionController:
                     on_tool_use=_tool_status if on_generation_status else None,
                     stop_requested=stop_requested,
                     user_text_for_persist=user_text,
+                    session_type=self.active_session_type,
                 )
                 turn_completed_ok = True
                 if use_stream_tts:

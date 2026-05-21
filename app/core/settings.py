@@ -218,6 +218,10 @@ class AgentSettings:
     browser_snapshot_compress: bool = True
     browser_snapshot_max_chars: int | None = None
     browser_snapshot_max_text_run: int | None = None
+    tool_dispatch_mode: str = "controller"  # "controller" | "plain_only" | "legacy_react"
+    tool_iterations_max: int = 3
+    triage_judge_enabled: bool = True
+    triage_judge_timeout_seconds: float = 0.5
 
 
 @dataclass(slots=True)
@@ -242,6 +246,7 @@ class PersonaSettings:
     overlay_y: int | None = None
     overlay_width: int | None = None
     overlay_height: int | None = None
+    embedded_width: int | None = None
 
 
 _DEFAULT_EXPRESSION_MAP: dict[str, str] = {
@@ -405,6 +410,13 @@ def _parse_session_tool_policies(raw: object) -> SessionToolPoliciesSettings:
         chat=_parse_session_tool_policy(payload.get("chat", {}), defaults=chat_defaults),
         reading=_parse_session_tool_policy(payload.get("reading", {}), defaults=reading_defaults),
     )
+
+
+def _normalize_tool_dispatch_mode(value: Any) -> str:
+    s = str(value or "controller").strip().lower()
+    if s in ("controller", "plain_only", "legacy_react"):
+        return s
+    return "controller"
 
 
 def _normalize_response_style(value: Any) -> str:
@@ -693,6 +705,16 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                 if agent_raw.get("browser_snapshot_max_text_run") is not None
                 else None
             ),
+            tool_dispatch_mode=_normalize_tool_dispatch_mode(
+                agent_raw.get("tool_dispatch_mode", "controller")
+            ),
+            tool_iterations_max=max(
+                1, min(int(agent_raw.get("tool_iterations_max", 3)), 20)
+            ),
+            triage_judge_enabled=bool(agent_raw.get("triage_judge_enabled", True)),
+            triage_judge_timeout_seconds=max(
+                0.1, min(float(agent_raw.get("triage_judge_timeout_seconds", 0.5)), 10.0)
+            ),
         ),
         logging=LoggingSettings(
             level=str(logging_raw.get("level", "INFO")).strip().upper() or "INFO",
@@ -734,6 +756,7 @@ def _parse_persona(raw: dict[str, Any]) -> PersonaSettings:
         overlay_y=int(raw["overlay_y"]) if raw.get("overlay_y") is not None else None,
         overlay_width=int(raw["overlay_width"]) if raw.get("overlay_width") is not None else None,
         overlay_height=int(raw["overlay_height"]) if raw.get("overlay_height") is not None else None,
+        embedded_width=int(raw["embedded_width"]) if raw.get("embedded_width") is not None else None,
     )
 
 
@@ -784,6 +807,7 @@ def save_runtime_preferences(
     persona_lip_sync_gain: float | None = None,
     persona_expression_map: dict[str, str] | None = None,
     persona_overlay_geometry: dict[str, int] | None = None,
+    persona_embedded_width: int | None = None,
     path: Path | None = None,
 ) -> None:
     target = path or USER_CONFIG_PATH
@@ -945,6 +969,8 @@ def save_runtime_preferences(
                 if "height" in persona_overlay_geometry else None,
             }
         )
+    if persona_embedded_width is not None:
+        persona_updates["embedded_width"] = max(180, min(int(persona_embedded_width), 900))
     if persona_updates:
         updates["persona"] = persona_updates
 
