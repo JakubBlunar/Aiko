@@ -110,6 +110,72 @@ class TurnTriage:
         return TriageDecision("conversational", 0.6, "judge_timeout_default")
 
     def _ask_judge(self, user_text: str) -> tuple[bool | None, str]:
+        # Fast path: talk to Ollama HTTP directly so the request is actually
+        # cancelled (socket closed) when our timeout fires. concurrent.futures
+        # cannot interrupt a running thread, and ChatOllama.invoke() blocks
+        # uninterruptibly inside the ollama python client -- which means a
+        # "timed out" judge call would keep generating on the GPU for many
+        # seconds AFTER we returned, fighting the chat model for compute.
+        # We also cap num_predict to ~64 tokens so the verdict JSON cannot
+        # run away even on a slow GPU.
+        model = (getattr(self._judge_llm, "model", "") or "").strip()
+        base_url = (getattr(self._judge_llm, "base_url", "") or "").strip()
+        client_kwargs = getattr(self._judge_llm, "client_kwargs", None) or {}
+        headers = dict((client_kwargs.get("headers") or {})) if isinstance(client_kwargs, dict) else {}
+        if model and base_url:
+            try:
+                import requests as _requests
+                payload = {
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": _TRIAGE_JUDGE_SYSTEM},
+                        {"role": "user", "content": f'User message: "{user_text[:300]}"'},
+                    ],
+                    "format": "json",
+                    "stream": False,
+                    "keep_alive": "10m",
+                    "options": {
+                        "temperature": 0.0,
+                        "num_predict": 80,
+                        "num_ctx": 2048,
+                    },
+                }
+                # Connect should be sub-millisecond against local Ollama; cap
+                # tightly so the worst case is bounded by self._timeout, not by
+                # an unreachable-host connect timeout.
+                resp = _requests.post(
+                    base_url.rstrip("/") + "/api/chat",
+                    json=payload,
+                    headers=headers or None,
+                    timeout=(0.5, max(0.2, self._timeout)),
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                raw = ""
+                if isinstance(data, dict):
+                    msg = data.get("message") or {}
+                    if isinstance(msg, dict):
+                        raw = str(msg.get("content", "") or "").strip()
+                    if not raw:
+                        raw = str(data.get("response", "") or "").strip()
+                raw = re.sub(r"\[\[reaction:\w+\]\]", "", raw).strip()
+                raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+                if not raw:
+                    return None, "empty"
+                parsed = json.loads(raw)
+                needs = bool(parsed.get("needs_tools", False))
+                reason = str(parsed.get("reason", "") or "").strip()[:60]
+                return needs, reason
+            except _requests.exceptions.Timeout:
+                logger.info("Triage judge timed out after %.2fs (HTTP)", self._timeout)
+                return None, "timeout"
+            except Exception as exc:
+                logger.debug("Triage judge HTTP failed (%s); falling back to LangChain path", exc)
+                # fall through
+
+        # Fallback: original LangChain-based path (still uses uninterruptible
+        # invoke under the hood). Reached only if we couldn't extract a
+        # base_url/model from the judge LLM, or the HTTP call errored.
         from langchain_core.messages import HumanMessage, SystemMessage
 
         prompt = [
@@ -135,7 +201,7 @@ class TurnTriage:
         try:
             return future.result(timeout=self._timeout)
         except concurrent.futures.TimeoutError:
-            logger.info("Triage judge timed out after %.2fs", self._timeout)
+            logger.info("Triage judge timed out after %.2fs (fallback path leaks GPU until done)", self._timeout)
             future.cancel()
             return None, "timeout"
         except Exception as exc:

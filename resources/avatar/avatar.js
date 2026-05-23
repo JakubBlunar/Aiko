@@ -45,6 +45,7 @@
   let envelopeFps = 60;
   let mouthValue = 0;
   let speaking = false;
+  let loadToken = 0;
 
   function showBanner(html) {
     banner.innerHTML = html;
@@ -131,6 +132,7 @@
   }
 
   async function loadModel(absoluteUrl, configJson) {
+    const myToken = ++loadToken;
     try {
       if (configJson) {
         try { modelConfig = Object.assign(modelConfig, JSON.parse(configJson)); }
@@ -149,7 +151,14 @@
         model.destroy({ children: true, texture: true, baseTexture: true });
         model = null;
       }
-      model = await PIXI.live2d.Live2DModel.from(absoluteUrl, { autoInteract: false });
+      const loaded = await PIXI.live2d.Live2DModel.from(absoluteUrl, { autoInteract: false });
+      if (myToken !== loadToken) {
+        try { loaded.destroy({ children: true, texture: true, baseTexture: true }); } catch (_) {}
+        log("discarding stale model load (token " + myToken + " vs " + loadToken + ")");
+        return;
+      }
+      sweepStaleLive2DModels();
+      model = loaded;
       app.stage.addChild(model);
       layoutModel();
       if (bridge && typeof bridge.onReady === "function") {
@@ -169,6 +178,23 @@
           String(exc && exc.message ? exc.message : exc) +
           "</code>"
       );
+    }
+  }
+
+  function sweepStaleLive2DModels() {
+    if (!app || !app.stage) return;
+    const Live2DModel = PIXI.live2d && PIXI.live2d.Live2DModel;
+    if (!Live2DModel) return;
+    const survivors = [];
+    for (const child of app.stage.children.slice()) {
+      if (child instanceof Live2DModel) {
+        app.stage.removeChild(child);
+        try { child.destroy({ children: true, texture: true, baseTexture: true }); } catch (_) {}
+        survivors.push(child);
+      }
+    }
+    if (survivors.length) {
+      log("swept " + survivors.length + " stale Live2D model(s) from stage");
     }
   }
 

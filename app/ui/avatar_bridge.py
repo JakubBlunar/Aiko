@@ -102,10 +102,12 @@ class AvatarBridge(QObject):
 
     @Slot()
     def requestInitialState(self) -> None:
-        """JS asks for the current model + overlay mode after page load."""
+        """JS asks for the current model + overlay mode after page load.
+
+        The panel-side ``initialStateRequested`` handler replays the pending
+        model via ``push_model`` (which emits ``modelChanged`` exactly once);
+        emitting ``modelChanged`` here too would cause two concurrent JS
+        ``loadModel`` calls and stack duplicate Live2D models on the stage.
+        """
         self.initialStateRequested.emit()
-        if self._last_model_url:
-            self.modelChanged.emit(
-                self._last_model_url, json.dumps(self._last_config, ensure_ascii=True)
-            )
         self.overlayModeChanged.emit(self._overlay_mode)

@@ -5,6 +5,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import logging
+import os
 from pathlib import Path
 import re
 import threading
@@ -23,6 +24,7 @@ from app.core.services.response_text_service import (
     parse_reaction_at_start,
     parse_two_tier_reply,
     strip_action_meta_for_tts,
+    strip_all_meta_tags,
     strip_all_reaction_tags,
 )
 from app.core.session_text_utils import (
@@ -34,7 +36,7 @@ from app.core.session_text_utils import (
 )
 from app.core.chat_database import ChatDatabase
 from app.llm.embedding_service import EmbeddingService
-from app.llm.langchain_agent import create_agent, run_agent
+from app.llm.langchain_agent import create_agent, run_agent, _resolve_env_var_name
 from app.llm.proactive_planner import (
     DIRECTOR_SYSTEM_PROMPT,
     ProactiveDirectorPlan,
@@ -63,6 +65,22 @@ def _get_assistant_background(settings: AppSettings) -> str | None:
             except Exception:
                 pass
     return (settings.assistant.background or "").strip() or None
+
+
+def _safe_display_prefix(new_text: str) -> str:
+    """Return the largest prefix of *new_text* that is safe to stream to the UI.
+
+    Holds back any in-progress ``[[...]]`` meta tag at the tail so partial
+    fragments like ``[[reaction:gentle`` never leak into the chat bubble.
+    The held-back tail will flow on the next delta once the tag closes and
+    :func:`strip_all_meta_tags` removes it from ``display_buf``.
+    """
+    last_open = new_text.rfind("[[")
+    if last_open >= 0 and "]]" not in new_text[last_open + 2:]:
+        return new_text[:last_open]
+    if new_text.endswith("[") and not new_text.endswith("[["):
+        return new_text[:-1]
+    return new_text
 
 
 class _StubMemory:
@@ -113,7 +131,48 @@ class SessionController:
 
         self._settings = settings
         self._decision_trace: deque[dict[str, str]] = deque(maxlen=500)
-        self._ollama = OllamaClient(settings.ollama)
+
+        chat_llm_settings = getattr(settings, "chat_llm", None)
+        chat_llm_provider = (
+            getattr(chat_llm_settings, "provider", "ollama") or "ollama"
+        ).strip().lower()
+        chat_llm_base_url = (
+            getattr(chat_llm_settings, "base_url", "") or ""
+        ).strip() or settings.ollama.base_url
+        chat_llm_api_key_explicit = (
+            getattr(chat_llm_settings, "api_key", "") or ""
+        ).strip()
+        chat_llm_api_key_env = (
+            getattr(chat_llm_settings, "api_key_env", "") or ""
+        ).strip()
+        chat_llm_extra_headers_raw = (
+            getattr(chat_llm_settings, "extra_headers", {}) or {}
+        )
+        chat_llm_extra_headers: dict[str, str] = {
+            str(k).strip(): str(v).strip()
+            for k, v in dict(chat_llm_extra_headers_raw).items()
+            if str(k).strip() and v is not None
+        }
+        if chat_llm_provider == "ollama":
+            env_name = _resolve_env_var_name(
+                base_url=chat_llm_base_url,
+                explicit=chat_llm_api_key_env,
+            )
+            chat_llm_api_key = (
+                chat_llm_api_key_explicit
+                or os.environ.get(env_name, "").strip()
+            )
+            self._ollama = OllamaClient(
+                settings.ollama,
+                base_url=chat_llm_base_url,
+                api_key=chat_llm_api_key or None,
+                extra_headers=chat_llm_extra_headers or None,
+            )
+        else:
+            # OpenAI-compatible chat path - keep a local Ollama client purely for
+            # diagnostics; list_models/prewarm guards skip it.
+            self._ollama = OllamaClient(settings.ollama)
+        self._chat_provider = chat_llm_provider
         self._microphone = MicrophoneCapture(settings.audio)
         self._prosody = FastProsodyAnalyzer(enabled=bool(settings.stt.prosody.enabled))
         self._prosody_include_in_prompt = bool(settings.stt.prosody.include_in_prompt)
@@ -142,9 +201,17 @@ class SessionController:
         browser_snapshot_max_chars = getattr(agent_settings, "browser_snapshot_max_chars", None) if agent_settings else None
         browser_snapshot_max_text_run = getattr(agent_settings, "browser_snapshot_max_text_run", None) if agent_settings else None
         chat_model = (settings.ollama.chat_model or "").strip() or "llama3.1:8b"
+        # When chat_llm overrides the model use that for display + prewarm.
+        chat_llm_model_override = (
+            getattr(chat_llm_settings, "model", "") or ""
+        ).strip()
+        if chat_llm_model_override:
+            chat_model_effective = chat_llm_model_override
+        else:
+            chat_model_effective = chat_model
         mcp_settings = tooling_config.tool_settings("mcp")
         mcp_enabled = bool(mcp_settings.get("enabled", False))
-        self._effective_chat_model = chat_model
+        self._effective_chat_model = chat_model_effective
         embedding_base_url = (getattr(settings.ollama, "embedding_base_url", "") or "").strip() or settings.ollama.base_url
         proactive_planner_base_url = (getattr(settings.ollama, "proactive_planner_base_url", "") or "").strip() or settings.ollama.base_url
 
@@ -197,6 +264,7 @@ class SessionController:
                     getattr(settings.agent, "triage_judge_timeout_seconds", 0.5)
                 ),
                 session_policy_resolver=self._resolve_session_tool_policy,
+                chat_llm=chat_llm_settings,
             )
             self._realtime_stt = stt_future.result()
             self._agent = agent_future.result()
@@ -247,15 +315,18 @@ class SessionController:
             self._autonomy_mode = "interactive"
         self._active_goal = settings.autonomy.default_goal
         self._active_goal_description: str = ""
-        self._last_metrics: dict[str, float | str] = {
+        self._last_metrics: dict[str, float | int | str] = {
             "mode": "idle",
             "capture_ms": 0.0,
             "stt_ms": 0.0,
             "llm_ms": 0.0,
             "tts_ms": 0.0,
             "total_ms": 0.0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
         }
-        self._metrics_history: deque[dict[str, float | str]] = deque(maxlen=10)
+        self._metrics_history: deque[dict[str, float | int | str]] = deque(maxlen=10)
         self._live_no_speech_streak = 0
 
         self._mcp_server_runner = None
@@ -289,6 +360,7 @@ class SessionController:
 
         self._live_voice_session_active = False
         self._turn_in_progress = False
+        self._last_turn_completed_monotonic = 0.0
         self._assistant_turn_seq = 0
         self._director_lock = threading.Lock()
         self._director_shutdown = threading.Event()
@@ -744,6 +816,9 @@ class SessionController:
 
     def _director_thread_main(self) -> None:
         log = logging.getLogger("app.proactive_director")
+        # Cooldown after a user turn so the chat model can stay warm in VRAM
+        # before we steal GPU time with the small planner model.
+        post_turn_grace_s = 8.0
         while not self._director_shutdown.is_set():
             interval = max(20.0, float(getattr(self._settings.agent, "proactive_background_interval_seconds", 90.0)))
             wake = self._director_post_turn.wait(timeout=min(0.5, interval))
@@ -760,10 +835,32 @@ class SessionController:
                 continue
             if self._turn_in_progress:
                 continue
+            # Skip if the user just finished a turn -- give the main 9B model
+            # time to settle in VRAM. Without this we evict it every ~20s on
+            # single-instance Ollama setups and pin the GPU silently.
+            since_turn = now - getattr(self, "_last_turn_completed_monotonic", 0.0)
+            if since_turn < post_turn_grace_s:
+                log.debug(
+                    "Director skipped (post-turn grace %.1fs / %.1fs)",
+                    since_turn, post_turn_grace_s,
+                )
+                continue
+            t0 = time.monotonic()
             try:
                 self._run_director_once()
+                log.info(
+                    "Director run ok in %.0f ms (model=%s, base_url=%s)",
+                    (time.monotonic() - t0) * 1000.0,
+                    (getattr(self._settings.ollama, "proactive_planner_model", "") or
+                     getattr(self._settings.ollama, "judge_model", "") or "?"),
+                    (getattr(self._settings.ollama, "proactive_planner_base_url", "") or
+                     getattr(self._settings.ollama, "base_url", "?")),
+                )
             except Exception as exc:
-                log.warning("Director run failed: %s", exc)
+                log.warning(
+                    "Director run failed after %.0f ms: %s",
+                    (time.monotonic() - t0) * 1000.0, exc,
+                )
             self._director_last_run_monotonic = time.monotonic()
 
     def _get_director_planner_llm(self) -> Any | None:
@@ -785,7 +882,9 @@ class SessionController:
             base_url=(getattr(self._settings.ollama, "proactive_planner_base_url", "") or "").strip() or self._settings.ollama.base_url,
             temperature=0.0,
             num_ctx=4096,
-            client_kwargs={"timeout": float(timeout)},
+            num_predict=512,
+            format="json",
+            client_kwargs={"timeout": min(30.0, float(timeout))},
             keep_alive="5m",
         )
         return self._director_planner_llm
@@ -1016,19 +1115,33 @@ class SessionController:
             if on_status:
                 on_status(message)
 
-        report("Checking Ollama availability...")
-        try:
-            models = self._ollama.list_models()
-        except Exception as exc:
-            raise RuntimeError(f"Failed to reach Ollama server: {exc}") from exc
+        # Skip Ollama-side warmup entirely when chat is on an OpenAI-compatible
+        # provider (always warm, would 404 against the wrong endpoint anyway).
+        if getattr(self, "_chat_provider", "ollama") != "ollama":
+            effective = self.effective_chat_model
+            report(f"Using cloud chat model: {effective} (no warmup needed)")
+        else:
+            effective = self.effective_chat_model
+            cloud_model = effective.endswith("-cloud") or effective.endswith(":cloud")
+            report("Checking Ollama availability...")
+            try:
+                models = self._ollama.list_models()
+            except Exception as exc:
+                raise RuntimeError(f"Failed to reach Ollama server: {exc}") from exc
 
-        effective = self.effective_chat_model
-        if effective not in models:
-            raise RuntimeError(
-                f"Response model not found in Ollama: {effective}. Pull it first (e.g. ollama pull {effective})."
-            )
-        report(f"Warming response model: {effective}")
-        self._ollama.chat(self._build_startup_prewarm_messages(), model=effective)
+            # Ollama Cloud's /api/tags returns the user's private models; cloud
+            # catalog models like gpt-oss:120b-cloud won't appear there. Skip the
+            # availability check in that case.
+            if not cloud_model and effective not in models:
+                raise RuntimeError(
+                    f"Response model not found in Ollama: {effective}. Pull it first (e.g. ollama pull {effective})."
+                )
+
+            if cloud_model:
+                report(f"Using Ollama Cloud model: {effective} (no local warmup)")
+            else:
+                report(f"Warming response model: {effective}")
+                self._ollama.chat(self._build_startup_prewarm_messages(), model=effective)
 
         report("Warming TTS models...")
         tts = self._tts
@@ -1100,6 +1213,16 @@ class SessionController:
         now = time.monotonic()
         if not refresh and self._models_cache is not None and (now - self._models_cache_time) < self._cache_ttl:
             return list(self._models_cache)
+
+        # OpenAI-compatible providers don't have a uniform /api/tags equivalent;
+        # leave the dropdown to free-text seeded with the current model.
+        if getattr(self, "_chat_provider", "ollama") != "ollama":
+            current = self.effective_chat_model
+            models: list[str] = [current] if current else []
+            self._models_cache = list(models)
+            self._models_cache_time = now
+            return models
+
         try:
             models = self._ollama.list_models()
         except Exception:
@@ -1345,7 +1468,7 @@ class SessionController:
         if self._director_thread is not None and self._director_thread.is_alive():
             self._director_thread.join(timeout=2.5)
 
-    def get_last_metrics(self) -> dict[str, float | str]:
+    def get_last_metrics(self) -> dict[str, float | int | str]:
         return dict(self._last_metrics)
 
     def get_average_metrics(self) -> dict[str, float | str]:
@@ -1397,12 +1520,32 @@ class SessionController:
             "llm_ms": 0.0,
             "tts_ms": 0.0,
             "total_ms": 0.0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
         }
         self._metrics_history.clear()
 
-    def _set_last_metrics(self, metrics: dict[str, float | str]) -> None:
-        self._last_metrics = metrics
-        self._metrics_history.append(dict(metrics))
+    def _read_token_usage(self) -> dict[str, int]:
+        """Read accumulated prompt/completion tokens from the agent's tracker."""
+        agent = getattr(self, "_agent", None)
+        tracker = getattr(agent, "_token_tracker", None) if agent is not None else None
+        if tracker is None or not getattr(tracker, "has_data", False):
+            return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        return {
+            "prompt_tokens": int(getattr(tracker, "prompt_tokens", 0) or 0),
+            "completion_tokens": int(getattr(tracker, "completion_tokens", 0) or 0),
+            "total_tokens": int(getattr(tracker, "total_tokens", 0) or 0),
+        }
+
+    def _set_last_metrics(self, metrics: dict[str, float | int | str]) -> None:
+        # Always carry token usage for the turn; callers don't need to remember.
+        merged: dict[str, float | int | str] = dict(metrics)
+        usage = self._read_token_usage()
+        for key, value in usage.items():
+            merged.setdefault(key, value)
+        self._last_metrics = merged
+        self._metrics_history.append(dict(merged))
 
     def get_conversation_memory(self, max_entries: int = 200) -> list[dict[str, str]]:
         if self._chat_db is not None:
@@ -1699,13 +1842,16 @@ class SessionController:
                         stream_io.truncate()
                         stream_io.write(remainder)
                     if on_token:
-                        display_buf = strip_all_reaction_tags(
-                            buf if reply_mood[0] is not None else "".join(typed_accumulated)
-                        )
-                        to_send = display_buf[last_ui_sent_len[0]:]
-                        if to_send:
-                            on_token(to_send)
-                        last_ui_sent_len[0] = len(display_buf)
+                        # Display path is independent of the TTS-drained `buf` so the
+                        # offset into the cumulative text stays monotonic. Any
+                        # in-progress `[[...]]` tag at the tail is held back so
+                        # partial fragments never leak to the chat bubble.
+                        display_buf = strip_all_meta_tags("".join(typed_accumulated))
+                        new_text = display_buf[last_ui_sent_len[0]:]
+                        safe = _safe_display_prefix(new_text)
+                        if safe:
+                            on_token(safe)
+                            last_ui_sent_len[0] += len(safe)
 
                 response = run_agent(
                     agent_to_use,
@@ -1755,7 +1901,16 @@ class SessionController:
                         daemon=True,
                         name="post-turn-summarize",
                     ).start()
-                    if hasattr(self._agent, "update_personality"):
+                    # Personality judge is the most expensive post-turn job
+                    # (3-5s on a shared GPU, often returns malformed JSON on
+                    # small judge models). Run it every Nth turn, not every
+                    # turn. Counter increments below in the turn-completed-ok
+                    # block so we only count successful turns.
+                    every_n = max(1, int(getattr(
+                        self._settings.agent, "personality_update_every_n_turns", 4
+                    )))
+                    next_seq = self._assistant_turn_seq + 1
+                    if hasattr(self._agent, "update_personality") and (next_seq % every_n == 0):
                         threading.Thread(
                             target=self._agent.update_personality,
                             args=(self._session_id, self._user_id),
@@ -1783,6 +1938,7 @@ class SessionController:
                 )
         finally:
             self._turn_in_progress = False
+            self._last_turn_completed_monotonic = time.monotonic()
 
         if turn_completed_ok:
             self._assistant_turn_seq += 1

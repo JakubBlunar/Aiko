@@ -38,14 +38,24 @@ def _default_storage_path() -> Path:
     return Path(__file__).resolve().parents[2] / "data" / "chat_sessions.db"
 
 
-def detect_context_window(base_url: str, model: str) -> int:
-    """Query Ollama /api/show to read the model's context window size."""
+def detect_context_window(
+    base_url: str,
+    model: str,
+    *,
+    headers: dict[str, str] | None = None,
+) -> int:
+    """Query Ollama /api/show to read the model's context window size.
+
+    Optional ``headers`` are forwarded so this works against Ollama Cloud
+    (``https://ollama.com``) which requires an ``Authorization`` bearer token.
+    """
     import requests
     try:
         resp = requests.post(
             f"{base_url.rstrip('/')}/api/show",
             json={"name": model},
             timeout=5,
+            headers=headers,
         )
         resp.raise_for_status()
         info = resp.json()
@@ -66,6 +76,326 @@ def detect_context_window(base_url: str, model: str) -> int:
 # makes every request pay for a huge KV reservation / slow prefill. Cap only when the user did
 # not set ollama.context_window explicitly (see create_agent).
 _MAX_AUTO_DETECT_CONTEXT_TOKENS = 65536
+
+
+# Per-host default env var names for OpenAI-compatible providers (and Ollama Cloud).
+_PROVIDER_ENV_HINTS: tuple[tuple[str, str], ...] = (
+    ("ollama.com", "OLLAMA_API_KEY"),
+    ("api.openai.com", "OPENAI_API_KEY"),
+    ("api.x.ai", "XAI_API_KEY"),
+    ("api.groq.com", "GROQ_API_KEY"),
+    ("openrouter.ai", "OPENROUTER_API_KEY"),
+    ("api.deepseek.com", "DEEPSEEK_API_KEY"),
+    ("api.together.xyz", "TOGETHER_API_KEY"),
+    ("api.mistral.ai", "MISTRAL_API_KEY"),
+)
+
+
+def _resolve_env_var_name(*, base_url: str, explicit: str = "") -> str:
+    """Return the env var name to read for an API key.
+
+    Honours an explicit override; otherwise infers from ``base_url`` host.
+    Falls back to ``OPENAI_API_KEY`` so an unrecognised endpoint still works
+    if the user only has that variable set.
+    """
+    if explicit:
+        return explicit.strip()
+    host = (base_url or "").lower()
+    for needle, env_var in _PROVIDER_ENV_HINTS:
+        if needle in host:
+            return env_var
+    return "OPENAI_API_KEY"
+
+
+# Built-in context-window defaults for OpenAI-compatible models. Match by prefix so
+# variants like ``gpt-4o-2024-11-20`` still resolve. Users can always override via
+# ``chat_llm.context_window``.
+_OPENAI_COMPAT_CTX_HINTS: tuple[tuple[str, int], ...] = (
+    ("gpt-4.1", 1_000_000),
+    ("gpt-4o", 128_000),
+    ("gpt-4-turbo", 128_000),
+    ("gpt-4-32k", 32_768),
+    ("gpt-4", 8_192),
+    ("gpt-3.5-turbo-16k", 16_385),
+    ("gpt-3.5-turbo", 16_385),
+    ("o1", 128_000),
+    ("o3", 200_000),
+    ("grok-4", 256_000),
+    ("grok-3", 131_072),
+    ("grok-2", 131_072),
+    ("llama-4", 1_000_000),
+    ("llama-3.3", 131_072),
+    ("llama-3.1", 131_072),
+    ("llama3.3", 131_072),
+    ("llama3.1", 131_072),
+    ("deepseek-v3", 128_000),
+    ("deepseek-r1", 128_000),
+    ("deepseek-chat", 128_000),
+    ("deepseek-reasoner", 128_000),
+    ("qwen3-coder", 256_000),
+    ("qwen3", 131_072),
+    ("qwen2.5", 128_000),
+    ("kimi-k2", 200_000),
+    ("kimi", 200_000),
+    ("gpt-oss", 131_072),
+    ("glm-4", 128_000),
+    ("mixtral", 32_768),
+    ("mistral-large", 128_000),
+    ("mistral", 32_768),
+)
+
+
+def _lookup_context_window(model: str) -> int:
+    """Return a sensible default context window for a model name."""
+    name = (model or "").strip().lower()
+    if not name:
+        return 32_768
+    for needle, ctx in _OPENAI_COMPAT_CTX_HINTS:
+        if needle in name:
+            return ctx
+    return 32_768
+
+
+try:
+    from langchain_core.callbacks import BaseCallbackHandler as _BaseCallbackHandler
+except ImportError:  # pragma: no cover - older langchain layouts
+    from langchain.callbacks.base import BaseCallbackHandler as _BaseCallbackHandler  # type: ignore
+
+
+class _TokenUsageTracker(_BaseCallbackHandler):
+    """LangChain callback that records prompt/completion token counts from the LLM.
+
+    Both ``ChatOllama`` and ``ChatOpenAI`` populate either ``usage_metadata`` on
+    AI messages (preferred, recent LangChain) or ``response.llm_output`` (older
+    fallback). This handler accepts both shapes and accumulates totals between
+    :meth:`reset` calls so callers see the cost of a whole turn (including
+    intermediate tool-calling LLM passes).
+    """
+
+    raise_error: bool = False
+    run_inline: bool = True
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.prompt_tokens: int = 0
+        self.completion_tokens: int = 0
+        self.total_tokens: int = 0
+        self.has_data: bool = False
+
+    def reset(self) -> None:
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+        self.total_tokens = 0
+        self.has_data = False
+
+    def on_llm_end(self, response: Any, **_: Any) -> None:
+        # 1) Try usage_metadata on AIMessage / ChatGeneration.
+        try:
+            generations = getattr(response, "generations", None) or []
+            for batch in generations:
+                for gen in batch:
+                    msg = getattr(gen, "message", None)
+                    usage = getattr(msg, "usage_metadata", None) if msg is not None else None
+                    if isinstance(usage, dict) and usage:
+                        self.prompt_tokens += int(usage.get("input_tokens", 0) or 0)
+                        self.completion_tokens += int(usage.get("output_tokens", 0) or 0)
+                        self.total_tokens += int(
+                            usage.get("total_tokens", 0)
+                            or (
+                                int(usage.get("input_tokens", 0) or 0)
+                                + int(usage.get("output_tokens", 0) or 0)
+                            )
+                        )
+                        self.has_data = True
+        except Exception:
+            pass
+        # 2) Fallback: response.llm_output["token_usage"].
+        try:
+            llm_output = getattr(response, "llm_output", None)
+            if isinstance(llm_output, dict):
+                token_usage = llm_output.get("token_usage") or llm_output.get("usage") or {}
+                if isinstance(token_usage, dict) and token_usage:
+                    pt = int(
+                        token_usage.get("prompt_tokens")
+                        or token_usage.get("input_tokens")
+                        or 0
+                    )
+                    ct = int(
+                        token_usage.get("completion_tokens")
+                        or token_usage.get("output_tokens")
+                        or 0
+                    )
+                    tt = int(token_usage.get("total_tokens") or (pt + ct))
+                    if pt or ct or tt:
+                        self.prompt_tokens += pt
+                        self.completion_tokens += ct
+                        self.total_tokens += tt
+                        self.has_data = True
+        except Exception:
+            pass
+
+
+def _build_chat_llm(
+    *,
+    chat_llm: Any,
+    fallback_base_url: str,
+    fallback_model: str,
+    fallback_temperature: float,
+    timeout: int,
+    explicit_context_window: int | None,
+    log: logging.Logger,
+    callbacks: list[Any] | None = None,
+) -> tuple[Any, int]:
+    """Construct the chat LLM and return ``(model, context_window)``.
+
+    When ``chat_llm.provider == "openai_compatible"`` returns a
+    ``langchain_openai.ChatOpenAI`` instance; otherwise returns a
+    ``ChatOllama`` (covering local Ollama AND Ollama Cloud Pro via
+    ``base_url`` + ``Authorization`` header).
+    """
+    import os
+
+    provider = (getattr(chat_llm, "provider", "ollama") or "ollama").strip().lower()
+    base_url = (getattr(chat_llm, "base_url", "") or "").strip() or fallback_base_url
+    model = (getattr(chat_llm, "model", "") or "").strip() or fallback_model
+    cfg_api_key = (getattr(chat_llm, "api_key", "") or "").strip()
+    api_key_env = (getattr(chat_llm, "api_key_env", "") or "").strip()
+    extra_headers_raw = getattr(chat_llm, "extra_headers", {}) or {}
+    extra_headers: dict[str, str] = {
+        str(k).strip(): str(v).strip()
+        for k, v in dict(extra_headers_raw).items()
+        if str(k).strip() and v is not None
+    }
+    cfg_temperature = getattr(chat_llm, "temperature", None)
+    temperature = (
+        float(cfg_temperature)
+        if cfg_temperature is not None
+        else float(fallback_temperature)
+    )
+
+    env_name = _resolve_env_var_name(base_url=base_url, explicit=api_key_env)
+    resolved_api_key = cfg_api_key or os.environ.get(env_name, "").strip()
+
+    if provider == "openai_compatible":
+        try:
+            from langchain_openai import ChatOpenAI
+        except ImportError as exc:
+            raise RuntimeError(
+                "chat_llm.provider=openai_compatible requires langchain-openai. "
+                "Install with: pip install \"langchain-openai>=0.3.0\" "
+                "(or pip install -e .[openai-compat])."
+            ) from exc
+        if not resolved_api_key:
+            raise RuntimeError(
+                "chat_llm.provider=openai_compatible but no API key found "
+                f"(checked api_key field and env var {env_name})"
+            )
+        if not base_url:
+            raise RuntimeError(
+                "chat_llm.provider=openai_compatible requires a base_url "
+                "(e.g. https://api.openai.com/v1, https://api.groq.com/openai/v1)"
+            )
+        cfg_ctx = getattr(chat_llm, "context_window", None)
+        if explicit_context_window is not None:
+            ctx = max(2048, int(explicit_context_window))
+        elif cfg_ctx:
+            ctx = max(2048, int(cfg_ctx))
+        else:
+            ctx = _lookup_context_window(model)
+        log.info(
+            "Chat LLM: openai_compatible model=%s base_url=%s context=%d",
+            model,
+            base_url,
+            ctx,
+        )
+        llm_kwargs: dict[str, Any] = dict(
+            model=model,
+            base_url=base_url,
+            api_key=resolved_api_key,
+            temperature=temperature,
+            streaming=True,
+            default_headers=extra_headers or None,
+            timeout=float(timeout),
+        )
+        cfg_max_tokens = getattr(chat_llm, "max_tokens", 512) or 0
+        if cfg_max_tokens > 0:
+            llm_kwargs["max_tokens"] = int(cfg_max_tokens)
+        if callbacks:
+            llm_kwargs["callbacks"] = list(callbacks)
+        # Surface usage_metadata from streaming responses (OpenAI returns it
+        # in the final chunk only when stream_options.include_usage is true).
+        llm_kwargs["stream_usage"] = True
+        llm = ChatOpenAI(**llm_kwargs)
+        return llm, ctx
+
+    # provider == "ollama" (covers local AND Ollama Cloud)
+    try:
+        from langchain_ollama import ChatOllama
+    except ImportError:
+        try:
+            from langchain_community.chat_models.ollama import ChatOllama  # type: ignore
+        except ImportError:
+            try:
+                from langchain_community.chat_models import ChatOllama  # type: ignore
+            except ImportError:
+                raise RuntimeError(
+                    "langchain-ollama (or langchain-community) not installed; "
+                    "pip install langchain-ollama"
+                ) from None
+
+    headers: dict[str, str] = dict(extra_headers)
+    if resolved_api_key:
+        headers["Authorization"] = f"Bearer {resolved_api_key}"
+
+    cfg_ctx = getattr(chat_llm, "context_window", None)
+    if explicit_context_window is not None:
+        resolved_ctx = max(2048, int(explicit_context_window))
+    elif cfg_ctx:
+        resolved_ctx = max(2048, int(cfg_ctx))
+    else:
+        detected = detect_context_window(base_url, model, headers=headers or None)
+        resolved_ctx = max(2048, min(int(detected), _MAX_AUTO_DETECT_CONTEXT_TOKENS))
+        if detected > resolved_ctx:
+            log.info(
+                "Context window for %s: using %d tokens (Ollama reports %d; set chat_llm.context_window to use more)",
+                model,
+                resolved_ctx,
+                detected,
+            )
+
+    if resolved_api_key:
+        log.info(
+            "Chat LLM: ollama (cloud) model=%s base_url=%s context=%d",
+            model,
+            base_url,
+            resolved_ctx,
+        )
+    else:
+        log.info(
+            "Chat LLM: ollama (local) model=%s base_url=%s context=%d",
+            model,
+            base_url,
+            resolved_ctx,
+        )
+
+    client_kwargs: dict[str, Any] = {"timeout": float(timeout)}
+    if headers:
+        client_kwargs["headers"] = headers
+    ollama_kwargs: dict[str, Any] = dict(
+        model=model,
+        base_url=base_url,
+        temperature=temperature,
+        num_ctx=resolved_ctx,
+        client_kwargs=client_kwargs,
+        keep_alive="10m",
+    )
+    cfg_max_tokens = getattr(chat_llm, "max_tokens", 512) or 0
+    if cfg_max_tokens > 0:
+        ollama_kwargs["num_predict"] = int(cfg_max_tokens)
+    if callbacks:
+        ollama_kwargs["callbacks"] = list(callbacks)
+    llm = ChatOllama(**ollama_kwargs)
+    return llm, resolved_ctx
 
 
 def _get_langchain_tools(
@@ -381,63 +711,57 @@ def create_agent(
     triage_judge_enabled: bool = True,
     triage_judge_timeout_seconds: float = 0.5,
     session_policy_resolver: Callable[[str], set[str] | None] | None = None,
+    chat_llm: Any | None = None,
 ) -> Any:
-    """Create a LangChain agent with Ollama, storage, optional tools and MCP. Create once and reuse."""
-    try:
-        from langchain_ollama import ChatOllama
-    except ImportError:
-        try:
-            from langchain_community.chat_models.ollama import ChatOllama
-        except ImportError:
-            try:
-                from langchain_community.chat_models import ChatOllama
-            except ImportError:
-                raise RuntimeError(
-                    "langchain-ollama (or langchain-community) not installed; "
-                    "pip install langchain-ollama"
-                ) from None
+    """Create a LangChain agent with a swappable chat LLM, storage, optional tools and MCP.
 
+    The chat LLM is built by :func:`_build_chat_llm` based on the optional
+    ``chat_llm`` settings dataclass. When ``chat_llm`` is ``None`` (or its
+    fields are blank) behaviour falls back to the legacy local Ollama path
+    using ``base_url``/``chat_model``/``temperature``.
+
+    Judge model and embeddings always run on the local Ollama daemon
+    (``base_url``); they are never routed through the cloud chat provider.
+    """
     storage_path = storage_path or _default_storage_path()
     storage_path.parent.mkdir(parents=True, exist_ok=True)
     root = project_root or Path(__file__).resolve().parents[2]
 
-    detected_ctx = detect_context_window(base_url, chat_model)
-    if context_window is not None:
-        resolved_ctx = max(2048, int(context_window))
-    else:
-        resolved_ctx = max(2048, min(int(detected_ctx), _MAX_AUTO_DETECT_CONTEXT_TOKENS))
     log = logging.getLogger("app.llm.langchain_agent")
-    if context_window is None and detected_ctx > resolved_ctx:
-        log.info(
-            "Context window for %s: using %d tokens (Ollama reports %d; set ollama.context_window to use more)",
-            chat_model,
-            resolved_ctx,
-            detected_ctx,
-        )
-    else:
-        log.info("Context window for %s: %d tokens", chat_model, resolved_ctx)
 
-    llm = ChatOllama(
-        model=chat_model,
-        base_url=base_url,
-        temperature=temperature,
-        num_ctx=resolved_ctx,
-        client_kwargs={"timeout": float(timeout)},
-        keep_alive="10m",
+    token_tracker = _TokenUsageTracker()
+
+    llm, resolved_ctx = _build_chat_llm(
+        chat_llm=chat_llm,
+        fallback_base_url=base_url,
+        fallback_model=chat_model,
+        fallback_temperature=float(temperature),
+        timeout=int(timeout),
+        explicit_context_window=context_window,
+        log=log,
+        callbacks=[token_tracker],
     )
 
     judge_llm = None
     if judge_model:
-        judge_llm = ChatOllama(
+        try:
+            from langchain_ollama import ChatOllama as _JudgeChatOllama
+        except ImportError:
+            try:
+                from langchain_community.chat_models.ollama import ChatOllama as _JudgeChatOllama  # type: ignore
+            except ImportError:
+                from langchain_community.chat_models import ChatOllama as _JudgeChatOllama  # type: ignore
+        judge_llm = _JudgeChatOllama(
             model=judge_model,
             base_url=base_url,
             temperature=0.0,
             num_ctx=4096,
+            num_predict=1024,
             format="json",
-            client_kwargs={"timeout": 120.0},
+            client_kwargs={"timeout": 60.0},
             keep_alive="10m",
         )
-        log.info("Judge model configured: %s", judge_model)
+        log.info("Judge model configured: %s (local Ollama)", judge_model)
 
     instr = (instructions or _BASE_INSTRUCTIONS).strip()
     if (assistant_background or "").strip():
@@ -511,7 +835,7 @@ def create_agent(
     elif dispatch_mode == "plain_only":
         log.info("Agent tool dispatch: plain_only — tools registered but never dispatched.")
 
-    return _AgentWrapper(
+    wrapper = _AgentWrapper(
         agent=legacy_agent,
         llm=llm,
         judge_llm=judge_llm,
@@ -533,6 +857,8 @@ def create_agent(
         controller=controller,
         dispatch_mode=dispatch_mode,
     )
+    wrapper._token_tracker = token_tracker
+    return wrapper
 
 
 class _AgentWrapper:
@@ -630,6 +956,11 @@ class _AgentWrapper:
     ) -> Any:
         """Run the agent. Returns response object or stream iterator."""
         from langchain_core.messages import HumanMessage
+
+        # Reset per-turn token usage so the metrics surface this turn's cost.
+        tracker = getattr(self, "_token_tracker", None)
+        if tracker is not None:
+            tracker.reset()
 
         session_key = session_id or "main"
         if user_id:
@@ -968,11 +1299,16 @@ class _AgentWrapper:
         try:
             import json as _json
             import re as _re
+            import time as _time
+            _started = _time.monotonic()
+            self._log.info("Personality judge start (model=%s, %d existing notes)",
+                           getattr(self._judge_llm, "model", "?"), len(existing))
             result = self._judge_llm.invoke(prompt)
             raw = _extract_text(getattr(result, "content", "")).strip()
             raw = _re.sub(r"\[\[reaction:\w+\]\]", "", raw).strip()
             raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-            self._log.info("Personality judge raw (%d chars): %s", len(raw), raw[:200])
+            self._log.info("Personality judge raw in %.0f ms (%d chars): %s",
+                           (_time.monotonic() - _started) * 1000.0, len(raw), raw[:200])
             parsed = _json.loads(raw)
 
             notes_data = parsed.get("notes", [])

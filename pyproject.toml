@@ -30,6 +30,12 @@ agent = [
   "wikipedia",
   "arxiv",
 ]
+# Required only when chat_llm.provider == "openai_compatible"
+# (covers OpenAI / xAI Grok / Groq / OpenRouter / DeepSeek / Together / Mistral
+# via the same ChatOpenAI class with custom base_url).
+openai-compat = [
+  "langchain-openai>=0.3.0",
+]
 agno-duckduckgo = [
   "ddgs",
 ]

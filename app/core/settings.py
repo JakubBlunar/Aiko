@@ -22,6 +22,34 @@ class OllamaSettings:
 
 
 @dataclass(slots=True)
+class ChatLlmSettings:
+    """Chat-LLM provider routing layer.
+
+    Sits in front of :class:`OllamaSettings`. When ``provider == "ollama"`` and
+    ``base_url``/``model``/``api_key`` are blank the legacy local Ollama chat
+    behaviour is preserved unchanged. Setting ``base_url`` to ``https://ollama.com``
+    plus an ``api_key`` flips the same code path to Ollama Cloud Pro. The
+    ``openai_compatible`` provider routes through ``langchain-openai``'s
+    ``ChatOpenAI`` and covers OpenAI / xAI Grok / Groq / OpenRouter / DeepSeek /
+    Together / Mistral via custom ``base_url``.
+    """
+
+    provider: str = "ollama"  # "ollama" | "openai_compatible"
+    model: str = ""  # empty -> falls back to OllamaSettings.chat_model
+    base_url: str = ""  # empty -> falls back to OllamaSettings.base_url for ollama provider
+    api_key: str = ""  # empty -> looked up via api_key_env / inferred from base_url host
+    api_key_env: str = ""  # explicit env var name; empty -> inferred per host
+    context_window: int | None = None  # None -> auto-detect (ollama) or model lookup (openai)
+    temperature: float | None = None  # None -> inherit OllamaSettings.temperature
+    extra_headers: dict[str, str] = field(default_factory=dict)
+    # Hard cap on tokens generated per assistant reply. Without it, models
+    # routinely emit 2k+ tokens of rambling on casual chat. 512 fits ~3
+    # short paragraphs which is plenty for chat AND tool summaries; raise
+    # for long-form code generation. Set to 0 / negative to disable.
+    max_tokens: int = 512
+
+
+@dataclass(slots=True)
 class DatabaseSettings:
     provider: str  # "sqlite" | "postgres"
     url: str | None  # for postgres: connection URL
@@ -54,6 +82,9 @@ class AssistantSettings:
     user_id: str = "default"  # Scopes Agno Learning (user profile + memory) per user
     response_style: str = "balanced"  # balanced | conversational | concise | detailed | technical
     tts_length_scale: float = 1.0  # TTS speed: 0.65–1.35, higher = slower
+    # Auto-greet on app launch (LLM call). Off by default since persisted
+    # sessions already give the user conversational continuity.
+    startup_greeting_enabled: bool = False
 
 
 @dataclass(slots=True)
@@ -201,6 +232,10 @@ class AgentSettings:
     personality_decay_rate: float = 0.1
     personality_max_notes: int = 40
     personality_token_budget: int = 300
+    # Run the personality judge once every N user turns (1 = every turn).
+    # The 0.5B judge model is expensive on shared GPUs and frequently
+    # returns malformed JSON; throttling reduces wasted GPU time.
+    personality_update_every_n_turns: int = 4
     proactive_silence_seconds: float = 45.0
     proactive_cooldown_seconds: float = 120.0
     proactive_planner_enabled: bool = True
@@ -279,6 +314,7 @@ class AppSettings:
     agent: AgentSettings = field(default_factory=AgentSettings)
     mcp_server: McpServerSettings = field(default_factory=McpServerSettings)
     persona: PersonaSettings = field(default_factory=PersonaSettings)
+    chat_llm: ChatLlmSettings = field(default_factory=ChatLlmSettings)
 
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "default.json"
@@ -456,6 +492,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
     logging_raw = raw.get("logging", {}) or {}
     mcp_server_raw = raw.get("mcp_server", {}) or {}
     persona_raw = raw.get("persona", {}) or {}
+    chat_llm_raw = raw.get("chat_llm", {}) or {}
 
     turn_planning = autonomy.get("turn_planning", {}) if isinstance(autonomy.get("turn_planning", {}), dict) else {}
     stt_diagnostics = stt.get("diagnostics", {}) if isinstance(stt.get("diagnostics", {}), dict) else {}
@@ -489,6 +526,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             user_id=str(assistant.get("user_id", "default") or "default").strip() or "default",
             response_style=_normalize_response_style(assistant.get("response_style")),
             tts_length_scale=_normalize_tts_length_scale(assistant.get("tts_length_scale")),
+            startup_greeting_enabled=bool(assistant.get("startup_greeting_enabled", False)),
         ),
         autonomy=AutonomySettings(
             enabled=bool(autonomy.get("enabled", False)),
@@ -680,6 +718,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             personality_decay_rate=max(0.0, min(float(agent_raw.get("personality_decay_rate", 0.1)), 0.5)),
             personality_max_notes=max(5, min(int(agent_raw.get("personality_max_notes", 40)), 100)),
             personality_token_budget=max(50, min(int(agent_raw.get("personality_token_budget", 300)), 1000)),
+            personality_update_every_n_turns=max(1, min(int(agent_raw.get("personality_update_every_n_turns", 4)), 50)),
             proactive_silence_seconds=max(10.0, float(agent_raw.get("proactive_silence_seconds", 45.0))),
             proactive_cooldown_seconds=max(30.0, float(agent_raw.get("proactive_cooldown_seconds", 120.0))),
             proactive_planner_enabled=bool(agent_raw.get("proactive_planner_enabled", True)),
@@ -724,6 +763,57 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             port=max(1, int(mcp_server_raw.get("port", 6274))),
         ),
         persona=_parse_persona(persona_raw),
+        chat_llm=_parse_chat_llm(chat_llm_raw),
+    )
+
+
+def _parse_chat_llm(raw: dict[str, Any]) -> ChatLlmSettings:
+    """Validate the chat_llm config block, falling back to defaults on missing keys."""
+
+    payload = raw if isinstance(raw, dict) else {}
+
+    provider_raw = str(payload.get("provider", "ollama") or "ollama").strip().lower()
+    if provider_raw not in {"ollama", "openai_compatible"}:
+        provider_raw = "ollama"
+
+    headers_raw = payload.get("extra_headers") or {}
+    if isinstance(headers_raw, dict):
+        extra_headers = {
+            str(k).strip(): str(v).strip()
+            for k, v in headers_raw.items()
+            if str(k).strip() and v is not None
+        }
+    else:
+        extra_headers = {}
+
+    ctx_raw = payload.get("context_window")
+    try:
+        context_window = int(ctx_raw) if ctx_raw not in (None, "", 0) else None
+    except (TypeError, ValueError):
+        context_window = None
+
+    temp_raw = payload.get("temperature")
+    try:
+        temperature = float(temp_raw) if temp_raw not in (None, "") else None
+    except (TypeError, ValueError):
+        temperature = None
+
+    max_tokens_raw = payload.get("max_tokens", 512)
+    try:
+        max_tokens = int(max_tokens_raw) if max_tokens_raw not in (None, "") else 512
+    except (TypeError, ValueError):
+        max_tokens = 512
+
+    return ChatLlmSettings(
+        provider=provider_raw,
+        model=str(payload.get("model", "") or "").strip(),
+        base_url=str(payload.get("base_url", "") or "").strip(),
+        api_key=str(payload.get("api_key", "") or "").strip(),
+        api_key_env=str(payload.get("api_key_env", "") or "").strip(),
+        context_window=context_window,
+        temperature=temperature,
+        extra_headers=extra_headers,
+        max_tokens=max_tokens,
     )
 
 
@@ -808,6 +898,14 @@ def save_runtime_preferences(
     persona_expression_map: dict[str, str] | None = None,
     persona_overlay_geometry: dict[str, int] | None = None,
     persona_embedded_width: int | None = None,
+    chat_llm_provider: str | None = None,
+    chat_llm_model: str | None = None,
+    chat_llm_base_url: str | None = None,
+    chat_llm_api_key: str | None = None,
+    chat_llm_api_key_env: str | None = None,
+    chat_llm_context_window: int | None = None,
+    chat_llm_temperature: float | None = None,
+    chat_llm_extra_headers: dict[str, str] | None = None,
     path: Path | None = None,
 ) -> None:
     target = path or USER_CONFIG_PATH
@@ -973,6 +1071,41 @@ def save_runtime_preferences(
         persona_updates["embedded_width"] = max(180, min(int(persona_embedded_width), 900))
     if persona_updates:
         updates["persona"] = persona_updates
+
+    chat_llm_updates: dict[str, Any] = {}
+    if chat_llm_provider is not None:
+        provider_norm = str(chat_llm_provider).strip().lower()
+        if provider_norm not in {"ollama", "openai_compatible"}:
+            provider_norm = "ollama"
+        chat_llm_updates["provider"] = provider_norm
+    if chat_llm_model is not None:
+        chat_llm_updates["model"] = str(chat_llm_model).strip()
+    if chat_llm_base_url is not None:
+        chat_llm_updates["base_url"] = str(chat_llm_base_url).strip()
+    if chat_llm_api_key is not None:
+        chat_llm_updates["api_key"] = str(chat_llm_api_key)
+    if chat_llm_api_key_env is not None:
+        chat_llm_updates["api_key_env"] = str(chat_llm_api_key_env).strip()
+    if chat_llm_context_window is not None:
+        try:
+            chat_llm_updates["context_window"] = (
+                int(chat_llm_context_window) if chat_llm_context_window else None
+            )
+        except (TypeError, ValueError):
+            chat_llm_updates["context_window"] = None
+    if chat_llm_temperature is not None:
+        try:
+            chat_llm_updates["temperature"] = float(chat_llm_temperature)
+        except (TypeError, ValueError):
+            chat_llm_updates["temperature"] = None
+    if chat_llm_extra_headers is not None:
+        chat_llm_updates["extra_headers"] = {
+            str(k).strip(): str(v).strip()
+            for k, v in chat_llm_extra_headers.items()
+            if str(k).strip() and v is not None
+        }
+    if chat_llm_updates:
+        updates["chat_llm"] = chat_llm_updates
 
     updated_effective = _deep_merge(effective, updates)
     minimal_overrides = _deep_diff(base, updated_effective)

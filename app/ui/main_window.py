@@ -438,6 +438,12 @@ class MainWindow(QMainWindow):
         if self._startup_greeting_done:
             return
         self._startup_greeting_done = True
+        # Sessions persist conversation history so the user already has
+        # context on relaunch -- a generated greeting just adds GPU cost
+        # and leads to "two messages on first send" UX. Opt in via
+        # assistant.startup_greeting_enabled in config if desired.
+        if not getattr(self._settings.assistant, "startup_greeting_enabled", False):
+            return
         if self._live_thread is not None or self._turn_thread is not None:
             return
         import threading
@@ -558,21 +564,33 @@ class MainWindow(QMainWindow):
         return lst
 
     def _refresh_session_list(self, lst=None):
+        from PySide6.QtWidgets import QListWidgetItem
         lst = lst or self._session_list
         lst.clear()
         db = getattr(self._session, "_chat_db", None)
         if db is None:
             return
-        sessions = db.list_sessions()
+        sessions = list(db.list_sessions())
         current_key = self._session.session_key
+
+        # Make sure the currently active session always shows up, even if it
+        # has no messages yet (i.e. user just clicked "New conversation").
+        # Without this, db.list_sessions() returns only sessions that have at
+        # least one row in messages, so a fresh session is invisible until the
+        # first message is sent.
+        if current_key and not any(s["session_id"] == current_key for s in sessions):
+            sessions.insert(0, {
+                "session_id": current_key,
+                "message_count": 0,
+                "last_activity": "",
+            })
+
         if not sessions:
-            from PySide6.QtWidgets import QListWidgetItem
             item = QListWidgetItem("main")
             item.setData(Qt.ItemDataRole.UserRole, current_key)
             lst.addItem(item)
             return
         for s in sessions:
-            from PySide6.QtWidgets import QListWidgetItem
             sid = s["session_id"]
             count = s["message_count"]
             last = s.get("last_activity", "")
@@ -585,9 +603,12 @@ class MainWindow(QMainWindow):
                     time_str = dt.strftime("%m/%d %H:%M")
                 except Exception:
                     time_str = last[:10]
-            display = f"{label} ({count} msgs)"
-            if time_str:
-                display += f"\n  {time_str}"
+            if count <= 0 and not last:
+                display = f"{label} (new)"
+            else:
+                display = f"{label} ({count} msgs)"
+                if time_str:
+                    display += f"\n  {time_str}"
             item = QListWidgetItem(display)
             item.setData(Qt.ItemDataRole.UserRole, sid)
             lst.addItem(item)
@@ -1102,6 +1123,7 @@ class MainWindow(QMainWindow):
             self._append("Assistant", reply)
         self._close_live_stream()
         self._refresh_latency_strip()
+        self._refresh_session_list()
 
     def _on_voice_turn_done(self, user_text: str, reply: str) -> None:
         self._append("You (voice)", user_text)
@@ -1109,6 +1131,7 @@ class MainWindow(QMainWindow):
             self._append("Assistant", reply)
         self._close_live_stream()
         self._refresh_latency_strip()
+        self._refresh_session_list()
 
     def _on_single_turn_failed(self, message: str) -> None:
         title = "Voice error" if self._turn_mode == "record" else "Assistant error"

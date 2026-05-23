@@ -24,9 +24,33 @@ class OllamaChatResponse:
 
 
 class OllamaClient:
-    def __init__(self, settings: OllamaSettings, timeout_seconds: int | None = None) -> None:
+    def __init__(
+        self,
+        settings: OllamaSettings,
+        timeout_seconds: int | None = None,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        extra_headers: dict[str, str] | None = None,
+    ) -> None:
         self._settings = settings
         self._timeout_seconds = timeout_seconds if timeout_seconds is not None else settings.timeout
+        self._base_url = (base_url or "").strip() or settings.base_url
+        headers: dict[str, str] = {}
+        if extra_headers:
+            for key, value in extra_headers.items():
+                if key and value:
+                    headers[str(key).strip()] = str(value).strip()
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key.strip()}"
+        self._headers: dict[str, str] = headers
+
+    @property
+    def base_url(self) -> str:
+        return self._base_url
+
+    def _request_headers(self) -> dict[str, str] | None:
+        return dict(self._headers) if self._headers else None
 
     def chat(
         self,
@@ -63,9 +87,10 @@ class OllamaClient:
         if think:
             payload["think"] = True
         response = requests.post(
-            f"{self._settings.base_url}/api/chat",
+            f"{self._base_url}/api/chat",
             json=payload,
             timeout=self._timeout_seconds,
+            headers=self._request_headers(),
         )
         if not response.ok:
             try:
@@ -103,10 +128,11 @@ class OllamaClient:
             "options": merged_options,
         }
         with requests.post(
-            f"{self._settings.base_url}/api/chat",
+            f"{self._base_url}/api/chat",
             json=payload,
             stream=True,
             timeout=self._timeout_seconds,
+            headers=self._request_headers(),
         ) as response:
             response.raise_for_status()
             for line in response.iter_lines(decode_unicode=True):
@@ -149,8 +175,9 @@ class OllamaClient:
 
     def list_models(self) -> list[str]:
         response = requests.get(
-            f"{self._settings.base_url}/api/tags",
+            f"{self._base_url}/api/tags",
             timeout=self._timeout_seconds,
+            headers=self._request_headers(),
         )
         response.raise_for_status()
         body = response.json()

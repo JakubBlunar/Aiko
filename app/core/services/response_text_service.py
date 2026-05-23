@@ -138,3 +138,18 @@ def _strip_two_tier_tags(text: str) -> str:
         s = s.replace(tag, "")
     s = _REACTION_TAG_PATTERN.sub("", s)
     return s.strip()
+
+
+def strip_all_meta_tags(text: str) -> str:
+    """Remove every closed meta tag the assistant emits (reaction + two-tier).
+
+    Like :func:`_strip_two_tier_tags` but does not call ``.strip()`` on the
+    result, so it is safe to use in streaming display paths where leading
+    whitespace must be preserved across deltas to keep ``last_ui_sent_len``
+    offsets monotonic. Partial / unclosed tags pass through unchanged --
+    callers are expected to hold them back until they complete.
+    """
+    s = str(text or "")
+    for tag in (_SPOKEN_OPEN, _SPOKEN_CLOSE, _DETAIL_OPEN, _DETAIL_CLOSE):
+        s = s.replace(tag, "")
+    return _REACTION_TAG_PATTERN.sub("", s)

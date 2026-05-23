@@ -18,7 +18,7 @@
     "proactive_planner_enabled": true,
     "proactive_use_main_for_utterance": false,
     "proactive_context_messages": 10,
-    "proactive_background_interval_seconds": 20,
+    "proactive_background_interval_seconds": 90,
     "proactive_background_stale_seconds": 120,
     "proactive_brain_advise_main": true,
     "proactive_brain_drive_speech": true,
@@ -28,7 +28,7 @@
     "tool_dispatch_mode": "controller",
     "tool_iterations_max": 3,
     "triage_judge_enabled": true,
-    "triage_judge_timeout_seconds": 0.5
+    "triage_judge_timeout_seconds": 1.5
   },
   "assistant": {
     "name": "Assistant",
@@ -48,6 +48,17 @@
     "context_window": null,
     "embedding_model": "qwen3-embedding:0.6b",
     "proactive_planner_model": "qwen2.5:0.5b"
+  },
+  "chat_llm": {
+    "provider": "ollama",
+    "model": "",
+    "base_url": "",
+    "api_key": "",
+    "api_key_env": "",
+    "context_window": null,
+    "temperature": null,
+    "extra_headers": {},
+    "max_tokens": 512
   },
   "audio": {
     "sample_rate": 16000,

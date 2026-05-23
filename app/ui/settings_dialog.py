@@ -69,11 +69,20 @@ class SettingsDialog(PersistentGeometryMixin, QDialog):
 
     def _build_model_tab(self) -> QWidget:
         widget = QWidget()
-        form = QFormLayout(widget)
+        layout = QVBoxLayout(widget)
+        form = QFormLayout()
         self._model_combo = QComboBox()
         self._model_combo.setMinimumWidth(200)
+        self._model_combo.setEditable(True)
         current = self._session.chat_model
-        self._model_combo.addItem(current or "Loading...", current)
+        chat_llm_settings = getattr(self._session._settings, "chat_llm", None)
+        chat_llm_model_pref = (
+            getattr(chat_llm_settings, "model", "") or ""
+        ).strip()
+        seed = chat_llm_model_pref or current
+        self._model_combo.addItem(seed or "Loading...", seed)
+        if seed:
+            self._model_combo.setEditText(seed)
         form.addRow("Model:", self._model_combo)
         btn_row = QHBoxLayout()
         self._clear_btn = QPushButton("Clear history")
@@ -81,8 +90,290 @@ class SettingsDialog(PersistentGeometryMixin, QDialog):
         btn_row.addWidget(self._clear_btn)
         btn_row.addStretch()
         form.addRow("", btn_row)
+        layout.addLayout(form)
+
+        layout.addWidget(self._build_chat_llm_group(chat_llm_settings))
+        layout.addStretch()
         self._load_models_async()
         return widget
+
+    # Suggested cloud-catalog models surfaced in the Ollama Cloud dropdown.
+    _OLLAMA_CLOUD_MODELS: tuple[str, ...] = (
+        "gpt-oss:120b-cloud",
+        "gpt-oss:20b-cloud",
+        "qwen3-coder:480b-cloud",
+        "deepseek-v3.1:671b-cloud",
+        "kimi-k2:1t-cloud",
+        "glm-4.6:cloud",
+    )
+
+    # OpenAI-compatible presets: base_url, env var, suggested models.
+    _OPENAI_COMPAT_PRESETS: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
+        (
+            "custom",
+            "Custom",
+            "",
+            "",
+            (),
+        ),
+        (
+            "openai",
+            "OpenAI",
+            "https://api.openai.com/v1",
+            "OPENAI_API_KEY",
+            (
+                "gpt-4o-mini",
+                "gpt-4o",
+                "gpt-4.1-mini",
+                "gpt-4.1",
+                "o1-mini",
+                "o3-mini",
+            ),
+        ),
+        (
+            "xai",
+            "xAI Grok",
+            "https://api.x.ai/v1",
+            "XAI_API_KEY",
+            (
+                "grok-3-mini",
+                "grok-3",
+                "grok-4",
+            ),
+        ),
+        (
+            "groq",
+            "Groq",
+            "https://api.groq.com/openai/v1",
+            "GROQ_API_KEY",
+            (
+                "llama-3.3-70b-versatile",
+                "llama-3.1-8b-instant",
+                "llama-4-scout-17b-16e-instruct",
+                "llama-4-maverick-17b-128e-instruct",
+                "qwen/qwen3-32b",
+                "deepseek-r1-distill-llama-70b",
+                "openai/gpt-oss-120b",
+                "openai/gpt-oss-20b",
+            ),
+        ),
+        (
+            "openrouter",
+            "OpenRouter",
+            "https://openrouter.ai/api/v1",
+            "OPENROUTER_API_KEY",
+            (
+                "openai/gpt-4o-mini",
+                "anthropic/claude-3.5-sonnet",
+                "meta-llama/llama-3.3-70b-instruct",
+                "deepseek/deepseek-chat",
+                "x-ai/grok-3-mini",
+            ),
+        ),
+        (
+            "deepseek",
+            "DeepSeek",
+            "https://api.deepseek.com/v1",
+            "DEEPSEEK_API_KEY",
+            (
+                "deepseek-chat",
+                "deepseek-reasoner",
+            ),
+        ),
+        (
+            "together",
+            "Together",
+            "https://api.together.xyz/v1",
+            "TOGETHER_API_KEY",
+            (
+                "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+                "Qwen/Qwen2.5-72B-Instruct-Turbo",
+                "deepseek-ai/DeepSeek-V3",
+            ),
+        ),
+        (
+            "mistral",
+            "Mistral",
+            "https://api.mistral.ai/v1",
+            "MISTRAL_API_KEY",
+            (
+                "mistral-large-latest",
+                "mistral-small-latest",
+                "open-mixtral-8x22b",
+            ),
+        ),
+    )
+
+    def _build_chat_llm_group(self, chat_llm_settings) -> QGroupBox:
+        group = QGroupBox("Chat LLM provider")
+        form = QFormLayout(group)
+
+        self._chat_provider_combo = QComboBox()
+        self._chat_provider_combo.addItem("Ollama (local)", "ollama_local")
+        self._chat_provider_combo.addItem("Ollama Cloud", "ollama_cloud")
+        self._chat_provider_combo.addItem("OpenAI-compatible (cloud)", "openai_compatible")
+        form.addRow("Provider:", self._chat_provider_combo)
+
+        self._chat_preset_label = QLabel("Preset:")
+        self._chat_preset_combo = QComboBox()
+        for preset_id, label, _url, _env, _models in self._OPENAI_COMPAT_PRESETS:
+            self._chat_preset_combo.addItem(label, preset_id)
+        form.addRow(self._chat_preset_label, self._chat_preset_combo)
+
+        self._chat_base_url_label = QLabel("Base URL:")
+        self._chat_base_url_edit = QLineEdit()
+        self._chat_base_url_edit.setPlaceholderText("https://ollama.com or https://api.openai.com/v1")
+        form.addRow(self._chat_base_url_label, self._chat_base_url_edit)
+
+        self._chat_api_key_label = QLabel("API key:")
+        self._chat_api_key_edit = QLineEdit()
+        self._chat_api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self._chat_api_key_edit.setPlaceholderText("blank = read from env var")
+        form.addRow(self._chat_api_key_label, self._chat_api_key_edit)
+
+        self._chat_api_key_env_label = QLabel("API key env var:")
+        self._chat_api_key_env_edit = QLineEdit()
+        self._chat_api_key_env_edit.setPlaceholderText("auto (e.g. OLLAMA_API_KEY, OPENAI_API_KEY)")
+        form.addRow(self._chat_api_key_env_label, self._chat_api_key_env_edit)
+
+        self._chat_context_window_label = QLabel("Context window:")
+        self._chat_context_window_edit = QLineEdit()
+        self._chat_context_window_edit.setPlaceholderText("blank = auto-detect / model lookup")
+        form.addRow(self._chat_context_window_label, self._chat_context_window_edit)
+
+        self._chat_extra_headers_label = QLabel("Extra headers (JSON):")
+        self._chat_extra_headers_edit = QTextEdit()
+        self._chat_extra_headers_edit.setMaximumHeight(60)
+        self._chat_extra_headers_edit.setPlaceholderText('{"HTTP-Referer": "https://example.com", "X-Title": "MyApp"}')
+        form.addRow(self._chat_extra_headers_label, self._chat_extra_headers_edit)
+
+        # Initial state from saved settings.
+        provider_saved = (
+            getattr(chat_llm_settings, "provider", "ollama") or "ollama"
+        ).strip().lower()
+        base_url_saved = (
+            getattr(chat_llm_settings, "base_url", "") or ""
+        ).strip()
+        api_key_saved = getattr(chat_llm_settings, "api_key", "") or ""
+        api_key_env_saved = (
+            getattr(chat_llm_settings, "api_key_env", "") or ""
+        ).strip()
+        ctx_saved = getattr(chat_llm_settings, "context_window", None)
+        headers_saved = getattr(chat_llm_settings, "extra_headers", {}) or {}
+
+        if provider_saved == "openai_compatible":
+            ui_provider = "openai_compatible"
+        elif "ollama.com" in base_url_saved.lower():
+            ui_provider = "ollama_cloud"
+        else:
+            ui_provider = "ollama_local"
+        idx = self._chat_provider_combo.findData(ui_provider)
+        if idx >= 0:
+            self._chat_provider_combo.setCurrentIndex(idx)
+
+        # Match preset by base_url for openai_compatible.
+        preset_match = "custom"
+        if ui_provider == "openai_compatible" and base_url_saved:
+            for preset_id, _label, url, _env, _models in self._OPENAI_COMPAT_PRESETS:
+                if url and url.lower() == base_url_saved.lower():
+                    preset_match = preset_id
+                    break
+        idx = self._chat_preset_combo.findData(preset_match)
+        if idx >= 0:
+            self._chat_preset_combo.setCurrentIndex(idx)
+
+        self._chat_base_url_edit.setText(base_url_saved)
+        self._chat_api_key_edit.setText(api_key_saved)
+        self._chat_api_key_env_edit.setText(api_key_env_saved)
+        self._chat_context_window_edit.setText(
+            str(ctx_saved) if ctx_saved is not None else ""
+        )
+        if headers_saved:
+            try:
+                import json as _json
+                self._chat_extra_headers_edit.setPlainText(
+                    _json.dumps(dict(headers_saved), indent=2)
+                )
+            except Exception:
+                self._chat_extra_headers_edit.setPlainText("")
+
+        self._chat_provider_combo.currentIndexChanged.connect(self._on_chat_llm_provider_changed)
+        self._chat_preset_combo.currentIndexChanged.connect(self._on_chat_llm_preset_changed)
+        self._on_chat_llm_provider_changed()
+        return group
+
+    def _on_chat_llm_provider_changed(self) -> None:
+        provider = self._chat_provider_combo.currentData() or "ollama_local"
+        is_local = provider == "ollama_local"
+        is_cloud = provider == "ollama_cloud"
+        is_openai = provider == "openai_compatible"
+
+        self._chat_preset_label.setVisible(is_openai)
+        self._chat_preset_combo.setVisible(is_openai)
+        self._chat_base_url_label.setVisible(not is_local)
+        self._chat_base_url_edit.setVisible(not is_local)
+        self._chat_api_key_label.setVisible(not is_local)
+        self._chat_api_key_edit.setVisible(not is_local)
+        self._chat_api_key_env_label.setVisible(not is_local)
+        self._chat_api_key_env_edit.setVisible(not is_local)
+        self._chat_extra_headers_label.setVisible(is_openai)
+        self._chat_extra_headers_edit.setVisible(is_openai)
+
+        if is_cloud and not self._chat_base_url_edit.text().strip():
+            self._chat_base_url_edit.setText("https://ollama.com")
+        if is_cloud and not self._chat_api_key_env_edit.text().strip():
+            self._chat_api_key_env_edit.setPlaceholderText("OLLAMA_API_KEY")
+        if is_openai and not self._chat_api_key_env_edit.text().strip():
+            self._chat_api_key_env_edit.setPlaceholderText("auto-detected from base URL host")
+
+        self._reseed_model_combo_for_provider(provider)
+
+    def _on_chat_llm_preset_changed(self) -> None:
+        if not self._chat_preset_combo.isVisible():
+            return
+        preset_id = self._chat_preset_combo.currentData() or "custom"
+        for known_id, _label, url, env, _models in self._OPENAI_COMPAT_PRESETS:
+            if known_id == preset_id:
+                if url:
+                    self._chat_base_url_edit.setText(url)
+                if env and not self._chat_api_key_env_edit.text().strip():
+                    self._chat_api_key_env_edit.setText(env)
+                break
+        self._reseed_model_combo_for_provider(
+            self._chat_provider_combo.currentData() or "ollama_local"
+        )
+
+    def _reseed_model_combo_for_provider(self, provider: str) -> None:
+        current_text = self._model_combo.currentText().strip()
+        if provider == "ollama_local":
+            # Existing async populator handles local Ollama; only re-trigger if we
+            # don't already have results so we don't blow away the user's typed text.
+            if not getattr(self, "_fetched_models", None):
+                self._load_models_async()
+            return
+
+        if provider == "ollama_cloud":
+            suggestions: list[str] = list(self._OLLAMA_CLOUD_MODELS)
+        else:
+            preset_id = self._chat_preset_combo.currentData() or "custom"
+            suggestions = []
+            for known_id, _label, _url, _env, models in self._OPENAI_COMPAT_PRESETS:
+                if known_id == preset_id:
+                    suggestions = list(models)
+                    break
+
+        self._model_combo.blockSignals(True)
+        self._model_combo.clear()
+        if current_text:
+            self._model_combo.addItem(current_text, current_text)
+        for name in suggestions:
+            if name != current_text:
+                self._model_combo.addItem(name, name)
+        if current_text:
+            self._model_combo.setEditText(current_text)
+        elif suggestions:
+            self._model_combo.setEditText(suggestions[0])
+        self._model_combo.blockSignals(False)
 
     def _load_models_async(self) -> None:
         def _fetch() -> None:
@@ -100,13 +391,26 @@ class SettingsDialog(PersistentGeometryMixin, QDialog):
         if not models:
             return
         self._model_poll.stop()
-        current = self._session.chat_model
+        # Don't replace cloud / openai-compat suggestions with the local catalog.
+        current_provider = (
+            self._chat_provider_combo.currentData()
+            if hasattr(self, "_chat_provider_combo")
+            else "ollama_local"
+        )
+        if current_provider != "ollama_local":
+            return
+        current_text = self._model_combo.currentText().strip()
+        current = current_text or self._session.chat_model
+        self._model_combo.blockSignals(True)
         self._model_combo.clear()
         for name in models:
             self._model_combo.addItem(name, name)
         idx = self._model_combo.findData(current)
         if idx >= 0:
             self._model_combo.setCurrentIndex(idx)
+        elif current:
+            self._model_combo.setEditText(current)
+        self._model_combo.blockSignals(False)
 
     def _build_audio_tab(self) -> QWidget:
         widget = QWidget()
@@ -576,7 +880,13 @@ class SettingsDialog(PersistentGeometryMixin, QDialog):
         self._session.clear_conversation_memory()
 
     def accept(self) -> None:
-        self._session.set_chat_model(str(self._model_combo.currentData() or self._session.chat_model))
+        # Read the model field as text since the combo is editable.
+        chosen_model = (
+            self._model_combo.currentText().strip()
+            or str(self._model_combo.currentData() or "").strip()
+            or self._session.chat_model
+        )
+        self._session.set_chat_model(chosen_model)
         self._session.update_sources(mic=self._mic_checkbox.isChecked())
         selected_provider = str(self._tts_provider_combo.currentData() or self._session.tts_provider)
         if selected_provider != self._session.tts_provider:
@@ -646,6 +956,64 @@ class SettingsDialog(PersistentGeometryMixin, QDialog):
             agent_settings.proactive_brain_influence_autonomy = self._proactive_influence_autonomy.isChecked()
         if hasattr(settings, "logging") and hasattr(settings.logging, "level"):
             settings.logging.level = self._log_level_combo.currentData() or "INFO"
+
+        # Chat LLM provider routing.
+        chat_llm_settings = getattr(settings, "chat_llm", None)
+        chat_llm_kwargs: dict = {}
+        if chat_llm_settings is not None and hasattr(self, "_chat_provider_combo"):
+            ui_provider = self._chat_provider_combo.currentData() or "ollama_local"
+            saved_provider = (
+                "openai_compatible" if ui_provider == "openai_compatible" else "ollama"
+            )
+            base_url_value = self._chat_base_url_edit.text().strip()
+            if ui_provider == "ollama_local":
+                base_url_value = ""
+            api_key_value = self._chat_api_key_edit.text()
+            if ui_provider == "ollama_local":
+                api_key_value = ""
+            api_key_env_value = self._chat_api_key_env_edit.text().strip()
+            if ui_provider == "ollama_local":
+                api_key_env_value = ""
+
+            ctx_text = self._chat_context_window_edit.text().strip()
+            try:
+                ctx_value = int(ctx_text) if ctx_text else None
+            except ValueError:
+                ctx_value = None
+
+            extra_headers_value: dict[str, str] = {}
+            if ui_provider == "openai_compatible":
+                headers_text = self._chat_extra_headers_edit.toPlainText().strip()
+                if headers_text:
+                    try:
+                        import json as _json
+                        loaded = _json.loads(headers_text)
+                        if isinstance(loaded, dict):
+                            extra_headers_value = {
+                                str(k).strip(): str(v).strip()
+                                for k, v in loaded.items()
+                                if str(k).strip() and v is not None
+                            }
+                    except Exception:
+                        pass
+
+            chat_llm_settings.provider = saved_provider
+            chat_llm_settings.model = chosen_model
+            chat_llm_settings.base_url = base_url_value
+            chat_llm_settings.api_key = api_key_value
+            chat_llm_settings.api_key_env = api_key_env_value
+            chat_llm_settings.context_window = ctx_value
+            chat_llm_settings.extra_headers = extra_headers_value
+
+            chat_llm_kwargs = {
+                "chat_llm_provider": saved_provider,
+                "chat_llm_model": chosen_model,
+                "chat_llm_base_url": base_url_value,
+                "chat_llm_api_key": api_key_value,
+                "chat_llm_api_key_env": api_key_env_value,
+                "chat_llm_context_window": ctx_value,
+                "chat_llm_extra_headers": extra_headers_value,
+            }
         persona_settings = getattr(settings, "persona", None)
         persona_kwargs: dict = {}
         if persona_settings is not None and hasattr(self, "_persona_enabled"):
@@ -690,6 +1058,7 @@ class SettingsDialog(PersistentGeometryMixin, QDialog):
                 pocket_tts_temp=getattr(settings.tts, "pocket_tts_temp", None),
                 enable_microphone=getattr(self._session, "_mic_enabled", True),
                 **persona_kwargs,
+                **chat_llm_kwargs,
             )
         except Exception:
             pass
