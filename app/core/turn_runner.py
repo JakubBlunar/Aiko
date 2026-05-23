@@ -127,7 +127,7 @@ class TurnRunner:
 
         if save_user_message:
             self._db.add_message(
-                session_key=session_key,
+                session_id=session_key,
                 role="user",
                 content=cleaned_user,
                 token_count=estimate_tokens(cleaned_user),
@@ -229,7 +229,7 @@ class TurnRunner:
 
         if cleaned and not aborted:
             self._db.add_message(
-                session_key=session_key,
+                session_id=session_key,
                 role="assistant",
                 content=cleaned,
                 token_count=usage.completion_tokens or estimate_tokens(cleaned),

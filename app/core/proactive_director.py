@@ -174,7 +174,7 @@ class ProactiveDirector:
 
         # Persist as an assistant turn so the model remembers what it said.
         self._db.add_message(
-            session_key=session_key,
+            session_id=session_key,
             role="assistant",
             content=cleaned,
             token_count=usage.completion_tokens,
