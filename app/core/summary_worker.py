@@ -175,7 +175,7 @@ class SummaryWorker:
             return
 
         self._db.save_summary(
-            session_key=session_key,
+            session_id=session_key,
             summary=text,
             summary_tokens=estimate_tokens(text),
             messages_summarized=total,

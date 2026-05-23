@@ -15,7 +15,7 @@ import logging
 import threading
 from typing import Any, Callable
 
-from app.core.services.response_text_service import prepare_tts_text
+from app.core.session_text_utils import prepare_tts_text
 
 
 StateListener = Callable[[str, dict[str, Any]], None]

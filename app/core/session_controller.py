@@ -524,10 +524,10 @@ class SessionController:
 
     @property
     def tts_provider(self) -> str:
-        return (self._settings.tts.provider or "kokoro").strip().lower() or "kokoro"
+        return (self._settings.tts.provider or "pocket-tts").strip().lower() or "pocket-tts"
 
     def list_tts_providers(self) -> list[str]:
-        return ["kokoro", "pykokoro", "pocket-tts"]
+        return ["pocket-tts"]
 
     @property
     def tts_voice(self) -> str:
@@ -583,7 +583,7 @@ class SessionController:
         return True
 
     def set_tts_provider(self, provider: str) -> None:
-        normalized = (provider or "").strip().lower() or "kokoro"
+        normalized = (provider or "").strip().lower() or "pocket-tts"
         if normalized == self.tts_provider:
             return
         try:
@@ -1118,21 +1118,10 @@ class SessionController:
 
     @staticmethod
     def _build_tts_service(settings: AppSettings, output_device: int | None = None) -> Any:
-        provider = (settings.tts.provider or "kokoro").strip().lower()
-        if provider == "pykokoro":
-            try:
-                from app.tts.pykokoro_service import PyKokoroTtsService
-                return PyKokoroTtsService(settings.tts, output_device=output_device)
-            except Exception:
-                log.warning("pykokoro init failed; falling back to kokoro", exc_info=True)
-        elif provider == "pocket-tts":
-            try:
-                from app.tts.pocket_tts_service import PocketTtsService
-                return PocketTtsService(settings.tts, output_device=output_device)
-            except Exception:
-                log.warning("pocket-tts init failed; falling back to kokoro", exc_info=True)
-        from app.tts.kokoro_service import KokoroTtsService
-        return KokoroTtsService(settings.tts, output_device=output_device)
+        # Lean v1 ships only pocket-tts (matches the active user.json config).
+        # Kokoro / PyKokoro were removed -- restore them in v2 if needed.
+        from app.tts.pocket_tts_service import PocketTtsService
+        return PocketTtsService(settings.tts, output_device=output_device)
 
     # ── Shutdown ────────────────────────────────────────────────────
 

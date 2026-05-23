@@ -1,64 +1,34 @@
 {
-  "agent": {
-    "num_history_runs": 10,
-    "compress_tool_results": true,
-    "compress_tool_results_limit": null,
-    "compress_token_limit": null,
-    "personality_prune_threshold": 0.15,
-    "personality_decay_rate": 0.1,
-    "personality_max_notes": 40,
-    "personality_token_budget": 300,
-    "proactive_silence_seconds": 45,
-    "proactive_cooldown_seconds": 120,
-    "archive_enabled": true,
-    "archive_days_threshold": 30,
-    "browser_snapshot_compress": true,
-    "browser_snapshot_max_chars": null,
-    "browser_snapshot_max_text_run": null,
-    "proactive_planner_enabled": true,
-    "proactive_use_main_for_utterance": false,
-    "proactive_context_messages": 10,
-    "proactive_background_interval_seconds": 90,
-    "proactive_background_stale_seconds": 120,
-    "proactive_brain_advise_main": true,
-    "proactive_brain_drive_speech": true,
-    "proactive_brain_influence_autonomy": false,
-    "proactive_brain_request_actions_via_main": false,
-    "proactive_speech_requires_live": true,
-    "tool_dispatch_mode": "controller",
-    "tool_iterations_max": 3,
-    "triage_judge_enabled": true,
-    "triage_judge_timeout_seconds": 1.5
-  },
   "assistant": {
-    "name": "Assistant",
+    "name": "Aiko",
     "remember_history": true,
     "background": "",
     "background_path": "data/assistant_background.txt",
     "response_style": "balanced",
-    "tts_length_scale": 1.0
+    "tts_length_scale": 1.0,
+    "startup_greeting_enabled": false
   },
   "ollama": {
     "base_url": "http://127.0.0.1:11434",
-    "embedding_base_url": "",
-    "proactive_planner_base_url": "",
     "chat_model": "jaahas/qwen3.5-uncensored:9b",
     "judge_model": "qwen2.5:0.5b",
     "temperature": 0.6,
-    "context_window": null,
-    "embedding_model": "qwen3-embedding:0.6b",
-    "proactive_planner_model": "qwen2.5:0.5b"
+    "context_window": null
   },
   "chat_llm": {
     "provider": "ollama",
-    "model": "",
-    "base_url": "",
-    "api_key": "",
-    "api_key_env": "",
-    "context_window": null,
-    "temperature": null,
-    "extra_headers": {},
     "max_tokens": 512
+  },
+  "agent": {
+    "num_history_runs": 10,
+    "personality_prune_threshold": 0.15,
+    "personality_decay_rate": 0.1,
+    "personality_max_notes": 40,
+    "personality_token_budget": 300,
+    "personality_update_every_n_turns": 4,
+    "proactive_silence_seconds": 45,
+    "proactive_cooldown_seconds": 120,
+    "proactive_speech_requires_live": true
   },
   "audio": {
     "sample_rate": 16000,
@@ -79,15 +49,11 @@
     "language": "en"
   },
   "tts": {
-    "provider": "kokoro",
-    "voice": "af_heart",
+    "provider": "pocket-tts",
+    "voice": "aiko1_refined.safetensors",
     "enabled": true,
-    "kokoro_model_path": "models/kokoro-v1.0.onnx",
-    "kokoro_voices_path": "models/voices-v1.0.bin",
-    "pykokoro_pause_mode": "auto",
-    "pocket_tts_voice": "alba",
-    "pocket_tts_temp": 0.7,
-    "pocket_tts_custom_voices_dir": ""
+    "pocket_tts_voice": "aiko1_refined.safetensors",
+    "pocket_tts_temp": 0.6
   },
   "ui": {
     "window_x": null,
@@ -95,36 +61,11 @@
     "window_width": null,
     "window_height": null
   },
-  "tooling": {
-    "config_default_path": "config/tooling.default.json",
-    "config_user_path": "config/tooling.user.json"
-  },
   "logging": {
     "level": "INFO"
   },
   "mcp_server": {
     "enabled": true,
     "port": 6274
-  },
-  "persona": {
-    "enabled": false,
-    "mode": "embedded",
-    "model_path": "data/avatars/hiyori/Hiyori.model3.json",
-    "scale": 0.25,
-    "anchor": "bottom-center",
-    "mirror": false,
-    "lip_sync_gain": 1.2,
-    "expression_map": {
-      "neutral": "",
-      "cheerful": "F01",
-      "excited": "F02",
-      "friendly": "F03",
-      "calm": "F04",
-      "serious": "F05",
-      "sad": "F06",
-      "gentle": "F07",
-      "angry": "F08",
-      "surprised": "F08"
-    }
   }
 }

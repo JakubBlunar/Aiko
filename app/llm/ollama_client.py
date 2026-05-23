@@ -143,6 +143,7 @@ class OllamaClient:
         keep_alive: str | None = "10m",
         stop_event: threading.Event | None = None,
         format_json: bool = False,
+        think: bool = False,
     ) -> Generator[str, None, None]:
         """Stream content tokens from Ollama /api/chat.
 
@@ -150,6 +151,11 @@ class OllamaClient:
         chunk's usage telemetry is exposed via :attr:`last_usage`. Pass
         ``stop_event`` to abort streaming cleanly: the underlying socket is
         closed which signals Ollama to cancel generation.
+
+        ``think`` defaults to ``False`` so reasoning models (qwen3.x, deepseek-r1,
+        gpt-oss…) skip their internal chain-of-thought and stream the actual
+        answer immediately. Pass ``think=True`` if you want the reasoning trace
+        in ``message.thinking`` (we still only yield ``message.content`` here).
         """
         merged_options: dict[str, object] = {"temperature": self._settings.temperature}
         if options:
@@ -159,6 +165,7 @@ class OllamaClient:
             "model": use_model,
             "messages": messages,
             "stream": True,
+            "think": bool(think),
             "options": merged_options,
         }
         if keep_alive:
@@ -205,13 +212,15 @@ class OllamaClient:
         options: dict[str, object] | None = None,
         timeout_seconds: float | None = None,
         format_json: bool = True,
+        think: bool = False,
     ) -> tuple[str, OllamaUsage]:
         """One-shot non-streaming call (defaults to ``format=json``).
 
         Used by background workers (summary, learner profile) that need a
         bounded response and don't want to manage a stream. Returns
         ``(raw_content, usage)``. Pass ``format_json=False`` for plain text
-        responses (e.g. summarisation).
+        responses (e.g. summarisation). ``think`` is False by default so
+        reasoning models don't burn the response budget on chain-of-thought.
         """
         merged_options: dict[str, object] = {"temperature": 0.0}
         if options:
@@ -222,6 +231,7 @@ class OllamaClient:
             "messages": messages,
             "stream": False,
             "keep_alive": "10m",
+            "think": bool(think),
             "options": merged_options,
         }
         if format_json:
