@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from collections.abc import Generator
 from dataclasses import dataclass, field
 import json
@@ -23,6 +24,25 @@ class OllamaChatResponse:
     tool_calls: list[OllamaToolCall] = field(default_factory=list)
 
 
+@dataclass(slots=True)
+class OllamaUsage:
+    """Token + timing telemetry pulled from the final streaming chunk.
+
+    Mirrors the fields Ollama's /api/chat returns when ``done=True`` is sent.
+    All values are 0 when the server didn't include them.
+    """
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_duration_ms: float = 0.0
+    eval_duration_ms: float = 0.0
+    prompt_eval_duration_ms: float = 0.0
+
+    @property
+    def total_tokens(self) -> int:
+        return self.prompt_tokens + self.completion_tokens
+
+
 class OllamaClient:
     def __init__(
         self,
@@ -44,6 +64,7 @@ class OllamaClient:
         if api_key:
             headers["Authorization"] = f"Bearer {api_key.strip()}"
         self._headers: dict[str, str] = headers
+        self.last_usage: OllamaUsage = OllamaUsage()
 
     @property
     def base_url(self) -> str:
@@ -117,16 +138,34 @@ class OllamaClient:
         self,
         messages: list[dict[str, Any]],
         options: dict[str, object] | None = None,
+        *,
+        model: str | None = None,
+        keep_alive: str | None = "10m",
+        stop_event: threading.Event | None = None,
+        format_json: bool = False,
     ) -> Generator[str, None, None]:
+        """Stream content tokens from Ollama /api/chat.
+
+        After iteration completes (or the caller stops consuming) the last
+        chunk's usage telemetry is exposed via :attr:`last_usage`. Pass
+        ``stop_event`` to abort streaming cleanly: the underlying socket is
+        closed which signals Ollama to cancel generation.
+        """
         merged_options: dict[str, object] = {"temperature": self._settings.temperature}
         if options:
             merged_options.update(options)
-        payload = {
-            "model": self._settings.chat_model,
+        use_model = (model or "").strip() or self._settings.chat_model
+        payload: dict[str, Any] = {
+            "model": use_model,
             "messages": messages,
             "stream": True,
             "options": merged_options,
         }
+        if keep_alive:
+            payload["keep_alive"] = keep_alive
+        if format_json:
+            payload["format"] = "json"
+        usage = OllamaUsage()
         with requests.post(
             f"{self._base_url}/api/chat",
             json=payload,
@@ -136,12 +175,75 @@ class OllamaClient:
         ) as response:
             response.raise_for_status()
             for line in response.iter_lines(decode_unicode=True):
+                if stop_event is not None and stop_event.is_set():
+                    response.close()
+                    break
                 if not line:
                     continue
-                chunk = json.loads(line)
+                try:
+                    chunk = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(chunk, dict):
+                    continue
+                if chunk.get("done"):
+                    usage.prompt_tokens = int(chunk.get("prompt_eval_count", 0) or 0)
+                    usage.completion_tokens = int(chunk.get("eval_count", 0) or 0)
+                    usage.total_duration_ms = float(chunk.get("total_duration", 0) or 0) / 1e6
+                    usage.eval_duration_ms = float(chunk.get("eval_duration", 0) or 0) / 1e6
+                    usage.prompt_eval_duration_ms = float(chunk.get("prompt_eval_duration", 0) or 0) / 1e6
                 token = chunk.get("message", {}).get("content", "")
                 if token:
                     yield token
+        self.last_usage = usage
+
+    def chat_json(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        model: str | None = None,
+        options: dict[str, object] | None = None,
+        timeout_seconds: float | None = None,
+        format_json: bool = True,
+    ) -> tuple[str, OllamaUsage]:
+        """One-shot non-streaming call (defaults to ``format=json``).
+
+        Used by background workers (summary, learner profile) that need a
+        bounded response and don't want to manage a stream. Returns
+        ``(raw_content, usage)``. Pass ``format_json=False`` for plain text
+        responses (e.g. summarisation).
+        """
+        merged_options: dict[str, object] = {"temperature": 0.0}
+        if options:
+            merged_options.update(options)
+        use_model = (model or "").strip() or self._settings.chat_model
+        payload: dict[str, Any] = {
+            "model": use_model,
+            "messages": messages,
+            "stream": False,
+            "keep_alive": "10m",
+            "options": merged_options,
+        }
+        if format_json:
+            payload["format"] = "json"
+        response = requests.post(
+            f"{self._base_url}/api/chat",
+            json=payload,
+            timeout=timeout_seconds if timeout_seconds is not None else self._timeout_seconds,
+            headers=self._request_headers(),
+        )
+        response.raise_for_status()
+        body = response.json()
+        message = body.get("message", {}) if isinstance(body, dict) else {}
+        content = str(message.get("content", "") or "")
+        usage = OllamaUsage(
+            prompt_tokens=int(body.get("prompt_eval_count", 0) or 0),
+            completion_tokens=int(body.get("eval_count", 0) or 0),
+            total_duration_ms=float(body.get("total_duration", 0) or 0) / 1e6,
+            eval_duration_ms=float(body.get("eval_duration", 0) or 0) / 1e6,
+            prompt_eval_duration_ms=float(body.get("prompt_eval_duration", 0) or 0) / 1e6,
+        )
+        return content, usage
 
     @staticmethod
     def _parse_tool_calls(raw_tool_calls: object) -> list[OllamaToolCall]:

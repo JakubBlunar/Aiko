@@ -1,94 +1,60 @@
+"""Lean session controller for Aiko (English-tutor edition).
+
+This is the single hub the UI talks to. It owns:
+
+- Settings + chat database
+- Ollama client + TurnRunner (the conversation loop)
+- TtsQueue + TTS engine
+- Microphone + RealtimeSTT
+- Background workers: SummaryWorker, LearnerProfile, ProactiveDirector
+- Embedded MCP server (optional, for Cursor debugging)
+
+The earlier ~2700-line implementation is preserved on the ``legacy-v0`` git
+tag if anything needs to be referenced. This rewrite drops:
+  - The LangChain agent + tool dispatch + triage judge + autonomy planner
+  - Embedding/recent-topics search
+  - Live2D avatar
+  - Action/agentic UI automation
+  - Personality decay + 0.5B judge model
+
+Public surface intentionally retains the method names the UI and MCP server
+already use, so callers don't have to change.
+"""
 from __future__ import annotations
 
-from collections.abc import Callable
-from collections import deque
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import logging
 import os
-from pathlib import Path
-import re
 import threading
 import time
+import uuid
+from collections import deque
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
-from app.core.action_intent import has_action_intent
-from app.core.tooling import load_tooling_config, resolve_toolkit_entries
-from app.core.tooling.runtime.emergency_stop import EmergencyStopState, GlobalHotkeyListener
-from app.core.tooling.types import ToolError, ToolResult
-from app.audio.mic_capture import MicrophoneCapture
-from app.core.crash_logging import log_event, log_handled_exception
-from app.core.settings import AppSettings, OllamaSettings
-from app.core.services.response_text_service import (
-    extract_tts_reaction_tag,
-    parse_reaction_at_start,
-    parse_two_tier_reply,
-    strip_action_meta_for_tts,
-    strip_all_meta_tags,
-    strip_all_reaction_tags,
-)
+from app.audio.earcons import EarconPlayer
+from app.audio.mic_capture import MicrophoneCapture, list_output_devices
+from app.core.chat_database import ChatDatabase
+from app.core.crash_logging import log_event
+from app.core.learner_profile import LearnerProfile
+from app.core.proactive_director import ProactiveDirector
+from app.core.prompt_assembler import PromptAssembler
+from app.core.services.response_text_service import strip_action_meta_for_tts
 from app.core.session_text_utils import (
-    drain_tts_stream_chunks,
     infer_tts_reaction,
     prepare_tts_text,
-    sanitize_assistant_text,
     sanitize_user_text,
 )
-from app.core.chat_database import ChatDatabase
-from app.llm.embedding_service import EmbeddingService
-from app.llm.langchain_agent import create_agent, run_agent, _resolve_env_var_name
-from app.llm.proactive_planner import (
-    DIRECTOR_SYSTEM_PROMPT,
-    ProactiveDirectorPlan,
-    build_director_user_message,
-    build_utterance_expand_prompt,
-    extract_json_object_from_text,
-    parse_director_json,
-)
+from app.core.settings import AppSettings
+from app.core.summary_worker import SummaryWorker
+from app.core.tts_queue import TtsQueue
+from app.core.turn_runner import TurnRunner
 from app.llm.ollama_client import OllamaClient
-from app.stt.prosody_fast import FastProsodyAnalyzer, ProsodyAnalysis
 from app.stt.realtime_stt_service import RealtimeSttService
-from app.tts.kokoro_service import KokoroTtsService
 
 
-def _get_assistant_background(settings: AppSettings) -> str | None:
-    """Resolve assistant background: from background_path file if set and readable, else from background string."""
-    path_raw = (getattr(settings.assistant, "background_path", None) or "").strip()
-    if path_raw:
-        root = Path(__file__).resolve().parents[2]
-        path = (root / path_raw) if not Path(path_raw).is_absolute() else Path(path_raw)
-        if path.is_file():
-            try:
-                content = path.read_text(encoding="utf-8").strip()
-                if content:
-                    return content
-            except Exception:
-                pass
-    return (settings.assistant.background or "").strip() or None
-
-
-def _safe_display_prefix(new_text: str) -> str:
-    """Return the largest prefix of *new_text* that is safe to stream to the UI.
-
-    Holds back any in-progress ``[[...]]`` meta tag at the tail so partial
-    fragments like ``[[reaction:gentle`` never leak into the chat bubble.
-    The held-back tail will flow on the next delta once the tag closes and
-    :func:`strip_all_meta_tags` removes it from ``display_buf``.
-    """
-    last_open = new_text.rfind("[[")
-    if last_open >= 0 and "]]" not in new_text[last_open + 2:]:
-        return new_text[:last_open]
-    if new_text.endswith("[") and not new_text.endswith("[["):
-        return new_text[:-1]
-    return new_text
-
-
-class _StubMemory:
-    def clear(self) -> None:
-        pass
-
-    def recent_entries(self, max_entries: int = 10) -> list:
-        return []
+log = logging.getLogger("app.session")
 
 
 @dataclass(slots=True)
@@ -98,209 +64,152 @@ class SessionState:
     session_type: str
 
 
-@dataclass(slots=True)
-class GoalInference:
-    goal: str
-    confidence: float
-    reason: str
-    description: str = ""
-    session_type: str = "chat"
+# ── Provider helpers (env-name fallback for OpenAI-compatible base URLs) ──
+
+_PROVIDER_ENV_HINTS: tuple[tuple[str, str], ...] = (
+    ("ollama.com", "OLLAMA_API_KEY"),
+    ("api.openai.com", "OPENAI_API_KEY"),
+    ("api.groq.com", "GROQ_API_KEY"),
+    ("api.x.ai", "XAI_API_KEY"),
+    ("openrouter.ai", "OPENROUTER_API_KEY"),
+)
 
 
-@dataclass(slots=True)
-class TurnAutonomyPlan:
-    strategy: str
-    should_plan_action: bool
-    ask_followup: bool
-    confidence: float
-    action_intent: str = ""
+def _resolve_env_var_name(*, base_url: str, explicit: str = "") -> str:
+    if explicit:
+        return explicit
+    host = (base_url or "").lower()
+    for needle, env_name in _PROVIDER_ENV_HINTS:
+        if needle in host:
+            return env_name
+    return ""
 
 
-@dataclass
-class _DirectorCache:
-    """Thread-safe cache for proactive director (mutate only under _director_lock)."""
-
-    plan: ProactiveDirectorPlan | None = None
-    built_monotonic: float = 0.0
-    speak_assistant_seq: int = -1
+# ── Controller ─────────────────────────────────────────────────────────
 
 
 class SessionController:
     def __init__(self, settings: AppSettings) -> None:
-        from concurrent.futures import ThreadPoolExecutor, Future
-
         self._settings = settings
-        self._decision_trace: deque[dict[str, str]] = deque(maxlen=500)
+        self._user_id = (settings.assistant.user_id or "default").strip() or "default"
+        self._session_id = "main"
 
-        chat_llm_settings = getattr(settings, "chat_llm", None)
-        chat_llm_provider = (
-            getattr(chat_llm_settings, "provider", "ollama") or "ollama"
-        ).strip().lower()
-        chat_llm_base_url = (
-            getattr(chat_llm_settings, "base_url", "") or ""
-        ).strip() or settings.ollama.base_url
-        chat_llm_api_key_explicit = (
-            getattr(chat_llm_settings, "api_key", "") or ""
-        ).strip()
-        chat_llm_api_key_env = (
-            getattr(chat_llm_settings, "api_key_env", "") or ""
-        ).strip()
-        chat_llm_extra_headers_raw = (
-            getattr(chat_llm_settings, "extra_headers", {}) or {}
+        # ── Chat LLM client (Ollama or Ollama Cloud) ──────────────────────
+        chat_llm = settings.chat_llm
+        chat_provider = (chat_llm.provider or "ollama").strip().lower()
+        if chat_provider != "ollama":
+            log.warning(
+                "chat_llm.provider=%s is not supported in the lean rewrite; "
+                "falling back to Ollama. Set the model on settings.ollama.chat_model.",
+                chat_provider,
+            )
+        chat_base_url = (chat_llm.base_url or "").strip() or settings.ollama.base_url
+        api_key_explicit = (chat_llm.api_key or "").strip()
+        api_key_env_name = _resolve_env_var_name(
+            base_url=chat_base_url, explicit=(chat_llm.api_key_env or "").strip(),
         )
-        chat_llm_extra_headers: dict[str, str] = {
+        api_key = api_key_explicit or os.environ.get(api_key_env_name, "").strip()
+        extra_headers = {
             str(k).strip(): str(v).strip()
-            for k, v in dict(chat_llm_extra_headers_raw).items()
+            for k, v in dict(chat_llm.extra_headers or {}).items()
             if str(k).strip() and v is not None
         }
-        if chat_llm_provider == "ollama":
-            env_name = _resolve_env_var_name(
-                base_url=chat_llm_base_url,
-                explicit=chat_llm_api_key_env,
-            )
-            chat_llm_api_key = (
-                chat_llm_api_key_explicit
-                or os.environ.get(env_name, "").strip()
-            )
-            self._ollama = OllamaClient(
-                settings.ollama,
-                base_url=chat_llm_base_url,
-                api_key=chat_llm_api_key or None,
-                extra_headers=chat_llm_extra_headers or None,
-            )
-        else:
-            # OpenAI-compatible chat path - keep a local Ollama client purely for
-            # diagnostics; list_models/prewarm guards skip it.
-            self._ollama = OllamaClient(settings.ollama)
-        self._chat_provider = chat_llm_provider
-        self._microphone = MicrophoneCapture(settings.audio)
-        self._prosody = FastProsodyAnalyzer(enabled=bool(settings.stt.prosody.enabled))
-        self._prosody_include_in_prompt = bool(settings.stt.prosody.include_in_prompt)
-        self._action_stop_state = EmergencyStopState()
-        self._action_hotkey_listener = GlobalHotkeyListener(
-            hotkey=settings.actions.emergency_hotkey,
-            state=self._action_stop_state,
+        self._ollama = OllamaClient(
+            settings.ollama,
+            base_url=chat_base_url,
+            api_key=api_key or None,
+            extra_headers=extra_headers or None,
         )
-        self._memory = _StubMemory()
+        self._chat_provider = "ollama"
 
-        storage_path = Path(__file__).resolve().parents[2] / "data" / "chat_sessions.db"
-        db_provider = getattr(settings.database, "provider", "sqlite") or "sqlite"
-        db_url = getattr(settings.database, "url", None)
-        root = Path(__file__).resolve().parents[2]
-        tooling_config = load_tooling_config(
-            default_path=root / (getattr(settings.tooling, "config_default_path", "config/tooling.default.json") or "config/tooling.default.json"),
-            user_path=root / (getattr(settings.tooling, "config_user_path", "config/tooling.user.json") or "config/tooling.user.json"),
+        chat_model_override = (chat_llm.model or "").strip()
+        self._effective_chat_model = (
+            chat_model_override
+            or (settings.ollama.chat_model or "").strip()
+            or "llama3.1:8b"
         )
-        toolkit_entries = resolve_toolkit_entries(tooling_config)
-        agent_settings = getattr(settings, "agent", None)
-        num_history_runs = int(agent_settings.num_history_runs) if agent_settings else 10
-        compress_tool_results = bool(agent_settings.compress_tool_results) if agent_settings else True
-        compress_limit = getattr(agent_settings, "compress_tool_results_limit", None) if agent_settings else None
-        compress_token_limit = getattr(agent_settings, "compress_token_limit", None) if agent_settings else None
-        browser_snapshot_compress = bool(getattr(agent_settings, "browser_snapshot_compress", True)) if agent_settings else True
-        browser_snapshot_max_chars = getattr(agent_settings, "browser_snapshot_max_chars", None) if agent_settings else None
-        browser_snapshot_max_text_run = getattr(agent_settings, "browser_snapshot_max_text_run", None) if agent_settings else None
-        chat_model = (settings.ollama.chat_model or "").strip() or "llama3.1:8b"
-        # When chat_llm overrides the model use that for display + prewarm.
-        chat_llm_model_override = (
-            getattr(chat_llm_settings, "model", "") or ""
-        ).strip()
-        if chat_llm_model_override:
-            chat_model_effective = chat_llm_model_override
-        else:
-            chat_model_effective = chat_model
-        mcp_settings = tooling_config.tool_settings("mcp")
-        mcp_enabled = bool(mcp_settings.get("enabled", False))
-        self._effective_chat_model = chat_model_effective
-        embedding_base_url = (getattr(settings.ollama, "embedding_base_url", "") or "").strip() or settings.ollama.base_url
-        proactive_planner_base_url = (getattr(settings.ollama, "proactive_planner_base_url", "") or "").strip() or settings.ollama.base_url
 
+        # Resolve context window: explicit override > chat_llm > legacy ollama setting
+        ctx_override = chat_llm.context_window or getattr(
+            settings.ollama, "context_window", None
+        )
+        self._context_window = int(ctx_override) if ctx_override else 8192
+        self._max_tokens = max(64, int(chat_llm.max_tokens or 512))
+        temp = chat_llm.temperature
+        if temp is None:
+            temp = float(settings.ollama.temperature)
+        self._temperature = float(temp)
+
+        # ── Database ─────────────────────────────────────────────────────
+        storage_path = (
+            Path(__file__).resolve().parents[2] / "data" / "chat_sessions.db"
+        )
         self._chat_db = ChatDatabase(storage_path)
-        self._embedding_service = EmbeddingService(
-            base_url=embedding_base_url,
-            model=settings.ollama.embedding_model,
-            database=self._chat_db,
-        )
-        context_window_override = getattr(settings.ollama, "context_window", None)
 
-        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="init") as pool:
-            stt_future: Future[RealtimeSttService] = pool.submit(
-                RealtimeSttService, settings.stt, settings.audio,
-            )
-            agent_future: Future = pool.submit(
-                create_agent,
-                chat_model=chat_model,
-                base_url=settings.ollama.base_url,
-                embedding_base_url=embedding_base_url,
-                temperature=float(settings.ollama.temperature),
-                timeout=settings.ollama.timeout,
-                judge_model=getattr(settings.ollama, "judge_model", None) or None,
-                assistant_background=_get_assistant_background(settings),
-                add_tools=True,
-                add_mcp=mcp_enabled,
-                database_provider=db_provider,
-                database_url=db_url,
-                storage_path=storage_path,
-                toolkit_entries=toolkit_entries or None,
-                num_history_runs=num_history_runs,
-                compress_tool_results=compress_tool_results,
-                compress_tool_results_limit=compress_limit,
-                compress_token_limit=compress_token_limit,
-                browser_snapshot_compress=browser_snapshot_compress,
-                browser_snapshot_max_chars=browser_snapshot_max_chars,
-                browser_snapshot_max_text_run=browser_snapshot_max_text_run,
-                mcp_config=mcp_settings if mcp_enabled else None,
-                project_root=root,
-                context_window=context_window_override,
-                chat_db=self._chat_db,
-                embedding_service=self._embedding_service,
-                personality_token_budget=settings.agent.personality_token_budget,
-                archive_path=storage_path.parent / "archive.db" if settings.agent.archive_enabled else None,
-                embedding_model=settings.ollama.embedding_model,
-                tool_dispatch_mode=getattr(settings.agent, "tool_dispatch_mode", "controller"),
-                tool_iterations_max=int(getattr(settings.agent, "tool_iterations_max", 3)),
-                triage_judge_enabled=bool(getattr(settings.agent, "triage_judge_enabled", True)),
-                triage_judge_timeout_seconds=float(
-                    getattr(settings.agent, "triage_judge_timeout_seconds", 0.5)
-                ),
-                session_policy_resolver=self._resolve_session_tool_policy,
-                chat_llm=chat_llm_settings,
-            )
-            self._realtime_stt = stt_future.result()
-            self._agent = agent_future.result()
-
-        if hasattr(self._agent, "persist_enabled"):
-            self._agent.persist_enabled = settings.assistant.remember_history
-
-        self._user_id = settings.assistant.user_id or "default"
-        threading.Thread(
-            target=self._embedding_service.backfill_embeddings,
-            args=(f"{self._user_id}:main",),
-            daemon=True,
-            name="embedding-backfill",
-        ).start()
-
-        if settings.agent.archive_enabled:
-            archive_path = storage_path.parent / "archive.db"
-            threading.Thread(
-                target=self._run_archival,
-                args=(settings.agent.archive_days_threshold, archive_path),
-                daemon=True,
-                name="db-archival",
-            ).start()
-        self._microphone_device = settings.audio.microphone_device
+        # ── TTS engine + queue ───────────────────────────────────────────
         self._output_device = getattr(settings.audio, "output_device", None)
-        from app.audio.earcons import EarconPlayer
+        self._tts_engine = self._build_tts_service(
+            settings, output_device=self._output_device,
+        )
+        self._tts = TtsQueue(
+            self._tts_engine,
+            enabled=bool(settings.tts.enabled),
+            state_listener=self._on_tts_state,
+        )
+        self._apply_assistant_preferences()
+
+        # ── Microphone + STT ─────────────────────────────────────────────
+        self._microphone = MicrophoneCapture(settings.audio)
+        self._microphone_device = settings.audio.microphone_device
         self._earcons = EarconPlayer(
             enabled=getattr(settings.audio, "earcons_enabled", True),
             output_device=self._output_device,
         )
-        self._tts = self._build_tts_service(settings, output_device=self._output_device)
-        self._apply_assistant_preferences()
-        self._session_id = "main"
-        self._tts_playing = False
-        self._pending_tts_chunks: list[tuple[str, str | None]] = []
-        self._tts_queue_lock = threading.Lock()
+        self._realtime_stt = RealtimeSttService(settings.stt, settings.audio)
+
+        # ── Prompt + workers + runner ────────────────────────────────────
+        self._prompt_assembler = PromptAssembler(self._chat_db)
+        self._learner_profile = LearnerProfile(
+            self._chat_db,
+            self._ollama,
+            model=self._effective_chat_model,
+            update_every_n_turns=int(
+                getattr(settings.agent, "personality_update_every_n_turns", 4),
+            ),
+        )
+        self._summary_worker = SummaryWorker(
+            self._chat_db,
+            self._ollama,
+            model=self._effective_chat_model,
+            is_busy=lambda: self._turn_in_progress,
+        )
+        self._summary_worker.start()
+        self._turn_runner = TurnRunner(
+            self._ollama,
+            self._chat_db,
+            self._prompt_assembler,
+            model=self._effective_chat_model,
+            context_window=self._context_window,
+            max_tokens=self._max_tokens,
+            temperature=self._temperature,
+            learner_profile=self._learner_profile,
+            summary_worker=self._summary_worker,
+        )
+        self._proactive = ProactiveDirector(
+            self._ollama,
+            self._chat_db,
+            self._prompt_assembler,
+            model=self._effective_chat_model,
+            speak=self._tts.enqueue,
+            is_busy=lambda: self._turn_in_progress,
+            is_live_mode=lambda: self._live_voice_session_active,
+            cooldown_seconds=float(
+                getattr(settings.agent, "proactive_cooldown_seconds", 120.0),
+            ),
+            context_window=self._context_window,
+        )
+
+        # ── Runtime state ────────────────────────────────────────────────
         self._vad_level_threshold = settings.audio.vad_level_threshold
         self._vad_silence_seconds = settings.audio.vad_silence_seconds
         self._live_input_mode = getattr(settings.audio, "live_input_mode", None) or "voice_detection"
@@ -309,47 +218,30 @@ class SessionController:
         self._live_ptt_mouse_button = getattr(settings.audio, "live_ptt_mouse_button", None)
         self._live_ptt_toggle = getattr(settings.audio, "live_ptt_toggle", False)
         self._ptt_active = False
+        self._live_no_speech_streak = 0
+        self._live_voice_session_active = False
+        self._turn_in_progress = False
         self._remember_history = settings.assistant.remember_history
-        self._autonomy_mode = str(getattr(settings.autonomy, "mode", "interactive") or "interactive").strip().lower()
+        self._autonomy_mode = (
+            str(getattr(settings.autonomy, "mode", "interactive") or "interactive").strip().lower()
+        )
         if self._autonomy_mode not in {"manual", "interactive", "automatic"}:
             self._autonomy_mode = "interactive"
         self._active_goal = settings.autonomy.default_goal
-        self._active_goal_description: str = ""
-        self._last_metrics: dict[str, float | int | str] = {
-            "mode": "idle",
-            "capture_ms": 0.0,
-            "stt_ms": 0.0,
-            "llm_ms": 0.0,
-            "tts_ms": 0.0,
-            "total_ms": 0.0,
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-        }
-        self._metrics_history: deque[dict[str, float | int | str]] = deque(maxlen=10)
-        self._live_no_speech_streak = 0
-
-        self._mcp_server_runner = None
-        if settings.mcp_server.enabled:
-            try:
-                from app.mcp.server import create_mcp_server
-                from app.mcp.runner import McpServerRunner
-                mcp_srv = create_mcp_server(self, port=settings.mcp_server.port)
-                self._mcp_server_runner = McpServerRunner(mcp_srv, port=settings.mcp_server.port)
-                self._mcp_server_runner.start()
-            except Exception:
-                logging.getLogger("app").warning("Failed to start embedded MCP server", exc_info=True)
-
-        self._message_listeners: list[Callable[[str, str], None]] = []
-        self._tts_state_listeners: list[Callable[..., None]] = []
-
         self._state = SessionState(
             mic_enabled=settings.audio.enable_microphone,
             autonomy_mode=self._autonomy_mode,
             session_type="chat",
         )
-        self._startup_context_prewarm_enabled = False
-        self._startup_history_limit = 1
+        self._decision_trace: deque[dict[str, str]] = deque(maxlen=500)
+
+        # ── Metrics ──────────────────────────────────────────────────────
+        self._last_metrics: dict[str, float | int | str] = self._zero_metrics()
+        self._metrics_history: deque[dict[str, float | int | str]] = deque(maxlen=10)
+
+        # ── Listeners ────────────────────────────────────────────────────
+        self._message_listeners: list[Callable[[str, str], None]] = []
+        self._tts_state_listeners: list[Callable[..., None]] = []
         self._models_cache: list[str] | None = None
         self._models_cache_time = 0.0
         self._input_devices_cache: list[tuple[int, str]] | None = None
@@ -358,25 +250,124 @@ class SessionController:
         self._output_devices_cache_time = 0.0
         self._cache_ttl = 60.0
 
-        self._live_voice_session_active = False
-        self._turn_in_progress = False
-        self._last_turn_completed_monotonic = 0.0
-        self._assistant_turn_seq = 0
-        self._director_lock = threading.Lock()
-        self._director_shutdown = threading.Event()
-        self._director_post_turn = threading.Event()
-        self._director_thread: threading.Thread | None = None
-        self._director_cache = _DirectorCache()
-        self._director_last_run_monotonic = 0.0
-        self._director_planner_llm: Any | None = None
-        self._start_director_background_thread()
+        # ── MCP debug server ─────────────────────────────────────────────
+        self._mcp_server_runner = None
+        if settings.mcp_server.enabled:
+            try:
+                from app.mcp.runner import McpServerRunner
+                from app.mcp.server import create_mcp_server
+                mcp_srv = create_mcp_server(self, port=settings.mcp_server.port)
+                self._mcp_server_runner = McpServerRunner(
+                    mcp_srv, port=settings.mcp_server.port,
+                )
+                self._mcp_server_runner.start()
+            except Exception:
+                log.warning("Failed to start embedded MCP server", exc_info=True)
+
+    # ── State ─────────────────────────────────────────────────────────
 
     @property
     def state(self) -> SessionState:
         return self._state
 
     def update_sources(self, *, mic: bool) -> None:
-        self._state.mic_enabled = mic
+        self._state.mic_enabled = bool(mic)
+
+    @property
+    def session_key(self) -> str:
+        return f"{self._user_id}:{self._session_id}" if self._user_id else self._session_id
+
+    def switch_session(self, session_id: str) -> None:
+        self._session_id = session_id
+
+    def new_session(self) -> str:
+        new_id = str(uuid.uuid4())[:8]
+        self.switch_session(new_id)
+        return new_id
+
+    def clear_conversation_memory(self) -> None:
+        self._chat_db.clear_messages(self.session_key, full_reset=True)
+
+    # ── Settings getters / setters ───────────────────────────────────
+
+    @property
+    def chat_model(self) -> str:
+        return self._settings.ollama.chat_model
+
+    @property
+    def effective_chat_model(self) -> str:
+        return self._effective_chat_model
+
+    @property
+    def context_window_size(self) -> int:
+        return self._context_window
+
+    @property
+    def context_tokens_used(self) -> int:
+        try:
+            metrics = self._last_metrics
+            return int(metrics.get("prompt_tokens", 0) or 0)
+        except Exception:
+            return 0
+
+    def set_chat_model(self, model_name: str) -> None:
+        normalized = (model_name or "").strip()
+        if not normalized:
+            return
+        self._settings.ollama.chat_model = normalized
+        self._effective_chat_model = normalized
+        self._turn_runner.update_runtime(model=normalized)
+        # Update the cached model on workers too.
+        self._learner_profile._model = normalized  # type: ignore[attr-defined]
+        self._summary_worker._model = normalized  # type: ignore[attr-defined]
+        self._proactive.update_runtime(model=normalized)
+
+    @property
+    def remember_history(self) -> bool:
+        return self._remember_history
+
+    def set_remember_history(self, value: bool) -> None:
+        self._remember_history = bool(value)
+
+    @property
+    def autonomy_mode(self) -> str:
+        return self._autonomy_mode
+
+    def set_autonomy_mode(self, mode: str) -> None:
+        normalized = str(mode or "").strip().lower()
+        if normalized in {"manual", "interactive", "automatic"} and normalized != self._autonomy_mode:
+            self._autonomy_mode = normalized
+            self._state.autonomy_mode = normalized
+
+    @property
+    def active_goal(self) -> str:
+        return self._active_goal
+
+    @property
+    def active_session_type(self) -> str:
+        return "chat"
+
+    def set_active_session_type(self, session_type: str) -> None:
+        _ = session_type  # legacy no-op
+
+    @property
+    def agentic_narration_level(self) -> str:
+        level = str(
+            getattr(self._settings.autonomy, "agentic_narration_level", "summary") or "summary",
+        ).strip().lower()
+        return level if level in {"full", "summary", "off"} else "summary"
+
+    def get_tooling_config_paths(self) -> tuple[Path, Path]:
+        root = Path(__file__).resolve().parents[2]
+        default = root / (
+            self._settings.tooling.config_default_path or "config/tooling.default.json"
+        )
+        user = root / (
+            self._settings.tooling.config_user_path or "config/tooling.user.json"
+        )
+        return (default, user)
+
+    # ── Audio: VAD / mic / output devices ───────────────────────────
 
     def list_microphone_devices(self, *, refresh: bool = False) -> list[tuple[int, str]]:
         now = time.monotonic()
@@ -399,17 +390,29 @@ class SessionController:
         now = time.monotonic()
         if not refresh and self._output_devices_cache is not None and (now - self._output_devices_cache_time) < self._cache_ttl:
             return list(self._output_devices_cache)
-        from app.audio.mic_capture import list_output_devices as _list
-        devices = _list()
+        try:
+            devices = list_output_devices()
+        except Exception:
+            devices = []
         self._output_devices_cache = list(devices)
         self._output_devices_cache_time = now
         return devices
 
     def set_output_device(self, device_index: int | None) -> None:
         self._output_device = device_index
-        set_od = getattr(self._tts, "set_output_device", None)
-        if set_od is not None:
-            set_od(device_index)
+        rebuild = getattr(self._tts_engine, "set_output_device", None)
+        if callable(rebuild):
+            try:
+                rebuild(device_index)
+            except Exception:
+                log.debug("tts engine rejected device switch", exc_info=True)
+        try:
+            self._earcons = EarconPlayer(
+                enabled=getattr(self._settings.audio, "earcons_enabled", True),
+                output_device=device_index,
+            )
+        except Exception:
+            log.debug("earcons rebuild failed", exc_info=True)
 
     @property
     def output_device(self) -> int | None:
@@ -426,35 +429,34 @@ class SessionController:
         return self._live_input_mode
 
     def set_live_input_mode(self, mode: str) -> None:
-        self._live_input_mode = (str(mode or "").strip() or "voice_detection").lower()
-        if self._live_input_mode not in ("voice_detection", "push_to_talk"):
-            self._live_input_mode = "voice_detection"
+        normalized = (mode or "").strip().lower()
+        if normalized:
+            self._live_input_mode = normalized
 
     @property
     def live_ptt_type(self) -> str:
         return self._live_ptt_type
 
     def set_live_ptt_type(self, ptt_type: str) -> None:
-        t = (str(ptt_type or "").strip().lower() or "keyboard")
-        self._live_ptt_type = t if t in ("keyboard", "mouse") else "keyboard"
+        self._live_ptt_type = (ptt_type or "keyboard").strip().lower() or "keyboard"
 
     @property
     def live_ptt_key(self) -> str | None:
         return self._live_ptt_key
 
     def set_live_ptt_key(self, key: str | None) -> None:
-        self._live_ptt_key = (str(key).strip() or None) if key is not None else None
+        self._live_ptt_key = (key or None) and str(key).strip()
 
     @property
     def live_ptt_mouse_button(self) -> str | None:
         return self._live_ptt_mouse_button
 
     def set_live_ptt_mouse_button(self, button: str | None) -> None:
-        self._live_ptt_mouse_button = (str(button).strip().lower() or None) if button is not None else None
+        self._live_ptt_mouse_button = (button or None) and str(button).strip().lower()
 
     @property
     def live_ptt_toggle(self) -> bool:
-        return self._live_ptt_toggle
+        return bool(self._live_ptt_toggle)
 
     def set_live_ptt_toggle(self, value: bool) -> None:
         self._live_ptt_toggle = bool(value)
@@ -467,36 +469,24 @@ class SessionController:
 
     @property
     def vad_level_threshold(self) -> float:
-        return self._vad_level_threshold
+        return float(self._vad_level_threshold)
+
+    def set_vad_level_threshold(self, value: float) -> None:
+        self._vad_level_threshold = float(value)
 
     @property
     def vad_silence_seconds(self) -> float:
-        return self._vad_silence_seconds
+        return float(self._vad_silence_seconds)
+
+    def set_vad_silence_seconds(self, value: float) -> None:
+        self._vad_silence_seconds = float(value)
 
     @property
     def stt_model(self) -> str:
         return str(self._settings.stt.model or "large-v1").strip() or "large-v1"
 
-    @property
-    def prosody_enabled(self) -> bool:
-        return bool(self._prosody.enabled)
-
-    def set_prosody_enabled(self, value: bool) -> None:
-        enabled = bool(value)
-        self._settings.stt.prosody.enabled = enabled
-        self._prosody.set_enabled(enabled)
-
-    @property
-    def prosody_include_in_prompt(self) -> bool:
-        return bool(self._prosody_include_in_prompt)
-
-    def set_prosody_include_in_prompt(self, value: bool) -> None:
-        include = bool(value)
-        self._settings.stt.prosody.include_in_prompt = include
-        self._prosody_include_in_prompt = include
-
     def set_stt_model(self, model_name: str) -> bool:
-        normalized = str(model_name or "").strip()
+        normalized = (model_name or "").strip()
         if not normalized:
             return False
         if normalized == self.stt_model:
@@ -504,17 +494,24 @@ class SessionController:
         self._settings.stt.model = normalized
         candidate = RealtimeSttService(self._settings.stt, self._settings.audio)
         if not candidate.is_available:
-            self._trace("stt.error", f"Failed to load STT model: {normalized}")
+            log.warning("Failed to load STT model: %s", normalized)
             return False
         self._realtime_stt = candidate
-        self._trace("stt.model", f"Switched STT model to {normalized}")
         return True
 
-    def set_vad_level_threshold(self, value: float) -> None:
-        self._vad_level_threshold = max(0.001, min(value, 0.5))
+    @property
+    def prosody_enabled(self) -> bool:
+        return bool(getattr(self._settings.stt.prosody, "enabled", False))
 
-    def set_vad_silence_seconds(self, value: float) -> None:
-        self._vad_silence_seconds = max(0.3, min(value, 6.0))
+    def set_prosody_enabled(self, value: bool) -> None:
+        self._settings.stt.prosody.enabled = bool(value)
+
+    @property
+    def prosody_include_in_prompt(self) -> bool:
+        return bool(getattr(self._settings.stt.prosody, "include_in_prompt", True))
+
+    def set_prosody_include_in_prompt(self, value: bool) -> None:
+        self._settings.stt.prosody.include_in_prompt = bool(value)
 
     @property
     def action_min_interval_seconds(self) -> float:
@@ -523,641 +520,67 @@ class SessionController:
     def set_action_min_interval_seconds(self, value: float) -> None:
         self._settings.actions.min_action_interval_seconds = max(0.0, float(value))
 
+    # ── TTS API ──────────────────────────────────────────────────────
+
     @property
     def tts_provider(self) -> str:
         return (self._settings.tts.provider or "kokoro").strip().lower() or "kokoro"
 
     def list_tts_providers(self) -> list[str]:
-        providers = ["kokoro"]
-        try:
-            from pykokoro import KokoroPipeline  # noqa: F401
-            providers.append("pykokoro")
-        except ImportError:
-            pass
-        try:
-            from pocket_tts import TTSModel as _PocketModel  # noqa: F401
-            providers.append("pocket-tts")
-        except ImportError:
-            pass
-        return providers
+        return ["kokoro", "pykokoro", "pocket-tts"]
 
     @property
     def tts_voice(self) -> str:
-        provider = getattr(self._settings.tts, "provider", "")
-        if provider == "pocket-tts":
-            return str(getattr(self._settings.tts, "pocket_tts_voice", "alba") or "alba").strip()
-        return str(self._settings.tts.voice or "").strip()
+        return self._settings.tts.voice or ""
 
     def list_tts_voices(self) -> list[str]:
-        list_fn = getattr(self._tts, "list_voices", None)
-        if callable(list_fn):
+        list_voices = getattr(self._tts_engine, "list_voices", None)
+        if callable(list_voices):
             try:
-                voices = list_fn()
-                current = self.tts_voice
-                if current and current not in voices:
-                    voices.insert(0, current)
-                return voices
+                voices = list_voices()
+                if voices:
+                    return list(voices)
             except Exception:
                 pass
-        return [self.tts_voice] if self.tts_voice else ["af_heart"]
+        return []
 
     def set_tts_voice(self, voice: str) -> None:
-        normalized = str(voice or "").strip().replace("\\", "/")
+        normalized = (voice or "").strip()
         if not normalized:
             return
-
-        provider = getattr(self._settings.tts, "provider", "")
-        if provider == "pocket-tts":
-            set_voice = getattr(self._tts, "set_voice", None)
-            if callable(set_voice) and set_voice(normalized):
-                self._settings.tts.pocket_tts_voice = normalized
-                self._trace("tts.voice", f"Switched Pocket TTS voice to {normalized}")
-                return
-
-        if normalized == self.tts_voice:
-            return
         self._settings.tts.voice = normalized
-        try:
-            self._tts.stop()
-        except Exception:
-            pass
-        self._trace("tts.voice", f"Switched TTS voice to {normalized}")
+        set_voice = getattr(self._tts_engine, "set_voice", None)
+        if callable(set_voice):
+            try:
+                set_voice(normalized)
+            except Exception:
+                log.debug("tts engine rejected voice switch", exc_info=True)
 
     def get_tts_model_status(self) -> tuple[str, str]:
-        get_status = getattr(self._tts, "get_status", None)
-        if callable(get_status):
+        getter = getattr(self._tts_engine, "model_status", None)
+        if callable(getter):
             try:
-                state, details = get_status()
+                state, details = getter()
                 return str(state), str(details)
             except Exception:
-                return "error", "Failed to read TTS status"
-        return "ready", "TTS runtime available"
-
-    def _on_tts_chunk_done(self) -> None:
-        next_chunk: tuple[str, str | None] | None = None
-        with self._tts_queue_lock:
-            self._tts_playing = False
-            if self._pending_tts_chunks:
-                next_chunk = self._pending_tts_chunks.pop(0)
-                self._tts_playing = True
-        if next_chunk:
-            text, reaction = next_chunk
-            self._start_tts_with_lookahead(text, reaction)
-        else:
-            self._notify_tts_state("end")
-
-    def _synthetic_tts_envelope(self, text: str, fps: int = 60) -> list[float]:
-        """Generate a placeholder mouth envelope when no PCM is available.
-
-        Roughly approximates a speaking mouth by modulating a low-frequency
-        sine wave for the estimated duration of the utterance.
-        """
-        import math
-
-        chars = max(1, len(text or ""))
-        duration = min(20.0, max(0.4, chars * 0.06))
-        total = int(duration * fps)
-        return [
-            float(0.45 + 0.4 * math.sin(i * 0.55) + 0.15 * math.sin(i * 0.21))
-            * 0.7
-            for i in range(total)
-        ]
-
-    def _compute_tts_envelope(
-        self, audio: Any, sample_rate: int, fps: int = 60, gain: float = 1.0
-    ) -> list[float]:
-        """Reduce a PCM array to a 0..1 mouth-open envelope sampled at ``fps``."""
-        try:
-            import numpy as _np  # local import: keeps SessionController import-time light
-        except Exception:
-            return []
-        try:
-            arr = _np.asarray(audio).astype(_np.float32).reshape(-1)
-        except Exception:
-            return []
-        if arr.size == 0 or sample_rate <= 0:
-            return []
-        hop = max(1, int(sample_rate / max(1, fps)))
-        # Vectorised RMS per ``hop`` window.
-        usable = (arr.size // hop) * hop
-        if usable <= 0:
-            return [float(min(1.0, abs(arr.max()) * gain))]
-        windows = arr[:usable].reshape(-1, hop)
-        rms = _np.sqrt(_np.mean(windows * windows, axis=1) + 1e-9)
-        peak = float(rms.max()) if rms.size else 1.0
-        if peak <= 0:
-            return [0.0] * int(rms.size)
-        normalised = (rms / peak) * float(gain)
-        return [float(min(1.0, v)) for v in normalised.tolist()]
-
-    def _start_tts_with_lookahead(self, text: str, reaction: str | None) -> None:
-        """Start playing a chunk and pre-generate the next one in parallel."""
-        generate = getattr(self._tts, "generate_audio", None)
-        peek: tuple[str, str | None] | None = None
-        with self._tts_queue_lock:
-            if self._pending_tts_chunks:
-                peek = self._pending_tts_chunks[0]
-
-        if peek is not None and callable(generate):
-            r2s = getattr(self._tts, "reaction_to_speed", None)
-            speed = r2s(peek[1]) if callable(r2s) else 1.0
-            threading.Thread(
-                target=generate, args=(peek[0], speed),
-                daemon=True, name="tts-lookahead",
-            ).start()
-
-        envelope: list[float] = []
-        sample_rate = 24000
-        if callable(generate):
-            try:
-                r2s = getattr(self._tts, "reaction_to_speed", None)
-                speed = r2s(reaction) if callable(r2s) else 1.0
-                result = generate(text, speed)
-                if result is not None:
-                    audio_data, sample_rate = result
-                    envelope = self._compute_tts_envelope(audio_data, int(sample_rate))
-            except Exception as exc:
-                self._trace("tts.envelope.error", f"envelope compute failed: {exc}")
-
-        if not envelope:
-            envelope = self._synthetic_tts_envelope(text)
-
-        self._notify_tts_state(
-            "start",
-            text=text,
-            reaction=reaction or "",
-            envelope=envelope,
-            sample_rate=int(sample_rate),
-        )
-
-        try:
-            self._tts.speak_async(
-                text,
-                reaction=reaction,
-                on_done=self._on_tts_chunk_done,
-            )
-        except Exception as exc:
-            self._trace("tts.error", f"TTS queue speak failed: {exc}")
-            with self._tts_queue_lock:
-                self._tts_playing = False
-            self._notify_tts_state("end")
-
-    def _enqueue_tts_chunk(self, text: str, reaction: str | None = None) -> None:
-        if not (text or "").strip():
-            return
-        msg = prepare_tts_text(text.strip())
-        if not msg:
-            return
-        with self._tts_queue_lock:
-            self._pending_tts_chunks.append((msg, reaction))
-            if self._tts_playing:
-                return
-            self._tts_playing = True
-            chunk = self._pending_tts_chunks.pop(0)
-        self._start_tts_with_lookahead(chunk[0], chunk[1])
+                pass
+        return ("unknown", "")
 
     def stop_tts(self) -> None:
-        with self._tts_queue_lock:
-            self._pending_tts_chunks.clear()
-            was_playing = self._tts_playing
-            self._tts_playing = False
-        try:
-            self._tts.stop()
-        except Exception:
-            pass
-        if was_playing:
-            self._notify_tts_state("end")
+        self._tts.stop()
 
     def is_tts_playing(self) -> bool:
-        with self._tts_queue_lock:
-            return self._tts_playing or len(self._pending_tts_chunks) > 0
+        return self._tts.is_active()
 
     def speak_text(self, text: str) -> bool:
         if not bool(getattr(self._settings.tts, "enabled", True)):
             return False
-        message = prepare_tts_text(text)
-        if not message:
+        prepared = prepare_tts_text(text or "")
+        if not prepared:
             return False
-        reaction = infer_tts_reaction(message)
-        self._enqueue_tts_chunk(message, reaction=reaction)
+        reaction = infer_tts_reaction(prepared)
+        self._tts.enqueue(prepared, reaction=reaction)
         return True
-
-    def build_startup_greeting(self) -> str:
-        """Generate a short personalized greeting using the LLM."""
-        try:
-            from langchain_core.messages import SystemMessage, HumanMessage
-            llm = getattr(self._agent, "_llm", None)
-            if llm is None:
-                return "Welcome back. Audio is ready."
-            sys_msg = getattr(self._agent, "_system_message", "") or ""
-            prompt = [
-                SystemMessage(content=sys_msg),
-                HumanMessage(
-                    content=(
-                        "The user just opened the app. Generate a single short greeting "
-                        "sentence (max 12 words) acknowledging that they are back. Stay "
-                        "in character.\n\n"
-                        "STRICT RULES:\n"
-                        "- Do NOT offer to do anything ('help with', 'show you', 'dive in', "
-                        "'work on', 'ready to', 'let me know', 'what can I do').\n"
-                        "- Do NOT imply you were doing an activity while they were away "
-                        "('making tea', 'reading', 'waiting', 'looking at').\n"
-                        "- Do NOT ask any question.\n"
-                        "- Just acknowledge their presence. Good examples: "
-                        "'Hey, welcome back.', \"You're back.\", 'Hi again.', "
-                        "'Good to see you.'\n"
-                        "- No [[reaction:...]] tags. No quotes. No emoji. No formatting."
-                    )
-                ),
-            ]
-            result = llm.invoke(prompt)
-            text = (getattr(result, "content", "") or "").strip()
-            text = text.strip('"').strip("'").strip()
-            if not text or len(text) > 200:
-                return "Welcome back. Audio is ready."
-            log = logging.getLogger("app")
-            log.info("Model startup greeting: %s", text)
-            return text
-        except Exception as exc:
-            log = logging.getLogger("app")
-            log.warning("Startup greeting generation failed: %s", exc)
-            return "Welcome back. Audio is ready."
-
-    def _run_archival(self, days_threshold: int, archive_path: Path) -> None:
-        log = logging.getLogger("app")
-        try:
-            count = self._chat_db.archive_old_messages(days_threshold, archive_path)
-            if count > 0:
-                log.info("Archived %d messages older than %d days to %s", count, days_threshold, archive_path)
-        except Exception as exc:
-            log.warning("Database archival failed: %s", exc)
-
-    def set_live_voice_session_active(self, active: bool) -> None:
-        """True while Start Live is running; used to gate proactive TTS."""
-        self._live_voice_session_active = bool(active)
-
-    def _start_director_background_thread(self) -> None:
-        if not getattr(self._settings.agent, "proactive_planner_enabled", False):
-            return
-        if self._director_thread is not None and self._director_thread.is_alive():
-            return
-        self._director_thread = threading.Thread(
-            target=self._director_thread_main,
-            daemon=True,
-            name="proactive-director",
-        )
-        self._director_thread.start()
-
-    def _signal_director_post_turn(self) -> None:
-        if not getattr(self._settings.agent, "proactive_planner_enabled", False):
-            return
-        self._start_director_background_thread()
-        self._director_post_turn.set()
-
-    def _director_thread_main(self) -> None:
-        log = logging.getLogger("app.proactive_director")
-        # Cooldown after a user turn so the chat model can stay warm in VRAM
-        # before we steal GPU time with the small planner model.
-        post_turn_grace_s = 8.0
-        while not self._director_shutdown.is_set():
-            interval = max(20.0, float(getattr(self._settings.agent, "proactive_background_interval_seconds", 90.0)))
-            wake = self._director_post_turn.wait(timeout=min(0.5, interval))
-            if self._director_shutdown.is_set():
-                break
-            if not getattr(self._settings.agent, "proactive_planner_enabled", False):
-                if wake:
-                    self._director_post_turn.clear()
-                continue
-            if wake:
-                self._director_post_turn.clear()
-            now = time.monotonic()
-            if not wake and (now - self._director_last_run_monotonic) < interval:
-                continue
-            if self._turn_in_progress:
-                continue
-            # Skip if the user just finished a turn -- give the main 9B model
-            # time to settle in VRAM. Without this we evict it every ~20s on
-            # single-instance Ollama setups and pin the GPU silently.
-            since_turn = now - getattr(self, "_last_turn_completed_monotonic", 0.0)
-            if since_turn < post_turn_grace_s:
-                log.debug(
-                    "Director skipped (post-turn grace %.1fs / %.1fs)",
-                    since_turn, post_turn_grace_s,
-                )
-                continue
-            t0 = time.monotonic()
-            try:
-                self._run_director_once()
-                log.info(
-                    "Director run ok in %.0f ms (model=%s, base_url=%s)",
-                    (time.monotonic() - t0) * 1000.0,
-                    (getattr(self._settings.ollama, "proactive_planner_model", "") or
-                     getattr(self._settings.ollama, "judge_model", "") or "?"),
-                    (getattr(self._settings.ollama, "proactive_planner_base_url", "") or
-                     getattr(self._settings.ollama, "base_url", "?")),
-                )
-            except Exception as exc:
-                log.warning(
-                    "Director run failed after %.0f ms: %s",
-                    (time.monotonic() - t0) * 1000.0, exc,
-                )
-            self._director_last_run_monotonic = time.monotonic()
-
-    def _get_director_planner_llm(self) -> Any | None:
-        if self._director_planner_llm is not None:
-            return self._director_planner_llm
-        try:
-            from langchain_ollama import ChatOllama
-        except ImportError:
-            try:
-                from langchain_community.chat_models.ollama import ChatOllama
-            except ImportError:
-                from langchain_community.chat_models import ChatOllama
-        name = (getattr(self._settings.ollama, "proactive_planner_model", "") or "").strip()
-        if not name:
-            name = (self._settings.ollama.judge_model or "").strip() or "qwen2.5:0.5b"
-        timeout = int(getattr(self._settings.ollama, "timeout", 300) or 300)
-        self._director_planner_llm = ChatOllama(
-            model=name,
-            base_url=(getattr(self._settings.ollama, "proactive_planner_base_url", "") or "").strip() or self._settings.ollama.base_url,
-            temperature=0.0,
-            num_ctx=4096,
-            num_predict=512,
-            format="json",
-            client_kwargs={"timeout": min(30.0, float(timeout))},
-            keep_alive="5m",
-        )
-        return self._director_planner_llm
-
-    def _run_director_once(self) -> None:
-        planner = self._get_director_planner_llm()
-        if planner is None:
-            return
-        chat_db = self._chat_db
-        session_key = self.session_key
-        n = max(2, min(int(getattr(self._settings.agent, "proactive_context_messages", 10)), 40))
-        rows = chat_db.get_messages(session_key, limit=n)
-        lines: list[str] = []
-        for row in rows:
-            role = (row.role or "?").strip().upper()
-            preview = (row.content or "").strip().replace("\n", " ")
-            if len(preview) > 400:
-                preview = preview[:397] + "..."
-            lines.append(f"{role}: {preview}")
-        notes = chat_db.get_personality_notes(session_key, min_confidence=0.15)
-        note_lines = [f"- {n.note} (confidence: {n.confidence:.1f})" for n in notes[:8]]
-        topics = chat_db.get_recent_topics(session_key, limit=10)
-        topic_list = ", ".join(t.topic for t in topics[:8]) if topics else "none yet"
-        now = datetime.now(timezone.utc).astimezone()
-        time_ctx = now.strftime("%A %I:%M %p")
-        user_msg = build_director_user_message(
-            time_ctx=time_ctx,
-            transcript_lines=lines,
-            note_lines=note_lines,
-            topic_list=topic_list,
-            live_voice=self._live_voice_session_active,
-        )
-        from langchain_core.messages import HumanMessage, SystemMessage
-
-        resp = planner.invoke([SystemMessage(content=DIRECTOR_SYSTEM_PROMPT), HumanMessage(content=user_msg)])
-        raw = (getattr(resp, "content", "") or "").strip()
-        plan = parse_director_json(extract_json_object_from_text(raw))
-        if not self._live_voice_session_active:
-            plan.speak = False
-            plan.draft_line = ""
-            plan.utterance_seed = ""
-        seq = self._assistant_turn_seq
-        with self._director_lock:
-            self._director_cache.plan = plan
-            self._director_cache.built_monotonic = time.monotonic()
-            self._director_cache.speak_assistant_seq = seq
-
-    def _take_director_hint_and_clear_cache(self) -> str:
-        """Read director hints for the next user turn, then clear cache (not persisted as user text)."""
-        if not getattr(self._settings.agent, "proactive_brain_advise_main", True):
-            with self._director_lock:
-                self._director_cache = _DirectorCache()
-            return ""
-        with self._director_lock:
-            plan = self._director_cache.plan
-            hint = (plan.hints_for_next_user_turn.strip()[:800] if plan else "") or ""
-            self._director_cache = _DirectorCache()
-            return hint
-
-    def _expand_proactive_utterance(self, plan: ProactiveDirectorPlan, topics: list[Any]) -> str | None:
-        if plan.draft_line.strip():
-            text = plan.draft_line.strip()
-        elif plan.utterance_seed.strip():
-            if getattr(self._settings.agent, "proactive_use_main_for_utterance", False):
-                llm = getattr(self._agent, "_llm", None)
-                if llm is None:
-                    return None
-                from langchain_core.messages import HumanMessage, SystemMessage
-
-                prompt = [
-                    SystemMessage(content="You write short spoken lines for a voice assistant."),
-                    HumanMessage(content=build_utterance_expand_prompt(seed=plan.utterance_seed, avoid=plan.avoid)),
-                ]
-                result = llm.invoke(prompt)
-                text = (getattr(result, "content", "") or "").strip()
-            else:
-                planner = self._get_director_planner_llm()
-                if planner is None:
-                    return None
-                from langchain_core.messages import HumanMessage, SystemMessage
-
-                prompt = [
-                    SystemMessage(content="You write short spoken lines for a voice assistant."),
-                    HumanMessage(content=build_utterance_expand_prompt(seed=plan.utterance_seed, avoid=plan.avoid)),
-                ]
-                result = planner.invoke(prompt)
-                text = (getattr(result, "content", "") or "").strip()
-        else:
-            return None
-        text = text.strip('"').strip("'").strip()
-        if not text or len(text) > 300:
-            return None
-        if topics:
-            for t in topics[:5]:
-                if t.topic.lower() in text.lower():
-                    return None
-        return text
-
-    def _legacy_generate_proactive_message(self) -> str | None:
-        """Original proactive path (main LLM + personality notes required)."""
-        try:
-            from langchain_core.messages import SystemMessage, HumanMessage
-
-            llm = getattr(self._agent, "_llm", None)
-            chat_db = getattr(self._agent, "_chat_db", None)
-            if llm is None or chat_db is None:
-                return None
-
-            session_key = self.session_key
-
-            notes = chat_db.get_personality_notes(session_key, min_confidence=0.15)
-            if not notes:
-                return None
-
-            strong = [n for n in notes if n.confidence >= 0.7]
-            fading = [n for n in notes if 0.15 <= n.confidence < 0.4]
-            topics = chat_db.get_recent_topics(session_key, limit=10)
-
-            note_lines = []
-            for n in (strong[:5] + fading[:3]):
-                note_lines.append(f"- {n.note} (confidence: {n.confidence:.1f})")
-
-            topic_list = ", ".join(t.topic for t in topics[:8]) if topics else "none yet"
-
-            now = datetime.now(timezone.utc).astimezone()
-            time_ctx = now.strftime("%A %I:%M %p")
-
-            sys_msg = getattr(self._agent, "_system_message", "") or ""
-            prompt = [
-                SystemMessage(content=sys_msg),
-                HumanMessage(
-                    content="The user has been quiet for a while. Start a brief, natural conversation.\n\n"
-                    f"Current time: {time_ctx}. Consider this for natural timing "
-                    "(e.g. don't bring up morning routines at night).\n\n"
-                    f"What you know about them:\n" + "\n".join(note_lines) + "\n\n"
-                    f"Recent topics to AVOID (don't repeat): {topic_list}\n\n"
-                    "Rules:\n"
-                    "- Write 1-2 short spoken sentences. Be casual and natural.\n"
-                    "- Pick something interesting from what you know, or bring up a fading memory.\n"
-                    "- Do NOT use [[reaction:...]] tags or formatting. Just the text.\n"
-                    "- Do NOT ask 'is there anything I can help with?' — be specific and interesting.\n"
-                    "- If a fading memory is available, you can reference it naturally like 'oh, by the way...'"
-                ),
-            ]
-
-            result = llm.invoke(prompt)
-            text = (getattr(result, "content", "") or "").strip()
-            text = text.strip('"').strip("'").strip()
-
-            if not text or len(text) > 300:
-                return None
-
-            if topics:
-                for t in topics[:5]:
-                    if t.topic.lower() in text.lower():
-                        return None
-
-            chat_db.add_recent_topic(session_key, text[:60])
-
-            log = logging.getLogger("app")
-            log.info("Proactive message generated: %s", text[:80])
-            return text
-
-        except Exception as exc:
-            log = logging.getLogger("app")
-            log.warning("Proactive message generation failed: %s", exc)
-            return None
-
-    def generate_proactive_message(self) -> str | None:
-        """Proactive TTS line: director cache when enabled, else legacy main-LLM path."""
-        ag = self._settings.agent
-        if getattr(ag, "proactive_speech_requires_live", True) and not self._live_voice_session_active:
-            return None
-        chat_db = getattr(self._agent, "_chat_db", None)
-        if chat_db is None:
-            return None
-        session_key = self.session_key
-        topics = chat_db.get_recent_topics(session_key, limit=10)
-        stale_s = max(30.0, float(getattr(ag, "proactive_background_stale_seconds", 120.0)))
-
-        if getattr(ag, "proactive_planner_enabled", False) and getattr(ag, "proactive_brain_drive_speech", True):
-            with self._director_lock:
-                cache = self._director_cache
-                plan = cache.plan
-                built = cache.built_monotonic
-                speak_seq = cache.speak_assistant_seq
-            if (
-                plan
-                and plan.speak
-                and speak_seq == self._assistant_turn_seq
-                and (time.monotonic() - built) <= stale_s
-            ):
-                text = self._expand_proactive_utterance(plan, topics)
-                if text:
-                    chat_db.add_recent_topic(session_key, text[:60])
-                    with self._director_lock:
-                        if self._director_cache.plan is plan:
-                            self._director_cache.plan.speak = False
-                            self._director_cache.plan.draft_line = ""
-                            self._director_cache.plan.utterance_seed = ""
-                    logging.getLogger("app").info("Proactive director message: %s", text[:80])
-                    return text
-            return None
-
-        return self._legacy_generate_proactive_message()
-
-    def prewarm_tts(self) -> None:
-        tts = self._tts
-        warmup_sync = getattr(tts, "warmup_sync", None)
-        if callable(warmup_sync):
-            try:
-                ok = bool(warmup_sync())
-                if not ok:
-                    state, details = self.get_tts_model_status()
-                    self._trace("tts.error", f"TTS warmup failed ({state}): {details}")
-            except Exception as exc:
-                self._trace("tts.error", f"TTS warmup failed: {exc}")
-            return
-        warmup_async = getattr(tts, "warmup_async", None)
-        if callable(warmup_async):
-            try:
-                warmup_async()
-            except Exception as exc:
-                self._trace("tts.error", f"TTS warmup async failed: {exc}")
-
-    def prewarm_runtime(self, on_status: Callable[[str], None] | None = None) -> None:
-        def report(message: str) -> None:
-            if on_status:
-                on_status(message)
-
-        # Skip Ollama-side warmup entirely when chat is on an OpenAI-compatible
-        # provider (always warm, would 404 against the wrong endpoint anyway).
-        if getattr(self, "_chat_provider", "ollama") != "ollama":
-            effective = self.effective_chat_model
-            report(f"Using cloud chat model: {effective} (no warmup needed)")
-        else:
-            effective = self.effective_chat_model
-            cloud_model = effective.endswith("-cloud") or effective.endswith(":cloud")
-            report("Checking Ollama availability...")
-            try:
-                models = self._ollama.list_models()
-            except Exception as exc:
-                raise RuntimeError(f"Failed to reach Ollama server: {exc}") from exc
-
-            # Ollama Cloud's /api/tags returns the user's private models; cloud
-            # catalog models like gpt-oss:120b-cloud won't appear there. Skip the
-            # availability check in that case.
-            if not cloud_model and effective not in models:
-                raise RuntimeError(
-                    f"Response model not found in Ollama: {effective}. Pull it first (e.g. ollama pull {effective})."
-                )
-
-            if cloud_model:
-                report(f"Using Ollama Cloud model: {effective} (no local warmup)")
-            else:
-                report(f"Warming response model: {effective}")
-                self._ollama.chat(self._build_startup_prewarm_messages(), model=effective)
-
-        report("Warming TTS models...")
-        tts = self._tts
-        warmup_sync = getattr(tts, "warmup_sync", None)
-        if callable(warmup_sync):
-            success = bool(warmup_sync())
-            if not success:
-                state, details = self.get_tts_model_status()
-                raise RuntimeError(f"TTS warmup failed ({state}): {details}")
-        else:
-            self.prewarm_tts()
-
-        report("Warmup complete")
-
-    def _build_startup_prewarm_messages(self) -> list[dict[str, str]]:
-        return [{"role": "user", "content": "Reply with OK."}]
 
     def set_tts_provider(self, provider: str) -> None:
         normalized = (provider or "").strip().lower() or "kokoro"
@@ -1168,66 +591,114 @@ class SessionController:
         except Exception:
             pass
         self._settings.tts.provider = normalized
-        self._tts = self._build_tts_service(self._settings, output_device=self._output_device)
+        self._tts_engine = self._build_tts_service(
+            self._settings, output_device=self._output_device,
+        )
+        self._tts = TtsQueue(
+            self._tts_engine,
+            enabled=bool(self._settings.tts.enabled),
+            state_listener=self._on_tts_state,
+        )
         self._apply_assistant_preferences()
         self._trace("tts.provider", f"Switched TTS provider to {normalized}")
 
-    @property
-    def chat_model(self) -> str:
-        return self._settings.ollama.chat_model
+    def prewarm_tts(self) -> None:
+        warmup_sync = getattr(self._tts_engine, "warmup_sync", None)
+        if callable(warmup_sync):
+            try:
+                warmup_sync()
+            except Exception:
+                log.debug("tts warmup_sync failed", exc_info=True)
+            return
+        warmup_async = getattr(self._tts_engine, "warmup_async", None)
+        if callable(warmup_async):
+            try:
+                warmup_async()
+            except Exception:
+                log.debug("tts warmup_async failed", exc_info=True)
 
-    @property
-    def effective_chat_model(self) -> str:
-        """Model used for the reply."""
-        return getattr(self, "_effective_chat_model", None) or self._settings.ollama.chat_model
+    def prewarm_runtime(self, on_status: Callable[[str], None] | None = None) -> None:
+        def report(message: str) -> None:
+            if on_status:
+                on_status(message)
 
-    @property
-    def context_window_size(self) -> int:
-        """Detected or configured context window in tokens."""
-        agent = getattr(self, "_agent", None)
-        if agent and hasattr(agent, "_context_window"):
-            return agent._context_window
-        return getattr(self._settings.ollama, "context_window", None) or 0
+        effective = self._effective_chat_model
+        cloud_model = effective.endswith("-cloud") or effective.endswith(":cloud")
+        report("Checking Ollama availability...")
+        try:
+            models = self._ollama.list_models()
+        except Exception as exc:
+            raise RuntimeError(f"Failed to reach Ollama server: {exc}") from exc
+        if not cloud_model and effective not in models:
+            raise RuntimeError(
+                f"Chat model not found in Ollama: {effective}. "
+                f"Pull it with: ollama pull {effective}",
+            )
+        if cloud_model:
+            report(f"Using Ollama Cloud model: {effective} (no local warmup)")
+        else:
+            report(f"Warming chat model: {effective}")
+            try:
+                self._ollama.chat(
+                    [{"role": "user", "content": "Reply with OK."}],
+                    model=effective,
+                )
+            except Exception as exc:
+                log.warning("chat model warmup failed: %s", exc)
 
-    @property
-    def context_tokens_used(self) -> int:
-        """Estimated tokens used (system + history + reserve) as of last turn."""
-        agent = getattr(self, "_agent", None)
-        if agent and hasattr(agent, "_last_context_tokens"):
-            return agent._last_context_tokens
-        return 0
+        report("Warming TTS models...")
+        self.prewarm_tts()
+        report("Warmup complete")
 
-    def set_chat_model(self, model_name: str) -> None:
-        model_name = (model_name or "").strip()
-        if model_name:
-            self._settings.ollama.chat_model = model_name
+    # ── Greetings + proactive ────────────────────────────────────────
 
-    def get_tooling_config_paths(self) -> tuple[Path, Path]:
-        """Return (default_path, user_path) for tooling config (e.g. for Settings Coding tab)."""
-        root = Path(__file__).resolve().parents[2]
-        default = root / (self._settings.tooling.config_default_path or "config/tooling.default.json")
-        user = root / (self._settings.tooling.config_user_path or "config/tooling.user.json")
-        return (default, user)
+    def build_startup_greeting(self) -> str:
+        return "Welcome back. Audio is ready."
+
+    def generate_proactive_message(self) -> str | None:
+        # The new ProactiveDirector speaks directly via TTS. Returning ``None``
+        # tells LiveWorker not to also queue something itself.
+        self._proactive.notify_silence(self.session_key)
+        return None
+
+    def set_live_voice_session_active(self, active: bool) -> None:
+        self._live_voice_session_active = bool(active)
+        self._state.session_type = "live" if active else "chat"
+
+    # ── Listeners ────────────────────────────────────────────────────
+
+    def add_message_listener(self, callback: Callable[[str, str], None]) -> None:
+        if callback and callback not in self._message_listeners:
+            self._message_listeners.append(callback)
+
+    def _notify_message(self, speaker: str, text: str) -> None:
+        for listener in list(self._message_listeners):
+            try:
+                listener(speaker, text)
+            except Exception:
+                log.debug("message listener raised", exc_info=True)
+
+    def add_tts_state_listener(self, callback: Callable[..., None]) -> None:
+        if callback and callback not in self._tts_state_listeners:
+            self._tts_state_listeners.append(callback)
+
+    def _on_tts_state(self, event: str, payload: dict[str, Any]) -> None:
+        for listener in list(self._tts_state_listeners):
+            try:
+                listener(event, **payload)
+            except Exception:
+                log.debug("tts state listener raised", exc_info=True)
+
+    # ── Models listing ───────────────────────────────────────────────
 
     def list_chat_models(self, *, refresh: bool = False) -> list[str]:
         now = time.monotonic()
         if not refresh and self._models_cache is not None and (now - self._models_cache_time) < self._cache_ttl:
             return list(self._models_cache)
-
-        # OpenAI-compatible providers don't have a uniform /api/tags equivalent;
-        # leave the dropdown to free-text seeded with the current model.
-        if getattr(self, "_chat_provider", "ollama") != "ollama":
-            current = self.effective_chat_model
-            models: list[str] = [current] if current else []
-            self._models_cache = list(models)
-            self._models_cache_time = now
-            return models
-
         try:
             models = self._ollama.list_models()
         except Exception:
             models = []
-
         current = self.chat_model
         if current and current not in models:
             models.insert(0, current)
@@ -1235,129 +706,13 @@ class SessionController:
         self._models_cache_time = now
         return models
 
-    @property
-    def remember_history(self) -> bool:
-        return self._remember_history
-
-    def set_remember_history(self, value: bool) -> None:
-        self._remember_history = bool(value)
-        if hasattr(self._agent, "persist_enabled"):
-            self._agent.persist_enabled = bool(value)
-
-    @property
-    def autonomy_mode(self) -> str:
-        return self._autonomy_mode
-
-    def set_autonomy_mode(self, mode: str) -> None:
-        normalized = str(mode or "").strip().lower()
-        if normalized not in {"manual", "interactive", "automatic"}:
-            return
-        if normalized == self._autonomy_mode:
-            return
-        previous = self._autonomy_mode
-        self._autonomy_mode = normalized
-        self._state.autonomy_mode = normalized
-        self._sync_action_confirmation_policy()
-        self._trace("autonomy.mode", f"Switched autonomy mode {previous} -> {normalized}")
-
-    def _sync_action_confirmation_policy(self) -> None:
-        mode = str(getattr(self, "_autonomy_mode", "interactive") or "interactive").strip().lower()
-        require_confirmation = mode != "automatic"
-        settings = getattr(self, "_settings", None)
-        actions = getattr(settings, "actions", None) if settings is not None else None
-        if actions is None:
-            return
-        setattr(actions, "require_confirmation", bool(require_confirmation))
-        self._trace(
-            "action.confirmation.policy",
-            f"mode={mode} require_confirmation={str(require_confirmation).lower()}",
-        )
-
-    def _trace_turn_action_policy(self) -> None:
-        settings = getattr(self, "_settings", None)
-        actions = getattr(settings, "actions", None) if settings is not None else None
-        if actions is None:
-            return
-        mode = str(getattr(self, "_autonomy_mode", "interactive") or "interactive").strip().lower()
-        require_confirmation = bool(getattr(actions, "require_confirmation", True))
-        self._trace(
-            "action.confirmation",
-            f"turn mode={mode} require_confirmation={str(require_confirmation).lower()}",
-        )
-
-    def set_active_session_type(self, session_type: str) -> None:
-        """No-op: LangChain agent manages conversation; session type is not used."""
-        _ = session_type
-
-    def _resolve_session_tool_policy(self, session_type: str) -> set[str] | None:
-        """Return the set of tool names allowed for ``session_type``.
-
-        Returning ``None`` means no filtering -- every tool is in scope.
-        Returning an empty set means tools are blocked for this session.
-
-        Today the ``session_tool_policies.allowed_tool_prefixes`` config is
-        treated as informational unless a session lists explicit, literal
-        tool-name prefixes (anything other than ``"mcp."``, which historically
-        does not match real tool names). This keeps the agent functional out
-        of the box while letting power users opt into hard restrictions.
-        """
-        try:
-            policies = self._settings.autonomy.session_tool_policies
-        except Exception:
-            return None
-        policy = getattr(policies, str(session_type or "chat").lower(), None)
-        if policy is None:
-            return None
-        prefixes = tuple(getattr(policy, "allowed_tool_prefixes", ()) or ())
-        if not prefixes:
-            return None
-        meaningful = tuple(p for p in prefixes if p and p != "mcp.")
-        if not meaningful:
-            return None
-        agent = getattr(self, "_agent", None)
-        tools = list(getattr(agent, "_tools", []) or [])
-        return {
-            getattr(t, "name", "")
-            for t in tools
-            if any(getattr(t, "name", "").startswith(p) for p in meaningful)
-            or "*" in meaningful
-        }
-
-    def clear_conversation_memory(self) -> None:
-        if self._chat_db is not None:
-            self._chat_db.clear_messages(self.session_key, full_reset=True)
-        self._memory.clear()
-
-    @property
-    def session_key(self) -> str:
-        return f"{self._user_id}:{self._session_id}" if self._user_id else self._session_id
-
-    def switch_session(self, session_id: str) -> None:
-        """Switch to a different conversation session."""
-        self._session_id = session_id
-        self._memory.clear()
-
-    def new_session(self) -> str:
-        """Create and switch to a new session. Returns the new session ID."""
-        import uuid
-        new_id = str(uuid.uuid4())[:8]
-        self.switch_session(new_id)
-        return new_id
-
-    @property
-    def active_goal(self) -> str:
-        return self._active_goal
-
-    @property
-    def active_session_type(self) -> str:
-        return "chat"
+    # ── Decision trace + emergency stop (legacy stubs) ──────────────
 
     def get_decision_trace(self, max_entries: int = 300) -> list[dict[str, str]]:
-        capped = max(1, max_entries)
         items = list(self._decision_trace)
-        if capped >= len(items):
+        if max_entries >= len(items):
             return items
-        return items[-capped:]
+        return items[-max_entries:]
 
     def clear_decision_trace(self) -> None:
         self._decision_trace.clear()
@@ -1368,10 +723,10 @@ class SessionController:
 
     @property
     def emergency_stop_active(self) -> bool:
-        return self._action_stop_state.triggered
+        return False
 
     def reset_emergency_stop(self) -> None:
-        self._action_stop_state.reset()
+        return
 
     @property
     def has_pending_action(self) -> bool:
@@ -1384,17 +739,18 @@ class SessionController:
     def approve_pending_action(self) -> tuple[str, str | None]:
         return ("No pending action.", None)
 
-    @property
-    def agentic_narration_level(self) -> str:
-        level = str(getattr(self._settings.autonomy, "agentic_narration_level", "summary") or "summary").strip().lower()
-        return level if level in {"full", "summary", "off"} else "summary"
+    def reject_pending_action(self) -> str:
+        return "No pending action."
+
+    def start_action_hotkey_listener(self) -> bool:
+        return False
+
+    def stop_action_hotkey_listener(self) -> None:
+        return
 
     def tts_text_for_followup(self, followup: str) -> str:
-        level = self.agentic_narration_level
-        if level == "off":
+        if self.agentic_narration_level == "off":
             return ""
-        if level == "full" and "agentic continuation completed" in str(followup or "").lower():
-            return "Agentic continuation completed."
         return self.summarize_followup_for_tts(followup)
 
     @staticmethod
@@ -1402,71 +758,27 @@ class SessionController:
         source = strip_action_meta_for_tts(str(followup or "")).strip()
         if not source:
             return ""
-
-        progress_match = re.search(r"progress:\s*(\d+)\s*/\s*(\d+)", source, flags=re.IGNORECASE)
-        step_matches = re.findall(
-            r"^[-*\s]*step\s+(\d+)\s*:\s*(.+)$",
-            source,
-            flags=re.IGNORECASE | re.MULTILINE,
-        )
-
-        chunks: list[str] = []
-        if "agentic continuation" in source.lower():
-            chunks.append("Agentic continuation update.")
-        if progress_match:
-            done, total = progress_match.group(1), progress_match.group(2)
-            chunks.append(f"Progress {done} of {total} autonomous steps.")
-
-        for index, (step_no, detail) in enumerate(step_matches[: max(1, int(max_steps))], start=1):
-            _ = index
-            cleaned = " ".join(str(detail).split())
-            if len(cleaned) > 90:
-                cleaned = cleaned[:87].rstrip() + "..."
-            chunks.append(f"Step {step_no}: {cleaned}.")
-
-        if chunks:
-            return " ".join(chunks).strip()
-
         compact = " ".join(source.split())
         if len(compact) > 220:
             compact = compact[:217].rstrip() + "..."
+        _ = max_steps
         return compact
 
-    def reject_pending_action(self) -> str:
-        return "No pending action."
+    # ── Metrics ─────────────────────────────────────────────────────
 
-    def start_action_hotkey_listener(self) -> bool:
-        return self._action_hotkey_listener.start()
-
-    def stop_action_hotkey_listener(self) -> None:
-        self._action_hotkey_listener.stop()
-
-    def shutdown(self) -> None:
-        if self._mcp_server_runner is not None:
-            try:
-                self._mcp_server_runner.stop()
-            except Exception:
-                pass
-        try:
-            self._tts.stop()
-        except Exception:
-            pass
-        try:
-            import threading as _th
-            t = _th.Thread(target=self._realtime_stt.stop_context, daemon=True)
-            t.start()
-            t.join(timeout=2.0)
-        except Exception:
-            pass
-        self.stop_action_hotkey_listener()
-        try:
-            if self._agent is not None:
-                self._agent.shutdown_mcp()
-        except Exception:
-            pass
-        self._director_shutdown.set()
-        if self._director_thread is not None and self._director_thread.is_alive():
-            self._director_thread.join(timeout=2.5)
+    @staticmethod
+    def _zero_metrics() -> dict[str, float | int | str]:
+        return {
+            "mode": "idle",
+            "capture_ms": 0.0,
+            "stt_ms": 0.0,
+            "llm_ms": 0.0,
+            "tts_ms": 0.0,
+            "total_ms": 0.0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        }
 
     def get_last_metrics(self) -> dict[str, float | int | str]:
         return dict(self._last_metrics)
@@ -1475,11 +787,8 @@ class SessionController:
         if not self._metrics_history:
             return {
                 "window": 0,
-                "capture_ms": 0.0,
-                "stt_ms": 0.0,
-                "llm_ms": 0.0,
-                "tts_ms": 0.0,
-                "total_ms": 0.0,
+                "capture_ms": 0.0, "stt_ms": 0.0, "llm_ms": 0.0,
+                "tts_ms": 0.0, "total_ms": 0.0,
             }
 
         def avg(key: str) -> float:
@@ -1495,255 +804,24 @@ class SessionController:
             "total_ms": avg("total_ms"),
         }
 
-    def get_reading_status(self) -> dict[str, bool | int | str]:
-        return {
-            "active": False,
-            "window": "",
-            "chunks": 0,
-            "scroll_steps": 0,
-            "max_scroll_steps": 0,
-        }
-
-    def get_agentic_status(self) -> dict[str, bool | int | str]:
-        return {
-            "active": False,
-            "objective": "",
-            "auto_steps": 0,
-            "max_auto_steps": 0,
-        }
-
     def reset_latency_metrics(self) -> None:
-        self._last_metrics = {
-            "mode": "idle",
-            "capture_ms": 0.0,
-            "stt_ms": 0.0,
-            "llm_ms": 0.0,
-            "tts_ms": 0.0,
-            "total_ms": 0.0,
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-        }
+        self._last_metrics = self._zero_metrics()
         self._metrics_history.clear()
 
-    def _read_token_usage(self) -> dict[str, int]:
-        """Read accumulated prompt/completion tokens from the agent's tracker."""
-        agent = getattr(self, "_agent", None)
-        tracker = getattr(agent, "_token_tracker", None) if agent is not None else None
-        if tracker is None or not getattr(tracker, "has_data", False):
-            return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-        return {
-            "prompt_tokens": int(getattr(tracker, "prompt_tokens", 0) or 0),
-            "completion_tokens": int(getattr(tracker, "completion_tokens", 0) or 0),
-            "total_tokens": int(getattr(tracker, "total_tokens", 0) or 0),
-        }
+    def get_reading_status(self) -> dict[str, bool | int | str]:
+        return {"active": False, "window": "", "chunks": 0, "scroll_steps": 0, "max_scroll_steps": 0}
 
-    def _set_last_metrics(self, metrics: dict[str, float | int | str]) -> None:
-        # Always carry token usage for the turn; callers don't need to remember.
-        merged: dict[str, float | int | str] = dict(metrics)
-        usage = self._read_token_usage()
-        for key, value in usage.items():
-            merged.setdefault(key, value)
-        self._last_metrics = merged
-        self._metrics_history.append(dict(merged))
+    def get_agentic_status(self) -> dict[str, bool | int | str]:
+        return {"active": False, "objective": "", "auto_steps": 0, "max_auto_steps": 0}
 
     def get_conversation_memory(self, max_entries: int = 200) -> list[dict[str, str]]:
-        if self._chat_db is not None:
-            rows = self._chat_db.get_messages(self.session_key, limit=max_entries)
-            return [
-                {"role": r.role, "content": r.content, "timestamp": r.created_at}
-                for r in rows
-            ]
-        return self._history_entries(limit=max_entries)
-
-    @staticmethod
-    def _coerce_int(value: object, *, default: int, minimum: int, maximum: int) -> int:
-        try:
-            parsed = int(value)
-        except Exception:
-            parsed = default
-        return max(minimum, min(parsed, maximum))
-
-    @staticmethod
-    def _preview_tool_value(value: object) -> str:
-        if value is None:
-            return "null"
-        if isinstance(value, bool):
-            return "true" if value else "false"
-        if isinstance(value, (int, float)):
-            return str(value)
-        if isinstance(value, str):
-            text = value.strip().replace("\n", " ")
-            return repr(text if len(text) <= 80 else f"{text[:77]}...")
-        if hasattr(value, "shape"):
-            return f"<image shape={getattr(value, 'shape', '?')}>"
-        if isinstance(value, dict):
-            return f"<dict keys={len(value)}>"
-        if isinstance(value, list):
-            return f"<list len={len(value)}>"
-        return f"<{type(value).__name__}>"
-
-    @staticmethod
-    def _build_memory_assistant_text(response: str) -> str:
-        cleaned = strip_action_meta_for_tts(str(response or ""))
-        cleaned = sanitize_assistant_text(cleaned)
-        return cleaned.strip()
-
-    def _preview_tool_args(self, args: dict[str, object]) -> str:
-        if not args:
-            return "{}"
-        parts: list[str] = []
-        for key in sorted(args.keys()):
-            if len(parts) >= 6:
-                parts.append("...")
-                break
-            parts.append(f"{key}={self._preview_tool_value(args[key])}")
-        return "{" + ", ".join(parts) + "}"
-
-    def _invoke_tool(
-        self,
-        name: str,
-        *,
-        args: dict[str, object] | None = None,
-        cancel_token: Callable[[], bool] | None = None,
-    ) -> ToolResult:
-        _ = cancel_token
-        self._trace("tool.invoke", f"{name} args={self._preview_tool_args(dict(args or {}))} (stubbed)")
-        return ToolResult(
-            success=False,
-            error=ToolError(code="stub", message="Tooling disabled; agent-only mode."),
-        )
-
-    def _history_messages(self, *, limit: int, offset: int = 0) -> list[dict[str, str]]:
-        result = self._invoke_tool(
-            "history.read_messages",
-            args={"limit": max(1, int(limit)), "offset": max(0, int(offset))},
-        )
-        if result.success:
-            messages = result.data.get("messages", [])
-            if isinstance(messages, list):
-                normalized: list[dict[str, str]] = []
-                for item in messages:
-                    if not isinstance(item, dict):
-                        continue
-                    role = str(item.get("role", "")).strip().lower()
-                    content = str(item.get("content", "")).strip()
-                    if role in {"user", "assistant"} and content:
-                        normalized.append({"role": role, "content": content})
-                return normalized
-        safe_limit = max(1, int(limit))
-        safe_offset = max(0, int(offset))
-        fallback_entries = self._memory.recent_entries(max_entries=safe_limit + safe_offset)
-        if safe_offset:
-            if len(fallback_entries) <= safe_offset:
-                return []
-            end = len(fallback_entries) - safe_offset
-            start = max(0, end - safe_limit)
-            fallback_entries = fallback_entries[start:end]
-        else:
-            fallback_entries = fallback_entries[-safe_limit:]
-
+        rows = self._chat_db.get_messages(self.session_key, limit=max_entries)
         return [
-            {"role": item.role, "content": item.content}
-            for item in fallback_entries
-            if item.role in {"user", "assistant"} and item.content
+            {"role": r.role, "content": r.content, "created_at": r.created_at}
+            for r in rows
         ]
 
-    def _history_entries(self, *, limit: int, offset: int = 0) -> list[dict[str, str]]:
-        result = self._invoke_tool(
-            "history.read_entries",
-            args={"limit": max(1, int(limit)), "offset": max(0, int(offset))},
-        )
-        if result.success:
-            entries = result.data.get("entries", [])
-            if isinstance(entries, list):
-                normalized: list[dict[str, str]] = []
-                for item in entries:
-                    if not isinstance(item, dict):
-                        continue
-                    role = str(item.get("role", "")).strip().lower()
-                    content = str(item.get("content", "")).strip()
-                    timestamp = str(item.get("timestamp", "")).strip()
-                    if role in {"user", "assistant"} and content:
-                        normalized.append(
-                            {
-                                "role": role,
-                                "content": content,
-                                "timestamp": timestamp,
-                            }
-                        )
-                return normalized
-
-        safe_limit = max(1, int(limit))
-        safe_offset = max(0, int(offset))
-        fallback_entries = self._memory.recent_entries(max_entries=safe_limit + safe_offset)
-        if safe_offset:
-            if len(fallback_entries) <= safe_offset:
-                return []
-            end = len(fallback_entries) - safe_offset
-            start = max(0, end - safe_limit)
-            fallback_entries = fallback_entries[start:end]
-        else:
-            fallback_entries = fallback_entries[-safe_limit:]
-
-        return [
-            {"role": item.role, "content": item.content, "timestamp": item.timestamp}
-            for item in fallback_entries
-        ]
-
-    def _history_summary(self, *, limit: int, max_chars: int, offset: int = 0) -> str:
-        result = self._invoke_tool(
-            "history.read_summary",
-            args={
-                "limit": max(1, int(limit)),
-                "offset": max(0, int(offset)),
-                "max_chars": max(80, int(max_chars)),
-            },
-        )
-        if result.success:
-            summary = str(result.data.get("summary", "")).strip()
-            if summary:
-                return summary
-
-        entries = self._history_entries(limit=limit, offset=offset)
-        if not entries:
-            return ""
-        parts: list[str] = []
-        for item in entries[-3:]:
-            role = str(item.get("role", "")).strip().lower()
-            content = str(item.get("content", "")).strip()
-            if role in {"user", "assistant"} and content:
-                trimmed = content if len(content) <= 120 else f"{content[:117].rstrip()}..."
-                parts.append(f"{role}: {trimmed}")
-        fallback = " | ".join(parts)
-        return fallback[: max(80, int(max_chars))].strip()
-
-    def add_message_listener(self, callback: Callable[[str, str], None]) -> None:
-        """Register a callback(speaker, text) invoked for every user/assistant message."""
-        self._message_listeners.append(callback)
-
-    def _notify_message(self, speaker: str, text: str) -> None:
-        for cb in self._message_listeners:
-            try:
-                cb(speaker, text)
-            except Exception:
-                pass
-
-    def add_tts_state_listener(self, callback: Callable[..., None]) -> None:
-        """Register a callback(event, **kwargs) for TTS chunk lifecycle events.
-
-        ``event`` is one of ``"start"`` or ``"end"``. For ``"start"`` kwargs
-        are ``text``, ``reaction``, ``envelope`` (list[float], 0..1, 60 fps),
-        and ``sample_rate``. For ``"end"`` no kwargs are passed.
-        """
-        self._tts_state_listeners.append(callback)
-
-    def _notify_tts_state(self, event: str, **kwargs: Any) -> None:
-        for cb in self._tts_state_listeners:
-            try:
-                cb(event, **kwargs)
-            except Exception:
-                pass
+    # ── The chat loop ────────────────────────────────────────────────
 
     def chat_once(self, user_text: str) -> str:
         return self.chat_once_streaming(user_text=user_text, mode="typed")
@@ -1752,568 +830,59 @@ class SessionController:
         self,
         *,
         user_text: str,
-        user_vocal_tone: str | None = None,
         on_token: Callable[[str], None] | None = None,
-        stop_requested: Callable[[], bool] | None = None,
         on_generation_status: Callable[[str], None] | None = None,
+        stop_requested: Callable[[], bool] | None = None,
         mode: str = "typed",
         capture_ms: float = 0.0,
         stt_ms: float = 0.0,
+        user_vocal_tone: str | None = None,
     ) -> str:
-        turn_start = time.perf_counter()
-        self._trace("pipeline.turn.start", f"mode={mode}")
-        raw_user_text = str(user_text or "")
-        user_text = sanitize_user_text(raw_user_text)
-        if raw_user_text.strip() and not user_text:
-            self._trace("pipeline.input.drop", "Input became empty after sanitization")
-            self._set_last_metrics(
-                {
-                    "mode": mode,
-                    "capture_ms": round(capture_ms, 1),
-                    "stt_ms": round(stt_ms, 1),
-                    "llm_ms": 0.0,
-                    "tts_ms": 0.0,
-                    "total_ms": round((time.perf_counter() - turn_start) * 1000.0, 1),
-                }
-            )
-            return "I could not parse that clearly. Please say it again in plain words."
+        _ = user_vocal_tone  # not used in v1; reserved for prosody hints
+        cleaned = sanitize_user_text(user_text or "")
+        if not cleaned:
+            return ""
 
-        if raw_user_text != user_text:
-            self._trace("stt.clean", f"Sanitized user text ({len(raw_user_text)} -> {len(user_text)} chars).")
+        if on_generation_status:
+            on_generation_status("AI is generating response...")
 
-        stream_tts_used = False
-        stream_tts_enqueued_chunks: list[int] = [0]
-        llm_ms = 0.0
-        turn_completed_ok = False
+        # If chat history is disabled, replay the message into a transient key
+        # so we never persist it across restarts.
+        session_key = self.session_key if self._remember_history else f"{self.session_key}:noremember"
 
         self._turn_in_progress = True
-        director_hint = ""
+        t0 = time.perf_counter()
         try:
-            director_hint = self._take_director_hint_and_clear_cache()
-            try:
-                if on_generation_status:
-                    on_generation_status("AI is generating response...")
-                self._earcons.play("thinking")
-                self._trace("pipeline.llm.start", f"mode={mode} model={self.chat_model}")
-                llm_started = time.perf_counter()
-                message_for_agent = user_text
-                if director_hint:
-                    message_for_agent = f"[Director hint: {director_hint}]\n\n{user_text}"
-                if user_vocal_tone and user_vocal_tone.strip():
-                    message_for_agent = f"{message_for_agent}\n\n[Vocal: {user_vocal_tone.strip()}]"
-
-                def _tool_status(name: str, summary: str) -> None:
-                    if on_generation_status:
-                        msg = f"Tool: {name} - {summary[:80]}{'...' if len(summary) > 80 else ''}" if summary else f"Tool: {name}"
-                        on_generation_status(msg)
-
-                agent_to_use = self._agent
-                tts_enabled = bool(getattr(self._settings.tts, "enabled", True))
-                use_stream_tts = tts_enabled
-                typed_accumulated: list[str] = []
-
-                from io import StringIO
-                stream_io = StringIO()
-                reply_mood: list[str | None] = [None]
-                last_ui_sent_len: list[int] = [0]
-
-                def _on_content(delta: str) -> None:
-                    if not delta:
-                        return
-                    typed_accumulated.append(delta)
-                    stream_io.write(delta)
-                    buf = stream_io.getvalue()
-                    if reply_mood[0] is None:
-                        mood, rest = parse_reaction_at_start(buf)
-                        if mood is not None:
-                            reply_mood[0] = mood
-                            stream_io.seek(0)
-                            stream_io.truncate()
-                            stream_io.write(rest)
-                            buf = rest
-                    if use_stream_tts:
-                        chunks, remainder = drain_tts_stream_chunks(buf, flush=False)
-                        for sent in chunks:
-                            tts_text = prepare_tts_text(strip_action_meta_for_tts(sent))
-                            if tts_text:
-                                self._enqueue_tts_chunk(tts_text, reaction=reply_mood[0] or "neutral")
-                                stream_tts_enqueued_chunks[0] += 1
-                        stream_io.seek(0)
-                        stream_io.truncate()
-                        stream_io.write(remainder)
-                    if on_token:
-                        # Display path is independent of the TTS-drained `buf` so the
-                        # offset into the cumulative text stays monotonic. Any
-                        # in-progress `[[...]]` tag at the tail is held back so
-                        # partial fragments never leak to the chat bubble.
-                        display_buf = strip_all_meta_tags("".join(typed_accumulated))
-                        new_text = display_buf[last_ui_sent_len[0]:]
-                        safe = _safe_display_prefix(new_text)
-                        if safe:
-                            on_token(safe)
-                            last_ui_sent_len[0] += len(safe)
-
-                response = run_agent(
-                    agent_to_use,
-                    message_for_agent,
-                    session_id=self._session_id,
-                    user_id=self._user_id,
-                    stream=True,
-                    on_content=_on_content,
-                    on_tool_use=_tool_status if on_generation_status else None,
-                    stop_requested=stop_requested,
-                    user_text_for_persist=user_text,
-                    session_type=self.active_session_type,
-                )
-                turn_completed_ok = True
-                if use_stream_tts:
-                    buf = stream_io.getvalue()
-                    final_chunks, _ = drain_tts_stream_chunks(buf, flush=True)
-                    for sent in final_chunks:
-                        tts_text = prepare_tts_text(strip_action_meta_for_tts(sent))
-                        if tts_text:
-                            self._enqueue_tts_chunk(tts_text, reaction=reply_mood[0] or "neutral")
-                            stream_tts_enqueued_chunks[0] += 1
-                    stream_tts_used = True
-
-                response = sanitize_assistant_text(response)
-                llm_ms = (time.perf_counter() - llm_started) * 1000.0
-                if not response or not response.strip():
-                    self._trace(
-                        "pipeline.llm.empty",
-                        f"mode={mode} llm_ms={round(llm_ms, 1)} agent returned empty; check LangChain/Ollama response shape",
-                    )
-                    response = "I didn’t get a reply from the model. Try again or check the console for details."
-                llm_for_tts = strip_action_meta_for_tts(response)
-                spoken_part, full_for_display = parse_two_tier_reply(llm_for_tts)
-                display_for_ui = (sanitize_assistant_text(full_for_display).strip() if full_for_display.strip() else response) or response
-                already_streamed = use_stream_tts or (mode == "typed" and bool(typed_accumulated))
-                if on_token and display_for_ui and not already_streamed:
-                    on_token(display_for_ui)
-                self._trace(
-                    "pipeline.llm.done",
-                    f"mode={mode} chars={len(response)} llm_ms={round(llm_ms, 1)}",
-                )
-                if self._remember_history and hasattr(self._agent, "summarize_if_needed"):
-                    threading.Thread(
-                        target=self._agent.summarize_if_needed,
-                        args=(self._session_id, self._user_id),
-                        daemon=True,
-                        name="post-turn-summarize",
-                    ).start()
-                    # Personality judge is the most expensive post-turn job
-                    # (3-5s on a shared GPU, often returns malformed JSON on
-                    # small judge models). Run it every Nth turn, not every
-                    # turn. Counter increments below in the turn-completed-ok
-                    # block so we only count successful turns.
-                    every_n = max(1, int(getattr(
-                        self._settings.agent, "personality_update_every_n_turns", 4
-                    )))
-                    next_seq = self._assistant_turn_seq + 1
-                    if hasattr(self._agent, "update_personality") and (next_seq % every_n == 0):
-                        threading.Thread(
-                            target=self._agent.update_personality,
-                            args=(self._session_id, self._user_id),
-                            kwargs={
-                                "decay_rate": self._settings.agent.personality_decay_rate,
-                                "prune_threshold": self._settings.agent.personality_prune_threshold,
-                                "max_notes": self._settings.agent.personality_max_notes,
-                            },
-                            daemon=True,
-                            name="post-turn-personality",
-                        ).start()
-            except Exception as exc:
-                self._trace("pipeline.llm.error", str(exc))
-                self._set_last_metrics({
-                    "mode": mode,
-                    "capture_ms": round(capture_ms, 1),
-                    "stt_ms": round(stt_ms, 1),
-                    "llm_ms": 0.0,
-                    "tts_ms": 0.0,
-                    "total_ms": round((time.perf_counter() - turn_start) * 1000.0, 1),
-                })
-                return (
-                    "I could not reach Ollama. Please make sure it is running and the model is available. "
-                    f"Details: {exc}"
-                )
+            result = self._turn_runner.run(
+                session_key,
+                cleaned,
+                on_token=on_token,
+                on_tts_chunk=self._tts.enqueue if bool(self._settings.tts.enabled) else None,
+                stop_requested=stop_requested,
+            )
         finally:
             self._turn_in_progress = False
-            self._last_turn_completed_monotonic = time.monotonic()
 
-        if turn_completed_ok:
-            self._assistant_turn_seq += 1
-            self._signal_director_post_turn()
-
-        explicit_reaction, response = extract_tts_reaction_tag(response)
-        if explicit_reaction:
-            self._trace("pipeline.tts.reaction", f"explicit={explicit_reaction}")
-            display_for_ui = f"— {explicit_reaction}\n\n" + (display_for_ui or "")
-
-        if stop_requested and stop_requested():
-            self._trace("pipeline.turn.stopped", f"mode={mode} stop_requested=true")
-            return display_for_ui
-
-        # Action execution delegated to agent (MCP/registry tools). No separate action pipeline.
-        # Two-tier: spoken_part for TTS, full_for_display (display_for_ui) for transcript; already computed above.
-
-        tts_started = time.perf_counter()
-        tts_ms = 0.0
-        should_speak_full_response = bool(response and not stream_tts_used)
-        if stream_tts_used and stream_tts_enqueued_chunks[0] < 1:
-            self._trace("pipeline.tts.enqueue", "stream mode used but no chunks enqueued; fallback full TTS")
-            should_speak_full_response = bool(response)
-        self._trace(
-            "pipeline.tts.plan",
-            (
-                f"stream_used={stream_tts_used} "
-                f"queued_chunks={stream_tts_enqueued_chunks[0]} "
-                f"full_response={'yes' if should_speak_full_response else 'no'}"
-            ),
-        )
-        if stream_tts_used and stream_tts_enqueued_chunks[0] > 0:
-            should_speak_full_response = False
-
-        if should_speak_full_response:
-            try:
-                tts_content = strip_all_reaction_tags(spoken_part) if spoken_part.strip() else strip_all_reaction_tags(llm_for_tts)
-                tts_text = prepare_tts_text(tts_content) if tts_content.strip() else ""
-                if tts_text:
-                    reaction = explicit_reaction or infer_tts_reaction(spoken_part or llm_for_tts)
-                    sentence_chunks, leftover = drain_tts_stream_chunks(tts_text, flush=True)
-                    if not sentence_chunks:
-                        sentence_chunks = [tts_text]
-                    for chunk in sentence_chunks:
-                        chunk = chunk.strip()
-                        if chunk:
-                            self._enqueue_tts_chunk(chunk, reaction=reaction)
-                    self._trace("pipeline.tts.reaction", f"reaction={reaction}")
-                    self._trace("pipeline.tts.speak", f"chars={len(tts_text)} chunks={len(sentence_chunks)}")
-            except Exception as exc:
-                self._trace("tts.error", f"TTS speak failed: {exc}")
-                self._trace("pipeline.tts.error", str(exc))
-            tts_ms = (time.perf_counter() - tts_started) * 1000.0
-        else:
-            self._trace("pipeline.tts.speak", "stream queue active")
-
+        llm_ms = (time.perf_counter() - t0) * 1000.0
+        total_ms = capture_ms + stt_ms + llm_ms
         self._set_last_metrics({
             "mode": mode,
             "capture_ms": round(capture_ms, 1),
             "stt_ms": round(stt_ms, 1),
             "llm_ms": round(llm_ms, 1),
-            "tts_ms": round(tts_ms, 1),
-            "total_ms": round((time.perf_counter() - turn_start) * 1000.0, 1),
+            "tts_ms": 0.0,
+            "total_ms": round(total_ms, 1),
+            "prompt_tokens": int(result.usage.prompt_tokens),
+            "completion_tokens": int(result.usage.completion_tokens),
+            "total_tokens": int(result.usage.total_tokens),
         })
-        self._trace("pipeline.turn.done", f"mode={mode} total_ms={round((time.perf_counter() - turn_start) * 1000.0, 1)}")
-        return display_for_ui
+        return result.text
 
-    def _apply_assistant_preferences(self) -> None:
-        length_scale = getattr(self._settings.assistant, "tts_length_scale", 1.0) or 1.0
-        set_length_scale = getattr(self._tts, "set_length_scale", None)
-        if callable(set_length_scale):
-            try:
-                set_length_scale(length_scale)
-            except Exception:
-                pass
+    def _set_last_metrics(self, metrics: dict[str, float | int | str]) -> None:
+        self._last_metrics = dict(metrics)
+        self._metrics_history.append(dict(metrics))
 
-    def _response_num_predict(self) -> int:
-        style = str(getattr(self._settings.assistant, "response_style", "balanced") or "balanced").strip().lower()
-        if style == "concise":
-            return 96
-        if style in ("detailed", "technical"):
-            return 220
-        if style == "conversational":
-            return 160
-        return 140
-
-    def _plan_turn_autonomy(self, *, user_text: str) -> TurnAutonomyPlan:
-        default_strategy = "Respond naturally, concise first, ask one focused follow-up when useful."
-        if not self._settings.autonomy.enabled:
-            return TurnAutonomyPlan(
-                strategy=default_strategy,
-                should_plan_action=False,
-                ask_followup=True,
-                confidence=0.4,
-                action_intent="",
-            )
-
-        if self._is_agentic_intent(user_text):
-            return TurnAutonomyPlan(
-                strategy=(
-                    "Confirm agentic mode is active and ask for the first objective. "
-                    "Do not propose or perform UI actions in this turn."
-                ),
-                should_plan_action=False,
-                ask_followup=True,
-                confidence=1.0,
-                action_intent="",
-            )
-
-        if self._autonomy_mode == "manual":
-            return TurnAutonomyPlan(
-                strategy="Respond naturally and avoid autonomous actions unless explicitly requested.",
-                should_plan_action=False,
-                ask_followup=True,
-                confidence=0.8,
-                action_intent="",
-            )
-
-        normalized = str(user_text or "").strip().lower()
-        turn_cfg = self._settings.autonomy.turn_planning
-        proactive = bool(turn_cfg.proactive_conversation)
-        allow_action_suggestions = bool(turn_cfg.allow_action_suggestions)
-        allow_proactive_actions = bool(turn_cfg.allow_proactive_actions)
-        explicit_action_intent = has_action_intent(user_text)
-        should_plan_action = (
-            bool(self._settings.actions.enabled)
-            and allow_action_suggestions
-            and (explicit_action_intent or allow_proactive_actions)
-        )
-        strategy = default_strategy
-        if "reading" in normalized or "continue" in normalized:
-            strategy = "Continue the active reading flow and summarize key points before the next step."
-        elif should_plan_action:
-            strategy = "Confirm the requested UI action, then execute safely and report the result."
-        elif proactive:
-            strategy = "Answer directly and ask one targeted follow-up if it helps move the task forward."
-
-        plan = TurnAutonomyPlan(
-            strategy=strategy[: max(40, int(turn_cfg.max_strategy_chars))],
-            should_plan_action=bool(should_plan_action),
-            ask_followup=bool(proactive and not should_plan_action),
-            confidence=0.7 if should_plan_action else 0.6,
-            action_intent=(str(user_text or "").strip() if should_plan_action else ""),
-        )
-
-        if self._autonomy_mode == "automatic":
-            plan.ask_followup = False
-            plan.should_plan_action = bool(self._settings.actions.enabled)
-            if plan.should_plan_action and not plan.action_intent:
-                plan.action_intent = "Execute the next best UI step for the active objective."
-            self._trace("autonomy.mode", "Automatic mode forced action planning and disabled follow-up prompt.")
-        return plan
-
-    def _update_goal_from_conversation(self, *, user_text: str) -> None:
-        if not self._settings.autonomy.enabled or not self._settings.autonomy.auto_goal_switch:
-            return
-
-        inferred = self._infer_goal(user_text=user_text)
-        min_conf = float(self._settings.autonomy.goal_switch_min_confidence)
-        if inferred.confidence < min_conf:
-            self._trace(
-                "autonomy.goal",
-                (
-                    f"Kept goal='{self._active_goal}' "
-                    f"(low confidence {round(inferred.confidence, 2)} < {round(min_conf, 2)})."
-                ),
-            )
-            return
-
-        goal_changed = inferred.goal != self._active_goal
-        if not goal_changed:
-            return
-
-        previous_goal = self._active_goal
-        self._active_goal = inferred.goal
-        self._active_goal_description = inferred.description
-        self._trace(
-            "autonomy.goal",
-            (
-                f"Switched goal {previous_goal} -> {self._active_goal} "
-                f"(confidence={round(inferred.confidence, 2)}; reason={inferred.reason or 'n/a'}; "
-                f"desc={inferred.description or 'n/a'})."
-            ),
-        )
-
-    def _infer_goal(self, *, user_text: str) -> GoalInference:
-        normalized = str(user_text or "").strip().lower()
-        if not normalized:
-            return GoalInference(goal=self._active_goal, confidence=0.0, reason="empty_user_text")
-
-        if self._is_agentic_intent(user_text):
-            return GoalInference(
-                goal="ui_automation",
-                confidence=0.95,
-                reason="explicit_agentic_intent",
-                description="User asked for autonomous or agentic operation.",
-                session_type="agentic",
-            )
-
-        if (
-            "read" in normalized
-            or "article" in normalized
-            or "continue" in normalized
-            or "scroll" in normalized
-        ):
-            return GoalInference(
-                goal="reading_assistance",
-                confidence=0.72,
-                reason="reading_keywords",
-                description="User is asking to read or continue screen content.",
-                session_type="reading",
-            )
-
-        if any(token in normalized for token in ("code", "python", "bug", "test", "refactor")):
-            return GoalInference(
-                goal="coding_help",
-                confidence=0.7,
-                reason="coding_keywords",
-                description="User is asking for coding help.",
-                session_type="chat",
-            )
-
-        if has_action_intent(user_text):
-            return GoalInference(
-                goal="ui_automation",
-                confidence=0.68,
-                reason="action_intent_detected",
-                description="User requested a desktop action.",
-                session_type="agentic",
-            )
-
-        return GoalInference(
-            goal="general_conversation",
-            confidence=0.55,
-            reason="default_conversation",
-            description="General conversational request.",
-            session_type="chat",
-        )
-
-    @staticmethod
-    def _is_agentic_intent(user_text: str) -> bool:
-        lowered = str(user_text or "").strip().lower()
-        if not lowered:
-            return False
-        tokens = (
-            "go fully automatic",
-            "fully automatic",
-            "enter agentic mode",
-            "start agentic session",
-            "agentic mode",
-            "work autonomously",
-        )
-        return any(token in lowered for token in tokens)
-
-    def run_stt_diagnostic(
-        self,
-        *,
-        seconds: float = 5.0,
-        vad_filter: bool = True,
-        initial_prompt: str = "",
-    ) -> dict[str, object]:
-        if not self._state.mic_enabled:
-            return {
-                "ok": False,
-                "reason": "mic-disabled",
-                "message": "Microphone source is disabled.",
-            }
-
-        if not self._realtime_stt.is_available:
-            return {
-                "ok": False,
-                "reason": "stt-unavailable",
-                "message": "RealtimeSTT is unavailable.",
-            }
-
-        duration = max(1.0, min(float(seconds), 30.0))
-        capture_started = time.perf_counter()
-        wav_path = self._microphone.capture_to_wav(seconds=duration)
-        capture_ms = (time.perf_counter() - capture_started) * 1000.0
-
-        prosody: ProsodyAnalysis | None = None
-        try:
-            stt_started = time.perf_counter()
-            text = self._realtime_stt.transcribe(wav_path)
-            stt_ms = (time.perf_counter() - stt_started) * 1000.0
-            prosody = self._analyze_prosody(wav_path=str(wav_path), text=text or "")
-        finally:
-            self._safe_unlink(wav_path)
-
-        sanitized = sanitize_user_text(text or "")
-        preview = " ".join((sanitized or "").split())
-        if len(preview) > 180:
-            preview = f"{preview[:177]}..."
-        self._trace(
-            "stt.mic",
-            (
-                f"diagnostic capture_ms={round(capture_ms, 1)} stt_ms={round(stt_ms, 1)} "
-                f"chars={len(sanitized)} vad_filter={bool(vad_filter)} "
-                f"text={preview or '[empty]'}"
-            ),
-        )
-
-        return {
-            "ok": True,
-            "reason": "ok",
-            "seconds": duration,
-            "capture_ms": round(capture_ms, 1),
-            "stt_ms": round(stt_ms, 1),
-            "chars": len(sanitized),
-            "vad_filter": bool(vad_filter),
-            "stt_model": self.stt_model,
-            "prosody_enabled": bool(self._prosody.enabled),
-            "prosody": (
-                {
-                    "emotion": prosody.emotion,
-                    "question_likely": bool(prosody.question_likely),
-                    "confidence": round(float(prosody.confidence), 3),
-                    "rms": round(float(prosody.rms), 5),
-                    "zcr": round(float(prosody.zcr), 5),
-                    "pitch_start_hz": (
-                        round(float(prosody.pitch_start_hz), 1)
-                        if prosody.pitch_start_hz is not None
-                        else None
-                    ),
-                    "pitch_end_hz": (
-                        round(float(prosody.pitch_end_hz), 1)
-                        if prosody.pitch_end_hz is not None
-                        else None
-                    ),
-                    "analysis_ms": round(float(prosody.analysis_ms), 2),
-                }
-                if prosody is not None
-                else None
-            ),
-            "text": sanitized,
-        }
-
-    def _trace(self, stage: str, message: str) -> None:
-        stage_text = str(stage)
-        message_text = str(message)
-        trace_buffer = getattr(self, "_decision_trace", None)
-        if not isinstance(trace_buffer, deque):
-            trace_buffer = deque(maxlen=500)
-            self._decision_trace = trace_buffer
-
-        trace_buffer.append(
-            {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "stage": stage_text,
-                "message": message_text,
-            }
-        )
-        logger = logging.getLogger("app")
-        if logger.isEnabledFor(logging.DEBUG) or "error" in stage_text.lower():
-            try:
-                log_event(stage_text, message_text)
-            except Exception:
-                pass
-
-    @staticmethod
-    def _build_tts_service(settings: AppSettings, output_device: int | None = None):
-        provider = (settings.tts.provider or "kokoro").strip().lower()
-        if provider == "pykokoro":
-            try:
-                from app.tts.pykokoro_service import PyKokoroTtsService
-                return PyKokoroTtsService(settings.tts, output_device=output_device)
-            except Exception:
-                pass
-        elif provider == "pocket-tts":
-            try:
-                from app.tts.pocket_tts_service import PocketTtsService
-                return PocketTtsService(settings.tts, output_device=output_device)
-            except Exception:
-                pass
-        return KokoroTtsService(settings.tts, output_device=output_device)
+    # ── Voice capture ────────────────────────────────────────────────
 
     def record_and_chat(
         self,
@@ -2323,41 +892,28 @@ class SessionController:
     ) -> tuple[str, str]:
         if not self._state.mic_enabled:
             raise RuntimeError("Microphone source is disabled. Enable it and try again.")
-
         if not self._realtime_stt.is_available:
             raise RuntimeError(
-                "RealtimeSTT is not available. Install with: pip install realtimestt"
+                "RealtimeSTT is not available. Install with: pip install realtimestt",
             )
-
         capture_started = time.perf_counter()
         text = self._realtime_stt.record_until_silence(
             max_seconds=max(3.0, min(seconds, 30.0)),
             silence_seconds=float(self._vad_silence_seconds),
         )
         capture_ms = (time.perf_counter() - capture_started) * 1000.0
-        stt_ms = 0.0
-        prosody: ProsodyAnalysis | None = None
-
         if not text:
             raise RuntimeError("No speech was detected from microphone audio.")
-
         text = sanitize_user_text(text)
         if not text:
             raise RuntimeError("No clear speech was detected from microphone audio.")
-
-        preview = " ".join(text.strip().split())
-        if len(preview) > 180:
-            preview = f"{preview[:177]}..."
-        self._trace("stt.mic", f"record transcribe ({len(text)} chars): {preview}")
-
+        self._trace("stt.mic", f"record transcribe ({len(text)} chars)")
         response = self.chat_once_streaming(
             user_text=text,
             on_token=on_token,
             on_generation_status=on_generation_status,
             mode="record",
             capture_ms=capture_ms,
-            stt_ms=stt_ms,
-            user_vocal_tone=self._prosody_prompt_hint(prosody),
         )
         return text, response
 
@@ -2378,7 +934,6 @@ class SessionController:
         )
         if captured is None:
             return None
-
         wav_path, capture_ms = captured
         return self.process_live_capture(
             wav_path=wav_path,
@@ -2398,75 +953,42 @@ class SessionController:
     ) -> tuple[Path, float] | None:
         if not self._state.mic_enabled:
             raise RuntimeError("Microphone source is disabled. Enable it and try again.")
-
         if not self._realtime_stt.is_available:
             raise RuntimeError(
-                "RealtimeSTT is not available. Install with: pip install realtimestt"
+                "RealtimeSTT is not available. Install with: pip install realtimestt",
             )
 
         live_level_threshold = max(0.004, float(self._vad_level_threshold) * 0.4)
         if self._live_no_speech_streak > 0:
-            relax_factor = min(0.7, 0.18 * float(self._live_no_speech_streak))
-            live_level_threshold = max(0.002, live_level_threshold * (1.0 - relax_factor))
-        live_end_level_threshold = max(0.004, float(self._vad_level_threshold) * 0.4)
-        live_pause_base = max(0.3, float(self._vad_silence_seconds))
-        live_silence_seconds = min(6.0, max(1.5, live_pause_base + 0.4))
-        live_min_speech_before_stop = 1.5
-        live_start_grace_seconds = 0.8
-        live_max_speech_seconds = 18.0
-        live_wait_for_start_seconds = 12.0
-        live_use_webrtc_vad = self._live_no_speech_streak < 3
+            relax = min(0.7, 0.18 * float(self._live_no_speech_streak))
+            live_level_threshold = max(0.002, live_level_threshold * (1.0 - relax))
+        end_threshold = max(0.004, float(self._vad_level_threshold) * 0.4)
+        silence_seconds = min(6.0, max(1.5, float(self._vad_silence_seconds) + 0.4))
+        use_webrtc = self._live_no_speech_streak < 3
 
-        self._trace(
-            "pipeline.listen.start",
-            (
-                f"threshold={live_level_threshold:.4f} silence={live_silence_seconds:.2f}s "
-                f"streak={self._live_no_speech_streak} webrtcvad={live_use_webrtc_vad}"
-            ),
-        )
-
-        # Track the peak mic level seen during capture for diagnostic logging.
-        _peak_level: list[float] = [0.0]
-        _orig_on_audio_level = on_audio_level
-        def _tracking_level(lvl: float) -> None:
-            if lvl > _peak_level[0]:
-                _peak_level[0] = lvl
-            if _orig_on_audio_level:
-                _orig_on_audio_level(lvl)
-
-        capture_started = time.perf_counter()
         if on_generation_status:
             on_generation_status("listening")
+        capture_started = time.perf_counter()
         wav_path = self._microphone.capture_phrase_to_wav(
             max_seconds=max_listen_seconds,
-            max_wait_for_speech_start_seconds=live_wait_for_start_seconds,
-            use_webrtc_vad=live_use_webrtc_vad,
-            silence_seconds_to_stop=live_silence_seconds,
+            max_wait_for_speech_start_seconds=12.0,
+            use_webrtc_vad=use_webrtc,
+            silence_seconds_to_stop=silence_seconds,
             level_threshold=live_level_threshold,
-            end_level_threshold=live_end_level_threshold,
-            min_speech_seconds_before_stop=live_min_speech_before_stop,
-            speech_start_grace_seconds=live_start_grace_seconds,
-            max_seconds_after_speech_start=live_max_speech_seconds,
+            end_level_threshold=end_threshold,
+            min_speech_seconds_before_stop=1.5,
+            speech_start_grace_seconds=0.8,
+            max_seconds_after_speech_start=18.0,
             stop_requested=stop_requested,
             on_speech_start=None,
-            on_audio_level=_tracking_level,
+            on_audio_level=on_audio_level,
         )
         capture_ms = (time.perf_counter() - capture_started) * 1000.0
         if wav_path is None:
             self._live_no_speech_streak += 1
-            self._trace(
-                "pipeline.listen.no_speech",
-                (
-                    f"capture_ms={round(capture_ms, 1)} "
-                    f"peak_level={_peak_level[0]:.4f} "
-                    f"threshold={live_level_threshold:.4f} "
-                    f"streak={self._live_no_speech_streak}"
-                ),
-            )
             if on_generation_status:
                 on_generation_status(f"listening (retry {self._live_no_speech_streak})")
             return None
-
         return wav_path, capture_ms
 
     def capture_ptt_phrase(
@@ -2478,22 +1000,20 @@ class SessionController:
         on_generation_status: Callable[[str], None] | None = None,
         max_seconds: float = 30.0,
     ) -> tuple[Path, float] | None:
-        """Record while ptt_active_getter() is True; return (wav_path, capture_ms) or None."""
         if not self._state.mic_enabled:
             raise RuntimeError("Microphone source is disabled. Enable it and try again.")
         if not self._realtime_stt.is_available:
             raise RuntimeError(
-                "RealtimeSTT is not available. Install with: pip install realtimestt"
+                "RealtimeSTT is not available. Install with: pip install realtimestt",
             )
         if on_generation_status:
             on_generation_status("push-to-talk")
-        result = self._microphone.capture_while_ptt_active(
+        return self._microphone.capture_while_ptt_active(
             ptt_active_getter=ptt_active_getter,
             stop_requested=stop_requested,
             on_audio_level=on_audio_level,
             max_seconds=max_seconds,
         )
-        return result
 
     def process_live_capture(
         self,
@@ -2506,49 +1026,35 @@ class SessionController:
     ) -> tuple[str, str] | None:
         if not self._realtime_stt.is_available:
             return None
-
-        self._earcons.play("listening")
-        prosody: ProsodyAnalysis | None = None
+        try:
+            self._earcons.play("listening")
+        except Exception:
+            pass
         try:
             if on_generation_status:
                 on_generation_status("transcribing")
-            self._trace("pipeline.stt.start", f"capture_ms={round(capture_ms, 1)}")
             stt_started = time.perf_counter()
             text = self._realtime_stt.transcribe(wav_path)
             stt_ms = (time.perf_counter() - stt_started) * 1000.0
-            prosody = self._analyze_prosody(wav_path=str(wav_path), text=text or "")
-            self._trace("pipeline.stt.done", f"stt_ms={round(stt_ms, 1)} chars={len(text or '')}")
         finally:
-            self._safe_unlink(wav_path)
+            try:
+                Path(wav_path).unlink(missing_ok=True)
+            except Exception:
+                pass
 
         if not text:
             self._live_no_speech_streak += 1
-            self._trace(
-                "pipeline.stt.empty",
-                f"streak={self._live_no_speech_streak}",
-            )
             if on_generation_status:
                 on_generation_status("did not catch that, listening")
             return None
-
         text = sanitize_user_text(text)
         if not text:
             self._live_no_speech_streak += 1
-            self._trace(
-                "pipeline.stt.drop",
-                f"empty after sanitize streak={self._live_no_speech_streak}",
-            )
             if on_generation_status:
                 on_generation_status("did not catch that, listening")
             return None
-
         self._live_no_speech_streak = 0
-
-        preview = " ".join(text.strip().split())
-        if len(preview) > 180:
-            preview = f"{preview[:177]}..."
-        self._trace("stt.mic", f"live transcribe ({len(text)} chars): {preview}")
-
+        self._trace("stt.mic", f"live transcribe ({len(text)} chars)")
         response = self.chat_once_streaming(
             user_text=text,
             on_token=on_token,
@@ -2557,114 +1063,98 @@ class SessionController:
             mode="live",
             capture_ms=capture_ms,
             stt_ms=stt_ms,
-            user_vocal_tone=self._prosody_prompt_hint(prosody),
         )
-
         return text, response
 
-    def _analyze_prosody(self, *, wav_path: str, text: str) -> ProsodyAnalysis | None:
-        if not self._prosody.enabled:
-            return None
-        analysis = self._prosody.analyze_wav(wav_path, text=text)
-        if analysis is None:
-            return None
-        self._trace(
-            "stt.prosody",
-            (
-                f"emotion={analysis.emotion} question={analysis.question_likely} "
-                f"conf={round(analysis.confidence, 2)} rms={round(analysis.rms, 4)} "
-                f"zcr={round(analysis.zcr, 4)} ms={round(analysis.analysis_ms, 1)}"
-            ),
-        )
-        return analysis
-
-    def _prosody_prompt_hint(self, analysis: ProsodyAnalysis | None) -> str | None:
-        if analysis is None or not self._prosody_include_in_prompt:
-            return None
-        parts = [f"emotion={analysis.emotion}"]
-        if analysis.question_likely:
-            parts.append("question_tone=true")
-        parts.append(f"confidence={round(analysis.confidence, 2)}")
-        return ", ".join(parts)
-
-    def _continue_session_after_approval(self) -> str:
-        if self._stop_agentic_for_emergency(source="continue_after_approval"):
-            return (
-                "Emergency stop is active. Reset emergency stop before resuming."
-            )
-        return ""
-
-    def _stop_agentic_for_emergency(self, *, source: str) -> bool:
-        if not bool(getattr(self, "emergency_stop_active", False)):
-            return False
-
-        mode = str(getattr(self, "_autonomy_mode", "interactive") or "interactive").strip().lower()
-        if mode == "automatic":
-            self._autonomy_mode = "interactive"
-            state = getattr(self, "_state", None)
-            if state is not None:
-                setattr(state, "autonomy_mode", "interactive")
-            self._sync_action_confirmation_policy()
-
-        self._trace(
-            "autonomy.safety",
-            f"Emergency stop is active (source={source}); mode set to interactive.",
-        )
-        return True
-
-    def _narrate_agentic_step(self, text: str) -> None:
-        spoken = " ".join(str(text or "").split()).strip()
-        if not spoken:
-            return
-        if len(spoken) > 220:
-            spoken = spoken[:217].rstrip() + "..."
-        self.speak_text(spoken)
-
-    def _plan_agentic_step(
+    def run_stt_diagnostic(
         self,
-        objective: str,
-        screen_text: str | None,
-        recent_events: list[dict[str, Any]],
-        remaining_steps: int,
-    ) -> dict[str, Any]:
-        # No separate planner: single agent handles conversation and tools.
-        # Return done so autonomy does not run a separate planning LLM.
-        self._trace("agentic.plan.output", "done=true reason=single_agent_no_planner")
+        *,
+        seconds: float = 5.0,
+        vad_filter: bool = True,
+        initial_prompt: str = "",
+    ) -> dict[str, object]:
+        if not self._state.mic_enabled:
+            return {"ok": False, "reason": "mic-disabled", "message": "Microphone source is disabled."}
+        if not self._realtime_stt.is_available:
+            return {"ok": False, "reason": "stt-missing", "message": "RealtimeSTT not installed."}
+        try:
+            text = self._realtime_stt.record_until_silence(
+                max_seconds=max(3.0, min(seconds, 30.0)),
+                silence_seconds=float(self._vad_silence_seconds),
+            )
+        except Exception as exc:
+            return {"ok": False, "reason": "exception", "message": str(exc)}
         return {
-            "done": True,
-            "progress_note": "",
-            "next_tool": "",
-            "next_args": {},
+            "ok": True,
+            "stt_model": self.stt_model,
+            "transcription": (text or "").strip(),
+            "vad_filter": bool(vad_filter),
+            "initial_prompt": initial_prompt or "",
         }
 
-    def _continue_reading_after_approval(self) -> str:
-        return self._continue_session_after_approval()
+    # ── Internals ───────────────────────────────────────────────────
 
-    def _handle_steering_command(self, user_text: str) -> str | None:
-        text = str(user_text or "").strip()
-        if not text.startswith("@"):
-            return None
+    def _apply_assistant_preferences(self) -> None:
+        length_scale = getattr(self._settings.assistant, "tts_length_scale", 1.0) or 1.0
+        set_length = getattr(self._tts_engine, "set_length_scale", None)
+        if callable(set_length):
+            try:
+                set_length(length_scale)
+            except Exception:
+                log.debug("tts engine rejected length scale", exc_info=True)
 
-        lowered = text.lower()
-        if lowered.startswith("@mode"):
-            parts = lowered.split(maxsplit=1)
-            if len(parts) < 2:
-                return "Mode command requires a value: @mode manual|interactive|automatic"
-            target = parts[1].strip()
-            if target not in {"manual", "interactive", "automatic"}:
-                return "Unknown mode. Use: @mode manual|interactive|automatic"
-            self.set_autonomy_mode(target)
-            return f"Autonomy mode set to {self._autonomy_mode}."
-
-        return None
+    def _trace(self, stage: str, message: str) -> None:
+        from datetime import datetime, timezone
+        self._decision_trace.append({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "stage": stage,
+            "message": message,
+        })
+        if "error" in stage.lower():
+            try:
+                log_event(stage, message)
+            except Exception:
+                pass
 
     @staticmethod
-    def _safe_unlink(path: Path) -> None:
-        try:
-            path.unlink(missing_ok=True)
-        except Exception:
-            return
+    def _build_tts_service(settings: AppSettings, output_device: int | None = None) -> Any:
+        provider = (settings.tts.provider or "kokoro").strip().lower()
+        if provider == "pykokoro":
+            try:
+                from app.tts.pykokoro_service import PyKokoroTtsService
+                return PyKokoroTtsService(settings.tts, output_device=output_device)
+            except Exception:
+                log.warning("pykokoro init failed; falling back to kokoro", exc_info=True)
+        elif provider == "pocket-tts":
+            try:
+                from app.tts.pocket_tts_service import PocketTtsService
+                return PocketTtsService(settings.tts, output_device=output_device)
+            except Exception:
+                log.warning("pocket-tts init failed; falling back to kokoro", exc_info=True)
+        from app.tts.kokoro_service import KokoroTtsService
+        return KokoroTtsService(settings.tts, output_device=output_device)
 
-    def _build_agno_tools_from_registry(self) -> list[Any]:
-        """Stub: agent uses MCP tools from config; no registry tools."""
-        return []
+    # ── Shutdown ────────────────────────────────────────────────────
+
+    def shutdown(self) -> None:
+        if self._mcp_server_runner is not None:
+            try:
+                self._mcp_server_runner.stop()
+            except Exception:
+                log.debug("mcp stop failed", exc_info=True)
+        try:
+            self._tts.stop()
+        except Exception:
+            pass
+        try:
+            self._summary_worker.stop()
+        except Exception:
+            pass
+        try:
+            t = threading.Thread(target=self._realtime_stt.stop_context, daemon=True)
+            t.start()
+            t.join(timeout=2.0)
+        except Exception:
+            pass
+
+

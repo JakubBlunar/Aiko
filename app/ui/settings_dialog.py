@@ -56,7 +56,6 @@ class SettingsDialog(PersistentGeometryMixin, QDialog):
         self._tabs.addTab(self._build_model_tab(), "Model")
         self._tabs.addTab(self._build_audio_tab(), "Audio")
         self._tabs.addTab(self._build_advanced_tab(), "Advanced")
-        self._tabs.addTab(self._build_persona_tab(), "Persona")
         layout.addWidget(self._tabs)
 
         layout.addWidget(QLabel(""))
@@ -750,114 +749,6 @@ class SettingsDialog(PersistentGeometryMixin, QDialog):
         self._populate_input_devices(self._fetched_input_devices)
         self._populate_output_devices(self._fetched_output_devices)
 
-    def _build_persona_tab(self) -> QWidget:
-        from pathlib import Path
-
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        form = QFormLayout()
-        layout.addLayout(form)
-
-        persona = getattr(self._session._settings, "persona", None)
-
-        self._persona_enabled = QCheckBox("Show persona avatar")
-        self._persona_enabled.setChecked(bool(getattr(persona, "enabled", False)))
-        form.addRow(self._persona_enabled)
-
-        self._persona_mode_combo = QComboBox()
-        self._persona_mode_combo.addItem("Embedded (left of chat)", "embedded")
-        self._persona_mode_combo.addItem("Overlay (always-on-top window)", "overlay")
-        mode_current = getattr(persona, "mode", "embedded")
-        for i in range(self._persona_mode_combo.count()):
-            if self._persona_mode_combo.itemData(i) == mode_current:
-                self._persona_mode_combo.setCurrentIndex(i)
-                break
-        form.addRow("Mode:", self._persona_mode_combo)
-
-        model_row = QHBoxLayout()
-        self._persona_model_edit = QLineEdit(str(getattr(persona, "model_path", "") or ""))
-        self._persona_model_edit.setPlaceholderText("data/avatars/<name>/<name>.model3.json")
-        browse_btn = QPushButton("Browse...")
-
-        def _pick_model() -> None:
-            start = self._persona_model_edit.text().strip() or "data/avatars"
-            path, _ = QFileDialog.getOpenFileName(
-                self,
-                "Choose Live2D model",
-                start,
-                "Live2D model (*.model3.json)",
-            )
-            if path:
-                project_root = Path(__file__).resolve().parents[2]
-                try:
-                    rel = Path(path).resolve().relative_to(project_root)
-                    self._persona_model_edit.setText(str(rel).replace("\\", "/"))
-                except Exception:
-                    self._persona_model_edit.setText(path)
-
-        browse_btn.clicked.connect(_pick_model)
-        model_row.addWidget(self._persona_model_edit, stretch=1)
-        model_row.addWidget(browse_btn)
-        form.addRow("Model file:", model_row)
-
-        self._persona_scale_spin = QDoubleSpinBox()
-        self._persona_scale_spin.setRange(0.05, 2.0)
-        self._persona_scale_spin.setSingleStep(0.05)
-        self._persona_scale_spin.setValue(float(getattr(persona, "scale", 0.25)))
-        form.addRow("Scale:", self._persona_scale_spin)
-
-        self._persona_anchor_combo = QComboBox()
-        for value, label in [
-            ("bottom-center", "Bottom center"),
-            ("bottom-left", "Bottom left"),
-            ("bottom-right", "Bottom right"),
-            ("center", "Center"),
-            ("top-center", "Top center"),
-        ]:
-            self._persona_anchor_combo.addItem(label, value)
-        anchor_current = getattr(persona, "anchor", "bottom-center")
-        for i in range(self._persona_anchor_combo.count()):
-            if self._persona_anchor_combo.itemData(i) == anchor_current:
-                self._persona_anchor_combo.setCurrentIndex(i)
-                break
-        form.addRow("Anchor:", self._persona_anchor_combo)
-
-        self._persona_mirror_checkbox = QCheckBox("Mirror horizontally")
-        self._persona_mirror_checkbox.setChecked(bool(getattr(persona, "mirror", False)))
-        form.addRow("", self._persona_mirror_checkbox)
-
-        self._persona_lipgain_spin = QDoubleSpinBox()
-        self._persona_lipgain_spin.setRange(0.1, 4.0)
-        self._persona_lipgain_spin.setSingleStep(0.1)
-        self._persona_lipgain_spin.setValue(float(getattr(persona, "lip_sync_gain", 1.2)))
-        form.addRow("Lip-sync gain:", self._persona_lipgain_spin)
-
-        # Expression mapping editor.
-        layout.addWidget(QLabel("Expression mapping (reaction → Live2D expression name):"))
-        mapping_group = QGroupBox()
-        mapping_form = QFormLayout(mapping_group)
-        self._persona_expression_edits: dict[str, QLineEdit] = {}
-        existing = dict(getattr(persona, "expression_map", {}) or {})
-        for key in [
-            "neutral", "cheerful", "excited", "friendly", "calm",
-            "serious", "sad", "gentle", "angry", "surprised",
-        ]:
-            edit = QLineEdit(str(existing.get(key, "")))
-            edit.setPlaceholderText("expression name (blank = none)")
-            self._persona_expression_edits[key] = edit
-            mapping_form.addRow(key.capitalize() + ":", edit)
-        layout.addWidget(mapping_group)
-
-        hint = QLabel(
-            "Persona requires QtWebEngine and the Live2D Cubism Core runtime. "
-            "Run scripts/fetch_live2d_core.py to install them."
-        )
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: #64748b; font-size: 11px;")
-        layout.addWidget(hint)
-        layout.addStretch()
-        return widget
-
     def _populate_input_devices(self, devices: list[tuple[int, str]]) -> None:
         self._input_device_combo.clear()
         self._input_device_combo.addItem("(Default)", None)
@@ -1014,34 +905,6 @@ class SettingsDialog(PersistentGeometryMixin, QDialog):
                 "chat_llm_context_window": ctx_value,
                 "chat_llm_extra_headers": extra_headers_value,
             }
-        persona_settings = getattr(settings, "persona", None)
-        persona_kwargs: dict = {}
-        if persona_settings is not None and hasattr(self, "_persona_enabled"):
-            persona_settings.enabled = self._persona_enabled.isChecked()
-            persona_settings.mode = str(
-                self._persona_mode_combo.currentData() or "embedded"
-            )
-            persona_settings.model_path = self._persona_model_edit.text().strip() or persona_settings.model_path
-            persona_settings.scale = float(self._persona_scale_spin.value())
-            persona_settings.anchor = str(
-                self._persona_anchor_combo.currentData() or "bottom-center"
-            )
-            persona_settings.mirror = self._persona_mirror_checkbox.isChecked()
-            persona_settings.lip_sync_gain = float(self._persona_lipgain_spin.value())
-            persona_settings.expression_map = {
-                key: edit.text().strip()
-                for key, edit in self._persona_expression_edits.items()
-            }
-            persona_kwargs = {
-                "persona_enabled": persona_settings.enabled,
-                "persona_mode": persona_settings.mode,
-                "persona_model_path": persona_settings.model_path,
-                "persona_scale": persona_settings.scale,
-                "persona_anchor": persona_settings.anchor,
-                "persona_mirror": persona_settings.mirror,
-                "persona_lip_sync_gain": persona_settings.lip_sync_gain,
-                "persona_expression_map": persona_settings.expression_map,
-            }
         try:
             save_runtime_preferences(
                 chat_model=self._session.chat_model,
@@ -1057,7 +920,6 @@ class SettingsDialog(PersistentGeometryMixin, QDialog):
                 pocket_tts_voice=getattr(settings.tts, "pocket_tts_voice", None),
                 pocket_tts_temp=getattr(settings.tts, "pocket_tts_temp", None),
                 enable_microphone=getattr(self._session, "_mic_enabled", True),
-                **persona_kwargs,
                 **chat_llm_kwargs,
             )
         except Exception:

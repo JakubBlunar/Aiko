@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "categories": {
+    "english_level": {
+      "type": "single_value",
+      "allowed": ["A2", "B1", "B2", "C1", "C2", "unknown"],
+      "default": "unknown",
+      "description": "Estimated CEFR level based on observed range, complexity, and accuracy."
+    },
+    "recurring_mistakes": {
+      "type": "list",
+      "description": "Specific grammar/usage errors seen multiple times. Short phrases like 'drops articles before nouns' or 'confuses past simple and present perfect'.",
+      "max_items": 12
+    },
+    "vocabulary_taught": {
+      "type": "list",
+      "description": "Words or phrases Aiko has introduced or that the user has actively learned. Each item is a short string ('fortnight', 'on the fence', etc.).",
+      "max_items": 50
+    },
+    "topics_user_enjoys": {
+      "type": "list",
+      "description": "Subjects the user has shown interest in across conversations. Short tags ('coding', 'cats', 'sci-fi', etc.).",
+      "max_items": 20
+    },
+    "correction_style_preference": {
+      "type": "single_value",
+      "allowed": ["minimal", "inline", "end_of_turn", "unknown"],
+      "default": "minimal",
+      "description": "How the user reacted to corrections previously."
+    },
+    "facts_about_user": {
+      "type": "list",
+      "description": "Concrete details the user has shared (job, location, hobbies, names of people in their life).",
+      "max_items": 30
+    }
+  },
+  "instructions_for_judge": [
+    "Only update fields where new evidence appeared in the latest turns.",
+    "Never invent facts. Empty list is fine.",
+    "Keep entries short. No paragraphs.",
+    "If something contradicts an existing entry, replace it; don't keep both."
+  ]
+}
