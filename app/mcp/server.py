@@ -322,6 +322,43 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"get_narrative_weaver_stats failed: {exc}"
 
     @mcp.tool()
+    def get_cadence_stats() -> str:
+        """Return ProsodyDispatcher counters (Phase 5b)."""
+        try:
+            dispatcher = getattr(session, "_prosody", None)
+            if dispatcher is None:
+                return json.dumps({"enabled": False}, indent=2)
+            return json.dumps(
+                {"enabled": True, **dispatcher.stats()}, indent=2, default=str,
+            )
+        except Exception as exc:
+            return f"get_cadence_stats failed: {exc}"
+
+    @mcp.tool()
+    def analyze_cadence(text: str, reaction: str = "neutral") -> str:
+        """Show how Aiko would prosody-analyze a sentence right now."""
+        try:
+            dispatcher = getattr(session, "_prosody", None)
+            if dispatcher is None:
+                return json.dumps({"enabled": False}, indent=2)
+            params = dispatcher.analyze(text, reaction=reaction)
+            return json.dumps(
+                {
+                    "reaction": params.reaction,
+                    "pause_before_ms": params.pause_before_ms,
+                    "pause_after_ms": params.pause_after_ms,
+                    "prefix_text": params.prefix_text,
+                    "prefix_reaction": params.prefix_reaction,
+                    "speed_hint": params.speed_hint,
+                    "rationale": params.rationale,
+                },
+                indent=2,
+                default=str,
+            )
+        except Exception as exc:
+            return f"analyze_cadence failed: {exc}"
+
+    @mcp.tool()
     def get_proactive_stats() -> str:
         """Return ProactiveDirector counters (prepared vs LLM path)."""
         try:
