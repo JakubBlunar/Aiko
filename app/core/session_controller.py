@@ -381,6 +381,24 @@ class SessionController:
             self._relationship_store = None
             self._relationship_tracker = None
 
+        # Phase 4a: agenda store + LLM grooming worker.
+        self._agenda_store = None
+        self._agenda_worker = None
+        try:
+            from app.core.agenda import AgendaStore, AgendaWorker
+
+            self._agenda_store = AgendaStore(self._chat_db)
+            self._agenda_worker = AgendaWorker(
+                ollama=self._ollama,
+                store=self._agenda_store,
+                model=self._effective_chat_model,
+                every_n_turns=settings.agent.agenda_groom_every_n_turns,
+            )
+        except Exception:
+            log.warning("AgendaStore/AgendaWorker init failed", exc_info=True)
+            self._agenda_store = None
+            self._agenda_worker = None
+
         # Phase 3c: promise extractor (regex post-turn + LLM speaking-window).
         # Both tracks persist promises as ``kind="promise"`` memories so RAG
         # surfaces them naturally; ProactiveDirector benefits implicitly.
@@ -458,6 +476,7 @@ class SessionController:
             profile=self._render_user_profile_block,
             user_state=self._render_user_state_block,
             relationship=self._render_relationship_block,
+            agenda=self._render_agenda_block,
         )
         self._prompt_assembler.set_pinned_self_memories_provider(
             self._top_pinned_self_memories,
@@ -1429,6 +1448,7 @@ class SessionController:
                 user_text=cleaned,
                 reaction=getattr(result, "reaction", "neutral") or "neutral",
                 assistant_text=getattr(result, "text", "") or "",
+                raw_assistant_text=getattr(result, "raw_text", "") or "",
             )
         except Exception:
             log.debug("post-turn inner life failed", exc_info=True)
@@ -1540,6 +1560,17 @@ class SessionController:
             log.debug("relationship block render failed", exc_info=True)
             return ""
 
+    def _render_agenda_block(self) -> str:
+        """Phase 4a: open agenda items as a small bullet block."""
+        store = getattr(self, "_agenda_store", None)
+        if store is None:
+            return ""
+        try:
+            return store.render_block(self._user_id)
+        except Exception:
+            log.debug("agenda block render failed", exc_info=True)
+            return ""
+
     def _top_pinned_self_memories(self, *, limit: int = 5) -> list[str]:
         """Phase 2d: hot-path provider for pinned self-memory bullets.
 
@@ -1601,6 +1632,56 @@ class SessionController:
                 self._notify_memory_added(mem)
             except Exception:
                 pass
+
+    def _maybe_schedule_agenda_groom_job(self) -> None:
+        """Phase 4a: enqueue AgendaWorker grooming pass on the speaking window."""
+        worker = getattr(self, "_agenda_worker", None)
+        if worker is None:
+            return
+        try:
+            if not worker.should_run(self._user_id):
+                return
+        except Exception:
+            log.debug("agenda should_run failed", exc_info=True)
+            return
+
+        session_key = self.session_key
+        user_id = self._user_id
+        history_window = 16
+
+        def _history_provider() -> list[tuple[str, str]]:
+            try:
+                rows = self._chat_db.get_messages(session_key, limit=history_window)
+            except Exception:
+                return []
+            return [
+                (str(r.role or ""), str(r.content or ""))
+                for r in rows
+                if r.role in ("user", "assistant")
+            ]
+
+        def _job(_stop_flag: Any) -> None:
+            if _stop_flag is not None and _stop_flag.is_set():
+                return
+            try:
+                worker.maybe_run(
+                    user_id, history_provider=_history_provider,
+                )
+            except Exception:
+                log.debug("agenda groom job raised", exc_info=True)
+
+        try:
+            from app.core.speaking_window_scheduler import ScheduledJob
+
+            self._scheduler.submit(ScheduledJob(
+                name="agenda_groom",
+                priority=70,
+                estimated_seconds=4.5,
+                callable=_job,
+                dedupe_key="agenda_groom",
+            ))
+        except Exception:
+            log.debug("agenda groom submit failed", exc_info=True)
 
     def _maybe_schedule_promise_llm_job(self) -> None:
         """Phase 3c: enqueue the LLM promise extractor in the speaking window."""
@@ -1841,6 +1922,7 @@ class SessionController:
         user_text: str,
         reaction: str,
         assistant_text: str = "",
+        raw_assistant_text: str = "",
     ) -> None:
         """Run all post-turn inner-life updates (cheap, no LLM).
 
@@ -1958,6 +2040,29 @@ class SessionController:
                 self._maybe_schedule_promise_llm_job()
             except Exception:
                 log.debug("promise extraction failed", exc_info=True)
+
+        # Phase 4a: inline [[agenda:...]] tags in raw assistant output.
+        agenda_store = getattr(self, "_agenda_store", None)
+        if agenda_store is not None and raw_assistant_text:
+            try:
+                from app.core.agenda import extract_inline_tags
+
+                for goal_text, importance in extract_inline_tags(raw_assistant_text):
+                    agenda_store.add(
+                        self._user_id,
+                        goal=goal_text,
+                        importance=importance,
+                        source_session=self.session_key,
+                    )
+            except Exception:
+                log.debug("agenda inline extraction failed", exc_info=True)
+        agenda_worker = getattr(self, "_agenda_worker", None)
+        if agenda_worker is not None:
+            try:
+                agenda_worker.notify_user_turn()
+                self._maybe_schedule_agenda_groom_job()
+            except Exception:
+                log.debug("agenda groom schedule failed", exc_info=True)
 
     # ── Voice capture ────────────────────────────────────────────────
 

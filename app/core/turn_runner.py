@@ -74,6 +74,7 @@ class TurnResult:
     compactions_run: int = 0  # synchronous compactions invoked this turn
     first_token_ms: float | None = None  # Phase 1c: time-to-first-stream-delta
     filler_emitted: bool = False  # Phase 1c: did the slow-first-token filler fire?
+    raw_text: str = ""  # Phase 4a: full pre-strip output (for tag extraction)
 
 
 class TurnRunner:
@@ -428,6 +429,7 @@ class TurnRunner:
             compactions_run=compactions_run,
             first_token_ms=first_token_ms,
             filler_emitted=self._filler.fired,
+            raw_text=full_raw,
         )
 
     # ── helpers ───────────────────────────────────────────────────────

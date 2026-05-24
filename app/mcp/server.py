@@ -197,6 +197,40 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"get_user_profile failed: {exc}"
 
     @mcp.tool()
+    def list_agenda(status: str = "open", limit: int = 20) -> str:
+        """List agenda items (Phase 4a). status: open | done | dropped | all."""
+        try:
+            store = getattr(session, "_agenda_store", None)
+            if store is None:
+                return json.dumps({"enabled": False}, indent=2)
+            if status == "all":
+                items = store.list_all(session._user_id, limit=int(limit))
+            else:
+                items = [
+                    i for i in store.list_all(session._user_id, limit=int(limit) * 4)
+                    if i.status == status
+                ][: int(limit)]
+            return json.dumps(
+                {"items": [i.to_dict() for i in items]},
+                indent=2, default=str,
+            )
+        except Exception as exc:
+            return f"list_agenda failed: {exc}"
+
+    @mcp.tool()
+    def get_agenda_stats() -> str:
+        """Return AgendaWorker counters (Phase 4a)."""
+        try:
+            worker = getattr(session, "_agenda_worker", None)
+            if worker is None:
+                return json.dumps({"enabled": False}, indent=2)
+            return json.dumps(
+                {"enabled": True, **worker.stats()}, indent=2, default=str,
+            )
+        except Exception as exc:
+            return f"get_agenda_stats failed: {exc}"
+
+    @mcp.tool()
     def get_promise_stats() -> str:
         """Return PromiseExtractor counters (Phase 3c)."""
         try:
