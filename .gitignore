@@ -4,6 +4,9 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+node_modules/
+web/dist/
+web/.vite/
 config/*.user.json
 config/user.json
 data/conversation_memory.jsonl
@@ -16,3 +19,4 @@ data/browser-profile/
 *.wav
 *.log
 realtimesst.log
+live-2d-models

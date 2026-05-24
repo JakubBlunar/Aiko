@@ -1,7 +1,7 @@
 [project]
 name = "english-speaking-assistant"
 version = "0.2.0"
-description = "Lean Aiko: anime-waifu English tutor with direct Ollama, RealtimeSTT, and Pocket-TTS"
+description = "Lean Aiko: anime-waifu AI companion with direct Ollama, RealtimeSTT, and Pocket-TTS"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

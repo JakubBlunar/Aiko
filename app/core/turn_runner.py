@@ -9,7 +9,7 @@ Replaces the old ``_AgentWrapper`` + ``AgentController`` + ``TurnTriage`` +
   4. Strip meta tags for display; emit incremental text via ``on_token``.
   5. Chunk text into sentences for TTS via ``on_tts_chunk``.
   6. Persist the user + assistant messages.
-  7. Kick off background workers (summary, learner profile).
+  7. Kick off background workers (summary).
 
 No tool-calling in v1 -- that hooks in later through
 ``OllamaClient.chat_with_tools`` without touching the rest of the pipeline.
@@ -23,7 +23,6 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from app.core.chat_database import ChatDatabase
-from app.core.learner_profile import LearnerProfile
 from app.core.prompt_assembler import PromptAssembler
 from app.core.services.response_text_service import (
     parse_reaction_at_start,
@@ -70,7 +69,6 @@ class TurnRunner:
         context_window: int,
         max_tokens: int,
         temperature: float,
-        learner_profile: LearnerProfile | None = None,
         summary_worker: SummaryWorker | None = None,
     ) -> None:
         self._ollama = ollama
@@ -80,7 +78,6 @@ class TurnRunner:
         self._context_window = max(2048, int(context_window))
         self._max_tokens = max(64, int(max_tokens))
         self._temperature = float(temperature)
-        self._profile = learner_profile
         self._summary = summary_worker
         self._stop = threading.Event()
 
@@ -273,14 +270,3 @@ class TurnRunner:
                 self._summary.notify_turn_done(session_key)
             except Exception as exc:
                 log.debug("summary notify failed: %s", exc)
-        if self._profile is None:
-            return
-        try:
-            count = self._db.get_message_count(session_key)
-        except Exception:
-            return
-        # ``count`` is total messages stored; one turn = (user, assistant).
-        turns = count // 2
-        every_n = max(1, int(self._profile.update_every_n_turns))
-        if turns > 0 and turns % every_n == 0:
-            self._profile.maybe_update_async(session_key)

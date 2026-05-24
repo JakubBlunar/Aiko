@@ -1,0 +1,217 @@
+import { useCallback, useEffect, useRef } from "react";
+import { useAssistantStore } from "../store";
+import type { WsClientCommand, WsServerEvent } from "../types";
+
+const WS_URL = "/ws";
+const RECONNECT_DELAY_MS = 1500;
+const PING_INTERVAL_MS = 25_000;
+
+function resolveWsUrl(): string {
+  // In dev, Vite proxies /ws -> backend. In prod we share an origin with FastAPI.
+  const proto = window.location.protocol === "https:" ? "wss" : "ws";
+  return `${proto}://${window.location.host}${WS_URL}`;
+}
+
+/**
+ * Single websocket client. Auto-reconnects on close. Caller gets a `send`
+ * function for issuing commands; everything else lives in the Zustand store.
+ */
+export function useAssistantSocket(): {
+  send: (cmd: WsClientCommand) => void;
+} {
+  const socketRef = useRef<WebSocket | null>(null);
+  const reconnectTimeoutRef = useRef<number | null>(null);
+  const pingIntervalRef = useRef<number | null>(null);
+  const closedByUser = useRef(false);
+
+  const setConnection = useAssistantStore((s) => s.setConnection);
+
+  const handleEvent = useCallback((evt: WsServerEvent) => {
+    const store = useAssistantStore.getState();
+
+    switch (evt.type) {
+      case "hello":
+        store.setSessionKey(evt.session);
+        store.setModel(evt.model);
+        store.setTtsEnabled(evt.tts_enabled);
+        // Re-sync voice mode if the backend was already running a loop
+        // when this socket connected (e.g. page refresh mid-session).
+        store.setVoiceMode(evt.voice_active ? "listening" : "off");
+        break;
+
+      case "session_changed":
+        store.setSessionKey(evt.session);
+        store.clearMessages();
+        break;
+
+      case "history_cleared":
+        store.clearMessages();
+        store.pushSystemMessage("History cleared.");
+        break;
+
+      case "message":
+        // System messages (status events from background workers, etc.)
+        // are pushed inline. User messages from the backend's
+        // _notify_message hook (typed input or voice STT result) are
+        // appended as user bubbles. Assistant turns are streamed via
+        // the "token" event; we ignore the trailing "message" envelope
+        // for assistants to avoid duplicating the bubble.
+        if (evt.role === "system") {
+          store.pushSystemMessage(evt.content);
+        } else if (evt.role === "user") {
+          store.appendUserMessage(evt.content);
+        }
+        break;
+
+      case "token":
+        if (!store.turnInProgress) {
+          store.setTurnInProgress(true);
+          store.appendAssistantBubble();
+        }
+        store.appendAssistantToken(evt.chunk);
+        break;
+
+      case "turn_done":
+        store.finishAssistantBubble();
+        store.setMetrics(evt.metrics || {});
+        store.setTurnInProgress(false);
+        store.setStatus("");
+        break;
+
+      case "tts_state":
+        store.setTtsState(
+          evt.event === "start" ? "speaking" : "idle",
+          evt.text ?? "",
+          evt.reaction ?? "neutral",
+        );
+        // While voice mode is on, mirror tts_state into voiceMode so the
+        // mic-button label reads "speaking" while Aiko is talking.
+        if (store.voiceMode !== "off") {
+          if (evt.event === "start") {
+            store.setVoiceMode("speaking");
+          } else if (store.voiceMode === "speaking") {
+            store.setVoiceMode("listening");
+          }
+        }
+        break;
+
+      case "stt_partial":
+        store.setStatus(`Listening: ${evt.text}`);
+        break;
+
+      case "stt_final":
+        store.setLastTranscript(evt.text);
+        store.setStatus("");
+        break;
+
+      case "voice_state":
+        store.setVoiceMode(evt.state);
+        if (evt.state === "off") {
+          store.setAudioLevel(0);
+        }
+        break;
+
+      case "audio_level":
+        store.setAudioLevel(evt.level);
+        break;
+
+      case "status":
+        store.setStatus(evt.message);
+        break;
+
+      case "error":
+        store.pushSystemMessage(`Error: ${evt.message}`);
+        store.setTurnInProgress(false);
+        break;
+
+      case "pong":
+        break;
+    }
+  }, []);
+
+  const connect = useCallback(() => {
+    if (socketRef.current && socketRef.current.readyState <= WebSocket.OPEN) {
+      return;
+    }
+    setConnection({ status: "connecting", lastError: null });
+    const ws = new WebSocket(resolveWsUrl());
+    socketRef.current = ws;
+
+    ws.addEventListener("open", () => {
+      setConnection({ status: "connected", lastError: null });
+      if (pingIntervalRef.current) {
+        window.clearInterval(pingIntervalRef.current);
+      }
+      pingIntervalRef.current = window.setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "ping" }));
+        }
+      }, PING_INTERVAL_MS);
+    });
+
+    ws.addEventListener("message", (event) => {
+      try {
+        const parsed = JSON.parse(event.data) as WsServerEvent;
+        handleEvent(parsed);
+      } catch {
+        // ignore malformed frames
+      }
+    });
+
+    const scheduleReconnect = () => {
+      if (closedByUser.current) {
+        return;
+      }
+      if (reconnectTimeoutRef.current !== null) {
+        return;
+      }
+      reconnectTimeoutRef.current = window.setTimeout(() => {
+        reconnectTimeoutRef.current = null;
+        connect();
+      }, RECONNECT_DELAY_MS);
+    };
+
+    ws.addEventListener("close", () => {
+      setConnection({ status: "disconnected", lastError: null });
+      if (pingIntervalRef.current) {
+        window.clearInterval(pingIntervalRef.current);
+        pingIntervalRef.current = null;
+      }
+      socketRef.current = null;
+      scheduleReconnect();
+    });
+
+    ws.addEventListener("error", () => {
+      setConnection({ status: "disconnected", lastError: "websocket error" });
+    });
+  }, [handleEvent, setConnection]);
+
+  useEffect(() => {
+    closedByUser.current = false;
+    connect();
+    return () => {
+      closedByUser.current = true;
+      if (reconnectTimeoutRef.current !== null) {
+        window.clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
+      if (pingIntervalRef.current !== null) {
+        window.clearInterval(pingIntervalRef.current);
+        pingIntervalRef.current = null;
+      }
+      socketRef.current?.close();
+      socketRef.current = null;
+    };
+  }, [connect]);
+
+  const send = useCallback((cmd: WsClientCommand) => {
+    const ws = socketRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      console.warn("WS not ready; dropping command", cmd);
+      return;
+    }
+    ws.send(JSON.stringify(cmd));
+  }, []);
+
+  return { send };
+}

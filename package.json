@@ -1,0 +1,15 @@
+{
+  "name": "aiko-dev",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Top-level dev runner for the Aiko assistant (FastAPI backend + Vite React frontend).",
+  "scripts": {
+    "dev": "concurrently --kill-others-on-fail --names api,web --prefix-colors magenta,cyan \"python -m app.web\" \"npm --prefix web run dev\"",
+    "dev:api": "python -m app.web",
+    "dev:web": "npm --prefix web run dev",
+    "build:web": "npm --prefix web run build"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}

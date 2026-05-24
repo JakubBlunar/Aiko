@@ -78,25 +78,6 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"Failed to clear history: {exc}"
 
     @mcp.tool()
-    def get_learner_profile() -> str:
-        """Return the current English-tutor profile rows for this session."""
-        try:
-            db = session._chat_db
-            notes = db.get_personality_notes(session.session_key)
-        except Exception as exc:
-            return f"Error: {exc}"
-        out = [
-            {
-                "category": n.category,
-                "note": n.note,
-                "confidence": round(float(n.confidence), 3),
-                "updated_at": n.updated_at,
-            }
-            for n in notes
-        ]
-        return json.dumps(out, indent=2, default=str)
-
-    @mcp.tool()
     def list_agent_tools() -> str:
         """Return JSON list of agent tools (empty in v1, hooked in via TurnRunner later)."""
         return json.dumps([], indent=2)

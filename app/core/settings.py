@@ -232,10 +232,6 @@ class AgentSettings:
     personality_decay_rate: float = 0.1
     personality_max_notes: int = 40
     personality_token_budget: int = 300
-    # Run the personality judge once every N user turns (1 = every turn).
-    # The 0.5B judge model is expensive on shared GPUs and frequently
-    # returns malformed JSON; throttling reduces wasted GPU time.
-    personality_update_every_n_turns: int = 4
     proactive_silence_seconds: float = 45.0
     proactive_cooldown_seconds: float = 120.0
     proactive_planner_enabled: bool = True
@@ -263,6 +259,15 @@ class AgentSettings:
 class McpServerSettings:
     enabled: bool = True
     port: int = 6274
+
+
+@dataclass(slots=True)
+class WebServerSettings:
+    """FastAPI/WebSocket layer that serves the React UI."""
+
+    enabled: bool = True
+    host: str = "127.0.0.1"
+    port: int = 6275
 
 
 @dataclass(slots=True)
@@ -313,6 +318,7 @@ class AppSettings:
     logging: LoggingSettings = field(default_factory=LoggingSettings)
     agent: AgentSettings = field(default_factory=AgentSettings)
     mcp_server: McpServerSettings = field(default_factory=McpServerSettings)
+    web_server: WebServerSettings = field(default_factory=WebServerSettings)
     persona: PersonaSettings = field(default_factory=PersonaSettings)
     chat_llm: ChatLlmSettings = field(default_factory=ChatLlmSettings)
 
@@ -491,6 +497,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
     agent_raw = raw.get("agent", {}) or {}
     logging_raw = raw.get("logging", {}) or {}
     mcp_server_raw = raw.get("mcp_server", {}) or {}
+    web_server_raw = raw.get("web_server", {}) or {}
     persona_raw = raw.get("persona", {}) or {}
     chat_llm_raw = raw.get("chat_llm", {}) or {}
 
@@ -718,7 +725,6 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             personality_decay_rate=max(0.0, min(float(agent_raw.get("personality_decay_rate", 0.1)), 0.5)),
             personality_max_notes=max(5, min(int(agent_raw.get("personality_max_notes", 40)), 100)),
             personality_token_budget=max(50, min(int(agent_raw.get("personality_token_budget", 300)), 1000)),
-            personality_update_every_n_turns=max(1, min(int(agent_raw.get("personality_update_every_n_turns", 4)), 50)),
             proactive_silence_seconds=max(10.0, float(agent_raw.get("proactive_silence_seconds", 45.0))),
             proactive_cooldown_seconds=max(30.0, float(agent_raw.get("proactive_cooldown_seconds", 120.0))),
             proactive_planner_enabled=bool(agent_raw.get("proactive_planner_enabled", True)),
@@ -761,6 +767,11 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
         mcp_server=McpServerSettings(
             enabled=bool(mcp_server_raw.get("enabled", True)),
             port=max(1, int(mcp_server_raw.get("port", 6274))),
+        ),
+        web_server=WebServerSettings(
+            enabled=bool(web_server_raw.get("enabled", True)),
+            host=str(web_server_raw.get("host", "127.0.0.1") or "127.0.0.1").strip() or "127.0.0.1",
+            port=max(1, int(web_server_raw.get("port", 6275))),
         ),
         persona=_parse_persona(persona_raw),
         chat_llm=_parse_chat_llm(chat_llm_raw),

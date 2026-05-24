@@ -1,1 +1,1 @@
-"""English speaking assistant package."""
+"""Aiko desktop assistant package."""
