@@ -183,6 +183,35 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"get_self_image_stats failed: {exc}"
 
     @mcp.tool()
+    def get_user_profile() -> str:
+        """Return Aiko's persisted profile of the user (Phase 3a)."""
+        try:
+            store = getattr(session, "_user_profile_store", None)
+            if store is None:
+                return json.dumps({"enabled": False}, indent=2)
+            return json.dumps(
+                {"enabled": True, "fields": store.as_dict(session._user_id)},
+                indent=2, default=str,
+            )
+        except Exception as exc:
+            return f"get_user_profile failed: {exc}"
+
+    @mcp.tool()
+    def get_user_state() -> str:
+        """Return the per-turn user-state snapshot (Phase 3a)."""
+        try:
+            store = getattr(session, "_user_state_store", None)
+            if store is None:
+                return json.dumps({"enabled": False}, indent=2)
+            state = store.get(session._user_id)
+            return json.dumps(
+                {"enabled": True, **state.to_payload()},
+                indent=2, default=str,
+            )
+        except Exception as exc:
+            return f"get_user_state failed: {exc}"
+
+    @mcp.tool()
     def trigger_self_image_pulse() -> str:
         """Force a self-image pulse now (Phase 2d). Bypasses the daily gate."""
         try:

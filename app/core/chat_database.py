@@ -201,6 +201,33 @@ class ChatDatabase:
             self._local.conn = conn
         return conn
 
+    # ── small generic helpers for inner-life modules (Phase 3+) ──────────
+    # These let lightweight stores (UserProfileStore, UserStateStore, ...)
+    # avoid duplicating connection bookkeeping. Heavy paths still go
+    # through dedicated methods on ChatDatabase.
+
+    def execute_fetchall(
+        self, sql: str, params: tuple[Any, ...] = (),
+    ) -> list[tuple[Any, ...]]:
+        conn = self._get_conn()
+        rows = conn.execute(sql, params).fetchall()
+        return [tuple(r) for r in rows]
+
+    def execute_fetchone(
+        self, sql: str, params: tuple[Any, ...] = (),
+    ) -> tuple[Any, ...] | None:
+        conn = self._get_conn()
+        row = conn.execute(sql, params).fetchone()
+        return tuple(row) if row is not None else None
+
+    def execute_commit(
+        self, sql: str, params: tuple[Any, ...] = (),
+    ) -> int:
+        conn = self._get_conn()
+        cursor = conn.execute(sql, params)
+        conn.commit()
+        return int(cursor.lastrowid or 0)
+
     def _init_schema(self, conn: sqlite3.Connection) -> None:
         conn.executescript(_CREATE_TABLES)
         row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
