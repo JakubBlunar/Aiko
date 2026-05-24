@@ -5,6 +5,13 @@ When Live mode is active and the microphone has been silent for
 ready to talk. This module fires a SHORT one-shot turn (no streaming) that
 is routed straight to TTS to keep the conversation alive.
 
+Phase 4c addition: if the :class:`PreparedNudgeStore` has a fresh entry
+(woven during a previous speaking window by :class:`NarrativeWeaver`),
+we speak that directly and skip the LLM round-trip entirely. This makes
+the silence-break feel instant *and* lets the line draw on Aiko's
+inner-life surfaces (callbacks, open questions, promises, agenda items)
+instead of cold-rolling something from history.
+
 Differences from the legacy ProactiveDirector:
 - No periodic heartbeat thread. Driven by an explicit
   :func:`notify_silence` call from LiveWorker.
@@ -70,6 +77,8 @@ class ProactiveDirector:
         timeout_seconds: float = 30.0,
         context_window: int = 8192,
         notify_message: NotifyMessageCallback | None = None,
+        prepared_nudge_store: object | None = None,
+        user_id: str = "default",
     ) -> None:
         self._ollama = ollama
         self._db = db
@@ -83,10 +92,14 @@ class ProactiveDirector:
         self._timeout = float(timeout_seconds)
         self._context_window = int(context_window)
         self._notify_message = notify_message
+        self._prepared_store = prepared_nudge_store
+        self._user_id = user_id or "default"
 
         self._lock = threading.Lock()
         self._last_run_monotonic = 0.0
         self._inflight = False
+        self._prepared_consumed = 0
+        self._llm_path_used = 0
 
     # ── public ────────────────────────────────────────────────────────
 
@@ -146,6 +159,11 @@ class ProactiveDirector:
             log.debug("proactive skip: no history yet")
             return
 
+        # Phase 4c: prefer a prepared nudge if one is fresh.
+        prepared = self._consume_prepared_nudge()
+        if prepared is not None and self._speak_prepared(session_key, prepared):
+            return
+
         messages = self._prompt.build(
             session_key,
             _PROACTIVE_HINT,
@@ -195,6 +213,7 @@ class ProactiveDirector:
         prepared = prepare_tts_text(cleaned)
         if prepared:
             self._speak(prepared, mood or "calm")
+        self._llm_path_used += 1
         log.info(
             "proactive spoke (%d chars, %d/%d tokens, %.0f ms)",
             len(cleaned),
@@ -202,3 +221,61 @@ class ProactiveDirector:
             usage.completion_tokens,
             (time.monotonic() - t0) * 1000.0,
         )
+
+    # ── prepared-nudge fast path (Phase 4c) ──────────────────────────────
+
+    def _consume_prepared_nudge(self):
+        store = self._prepared_store
+        if store is None:
+            return None
+        try:
+            return store.consume(self._user_id)
+        except Exception:
+            log.debug("prepared nudge consume raised", exc_info=True)
+            return None
+
+    def _speak_prepared(self, session_key: str, nudge: object) -> bool:
+        text = getattr(nudge, "text", "")
+        if not text:
+            return False
+        # Re-run guards before speaking (state may have changed).
+        if self._is_busy() or not self._is_live():
+            log.debug("proactive prepared: discarding (state changed)")
+            return False
+        cleaned = sanitize_assistant_text(text)
+        if not cleaned:
+            return False
+        try:
+            self._db.add_message(
+                session_id=session_key,
+                role="assistant",
+                content=cleaned,
+                token_count=0,
+            )
+        except Exception:
+            log.debug("prepared nudge persist failed", exc_info=True)
+        if self._notify_message is not None:
+            try:
+                self._notify_message("Assistant (proactive)", cleaned)
+            except Exception:
+                log.debug("notify_message raised", exc_info=True)
+        prepared_text = prepare_tts_text(cleaned)
+        if prepared_text:
+            try:
+                self._speak(prepared_text, "calm")
+            except Exception:
+                log.debug("speak callback raised", exc_info=True)
+                return False
+        self._prepared_consumed += 1
+        log.info(
+            "proactive spoke prepared nudge (kind=%s, %d chars)",
+            getattr(nudge, "source_kind", "?"),
+            len(cleaned),
+        )
+        return True
+
+    def stats(self) -> dict[str, int]:
+        return {
+            "prepared_consumed": int(self._prepared_consumed),
+            "llm_path_used": int(self._llm_path_used),
+        }

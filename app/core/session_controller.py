@@ -525,6 +525,7 @@ class SessionController:
             user_state=self._render_user_state_block,
             relationship=self._render_relationship_block,
             agenda=self._render_agenda_block,
+            arc=self._render_arc_block,
         )
         self._prompt_assembler.set_pinned_self_memories_provider(
             self._top_pinned_self_memories,
@@ -614,6 +615,57 @@ class SessionController:
             self.rebuild_tool_registry()
         except Exception:
             log.warning("initial tool registry build failed", exc_info=True)
+        # Phase 4c: conversation arc tracker (regex hot-path + LLM smoother).
+        self._arc_store = None
+        self._arc_estimator = None
+        self._arc_smoother = None
+        try:
+            from app.core.conversation_arc import (
+                ArcEstimator,
+                ArcSmootherWorker,
+                ArcStore,
+            )
+
+            self._arc_store = ArcStore(self._chat_db)
+            self._arc_estimator = ArcEstimator(self._arc_store)
+            self._arc_smoother = ArcSmootherWorker(
+                ollama=self._ollama,
+                store=self._arc_store,
+                model=self._effective_chat_model,
+                every_n_turns=max(
+                    1, int(settings.agent.arc_update_every_n_turns) * 6
+                ),
+            )
+        except Exception:
+            log.warning("ArcStore/ArcEstimator init failed", exc_info=True)
+            self._arc_store = None
+            self._arc_estimator = None
+            self._arc_smoother = None
+
+        # Phase 4c: prepared nudge store + narrative weaver.
+        self._prepared_nudge_store = None
+        self._narrative_weaver = None
+        try:
+            from app.core.prepared_nudge import (
+                NarrativeWeaver,
+                PreparedNudgeStore,
+            )
+
+            self._prepared_nudge_store = PreparedNudgeStore(self._chat_db)
+            self._narrative_weaver = NarrativeWeaver(
+                ollama=self._ollama,
+                store=self._prepared_nudge_store,
+                memory_store=self._memory_store,
+                agenda_store=getattr(self, "_agenda_store", None),
+                model=self._effective_chat_model,
+                every_n_turns=4,
+                ttl_seconds=settings.agent.prepared_nudge_ttl_seconds,
+            )
+        except Exception:
+            log.warning("PreparedNudgeStore/NarrativeWeaver init failed", exc_info=True)
+            self._prepared_nudge_store = None
+            self._narrative_weaver = None
+
         self._proactive = ProactiveDirector(
             self._ollama,
             self._chat_db,
@@ -627,6 +679,8 @@ class SessionController:
             ),
             context_window=self._context_window,
             notify_message=self._notify_message,
+            prepared_nudge_store=self._prepared_nudge_store,
+            user_id=self._user_id,
         )
 
         # ── Runtime state ────────────────────────────────────────────────
@@ -1619,6 +1673,21 @@ class SessionController:
             log.debug("agenda block render failed", exc_info=True)
             return ""
 
+    def _render_arc_block(self) -> str:
+        """Phase 4c: ambient line about the current conversation arc."""
+        store = getattr(self, "_arc_store", None)
+        if store is None:
+            return ""
+        try:
+            current_turn = self._chat_db.get_message_count(self.session_key)
+        except Exception:
+            current_turn = 0
+        try:
+            return store.render_block(self._user_id, current_turn=current_turn)
+        except Exception:
+            log.debug("arc block render failed", exc_info=True)
+            return ""
+
     def _top_pinned_self_memories(self, *, limit: int = 5) -> list[str]:
         """Phase 2d: hot-path provider for pinned self-memory bullets.
 
@@ -1904,6 +1973,97 @@ class SessionController:
         except Exception:
             log.debug("consolidator submit failed", exc_info=True)
 
+    def _maybe_schedule_arc_smoother(self) -> None:
+        """Phase 4c: enqueue ArcSmootherWorker if it's due."""
+        worker = getattr(self, "_arc_smoother", None)
+        if worker is None:
+            return
+        try:
+            if not worker.should_run():
+                return
+        except Exception:
+            log.debug("arc smoother should_run failed", exc_info=True)
+            return
+
+        session_key = self.session_key
+        user_id = self._user_id
+        history_window = 12
+
+        def _history_provider() -> list[tuple[str, str]]:
+            try:
+                rows = self._chat_db.get_messages(session_key, limit=history_window)
+            except Exception:
+                return []
+            return [
+                (str(r.role or ""), str(r.content or ""))
+                for r in rows
+                if r.role in ("user", "assistant")
+            ]
+
+        def _job(stop_flag: Any) -> None:
+            if stop_flag is not None and stop_flag.is_set():
+                return
+            try:
+                current_turn = self._chat_db.get_message_count(session_key)
+            except Exception:
+                current_turn = 0
+            try:
+                worker.maybe_run(
+                    user_id,
+                    history_provider=_history_provider,
+                    current_turn=current_turn,
+                )
+            except Exception:
+                log.debug("arc smoother job raised", exc_info=True)
+
+        try:
+            from app.core.speaking_window_scheduler import ScheduledJob
+
+            self._scheduler.submit(ScheduledJob(
+                name="arc_smoother",
+                priority=72,
+                estimated_seconds=3.5,
+                callable=_job,
+                dedupe_key="arc_smoother",
+            ))
+        except Exception:
+            log.debug("arc smoother submit failed", exc_info=True)
+
+    def _maybe_schedule_narrative_weaver(self) -> None:
+        """Phase 4c: enqueue NarrativeWeaver to refill prepared_nudge."""
+        worker = getattr(self, "_narrative_weaver", None)
+        if worker is None:
+            return
+        try:
+            if not worker.should_run(self._user_id):
+                return
+        except Exception:
+            log.debug("narrative weaver should_run failed", exc_info=True)
+            return
+
+        user_id = self._user_id
+
+        def _job(stop_flag: Any) -> None:
+            if stop_flag is not None and stop_flag.is_set():
+                return
+            try:
+                worker.maybe_run(user_id)
+            except Exception:
+                log.debug("narrative weaver job raised", exc_info=True)
+
+        try:
+            from app.core.speaking_window_scheduler import ScheduledJob
+
+            self._scheduler.submit(ScheduledJob(
+                name="narrative_weaver",
+                priority=68,
+                estimated_seconds=3.0,
+                callable=_job,
+                dedupe_key="narrative_weaver",
+            ))
+        except Exception:
+            log.debug("narrative weaver submit failed", exc_info=True)
+
     def _maybe_schedule_relationship_pulse(self) -> None:
         """Phase 4b: enqueue the weekly relationship-pulse summary."""
         worker = getattr(self, "_relationship_pulse", None)
@@ -2179,6 +2339,38 @@ class SessionController:
                 self._maybe_schedule_agenda_groom_job()
             except Exception:
                 log.debug("agenda groom schedule failed", exc_info=True)
+
+        # Phase 4c: hot-path arc estimator on the user turn.
+        estimator = getattr(self, "_arc_estimator", None)
+        smoother = getattr(self, "_arc_smoother", None)
+        if estimator is not None:
+            try:
+                current_turn = self._chat_db.get_message_count(self.session_key)
+            except Exception:
+                current_turn = 0
+            try:
+                estimator.apply_turn(
+                    self._user_id,
+                    user_text=user_text,
+                    current_turn=current_turn,
+                )
+            except Exception:
+                log.debug("arc estimator failed", exc_info=True)
+        if smoother is not None:
+            try:
+                smoother.notify_user_turn()
+                self._maybe_schedule_arc_smoother()
+            except Exception:
+                log.debug("arc smoother schedule failed", exc_info=True)
+
+        # Phase 4c: notify narrative weaver and maybe enqueue.
+        weaver = getattr(self, "_narrative_weaver", None)
+        if weaver is not None:
+            try:
+                weaver.notify_user_turn()
+                self._maybe_schedule_narrative_weaver()
+            except Exception:
+                log.debug("narrative weaver schedule failed", exc_info=True)
 
         # Phase 4b: opportunistic maintenance jobs (consolidator + pulse).
         try:

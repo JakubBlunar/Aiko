@@ -268,6 +268,73 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"trigger_consolidator failed: {exc}"
 
     @mcp.tool()
+    def get_arc_state() -> str:
+        """Return the current conversation arc + confidence (Phase 4c)."""
+        try:
+            store = getattr(session, "_arc_store", None)
+            if store is None:
+                return json.dumps({"enabled": False}, indent=2)
+            state = store.get(session._user_id)
+            if state is None:
+                return json.dumps({"arc": "casual_check_in", "confidence": 0.5}, indent=2)
+            return json.dumps(state.to_payload(), indent=2, default=str)
+        except Exception as exc:
+            return f"get_arc_state failed: {exc}"
+
+    @mcp.tool()
+    def get_arc_smoother_stats() -> str:
+        """Return ArcSmootherWorker counters (Phase 4c)."""
+        try:
+            worker = getattr(session, "_arc_smoother", None)
+            if worker is None:
+                return json.dumps({"enabled": False}, indent=2)
+            return json.dumps(
+                {"enabled": True, **worker.stats()}, indent=2, default=str,
+            )
+        except Exception as exc:
+            return f"get_arc_smoother_stats failed: {exc}"
+
+    @mcp.tool()
+    def get_prepared_nudge() -> str:
+        """Return the current prepared nudge if fresh (Phase 4c)."""
+        try:
+            store = getattr(session, "_prepared_nudge_store", None)
+            if store is None:
+                return json.dumps({"enabled": False}, indent=2)
+            nudge = store.get_fresh(session._user_id)
+            if nudge is None:
+                return json.dumps({"prepared": None}, indent=2)
+            return json.dumps(nudge.to_payload(), indent=2, default=str)
+        except Exception as exc:
+            return f"get_prepared_nudge failed: {exc}"
+
+    @mcp.tool()
+    def get_narrative_weaver_stats() -> str:
+        """Return NarrativeWeaver counters (Phase 4c)."""
+        try:
+            worker = getattr(session, "_narrative_weaver", None)
+            if worker is None:
+                return json.dumps({"enabled": False}, indent=2)
+            return json.dumps(
+                {"enabled": True, **worker.stats()}, indent=2, default=str,
+            )
+        except Exception as exc:
+            return f"get_narrative_weaver_stats failed: {exc}"
+
+    @mcp.tool()
+    def get_proactive_stats() -> str:
+        """Return ProactiveDirector counters (prepared vs LLM path)."""
+        try:
+            director = getattr(session, "_proactive", None)
+            if director is None:
+                return json.dumps({"enabled": False}, indent=2)
+            return json.dumps(
+                {"enabled": True, **director.stats()}, indent=2, default=str,
+            )
+        except Exception as exc:
+            return f"get_proactive_stats failed: {exc}"
+
+    @mcp.tool()
     def get_relationship_pulse_stats() -> str:
         """Return RelationshipPulseWorker counters (Phase 4b)."""
         try:
