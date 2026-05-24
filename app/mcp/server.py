@@ -137,6 +137,18 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
         except Exception as exc:
             return f"get_scheduler_stats failed: {exc}"
 
+    @mcp.tool()
+    def get_rag_prefetcher_stats() -> str:
+        """Return RagPrefetcher counters + cache size (Phase 1b)."""
+        try:
+            prefetcher = getattr(session, "_rag_prefetcher", None)
+            if prefetcher is None:
+                return json.dumps({"enabled": False}, indent=2)
+            payload = {"enabled": True, **prefetcher.stats()}
+            return json.dumps(payload, indent=2, default=str)
+        except Exception as exc:
+            return f"get_rag_prefetcher_stats failed: {exc}"
+
     # ── Resources ────────────────────────────────────────────────────
 
     @mcp.resource("assistant://history")
