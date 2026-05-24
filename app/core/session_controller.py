@@ -37,6 +37,9 @@ from app.audio.earcons import EarconPlayer
 from app.audio.mic_capture import MicrophoneCapture, list_output_devices
 from app.core.chat_database import ChatDatabase
 from app.core.crash_logging import log_event
+from app.core.memory_extractor import MemoryExtractor
+from app.core.memory_retriever import MemoryRetriever
+from app.core.memory_store import MemoryStore
 from app.core.proactive_director import ProactiveDirector
 from app.core.prompt_assembler import PromptAssembler
 from app.core.services.response_text_service import strip_action_meta_for_tts
@@ -49,6 +52,7 @@ from app.core.settings import AppSettings
 from app.core.summary_worker import SummaryWorker
 from app.core.tts_queue import TtsQueue
 from app.core.turn_runner import TurnRunner
+from app.llm.embedder import Embedder
 from app.llm.ollama_client import OllamaClient
 from app.stt.realtime_stt_service import RealtimeSttService
 
@@ -145,6 +149,33 @@ class SessionController:
         )
         self._chat_db = ChatDatabase(storage_path)
 
+        # ── Long-term memory (cross-session) ─────────────────────────────
+        self._memory_settings = settings.memory
+        self._embedder: Embedder | None = None
+        self._memory_store: MemoryStore | None = None
+        self._memory_retriever: MemoryRetriever | None = None
+        self._memory_extractor: MemoryExtractor | None = None
+        self._memory_listeners: list[Callable[[Any], None]] = []
+        if self._memory_settings.enabled:
+            try:
+                self._embedder = Embedder(settings.ollama)
+                self._memory_store = MemoryStore(
+                    storage_path,
+                    max_memories=self._memory_settings.max_memories,
+                    dedupe_threshold=self._memory_settings.dedupe_threshold,
+                )
+                self._memory_retriever = MemoryRetriever(
+                    self._memory_store,
+                    self._embedder,
+                    top_k=self._memory_settings.top_k,
+                    score_threshold=self._memory_settings.score_threshold,
+                )
+            except Exception:
+                log.warning("memory subsystem failed to initialise", exc_info=True)
+                self._embedder = None
+                self._memory_store = None
+                self._memory_retriever = None
+
         # ── TTS engine + queue ───────────────────────────────────────────
         self._output_device = getattr(settings.audio, "output_device", None)
         self._tts_engine = self._build_tts_service(
@@ -167,12 +198,36 @@ class SessionController:
         self._realtime_stt = RealtimeSttService(settings.stt, settings.audio)
 
         # ── Prompt + workers + runner ────────────────────────────────────
-        self._prompt_assembler = PromptAssembler(self._chat_db)
+        self._prompt_assembler = PromptAssembler(
+            self._chat_db,
+            memory_retriever=self._memory_retriever,
+        )
+
+        if (
+            self._memory_settings.enabled
+            and self._memory_settings.extractor_enabled
+            and self._embedder is not None
+            and self._memory_store is not None
+        ):
+            try:
+                self._memory_extractor = MemoryExtractor(
+                    self._chat_db,
+                    self._memory_store,
+                    self._embedder,
+                    self._ollama,
+                    model=self._effective_chat_model,
+                )
+                self._memory_extractor.add_listener(self._notify_memory_added)
+            except Exception:
+                log.warning("memory extractor failed to initialise", exc_info=True)
+                self._memory_extractor = None
+
         self._summary_worker = SummaryWorker(
             self._chat_db,
             self._ollama,
             model=self._effective_chat_model,
             is_busy=lambda: self._turn_in_progress,
+            memory_extractor=self._memory_extractor,
         )
         self._summary_worker.start()
         self._turn_runner = TurnRunner(
@@ -184,6 +239,10 @@ class SessionController:
             max_tokens=self._max_tokens,
             temperature=self._temperature,
             summary_worker=self._summary_worker,
+            memory_store=self._memory_store,
+            embedder=self._embedder,
+            self_tagged_salience=self._memory_settings.self_tagged_salience,
+            on_memory_added=self._notify_memory_added,
         )
         self._proactive = ProactiveDirector(
             self._ollama,
@@ -310,6 +369,11 @@ class SessionController:
         # Update the cached model on workers too.
         self._summary_worker._model = normalized  # type: ignore[attr-defined]
         self._proactive.update_runtime(model=normalized)
+        if self._memory_extractor is not None:
+            try:
+                self._memory_extractor.update_model(normalized)
+            except Exception:
+                log.debug("memory extractor model update failed", exc_info=True)
 
     @property
     def remember_history(self) -> bool:
@@ -655,6 +719,47 @@ class SessionController:
         self._state.session_type = "live" if active else "chat"
 
     # ── Listeners ────────────────────────────────────────────────────
+
+    # ── Memory accessors ────────────────────────────────────────────
+
+    @property
+    def memory_store(self) -> "MemoryStore | None":
+        return self._memory_store
+
+    @property
+    def memory_extractor(self) -> "MemoryExtractor | None":
+        return self._memory_extractor
+
+    def list_memories(
+        self,
+        *,
+        limit: int = 50,
+        order: str = "recent",
+    ) -> list[dict[str, Any]]:
+        store = self._memory_store
+        if store is None:
+            return []
+        if order == "top":
+            mems = store.list_top(limit=limit)
+        else:
+            mems = store.list_recent(limit=limit)
+        return [m.to_dict() for m in mems]
+
+    def delete_memory(self, memory_id: int) -> bool:
+        if self._memory_store is None:
+            return False
+        return self._memory_store.delete(int(memory_id))
+
+    def add_memory_listener(self, callback: Callable[[Any], None]) -> None:
+        if callback and callback not in self._memory_listeners:
+            self._memory_listeners.append(callback)
+
+    def _notify_memory_added(self, memory: Any) -> None:
+        for listener in list(self._memory_listeners):
+            try:
+                listener(memory)
+            except Exception:
+                log.debug("memory listener raised", exc_info=True)
 
     def add_message_listener(self, callback: Callable[[str, str], None]) -> None:
         if callback and callback not in self._message_listeners:
@@ -1128,6 +1233,16 @@ class SessionController:
             self._summary_worker.stop()
         except Exception:
             pass
+        if self._memory_store is not None:
+            try:
+                self._memory_store.close()
+            except Exception:
+                log.debug("memory store close failed", exc_info=True)
+        if self._embedder is not None:
+            try:
+                self._embedder.close()
+            except Exception:
+                log.debug("embedder close failed", exc_info=True)
         try:
             t = threading.Thread(target=self._realtime_stt.stop_context, daemon=True)
             t.start()

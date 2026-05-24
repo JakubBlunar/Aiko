@@ -124,6 +124,14 @@ export function useAssistantSocket(): {
         store.setTurnInProgress(false);
         break;
 
+      case "memory_added":
+        store.upsertMemory(evt.memory);
+        break;
+
+      case "memory_deleted":
+        store.removeMemory(evt.id);
+        break;
+
       case "pong":
         break;
     }

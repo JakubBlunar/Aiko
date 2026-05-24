@@ -17,15 +17,17 @@ No tool-calling in v1 -- that hooks in later through
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, TYPE_CHECKING
 
 from app.core.chat_database import ChatDatabase
 from app.core.prompt_assembler import PromptAssembler
 from app.core.services.response_text_service import (
     parse_reaction_at_start,
+    safe_visible_prefix,
     strip_all_meta_tags,
 )
 from app.core.session_text_utils import (
@@ -37,6 +39,13 @@ from app.core.session_text_utils import (
 from app.core.summary_worker import SummaryWorker
 from app.llm.ollama_client import OllamaClient, OllamaUsage
 from app.llm.token_utils import estimate_tokens
+
+if TYPE_CHECKING:
+    from app.core.memory_store import MemoryStore
+    from app.llm.embedder import Embedder
+
+
+_REMEMBER_TAG_RE = re.compile(r"\[\[remember:([^\]]+?)\]\]", flags=re.IGNORECASE)
 
 
 log = logging.getLogger("app.turn_runner")
@@ -70,6 +79,10 @@ class TurnRunner:
         max_tokens: int,
         temperature: float,
         summary_worker: SummaryWorker | None = None,
+        memory_store: "MemoryStore | None" = None,
+        embedder: "Embedder | None" = None,
+        self_tagged_salience: float = 0.7,
+        on_memory_added: Callable[[object], None] | None = None,
     ) -> None:
         self._ollama = ollama
         self._db = db
@@ -79,7 +92,19 @@ class TurnRunner:
         self._max_tokens = max(64, int(max_tokens))
         self._temperature = float(temperature)
         self._summary = summary_worker
+        self._memory_store = memory_store
+        self._embedder = embedder
+        self._self_tagged_salience = max(0.0, min(1.0, float(self_tagged_salience)))
+        self._on_memory_added = on_memory_added
         self._stop = threading.Event()
+
+    def set_memory(
+        self,
+        store: "MemoryStore | None",
+        embedder: "Embedder | None",
+    ) -> None:
+        self._memory_store = store
+        self._embedder = embedder
 
     # ── public ────────────────────────────────────────────────────────
 
@@ -182,7 +207,10 @@ class TurnRunner:
                     if _m is None:
                         body = full
 
-                visible = strip_all_meta_tags(body)
+                # Use the streaming-safe prefix so partial tokens like "[[spo"
+                # never reach the UI / TTS. Anything past the last unresolved
+                # `[` is held back until the next delta arrives.
+                visible = safe_visible_prefix(body)
 
                 if on_token is not None and len(visible) > ui_sent_chars:
                     on_token(visible[ui_sent_chars:])
@@ -211,6 +239,19 @@ class TurnRunner:
             if parsed_mood is not None:
                 mood = parsed_mood
         body_text = strip_all_meta_tags(full_raw)
+        # Final-flush: emit any tail that the streaming holdback was sitting on
+        # (e.g. a "[[" that turned out NOT to be a tag) so the UI bubble lands
+        # in the same state as the persisted message.
+        if on_token is not None and len(body_text) > ui_sent_chars:
+            on_token(body_text[ui_sent_chars:])
+            ui_sent_chars = len(body_text)
+        if (
+            on_tts_chunk is not None
+            and mood is not None
+            and len(body_text) > tts_appended_chars
+        ):
+            tts_buffer += body_text[tts_appended_chars:]
+            tts_appended_chars = len(body_text)
         cleaned = sanitize_assistant_text(body_text)
 
         # Flush any trailing TTS buffer (final sentence without terminator).
@@ -224,12 +265,18 @@ class TurnRunner:
         usage = self._ollama.last_usage
         duration_ms = (time.monotonic() - t0) * 1000.0
 
+        assistant_message_id: int | None = None
         if cleaned and not aborted:
-            self._db.add_message(
+            assistant_message_id = self._db.add_message(
                 session_id=session_key,
                 role="assistant",
                 content=cleaned,
                 token_count=usage.completion_tokens or estimate_tokens(cleaned),
+            )
+            self._extract_self_tagged_memories(
+                full_raw,
+                session_key=session_key,
+                assistant_message_id=assistant_message_id,
             )
             self._post_turn(session_key)
 
@@ -270,3 +317,57 @@ class TurnRunner:
                 self._summary.notify_turn_done(session_key)
             except Exception as exc:
                 log.debug("summary notify failed: %s", exc)
+
+    def _extract_self_tagged_memories(
+        self,
+        raw_text: str,
+        *,
+        session_key: str,
+        assistant_message_id: int | None,
+    ) -> None:
+        """Harvest ``[[remember:...]]`` tags from the assistant's raw output.
+
+        Only runs when both a memory store and embedder are configured. Each
+        unique tag becomes one ``self_tagged`` memory. Failures are logged
+        but never raised back into the turn -- a broken extractor must not
+        kill the chat.
+        """
+        if (
+            self._memory_store is None
+            or self._embedder is None
+            or not raw_text
+        ):
+            return
+        seen: set[str] = set()
+        for match in _REMEMBER_TAG_RE.finditer(raw_text):
+            content = match.group(1).strip()
+            if not content or len(content) < 4:
+                continue
+            key = content.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                embedding = self._embedder.embed(content)
+            except Exception as exc:
+                log.debug("self-tagged memory embed failed: %s", exc)
+                continue
+            try:
+                memory = self._memory_store.add(
+                    content=content,
+                    kind="self_tagged",
+                    embedding=embedding,
+                    salience=self._self_tagged_salience,
+                    source_session=session_key,
+                    source_message_id=assistant_message_id,
+                )
+            except Exception as exc:
+                log.debug("self-tagged memory insert failed: %s", exc)
+                continue
+            if memory is not None:
+                log.info("self-tagged memory: %s", content)
+                if self._on_memory_added is not None:
+                    try:
+                        self._on_memory_added(memory)
+                    except Exception:
+                        log.debug("on_memory_added listener raised", exc_info=True)

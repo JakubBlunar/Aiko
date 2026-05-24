@@ -1,16 +1,14 @@
-"""First-party SQLite chat database with messages, embeddings, and summaries."""
+"""First-party SQLite chat database for messages, summaries, and memories."""
 from __future__ import annotations
 
 import sqlite3
-import struct
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
-import numpy as np
-
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 _CREATE_TABLES = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -27,15 +25,6 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at);
 
-CREATE TABLE IF NOT EXISTS message_embeddings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    message_id INTEGER NOT NULL REFERENCES messages(id),
-    session_id TEXT NOT NULL,
-    embedding BLOB NOT NULL,
-    created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_embeddings_session ON message_embeddings(session_id);
-
 CREATE TABLE IF NOT EXISTS session_summaries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL,
@@ -46,25 +35,24 @@ CREATE TABLE IF NOT EXISTS session_summaries (
 );
 CREATE INDEX IF NOT EXISTS idx_summaries_session ON session_summaries(session_id, updated_at);
 
-CREATE TABLE IF NOT EXISTS personality_notes (
+CREATE TABLE IF NOT EXISTS memories (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT NOT NULL,
-    category TEXT NOT NULL,
-    note TEXT NOT NULL,
-    confidence REAL NOT NULL DEFAULT 0.8,
+    content TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    salience REAL NOT NULL DEFAULT 0.5,
+    embedding BLOB NOT NULL,
+    source_session TEXT,
+    source_message_id INTEGER,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    last_used_at TEXT,
+    use_count INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS idx_personality_session ON personality_notes(session_id, confidence);
-
-CREATE TABLE IF NOT EXISTS recent_topics (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT NOT NULL,
-    topic TEXT NOT NULL,
-    used_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_topics_session ON recent_topics(session_id, used_at);
+CREATE INDEX IF NOT EXISTS idx_memories_kind ON memories(kind);
+CREATE INDEX IF NOT EXISTS idx_memories_salience ON memories(salience);
 """
+
+# Tables that existed in earlier schemas but are no longer used.
+_OBSOLETE_TABLES = ("personality_notes", "recent_topics", "message_embeddings")
 
 
 @dataclass(slots=True)
@@ -78,16 +66,6 @@ class MessageRow:
 
 
 @dataclass(slots=True)
-class EmbeddingRow:
-    message_id: int
-    session_id: str
-    embedding: np.ndarray
-    content: str  # denormalised from messages for search results
-    role: str
-    created_at: str
-
-
-@dataclass(slots=True)
 class SummaryRow:
     session_id: str
     summary: str
@@ -96,26 +74,8 @@ class SummaryRow:
     updated_at: str
 
 
-@dataclass(slots=True)
-class RecentTopicRow:
-    id: int
-    session_id: str
-    topic: str
-    used_at: str
-
-
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _encode_embedding(vec: np.ndarray) -> bytes:
-    arr = np.asarray(vec, dtype=np.float32)
-    return struct.pack(f"{len(arr)}f", *arr.tolist())
-
-
-def _decode_embedding(blob: bytes) -> np.ndarray:
-    count = len(blob) // 4
-    return np.array(struct.unpack(f"{count}f", blob), dtype=np.float32)
 
 
 class ChatDatabase:
@@ -127,6 +87,7 @@ class ChatDatabase:
         self._local = threading.local()
         self._init_schema(self._get_conn())
         self._migrate_langchain_history()
+        self._backfill_legacy_meta_tags()
 
     def _get_conn(self) -> sqlite3.Connection:
         conn = getattr(self._local, "conn", None)
@@ -143,9 +104,19 @@ class ChatDatabase:
         if row is None:
             conn.execute("INSERT INTO schema_version (version) VALUES (?)", (_SCHEMA_VERSION,))
             conn.commit()
-        elif row[0] < _SCHEMA_VERSION:
-            conn.execute("UPDATE schema_version SET version = ?", (_SCHEMA_VERSION,))
-            conn.commit()
+            return
+        if row[0] >= _SCHEMA_VERSION:
+            return
+        # On upgrade: drop tables that are no longer used so they stop wasting
+        # space and confusing later readers. ``messages`` and
+        # ``session_summaries`` are kept intact.
+        for table in _OBSOLETE_TABLES:
+            try:
+                conn.execute(f"DROP TABLE IF EXISTS {table}")
+            except Exception:
+                pass
+        conn.execute("UPDATE schema_version SET version = ?", (_SCHEMA_VERSION,))
+        conn.commit()
 
     def _migrate_langchain_history(self) -> None:
         """One-time migration: import rows from LangChain's message_store table if it exists."""
@@ -191,6 +162,55 @@ class ChatDatabase:
             conn.commit()
         except Exception:
             pass
+
+    def _backfill_legacy_meta_tags(self) -> None:
+        """One-shot pass: re-strip already-stored assistant messages.
+
+        Older rows were saved with raw ``[[spoken]]``/``[[detail]]``/
+        ``[[reaction:X]]``/``[[remember:...]]`` markers because the streaming
+        strip had a partial-tag leak bug. Run the current stripper over them
+        so they display clean on the next reload. Idempotent: rows that
+        already strip to themselves are skipped.
+        """
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT id, content FROM messages "
+                "WHERE role = 'assistant' AND ("
+                "  content LIKE '%[[spoken]]%'"
+                "  OR content LIKE '%[[/spoken]]%'"
+                "  OR content LIKE '%[[detail]]%'"
+                "  OR content LIKE '%[[/detail]]%'"
+                "  OR content LIKE '%[[reaction:%'"
+                "  OR content LIKE '%[[remember:%'"
+                ")"
+            ).fetchall()
+        except Exception:
+            return
+        if not rows:
+            return
+        try:
+            from app.core.services.response_text_service import strip_all_meta_tags
+            from app.core.session_text_utils import sanitize_assistant_text
+            from app.llm.token_utils import estimate_tokens
+        except Exception:
+            return
+        updated = 0
+        for row_id, content in rows:
+            stripped = strip_all_meta_tags(str(content or ""))
+            cleaned = sanitize_assistant_text(stripped)
+            if cleaned == content:
+                continue
+            try:
+                conn.execute(
+                    "UPDATE messages SET content = ?, token_count = ? WHERE id = ?",
+                    (cleaned, estimate_tokens(cleaned), row_id),
+                )
+                updated += 1
+            except Exception:
+                continue
+        if updated:
+            conn.commit()
 
     # ── Messages ──
 
@@ -260,92 +280,21 @@ class ChatDatabase:
         return row[0] if row else 0
 
     def clear_messages(self, session_id: str, *, full_reset: bool = False) -> int:
-        """Delete all messages (and their embeddings) for a session. Returns deleted count.
+        """Delete all messages and summaries for a session. Returns deleted count.
 
-        When *full_reset* is True, also clears personality notes and recent topics
-        so the assistant has no residual memory of the session.
+        ``full_reset`` is accepted for backward-compat but no longer has a
+        distinct effect now that personality_notes / recent_topics tables are
+        gone. Long-term memories are cross-session and untouched here.
         """
         conn = self._get_conn()
-        conn.execute(
-            "DELETE FROM message_embeddings WHERE session_id = ?", (session_id,)
-        )
         cursor = conn.execute(
             "DELETE FROM messages WHERE session_id = ?", (session_id,)
         )
         conn.execute(
             "DELETE FROM session_summaries WHERE session_id = ?", (session_id,)
         )
-        if full_reset:
-            conn.execute(
-                "DELETE FROM personality_notes WHERE session_id = ?", (session_id,)
-            )
-            conn.execute(
-                "DELETE FROM recent_topics WHERE session_id = ?", (session_id,)
-            )
         conn.commit()
         return cursor.rowcount
-
-    # ── Embeddings ──
-
-    def add_embedding(
-        self,
-        message_id: int,
-        session_id: str,
-        embedding: np.ndarray,
-    ) -> None:
-        conn = self._get_conn()
-        conn.execute(
-            "INSERT INTO message_embeddings (message_id, session_id, embedding, created_at) "
-            "VALUES (?, ?, ?, ?)",
-            (message_id, session_id, _encode_embedding(embedding), _now_iso()),
-        )
-        conn.commit()
-
-    def get_all_embeddings(
-        self,
-        session_id: str | None = None,
-        *,
-        max_rows: int | None = None,
-    ) -> list[EmbeddingRow]:
-        """Return embedding rows, optionally scoped to a session and capped.
-
-        When *max_rows* is set, only the most recent *max_rows* embeddings are
-        returned (by message_id descending), keeping search cost bounded.
-        """
-        conn = self._get_conn()
-        limit_clause = f" LIMIT {int(max_rows)}" if max_rows and max_rows > 0 else ""
-        if session_id:
-            rows = conn.execute(
-                "SELECT me.message_id, me.session_id, me.embedding, m.content, m.role, me.created_at "
-                "FROM message_embeddings me JOIN messages m ON me.message_id = m.id "
-                f"WHERE me.session_id = ? ORDER BY me.message_id DESC{limit_clause}",
-                (session_id,),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT me.message_id, me.session_id, me.embedding, m.content, m.role, me.created_at "
-                "FROM message_embeddings me JOIN messages m ON me.message_id = m.id "
-                f"ORDER BY me.message_id DESC{limit_clause}",
-            ).fetchall()
-        return [
-            EmbeddingRow(
-                message_id=r[0],
-                session_id=r[1],
-                embedding=_decode_embedding(r[2]),
-                content=r[3],
-                role=r[4],
-                created_at=r[5],
-            )
-            for r in rows
-        ]
-
-    def get_message_ids_with_embeddings(self, session_id: str) -> set[int]:
-        conn = self._get_conn()
-        rows = conn.execute(
-            "SELECT message_id FROM message_embeddings WHERE session_id = ?",
-            (session_id,),
-        ).fetchall()
-        return {r[0] for r in rows}
 
     # ── Summaries ──
 
@@ -381,31 +330,6 @@ class ChatDatabase:
             )
         conn.commit()
 
-    # ── Recent Topics ──
-
-    def get_recent_topics(self, session_id: str, limit: int = 20) -> list[RecentTopicRow]:
-        conn = self._get_conn()
-        rows = conn.execute(
-            "SELECT id, session_id, topic, used_at FROM recent_topics "
-            "WHERE session_id = ? ORDER BY used_at DESC LIMIT ?",
-            (session_id, limit),
-        ).fetchall()
-        return [RecentTopicRow(*r) for r in rows]
-
-    def add_recent_topic(self, session_id: str, topic: str) -> None:
-        conn = self._get_conn()
-        conn.execute(
-            "INSERT INTO recent_topics (session_id, topic, used_at) VALUES (?, ?, ?)",
-            (session_id, topic, _now_iso()),
-        )
-        # Keep only last 20 per session
-        conn.execute(
-            "DELETE FROM recent_topics WHERE session_id = ? AND id NOT IN "
-            "(SELECT id FROM recent_topics WHERE session_id = ? ORDER BY used_at DESC LIMIT 20)",
-            (session_id, session_id),
-        )
-        conn.commit()
-
     # ── Session management ──
 
     def list_sessions(self) -> list[dict[str, Any]]:
@@ -421,7 +345,7 @@ class ChatDatabase:
         ]
 
     def delete_session(self, session_id: str) -> None:
-        """Remove all data for a session (messages, embeddings, summaries, notes, topics)."""
+        """Remove all messages and summaries for a session."""
         self.clear_messages(session_id, full_reset=True)
 
     def export_session(self, session_id: str) -> list[dict[str, str]]:
@@ -431,76 +355,3 @@ class ChatDatabase:
             {"role": m.role, "content": m.content, "created_at": m.created_at}
             for m in msgs
         ]
-
-    def archive_old_messages(self, days_threshold: int, archive_path: Path) -> int:
-        """Move messages (and their embeddings) older than *days_threshold* days to *archive_path*.
-
-        Session summaries for affected sessions are copied (not moved).
-        Personality notes and recent topics stay in the active DB.
-        Returns the number of archived messages.
-        """
-        from datetime import timedelta
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=days_threshold)).isoformat()
-
-        conn = self._get_conn()
-        old_ids = [
-            r[0] for r in conn.execute(
-                "SELECT id FROM messages WHERE created_at < ?", (cutoff,)
-            ).fetchall()
-        ]
-        if not old_ids:
-            return 0
-
-        archive_path.parent.mkdir(parents=True, exist_ok=True)
-        arch = sqlite3.connect(str(archive_path))
-        arch.execute("PRAGMA journal_mode=WAL")
-        arch.execute("PRAGMA foreign_keys=ON")
-        arch.executescript(_CREATE_TABLES)
-
-        batch_size = 200
-        archived = 0
-        for i in range(0, len(old_ids), batch_size):
-            batch = old_ids[i : i + batch_size]
-            placeholders = ",".join("?" * len(batch))
-
-            rows = conn.execute(
-                f"SELECT id, session_id, role, content, token_count, created_at "
-                f"FROM messages WHERE id IN ({placeholders})", batch,
-            ).fetchall()
-            if rows:
-                arch.executemany(
-                    "INSERT OR IGNORE INTO messages (id, session_id, role, content, token_count, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?)", rows,
-                )
-
-            emb_rows = conn.execute(
-                f"SELECT id, message_id, session_id, embedding, created_at "
-                f"FROM message_embeddings WHERE message_id IN ({placeholders})", batch,
-            ).fetchall()
-            if emb_rows:
-                arch.executemany(
-                    "INSERT OR IGNORE INTO message_embeddings (id, message_id, session_id, embedding, created_at) "
-                    "VALUES (?, ?, ?, ?, ?)", emb_rows,
-                )
-
-            conn.execute(f"DELETE FROM message_embeddings WHERE message_id IN ({placeholders})", batch)
-            conn.execute(f"DELETE FROM messages WHERE id IN ({placeholders})", batch)
-            archived += len(rows)
-
-        affected_sessions = {
-            r[1] for r in conn.execute(
-                "SELECT DISTINCT id, session_id FROM messages"
-            ).fetchall()
-        }
-        for r in conn.execute("SELECT session_id, summary, summary_tokens, messages_summarized, updated_at FROM session_summaries").fetchall():
-            arch.execute(
-                "INSERT OR IGNORE INTO session_summaries (session_id, summary, summary_tokens, messages_summarized, updated_at) "
-                "VALUES (?, ?, ?, ?, ?)", r,
-            )
-
-        arch.commit()
-        arch.close()
-        conn.commit()
-        conn.execute("VACUUM")
-
-        return archived

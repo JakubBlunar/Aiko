@@ -1,21 +1,15 @@
 """Tests for app.core.chat_database.ChatDatabase."""
 from __future__ import annotations
 
-import sqlite3
 import tempfile
 import threading
 import unittest
 from pathlib import Path
 
-import numpy as np
-
 from app.core.chat_database import (
     ChatDatabase,
     MessageRow,
     SummaryRow,
-    RecentTopicRow,
-    _encode_embedding,
-    _decode_embedding,
 )
 
 
@@ -40,7 +34,7 @@ class _TempDB:
 
 
 class TestSchemaCreation(unittest.TestCase):
-    def test_fresh_database_creates_tables(self):
+    def test_fresh_database_creates_expected_tables(self):
         with _TempDB() as db:
             conn = db._get_conn()
             tables = {
@@ -51,20 +45,25 @@ class TestSchemaCreation(unittest.TestCase):
             }
             for expected in (
                 "messages",
-                "message_embeddings",
                 "session_summaries",
-                "personality_notes",
-                "recent_topics",
+                "memories",
                 "schema_version",
             ):
                 self.assertIn(expected, tables)
+            # Obsolete tables must not exist on a fresh schema.
+            for obsolete in (
+                "personality_notes",
+                "recent_topics",
+                "message_embeddings",
+            ):
+                self.assertNotIn(obsolete, tables)
 
-    def test_schema_version_is_set(self):
+    def test_schema_version_is_v3(self):
         with _TempDB() as db:
             conn = db._get_conn()
             row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
             self.assertIsNotNone(row)
-            self.assertGreaterEqual(row[0], 2)
+            self.assertEqual(row[0], 3)
 
 
 class TestMessages(unittest.TestCase):
@@ -104,63 +103,32 @@ class TestMessages(unittest.TestCase):
             db.add_message("s1", "user", "y")
             self.assertEqual(db.get_message_count("s1"), 2)
 
-    def test_clear_messages_default(self):
+    def test_clear_messages_drops_messages_and_summary(self):
         with _TempDB() as db:
             db.add_message("s1", "user", "hello")
             db.save_summary("s1", "summary", 10, 1)
-            db.add_recent_topic("s1", "cats")
 
             deleted = db.clear_messages("s1")
             self.assertEqual(deleted, 1)
             self.assertEqual(db.get_message_count("s1"), 0)
             self.assertIsNone(db.get_latest_summary("s1"))
-            # topics should survive default clear
-            self.assertGreater(len(db.get_recent_topics("s1")), 0)
 
-    def test_clear_messages_full_reset(self):
+
+class TestBackfillLegacyMetaTags(unittest.TestCase):
+    def test_dirty_assistant_rows_are_re_stripped(self):
         with _TempDB() as db:
-            db.add_message("s1", "user", "hello")
-            db.add_recent_topic("s1", "cats")
-
-            db.clear_messages("s1", full_reset=True)
-            self.assertEqual(db.get_message_count("s1"), 0)
-            self.assertEqual(len(db.get_recent_topics("s1")), 0)
-
-
-class TestEmbeddings(unittest.TestCase):
-    def test_encode_decode_roundtrip(self):
-        vec = np.array([0.1, 0.2, 0.3], dtype=np.float32)
-        blob = _encode_embedding(vec)
-        restored = _decode_embedding(blob)
-        np.testing.assert_array_almost_equal(vec, restored)
-
-    def test_add_and_get_embeddings(self):
-        with _TempDB() as db:
-            mid = db.add_message("s1", "user", "test embedding")
-            vec = np.random.rand(128).astype(np.float32)
-            db.add_embedding(mid, "s1", vec)
-
-            rows = db.get_all_embeddings("s1")
+            dirty = (
+                "[[reaction:gentle]]\n[[spoken]]Hi there.[[/spoken]]\n"
+                "[[detail]]private rambling[[/detail]]"
+            )
+            db.add_message("s1", "assistant", dirty)
+            db._backfill_legacy_meta_tags()  # idempotent re-run
+            rows = db.get_messages("s1")
             self.assertEqual(len(rows), 1)
-            self.assertEqual(rows[0].message_id, mid)
-            self.assertEqual(rows[0].content, "test embedding")
-            np.testing.assert_array_almost_equal(rows[0].embedding, vec)
-
-    def test_message_ids_with_embeddings(self):
-        with _TempDB() as db:
-            m1 = db.add_message("s1", "user", "a")
-            m2 = db.add_message("s1", "user", "b")
-            db.add_embedding(m1, "s1", np.zeros(4, dtype=np.float32))
-            ids = db.get_message_ids_with_embeddings("s1")
-            self.assertIn(m1, ids)
-            self.assertNotIn(m2, ids)
-
-    def test_embeddings_cleared_with_messages(self):
-        with _TempDB() as db:
-            mid = db.add_message("s1", "user", "x")
-            db.add_embedding(mid, "s1", np.ones(4, dtype=np.float32))
-            db.clear_messages("s1")
-            self.assertEqual(len(db.get_all_embeddings("s1")), 0)
+            content = rows[0].content
+            self.assertNotIn("[[", content)
+            self.assertNotIn("private", content)
+            self.assertIn("Hi there", content)
 
 
 class TestSummaries(unittest.TestCase):
@@ -181,31 +149,6 @@ class TestSummaries(unittest.TestCase):
             db.save_summary("s1", "new", 20, 10)
             row = db.get_latest_summary("s1")
             self.assertEqual(row.summary, "new")
-
-
-class TestRecentTopics(unittest.TestCase):
-    def test_add_and_get_topics(self):
-        with _TempDB() as db:
-            db.add_recent_topic("s1", "weather")
-            db.add_recent_topic("s1", "cooking")
-            topics = db.get_recent_topics("s1")
-            self.assertEqual(len(topics), 2)
-            self.assertIsInstance(topics[0], RecentTopicRow)
-            self.assertEqual(topics[0].topic, "cooking")
-
-    def test_auto_trim_to_20(self):
-        with _TempDB() as db:
-            for i in range(25):
-                db.add_recent_topic("s1", f"topic {i}")
-            topics = db.get_recent_topics("s1", limit=100)
-            self.assertLessEqual(len(topics), 20)
-
-    def test_topics_isolated_by_session(self):
-        with _TempDB() as db:
-            db.add_recent_topic("s1", "a")
-            db.add_recent_topic("s2", "b")
-            self.assertEqual(len(db.get_recent_topics("s1")), 1)
-            self.assertEqual(len(db.get_recent_topics("s2")), 1)
 
 
 class TestThreadSafety(unittest.TestCase):

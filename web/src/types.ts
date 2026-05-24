@@ -52,6 +52,31 @@ export type VoiceMode =
   | "thinking"
   | "speaking";
 
+export type MemoryKind =
+  | "fact"
+  | "preference"
+  | "event"
+  | "relationship"
+  | "self_tagged";
+
+export interface Memory {
+  id: number;
+  content: string;
+  kind: MemoryKind | string;
+  salience: number;
+  source_session: string | null;
+  source_message_id: number | null;
+  created_at: string;
+  last_used_at: string | null;
+  use_count: number;
+}
+
+export interface MemoriesResponse {
+  memories: Memory[];
+  count: number;
+  enabled: boolean;
+}
+
 export interface MetricsSnapshot {
   mode?: string;
   capture_ms?: number;
@@ -91,6 +116,8 @@ export type WsServerEvent =
   | { type: "history_cleared"; session: string }
   | { type: "status"; message: string }
   | { type: "error"; message: string }
+  | { type: "memory_added"; memory: Memory }
+  | { type: "memory_deleted"; id: number }
   | { type: "pong" };
 
 export type WsClientCommand =

@@ -1,5 +1,10 @@
 import { create } from "zustand";
-import type { ChatMessage, MetricsSnapshot, VoiceMode } from "./types";
+import type {
+  ChatMessage,
+  Memory,
+  MetricsSnapshot,
+  VoiceMode,
+} from "./types";
 
 interface ConnectionState {
   status: "disconnected" | "connecting" | "connected";
@@ -50,9 +55,41 @@ interface AssistantState {
   setVoiceMode: (mode: VoiceMode) => void;
   setAudioLevel: (level: number) => void;
   setLastTranscript: (text: string) => void;
+
+  // Long-term memories
+  memories: Memory[];
+  memoriesEnabled: boolean;
+  setMemories: (memories: Memory[], enabled?: boolean) => void;
+  upsertMemory: (memory: Memory) => void;
+  removeMemory: (id: number) => void;
 }
 
 const REACTION_TAG_RE = /\[\[reaction:(\w+)\]\]/i;
+
+/**
+ * Defense-in-depth: strip every meta marker the assistant might emit, so the
+ * UI is bulletproof regardless of source (live stream, history fetch, MCP
+ * message, future model swap). Mirrors
+ * ``app/core/services/response_text_service.strip_all_meta_tags``.
+ */
+function stripMetaMarkers(s: string): string {
+  if (!s) return s;
+  return (
+    s
+      // Drop full [[detail]]...[[/detail]] blocks (and any unclosed tail).
+      .replace(/\[\[detail\]\][\s\S]*?(?:\[\[\/detail\]\]|$)/gi, "")
+      // Drop [[remember:...]] tags entirely (private notebook).
+      .replace(/\[\[remember:[^\]]*?\]\]/gi, "")
+      // Drop unclosed remember at end-of-string.
+      .replace(/\[\[remember:[^\]]*$/gi, "")
+      // Strip [[spoken]]/[[/spoken]] markers (keep content).
+      .replace(/\[\[\/?spoken\]\]/gi, "")
+      // Strip [[reaction:X]] markers (kept separately as state).
+      .replace(/\[\[reaction:\w+\]\]/gi, "")
+      // Collapse runaway blank lines left over from removed blocks.
+      .replace(/\n{3,}/g, "\n\n")
+  );
+}
 
 let bubbleCounter = 0;
 const nextId = (): string => {
@@ -78,7 +115,14 @@ export const useAssistantStore = create<AssistantState>((set) => ({
     set({ ttsState: state, ttsText: text, reaction }),
 
   messages: [],
-  setMessages: (msgs) => set({ messages: msgs }),
+  setMessages: (msgs) =>
+    set({
+      messages: msgs.map((m) =>
+        m.role === "assistant"
+          ? { ...m, content: stripMetaMarkers(m.content) }
+          : m,
+      ),
+    }),
   appendUserMessage: (content) =>
     set((state) => ({
       messages: [
@@ -121,7 +165,7 @@ export const useAssistantStore = create<AssistantState>((set) => ({
       const reaction = reactionMatch
         ? reactionMatch[1].toLowerCase()
         : last.reaction;
-      const cleaned = merged.replace(/\[\[reaction:\w+\]\]/gi, "");
+      const cleaned = stripMetaMarkers(merged);
       return {
         messages: [
           ...state.messages.slice(0, -1),
@@ -177,6 +221,28 @@ export const useAssistantStore = create<AssistantState>((set) => ({
   setAudioLevel: (level) =>
     set({ audioLevel: Math.max(0, Math.min(1, level)) }),
   setLastTranscript: (text) => set({ lastTranscript: text }),
+
+  memories: [],
+  memoriesEnabled: true,
+  setMemories: (memories, enabled) =>
+    set((state) => ({
+      memories,
+      memoriesEnabled: enabled ?? state.memoriesEnabled,
+    })),
+  upsertMemory: (memory) =>
+    set((state) => {
+      const existing = state.memories.findIndex((m) => m.id === memory.id);
+      if (existing >= 0) {
+        const next = state.memories.slice();
+        next[existing] = memory;
+        return { memories: next };
+      }
+      return { memories: [memory, ...state.memories] };
+    }),
+  removeMemory: (id) =>
+    set((state) => ({
+      memories: state.memories.filter((m) => m.id !== id),
+    })),
 }));
 
 // Convenience getter without subscribing (used inside the WS hook).
