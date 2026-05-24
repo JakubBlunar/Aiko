@@ -27,6 +27,22 @@ interface SettingsDrawerProps {
   onClose: () => void;
 }
 
+type SettingsTabId = "chat" | "voice" | "tools" | "persona" | "knowledge";
+
+interface TabSpec {
+  id: SettingsTabId;
+  label: string;
+  icon: string;
+}
+
+const SETTINGS_TABS: ReadonlyArray<TabSpec> = [
+  { id: "chat", label: "Chat", icon: "💬" },
+  { id: "voice", label: "Voice", icon: "🎙️" },
+  { id: "tools", label: "Tools", icon: "🛠️" },
+  { id: "persona", label: "Persona", icon: "🌸" },
+  { id: "knowledge", label: "Knowledge", icon: "📚" },
+];
+
 export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
   const [settings, setSettings] = useState<AssistantSettings | null>(null);
   const [models, setModels] = useState<string[]>([]);
@@ -34,6 +50,7 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
   const [devices, setDevices] = useState<AudioDevices>({ input: [], output: [] });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<SettingsTabId>("chat");
   const [memoriesOpen, setMemoriesOpen] = useState(false);
   const memories = useAssistantStore((s) => s.memories);
   const memoriesEnabled = useAssistantStore((s) => s.memoriesEnabled);
@@ -241,7 +258,7 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
         onClick={onClose}
         role="presentation"
       />
-      <div className="flex h-full w-full max-w-md flex-col border-l border-white/10 bg-[#0f0a1f] shadow-2xl">
+      <div className="flex h-full w-full max-w-lg flex-col border-l border-white/10 bg-[#0f0a1f] shadow-2xl">
         <header className="flex items-center justify-between border-b border-white/5 px-5 py-4">
           <div>
             <h2 className="text-base font-semibold text-ink-100">Settings</h2>
@@ -258,6 +275,31 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
           </button>
         </header>
 
+        <nav
+          className="flex shrink-0 gap-1 overflow-x-auto border-b border-white/5 bg-white/[0.015] px-3 py-2"
+          aria-label="Settings sections"
+        >
+          {SETTINGS_TABS.map((tab) => {
+            const isActive = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTab(tab.id)}
+                aria-pressed={isActive}
+                className={`flex shrink-0 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${
+                  isActive
+                    ? "bg-ink-500/30 text-ink-100 ring-1 ring-ink-400/50"
+                    : "text-ink-100/60 hover:bg-white/5 hover:text-ink-100/90"
+                }`}
+              >
+                <span aria-hidden="true">{tab.icon}</span>
+                <span>{tab.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+
         <div className="flex-1 space-y-6 overflow-y-auto px-5 py-5 text-sm">
           {error ? (
             <div className="rounded-md border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
@@ -268,34 +310,40 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
             <div className="text-xs text-ink-100/50">Loading...</div>
           ) : settings ? (
             <>
-              <Section title="Chat model">
-                <label className="block text-xs text-ink-100/60">Model</label>
-                <select
-                  value={settings.chat.model}
-                  onChange={(e) =>
-                    void apply({ chat: { model: e.target.value } })
-                  }
-                  className="mt-1 w-full rounded-md border border-white/10 bg-black/40 px-3 py-2 text-sm text-ink-100"
-                >
-                  {(models.length > 0 ? models : [settings.chat.model]).map(
-                    (model) => (
-                      <option key={model} value={model}>
-                        {model}
-                      </option>
-                    ),
-                  )}
-                </select>
-                <Row label="Context window" value={settings.chat.context_window.toLocaleString()} />
-                <Row label="Temperature" value={settings.chat.temperature.toFixed(2)} />
-                <Row label="Max tokens" value={String(settings.chat.max_tokens)} />
-              </Section>
+              {activeTab === "chat" ? (
+                <>
+                  <Section title="Chat model">
+                    <label className="block text-xs text-ink-100/60">Model</label>
+                    <select
+                      value={settings.chat.model}
+                      onChange={(e) =>
+                        void apply({ chat: { model: e.target.value } })
+                      }
+                      className="mt-1 w-full rounded-md border border-white/10 bg-black/40 px-3 py-2 text-sm text-ink-100"
+                    >
+                      {(models.length > 0 ? models : [settings.chat.model]).map(
+                        (model) => (
+                          <option key={model} value={model}>
+                            {model}
+                          </option>
+                        ),
+                      )}
+                    </select>
+                    <Row label="Context window" value={settings.chat.context_window.toLocaleString()} />
+                    <Row label="Temperature" value={settings.chat.temperature.toFixed(2)} />
+                    <Row label="Max tokens" value={String(settings.chat.max_tokens)} />
+                  </Section>
 
-              <DiagnosticsSection
-                metrics={metrics}
-                liveLastMetrics={liveMetrics}
-              />
+                  <DiagnosticsSection
+                    metrics={metrics}
+                    liveLastMetrics={liveMetrics}
+                  />
+                </>
+              ) : null}
 
-              <Section title="Voice (TTS)">
+              {activeTab === "voice" ? (
+                <>
+                  <Section title="Voice (TTS)">
                 <label className="block text-xs text-ink-100/60">Voice</label>
                 <select
                   value={settings.tts.voice}
@@ -427,8 +475,12 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                   }
                 />
               </Section>
+                </>
+              ) : null}
 
-              <Section title="Tools">
+              {activeTab === "tools" ? (
+                <>
+                  <Section title="Tools">
                 <p className="text-[11px] text-ink-100/50">
                   Tools let Aiko reach for fresh facts before answering: the
                   current time, your notebook, or the public web. Disable any
@@ -487,8 +539,12 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                   </div>
                 )}
               </Section>
+                </>
+              ) : null}
 
-              <Section title="Persona avatar (Live2D)">
+              {activeTab === "persona" ? (
+                <>
+                  <Section title="Persona avatar (Live2D)">
                 {personaError ? (
                   <div className="rounded-md border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
                     {personaError}
@@ -618,8 +674,12 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                   </p>
                 )}
               </Section>
+                </>
+              ) : null}
 
-              <Section title="Documents (RAG)">
+              {activeTab === "knowledge" ? (
+                <>
+                  <Section title="Documents (RAG)">
                 <p className="text-[11px] text-ink-100/50">
                   Drop in notes, docs, or PDFs and Aiko will be able to pull
                   relevant chunks into the conversation. Indexed into the same
@@ -737,6 +797,8 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                   )
                 ) : null}
               </Section>
+                </>
+              ) : null}
             </>
           ) : null}
         </div>

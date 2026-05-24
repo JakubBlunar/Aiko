@@ -44,10 +44,14 @@ export function ChatView({ send }: ChatViewProps) {
   const lastTranscript = useAssistantStore((s) => s.lastTranscript);
   const setLastTranscript = useAssistantStore((s) => s.setLastTranscript);
   const toolActivity = useAssistantStore((s) => s.toolActivity);
+  const sessionKey = useAssistantStore((s) => s.sessionKey);
 
   const [draft, setDraft] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // Tracks whether we've already done the "land at bottom" jump for the
+  // current session. Reset when the session key or first-load completes.
+  const initialScrolledRef = useRef<string | null>(null);
 
   // Hide the transcript pill ~3s after we receive a final transcript.
   useEffect(() => {
@@ -56,17 +60,54 @@ export function ChatView({ send }: ChatViewProps) {
     return () => window.clearTimeout(id);
   }, [lastTranscript, setLastTranscript]);
 
-  // Auto-scroll to the bottom whenever new tokens arrive (only if user
-  // already had the view scrolled to within ~100px of the end).
+  // Reset the "initial scrolled" guard when the session changes so that
+  // switching to another conversation also jumps to its latest message.
+  useEffect(() => {
+    initialScrolledRef.current = null;
+  }, [sessionKey]);
+
+  // Scroll behavior:
+  //   1. On first paint with messages (or after a session switch), jump
+  //      straight to the bottom — the user wants to land on the most
+  //      recent message.
+  //   2. On subsequent updates (streaming tokens, new turn), only stick
+  //      to the bottom if the user is already within ~120px of it, so
+  //      we don't yank them away while they're scrolling history.
   useEffect(() => {
     const el = scrollRef.current;
-    if (!el) return;
+    if (!el || messages.length === 0) return;
+
+    const sessionTag = sessionKey || "__default__";
+    if (initialScrolledRef.current !== sessionTag) {
+      initialScrolledRef.current = sessionTag;
+      // Two raf ticks: first lets layout settle (bubbles + auto-grown
+      // textarea), second performs the jump after final heights are known.
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const node = scrollRef.current;
+          if (node) node.scrollTop = node.scrollHeight;
+        });
+      });
+      return;
+    }
+
     const stickToBottom =
       el.scrollHeight - el.scrollTop - el.clientHeight < 120;
     if (stickToBottom) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [messages]);
+  }, [messages, sessionKey]);
+
+  // Auto-grow the input textarea up to its max-height so the row doesn't
+  // start out as a tall 2-line box but still expands naturally.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const max = 160; // matches max-h-40 in the className
+    const next = Math.min(max, Math.max(48, el.scrollHeight));
+    el.style.height = `${next}px`;
+  }, [draft]);
 
   const headerReaction = useMemo(() => {
     return REACTION_EMOJI[reaction] ?? REACTION_EMOJI.neutral;
@@ -144,13 +185,12 @@ export function ChatView({ send }: ChatViewProps) {
 
       <div className="border-t border-white/5 bg-white/[0.02] px-6 py-4">
         <div className="mx-auto max-w-3xl">
-          {voiceMode !== "off" && lastTranscript ? (
-            <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.03] px-3 py-1 text-xs text-ink-100/70">
-              <span className="text-ink-100/40">you said:</span>
-              <span className="italic">{lastTranscript}</span>
-            </div>
-          ) : null}
-          <div className="flex items-end gap-2">
+          <VoiceStrip
+            voiceMode={voiceMode}
+            audioLevel={audioLevel}
+            lastTranscript={lastTranscript}
+          />
+          <div className="flex items-center gap-2">
             <MicButton
               voiceMode={voiceMode}
               audioLevel={audioLevel}
@@ -170,14 +210,16 @@ export function ChatView({ send }: ChatViewProps) {
                     : "Talk to Aiko... (Enter to send, Shift+Enter for newline)"
               }
               disabled={connection.status !== "connected"}
-              rows={2}
-              className="flex-1 resize-none rounded-xl border border-white/10 bg-black/30 px-4 py-3 text-sm text-ink-100 placeholder:text-ink-100/40 focus:border-ink-400 focus:outline-none focus:ring-2 focus:ring-ink-500/40 disabled:opacity-60"
+              rows={1}
+              className="h-12 max-h-40 min-h-[3rem] flex-1 resize-none self-center rounded-xl border border-white/10 bg-black/30 px-4 py-3 text-sm leading-6 text-ink-100 placeholder:text-ink-100/40 focus:border-ink-400 focus:outline-none focus:ring-2 focus:ring-ink-500/40 disabled:opacity-60"
             />
             {turnInProgress ? (
               <button
                 type="button"
                 onClick={() => send({ type: "stop" })}
-                className="h-12 rounded-xl bg-red-500/80 px-4 text-sm font-medium text-white transition hover:bg-red-500"
+                className="flex h-12 min-w-[3rem] shrink-0 items-center justify-center rounded-xl bg-red-500/80 px-4 text-sm font-medium text-white transition hover:bg-red-500"
+                title="Stop generation"
+                aria-label="Stop generation"
               >
                 Stop
               </button>
@@ -186,7 +228,9 @@ export function ChatView({ send }: ChatViewProps) {
                 type="button"
                 onClick={handleSend}
                 disabled={!draft.trim() || connection.status !== "connected"}
-                className="h-12 rounded-xl bg-ink-500 px-5 text-sm font-medium text-white transition hover:bg-ink-400 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-white/40"
+                className="flex h-12 min-w-[3rem] shrink-0 items-center justify-center rounded-xl bg-ink-500 px-5 text-sm font-medium text-white transition hover:bg-ink-400 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-white/40"
+                title="Send message (Enter)"
+                aria-label="Send message"
               >
                 Send
               </button>
@@ -212,48 +256,78 @@ function MicButton({
   onClick,
 }: MicButtonProps) {
   const isOn = voiceMode !== "off";
-  const labelMap: Record<MicButtonProps["voiceMode"], string> = {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={!connected}
+      title={isOn ? "Stop voice mode" : "Start voice mode"}
+      aria-label={isOn ? "Stop voice mode" : "Start voice mode"}
+      aria-pressed={isOn}
+      className={`relative flex h-12 w-12 shrink-0 items-center justify-center self-center rounded-xl border text-xl transition ${
+        isOn
+          ? "border-pink-400/60 bg-pink-500/20 text-pink-100 hover:bg-pink-500/30"
+          : "border-white/10 bg-black/30 text-ink-100/70 hover:border-ink-400 hover:text-ink-100"
+      } disabled:cursor-not-allowed disabled:opacity-40`}
+    >
+      {isOn && voiceMode === "listening" ? (
+        <span
+          aria-hidden="true"
+          className="absolute inset-0 rounded-xl border-2 border-pink-400/40"
+          style={{
+            transform: `scale(${1 + Math.min(audioLevel, 1) * 0.25})`,
+            transition: "transform 60ms linear",
+            opacity: 0.6,
+          }}
+        />
+      ) : null}
+      <span className="relative">{isOn ? "🎙️" : "🎤"}</span>
+    </button>
+  );
+}
+
+interface VoiceStripProps {
+  voiceMode: "off" | "listening" | "transcribing" | "thinking" | "speaking";
+  audioLevel: number;
+  lastTranscript: string;
+}
+
+function VoiceStrip({ voiceMode, audioLevel, lastTranscript }: VoiceStripProps) {
+  const isOn = voiceMode !== "off";
+  if (!isOn && !lastTranscript) {
+    return null;
+  }
+  const labelMap: Record<VoiceStripProps["voiceMode"], string> = {
     off: "Voice off",
     listening: "Listening",
-    transcribing: "Transcribing",
-    thinking: "Thinking",
-    speaking: "Speaking",
+    transcribing: "Transcribing…",
+    thinking: "Thinking…",
+    speaking: "Speaking…",
   };
-  const label = labelMap[voiceMode];
-
   return (
-    <div className="flex flex-col items-center gap-1">
-      <button
-        type="button"
-        onClick={onClick}
-        disabled={!connected}
-        title={isOn ? "Stop voice mode" : "Start voice mode"}
-        className={`relative flex h-12 w-12 items-center justify-center rounded-xl border text-xl transition ${
-          isOn
-            ? "border-pink-400/60 bg-pink-500/20 text-pink-100 hover:bg-pink-500/30"
-            : "border-white/10 bg-black/30 text-ink-100/70 hover:border-ink-400 hover:text-ink-100"
-        } disabled:cursor-not-allowed disabled:opacity-40`}
-      >
-        {isOn && voiceMode === "listening" ? (
+    <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
+      {isOn ? (
+        <span className="inline-flex items-center gap-2 rounded-full border border-pink-400/30 bg-pink-500/10 px-3 py-1 text-pink-100">
           <span
-            className="absolute inset-0 rounded-xl border-2 border-pink-400/40"
+            aria-hidden="true"
+            className="h-1.5 w-1.5 rounded-full bg-pink-300"
             style={{
-              transform: `scale(${1 + Math.min(audioLevel, 1) * 0.25})`,
-              transition: "transform 60ms linear",
-              opacity: 0.6,
+              opacity: 0.4 + Math.min(1, audioLevel) * 0.6,
+              transition: "opacity 80ms linear",
             }}
           />
-        ) : null}
-        <span className="relative">{isOn ? "🎙️" : "🎤"}</span>
-      </button>
-      <AudioMeter level={isOn ? audioLevel : 0} active={isOn} />
-      <div
-        className={`text-[10px] uppercase tracking-wider ${
-          isOn ? "text-pink-200/80" : "text-ink-100/40"
-        }`}
-      >
-        {label}
-      </div>
+          <span className="font-medium uppercase tracking-wider">
+            {labelMap[voiceMode]}
+          </span>
+          <AudioMeter level={audioLevel} active={voiceMode === "listening"} />
+        </span>
+      ) : null}
+      {lastTranscript ? (
+        <span className="inline-flex max-w-full items-center gap-2 truncate rounded-full border border-white/10 bg-white/[0.03] px-3 py-1 text-ink-100/70">
+          <span className="text-ink-100/40">you said:</span>
+          <span className="italic truncate">{lastTranscript}</span>
+        </span>
+      ) : null}
     </div>
   );
 }
