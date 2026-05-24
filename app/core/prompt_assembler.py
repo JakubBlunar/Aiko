@@ -16,6 +16,7 @@ that don't need telemetry.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -32,6 +33,23 @@ if TYPE_CHECKING:
 log = logging.getLogger("app.prompt_assembler")
 
 DEFAULT_PERSONA_PATH = Path("data/persona/aiko_companion.txt")
+DEFAULT_SELF_IMAGE_PATH = Path("data/persona/self_image.txt")
+
+
+def _safe_provider(provider: Callable[[], str] | None) -> str:
+    """Run an inner-life block provider, swallowing exceptions.
+
+    Hot-path safety: a broken provider must NEVER kill the prompt build.
+    Returns ``""`` on any failure.
+    """
+    if provider is None:
+        return ""
+    try:
+        text = provider()
+    except Exception:
+        log.debug("inner-life provider raised", exc_info=True)
+        return ""
+    return (text or "").strip()
 
 # Reserve a buffer between (estimated tokens used) and (model's context window)
 # so we never send a request that bumps against the limit and gets truncated
@@ -61,6 +79,17 @@ class PromptTelemetry:
     history_tokens: int = 0
     user_tokens: int = 0
     tool_tokens: int = 0  # set by TurnRunner after the tool pre-pass
+    # Phase-2/3/4 inner-life blocks. These are folded into ``system_tokens``
+    # for budgeting; the per-block fields exist for the metrics drawer.
+    affect_tokens: int = 0
+    circadian_tokens: int = 0
+    profile_tokens: int = 0
+    user_state_tokens: int = 0
+    relationship_tokens: int = 0
+    arc_tokens: int = 0
+    narrative_tokens: int = 0
+    agenda_tokens: int = 0
+    self_image_tokens: int = 0
     prompt_tokens_estimate: int = 0
     history_messages_kept: int = 0
     history_messages_dropped: int = 0
@@ -81,6 +110,15 @@ class PromptTelemetry:
             "history_tokens": int(self.history_tokens),
             "user_tokens": int(self.user_tokens),
             "tool_tokens": int(self.tool_tokens),
+            "affect_tokens": int(self.affect_tokens),
+            "circadian_tokens": int(self.circadian_tokens),
+            "profile_tokens": int(self.profile_tokens),
+            "user_state_tokens": int(self.user_state_tokens),
+            "relationship_tokens": int(self.relationship_tokens),
+            "arc_tokens": int(self.arc_tokens),
+            "narrative_tokens": int(self.narrative_tokens),
+            "agenda_tokens": int(self.agenda_tokens),
+            "self_image_tokens": int(self.self_image_tokens),
             "prompt_tokens_estimate": int(self.prompt_tokens_estimate),
             "history_messages_kept": int(self.history_messages_kept),
             "history_messages_dropped": int(self.history_messages_dropped),
@@ -99,6 +137,7 @@ class PromptAssembler:
         recent_window: int = 20,
         memory_retriever: "MemoryRetriever | None" = None,
         rag_retriever: "RagRetriever | None" = None,
+        self_image_path: Path | str | None = None,
     ) -> None:
         self._db = db
         self._persona_path = Path(persona_path)
@@ -111,11 +150,63 @@ class PromptAssembler:
         # explicitly into the persona.
         self._last_reaction: str | None = None
 
+        # Phase-2/3/4 block providers. Each callable returns a short text
+        # snippet (or ``""`` to skip) that gets folded into the system
+        # prompt. They run on the hot path so must be cheap (<1ms each):
+        # SQL reads + dict lookups, no LLM. Set via ``set_inner_life_providers``.
+        self._affect_provider: Callable[[], str] | None = None
+        self._circadian_provider: Callable[[], str] | None = None
+        self._profile_provider: Callable[[], str] | None = None
+        self._user_state_provider: Callable[[], str] | None = None
+        self._relationship_provider: Callable[[], str] | None = None
+        self._arc_provider: Callable[[], str] | None = None
+        self._narrative_provider: Callable[[], str] | None = None
+        self._agenda_provider: Callable[[], str] | None = None
+        self._self_image_path = (
+            Path(self_image_path) if self_image_path is not None else None
+        )
+        self._self_image_cache: tuple[float, str] | None = None
+
     def set_memory_retriever(self, retriever: "MemoryRetriever | None") -> None:
         self._memory_retriever = retriever
 
     def set_rag_retriever(self, retriever: "RagRetriever | None") -> None:
         self._rag_retriever = retriever
+
+    def set_inner_life_providers(
+        self,
+        *,
+        affect: Callable[[], str] | None = None,
+        circadian: Callable[[], str] | None = None,
+        profile: Callable[[], str] | None = None,
+        user_state: Callable[[], str] | None = None,
+        relationship: Callable[[], str] | None = None,
+        arc: Callable[[], str] | None = None,
+        narrative: Callable[[], str] | None = None,
+        agenda: Callable[[], str] | None = None,
+    ) -> None:
+        """Register optional inner-life block providers.
+
+        Each provider returns a short, prompt-ready string (or empty to
+        skip). Workers register themselves via this hook so the assembler
+        doesn't need to know about every concrete table.
+        """
+        if affect is not None:
+            self._affect_provider = affect
+        if circadian is not None:
+            self._circadian_provider = circadian
+        if profile is not None:
+            self._profile_provider = profile
+        if user_state is not None:
+            self._user_state_provider = user_state
+        if relationship is not None:
+            self._relationship_provider = relationship
+        if arc is not None:
+            self._arc_provider = arc
+        if narrative is not None:
+            self._narrative_provider = narrative
+        if agenda is not None:
+            self._agenda_provider = agenda
 
     def set_last_reaction(self, reaction: str | None) -> None:
         if not reaction:
@@ -214,6 +305,16 @@ class PromptAssembler:
 
         ambient = self._ambient_block()
         mood_hint = self._mood_carryover_hint()
+        # Phase-2/3/4 inner-life blocks (each returns "" to skip).
+        circadian_block = _safe_provider(self._circadian_provider)
+        affect_block = _safe_provider(self._affect_provider)
+        profile_block = _safe_provider(self._profile_provider)
+        user_state_block = _safe_provider(self._user_state_provider)
+        relationship_block = _safe_provider(self._relationship_provider)
+        arc_block = _safe_provider(self._arc_provider)
+        narrative_block = _safe_provider(self._narrative_provider)
+        agenda_block = "" if aggressive else _safe_provider(self._agenda_provider)
+        self_image_block = self._load_self_image()
 
         summary_text = ""
         if summary and summary.summary.strip():
@@ -222,10 +323,28 @@ class PromptAssembler:
         system_parts: list[str] = []
         if persona:
             system_parts.append(persona)
+        if self_image_block:
+            system_parts.append(self_image_block)
+        if narrative_block:
+            system_parts.append(narrative_block)
         if ambient:
             system_parts.append(ambient)
+        if circadian_block:
+            system_parts.append(circadian_block)
+        if affect_block:
+            system_parts.append(affect_block)
         if mood_hint:
             system_parts.append(mood_hint)
+        if relationship_block:
+            system_parts.append(relationship_block)
+        if profile_block:
+            system_parts.append(profile_block)
+        if user_state_block:
+            system_parts.append(user_state_block)
+        if arc_block:
+            system_parts.append(arc_block)
+        if agenda_block:
+            system_parts.append(agenda_block)
         if memory_block:
             system_parts.append(memory_block)
         if summary_text:
@@ -241,6 +360,15 @@ class PromptAssembler:
         mood_tokens = estimate_tokens(mood_hint) if mood_hint else 0
         rag_tokens = estimate_tokens(memory_block) if memory_block else 0
         summary_tokens = estimate_tokens(summary_text) if summary_text else 0
+        affect_tokens = estimate_tokens(affect_block) if affect_block else 0
+        circadian_tokens = estimate_tokens(circadian_block) if circadian_block else 0
+        profile_tokens = estimate_tokens(profile_block) if profile_block else 0
+        user_state_tokens = estimate_tokens(user_state_block) if user_state_block else 0
+        relationship_tokens = estimate_tokens(relationship_block) if relationship_block else 0
+        arc_tokens = estimate_tokens(arc_block) if arc_block else 0
+        narrative_tokens = estimate_tokens(narrative_block) if narrative_block else 0
+        agenda_tokens = estimate_tokens(agenda_block) if agenda_block else 0
+        self_image_tokens = estimate_tokens(self_image_block) if self_image_block else 0
         system_tokens = estimate_tokens(system_prompt) + (_MESSAGE_OVERHEAD if system_prompt else 0)
 
         cleaned_user = (user_text or "").strip()
@@ -298,6 +426,15 @@ class PromptAssembler:
             history_tokens=history_tokens,
             user_tokens=user_tokens,
             tool_tokens=0,
+            affect_tokens=affect_tokens,
+            circadian_tokens=circadian_tokens,
+            profile_tokens=profile_tokens,
+            user_state_tokens=user_state_tokens,
+            relationship_tokens=relationship_tokens,
+            arc_tokens=arc_tokens,
+            narrative_tokens=narrative_tokens,
+            agenda_tokens=agenda_tokens,
+            self_image_tokens=self_image_tokens,
             prompt_tokens_estimate=prompt_tokens_estimate,
             history_messages_kept=kept_count,
             history_messages_dropped=dropped_count,
@@ -386,6 +523,31 @@ class PromptAssembler:
             log.warning("persona file %s unreadable: %s", path, exc)
             text = ""
         self._persona_cache = (mtime, text)
+        return text
+
+    def _load_self_image(self) -> str:
+        """Read and cache ``data/persona/self_image.txt`` (Phase 2d/4b output).
+
+        Returns the formatted "Lately you've been being someone who..."
+        block or empty when the file is absent. mtime-cached so the hot
+        path is a stat call.
+        """
+        path = self._self_image_path
+        if path is None:
+            return ""
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return ""
+        if self._self_image_cache is not None and self._self_image_cache[0] == mtime:
+            return self._self_image_cache[1]
+        try:
+            text = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            text = ""
+        if text:
+            text = "Lately:\n" + text
+        self._self_image_cache = (mtime, text)
         return text
 
     @staticmethod

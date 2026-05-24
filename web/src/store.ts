@@ -1,8 +1,10 @@
 import { create } from "zustand";
 import type {
+  BackchannelHint,
   ChatMessage,
   Memory,
   MetricsSnapshot,
+  MoodState,
   Persona,
   ToolEvent,
   VoiceMode,
@@ -78,6 +80,16 @@ interface AssistantState {
   audioAmplitude: number;
   setPersona: (persona: Persona | null) => void;
   setAudioAmplitude: (level: number) => void;
+
+  // Phase 2b: persistent mood snapshot, updated post-turn.
+  mood: MoodState;
+  setMood: (mood: MoodState) => void;
+
+  // Phase 1a: transient backchannel hints from STT partials.
+  /** ID of the latest backchannel; consumers compare to detect changes. */
+  backchannelHint: BackchannelHint | null;
+  backchannelAt: number;  // Date.now() of last hint
+  pushBackchannel: (hint: BackchannelHint) => void;
 
   // Toasts (transient corner notifications, e.g. "Aiko remembered something")
   toasts: Toast[];
@@ -305,6 +317,14 @@ export const useAssistantStore = create<AssistantState>((set) => ({
   setPersona: (persona) => set({ persona }),
   setAudioAmplitude: (level) =>
     set({ audioAmplitude: Math.max(0, Math.min(1, level)) }),
+
+  mood: { label: "content", intensity: 0.5, valence: 0, arousal: 0.4 },
+  setMood: (mood) => set({ mood }),
+
+  backchannelHint: null,
+  backchannelAt: 0,
+  pushBackchannel: (hint) =>
+    set({ backchannelHint: hint, backchannelAt: Date.now() }),
 
   toasts: [],
   pushToast: (kind, text, ttlMs = 4500) =>

@@ -209,6 +209,19 @@ export function useAssistantSocket(): {
         });
         break;
 
+      case "mood_state":
+        store.setMood({
+          label: evt.label,
+          intensity: evt.intensity,
+          valence: evt.valence,
+          arousal: evt.arousal,
+        });
+        break;
+
+      case "backchannel":
+        store.pushBackchannel(evt.hint);
+        break;
+
       case "pong":
         break;
     }

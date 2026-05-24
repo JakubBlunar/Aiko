@@ -115,6 +115,34 @@ class AgentSettings:
     # schedule a background compaction immediately (don't wait for idle).
     max_prompt_tokens_pct: float = 0.8
 
+    # ── Speaking-window scheduler (Phase 2a) ──────────────────────────
+    # The scheduler drains LLM-driven background jobs (reflection, profile
+    # updates, agenda grooming, narrative weaving, etc.) while Aiko is
+    # speaking the previous reply. Hot-path stays cheap; the workers feel
+    # "free" because they hide under TTS playback.
+    scheduler_idle_seconds: float = 20.0  # quiet time before idle drain
+    scheduler_speaking_window_grace_ms: int = 200  # soft-close grace
+    scheduler_max_job_seconds: float = 8.0  # advisory per-job cap
+
+    # ── Inner-life workers (Phase 2c onward) ──────────────────────────
+    # ReflectionWorker fires after every turn unless skipped by emotional-delta
+    # throttling. Set to a higher number to throttle more aggressively.
+    reflection_min_seconds_between: float = 8.0
+    reflection_emotional_delta_threshold: float = 0.05
+    # User-profile worker runs every N user turns; lowered when each pass is
+    # richer (covers all fields per pass).
+    user_profile_min_turns: int = 6
+    # Agenda groomer runs every N user turns when there are >= 1 agenda items.
+    agenda_groom_every_n_turns: int = 8
+    # Conversation-arc worker (cheap LLM, runs each turn at low priority).
+    arc_update_every_n_turns: int = 1
+    # Self-image pulse: once per UTC day in the first speaking window after
+    # midnight. ``enabled=False`` skips entirely.
+    self_image_pulse_enabled: bool = True
+    # Prepared-nudge job runs in late speaking windows; cap how stale a
+    # prepared nudge can be before ProactiveDirector re-synthesises.
+    prepared_nudge_ttl_seconds: float = 600.0
+
 
 @dataclass(slots=True)
 class McpServerSettings:
@@ -363,6 +391,16 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             summary_min_unsummarized_messages=max(2, int(agent_raw.get("summary_min_unsummarized_messages", 6))),
             summary_target_tokens=max(120, int(agent_raw.get("summary_target_tokens", 600))),
             max_prompt_tokens_pct=max(0.3, min(0.95, float(agent_raw.get("max_prompt_tokens_pct", 0.8)))),
+            scheduler_idle_seconds=max(2.0, float(agent_raw.get("scheduler_idle_seconds", 20.0))),
+            scheduler_speaking_window_grace_ms=max(0, int(agent_raw.get("scheduler_speaking_window_grace_ms", 200))),
+            scheduler_max_job_seconds=max(1.0, float(agent_raw.get("scheduler_max_job_seconds", 8.0))),
+            reflection_min_seconds_between=max(0.0, float(agent_raw.get("reflection_min_seconds_between", 8.0))),
+            reflection_emotional_delta_threshold=max(0.0, float(agent_raw.get("reflection_emotional_delta_threshold", 0.05))),
+            user_profile_min_turns=max(1, int(agent_raw.get("user_profile_min_turns", 6))),
+            agenda_groom_every_n_turns=max(1, int(agent_raw.get("agenda_groom_every_n_turns", 8))),
+            arc_update_every_n_turns=max(1, int(agent_raw.get("arc_update_every_n_turns", 1))),
+            self_image_pulse_enabled=bool(agent_raw.get("self_image_pulse_enabled", True)),
+            prepared_nudge_ttl_seconds=max(30.0, float(agent_raw.get("prepared_nudge_ttl_seconds", 600.0))),
         ),
         logging=LoggingSettings(
             level=str(logging_raw.get("level", "INFO")).strip().upper() or "INFO",
