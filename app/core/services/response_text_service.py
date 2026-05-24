@@ -153,6 +153,16 @@ _REMEMBER_OPEN_TAIL_PATTERN = re.compile(
     r"\[\[remember:[^\]]*\Z",
     flags=re.IGNORECASE,
 )
+# Phase 4a: [[agenda:goal]] / [[agenda:0.7:goal]] — extracted by
+# AgendaStore in SessionController and stripped from user-visible text.
+_AGENDA_TAG_PATTERN = re.compile(
+    r"\[\[agenda(?::[0-9.]+)?:[^\]]*?\]\]",
+    flags=re.IGNORECASE,
+)
+_AGENDA_OPEN_TAIL_PATTERN = re.compile(
+    r"\[\[agenda(?::[0-9.]+)?:[^\]]*\Z",
+    flags=re.IGNORECASE,
+)
 
 
 def strip_all_meta_tags(text: str) -> str:
@@ -187,6 +197,9 @@ def strip_all_meta_tags(text: str) -> str:
     s = _REMEMBER_TAG_PATTERN.sub("", s)
     # Drop an unclosed remember opener that runs off the end.
     s = _REMEMBER_OPEN_TAIL_PATTERN.sub("", s)
+    # Phase 4a: same treatment for [[agenda:...]].
+    s = _AGENDA_TAG_PATTERN.sub("", s)
+    s = _AGENDA_OPEN_TAIL_PATTERN.sub("", s)
     # Strip the spoken/reaction markers (content kept for spoken).
     for tag in (_SPOKEN_OPEN, _SPOKEN_CLOSE):
         s = re.sub(re.escape(tag), "", s, flags=re.IGNORECASE)
