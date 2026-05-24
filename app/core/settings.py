@@ -170,6 +170,12 @@ class AgentSettings:
     relationship_pulse_min_hours: float = 168.0  # ~7 days
     relationship_pulse_min_turns: int = 30
 
+    # ── Cadence / prosody (Phase 5b) ──────────────────────────────────
+    # ProsodyDispatcher inserts per-sentence reactions, occasional micro
+    # prefixes ("Mm.", "Oh,") and gentle pause-style punctuation tweaks.
+    # All hints are text-only — engines that ignore punctuation are safe.
+    cadence_enabled: bool = True
+
 
 @dataclass(slots=True)
 class McpServerSettings:
@@ -439,6 +445,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             relationship_pulse_enabled=bool(agent_raw.get("relationship_pulse_enabled", True)),
             relationship_pulse_min_hours=max(24.0, float(agent_raw.get("relationship_pulse_min_hours", 168.0))),
             relationship_pulse_min_turns=max(5, int(agent_raw.get("relationship_pulse_min_turns", 30))),
+            cadence_enabled=bool(agent_raw.get("cadence_enabled", True)),
         ),
         logging=LoggingSettings(
             level=str(logging_raw.get("level", "INFO")).strip().upper() or "INFO",

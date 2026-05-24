@@ -295,6 +295,19 @@ class SessionController:
             enabled=bool(settings.tts.enabled),
             state_listener=self._on_tts_state,
         )
+        # Phase 5b: ProsodyDispatcher wraps tts.enqueue with per-sentence
+        # cadence. Context provider is wired below once affect/circadian
+        # are available.
+        try:
+            from app.core.cadence import ProsodyDispatcher
+
+            self._prosody = ProsodyDispatcher(
+                self._tts.enqueue,
+                enabled=bool(settings.agent.cadence_enabled),
+            )
+        except Exception:
+            log.warning("ProsodyDispatcher init failed", exc_info=True)
+            self._prosody = None
         self._apply_assistant_preferences()
 
         # ── Microphone + STT ─────────────────────────────────────────────
@@ -530,6 +543,14 @@ class SessionController:
         self._prompt_assembler.set_pinned_self_memories_provider(
             self._top_pinned_self_memories,
         )
+
+        # Phase 5b: feed the prosody dispatcher live affect/circadian.
+        prosody = getattr(self, "_prosody", None)
+        if prosody is not None:
+            try:
+                prosody.set_context_provider(self._cadence_context)
+            except Exception:
+                log.debug("prosody context provider wire failed", exc_info=True)
 
         if (
             self._memory_settings.enabled
@@ -1068,6 +1089,13 @@ class SessionController:
             state_listener=self._on_tts_state,
             amplitude_listener=self._on_tts_amplitude,
         )
+        # Phase 5b: re-bind the ProsodyDispatcher to the new queue.
+        prosody = getattr(self, "_prosody", None)
+        if prosody is not None:
+            try:
+                prosody._enqueue = self._tts.enqueue  # noqa: SLF001
+            except Exception:
+                log.debug("prosody rebind failed", exc_info=True)
         self._apply_assistant_preferences()
         self._trace("tts.provider", f"Switched TTS provider to {normalized}")
 
@@ -1521,11 +1549,17 @@ class SessionController:
         self._turn_in_progress = True
         t0 = time.perf_counter()
         try:
+            tts_chunk_cb = None
+            if bool(self._settings.tts.enabled):
+                prosody = getattr(self, "_prosody", None)
+                tts_chunk_cb = (
+                    prosody.dispatch if prosody is not None else self._tts.enqueue
+                )
             result = self._turn_runner.run(
                 session_key,
                 cleaned,
                 on_token=on_token,
-                on_tts_chunk=self._tts.enqueue if bool(self._settings.tts.enabled) else None,
+                on_tts_chunk=tts_chunk_cb,
                 stop_requested=stop_requested,
             )
         finally:
@@ -1628,6 +1662,26 @@ class SessionController:
         except Exception:
             log.debug("circadian block render failed", exc_info=True)
             return ""
+
+    def _cadence_context(self) -> Any:
+        """Phase 5b: build a CadenceContext from the live affect/circadian."""
+        from app.core.cadence import CadenceContext
+
+        ctx = CadenceContext()
+        try:
+            state = self._affect_store.get(self._user_id)
+            ctx.mood_label = state.mood_label or "content"
+            ctx.mood_arousal = float(state.arousal)
+            ctx.mood_valence = float(state.valence)
+        except Exception:
+            log.debug("cadence affect lookup failed", exc_info=True)
+        try:
+            cstate = _circadian.compute()
+            ctx.circadian_period = getattr(cstate, "period", "")
+            ctx.circadian_drowsy = bool(getattr(cstate, "drowsy", False))
+        except Exception:
+            log.debug("cadence circadian lookup failed", exc_info=True)
+        return ctx
 
     def _render_user_profile_block(self) -> str:
         """Phase 3a: bullet block of the high-confidence profile fields."""
