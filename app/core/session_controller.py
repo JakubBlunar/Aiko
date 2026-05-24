@@ -359,6 +359,28 @@ class SessionController:
             log.warning("ReflectionWorker init failed", exc_info=True)
             self._reflection_worker = None
 
+        # Phase 3b: relationship tracker (turn / session counters + phase
+        # + milestones). Hot-path safe: a single SQLite row per user.
+        self._relationship_store = None
+        self._relationship_tracker = None
+        try:
+            from app.core.relationship import (
+                RelationshipStore, RelationshipTracker,
+            )
+            self._relationship_store = RelationshipStore(self._chat_db)
+            self._relationship_tracker = RelationshipTracker(
+                self._relationship_store,
+            )
+            # Bump session counter on init.
+            try:
+                self._relationship_tracker.register_session_start(self._user_id)
+            except Exception:
+                log.debug("relationship session start failed", exc_info=True)
+        except Exception:
+            log.warning("RelationshipTracker init failed", exc_info=True)
+            self._relationship_store = None
+            self._relationship_tracker = None
+
         # Phase 3a: structured user profile + per-turn user-state estimator.
         # The store is hot-path-safe (small SQL reads) and the estimator
         # runs after every turn (regex only). The worker is LLM-driven and
@@ -418,6 +440,7 @@ class SessionController:
             circadian=self._render_circadian_block,
             profile=self._render_user_profile_block,
             user_state=self._render_user_state_block,
+            relationship=self._render_relationship_block,
         )
         self._prompt_assembler.set_pinned_self_memories_provider(
             self._top_pinned_self_memories,
@@ -1489,6 +1512,17 @@ class SessionController:
             log.debug("user state block render failed", exc_info=True)
             return ""
 
+    def _render_relationship_block(self) -> str:
+        """Phase 3b: short ambient block about how long we've known Jacob."""
+        tracker = getattr(self, "_relationship_tracker", None)
+        if tracker is None:
+            return ""
+        try:
+            return tracker.ambient_line(self._user_id)
+        except Exception:
+            log.debug("relationship block render failed", exc_info=True)
+            return ""
+
     def _top_pinned_self_memories(self, *, limit: int = 5) -> list[str]:
         """Phase 2d: hot-path provider for pinned self-memory bullets.
 
@@ -1514,6 +1548,42 @@ class SessionController:
             if len(out) >= int(limit):
                 break
         return out
+
+    def _record_milestone_memory(self, label: str) -> None:
+        """Persist a milestone as a callback memory so RAG surfaces it."""
+        if not label:
+            return
+        store = getattr(self, "_memory_store", None)
+        embedder = getattr(self, "_embedder", None)
+        if store is None or embedder is None:
+            return
+        humanized = label.replace("_", " ")
+        content = (
+            f"Aiko reached a milestone with Jacob: {humanized}. "
+            "She might naturally bring this up in conversation."
+        )
+        try:
+            emb = embedder.embed(content)
+        except Exception:
+            log.debug("milestone embed failed", exc_info=True)
+            return
+        try:
+            mem = store.add(
+                content=content,
+                kind="callback",
+                embedding=emb,
+                salience=0.6,
+                source_session=self.session_key,
+            )
+        except Exception:
+            log.debug("milestone memory insert failed", exc_info=True)
+            return
+        if mem is not None:
+            log.info("relationship milestone recorded: %s", label)
+            try:
+                self._notify_memory_added(mem)
+            except Exception:
+                pass
 
     def _maybe_schedule_user_profile_job(self) -> None:
         """Phase 3a: enqueue UserProfileWorker via the speaking window."""
@@ -1796,6 +1866,17 @@ class SessionController:
                 self._maybe_schedule_user_profile_job()
             except Exception:
                 log.debug("user-profile schedule failed", exc_info=True)
+
+        # Phase 3b: bump turn counter + maybe surface a milestone callback.
+        tracker = getattr(self, "_relationship_tracker", None)
+        if tracker is not None:
+            try:
+                _new_state, milestone = tracker.record_turn(self._user_id)
+            except Exception:
+                log.debug("relationship record_turn failed", exc_info=True)
+                milestone = None
+            if milestone:
+                self._record_milestone_memory(milestone)
 
     # ── Voice capture ────────────────────────────────────────────────
 

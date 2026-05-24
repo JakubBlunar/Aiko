@@ -197,6 +197,24 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"get_user_profile failed: {exc}"
 
     @mcp.tool()
+    def get_relationship_state() -> str:
+        """Return relationship phase + counters (Phase 3b)."""
+        try:
+            tracker = getattr(session, "_relationship_tracker", None)
+            if tracker is None:
+                return json.dumps({"enabled": False}, indent=2)
+            state = tracker.get(session._user_id)
+            payload = {
+                "enabled": True,
+                "phase": tracker.current_phase(session._user_id),
+                "ambient_line": tracker.ambient_line(session._user_id),
+                **state.to_payload(),
+            }
+            return json.dumps(payload, indent=2, default=str)
+        except Exception as exc:
+            return f"get_relationship_state failed: {exc}"
+
+    @mcp.tool()
     def get_user_state() -> str:
         """Return the per-turn user-state snapshot (Phase 3a)."""
         try:
