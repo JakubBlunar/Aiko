@@ -149,6 +149,19 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
         except Exception as exc:
             return f"get_rag_prefetcher_stats failed: {exc}"
 
+    @mcp.tool()
+    def get_reflection_stats() -> str:
+        """Return ReflectionWorker counters (Phase 2c)."""
+        try:
+            worker = getattr(session, "_reflection_worker", None)
+            if worker is None:
+                return json.dumps({"enabled": False}, indent=2)
+            return json.dumps(
+                {"enabled": True, **worker.stats()}, indent=2, default=str,
+            )
+        except Exception as exc:
+            return f"get_reflection_stats failed: {exc}"
+
     # ── Resources ────────────────────────────────────────────────────
 
     @mcp.resource("assistant://history")

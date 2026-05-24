@@ -37,7 +37,20 @@ if TYPE_CHECKING:
 log = logging.getLogger("app.memory_store")
 
 
-VALID_KINDS = {"fact", "preference", "event", "relationship", "self_tagged", "self"}
+VALID_KINDS = {
+    "fact",
+    "preference",
+    "event",
+    "relationship",
+    "self_tagged",
+    "self",
+    # Phase 2c — produced by ReflectionWorker (LLM journal during the
+    # speaking window). open_question = something Aiko wonders about and
+    # might surface later. callback = a thread she'd like to pick back up.
+    "open_question",
+    "callback",
+    "reflection",
+}
 
 
 @dataclass(slots=True)
