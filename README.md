@@ -1,179 +1,135 @@
-# English Speaking Assistant
+# Aiko
 
-Local speech-to-speech + type-in assistant: talk or type to the agent, get text and spoken response in real time. Uses RealtimeSTT (Whisper + Silero VAD), Kokoro TTS, and LangChain with Ollama.
+Local, private, web-based AI companion. Talk or type, get streaming text + spoken responses, watch a Live2D avatar react, and ground replies in your own documents — all running on your machine.
+
+Built around:
+
+- **Ollama** for chat (local, or any OpenAI-compatible endpoint via the `chat_llm` block).
+- **RealtimeSTT** (faster-whisper + Silero VAD) for speech input.
+- **Pocket-TTS** for low-latency speech output.
+- **LanceDB** for vector RAG over long-term memories, recent chat messages, and user-uploaded documents.
+- **FastAPI + React/Vite + PixiJS** for the web UI and Live2D avatar.
 
 ## Requirements
 
-- Windows 10/11 (or macOS/Linux)
-- Python 3.11+
-- Ollama installed and running
-- A local Ollama model (e.g. `llama3.1:8b`)
+- Windows 10/11, macOS, or Linux
+- Python 3.11+ (3.13 supported)
+- Node.js 20+ (only for the React frontend dev server)
 - Microphone and speakers
-
-The app uses **Ollama** for the LLM via LangChain; the `openai` package is installed for compatibility.
+- An Ollama install with a chat model and an embedding model
 
 ## Setup
 
-### 1. Install Ollama
+### 1. Install Ollama and pull models
 
-- **Windows:** Download from [ollama.com/download/windows](https://ollama.com/download/windows)
-- **macOS:** `brew install ollama` or download from [ollama.com/download/mac](https://ollama.com/download/mac)
+- **Windows:** [ollama.com/download/windows](https://ollama.com/download/windows)
+- **macOS:** `brew install ollama`
 - **Linux:** `curl -fsSL https://ollama.com/install.sh | sh`
 
-Then pull the model:
+Pull a chat model and the embedding model used for RAG (defaults below match `config/default.json`):
 
 ```powershell
-ollama pull llama3.1:8b
+ollama pull jaahas/qwen3.5-uncensored:9b   # or any chat model you prefer
+ollama pull qwen3-embedding:0.6b
 ```
 
 ### 2. Python environment
 
 ```powershell
 python -m venv .venv
-.\.venv\Activate.ps1
-pip install -e .
-```
-
-For optional toolkits (search, calculator, etc.), see [Toolkits](#toolkits-config-and-deps) below. Tool registry is config-driven; install optional deps only for the toolkits you enable.
-
-**If your `.venv` is corrupted or misbehaving**, recreate it from the project root (close the app first):
-
-```powershell
-Remove-Item -Recurse -Force .venv
-python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -e .
-.\.venv\Scripts\python -m spacy download en_core_web_sm
 ```
 
-Then run the app with `.\.venv\Scripts\python -m app.main`.
+The console script `aiko-web` is installed as a shortcut for `python -m app.web`.
 
-### 3. Kokoro TTS dependencies
-
-If you see "Missing TTS dependencies" or "Missing kokoro_onnx, misaki, sounddevice, or numpy", install the project (which includes them) or the TTS packages explicitly:
+### 3. Frontend dependencies
 
 ```powershell
-pip install -e .
+cd web
+npm install
+cd ..
 ```
 
-Or only the TTS stack:
-
-```powershell
-pip install numpy sounddevice kokoro-onnx misaki
-```
-
-You also need **espeak-ng** installed on your system for misaki G2P (see step 5 below).
-
-### 4. Kokoro TTS model files
-
-Download and place in the `models/` folder (default paths):
-
-1. [kokoro-v1.0.onnx](https://github.com/thewh1teagle/kokoro-onnx/releases/tag/model-files-v1.0) → `models/kokoro-v1.0.onnx`
-2. [voices-v1.0.bin](https://github.com/thewh1teagle/kokoro-onnx/releases/tag/model-files-v1.0) → `models/voices-v1.0.bin`
-
-To use a different location, set paths in `config/user.json`:
-
-```json
-{
-  "tts": {
-    "kokoro_model_path": "models/kokoro-v1.0.onnx",
-    "kokoro_voices_path": "models/voices-v1.0.bin"
-  }
-}
-```
-
-### 5. RealtimeSTT / Whisper
-
-RealtimeSTT will download Whisper `large-v1` on first use. No manual download required.
-
-### 6. espeak-ng (for Kokoro G2P)
-
-- **Windows:** Download from [eSpeak NG releases](https://github.com/espeak-ng/espeak-ng/releases) (e.g. `.msi`) and install; add to PATH if needed.
-- **macOS:** `brew install espeak-ng`
-- **Linux:** `sudo apt-get install espeak-ng`
-
-## Configure
-
-- **Ollama:** `config/default.json` → `ollama.base_url`, `ollama.chat_model`, `ollama.temperature`
-- **STT:** `stt.provider` (realtime_stt), `stt.model` (large-v1), `stt.language` (en)
-- **TTS:** `tts.provider` (kokoro), `tts.voice` (e.g. af_heart), `tts.kokoro_model_path`, `tts.kokoro_voices_path`
-- **MCP:** Optional. See `config/tooling.default.json` and `config/mcp.servers.json`; enable in `config/tooling.user.json` under `tools.mcp.enabled`
-- **Logging:** All app events and errors are logged to the console (stderr). Filter by level with the `LOG_LEVEL` environment variable (e.g. `DEBUG`, `INFO`, `WARNING`, `ERROR`) or set `logging.level` in `config/default.json` or `config/user.json`. Use `DEBUG` to see all pipeline/tool events for diagnosis; use `ERROR` to reduce noise.
-
-User overrides (model, voice, paths) go in `config/user.json`.
-
-## Customizing the persona
-
-Session history is stored in `data/chat_sessions.db` by default. User persona (optional) can be added later via a user-context store.
-
-Configure the assistant in `config/default.json` or `config/user.json` under `assistant`:
-
-| Key | Description |
-|-----|-------------|
-| `background` | Inline description of the assistant’s role (single line in JSON). Used when `background_path` is not set or the file cannot be read. |
-| `background_path` | Path to a **text file** (relative to project root) with multiline instructions, e.g. `data/assistant_background.txt`. If set and the file exists, its content is used instead of `background`. |
-| `user_id` | Optional; default `"default"`. Scopes session/user context per user. |
-| `response_style` | Optional; one of `balanced`, `concise`, `detailed`. Affects reply length. Default `balanced`. |
-| `tts_length_scale` | Optional; float in 0.65–1.35. Higher = slower TTS. Default `1.0`. |
+For day-to-day development the top-level `npm run dev` script (in `package.json`) starts both the Python web server and Vite together.
 
 ## Run
 
-Use the project’s virtual environment so that `agno` and other dependencies are found. From the project root:
-
 ```powershell
-.\.venv\Scripts\python -m app.main
+# Backend + frontend in one shot (recommended for development)
+npm run dev
+
+# Or backend only:
+python -m app.web
+# (then open http://127.0.0.1:6275)
 ```
 
-Or activate the venv first, then run:
+The Python process boots:
+
+- The `SessionController` (chat, memory, RAG, tools).
+- The FastAPI/WebSocket app on `http://127.0.0.1:6275`.
+- The embedded MCP server on `http://127.0.0.1:6274/sse` (used for debugging — see `AGENTS.md`).
+
+In dev mode Vite proxies `/api` and `/ws` to the Python server.
+
+## Configure
+
+User-editable defaults live in `config/default.json`. Personal overrides go in `config/user.json` and are deep-merged on top.
+
+| Block | Purpose |
+|---|---|
+| `assistant` | `name`, `remember_history`, `user_id`, `tts_length_scale` |
+| `ollama` | `base_url`, `chat_model`, `embedding_model`, `temperature`, `context_window`, `timeout` |
+| `chat_llm` | Routes the chat call. `provider: "ollama"` (default) or `"openai_compatible"` for OpenAI / xAI / Groq / OpenRouter / DeepSeek / etc. |
+| `audio` | Sample rate, microphone/output device, VAD thresholds, push-to-talk |
+| `stt` | `model` (e.g. `large-v1`), `language` |
+| `tts` | `provider` (`pocket-tts`), `voice`, `enabled`, `pocket_tts_voice`, `pocket_tts_temp` |
+| `agent` | `proactive_silence_seconds`, `proactive_cooldown_seconds` |
+| `memory` | `enabled`, `top_k`, `score_threshold`, `max_memories`, `dedupe_threshold`, `extractor_enabled`, `self_tagged_salience` |
+| `tools` | `enabled` plus per-tool flags: `get_time`, `recall`, `web_search` |
+| `web_server` | `host`, `port` (default `127.0.0.1:6275`) |
+| `mcp_server` | `enabled`, `port` (default `6274`) |
+
+Set `LOG_LEVEL=DEBUG` (env var) or `logging.level` in config to control verbosity.
+
+## Tools
+
+The lean v1 tool registry exposes three tools to the chat model via Ollama's native function-calling:
+
+| Tool | Returns |
+|---|---|
+| `get_time` | Current ISO date/time. |
+| `recall` | Semantic search across memories, recent messages, and uploaded documents (LanceDB). |
+| `web_search` | DuckDuckGo lite results. |
+
+The agent runs a pre-stream `chat_with_tools` pass; if a tool call appears, it executes, appends the result, then runs the streaming reply pass. Toggle each tool from the web Settings drawer or in `config.tools`.
+
+## Memory and RAG
+
+- `data/chat_sessions.db` — SQLite source of truth for messages, rolling summaries, and long-term memory metadata.
+- `data/lancedb/` — Vector store: a `memories` table mirrored from SQLite, an asynchronously-indexed `messages` table, and a chunked `documents` table.
+- `data/documents/` — Originals of files uploaded through the **Documents** section of the web Settings drawer (.md, .txt, .pdf supported).
+- Aiko can also self-tag memories inline using `[[remember:self:...]]`. See `data/persona/aiko_companion.txt`.
+
+## Live2D avatar
+
+- Models live in `data/personas/`. Upload a zip from the web UI; it gets unpacked and registered as the new active persona.
+- The avatar plays an idle motion loop, syncs lip movement to TTS audio amplitude, and switches expressions based on `[[reaction:...]]` tags Aiko emits.
+
+## Voice
+
+- Pocket-TTS uses the `voice` set in `config.tts` (e.g. `aiko1_refined.safetensors` from `voices/`). Drop `.safetensors` files into `voices/` and they show up automatically.
+
+## Test
 
 ```powershell
-.\.venv\Scripts\Activate.ps1
-python -m app.main
+.\.venv\Scripts\python.exe -m pytest tests/
 ```
 
-## Usage
-
-- **Type** in the input field and press Enter or click Send to get a text + spoken reply.
-- **Live** — Click **Start Live** to use voice detection or push-to-talk: the app listens for your speech, transcribes it, sends it to the agent, and speaks the reply. Sentence chunks are spoken as they are generated (stream-to-speak). Use **Stop Live** when done.
-- Conversation history is kept in the session (LangChain chat history). Use Clear history in settings to reset.
-
-### Live mode: streaming, barge-in, and mood
-
-- **Streaming:** In Live mode the agent reply is streamed; each sentence is spoken as soon as it is ready, so you hear the start of the answer sooner.
-- **Mood:** The agent starts each reply with a mood tag (e.g. `[[reaction:cheerful]]`). TTS uses this to slightly adjust speaking speed (e.g. more energetic for “excited”, slower for “sad”).
-- **Barge-in:** In Settings → Audio you can enable **Allow barge-in**. When on, you can interrupt while the assistant is speaking: your new utterance stops playback and is processed as a correction or follow-up in the same conversation, so the agent keeps context.
-
-## Toolkits (config and deps)
-
-Which toolkits the agent can use is set in **`config/tooling.default.json`** (and overrides in `config/tooling.user.json`) under **`toolkits`** (or backward-compat **`agno_toolkits`**). The tool registry is config-driven; by default no toolkits are loaded. See [docs/toolkits-deps.md](docs/toolkits-deps.md) for adding toolkits and their dependencies.
-
-**Toolkit parameters:** Use `toolkits` (list of ids or `{ "id": "...", "params": {} }`) and optional **`toolkit_params`** (map from toolkit id to params). User overrides in `config/tooling.user.json` are merged.
-
-## Optional: MCP tools
-
-To use MCP servers (e.g. windows-mcp) as agent tools:
-
-1. Install prerequisites (e.g. `uv`, Python 3.13+ for windows-mcp).
-2. Define servers in `config/mcp.servers.json` or `config/mcp.servers.user.json`.
-3. In `config/tooling.user.json` set `tools.mcp.enabled` to `true`.
-
-MCP tools are loaded via LangChain MCP adapters and called by the agent when needed.
-
-Context and history are configurable in `config/default.json` under `agent` (`num_history_runs`, `compress_tool_results`, etc.).
-
-## Testing
-
-Install dev dependencies and run tests:
-
-```powershell
-pip install -e ".[dev]"
-python -m pytest tests/ -v
-```
+The suite covers the live surface end-to-end: `TurnRunner`, `RagStore`, `MessageIndexer`, `DocumentIngestor`, `MemoryStore`, `ChatDatabase`, `PersonaManager`, `OllamaClient` tool calls, the response-text service, and the tool registry.
 
 ## Notes
 
-- All processing is local (Ollama, Whisper, Kokoro).
-- Ensure Ollama is running before starting the app (`ollama serve` or start from tray).
-- If Kokoro fails to load, check that `kokoro-v1.0.onnx` and `voices-v1.0.bin` are in the configured path and that espeak-ng is installed.
-- Default config (`config/default.json`) includes only assistant, agent, ollama, audio, stt, tts, ui, and tooling; user overrides go in `config/user.json`.
-- **Agent context:** `config/default.json` → `agent.num_history_runs` (how many past turns to send), `agent.compress_tool_results` (shrink large tool outputs). Lower history or enable compression if the agent slows down with long chats or many tool calls.
+- Everything runs locally by default — Ollama, faster-whisper, Pocket-TTS, LanceDB.
+- The `chat_llm.provider == "openai_compatible"` path routes through `langchain-openai`'s `ChatOpenAI` and works with OpenAI / xAI Grok / Groq / OpenRouter / DeepSeek / Together / Mistral.
+- The MCP server is opt-in (default on) and is intended for development tooling — see `AGENTS.md` for the available tools and how to add new ones.

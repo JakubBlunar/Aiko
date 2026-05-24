@@ -154,7 +154,7 @@ export function useAssistantSocket(): {
 
       case "memory_added": {
         store.upsertMemory(evt.memory);
-        const text = (evt.memory.text || "").slice(0, 80);
+        const text = (evt.memory.content || "").slice(0, 80);
         store.pushToast(
           "memory",
           text ? `Aiko remembered: ${text}` : "Aiko remembered something",

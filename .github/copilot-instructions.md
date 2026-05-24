@@ -1,18 +1,19 @@
 # Copilot Instructions
 
-This is a Python 3.11+ PySide6 desktop assistant with Ollama LLM, voice I/O, browser automation, and pluggable TTS.
+Aiko is a Python 3.11+ web app: FastAPI/WebSocket backend (`app/`) plus a React + Vite + PixiJS frontend (`web/`). Entry point: `python -m app.web` (or the `aiko-web` console script).
 
 ## MCP Server for Debugging
 
-The running app exposes an MCP server at `http://localhost:6274/sse`. Use it to send messages, inspect browser state, and check agent behavior programmatically. See `AGENTS.md` in the repo root for full tool documentation and setup.
+The running app exposes an MCP server at `http://localhost:6274/sse`. Use it to send messages, list available tools, and check turn timings programmatically. See `AGENTS.md` in the repo root for full tool documentation and setup.
 
-Key tools: `send_message`, `get_status`, `get_browser_snapshot`, `get_last_response_detail`.
+Key tools: `send_message`, `get_status`, `list_agent_tools`, `get_last_response_detail`, `clear_history`.
 
 ## Code Style
 
-- Reuse agents — never create in loops.
-- TTS text processing (`prepare_tts_text`) is for the spoken part only, not the chat transcript.
-- Use `_extract_text()` for AI message content (handles both string and list formats).
-- The retry mechanism in `_react_stream_with_retry` handles models that produce tool calls without text.
-- SQLite for development, Postgres for production. Chat history uses a custom schema in `app/core/chat_database.py`.
+- LLM calls go through `app/llm/ollama_client.py` (`chat`, `chat_stream`, `chat_with_tools`). No LangChain/LangGraph in `app/llm/`.
+- Tool dispatch is a two-pass turn handled in `app/core/turn_runner.py`: a pre-stream `chat_with_tools` pass for tool calls, then a streaming reply pass.
+- The tool registry (`app/llm/tools/`) is rebuilt per turn from `config.tools`. Built-in tools: `get_time`, `recall`, `web_search`.
+- TTS text processing (`prepare_tts_text` in `app/core/session_text_utils.py`) applies to the spoken stream only, not the chat transcript.
+- SQLite (`data/chat_sessions.db`) is the source of truth for messages, summaries, and memory metadata. LanceDB (`data/lancedb/`) mirrors `memories`, indexes `messages`, and holds chunked uploaded `documents`.
 - Config: `config/default.json` (defaults) + `config/user.json` (overrides), loaded via `app/core/settings.py`.
+- Inline tags Aiko emits: `[[reaction:...]]` (mood) and `[[remember:...]]` / `[[remember:self:...]]` (memory writes). Both are stripped from the spoken/transcript output by the response-text service.

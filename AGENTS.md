@@ -2,11 +2,20 @@
 
 ## Project Overview
 
-Python 3.11+ PySide6 desktop assistant with voice I/O, LLM chat (Ollama), browser automation (Playwright MCP), and pluggable TTS. Entry point: `python -m app.main`.
+Aiko is a web-based AI companion built around:
+
+- **Python 3.11+** backend (FastAPI + WebSocket) under `app/`. Entry point: `python -m app.web` (or the `aiko-web` console script).
+- **React + Vite + PixiJS** frontend under `web/` (Live2D avatar, chat, voice controls, settings drawer, document upload).
+- **Ollama** for chat (via `OllamaClient` directly, not LangChain). The `chat_llm` block can route to any OpenAI-compatible endpoint instead.
+- **RealtimeSTT** + **Pocket-TTS** for voice in/out.
+- **LanceDB** for vector RAG over memories, recent chat messages, and uploaded documents.
+- **SQLite** (`data/chat_sessions.db`) as the source of truth for messages, summaries, and memory metadata.
+
+There is no desktop / Qt / LangChain code. The web UI is the only UI.
 
 ## Embedded MCP Server
 
-The app exposes an MCP server on `http://localhost:6274/sse` for programmatic interaction and debugging. Start the app first, then connect any MCP client.
+The app exposes an MCP server on `http://localhost:6274/sse` for development tooling. Start the app first, then connect any MCP client.
 
 ### Cursor Setup
 
@@ -31,15 +40,11 @@ Add to your MCP settings (`.vscode/mcp.json` or user settings):
 
 | Tool | Args | Returns |
 |------|------|---------|
-| `send_message` | `message: str`, `skip_tts: bool = false` | Assistant response text. UI updates live. |
-| `get_status` | — | JSON: model, context window, tool count, TTS, metrics. |
-| `list_agent_tools` | — | JSON array of `{name, description}` for all agent tools. |
-| `get_last_response_detail` | — | JSON timing breakdown of the last turn. |
-| `clear_history` | — | Clears conversation session in the DB. |
-| `get_browser_snapshot` | — | Accessibility tree of the current browser page. |
-| `get_browser_screenshot` | — | Screenshot of the browser page. |
-| `get_browser_url` | — | Current tab URLs. |
-| `get_browser_console` | — | Recent console messages. |
+| `send_message` | `message: str`, `skip_tts: bool = false` | Assistant response text. The web UI updates live as the message streams. |
+| `get_status` | — | JSON: model name, context window, TTS engine, agent tool count, recent metrics. |
+| `list_agent_tools` | — | JSON array of `{name, description}` for every agent tool currently registered. |
+| `get_last_response_detail` | — | JSON timing breakdown for the last turn (`llm_ms`, `tts_ms`, etc.). |
+| `clear_history` | — | Clears the active session in `chat_sessions.db`. |
 
 ### Resources
 
@@ -50,11 +55,10 @@ Add to your MCP settings (`.vscode/mcp.json` or user settings):
 
 ### Debugging Workflow
 
-1. **Confirm connection**: Call `get_status` — verify model name, tool count, and `mcp_manager_active: true`.
-2. **Test agent**: Call `send_message` with `skip_tts: true` to avoid audio playback during testing.
-3. **Inspect browser**: After a browser task, call `get_browser_snapshot` to see what the agent saw, or `get_browser_screenshot` for a visual.
-4. **Check performance**: Call `get_last_response_detail` — `llm_ms` is the model time, `tts_ms` is speech synthesis time.
-5. **Read logs**: The app console prints `Stream pass complete:` (tool call counts, AI text length) and `Nudging agent:` (retry trigger) at INFO level.
+1. **Confirm connection**: Call `get_status` — verify `model`, `tool_count`, and `tts.engine`.
+2. **Test agent**: Call `send_message` with `skip_tts: true` to avoid audio playback during automated testing.
+3. **Check timing**: Call `get_last_response_detail` — `llm_ms` is the model time, `tts_ms` is speech synthesis time.
+4. **Read logs**: The app console prints tool registry rebuilds, `TurnRunner` two-pass execution, and proactive nudges at INFO level.
 
 ### Adding Custom MCP Tools
 
@@ -65,26 +69,27 @@ If the existing tools are not enough for your debugging scenario, add new ones d
 def my_debug_tool(some_arg: str) -> str:
     """Description of what this tool does."""
     # Access any internal state via the `session` reference:
-    #   session._agent, session._settings, session._chat_db, etc.
-    # Call Playwright MCP tools via _call_mcp_tool("browser_*", ...)
+    #   session._settings, session._chat_db, session._memory_store,
+    #   session._rag_store, session._tool_registry, etc.
     # The app must be restarted for new tools to take effect.
     return "result"
 ```
 
-You are encouraged to add any MCP tool you need to debug a problem. Common examples: inspecting agent message history mid-turn, dumping the system prompt, reading TTS queue state, checking embedding search results, or triggering specific SessionController methods. After adding a tool, restart the app and it will appear automatically.
+You are encouraged to add any MCP tool you need to debug a problem. Common examples: inspecting agent message history mid-turn, dumping the system prompt, reading TTS queue state, checking embedding search results, or triggering specific `SessionController` methods. After adding a tool, restart the app and it will appear automatically.
 
 ### Architecture Notes
 
 - `app/mcp/server.py` — FastMCP server definition with all tools/resources. Add new tools here.
 - `app/mcp/runner.py` — Runs uvicorn in a daemon thread; stops on app shutdown.
-- `app/core/session_controller.py` — Starts the MCP server in `__init__`, stops in `shutdown()`. Message listeners notify the UI of MCP-triggered messages.
-- Browser tools proxy through the existing `_mcp_manager` in `app/llm/langchain_agent.py` which holds the persistent Playwright session.
+- `app/core/session_controller.py` — Starts the MCP server in `__init__`, stops in `shutdown()`. Message listeners notify the web UI of MCP-triggered messages over WebSocket.
 - Config: `config/default.json` key `mcp_server` (`enabled`, `port`).
 
 ## Code Conventions
 
-- Python 3.11+, PySide6 for UI, LangChain/LangGraph for agents.
-- Agent is created once and reused (`create_react_agent`). Never recreate in loops.
-- TTS text processing (`prepare_tts_text`) applies only to the spoken part, not the chat transcript.
-- SQLite for chat history (`data/chat_sessions.db`), with token-aware trimming and rolling summaries.
-- The react agent retry mechanism (`_react_stream_with_retry`) nudges the model when it calls tools without producing text.
+- Python 3.11+, dataclasses + slots for settings, FastAPI for the HTTP/WebSocket layer.
+- LLM calls go through `app/llm/ollama_client.py` (`chat`, `chat_stream`, `chat_with_tools`). Tool dispatch happens in `app/core/turn_runner.py` via a pre-stream `chat_with_tools` pass; the streaming reply runs immediately after.
+- The agent's available tools are built once per turn from `config.tools` by `SessionController.rebuild_tool_registry()` — see `app/llm/tools/builtins.py` for the live set (`get_time`, `recall`, `web_search`).
+- TTS text processing (`prepare_tts_text` in `app/core/session_text_utils.py`) applies only to the spoken stream, not the chat transcript.
+- SQLite (`data/chat_sessions.db`) is the source of truth; LanceDB (`data/lancedb/`) mirrors `memories`, asynchronously indexes `messages`, and holds chunked uploaded `documents`.
+- Inline tags Aiko emits: `[[reaction:...]]` (mood, drives Live2D expression and TTS prosody) and `[[remember:...]]` / `[[remember:self:...]]` (writes a long-term memory). Both are stripped from the spoken/chat output.
+- Frontend state lives in `web/src/store.ts` (Zustand). The WebSocket hook (`web/src/hooks/useAssistantSocket.ts`) is the single point that mutates store state from server events.
