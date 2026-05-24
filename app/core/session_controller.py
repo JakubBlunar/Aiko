@@ -36,6 +36,7 @@ from typing import Any
 from app.audio.earcons import EarconPlayer
 from app.audio.mic_capture import MicrophoneCapture, list_output_devices
 from app.core.affect_state import AffectStore, AffectUpdater
+from app.core.backchannel_classifier import BackchannelGate, BackchannelHint
 from app.core.chat_database import ChatDatabase
 from app.core import circadian as _circadian
 from app.core.crash_logging import log_event
@@ -166,6 +167,16 @@ class SessionController:
         self._affect_store = AffectStore(self._chat_db)
         self._affect_updater = AffectUpdater(self._affect_store)
         self._mood_listeners: list[Callable[[dict[str, Any]], None]] = []
+
+        # ── Backchannel classifier (Phase 1a) ────────────────────────────
+        # Regex-only — pure CPU, <1ms — runs on every stt_partial event.
+        # The gate rate-limits identical hints so the avatar overlay doesn't
+        # spam the same expression mid-phrase.
+        self._backchannel_gate = BackchannelGate(min_repeat_seconds=1.5)
+        self._backchannel_listeners: list[
+            Callable[[BackchannelHint, str], None]
+        ] = []
+        self._stt_partial_listeners: list[Callable[[str], None]] = []
 
         # ── Long-term memory (cross-session) ─────────────────────────────
         self._memory_settings = settings.memory
@@ -1355,6 +1366,59 @@ class SessionController:
     ) -> None:
         if callback and callback not in self._mood_listeners:
             self._mood_listeners.append(callback)
+
+    # ── STT partials + backchannel (Phase 1a) ───────────────────────
+
+    def add_stt_partial_listener(self, callback: Callable[[str], None]) -> None:
+        if callback and callback not in self._stt_partial_listeners:
+            self._stt_partial_listeners.append(callback)
+
+    def add_backchannel_listener(
+        self, callback: Callable[[BackchannelHint, str], None],
+    ) -> None:
+        if callback and callback not in self._backchannel_listeners:
+            self._backchannel_listeners.append(callback)
+
+    def feed_stt_partial(self, partial_text: str) -> BackchannelHint | None:
+        """Hot-path entry point for partial STT text (every ~200ms).
+
+        Forwards the partial to all subscribed listeners, then runs the
+        regex backchannel classifier through the rate-limit gate. If a new
+        hint fires, broadcasts it to backchannel listeners. Returns the
+        hint (or ``None``) so callers can also use it locally.
+        """
+        text = (partial_text or "").strip()
+        for listener in list(self._stt_partial_listeners):
+            try:
+                listener(text)
+            except Exception:
+                log.debug("stt partial listener raised", exc_info=True)
+        if not text:
+            return None
+        # Notify the scheduler so any in-flight background job knows fresh
+        # user audio is landing — they can pre-empt and free the LLM
+        # channel before the user finishes speaking.
+        try:
+            self._scheduler.on_user_speech()
+        except Exception:
+            log.debug("scheduler.on_user_speech failed", exc_info=True)
+        try:
+            hint = self._backchannel_gate.consider(text, now=time.monotonic())
+        except Exception:
+            log.debug("backchannel gate raised", exc_info=True)
+            hint = None
+        if hint is None:
+            return None
+        for listener in list(self._backchannel_listeners):
+            try:
+                listener(hint, text)
+            except Exception:
+                log.debug("backchannel listener raised", exc_info=True)
+        return hint
+
+    def reset_backchannel_state(self) -> None:
+        """Clear gate state at session boundaries so fresh hints can fire."""
+        self._backchannel_gate.reset()
 
     def _notify_mood_state(self, payload: dict[str, Any]) -> None:
         for listener in list(self._mood_listeners):

@@ -148,6 +148,13 @@ def create_web_app(session: "SessionController") -> FastAPI:
     def _on_mood_state(payload: dict[str, Any]) -> None:
         hub.broadcast({"type": "mood_state", **payload})
 
+    def _on_backchannel(hint: str, partial: str) -> None:
+        hub.broadcast({
+            "type": "backchannel",
+            "hint": hint,
+            "partial": partial,
+        })
+
     def _broadcast_context_window() -> None:
         hub.broadcast({
             "type": "context_window",
@@ -184,6 +191,10 @@ def create_web_app(session: "SessionController") -> FastAPI:
         session.add_mood_state_listener(_on_mood_state)
     except Exception:
         log.debug("mood state listener subscription failed", exc_info=True)
+    try:
+        session.add_backchannel_listener(_on_backchannel)
+    except Exception:
+        log.debug("backchannel listener subscription failed", exc_info=True)
     try:
         session.add_tts_amplitude_listener(_on_amplitude)
     except Exception:
@@ -229,6 +240,12 @@ def create_web_app(session: "SessionController") -> FastAPI:
             text = str(payload.get("text") or "")
             if text:
                 hub.broadcast({"type": "stt_partial", "text": text})
+                # Route through the SessionController so the backchannel
+                # classifier + scheduler urgent-cancel hooks both fire.
+                try:
+                    session.feed_stt_partial(text)
+                except Exception:
+                    log.debug("feed_stt_partial failed", exc_info=True)
         elif name == "stt_final":
             text = str(payload.get("text") or "").strip()
             if not text:

@@ -82,6 +82,61 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
         """Return JSON list of agent tools (empty in v1, hooked in via TurnRunner later)."""
         return json.dumps([], indent=2)
 
+    @mcp.tool()
+    def feed_stt_partial(partial_text: str) -> str:
+        """Inject a fake STT partial transcript for testing backchannel hints.
+
+        Useful while the audio-side partial pipeline is still being wired:
+        send any sentence and we'll run it through the regex classifier and
+        broadcast the resulting backchannel WS event (if any). Returns the
+        hint that fired or 'none' when the text was neutral.
+        """
+        try:
+            hint = session.feed_stt_partial(partial_text)
+        except Exception as exc:
+            return f"feed_stt_partial failed: {exc}"
+        return hint or "none"
+
+    @mcp.tool()
+    def get_mood_state() -> str:
+        """Return Aiko's current persistent mood snapshot (Phase 2b)."""
+        try:
+            store = session._affect_store  # type: ignore[attr-defined]
+            user_id = session._user_id  # type: ignore[attr-defined]
+            state = store.get(user_id)
+            return json.dumps(state.to_payload(), indent=2, default=str)
+        except Exception as exc:
+            return f"get_mood_state failed: {exc}"
+
+    @mcp.tool()
+    def get_circadian_state() -> str:
+        """Return the current circadian state (Phase 2e)."""
+        try:
+            from app.core import circadian as _circ
+            state = _circ.compute()
+            payload = {
+                "period": state.period,
+                "energy": state.energy,
+                "drowsy": state.drowsy,
+                "sociability_bias": state.sociability_bias,
+                "hour": state.hour,
+                "minute": state.minute,
+                "ambient_line": state.ambient_line(),
+            }
+            return json.dumps(payload, indent=2, default=str)
+        except Exception as exc:
+            return f"get_circadian_state failed: {exc}"
+
+    @mcp.tool()
+    def get_scheduler_stats() -> str:
+        """Return SpeakingWindowScheduler counters + queue depth (Phase 2a)."""
+        try:
+            return json.dumps(
+                session.scheduler.snapshot(), indent=2, default=str,
+            )
+        except Exception as exc:
+            return f"get_scheduler_stats failed: {exc}"
+
     # ── Resources ────────────────────────────────────────────────────
 
     @mcp.resource("assistant://history")
