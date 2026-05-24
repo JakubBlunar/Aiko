@@ -16,7 +16,11 @@
   },
   "agent": {
     "proactive_silence_seconds": 45,
-    "proactive_cooldown_seconds": 120
+    "proactive_cooldown_seconds": 120,
+    "summary_idle_seconds": 15,
+    "summary_min_unsummarized_messages": 6,
+    "summary_target_tokens": 600,
+    "max_prompt_tokens_pct": 0.8
   },
   "audio": {
     "sample_rate": 16000,

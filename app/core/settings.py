@@ -96,11 +96,24 @@ class LoggingSettings:
 class AgentSettings:
     """Lean v1 conversation agent knobs.
 
-    Driven by :class:`app.core.proactive_director.ProactiveDirector`.
+    Proactive nudges are driven by
+    :class:`app.core.proactive_director.ProactiveDirector`.
+
+    The ``summary_*`` knobs and ``max_prompt_tokens_pct`` together control
+    context compaction (rolling summary + on-overflow squish) handled by
+    :class:`app.core.summary_worker.SummaryWorker` and
+    :class:`app.core.turn_runner.TurnRunner`.
     """
 
     proactive_silence_seconds: float = 45.0
     proactive_cooldown_seconds: float = 120.0
+    # Rolling summary background worker.
+    summary_idle_seconds: float = 15.0  # quiet time before summarising
+    summary_min_unsummarized_messages: int = 6  # minimum new msgs to trigger
+    summary_target_tokens: int = 600  # cap on the summary the LLM produces
+    # When the *next* prompt would exceed this fraction of the context window,
+    # schedule a background compaction immediately (don't wait for idle).
+    max_prompt_tokens_pct: float = 0.8
 
 
 @dataclass(slots=True)
@@ -346,6 +359,10 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
         agent=AgentSettings(
             proactive_silence_seconds=max(10.0, float(agent_raw.get("proactive_silence_seconds", 45.0))),
             proactive_cooldown_seconds=max(30.0, float(agent_raw.get("proactive_cooldown_seconds", 120.0))),
+            summary_idle_seconds=max(2.0, float(agent_raw.get("summary_idle_seconds", 15.0))),
+            summary_min_unsummarized_messages=max(2, int(agent_raw.get("summary_min_unsummarized_messages", 6))),
+            summary_target_tokens=max(120, int(agent_raw.get("summary_target_tokens", 600))),
+            max_prompt_tokens_pct=max(0.3, min(0.95, float(agent_raw.get("max_prompt_tokens_pct", 0.8)))),
         ),
         logging=LoggingSettings(
             level=str(logging_raw.get("level", "INFO")).strip().upper() or "INFO",

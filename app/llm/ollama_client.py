@@ -42,6 +42,26 @@ class OllamaUsage:
     def total_tokens(self) -> int:
         return self.prompt_tokens + self.completion_tokens
 
+    @property
+    def tokens_per_second(self) -> float:
+        if self.eval_duration_ms <= 0 or self.completion_tokens <= 0:
+            return 0.0
+        return round((self.completion_tokens * 1000.0) / self.eval_duration_ms, 1)
+
+    def merge(self, other: "OllamaUsage") -> "OllamaUsage":
+        """Return a new usage that adds another pass on top of this one.
+
+        Used to combine the tool pre-pass and the streaming reply pass into a
+        single per-turn telemetry record.
+        """
+        return OllamaUsage(
+            prompt_tokens=self.prompt_tokens + other.prompt_tokens,
+            completion_tokens=self.completion_tokens + other.completion_tokens,
+            total_duration_ms=self.total_duration_ms + other.total_duration_ms,
+            eval_duration_ms=self.eval_duration_ms + other.eval_duration_ms,
+            prompt_eval_duration_ms=self.prompt_eval_duration_ms + other.prompt_eval_duration_ms,
+        )
+
 
 class OllamaClient:
     def __init__(
@@ -127,6 +147,13 @@ class OllamaClient:
         body = response.json()
         message = body.get("message", {}) if isinstance(body, dict) else {}
         content = str(message.get("content", "") or "")
+        self.last_usage = OllamaUsage(
+            prompt_tokens=int(body.get("prompt_eval_count", 0) or 0),
+            completion_tokens=int(body.get("eval_count", 0) or 0),
+            total_duration_ms=float(body.get("total_duration", 0) or 0) / 1e6,
+            eval_duration_ms=float(body.get("eval_duration", 0) or 0) / 1e6,
+            prompt_eval_duration_ms=float(body.get("prompt_eval_duration", 0) or 0) / 1e6,
+        )
         # When think=True, Ollama may also return message.thinking (reasoning trace);
         # we use content (final answer) for the response.
         return OllamaChatResponse(
@@ -300,3 +327,55 @@ class OllamaClient:
             if name:
                 output.append(name)
         return output
+
+    # ── Model metadata ───────────────────────────────────────────────
+
+    _show_cache: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def show(self, model: str, *, refresh: bool = False) -> dict[str, Any]:
+        """Fetch model metadata from /api/show.
+
+        Cached per ``(base_url, model)`` for the process lifetime — Ollama's
+        model metadata is static once a model is pulled, and we call this on
+        every model switch. Returns ``{}`` on failure (network, 404, parse).
+        """
+        key = (self._base_url, model)
+        if not refresh and key in self._show_cache:
+            return self._show_cache[key]
+        try:
+            response = requests.post(
+                f"{self._base_url}/api/show",
+                json={"model": model, "verbose": False},
+                timeout=min(5.0, float(self._timeout_seconds)),
+                headers=self._request_headers(),
+            )
+            response.raise_for_status()
+            body = response.json()
+            data = body if isinstance(body, dict) else {}
+        except Exception:
+            data = {}
+        self._show_cache[key] = data
+        return data
+
+    def get_context_length(self, model: str) -> int | None:
+        """Return the model's max context length in tokens, or ``None``.
+
+        Walks ``model_info`` for any key ending in ``.context_length`` (Qwen,
+        Llama, Mistral, etc. all expose it under their architecture prefix,
+        e.g. ``qwen2.context_length``, ``llama.context_length``).
+        """
+        info = self.show(model)
+        model_info = info.get("model_info") if isinstance(info, dict) else None
+        if not isinstance(model_info, dict):
+            return None
+        for key, value in model_info.items():
+            if not isinstance(key, str):
+                continue
+            if key.endswith(".context_length"):
+                try:
+                    parsed = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if parsed > 0:
+                    return parsed
+        return None

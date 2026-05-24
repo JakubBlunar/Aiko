@@ -399,6 +399,50 @@ class TurnRunnerTwoPassTests(unittest.TestCase):
         runner._maybe_run_tool_pass(messages, stop_requested=None)
         self.assertEqual(len(messages), 1)
 
+    def test_returns_aggregated_usage(self) -> None:
+        """The tool pre-pass must return cumulative ``OllamaUsage`` so the
+        caller can merge it into the streaming-pass usage for accurate totals.
+        """
+        from app.llm.ollama_client import OllamaChatResponse, OllamaToolCall, OllamaUsage
+
+        class FakeOllama:
+            def __init__(self) -> None:
+                self.calls = 0
+                self.last_usage = OllamaUsage()
+
+            def chat_with_tools(self, messages, **_kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    self.last_usage = OllamaUsage(
+                        prompt_tokens=80,
+                        completion_tokens=12,
+                        total_duration_ms=400.0,
+                        eval_duration_ms=300.0,
+                    )
+                    return OllamaChatResponse(
+                        content="",
+                        tool_calls=[OllamaToolCall(name="get_time", arguments={}, call_id="c1")],
+                    )
+                self.last_usage = OllamaUsage(
+                    prompt_tokens=10,
+                    completion_tokens=4,
+                    total_duration_ms=80.0,
+                    eval_duration_ms=50.0,
+                )
+                return OllamaChatResponse(content="", tool_calls=[])
+
+        registry = ToolRegistry()
+        registry.register(GetTimeTool())
+        runner = self._make_runner(FakeOllama(), registry)
+
+        usage = runner._maybe_run_tool_pass(
+            [{"role": "user", "content": "hi"}], stop_requested=None,
+        )
+        self.assertEqual(usage.prompt_tokens, 90)
+        self.assertEqual(usage.completion_tokens, 16)
+        self.assertEqual(usage.total_duration_ms, 480.0)
+        self.assertEqual(usage.eval_duration_ms, 350.0)
+
     def test_stop_requested_short_circuits(self) -> None:
         from app.llm.ollama_client import OllamaChatResponse, OllamaToolCall
 
