@@ -317,12 +317,6 @@ class SessionController:
             self_image_path=self_image_path,
         )
 
-        # Wire inner-life providers (cheap SQL reads / pure functions).
-        # Each closure is hot-path-safe (see _safe_provider above).
-        self._prompt_assembler.set_inner_life_providers(
-            affect=self._render_affect_block,
-            circadian=self._render_circadian_block,
-        )
 
         # Phase 1b: speculative RAG pre-fetcher. While the user is still
         # talking (stt_partial events), we kick off background retrieval so
@@ -364,6 +358,37 @@ class SessionController:
         except Exception:
             log.warning("ReflectionWorker init failed", exc_info=True)
             self._reflection_worker = None
+
+        # Phase 2d: daily self-image pulse + pinned top-self-memories.
+        # The pulse rebuilds data/persona/self_image.txt at most once per
+        # ~20h. Pinned bullets get folded into the prompt every turn so we
+        # don't depend on the file existing yet.
+        self._self_image_pulse_enabled = bool(
+            settings.agent.self_image_pulse_enabled
+        )
+        self._self_image_worker = None
+        if self._self_image_pulse_enabled:
+            try:
+                from app.core.self_image_worker import SelfImageWorker
+
+                self._self_image_worker = SelfImageWorker(
+                    ollama=self._ollama,
+                    memory_store=self._memory_store,
+                    target_path=self_image_path,
+                    model=self._effective_chat_model,
+                )
+            except Exception:
+                log.warning("SelfImageWorker init failed", exc_info=True)
+                self._self_image_worker = None
+        # Wire all hot-path providers (each cheap: SQL/mirror reads or
+        # pure functions). Token accounting runs through PromptTelemetry.
+        self._prompt_assembler.set_inner_life_providers(
+            affect=self._render_affect_block,
+            circadian=self._render_circadian_block,
+        )
+        self._prompt_assembler.set_pinned_self_memories_provider(
+            self._top_pinned_self_memories,
+        )
 
         if (
             self._memory_settings.enabled
@@ -1409,6 +1434,70 @@ class SessionController:
             log.debug("circadian block render failed", exc_info=True)
             return ""
 
+    def _top_pinned_self_memories(self, *, limit: int = 5) -> list[str]:
+        """Phase 2d: hot-path provider for pinned self-memory bullets.
+
+        Reads from the ``MemoryStore`` mirror (in-memory dict) and filters
+        for ``kind == "self"``. Returns up to ``limit`` items sorted by the
+        store's salience+use_count ranking. Hot-path safe.
+        """
+        store = getattr(self, "_memory_store", None)
+        if store is None:
+            return []
+        try:
+            top = store.list_top(limit=max(8, int(limit) * 4))
+        except Exception:
+            log.debug("list_top failed in pinned self provider", exc_info=True)
+            return []
+        out: list[str] = []
+        for mem in top:
+            if (mem.kind or "").lower() != "self":
+                continue
+            content = (mem.content or "").strip()
+            if content:
+                out.append(content)
+            if len(out) >= int(limit):
+                break
+        return out
+
+    def _maybe_schedule_self_image_pulse(self) -> None:
+        """Phase 2d: enqueue a daily self-image rebuild during TTS playback."""
+        worker = getattr(self, "_self_image_worker", None)
+        if worker is None:
+            return
+        try:
+            if not worker.should_run():
+                return
+        except Exception:
+            log.debug("self-image should_run check failed", exc_info=True)
+            return
+
+        def _job(_stop_flag: Any) -> None:
+            if _stop_flag is not None and _stop_flag.is_set():
+                return
+            try:
+                new_text = worker.pulse()
+                if new_text:
+                    log.info(
+                        "self-image pulse wrote %d chars",
+                        len(new_text),
+                    )
+            except Exception:
+                log.debug("self-image pulse raised", exc_info=True)
+
+        try:
+            from app.core.speaking_window_scheduler import ScheduledJob
+
+            self._scheduler.submit(ScheduledJob(
+                name="self_image_pulse",
+                priority=80,  # lowest — daily, not urgent
+                estimated_seconds=5.0,
+                callable=_job,
+                dedupe_key="self_image_pulse",
+            ))
+        except Exception:
+            log.debug("self-image pulse submit failed", exc_info=True)
+
     def _lookup_prefetched_rag_block(self, user_text: str) -> str | None:
         """Phase 1b: PromptAssembler hook into the speculative pre-fetcher.
 
@@ -1579,6 +1668,12 @@ class SessionController:
                 ))
             except Exception:
                 log.debug("reflection job submit failed", exc_info=True)
+
+        # Phase 2d: opportunistically schedule the daily self-image pulse.
+        try:
+            self._maybe_schedule_self_image_pulse()
+        except Exception:
+            log.debug("self-image schedule failed", exc_info=True)
 
     # ── Voice capture ────────────────────────────────────────────────
 
