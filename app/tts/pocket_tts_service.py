@@ -1,6 +1,7 @@
 """Pocket TTS backend -- CPU-only, 100M params, voice cloning support."""
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from pathlib import Path
 import threading
@@ -194,6 +195,7 @@ class PocketTtsService:
         text: str,
         reaction: str | None = None,
         on_done: Callable[[], None] | None = None,
+        on_amplitude: Callable[[float], None] | None = None,
     ) -> None:
         if not self._settings.enabled or not (text or "").strip():
             return
@@ -201,7 +203,7 @@ class PocketTtsService:
         speed = self.reaction_to_speed(reaction)
         self._speech_thread = threading.Thread(
             target=self._speak_worker,
-            args=(text.strip(), on_done, speed),
+            args=(text.strip(), on_done, speed, on_amplitude),
             daemon=True,
         )
         self._speech_thread.start()
@@ -244,7 +246,10 @@ class PocketTtsService:
         text: str,
         on_done: Callable[[], None] | None = None,
         speed: float = 1.0,
+        on_amplitude: Callable[[float], None] | None = None,
     ) -> None:
+        amplitude_thread: threading.Thread | None = None
+        amplitude_stop = threading.Event()
         try:
             if sd is None:
                 return
@@ -258,12 +263,94 @@ class PocketTtsService:
             silence = np.zeros(int(sample_rate * 0.15), dtype=np.float32)
             audio_data = np.concatenate([audio_data, silence])
             sd.play(audio_data.reshape(-1, 1), sample_rate, device=self._output_device)
+
+            # Spawn the lip-sync amplitude pacer right after audio starts so its
+            # emissions line up with what the user is hearing.
+            if on_amplitude is not None:
+                amplitude_thread = threading.Thread(
+                    target=self._amplitude_pacer,
+                    args=(audio_data, sample_rate, on_amplitude, amplitude_stop),
+                    daemon=True,
+                    name="pocket-tts-amp",
+                )
+                amplitude_thread.start()
+
             sd.wait()
         except Exception as exc:
             self._last_error = str(exc)
         finally:
+            amplitude_stop.set()
+            if amplitude_thread is not None:
+                amplitude_thread.join(timeout=0.25)
+            if on_amplitude is not None:
+                try:
+                    on_amplitude(0.0)
+                except Exception:
+                    pass
             if on_done:
                 try:
                     on_done()
                 except Exception:
                     pass
+
+    def _amplitude_pacer(
+        self,
+        audio: "np.ndarray",
+        sample_rate: int,
+        on_amplitude: Callable[[float], None],
+        stop_event: threading.Event,
+    ) -> None:
+        """Compute RMS in ~50 ms windows and emit them at audio-clock pace."""
+        if np is None or audio.size == 0:
+            return
+        # ``audio`` arrives shaped as (N,) here -- we add the trailing silence
+        # and never reshape this local copy.
+        flat = audio.reshape(-1) if audio.ndim > 1 else audio
+        hop_seconds = 0.05
+        hop = max(1, int(sample_rate * hop_seconds))
+        n_chunks = (flat.size + hop - 1) // hop
+        if n_chunks <= 0:
+            return
+
+        # Pre-compute RMS for every window and a robust normalization factor.
+        rms_values: list[float] = []
+        for i in range(n_chunks):
+            start = i * hop
+            end = min(start + hop, flat.size)
+            chunk = flat[start:end]
+            if chunk.size == 0:
+                rms_values.append(0.0)
+                continue
+            rms_values.append(float(np.sqrt(np.mean(chunk * chunk))))
+        # Use the 95th percentile rather than the absolute peak so a single
+        # loud syllable doesn't flatten the rest of the curve.
+        if rms_values:
+            sorted_vals = sorted(v for v in rms_values if v > 0.0)
+            if sorted_vals:
+                peak = sorted_vals[max(0, int(len(sorted_vals) * 0.95) - 1)] or 1.0
+            else:
+                peak = 1.0
+        else:
+            peak = 1.0
+        if peak < 1e-6:
+            peak = 1.0
+
+        start_time = time.monotonic()
+        for i, rms in enumerate(rms_values):
+            if stop_event.is_set() or self._stop_requested.is_set():
+                return
+            target = start_time + i * hop_seconds
+            delay = target - time.monotonic()
+            if delay > 0.001:
+                # Sleep in small slices so stop is responsive.
+                if stop_event.wait(timeout=delay):
+                    return
+            normalized = rms / peak
+            if normalized > 1.0:
+                normalized = 1.0
+            elif normalized < 0.0:
+                normalized = 0.0
+            try:
+                on_amplitude(normalized)
+            except Exception:
+                pass

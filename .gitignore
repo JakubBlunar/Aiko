@@ -20,3 +20,5 @@ data/browser-profile/
 *.log
 realtimesst.log
 live-2d-models
+data/personas/active/
+data/personas/_staging_*/

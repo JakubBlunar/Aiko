@@ -4,6 +4,8 @@ import type {
   AssistantSettings,
   ChatMessage,
   MemoriesResponse,
+  Persona,
+  PersonaResponse,
   SessionRow,
 } from "./types";
 
@@ -81,5 +83,27 @@ export const api = {
   deleteMemory: (id: number) =>
     jsonFetch<{ deleted: number }>(`/api/memories/${id}`, {
       method: "DELETE",
+    }),
+  getPersona: () => jsonFetch<PersonaResponse>("/api/persona"),
+  uploadPersona: async (file: File): Promise<Persona> => {
+    const form = new FormData();
+    form.append("file", file);
+    const result = await jsonFetch<{ persona: Persona }>(
+      "/api/persona/upload",
+      { method: "POST", body: form },
+    );
+    return result.persona;
+  },
+  deletePersona: () =>
+    jsonFetch<{ removed: boolean }>("/api/persona", { method: "DELETE" }),
+  patchPersonaMapping: (patch: {
+    reaction_mapping?: Record<string, string>;
+    idle_motion_group?: string | null;
+    talk_motion_group?: string | null;
+  }) =>
+    jsonFetch<{ persona: Persona }>("/api/persona/mapping", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
     }),
 };

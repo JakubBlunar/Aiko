@@ -3,6 +3,7 @@ import type {
   ChatMessage,
   Memory,
   MetricsSnapshot,
+  Persona,
   VoiceMode,
 } from "./types";
 
@@ -62,6 +63,13 @@ interface AssistantState {
   setMemories: (memories: Memory[], enabled?: boolean) => void;
   upsertMemory: (memory: Memory) => void;
   removeMemory: (id: number) => void;
+
+  // Live2D persona avatar
+  persona: Persona | null;
+  /** Lip-sync amplitude in [0, 1]; updated at <=30 Hz from the WS. */
+  audioAmplitude: number;
+  setPersona: (persona: Persona | null) => void;
+  setAudioAmplitude: (level: number) => void;
 }
 
 const REACTION_TAG_RE = /\[\[reaction:(\w+)\]\]/i;
@@ -243,6 +251,12 @@ export const useAssistantStore = create<AssistantState>((set) => ({
     set((state) => ({
       memories: state.memories.filter((m) => m.id !== id),
     })),
+
+  persona: null,
+  audioAmplitude: 0,
+  setPersona: (persona) => set({ persona }),
+  setAudioAmplitude: (level) =>
+    set({ audioAmplitude: Math.max(0, Math.min(1, level)) }),
 }));
 
 // Convenience getter without subscribing (used inside the WS hook).
