@@ -271,6 +271,23 @@ class WebServerSettings:
 
 
 @dataclass(slots=True)
+class MemorySettings:
+    """Long-term memory: cross-session vector store of durable facts.
+
+    Populated by background extraction after each summary, plus any
+    ``[[remember:...]]`` tags Aiko emits inline.
+    """
+
+    enabled: bool = True
+    top_k: int = 6
+    score_threshold: float = 0.4
+    max_memories: int = 500
+    dedupe_threshold: float = 0.92
+    extractor_enabled: bool = True
+    self_tagged_salience: float = 0.7
+
+
+@dataclass(slots=True)
 class PersonaSettings:
     """Live2D persona avatar configuration."""
 
@@ -319,6 +336,7 @@ class AppSettings:
     agent: AgentSettings = field(default_factory=AgentSettings)
     mcp_server: McpServerSettings = field(default_factory=McpServerSettings)
     web_server: WebServerSettings = field(default_factory=WebServerSettings)
+    memory: MemorySettings = field(default_factory=MemorySettings)
     persona: PersonaSettings = field(default_factory=PersonaSettings)
     chat_llm: ChatLlmSettings = field(default_factory=ChatLlmSettings)
 
@@ -498,6 +516,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
     logging_raw = raw.get("logging", {}) or {}
     mcp_server_raw = raw.get("mcp_server", {}) or {}
     web_server_raw = raw.get("web_server", {}) or {}
+    memory_raw = raw.get("memory", {}) or {}
     persona_raw = raw.get("persona", {}) or {}
     chat_llm_raw = raw.get("chat_llm", {}) or {}
 
@@ -772,6 +791,15 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             enabled=bool(web_server_raw.get("enabled", True)),
             host=str(web_server_raw.get("host", "127.0.0.1") or "127.0.0.1").strip() or "127.0.0.1",
             port=max(1, int(web_server_raw.get("port", 6275))),
+        ),
+        memory=MemorySettings(
+            enabled=bool(memory_raw.get("enabled", True)),
+            top_k=max(0, int(memory_raw.get("top_k", 6))),
+            score_threshold=max(0.0, min(1.0, float(memory_raw.get("score_threshold", 0.4)))),
+            max_memories=max(50, int(memory_raw.get("max_memories", 500))),
+            dedupe_threshold=max(0.5, min(0.999, float(memory_raw.get("dedupe_threshold", 0.92)))),
+            extractor_enabled=bool(memory_raw.get("extractor_enabled", True)),
+            self_tagged_salience=max(0.0, min(1.0, float(memory_raw.get("self_tagged_salience", 0.7)))),
         ),
         persona=_parse_persona(persona_raw),
         chat_llm=_parse_chat_llm(chat_llm_raw),

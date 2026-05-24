@@ -140,16 +140,121 @@ def _strip_two_tier_tags(text: str) -> str:
     return s.strip()
 
 
-def strip_all_meta_tags(text: str) -> str:
-    """Remove every closed meta tag the assistant emits (reaction + two-tier).
+_DETAIL_BLOCK_PATTERN = re.compile(
+    r"\[\[detail\]\][\s\S]*?(?:\[\[/detail\]\]|\Z)",
+    flags=re.IGNORECASE,
+)
+_REMEMBER_TAG_PATTERN = re.compile(
+    r"\[\[remember:[^\]]*?\]\]",
+    flags=re.IGNORECASE,
+)
+# Matches an unclosed [[remember:... at end of string (the closing ]] never arrived).
+_REMEMBER_OPEN_TAIL_PATTERN = re.compile(
+    r"\[\[remember:[^\]]*\Z",
+    flags=re.IGNORECASE,
+)
 
-    Like :func:`_strip_two_tier_tags` but does not call ``.strip()`` on the
-    result, so it is safe to use in streaming display paths where leading
-    whitespace must be preserved across deltas to keep ``last_ui_sent_len``
-    offsets monotonic. Partial / unclosed tags pass through unchanged --
-    callers are expected to hold them back until they complete.
+
+def strip_all_meta_tags(text: str) -> str:
+    """Remove every closed meta tag the assistant emits.
+
+    Behaviour:
+      - ``[[reaction:X]]`` markers: removed (content is the marker itself).
+      - ``[[spoken]]`` / ``[[/spoken]]`` markers: removed, content kept (so a
+        legacy two-tier reply degrades into spoken-only).
+      - ``[[detail]]...[[/detail]]`` block: marker AND content removed.
+      - ``[[detail]]`` opener with no closing tag yet (end of text): everything
+        from the opener to end is suppressed (private detail-in-progress).
+      - ``[[remember:...]]`` block: marker AND content removed (private).
+      - ``[[remember:...`` opener with no closing ``]]`` yet: suppressed
+        through end of text.
+
+    Does NOT call ``.strip()`` on the result, so streaming callers can keep
+    monotonic ``len(visible)`` offsets across deltas. Partial / unrecognized
+    tags pass through unchanged -- callers are expected to use
+    :func:`safe_visible_prefix` for streaming display.
     """
     s = str(text or "")
-    for tag in (_SPOKEN_OPEN, _SPOKEN_CLOSE, _DETAIL_OPEN, _DETAIL_CLOSE):
-        s = s.replace(tag, "")
-    return _REACTION_TAG_PATTERN.sub("", s)
+    if not s:
+        return s
+    # Drop fully-formed detail blocks first (greedy on the *content*).
+    s = _DETAIL_BLOCK_PATTERN.sub("", s)
+    # Drop an unclosed detail opener that runs off the end of the string.
+    open_idx = s.lower().rfind("[[detail]]")
+    if open_idx >= 0 and "[[/detail]]" not in s[open_idx:].lower():
+        s = s[:open_idx]
+    # Drop fully-formed remember tags + content.
+    s = _REMEMBER_TAG_PATTERN.sub("", s)
+    # Drop an unclosed remember opener that runs off the end.
+    s = _REMEMBER_OPEN_TAIL_PATTERN.sub("", s)
+    # Strip the spoken/reaction markers (content kept for spoken).
+    for tag in (_SPOKEN_OPEN, _SPOKEN_CLOSE):
+        s = re.sub(re.escape(tag), "", s, flags=re.IGNORECASE)
+    s = _REACTION_TAG_PATTERN.sub("", s)
+    return s
+
+
+# Tokens that mark the start of a meta block but might not yet be complete in
+# a streaming buffer. If we see any of these prefixes (or a partial form like
+# ``[[de``) we have to hold the tail back until we have enough chars to decide.
+_META_OPENERS = (
+    "[[reaction:",
+    "[[spoken]]",
+    "[[/spoken]]",
+    "[[detail]]",
+    "[[/detail]]",
+    "[[remember:",
+)
+
+
+def _looks_like_partial_opener(suffix: str) -> bool:
+    """Return True if ``suffix`` could still grow into a known meta opener.
+
+    The streaming holdback uses this to decide which characters can be safely
+    emitted *now* vs held until more deltas arrive. We're permissive on
+    purpose: any string that is a prefix of any known opener forces a hold.
+    """
+    if not suffix:
+        return False
+    lowered = suffix.lower()
+    # Single ``[`` or ``[[`` could be the start of any opener.
+    if lowered in {"[", "[["}:
+        return True
+    for opener in _META_OPENERS:
+        if opener.startswith(lowered):
+            return True
+    # ``[[reaction:foo`` (no closing yet) -- still ambiguous; hold.
+    if lowered.startswith("[[reaction:") and "]]" not in lowered:
+        return True
+    if lowered.startswith("[[remember:") and "]]" not in lowered:
+        return True
+    # Mid-tag like ``[[d`` / ``[[de`` / ``[[s`` etc.
+    if lowered.startswith("[["):
+        return True
+    return False
+
+
+def safe_visible_prefix(text: str) -> str:
+    """Return the prefix of ``text`` that is safe to display *right now*.
+
+    Used by the streaming UI/TTS pipeline. Any tail that could still grow
+    into a meta tag is held back; once the next delta arrives the caller
+    re-runs this on the new cumulative text. The full text after stream
+    completion goes through :func:`strip_all_meta_tags` for final cleanup.
+
+    Algorithm: strip every *complete* meta tag, then find the leftmost ``[``
+    whose suffix could still grow into a known opener. Hold back from there.
+    """
+    if not text:
+        return ""
+    cleaned = strip_all_meta_tags(text)
+    if not cleaned:
+        return ""
+    holdback_start = len(cleaned)
+    for i, ch in enumerate(cleaned):
+        if ch != "[":
+            continue
+        if _looks_like_partial_opener(cleaned[i:]):
+            holdback_start = i
+            break
+    return cleaned[:holdback_start]

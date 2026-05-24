@@ -1,23 +1,27 @@
-"""Idle-triggered conversation summarizer.
+"""Idle-triggered conversation summarizer + long-term memory extractor.
 
 Rather than running on every turn (which thrashes the GPU), the worker keeps
 a rolling deadline that ``notify_turn_done`` pushes forward. Only when the
 chat has been quiet for ``idle_seconds`` AND there are at least
 ``min_unsummarized_messages`` new messages does it actually run.
 
-Uses the same chat model — no separate judge — so it never causes model
-swapping. Stores results in the existing ``session_summaries`` table.
+After a successful summary, it kicks the optional :class:`MemoryExtractor`
+to mine durable facts from the same window. Both run on the same chat model
+so there's no extra GPU swap.
 """
 from __future__ import annotations
 
 import logging
 import threading
 import time
-from typing import Callable
+from typing import Callable, TYPE_CHECKING
 
 from app.core.chat_database import ChatDatabase
 from app.llm.ollama_client import OllamaClient
 from app.llm.token_utils import estimate_tokens
+
+if TYPE_CHECKING:
+    from app.core.memory_extractor import MemoryExtractor
 
 
 log = logging.getLogger("app.summary_worker")
@@ -42,6 +46,7 @@ class SummaryWorker:
         idle_seconds: float = 30.0,
         min_unsummarized_messages: int = 10,
         timeout_seconds: float = 90.0,
+        memory_extractor: "MemoryExtractor | None" = None,
     ) -> None:
         self._db = db
         self._ollama = ollama
@@ -50,11 +55,15 @@ class SummaryWorker:
         self._idle = float(idle_seconds)
         self._min_msgs = int(min_unsummarized_messages)
         self._timeout = float(timeout_seconds)
+        self._memory_extractor = memory_extractor
 
         self._cond = threading.Condition()
         self._deadline_ms: dict[str, float] = {}
         self._shutdown = threading.Event()
         self._thread: threading.Thread | None = None
+
+    def set_memory_extractor(self, extractor: "MemoryExtractor | None") -> None:
+        self._memory_extractor = extractor
 
     # ── lifecycle ────────────────────────────────────────────────────────
 
@@ -188,3 +197,14 @@ class SummaryWorker:
             usage.prompt_tokens,
             usage.completion_tokens,
         )
+
+        if self._memory_extractor is not None:
+            try:
+                inserted = self._memory_extractor.extract_for_session(session_key)
+                if inserted:
+                    log.info(
+                        "memory extractor added %d new memories for %s",
+                        inserted, session_key[:8],
+                    )
+            except Exception as exc:
+                log.warning("memory extractor failed: %s", exc)

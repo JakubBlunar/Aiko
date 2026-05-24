@@ -2,22 +2,24 @@
 
 Inputs (all optional):
   - persona file (data/persona/aiko_companion.txt)
+  - long-term memory block from :class:`MemoryRetriever` (cross-session)
   - latest summary row (covers everything before the recent window)
   - last N messages from chat_database.messages
   - the new user input
 
 Output: ``list[dict]`` ready for ``OllamaClient.chat_stream``.
-No embedding lookups, no recent-topics, no eviction buffer. The trimming is
-purely token-budget based against ``context_window - max_tokens - safety``.
 """
 from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from app.core.chat_database import ChatDatabase, MessageRow
 from app.llm.token_utils import estimate_messages_tokens, estimate_tokens
+
+if TYPE_CHECKING:
+    from app.core.memory_retriever import MemoryRetriever
 
 
 log = logging.getLogger("app.prompt_assembler")
@@ -37,11 +39,16 @@ class PromptAssembler:
         *,
         persona_path: Path | str = DEFAULT_PERSONA_PATH,
         recent_window: int = 20,
+        memory_retriever: "MemoryRetriever | None" = None,
     ) -> None:
         self._db = db
         self._persona_path = Path(persona_path)
         self._recent_window = max(2, int(recent_window))
         self._persona_cache: tuple[float, str] | None = None
+        self._memory_retriever = memory_retriever
+
+    def set_memory_retriever(self, retriever: "MemoryRetriever | None") -> None:
+        self._memory_retriever = retriever
 
     # ── public API ────────────────────────────────────────────────────────
 
@@ -66,9 +73,19 @@ class PromptAssembler:
         persona = self._load_persona()
         summary = self._db.get_latest_summary(session_key)
 
+        memory_block = ""
+        if self._memory_retriever is not None:
+            try:
+                memory_block = self._memory_retriever.block_for(user_text)
+            except Exception:
+                log.debug("memory retrieval failed", exc_info=True)
+                memory_block = ""
+
         system_parts: list[str] = []
         if persona:
             system_parts.append(persona)
+        if memory_block:
+            system_parts.append(memory_block)
         if summary and summary.summary.strip():
             system_parts.append(
                 "Earlier conversation (summary):\n" + summary.summary.strip()

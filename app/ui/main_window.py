@@ -580,18 +580,12 @@ class MainWindow(QMainWindow):
         self._refresh_topics_strip(session_key)
 
     def _refresh_topics_strip(self, session_key: str | None = None):
-        db = getattr(self._session, "_chat_db", None)
-        if db is None:
+        # The recent_topics table was dropped in schema v3; this strip is now
+        # always hidden. Kept as a no-op so the desktop UI still loads.
+        try:
             self._topics_strip.setVisible(False)
-            return
-        key = session_key or self._session.session_key
-        topics = db.get_recent_topics(key, limit=10)
-        if not topics:
-            self._topics_strip.setVisible(False)
-            return
-        chips = " \u00b7 ".join(t.topic for t in topics[:8])
-        self._topics_strip.setText(f"Topics: {chips}")
-        self._topics_strip.setVisible(True)
+        except Exception:
+            pass
 
     def _new_session(self):
         new_id = self._session.new_session()

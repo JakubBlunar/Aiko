@@ -133,6 +133,18 @@ def create_web_app(session: "SessionController") -> FastAPI:
     session.add_message_listener(_on_message)
     session.add_tts_state_listener(_on_tts_state)
 
+    def _on_memory_added(memory: Any) -> None:
+        try:
+            payload = memory.to_dict() if hasattr(memory, "to_dict") else dict(memory)
+        except Exception:
+            return
+        hub.broadcast({"type": "memory_added", "memory": payload})
+
+    try:
+        session.add_memory_listener(_on_memory_added)
+    except Exception:
+        log.debug("memory listener subscription failed", exc_info=True)
+
     # ── Live (continuous voice) session ─────────────────────────────
     # One global instance per backend; SessionController already serializes
     # mic/STT access so a single loop is the right shape.
@@ -297,6 +309,27 @@ def create_web_app(session: "SessionController") -> FastAPI:
             "last": session.get_last_metrics(),
             "average": session.get_average_metrics(),
         })
+
+    # ── REST: long-term memories ────────────────────────────────────
+
+    @app.get("/api/memories")
+    def list_memories(limit: int = 50, order: str = "recent") -> JSONResponse:
+        clamped = max(1, min(int(limit), 200))
+        order_norm = "top" if str(order).strip().lower() == "top" else "recent"
+        items = session.list_memories(limit=clamped, order=order_norm)
+        return JSONResponse({
+            "memories": items,
+            "count": len(items),
+            "enabled": session.memory_store is not None,
+        })
+
+    @app.delete("/api/memories/{memory_id}")
+    def delete_memory(memory_id: int) -> JSONResponse:
+        ok = session.delete_memory(int(memory_id))
+        if not ok:
+            raise HTTPException(404, "memory not found")
+        hub.broadcast({"type": "memory_deleted", "id": int(memory_id)})
+        return JSONResponse({"deleted": int(memory_id)})
 
     # ── Persona / static assets ─────────────────────────────────────
 

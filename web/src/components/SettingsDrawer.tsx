@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type AudioDevices } from "../api";
-import type { AssistantSettings } from "../types";
+import type { AssistantSettings, Memory } from "../types";
+import { useAssistantStore } from "../store";
 
 interface SettingsDrawerProps {
   open: boolean;
@@ -14,6 +15,11 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
   const [devices, setDevices] = useState<AudioDevices>({ input: [], output: [] });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [memoriesOpen, setMemoriesOpen] = useState(false);
+  const memories = useAssistantStore((s) => s.memories);
+  const memoriesEnabled = useAssistantStore((s) => s.memoriesEnabled);
+  const setMemories = useAssistantStore((s) => s.setMemories);
+  const removeMemory = useAssistantStore((s) => s.removeMemory);
 
   const refreshAll = useCallback(async () => {
     setBusy(true);
@@ -36,11 +42,35 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
     }
   }, []);
 
+  const refreshMemories = useCallback(async () => {
+    try {
+      const data = await api.listMemories(50, "recent");
+      setMemories(data.memories, data.enabled);
+    } catch (err) {
+      setError(String(err));
+    }
+  }, [setMemories]);
+
   useEffect(() => {
     if (open) {
       void refreshAll();
     }
   }, [open, refreshAll]);
+
+  useEffect(() => {
+    if (open && memoriesOpen) {
+      void refreshMemories();
+    }
+  }, [open, memoriesOpen, refreshMemories]);
+
+  const onDeleteMemory = async (memory: Memory) => {
+    try {
+      await api.deleteMemory(memory.id);
+      removeMemory(memory.id);
+    } catch (err) {
+      setError(String(err));
+    }
+  };
 
   const apply = async (patch: Record<string, unknown>) => {
     setBusy(true);
@@ -199,6 +229,68 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                   />
                   Allow barge-in (interrupt while Aiko is speaking)
                 </label>
+              </Section>
+
+              <Section title="What Aiko remembers">
+                <button
+                  type="button"
+                  onClick={() => setMemoriesOpen((v) => !v)}
+                  className="flex w-full items-center justify-between rounded-md border border-white/10 bg-black/30 px-3 py-2 text-left text-xs text-ink-100/70 hover:border-ink-400 hover:text-ink-100"
+                >
+                  <span>
+                    {memoriesOpen
+                      ? "Hide memories"
+                      : "Show long-term memories"}
+                  </span>
+                  <span className="font-mono text-ink-100/40">
+                    {memoriesEnabled ? `${memories.length}` : "off"}
+                  </span>
+                </button>
+                {memoriesOpen ? (
+                  !memoriesEnabled ? (
+                    <p className="rounded-md border border-white/5 bg-white/[0.02] px-3 py-2 text-xs text-ink-100/50">
+                      Long-term memory is disabled in config (memory.enabled).
+                    </p>
+                  ) : memories.length === 0 ? (
+                    <p className="rounded-md border border-white/5 bg-white/[0.02] px-3 py-2 text-xs text-ink-100/50">
+                      Nothing remembered yet. Memories are mined after a few
+                      turns of conversation, or whenever Aiko writes a private
+                      [[remember]] tag.
+                    </p>
+                  ) : (
+                    <ul className="space-y-1.5">
+                      {memories.map((memory) => (
+                        <li
+                          key={memory.id}
+                          className="flex items-start justify-between gap-2 rounded-md border border-white/5 bg-white/[0.03] px-3 py-2 text-xs text-ink-100/80"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <p className="break-words">{memory.content}</p>
+                            <div className="mt-1 flex items-center gap-2 text-[10px] uppercase tracking-wide text-ink-100/40">
+                              <span className="rounded bg-white/5 px-1.5 py-0.5 text-ink-100/60">
+                                {memory.kind}
+                              </span>
+                              <span>
+                                salience {(memory.salience * 100).toFixed(0)}%
+                              </span>
+                              {memory.use_count > 0 ? (
+                                <span>used {memory.use_count}x</span>
+                              ) : null}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void onDeleteMemory(memory)}
+                            className="shrink-0 rounded border border-white/10 px-2 py-0.5 text-[11px] text-ink-100/60 hover:border-rose-400/60 hover:text-rose-200"
+                            aria-label={`Forget memory ${memory.id}`}
+                          >
+                            forget
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )
+                ) : null}
               </Section>
             </>
           ) : null}

@@ -1,6 +1,11 @@
 // Thin REST wrapper over the FastAPI endpoints.
 
-import type { AssistantSettings, ChatMessage, SessionRow } from "./types";
+import type {
+  AssistantSettings,
+  ChatMessage,
+  MemoriesResponse,
+  SessionRow,
+} from "./types";
 
 interface SessionListResponse {
   active: string;
@@ -69,4 +74,12 @@ export const api = {
     jsonFetch<string[]>(`/api/models${refresh ? "?refresh=true" : ""}`),
   listVoices: () => jsonFetch<string[]>("/api/voices"),
   listAudioDevices: () => jsonFetch<AudioDevices>("/api/audio/devices"),
+  listMemories: (limit = 50, order: "recent" | "top" = "recent") =>
+    jsonFetch<MemoriesResponse>(
+      `/api/memories?limit=${limit}&order=${order}`,
+    ),
+  deleteMemory: (id: number) =>
+    jsonFetch<{ deleted: number }>(`/api/memories/${id}`, {
+      method: "DELETE",
+    }),
 };
