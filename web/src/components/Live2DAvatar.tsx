@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import * as PIXI from "pixi.js";
 import { Live2DModel, MotionPriority } from "pixi-live2d-display";
 import { useAssistantStore } from "../store";
-import type { Persona } from "../types";
+import type { BackchannelHint, Persona } from "../types";
 
 // Make pixi-live2d-display drive its own ticker via the standard PIXI ticker.
 // (The library expects this to be registered exactly once before any model is
@@ -183,7 +183,68 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
     return () => unsub();
   }, [manifest.id, manifest.reaction_mapping, manifest.talk_motion_group]);
 
-  // ── 4. Idle motion loop -- only fires when not speaking. Uses a jittered
+  // ── 4. Backchannel overlay: transient expression while user is speaking ──
+  //    A regex classifier on the backend tags STT partials with hints
+  //    (agreement, surprise, etc.). When a hint fires, briefly overlay the
+  //    matching expression so Aiko looks like she's actively listening.
+  useEffect(() => {
+    let restoreTimeout: number | null = null;
+    let lastBackchannelAt = 0;
+
+    const unsub = useAssistantStore.subscribe((state, prev) => {
+      const model = modelRef.current;
+      if (!model) {
+        return;
+      }
+      // Only act when a *fresh* hint arrived.
+      if (state.backchannelAt === prev.backchannelAt) {
+        return;
+      }
+      if (!state.backchannelHint) {
+        return;
+      }
+      lastBackchannelAt = state.backchannelAt;
+      const expressionName = pickBackchannelExpression(
+        manifest, state.backchannelHint,
+      );
+      if (!expressionName) {
+        return;
+      }
+      try {
+        (model as unknown as {
+          expression: (name?: string) => void;
+        }).expression(expressionName);
+      } catch (err) {
+        console.debug("backchannel expression failed", err);
+      }
+      // Restore the persistent reaction expression after a short window
+      // (the user finishes speaking soon — we don't want to leave the
+      // overlay stuck if the next backchannel doesn't arrive).
+      if (restoreTimeout !== null) {
+        window.clearTimeout(restoreTimeout);
+      }
+      restoreTimeout = window.setTimeout(() => {
+        const fresh = useAssistantStore.getState();
+        if (fresh.backchannelAt !== lastBackchannelAt) {
+          // Newer backchannel landed; let that one finish its window.
+          return;
+        }
+        const m = modelRef.current;
+        if (!m) {
+          return;
+        }
+        applyReaction(m, manifest, fresh.reaction);
+      }, 1800);
+    });
+    return () => {
+      unsub();
+      if (restoreTimeout !== null) {
+        window.clearTimeout(restoreTimeout);
+      }
+    };
+  }, [manifest.id, manifest.reaction_mapping]);
+
+  // ── 5. Idle motion loop -- only fires when not speaking. Uses a jittered
   //    8-15 s schedule so the avatar never sits perfectly still.
   useEffect(() => {
     const idleGroup = manifest.idle_motion_group;
@@ -216,10 +277,16 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
     };
   }, [manifest.id, manifest.idle_motion_group]);
 
+  // Phase 2b: subtle mood tinting on the avatar container. Subscribed via
+  // useAssistantStore so it re-renders whenever the WS pushes mood_state.
+  const mood = useAssistantStore((s) => s.mood);
+  const tintFilter = moodToFilter(mood.label, mood.intensity);
+
   return (
     <div
       ref={containerRef}
-      className="relative h-full w-full"
+      className="relative h-full w-full transition-[filter] duration-700 ease-out"
+      style={{ filter: tintFilter }}
       aria-label={`${manifest.display_name} (Live2D)`}
     />
   );
@@ -301,5 +368,65 @@ function applyReaction(
     }).expression(expressionName);
   } catch (err) {
     console.debug("expression() failed", expressionName, err);
+  }
+}
+
+// Phase 1a: map a backchannel hint to an expression name in the persona.
+// Falls back to the persona's nearest matching reaction so even sparse
+// reaction_mapping configs produce a visible response.
+const _BACKCHANNEL_TO_REACTION: Record<BackchannelHint, string[]> = {
+  agreement: ["cheerful", "friendly", "warm"],
+  disagreement: ["serious", "concerned", "thoughtful"],
+  surprise: ["surprised", "excited", "amazed"],
+  amusement: ["cheerful", "amused", "playful"],
+  concern: ["concerned", "sad", "gentle"],
+  confused: ["confused", "thoughtful", "curious"],
+  thinking: ["thoughtful", "calm", "neutral"],
+};
+
+function pickBackchannelExpression(
+  manifest: Persona,
+  hint: BackchannelHint,
+): string | undefined {
+  const candidates = _BACKCHANNEL_TO_REACTION[hint] || [];
+  for (const reaction of candidates) {
+    const expr = manifest.reaction_mapping[reaction];
+    if (expr) {
+      return expr;
+    }
+  }
+  // Last resort: any expression whose name contains the hint keyword.
+  for (const expr of manifest.expressions) {
+    if (expr.name.toLowerCase().includes(hint)) {
+      return expr.name;
+    }
+  }
+  return undefined;
+}
+
+// Phase 2b: very subtle CSS filter tinting based on mood label + intensity.
+// Kept gentle (max 12% saturation/brightness shift) so the model still
+// looks like itself; meant as background atmosphere, not a costume change.
+function moodToFilter(label: string, intensity: number): string {
+  const i = Math.max(0, Math.min(1, intensity));
+  const sat = Math.round(100 + i * 12); // 100..112
+  const dim = Math.round(100 - i * 6); // 100..94
+  const warm: string = `saturate(${sat}%) brightness(${100 + Math.round(i * 4)}%)`;
+  const cool: string = `saturate(${sat}%) brightness(${dim}%)`;
+  switch (label) {
+    case "playful":
+    case "warm":
+    case "tender":
+    case "curious":
+      return warm;
+    case "melancholy":
+    case "tired":
+    case "concerned":
+      return cool;
+    case "restless":
+    case "focused":
+      return `saturate(${sat}%)`;
+    default:
+      return "none";
   }
 }
