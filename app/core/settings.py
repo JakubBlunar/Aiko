@@ -143,6 +143,14 @@ class AgentSettings:
     # prepared nudge can be before ProactiveDirector re-synthesises.
     prepared_nudge_ttl_seconds: float = 600.0
 
+    # ── Filler injection (Phase 1c) ───────────────────────────────────
+    # If the LLM hasn't produced a first stream delta within this many
+    # ms, the TurnRunner emits a short filler ("Hmm,", "Let me think,")
+    # via TTS so Aiko isn't silent. Set ``filler_enabled`` to false to
+    # disable globally.
+    filler_enabled: bool = True
+    filler_first_token_ms: int = 800
+
 
 @dataclass(slots=True)
 class McpServerSettings:
@@ -401,6 +409,8 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             arc_update_every_n_turns=max(1, int(agent_raw.get("arc_update_every_n_turns", 1))),
             self_image_pulse_enabled=bool(agent_raw.get("self_image_pulse_enabled", True)),
             prepared_nudge_ttl_seconds=max(30.0, float(agent_raw.get("prepared_nudge_ttl_seconds", 600.0))),
+            filler_enabled=bool(agent_raw.get("filler_enabled", True)),
+            filler_first_token_ms=max(150, int(agent_raw.get("filler_first_token_ms", 800))),
         ),
         logging=LoggingSettings(
             level=str(logging_raw.get("level", "INFO")).strip().upper() or "INFO",

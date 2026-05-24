@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, TYPE_CHECKING
 
 from app.core.chat_database import ChatDatabase
+from app.core.filler_injector import FillerInjector
 from app.core.prompt_assembler import PromptAssembler, PromptTelemetry
 from app.core.services.response_text_service import (
     parse_reaction_at_start,
@@ -71,6 +72,8 @@ class TurnResult:
     duration_ms: float = 0.0
     telemetry: PromptTelemetry | None = None
     compactions_run: int = 0  # synchronous compactions invoked this turn
+    first_token_ms: float | None = None  # Phase 1c: time-to-first-stream-delta
+    filler_emitted: bool = False  # Phase 1c: did the slow-first-token filler fire?
 
 
 class TurnRunner:
@@ -93,6 +96,8 @@ class TurnRunner:
         tool_registry: "Any | None" = None,
         on_tool_call: Callable[[str, dict[str, Any]], None] | None = None,
         on_tool_result: Callable[[str, str, bool], None] | None = None,
+        filler_threshold_ms: int = 800,
+        filler_enabled: bool = True,
     ) -> None:
         self._ollama = ollama
         self._db = db
@@ -111,6 +116,14 @@ class TurnRunner:
         self._on_tool_call = on_tool_call
         self._on_tool_result = on_tool_result
         self._stop = threading.Event()
+        # Phase 1c: slow-first-token filler.
+        self._filler = FillerInjector(
+            threshold_ms=filler_threshold_ms,
+            enabled=filler_enabled,
+        )
+        # Best-effort carry-over of the previous reaction so the filler tone
+        # matches recent texture. Updated at the end of each successful run.
+        self._last_reaction: str | None = None
 
     def set_tool_registry(self, registry: "Any | None") -> None:
         self._tool_registry = registry
@@ -137,6 +150,8 @@ class TurnRunner:
         max_tokens: int | None = None,
         temperature: float | None = None,
         max_prompt_tokens_pct: float | None = None,
+        filler_threshold_ms: int | None = None,
+        filler_enabled: bool | None = None,
     ) -> None:
         if model is not None:
             self._model = model
@@ -148,6 +163,11 @@ class TurnRunner:
             self._temperature = float(temperature)
         if max_prompt_tokens_pct is not None:
             self._max_prompt_tokens_pct = max(0.3, min(0.95, float(max_prompt_tokens_pct)))
+        if filler_threshold_ms is not None or filler_enabled is not None:
+            self._filler.update_runtime(
+                threshold_ms=filler_threshold_ms,
+                enabled=filler_enabled,
+            )
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -239,7 +259,15 @@ class TurnRunner:
         tts_appended_chars = 0  # chars of meta-stripped body already routed to TTS
         tts_buffer = ""         # rolling buffer of body chars not yet spoken
         aborted = False
+        first_delta_seen = False
+        first_token_ms: float | None = None
         t0 = time.monotonic()
+
+        # Phase 1c: arm slow-first-token filler. Disarmed on first delta.
+        self._filler.arm(
+            on_tts_chunk,
+            carry_over_reaction=self._last_reaction,
+        )
 
         try:
             stream = self._ollama.chat_stream(
@@ -253,6 +281,13 @@ class TurnRunner:
                 stop_event=self._stop,
             )
             for delta in stream:
+                if not first_delta_seen:
+                    first_delta_seen = True
+                    first_token_ms = (time.monotonic() - t0) * 1000.0
+                    # Cancel filler watchdog. If it already fired, the
+                    # filler chunk is in the TTS queue and the real reply
+                    # will follow it; nothing else to do.
+                    self._filler.disarm()
                 if self._is_stop_requested(stop_requested):
                     aborted = True
                     self._stop.set()
@@ -295,8 +330,12 @@ class TurnRunner:
                                 on_tts_chunk(prepared, mood or "neutral")
 
         except Exception as exc:
+            self._filler.disarm()
             log.warning("stream failed: %s", exc)
             raise
+        finally:
+            # Belt-and-braces: ensure the watchdog is never left armed.
+            self._filler.disarm()
 
         full_raw = "".join(accumulator)
         if mood is None:
@@ -376,6 +415,9 @@ class TurnRunner:
             " [aborted]" if aborted else "",
         )
 
+        # Carry-over for the *next* turn's filler tone.
+        self._last_reaction = mood or self._last_reaction
+
         return TurnResult(
             text=cleaned,
             reaction=mood or "neutral",
@@ -384,6 +426,8 @@ class TurnRunner:
             duration_ms=duration_ms,
             telemetry=telemetry,
             compactions_run=compactions_run,
+            first_token_ms=first_token_ms,
+            filler_emitted=self._filler.fired,
         )
 
     # ── helpers ───────────────────────────────────────────────────────
