@@ -151,6 +151,25 @@ class AgentSettings:
     filler_enabled: bool = True
     filler_first_token_ms: int = 800
 
+    # ── Memory consolidation (Phase 4b) ───────────────────────────────
+    # MemoryConsolidator merges near-cosine clusters in the SQLite store
+    # so we don't drown in tiny redundant fact-rows. Runs in chunks during
+    # the speaking window so a single pass never exceeds ``chunk_size``
+    # memories. ``enabled=false`` short-circuits.
+    consolidator_enabled: bool = True
+    consolidator_min_hours_between: float = 18.0
+    consolidator_chunk_size: int = 40
+    consolidator_similarity_threshold: float = 0.84
+    consolidator_min_cluster_size: int = 2
+    consolidator_use_llm_merge: bool = True
+
+    # Weekly relationship-pulse: a single LLM pass that summarises
+    # how the relationship has been going and writes it as a salience-
+    # boosted "self_tagged" memory. Runs at most once per ``min_hours``.
+    relationship_pulse_enabled: bool = True
+    relationship_pulse_min_hours: float = 168.0  # ~7 days
+    relationship_pulse_min_turns: int = 30
+
 
 @dataclass(slots=True)
 class McpServerSettings:
@@ -411,6 +430,15 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             prepared_nudge_ttl_seconds=max(30.0, float(agent_raw.get("prepared_nudge_ttl_seconds", 600.0))),
             filler_enabled=bool(agent_raw.get("filler_enabled", True)),
             filler_first_token_ms=max(150, int(agent_raw.get("filler_first_token_ms", 800))),
+            consolidator_enabled=bool(agent_raw.get("consolidator_enabled", True)),
+            consolidator_min_hours_between=max(0.5, float(agent_raw.get("consolidator_min_hours_between", 18.0))),
+            consolidator_chunk_size=max(8, int(agent_raw.get("consolidator_chunk_size", 40))),
+            consolidator_similarity_threshold=max(0.5, min(0.99, float(agent_raw.get("consolidator_similarity_threshold", 0.84)))),
+            consolidator_min_cluster_size=max(2, int(agent_raw.get("consolidator_min_cluster_size", 2))),
+            consolidator_use_llm_merge=bool(agent_raw.get("consolidator_use_llm_merge", True)),
+            relationship_pulse_enabled=bool(agent_raw.get("relationship_pulse_enabled", True)),
+            relationship_pulse_min_hours=max(24.0, float(agent_raw.get("relationship_pulse_min_hours", 168.0))),
+            relationship_pulse_min_turns=max(5, int(agent_raw.get("relationship_pulse_min_turns", 30))),
         ),
         logging=LoggingSettings(
             level=str(logging_raw.get("level", "INFO")).strip().upper() or "INFO",
