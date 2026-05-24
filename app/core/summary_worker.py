@@ -43,8 +43,9 @@ class SummaryWorker:
         *,
         model: str,
         is_busy: Callable[[], bool],
-        idle_seconds: float = 30.0,
-        min_unsummarized_messages: int = 10,
+        idle_seconds: float = 15.0,
+        min_unsummarized_messages: int = 6,
+        target_tokens: int = 600,
         timeout_seconds: float = 90.0,
         memory_extractor: "MemoryExtractor | None" = None,
     ) -> None:
@@ -54,6 +55,7 @@ class SummaryWorker:
         self._is_busy = is_busy
         self._idle = float(idle_seconds)
         self._min_msgs = int(min_unsummarized_messages)
+        self._target_tokens = max(120, int(target_tokens))
         self._timeout = float(timeout_seconds)
         self._memory_extractor = memory_extractor
 
@@ -61,6 +63,8 @@ class SummaryWorker:
         self._deadline_ms: dict[str, float] = {}
         self._shutdown = threading.Event()
         self._thread: threading.Thread | None = None
+        self._compactions_total = 0
+        self._last_compaction_at: float | None = None  # monotonic seconds
 
     def set_memory_extractor(self, extractor: "MemoryExtractor | None") -> None:
         self._memory_extractor = extractor
@@ -89,6 +93,45 @@ class SummaryWorker:
         with self._cond:
             self._deadline_ms[session_key] = deadline
             self._cond.notify_all()
+
+    def notify_compaction_soon(self, session_key: str) -> None:
+        """Push the deadline to *now* so the next loop tick processes it.
+
+        Used by :class:`TurnRunner` when the just-finished turn left the
+        prompt above ``max_prompt_tokens_pct`` of the context window — we
+        don't want to wait the full idle window before compacting.
+        """
+        with self._cond:
+            self._deadline_ms[session_key] = time.monotonic() * 1000.0
+            self._cond.notify_all()
+
+    def compactions_total(self) -> int:
+        return self._compactions_total
+
+    def last_compaction_age_seconds(self) -> float | None:
+        if self._last_compaction_at is None:
+            return None
+        return max(0.0, time.monotonic() - self._last_compaction_at)
+
+    # ── synchronous entry point (overflow squish) ────────────────────────
+
+    def compact_now(self, session_key: str) -> bool:
+        """Force an immediate, synchronous summarisation pass.
+
+        Lowers the ``min_unsummarized_messages`` bar to 2 so we always make
+        progress when called. Returns ``True`` if a summary was actually
+        written. Safe to call from the turn thread; the model call happens
+        inline (so this blocks for `timeout_seconds`).
+        """
+        try:
+            wrote = self._maybe_summarize(session_key, min_msgs_override=2)
+        except Exception as exc:
+            log.warning("compact_now failed: %s", exc)
+            return False
+        if wrote:
+            self._compactions_total += 1
+            self._last_compaction_at = time.monotonic()
+        return bool(wrote)
 
     # ── loop ─────────────────────────────────────────────────────────────
 
@@ -123,24 +166,27 @@ class SummaryWorker:
 
     # ── work ─────────────────────────────────────────────────────────────
 
-    def _maybe_summarize(self, session_key: str) -> None:
+    def _maybe_summarize(
+        self, session_key: str, *, min_msgs_override: int | None = None,
+    ) -> bool:
+        threshold = self._min_msgs if min_msgs_override is None else int(min_msgs_override)
         latest = self._db.get_latest_summary(session_key)
         already_summarized = int(latest.messages_summarized) if latest else 0
         total = self._db.get_message_count(session_key)
         unsummarized = total - already_summarized
-        if unsummarized < self._min_msgs:
+        if unsummarized < threshold:
             log.debug(
                 "summary skipped (only %d new msgs, need %d) for %s",
-                unsummarized, self._min_msgs, session_key[:8],
+                unsummarized, threshold, session_key[:8],
             )
-            return
+            return False
 
         # Pull the unsummarized window plus a small overlap from before so the
         # model can see continuity.
         offset = max(0, already_summarized - 4)
         rows = self._db.get_messages(session_key, offset=offset)
         if not rows:
-            return
+            return False
 
         transcript_lines: list[str] = []
         for row in rows:
@@ -168,12 +214,12 @@ class SummaryWorker:
                 messages,
                 model=self._model,
                 timeout_seconds=self._timeout,
-                options={"temperature": 0.3, "num_predict": 512},
+                options={"temperature": 0.3, "num_predict": self._target_tokens},
                 format_json=False,
             )
         except Exception as exc:
             log.warning("summary call failed: %s", exc)
-            return
+            return False
 
         # The model may have been asked for plain text (we used chat_json for
         # the keep-alive / non-streaming behaviour but the system prompt asks
@@ -181,7 +227,7 @@ class SummaryWorker:
         text = content.strip().strip("`")
         if not text:
             log.info("summary returned empty for %s", session_key[:8])
-            return
+            return False
 
         self._db.save_summary(
             session_id=session_key,
@@ -208,3 +254,4 @@ class SummaryWorker:
                     )
             except Exception as exc:
                 log.warning("memory extractor failed: %s", exc)
+        return True

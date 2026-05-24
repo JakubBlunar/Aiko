@@ -131,11 +131,14 @@ class SessionController:
             or "llama3.1:8b"
         )
 
-        # Resolve context window: explicit override > chat_llm > legacy ollama setting
+        # Resolve context window: explicit config override > Ollama /api/show > fallback.
+        # ``self._context_source`` records which path won (used for stats display).
         ctx_override = chat_llm.context_window or getattr(
             settings.ollama, "context_window", None
         )
-        self._context_window = int(ctx_override) if ctx_override else 8192
+        self._context_window, self._context_source = self._resolve_context_window(
+            ctx_override, self._effective_chat_model,
+        )
         self._max_tokens = max(64, int(chat_llm.max_tokens or 512))
         temp = chat_llm.temperature
         if temp is None:
@@ -311,6 +314,9 @@ class SessionController:
             self._ollama,
             model=self._effective_chat_model,
             is_busy=lambda: self._turn_in_progress,
+            idle_seconds=settings.agent.summary_idle_seconds,
+            min_unsummarized_messages=settings.agent.summary_min_unsummarized_messages,
+            target_tokens=settings.agent.summary_target_tokens,
             memory_extractor=self._memory_extractor,
         )
         self._summary_worker.start()
@@ -337,6 +343,7 @@ class SessionController:
             memory_store=self._memory_store,
             embedder=self._embedder,
             self_tagged_salience=self._memory_settings.self_tagged_salience,
+            max_prompt_tokens_pct=settings.agent.max_prompt_tokens_pct,
             on_memory_added=self._notify_memory_added,
             on_tool_call=lambda name, args: self._notify_tool_event(
                 "call", {"name": name, "arguments": args},
@@ -388,11 +395,19 @@ class SessionController:
         # ── Metrics ──────────────────────────────────────────────────────
         self._last_metrics: dict[str, float | int | str] = self._zero_metrics()
         self._metrics_history: deque[dict[str, float | int | str]] = deque(maxlen=10)
+        self._compactions_total = 0
+        # TTS timing: the moment chat_once_streaming finishes the LLM stream
+        # is the natural "TTS may begin" mark; ``_tts_turn_start_at`` captures
+        # that. We update ``_last_metrics["tts_ms"]`` when the TTS queue
+        # signals "end" for a session that started after the LLM was done.
+        self._tts_turn_start_at: float | None = None
+        self._tts_turn_first_start_at: float | None = None
 
         # ── Listeners ────────────────────────────────────────────────────
         self._message_listeners: list[Callable[[str, str], None]] = []
         self._tts_state_listeners: list[Callable[..., None]] = []
         self._tts_amplitude_listeners: list[Callable[[float], None]] = []
+        self._metrics_listeners: list[Callable[[dict[str, Any]], None]] = []
         self._tts.set_amplitude_listener(self._on_tts_amplitude)
         self._models_cache: list[str] | None = None
         self._models_cache_time = 0.0
@@ -455,6 +470,11 @@ class SessionController:
         return self._context_window
 
     @property
+    def context_window_source(self) -> str:
+        """Where ``context_window`` came from: ``config|ollama_show|fallback``."""
+        return getattr(self, "_context_source", "fallback")
+
+    @property
     def context_tokens_used(self) -> int:
         try:
             metrics = self._last_metrics
@@ -462,13 +482,50 @@ class SessionController:
         except Exception:
             return 0
 
+    def _resolve_context_window(
+        self, override: int | None, model: str,
+    ) -> tuple[int, str]:
+        """Pick the context window and record the source.
+
+        Order of preference:
+        1. Explicit config override (``chat_llm.context_window`` /
+           ``ollama.context_window``).
+        2. ``OllamaClient.get_context_length(model)`` from ``/api/show``.
+        3. Hardcoded ``8192`` last-resort fallback.
+        """
+        if override:
+            try:
+                value = int(override)
+                if value > 0:
+                    return value, "config"
+            except (TypeError, ValueError):
+                pass
+        try:
+            detected = self._ollama.get_context_length(model)
+        except Exception:
+            detected = None
+        if detected and detected > 0:
+            return int(detected), "ollama_show"
+        return 8192, "fallback"
+
     def set_chat_model(self, model_name: str) -> None:
         normalized = (model_name or "").strip()
         if not normalized:
             return
         self._settings.ollama.chat_model = normalized
         self._effective_chat_model = normalized
-        self._turn_runner.update_runtime(model=normalized)
+        # Re-resolve the context window for the new model. Honour the explicit
+        # config override if any; otherwise re-query /api/show.
+        chat_llm = self._settings.chat_llm
+        ctx_override = chat_llm.context_window or getattr(
+            self._settings.ollama, "context_window", None,
+        )
+        self._context_window, self._context_source = self._resolve_context_window(
+            ctx_override, normalized,
+        )
+        self._turn_runner.update_runtime(
+            model=normalized, context_window=self._context_window,
+        )
         # Update the cached model on workers too.
         self._summary_worker._model = normalized  # type: ignore[attr-defined]
         self._proactive.update_runtime(model=normalized)
@@ -914,6 +971,21 @@ class SessionController:
         if callback and callback not in self._tts_state_listeners:
             self._tts_state_listeners.append(callback)
 
+    def add_metrics_listener(
+        self, callback: Callable[[dict[str, Any]], None],
+    ) -> None:
+        """Subscribe to retroactive metrics updates (e.g. tts_ms back-fill)."""
+        if callback and callback not in self._metrics_listeners:
+            self._metrics_listeners.append(callback)
+
+    def _notify_metrics_updated(self) -> None:
+        snapshot = dict(self._last_metrics)
+        for listener in list(self._metrics_listeners):
+            try:
+                listener(snapshot)
+            except Exception:
+                log.debug("metrics listener raised", exc_info=True)
+
     def _on_tts_state(self, event: str, payload: dict[str, Any]) -> None:
         # Carry the last assistant reaction over to the next turn so the
         # mood doesn't reset to "neutral" every time. Phase E mood-carryover.
@@ -923,6 +995,34 @@ class SessionController:
                 self._prompt_assembler.set_last_reaction(reaction)
             except Exception:
                 log.debug("set_last_reaction failed", exc_info=True)
+            # First "start" after the LLM finished marks audible-from time;
+            # subsequent chunk starts in the same turn don't reset it.
+            if (
+                self._tts_turn_start_at is not None
+                and self._tts_turn_first_start_at is None
+            ):
+                self._tts_turn_first_start_at = time.monotonic()
+        elif event == "end":
+            # Queue is drained for this turn. Compute total tts_ms (LLM done
+            # → audio fully played) and back-fill the last metrics record.
+            if self._tts_turn_start_at is not None:
+                tts_ms = round(
+                    (time.monotonic() - self._tts_turn_start_at) * 1000.0, 1,
+                )
+                # ``total_ms`` was capture+stt+llm at the time of the LLM
+                # turn; add the freshly-measured TTS span on top.
+                base_total = float(self._last_metrics.get("total_ms", 0.0) or 0.0)
+                base_total -= float(self._last_metrics.get("tts_ms", 0.0) or 0.0)
+                self._last_metrics["tts_ms"] = tts_ms
+                self._last_metrics["total_ms"] = round(base_total + tts_ms, 1)
+                # Mirror into the history tail so averages reflect tts_ms too.
+                if self._metrics_history:
+                    self._metrics_history[-1]["tts_ms"] = tts_ms
+                    self._metrics_history[-1]["total_ms"] = self._last_metrics["total_ms"]
+                self._tts_turn_start_at = None
+                self._tts_turn_first_start_at = None
+                # Re-broadcast metrics so the badge picks up the final tts_ms.
+                self._notify_metrics_updated()
         for listener in list(self._tts_state_listeners):
             try:
                 listener(event, **payload)
@@ -979,24 +1079,50 @@ class SessionController:
             "llm_ms": 0.0,
             "tts_ms": 0.0,
             "total_ms": 0.0,
+            # Token totals (combined streaming + tool-pass).
             "prompt_tokens": 0,
             "completion_tokens": 0,
             "total_tokens": 0,
+            # Ollama timing breakdown (full-precision).
+            "total_duration_ms": 0.0,
+            "eval_duration_ms": 0.0,
+            "prompt_eval_duration_ms": 0.0,
+            "tokens_per_second": 0.0,
+            # Context fill.
+            "context_window": 0,
+            "context_source": "fallback",
+            "prompt_pct": 0.0,
+            # Prompt-assembly telemetry.
+            "system_tokens": 0,
+            "summary_tokens": 0,
+            "rag_tokens": 0,
+            "history_tokens": 0,
+            "user_tokens": 0,
+            "tool_tokens": 0,
+            "history_messages_kept": 0,
+            "history_dropped_count": 0,
+            "summary_active": False,
+            "summary_messages": 0,
+            # Compaction state.
+            "compaction_triggered": False,
+            "compactions_total": 0,
         }
 
     def get_last_metrics(self) -> dict[str, float | int | str]:
         return dict(self._last_metrics)
 
-    def get_average_metrics(self) -> dict[str, float | str]:
+    def get_average_metrics(self) -> dict[str, float | str | int]:
         if not self._metrics_history:
             return {
                 "window": 0,
                 "capture_ms": 0.0, "stt_ms": 0.0, "llm_ms": 0.0,
                 "tts_ms": 0.0, "total_ms": 0.0,
+                "prompt_tokens": 0.0, "completion_tokens": 0.0,
+                "tokens_per_second": 0.0, "prompt_pct": 0.0,
             }
 
         def avg(key: str) -> float:
-            values = [float(item.get(key, 0.0)) for item in self._metrics_history]
+            values = [float(item.get(key, 0.0) or 0.0) for item in self._metrics_history]
             return round(sum(values) / max(1, len(values)), 1)
 
         return {
@@ -1006,6 +1132,10 @@ class SessionController:
             "llm_ms": avg("llm_ms"),
             "tts_ms": avg("tts_ms"),
             "total_ms": avg("total_ms"),
+            "prompt_tokens": avg("prompt_tokens"),
+            "completion_tokens": avg("completion_tokens"),
+            "tokens_per_second": avg("tokens_per_second"),
+            "prompt_pct": round(avg("prompt_pct"), 4),
         }
 
     def reset_latency_metrics(self) -> None:
@@ -1063,22 +1193,61 @@ class SessionController:
 
         llm_ms = (time.perf_counter() - t0) * 1000.0
         total_ms = capture_ms + stt_ms + llm_ms
-        self._set_last_metrics({
+        # Mark the TTS-timing window now; ``_on_tts_state("end", ...)`` will
+        # close it and back-fill ``tts_ms`` / ``total_ms`` on the last metric.
+        self._tts_turn_start_at = time.monotonic()
+        self._tts_turn_first_start_at = None
+
+        self._compactions_total += int(getattr(result, "compactions_run", 0) or 0)
+        usage = result.usage
+        telemetry = result.telemetry
+
+        prompt_pct = 0.0
+        if self._context_window > 0 and usage.prompt_tokens > 0:
+            prompt_pct = round(usage.prompt_tokens / float(self._context_window), 4)
+
+        metrics: dict[str, float | int | str | bool] = {
             "mode": mode,
             "capture_ms": round(capture_ms, 1),
             "stt_ms": round(stt_ms, 1),
             "llm_ms": round(llm_ms, 1),
             "tts_ms": 0.0,
             "total_ms": round(total_ms, 1),
-            "prompt_tokens": int(result.usage.prompt_tokens),
-            "completion_tokens": int(result.usage.completion_tokens),
-            "total_tokens": int(result.usage.total_tokens),
-        })
+            "prompt_tokens": int(usage.prompt_tokens),
+            "completion_tokens": int(usage.completion_tokens),
+            "total_tokens": int(usage.total_tokens),
+            "total_duration_ms": round(usage.total_duration_ms, 1),
+            "eval_duration_ms": round(usage.eval_duration_ms, 1),
+            "prompt_eval_duration_ms": round(usage.prompt_eval_duration_ms, 1),
+            "tokens_per_second": float(usage.tokens_per_second),
+            "context_window": int(self._context_window),
+            "context_source": str(self._context_source),
+            "prompt_pct": prompt_pct,
+            "compactions_total": int(self._compactions_total),
+        }
+        if telemetry is not None:
+            tdict = telemetry.as_dict()
+            metrics.update({
+                "system_tokens": tdict["system_tokens"],
+                "summary_tokens": tdict["summary_tokens"],
+                "rag_tokens": tdict["rag_tokens"],
+                "history_tokens": tdict["history_tokens"],
+                "user_tokens": tdict["user_tokens"],
+                "tool_tokens": tdict["tool_tokens"],
+                "history_messages_kept": tdict["history_messages_kept"],
+                "history_dropped_count": tdict["history_messages_dropped"],
+                "summary_active": tdict["summary_active"],
+                "summary_messages": tdict["summary_messages"],
+                "compaction_triggered": tdict["compaction_triggered"],
+            })
+        self._set_last_metrics(metrics)
         return result.text
 
-    def _set_last_metrics(self, metrics: dict[str, float | int | str]) -> None:
-        self._last_metrics = dict(metrics)
-        self._metrics_history.append(dict(metrics))
+    def _set_last_metrics(
+        self, metrics: dict[str, float | int | str | bool],
+    ) -> None:
+        self._last_metrics = dict(metrics)  # type: ignore[arg-type]
+        self._metrics_history.append(dict(metrics))  # type: ignore[arg-type]
 
     # ── Voice capture ────────────────────────────────────────────────
 

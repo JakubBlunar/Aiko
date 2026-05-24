@@ -4,6 +4,7 @@ import type {
   AssistantSettings,
   ChatMessage,
   MemoriesResponse,
+  MetricsResponse,
   Persona,
   PersonaResponse,
   RagDocument,
@@ -123,4 +124,5 @@ export const api = {
       `/api/documents/${encodeURIComponent(document_id)}`,
       { method: "DELETE" },
     ),
+  getMetrics: () => jsonFetch<MetricsResponse>("/api/metrics"),
 };

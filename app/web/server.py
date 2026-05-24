@@ -142,6 +142,17 @@ def create_web_app(session: "SessionController") -> FastAPI:
     def _on_tts_state(event: str, **payload: Any) -> None:
         hub.broadcast({"type": "tts_state", "event": event, **payload})
 
+    def _on_metrics_updated(snapshot: dict[str, Any]) -> None:
+        hub.broadcast({"type": "metrics_update", "metrics": snapshot})
+
+    def _broadcast_context_window() -> None:
+        hub.broadcast({
+            "type": "context_window",
+            "context_window": session.context_window_size,
+            "context_source": session.context_window_source,
+            "model": session.effective_chat_model,
+        })
+
     # Throttle amplitude broadcasts to <=30 Hz so we don't drown the WS.
     _amp_state: dict[str, float] = {"last_sent": 0.0, "last_level": 0.0}
     _AMP_INTERVAL = 1.0 / 30.0
@@ -162,6 +173,10 @@ def create_web_app(session: "SessionController") -> FastAPI:
 
     session.add_message_listener(_on_message)
     session.add_tts_state_listener(_on_tts_state)
+    try:
+        session.add_metrics_listener(_on_metrics_updated)
+    except Exception:
+        log.debug("metrics listener subscription failed", exc_info=True)
     try:
         session.add_tts_amplitude_listener(_on_amplitude)
     except Exception:
@@ -249,6 +264,7 @@ def create_web_app(session: "SessionController") -> FastAPI:
     def new_session() -> JSONResponse:
         new_id = session.new_session()
         hub.broadcast({"type": "session_changed", "session": session.session_key})
+        _broadcast_context_window()
         return JSONResponse({"session_id": new_id, "session_key": session.session_key})
 
     @app.post("/api/sessions/switch")
@@ -262,6 +278,7 @@ def create_web_app(session: "SessionController") -> FastAPI:
             session_id = session_id.split(":", 1)[1]
         session.switch_session(session_id)
         hub.broadcast({"type": "session_changed", "session": session.session_key})
+        _broadcast_context_window()
         return JSONResponse({"session_key": session.session_key})
 
     @app.delete("/api/sessions/{session_id}")
@@ -332,6 +349,8 @@ def create_web_app(session: "SessionController") -> FastAPI:
         chat = payload.get("chat") or {}
         if "model" in chat:
             session.set_chat_model(str(chat["model"]))
+            hub.broadcast({"type": "model_changed", "model": session.effective_chat_model})
+            _broadcast_context_window()
         tts = payload.get("tts") or {}
         if "voice" in tts:
             session.set_tts_voice(str(tts["voice"]))
@@ -397,9 +416,21 @@ def create_web_app(session: "SessionController") -> FastAPI:
 
     @app.get("/api/metrics")
     def metrics() -> JSONResponse:
+        s = session._settings
         return JSONResponse({
             "last": session.get_last_metrics(),
             "average": session.get_average_metrics(),
+            "config": {
+                "model": session.effective_chat_model,
+                "context_window": session.context_window_size,
+                "context_source": session.context_window_source,
+                "max_prompt_tokens_pct": float(getattr(s.agent, "max_prompt_tokens_pct", 0.8)),
+                "summary_idle_seconds": float(getattr(s.agent, "summary_idle_seconds", 15.0)),
+                "summary_min_unsummarized_messages": int(
+                    getattr(s.agent, "summary_min_unsummarized_messages", 6),
+                ),
+                "summary_target_tokens": int(getattr(s.agent, "summary_target_tokens", 600)),
+            },
         })
 
     # ── REST: long-term memories ────────────────────────────────────
@@ -611,6 +642,8 @@ def create_web_app(session: "SessionController") -> FastAPI:
                 "model": session.effective_chat_model,
                 "tts_enabled": bool(session._settings.tts.enabled),
                 "voice_active": bool(live_session.is_active),
+                "context_window": session.context_window_size,
+                "context_source": session.context_window_source,
             }))
         except Exception:
             pass
@@ -658,10 +691,12 @@ def create_web_app(session: "SessionController") -> FastAPI:
                             sid = sid.split(":", 1)[1]
                         session.switch_session(sid)
                         hub.broadcast({"type": "session_changed", "session": session.session_key})
+                        _broadcast_context_window()
 
                 elif msg_type == "new_session":
                     session.new_session()
                     hub.broadcast({"type": "session_changed", "session": session.session_key})
+                    _broadcast_context_window()
 
                 elif msg_type == "clear":
                     session.clear_conversation_memory()

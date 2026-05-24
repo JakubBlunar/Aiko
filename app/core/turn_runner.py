@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, TYPE_CHECKING
 
 from app.core.chat_database import ChatDatabase
-from app.core.prompt_assembler import PromptAssembler
+from app.core.prompt_assembler import PromptAssembler, PromptTelemetry
 from app.core.services.response_text_service import (
     parse_reaction_at_start,
     safe_visible_prefix,
@@ -69,6 +69,8 @@ class TurnResult:
     usage: OllamaUsage = field(default_factory=OllamaUsage)
     aborted: bool = False
     duration_ms: float = 0.0
+    telemetry: PromptTelemetry | None = None
+    compactions_run: int = 0  # synchronous compactions invoked this turn
 
 
 class TurnRunner:
@@ -86,6 +88,7 @@ class TurnRunner:
         memory_store: "MemoryStore | None" = None,
         embedder: "Embedder | None" = None,
         self_tagged_salience: float = 0.7,
+        max_prompt_tokens_pct: float = 0.8,
         on_memory_added: Callable[[object], None] | None = None,
         tool_registry: "Any | None" = None,
         on_tool_call: Callable[[str, dict[str, Any]], None] | None = None,
@@ -102,6 +105,7 @@ class TurnRunner:
         self._memory_store = memory_store
         self._embedder = embedder
         self._self_tagged_salience = max(0.0, min(1.0, float(self_tagged_salience)))
+        self._max_prompt_tokens_pct = max(0.3, min(0.95, float(max_prompt_tokens_pct)))
         self._on_memory_added = on_memory_added
         self._tool_registry = tool_registry
         self._on_tool_call = on_tool_call
@@ -132,6 +136,7 @@ class TurnRunner:
         context_window: int | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        max_prompt_tokens_pct: float | None = None,
     ) -> None:
         if model is not None:
             self._model = model
@@ -141,6 +146,8 @@ class TurnRunner:
             self._max_tokens = max(64, int(max_tokens))
         if temperature is not None:
             self._temperature = float(temperature)
+        if max_prompt_tokens_pct is not None:
+            self._max_prompt_tokens_pct = max(0.3, min(0.95, float(max_prompt_tokens_pct)))
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -168,16 +175,39 @@ class TurnRunner:
                 token_count=estimate_tokens(cleaned_user),
             )
 
-        messages = self._prompt.build(
+        messages, telemetry = self._prompt.assemble_with_budget(
             session_key,
             cleaned_user,
             context_window=self._context_window,
             response_budget=self._max_tokens,
         )
 
+        # On overflow: synchronous compaction → reassemble (aggressive) once.
+        compactions_run = 0
+        if telemetry.compaction_triggered and self._summary is not None:
+            log.info(
+                "context overflow projected (est=%d > budget=%d); compacting now",
+                telemetry.prompt_tokens_estimate, telemetry.budget_tokens,
+            )
+            try:
+                wrote = self._summary.compact_now(session_key)
+            except Exception:
+                log.exception("compact_now raised")
+                wrote = False
+            if wrote:
+                compactions_run += 1
+            messages, telemetry = self._prompt.assemble_with_budget(
+                session_key,
+                cleaned_user,
+                context_window=self._context_window,
+                response_budget=self._max_tokens,
+                aggressive=True,
+            )
+
         log.info(
-            "turn start: model=%s session=%s ctx=%d max=%d msgs=%d",
-            self._model, session_key[:8], self._context_window, self._max_tokens, len(messages),
+            "turn start: model=%s session=%s ctx=%d max=%d msgs=%d est=%d",
+            self._model, session_key[:8], self._context_window, self._max_tokens,
+            len(messages), telemetry.prompt_tokens_estimate,
         )
 
         # ── Pass 1: tool calling (optional) ──────────────────────────────
@@ -185,11 +215,22 @@ class TurnRunner:
         # wants to call any tools before producing the spoken reply. Tool
         # results are appended as ``role="tool"`` messages and the prompt is
         # then sent through ``chat_stream`` for the user-facing reply.
+        tool_usage = OllamaUsage()
         if self._tool_registry is not None and len(self._tool_registry) > 0:
             try:
-                self._maybe_run_tool_pass(messages, stop_requested=stop_requested)
+                tool_usage = self._maybe_run_tool_pass(
+                    messages, stop_requested=stop_requested,
+                )
             except Exception:
                 log.exception("tool pre-pass failed; falling back to plain stream")
+            # Tool-pass appendments grow the prompt; refresh telemetry so the
+            # post-turn metrics reflect what actually got streamed.
+            if tool_usage.prompt_tokens or tool_usage.completion_tokens:
+                tool_text_total = self._estimate_messages_tokens(messages)
+                telemetry.tool_tokens = max(
+                    0, tool_text_total - telemetry.prompt_tokens_estimate,
+                )
+                telemetry.prompt_tokens_estimate = tool_text_total
 
         # Streaming bookkeeping.
         accumulator: list[str] = []
@@ -286,8 +327,28 @@ class TurnRunner:
                 if prepared:
                     on_tts_chunk(prepared, mood or "neutral")
 
-        usage = self._ollama.last_usage
+        # Merge the tool-pass usage into the streaming-pass usage so the turn
+        # totals reflect every Ollama call we made.
+        usage = self._ollama.last_usage.merge(tool_usage)
         duration_ms = (time.monotonic() - t0) * 1000.0
+
+        # Decide whether to schedule a proactive (background) compaction
+        # because this turn left the prompt close to the limit.
+        if (
+            usage.prompt_tokens > 0
+            and self._context_window > 0
+            and self._summary is not None
+        ):
+            prompt_pct = usage.prompt_tokens / float(self._context_window)
+            if prompt_pct >= self._max_prompt_tokens_pct:
+                try:
+                    self._summary.notify_compaction_soon(session_key)
+                    log.info(
+                        "prompt at %.0f%% of ctx; scheduling background compaction",
+                        prompt_pct * 100.0,
+                    )
+                except Exception:
+                    log.debug("notify_compaction_soon failed", exc_info=True)
 
         assistant_message_id: int | None = None
         if cleaned and not aborted:
@@ -321,6 +382,8 @@ class TurnRunner:
             usage=usage,
             aborted=aborted,
             duration_ms=duration_ms,
+            telemetry=telemetry,
+            compactions_run=compactions_run,
         )
 
     # ── helpers ───────────────────────────────────────────────────────
@@ -331,26 +394,31 @@ class TurnRunner:
         *,
         stop_requested: StopPredicate | None,
         max_rounds: int = 2,
-    ) -> None:
+    ) -> OllamaUsage:
         """Run up to ``max_rounds`` ``chat_with_tools`` passes and mutate
         ``messages`` in place by appending the assistant's tool_calls and
         the corresponding ``tool`` results.
+
+        Returns the cumulative :class:`OllamaUsage` across all rounds so the
+        caller can merge it into the streaming-pass usage (gives the user
+        accurate token totals across the whole turn).
 
         We bail early if the model returns no tool calls, the stop event is
         set, or anything goes sideways (the streaming pass is the
         authoritative final reply, so silently dropping tool augmentation
         is fine).
         """
+        total_usage = OllamaUsage()
         registry = self._tool_registry
         if registry is None:
-            return
+            return total_usage
         tool_schemas = registry.to_ollama_tools()
         if not tool_schemas:
-            return
+            return total_usage
 
         for round_idx in range(max_rounds):
             if self._is_stop_requested(stop_requested) or self._stop.is_set():
-                return
+                return total_usage
             try:
                 response = self._ollama.chat_with_tools(
                     messages,
@@ -365,9 +433,13 @@ class TurnRunner:
                 )
             except Exception:
                 log.exception("chat_with_tools round %d failed", round_idx)
-                return
+                return total_usage
+            # OllamaClient stamps last_usage on every chat_with_tools call.
+            tool_call_usage = getattr(self._ollama, "last_usage", None)
+            if isinstance(tool_call_usage, OllamaUsage):
+                total_usage = total_usage.merge(tool_call_usage)
             if not response.tool_calls:
-                return
+                return total_usage
 
             assistant_msg: dict[str, Any] = {
                 "role": "assistant",
@@ -410,6 +482,15 @@ class TurnRunner:
                     "tool dispatch: name=%s ok=%s len=%d",
                     result.name, result.ok, len(result.content),
                 )
+        return total_usage
+
+    @staticmethod
+    def _estimate_messages_tokens(messages: list[dict[str, Any]]) -> int:
+        total = 0
+        for msg in messages:
+            content = str(msg.get("content") or "")
+            total += estimate_tokens(content) + 4  # _MESSAGE_OVERHEAD
+        return total
 
     def _is_stop_requested(self, predicate: StopPredicate | None) -> bool:
         if predicate is None:

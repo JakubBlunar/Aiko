@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAssistantStore } from "../store";
 import type { ToolEvent, WsClientCommand } from "../types";
+import { ContextBadge } from "./ContextBadge";
 
 interface ChatViewProps {
   send: (cmd: WsClientCommand) => void;
@@ -117,7 +118,10 @@ export function ChatView({ send }: ChatViewProps) {
             </div>
           </div>
         </div>
-        <ConnectionBadge />
+        <div className="flex items-center gap-2">
+          <ContextBadge />
+          <ConnectionBadge />
+        </div>
       </div>
 
       <div

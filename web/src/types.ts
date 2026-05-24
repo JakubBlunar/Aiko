@@ -159,9 +159,49 @@ export interface MetricsSnapshot {
   llm_ms?: number;
   tts_ms?: number;
   total_ms?: number;
+  // Token totals (combined streaming + tool-pass).
   prompt_tokens?: number;
   completion_tokens?: number;
   total_tokens?: number;
+  // Ollama timing breakdown.
+  total_duration_ms?: number;
+  eval_duration_ms?: number;
+  prompt_eval_duration_ms?: number;
+  tokens_per_second?: number;
+  // Context fill.
+  context_window?: number;
+  context_source?: "config" | "ollama_show" | "fallback" | string;
+  prompt_pct?: number;
+  // Prompt-assembly telemetry.
+  system_tokens?: number;
+  summary_tokens?: number;
+  rag_tokens?: number;
+  history_tokens?: number;
+  user_tokens?: number;
+  tool_tokens?: number;
+  history_messages_kept?: number;
+  history_dropped_count?: number;
+  summary_active?: boolean;
+  summary_messages?: number;
+  // Compaction state.
+  compaction_triggered?: boolean;
+  compactions_total?: number;
+}
+
+export interface MetricsConfig {
+  model: string;
+  context_window: number;
+  context_source: string;
+  max_prompt_tokens_pct: number;
+  summary_idle_seconds: number;
+  summary_min_unsummarized_messages: number;
+  summary_target_tokens: number;
+}
+
+export interface MetricsResponse {
+  last: MetricsSnapshot;
+  average: MetricsSnapshot & { window?: number };
+  config: MetricsConfig;
 }
 
 // ── WebSocket message envelopes ──────────────────────────────────────
@@ -173,9 +213,19 @@ export type WsServerEvent =
       model: string;
       tts_enabled: boolean;
       voice_active?: boolean;
+      context_window?: number;
+      context_source?: string;
     }
   | { type: "token"; chunk: string }
   | { type: "turn_done"; metrics: MetricsSnapshot }
+  | { type: "metrics_update"; metrics: MetricsSnapshot }
+  | {
+      type: "context_window";
+      context_window: number;
+      context_source: string;
+      model: string;
+    }
+  | { type: "model_changed"; model: string }
   | {
       type: "tts_state";
       event: "start" | "end";

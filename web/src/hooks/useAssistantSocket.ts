@@ -36,6 +36,12 @@ export function useAssistantSocket(): {
         store.setSessionKey(evt.session);
         store.setModel(evt.model);
         store.setTtsEnabled(evt.tts_enabled);
+        if (evt.context_window) {
+          store.setContextInfo(
+            evt.context_window,
+            evt.context_source ?? "fallback",
+          );
+        }
         // Re-sync voice mode if the backend was already running a loop
         // when this socket connected (e.g. page refresh mid-session).
         store.setVoiceMode(evt.voice_active ? "listening" : "off");
@@ -87,9 +93,28 @@ export function useAssistantSocket(): {
       case "turn_done":
         store.finishAssistantBubble();
         store.setMetrics(evt.metrics || {});
+        if (evt.metrics?.context_window) {
+          store.setContextInfo(
+            evt.metrics.context_window,
+            String(evt.metrics.context_source ?? "fallback"),
+          );
+        }
         store.setTurnInProgress(false);
         store.setStatus("");
         store.clearToolActivity();
+        break;
+
+      case "metrics_update":
+        store.mergeMetrics(evt.metrics || {});
+        break;
+
+      case "context_window":
+        store.setContextInfo(evt.context_window, evt.context_source);
+        store.setModel(evt.model);
+        break;
+
+      case "model_changed":
+        store.setModel(evt.model);
         break;
 
       case "tts_state":
