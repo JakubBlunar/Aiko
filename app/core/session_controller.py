@@ -381,6 +381,23 @@ class SessionController:
             self._relationship_store = None
             self._relationship_tracker = None
 
+        # Phase 3c: promise extractor (regex post-turn + LLM speaking-window).
+        # Both tracks persist promises as ``kind="promise"`` memories so RAG
+        # surfaces them naturally; ProactiveDirector benefits implicitly.
+        self._promise_extractor = None
+        try:
+            from app.core.promise_extractor import PromiseExtractor
+
+            self._promise_extractor = PromiseExtractor(
+                ollama=self._ollama,
+                memory_store=self._memory_store,
+                embedder=self._embedder,
+                model=self._effective_chat_model,
+            )
+        except Exception:
+            log.warning("PromiseExtractor init failed", exc_info=True)
+            self._promise_extractor = None
+
         # Phase 3a: structured user profile + per-turn user-state estimator.
         # The store is hot-path-safe (small SQL reads) and the estimator
         # runs after every turn (regex only). The worker is LLM-driven and
@@ -1585,6 +1602,56 @@ class SessionController:
             except Exception:
                 pass
 
+    def _maybe_schedule_promise_llm_job(self) -> None:
+        """Phase 3c: enqueue the LLM promise extractor in the speaking window."""
+        extractor = getattr(self, "_promise_extractor", None)
+        if extractor is None:
+            return
+        try:
+            if not extractor.should_run_llm():
+                return
+        except Exception:
+            log.debug("promise extractor should_run failed", exc_info=True)
+            return
+
+        session_key = self.session_key
+        history_window = 12
+
+        def _history_provider() -> list[tuple[str, str]]:
+            try:
+                rows = self._chat_db.get_messages(session_key, limit=history_window)
+            except Exception:
+                return []
+            return [
+                (str(r.role or ""), str(r.content or ""))
+                for r in rows
+                if r.role in ("user", "assistant")
+            ]
+
+        def _job(_stop_flag: Any) -> None:
+            if _stop_flag is not None and _stop_flag.is_set():
+                return
+            try:
+                extractor.maybe_run_llm(
+                    session_key=session_key,
+                    history_provider=_history_provider,
+                )
+            except Exception:
+                log.debug("promise llm job raised", exc_info=True)
+
+        try:
+            from app.core.speaking_window_scheduler import ScheduledJob
+
+            self._scheduler.submit(ScheduledJob(
+                name="promise_llm",
+                priority=65,
+                estimated_seconds=3.5,
+                callable=_job,
+                dedupe_key="promise_llm",
+            ))
+        except Exception:
+            log.debug("promise llm submit failed", exc_info=True)
+
     def _maybe_schedule_user_profile_job(self) -> None:
         """Phase 3a: enqueue UserProfileWorker via the speaking window."""
         worker = getattr(self, "_user_profile_worker", None)
@@ -1877,6 +1944,20 @@ class SessionController:
                 milestone = None
             if milestone:
                 self._record_milestone_memory(milestone)
+
+        # Phase 3c: post-turn promise regex (cheap) + maybe schedule LLM pass.
+        extractor = getattr(self, "_promise_extractor", None)
+        if extractor is not None:
+            try:
+                extractor.extract_post_turn(
+                    user_text=user_text,
+                    assistant_text=assistant_text,
+                    session_key=self.session_key,
+                )
+                extractor.notify_user_turn()
+                self._maybe_schedule_promise_llm_job()
+            except Exception:
+                log.debug("promise extraction failed", exc_info=True)
 
     # ── Voice capture ────────────────────────────────────────────────
 

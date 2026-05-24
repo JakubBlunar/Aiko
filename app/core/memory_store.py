@@ -50,6 +50,9 @@ VALID_KINDS = {
     "open_question",
     "callback",
     "reflection",
+    # Phase 3c — explicit promises ("I'll do X", "remind me to Y").
+    # Surfaced through RAG and consumed by ProactiveDirector.
+    "promise",
 }
 
 

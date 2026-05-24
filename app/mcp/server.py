@@ -197,6 +197,42 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"get_user_profile failed: {exc}"
 
     @mcp.tool()
+    def get_promise_stats() -> str:
+        """Return PromiseExtractor counters (Phase 3c)."""
+        try:
+            extractor = getattr(session, "_promise_extractor", None)
+            if extractor is None:
+                return json.dumps({"enabled": False}, indent=2)
+            return json.dumps(
+                {"enabled": True, **extractor.stats()},
+                indent=2, default=str,
+            )
+        except Exception as exc:
+            return f"get_promise_stats failed: {exc}"
+
+    @mcp.tool()
+    def list_promises(limit: int = 10) -> str:
+        """List recent promise memories (Phase 3c)."""
+        try:
+            store = getattr(session, "_memory_store", None)
+            if store is None:
+                return json.dumps([], indent=2)
+            top = store.list_recent(limit=max(1, int(limit) * 4))
+            promises = [
+                {
+                    "id": m.id,
+                    "content": m.content,
+                    "salience": float(m.salience),
+                    "created_at": m.created_at,
+                }
+                for m in top
+                if (m.kind or "").lower() == "promise"
+            ][: max(1, int(limit))]
+            return json.dumps(promises, indent=2, default=str)
+        except Exception as exc:
+            return f"list_promises failed: {exc}"
+
+    @mcp.tool()
     def get_relationship_state() -> str:
         """Return relationship phase + counters (Phase 3b)."""
         try:
