@@ -468,6 +468,54 @@ class SessionController:
             except Exception:
                 log.warning("SelfImageWorker init failed", exc_info=True)
                 self._self_image_worker = None
+
+        # Phase 4b: memory consolidator (cluster + merge near-cosine groups).
+        self._consolidator = None
+        if (
+            settings.agent.consolidator_enabled
+            and self._memory_store is not None
+        ):
+            try:
+                from app.core.memory_consolidator import MemoryConsolidator
+
+                self._consolidator = MemoryConsolidator(
+                    ollama=self._ollama,
+                    memory_store=self._memory_store,
+                    chat_db=self._chat_db,
+                    model=self._effective_chat_model,
+                    chunk_size=settings.agent.consolidator_chunk_size,
+                    similarity_threshold=settings.agent.consolidator_similarity_threshold,
+                    min_cluster_size=settings.agent.consolidator_min_cluster_size,
+                    min_hours_between=settings.agent.consolidator_min_hours_between,
+                    use_llm_merge=settings.agent.consolidator_use_llm_merge,
+                )
+            except Exception:
+                log.warning("MemoryConsolidator init failed", exc_info=True)
+                self._consolidator = None
+
+        # Phase 4b: weekly relationship pulse (LLM summary as self_tagged memory).
+        self._relationship_pulse = None
+        if (
+            settings.agent.relationship_pulse_enabled
+            and self._memory_store is not None
+            and self._embedder is not None
+        ):
+            try:
+                from app.core.relationship_pulse import RelationshipPulseWorker
+
+                self._relationship_pulse = RelationshipPulseWorker(
+                    ollama=self._ollama,
+                    memory_store=self._memory_store,
+                    relationship_store=getattr(self, "_relationship_store", None),
+                    chat_db=self._chat_db,
+                    embedder=self._embedder,
+                    model=self._effective_chat_model,
+                    min_hours=settings.agent.relationship_pulse_min_hours,
+                    min_turns=settings.agent.relationship_pulse_min_turns,
+                )
+            except Exception:
+                log.warning("RelationshipPulseWorker init failed", exc_info=True)
+                self._relationship_pulse = None
         # Wire all hot-path providers (each cheap: SQL/mirror reads or
         # pure functions). Token accounting runs through PromptTelemetry.
         self._prompt_assembler.set_inner_life_providers(
@@ -1823,6 +1871,74 @@ class SessionController:
         except Exception:
             log.debug("self-image pulse submit failed", exc_info=True)
 
+    def _maybe_schedule_consolidator(self) -> None:
+        """Phase 4b: enqueue the memory-consolidator pass."""
+        worker = getattr(self, "_consolidator", None)
+        if worker is None:
+            return
+        try:
+            if not worker.should_run(self._user_id):
+                return
+        except Exception:
+            log.debug("consolidator should_run failed", exc_info=True)
+            return
+
+        user_id = self._user_id
+
+        def _job(stop_flag: Any) -> None:
+            try:
+                worker.maybe_run(user_id, stop_flag=stop_flag)
+            except Exception:
+                log.debug("consolidator job raised", exc_info=True)
+
+        try:
+            from app.core.speaking_window_scheduler import ScheduledJob
+
+            self._scheduler.submit(ScheduledJob(
+                name="memory_consolidator",
+                priority=85,  # very low — daily-ish maintenance
+                estimated_seconds=6.0,
+                callable=_job,
+                dedupe_key="memory_consolidator",
+            ))
+        except Exception:
+            log.debug("consolidator submit failed", exc_info=True)
+
+    def _maybe_schedule_relationship_pulse(self) -> None:
+        """Phase 4b: enqueue the weekly relationship-pulse summary."""
+        worker = getattr(self, "_relationship_pulse", None)
+        if worker is None:
+            return
+        try:
+            if not worker.should_run(self._user_id):
+                return
+        except Exception:
+            log.debug("relationship pulse should_run failed", exc_info=True)
+            return
+
+        user_id = self._user_id
+
+        def _job(stop_flag: Any) -> None:
+            if stop_flag is not None and stop_flag.is_set():
+                return
+            try:
+                worker.maybe_run(user_id)
+            except Exception:
+                log.debug("relationship pulse job raised", exc_info=True)
+
+        try:
+            from app.core.speaking_window_scheduler import ScheduledJob
+
+            self._scheduler.submit(ScheduledJob(
+                name="relationship_pulse",
+                priority=82,
+                estimated_seconds=5.5,
+                callable=_job,
+                dedupe_key="relationship_pulse",
+            ))
+        except Exception:
+            log.debug("relationship pulse submit failed", exc_info=True)
+
     def _lookup_prefetched_rag_block(self, user_text: str) -> str | None:
         """Phase 1b: PromptAssembler hook into the speculative pre-fetcher.
 
@@ -2063,6 +2179,16 @@ class SessionController:
                 self._maybe_schedule_agenda_groom_job()
             except Exception:
                 log.debug("agenda groom schedule failed", exc_info=True)
+
+        # Phase 4b: opportunistic maintenance jobs (consolidator + pulse).
+        try:
+            self._maybe_schedule_consolidator()
+        except Exception:
+            log.debug("consolidator schedule failed", exc_info=True)
+        try:
+            self._maybe_schedule_relationship_pulse()
+        except Exception:
+            log.debug("relationship pulse schedule failed", exc_info=True)
 
     # ── Voice capture ────────────────────────────────────────────────
 

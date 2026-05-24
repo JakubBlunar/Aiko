@@ -231,6 +231,56 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"get_agenda_stats failed: {exc}"
 
     @mcp.tool()
+    def get_consolidator_stats() -> str:
+        """Return MemoryConsolidator counters (Phase 4b)."""
+        try:
+            worker = getattr(session, "_consolidator", None)
+            if worker is None:
+                return json.dumps({"enabled": False}, indent=2)
+            return json.dumps(
+                {"enabled": True, **worker.stats()}, indent=2, default=str,
+            )
+        except Exception as exc:
+            return f"get_consolidator_stats failed: {exc}"
+
+    @mcp.tool()
+    def trigger_consolidator() -> str:
+        """Manually run the consolidator now (bypasses throttling)."""
+        try:
+            worker = getattr(session, "_consolidator", None)
+            if worker is None:
+                return json.dumps({"enabled": False}, indent=2)
+            result = worker.force_run(session._user_id)
+            if result is None:
+                return json.dumps({"ran": False, "reason": "no memories"}, indent=2)
+            return json.dumps(
+                {
+                    "ran": True,
+                    "clusters_found": result.clusters_found,
+                    "merges_applied": result.merges_applied,
+                    "deletions": result.deletions,
+                    "elapsed_seconds": round(result.elapsed_seconds, 2),
+                },
+                indent=2,
+                default=str,
+            )
+        except Exception as exc:
+            return f"trigger_consolidator failed: {exc}"
+
+    @mcp.tool()
+    def get_relationship_pulse_stats() -> str:
+        """Return RelationshipPulseWorker counters (Phase 4b)."""
+        try:
+            worker = getattr(session, "_relationship_pulse", None)
+            if worker is None:
+                return json.dumps({"enabled": False}, indent=2)
+            return json.dumps(
+                {"enabled": True, **worker.stats()}, indent=2, default=str,
+            )
+        except Exception as exc:
+            return f"get_relationship_pulse_stats failed: {exc}"
+
+    @mcp.tool()
     def get_promise_stats() -> str:
         """Return PromiseExtractor counters (Phase 3c)."""
         try:

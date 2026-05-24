@@ -32,7 +32,16 @@
     "self_image_pulse_enabled": true,
     "prepared_nudge_ttl_seconds": 600,
     "filler_enabled": true,
-    "filler_first_token_ms": 800
+    "filler_first_token_ms": 800,
+    "consolidator_enabled": true,
+    "consolidator_min_hours_between": 18,
+    "consolidator_chunk_size": 40,
+    "consolidator_similarity_threshold": 0.84,
+    "consolidator_min_cluster_size": 2,
+    "consolidator_use_llm_merge": true,
+    "relationship_pulse_enabled": true,
+    "relationship_pulse_min_hours": 168,
+    "relationship_pulse_min_turns": 30
   },
   "audio": {
     "sample_rate": 16000,
