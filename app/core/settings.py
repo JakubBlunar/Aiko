@@ -87,6 +87,12 @@ class AssistantSettings:
     startup_greeting_enabled: bool = False
 
 
+# DEPRECATED v0-only -- the legacy LangChain agent / tool-dispatch surface no
+# longer exists in lean v1. SessionToolPolicySettings / SessionToolPoliciesSettings
+# / AutonomyTurnPlanningSettings / AutonomySettings / ActionSettings are still
+# loaded so existing user.json files keep parsing, but nothing in the v1
+# runtime reads them. Phase F (tools) will introduce a new, narrower
+# tool-policy block. Do not extend these.
 @dataclass(slots=True)
 class SessionToolPolicySettings:
     native_tool_calls_enabled: bool = False
@@ -113,6 +119,7 @@ class SessionToolPoliciesSettings:
     )
 
 
+# DEPRECATED v0-only.
 @dataclass(slots=True)
 class AutonomyTurnPlanningSettings:
     proactive_conversation: bool = True
@@ -121,6 +128,9 @@ class AutonomyTurnPlanningSettings:
     max_strategy_chars: int = 180
 
 
+# DEPRECATED v0-only -- AutonomySettings drove the legacy goal-switch + reading
+# session machinery. Lean v1 has a single chat session shape; these knobs are
+# parsed for back-compat only.
 @dataclass(slots=True)
 class AutonomySettings:
     enabled: bool
@@ -140,6 +150,8 @@ class AutonomySettings:
     reading_trusted_window_titles: list[str] | None = None
 
 
+# DEPRECATED v0-only -- ActionSettings was the action-dispatcher / GUI agent
+# config. Removed from the v1 runtime; kept here so legacy user.json parses.
 @dataclass(slots=True)
 class ActionSettings:
     enabled: bool
@@ -223,36 +235,47 @@ class LoggingSettings:
 
 @dataclass(slots=True)
 class AgentSettings:
-    """Agent context, compression, personality evolution, and proactive conversation."""
+    """Agent context, compression, and proactive conversation.
+
+    Lean-v1 fields actively used today:
+      - ``proactive_silence_seconds``, ``proactive_cooldown_seconds`` -- driven
+        by :class:`app.core.proactive_director.ProactiveDirector`.
+      - ``num_history_runs`` -- recent-window size hint.
+
+    All other fields below are DEPRECATED v0-only (LangChain / triage judge /
+    personality notebook / browser-snapshot compression / agent archive). They
+    parse for back-compat with old ``user.json`` files but no v1 code reads
+    them. Phase F will introduce a focused tool-settings block.
+    """
     num_history_runs: int = 10
     compress_tool_results: bool = True
     compress_tool_results_limit: int | None = None
     compress_token_limit: int | None = None
-    personality_prune_threshold: float = 0.15
-    personality_decay_rate: float = 0.1
-    personality_max_notes: int = 40
-    personality_token_budget: int = 300
+    personality_prune_threshold: float = 0.15  # v0-only
+    personality_decay_rate: float = 0.1  # v0-only
+    personality_max_notes: int = 40  # v0-only
+    personality_token_budget: int = 300  # v0-only
     proactive_silence_seconds: float = 45.0
     proactive_cooldown_seconds: float = 120.0
-    proactive_planner_enabled: bool = True
-    proactive_use_main_for_utterance: bool = False
-    proactive_context_messages: int = 10
-    proactive_background_interval_seconds: float = 90.0
-    proactive_background_stale_seconds: float = 120.0
-    proactive_brain_advise_main: bool = True
-    proactive_brain_drive_speech: bool = True
-    proactive_brain_influence_autonomy: bool = False
-    proactive_brain_request_actions_via_main: bool = False
-    proactive_speech_requires_live: bool = True
-    archive_enabled: bool = True
-    archive_days_threshold: int = 30
-    browser_snapshot_compress: bool = True
-    browser_snapshot_max_chars: int | None = None
-    browser_snapshot_max_text_run: int | None = None
-    tool_dispatch_mode: str = "controller"  # "controller" | "plain_only" | "legacy_react"
-    tool_iterations_max: int = 3
-    triage_judge_enabled: bool = True
-    triage_judge_timeout_seconds: float = 0.5
+    proactive_planner_enabled: bool = True  # v0-only
+    proactive_use_main_for_utterance: bool = False  # v0-only
+    proactive_context_messages: int = 10  # v0-only
+    proactive_background_interval_seconds: float = 90.0  # v0-only
+    proactive_background_stale_seconds: float = 120.0  # v0-only
+    proactive_brain_advise_main: bool = True  # v0-only
+    proactive_brain_drive_speech: bool = True  # v0-only
+    proactive_brain_influence_autonomy: bool = False  # v0-only
+    proactive_brain_request_actions_via_main: bool = False  # v0-only
+    proactive_speech_requires_live: bool = True  # v0-only
+    archive_enabled: bool = True  # v0-only
+    archive_days_threshold: int = 30  # v0-only
+    browser_snapshot_compress: bool = True  # v0-only
+    browser_snapshot_max_chars: int | None = None  # v0-only
+    browser_snapshot_max_text_run: int | None = None  # v0-only
+    tool_dispatch_mode: str = "controller"  # v0-only
+    tool_iterations_max: int = 3  # v0-only
+    triage_judge_enabled: bool = True  # v0-only
+    triage_judge_timeout_seconds: float = 0.5  # v0-only
 
 
 @dataclass(slots=True)
@@ -285,6 +308,21 @@ class MemorySettings:
     dedupe_threshold: float = 0.92
     extractor_enabled: bool = True
     self_tagged_salience: float = 0.7
+
+
+@dataclass(slots=True)
+class ToolsSettings:
+    """Lean v1 tool-calling configuration.
+
+    Tools are dispatched in :class:`app.core.turn_runner.TurnRunner` via a
+    pre-stream ``chat_with_tools`` pass. Each switch below toggles a single
+    tool; setting ``enabled=False`` disables the whole tool registry.
+    """
+
+    enabled: bool = True
+    get_time: bool = True
+    recall: bool = True
+    web_search: bool = True
 
 
 @dataclass(slots=True)
@@ -339,6 +377,7 @@ class AppSettings:
     memory: MemorySettings = field(default_factory=MemorySettings)
     persona: PersonaSettings = field(default_factory=PersonaSettings)
     chat_llm: ChatLlmSettings = field(default_factory=ChatLlmSettings)
+    tools: ToolsSettings = field(default_factory=ToolsSettings)
 
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "default.json"
@@ -519,6 +558,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
     memory_raw = raw.get("memory", {}) or {}
     persona_raw = raw.get("persona", {}) or {}
     chat_llm_raw = raw.get("chat_llm", {}) or {}
+    tools_raw = raw.get("tools", {}) or {}
 
     turn_planning = autonomy.get("turn_planning", {}) if isinstance(autonomy.get("turn_planning", {}), dict) else {}
     stt_diagnostics = stt.get("diagnostics", {}) if isinstance(stt.get("diagnostics", {}), dict) else {}
@@ -803,6 +843,12 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
         ),
         persona=_parse_persona(persona_raw),
         chat_llm=_parse_chat_llm(chat_llm_raw),
+        tools=ToolsSettings(
+            enabled=bool(tools_raw.get("enabled", True)),
+            get_time=bool(tools_raw.get("get_time", True)),
+            recall=bool(tools_raw.get("recall", True)),
+            web_search=bool(tools_raw.get("web_search", True)),
+        ),
     )
 
 

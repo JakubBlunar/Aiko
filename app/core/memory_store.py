@@ -7,6 +7,13 @@ so cosine search runs in pure NumPy without a per-query SQL roundtrip.
 Capacity is bounded (``max_memories``, default 500); ``prune()`` evicts the
 oldest least-used / lowest-salience rows once the cap is hit. Cross-session
 by design: there's exactly one memory store for the assistant.
+
+Phase C also mirrors every write into a :class:`RagStore` (LanceDB-backed)
+when one is attached, so that the new RagRetriever has a single read path.
+The SQLite store remains the source of truth for now; if the RagStore
+disappears (e.g., embedding-dim swap rebuilds the table), the next search
+will simply hit the SQLite path until the RagStore catches up via a fresh
+migration.
 """
 from __future__ import annotations
 
@@ -17,17 +24,20 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import TYPE_CHECKING, Iterable
 
 import numpy as np
 
 from app.llm.embedder import cosine_similarity
 
+if TYPE_CHECKING:
+    from app.core.rag_store import RagStore
+
 
 log = logging.getLogger("app.memory_store")
 
 
-VALID_KINDS = {"fact", "preference", "event", "relationship", "self_tagged"}
+VALID_KINDS = {"fact", "preference", "event", "relationship", "self_tagged", "self"}
 
 
 @dataclass(slots=True)
@@ -98,7 +108,45 @@ class MemoryStore:
         self._lock = threading.Lock()
         # In-memory mirror so cosine search is a single NumPy pass.
         self._mirror: dict[int, Memory] = {}
+        self._rag: "RagStore | None" = None
         self._reload_mirror()
+
+    def attach_rag_store(self, rag_store: "RagStore | None") -> None:
+        """Hook a :class:`RagStore` so subsequent writes mirror into LanceDB.
+
+        Idempotent. Pass ``None`` to detach.
+        """
+        self._rag = rag_store
+
+    def migrate_to_rag(self, rag_store: "RagStore") -> int:
+        """Copy every existing memory into the RagStore (idempotent).
+
+        Returns how many rows were written. Safe to call multiple times --
+        :meth:`RagStore.add_memory` upserts on ``id`` so re-runs are no-ops.
+        """
+        if rag_store is None:
+            return 0
+        with self._lock:
+            mems = list(self._mirror.values())
+        written = 0
+        for mem in mems:
+            try:
+                rag_store.add_memory(
+                    record_id=str(mem.id),
+                    content=mem.content,
+                    kind=mem.kind,
+                    embedding=mem.embedding,
+                    salience=mem.salience,
+                    source_session=mem.source_session,
+                    source_message_id=mem.source_message_id,
+                    created_at=mem.created_at,
+                )
+                written += 1
+            except Exception:
+                log.debug("rag mirror failed for memory id=%s", mem.id, exc_info=True)
+        if written:
+            log.info("RAG: mirrored %d existing memories into LanceDB", written)
+        return written
 
     # ── lifecycle ─────────────────────────────────────────────────────────
 
@@ -230,6 +278,20 @@ class MemoryStore:
         )
         with self._lock:
             self._mirror[new_id] = memory
+        if self._rag is not None:
+            try:
+                self._rag.add_memory(
+                    record_id=str(new_id),
+                    content=cleaned,
+                    kind=kind,
+                    embedding=emb,
+                    salience=salience_clipped,
+                    source_session=source_session,
+                    source_message_id=source_message_id,
+                    created_at=now,
+                )
+            except Exception:
+                log.debug("rag add_memory failed", exc_info=True)
         if len(self._mirror) > self._max:
             self.prune()
         return memory
@@ -278,6 +340,11 @@ class MemoryStore:
         conn.commit()
         with self._lock:
             self._mirror.pop(int(memory_id), None)
+        if self._rag is not None:
+            try:
+                self._rag.delete_memory(str(int(memory_id)))
+            except Exception:
+                log.debug("rag delete_memory failed", exc_info=True)
         return cursor.rowcount > 0
 
     def decay(self, by: float = 0.02) -> None:
@@ -319,6 +386,12 @@ class MemoryStore:
         with self._lock:
             for mid in victims:
                 self._mirror.pop(mid, None)
+        if self._rag is not None:
+            for mid in victims:
+                try:
+                    self._rag.delete_memory(str(mid))
+                except Exception:
+                    log.debug("rag delete during prune failed", exc_info=True)
         log.info("pruned %d low-priority memories", len(victims))
         return len(victims)
 

@@ -39,6 +39,10 @@ log = logging.getLogger("app.proactive")
 SpeakCallback = Callable[[str, str], None]
 """Signature: ``(prepared_text, reaction)``."""
 
+NotifyMessageCallback = Callable[[str, str], None]
+"""Signature: ``(speaker, text)`` -- routes the proactive line into the chat
+transcript so the React UI / desktop log show what Aiko said unprompted."""
+
 BoolPredicate = Callable[[], bool]
 
 
@@ -65,6 +69,7 @@ class ProactiveDirector:
         max_tokens: int = 80,
         timeout_seconds: float = 30.0,
         context_window: int = 8192,
+        notify_message: NotifyMessageCallback | None = None,
     ) -> None:
         self._ollama = ollama
         self._db = db
@@ -77,6 +82,7 @@ class ProactiveDirector:
         self._max_tokens = int(max_tokens)
         self._timeout = float(timeout_seconds)
         self._context_window = int(context_window)
+        self._notify_message = notify_message
 
         self._lock = threading.Lock()
         self._last_run_monotonic = 0.0
@@ -179,6 +185,13 @@ class ProactiveDirector:
             content=cleaned,
             token_count=usage.completion_tokens,
         )
+        # Surface the line in the chat transcript using a distinguishable
+        # speaker so the React UI can render it differently if it wants.
+        if self._notify_message is not None:
+            try:
+                self._notify_message("Assistant (proactive)", cleaned)
+            except Exception:
+                log.debug("notify_message raised", exc_info=True)
         prepared = prepare_tts_text(cleaned)
         if prepared:
             self._speak(prepared, mood or "calm")

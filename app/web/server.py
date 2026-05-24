@@ -120,18 +120,24 @@ def create_web_app(session: "SessionController") -> FastAPI:
         # Map the legacy "You / Assistant / You (MCP)" speaker convention to
         # an explicit role so the React store doesn't have to guess.
         lowered = (speaker or "").strip().lower()
+        kind: str | None = None
         if lowered.startswith("you"):
             role = "user"
-        elif lowered == "assistant":
+        elif lowered.startswith("assistant"):
             role = "assistant"
+            if "proactive" in lowered:
+                kind = "proactive"
         else:
             role = "system"
-        hub.broadcast({
+        payload: dict[str, Any] = {
             "type": "message",
             "role": role,
             "speaker": speaker,
             "content": text,
-        })
+        }
+        if kind is not None:
+            payload["kind"] = kind
+        hub.broadcast(payload)
 
     def _on_tts_state(event: str, **payload: Any) -> None:
         hub.broadcast({"type": "tts_state", "event": event, **payload})
@@ -173,6 +179,20 @@ def create_web_app(session: "SessionController") -> FastAPI:
     except Exception:
         log.debug("memory listener subscription failed", exc_info=True)
 
+    def _on_tool_event(event: str, payload: dict[str, Any]) -> None:
+        # Tool calls and results stream out as a small event so the UI can
+        # show "Aiko is checking the time / searching the web / recalling
+        # your notebook..." indicators while the model decides.
+        try:
+            hub.broadcast({"type": "tool_event", "event": event, "payload": dict(payload)})
+        except Exception:
+            log.debug("tool event broadcast failed", exc_info=True)
+
+    try:
+        session.add_tool_event_listener(_on_tool_event)
+    except Exception:
+        log.debug("tool event listener subscription failed", exc_info=True)
+
     # ── Live (continuous voice) session ─────────────────────────────
     # One global instance per backend; SessionController already serializes
     # mic/STT access so a single loop is the right shape.
@@ -183,13 +203,19 @@ def create_web_app(session: "SessionController") -> FastAPI:
             hub.broadcast({"type": "voice_state", "state": payload.get("state", "off")})
         elif name == "audio_level":
             hub.broadcast({"type": "audio_level", "level": payload.get("level", 0.0)})
+        elif name == "stt_partial":
+            text = str(payload.get("text") or "")
+            if text:
+                hub.broadcast({"type": "stt_partial", "text": text})
         elif name == "stt_final":
             text = str(payload.get("text") or "").strip()
             if not text:
                 return
-            # Surface the user's spoken phrase as a regular user message
-            # so the React UI shows it in the chat list (the existing
-            # message listener handles the broadcast).
+            # Two parallel surfaces: the chat list (via _notify_message) and
+            # the live "you said: ..." subtitle pill (via stt_final). The
+            # store's lastTranscript drives the pill; the chat bubble comes
+            # from the message event.
+            hub.broadcast({"type": "stt_final", "text": text})
             session._notify_message("You (voice)", text)
         elif name == "token":
             chunk = payload.get("chunk", "")
@@ -285,6 +311,17 @@ def create_web_app(session: "SessionController") -> FastAPI:
                 "vad_silence_seconds": session.vad_silence_seconds,
                 "barge_in_enabled": session.barge_in_enabled(),
             },
+            "proactive": {
+                "silence_seconds": float(getattr(s.agent, "proactive_silence_seconds", 45.0)),
+                "cooldown_seconds": float(getattr(s.agent, "proactive_cooldown_seconds", 120.0)),
+            },
+            "tools": {
+                "enabled": bool(getattr(s.tools, "enabled", True)),
+                "get_time": bool(getattr(s.tools, "get_time", True)),
+                "recall": bool(getattr(s.tools, "recall", True)),
+                "web_search": bool(getattr(s.tools, "web_search", True)),
+                "available": list(session.available_tool_names()),
+            },
             "voice_active": bool(live_session.is_active),
             "session_key": session.session_key,
         })
@@ -314,6 +351,33 @@ def create_web_app(session: "SessionController") -> FastAPI:
             session.set_vad_silence_seconds(float(audio["vad_silence_seconds"]))
         if "barge_in_enabled" in audio:
             session.set_barge_in_enabled(bool(audio["barge_in_enabled"]))
+        proactive = payload.get("proactive") or {}
+        if "silence_seconds" in proactive:
+            try:
+                value = max(10.0, float(proactive["silence_seconds"]))
+            except (TypeError, ValueError):
+                value = 45.0
+            session._settings.agent.proactive_silence_seconds = value
+        if "cooldown_seconds" in proactive:
+            try:
+                value = max(30.0, float(proactive["cooldown_seconds"]))
+            except (TypeError, ValueError):
+                value = 120.0
+            session._settings.agent.proactive_cooldown_seconds = value
+            try:
+                session._proactive.update_runtime(cooldown_seconds=value)
+            except Exception:
+                log.debug("proactive update_runtime failed", exc_info=True)
+        tools = payload.get("tools") or {}
+        if tools:
+            tcfg = session._settings.tools
+            for key in ("enabled", "get_time", "recall", "web_search"):
+                if key in tools:
+                    setattr(tcfg, key, bool(tools[key]))
+            try:
+                session.rebuild_tool_registry()
+            except Exception:
+                log.debug("rebuild_tool_registry failed", exc_info=True)
         return get_settings()
 
     @app.get("/api/models")
@@ -428,6 +492,59 @@ def create_web_app(session: "SessionController") -> FastAPI:
         out = manifest.to_dict()
         hub.broadcast({"type": "persona_changed", "persona": out})
         return JSONResponse({"persona": out})
+
+    # ── REST: documents (RAG corpus) ────────────────────────────────
+
+    _MAX_DOCUMENT_UPLOAD_BYTES = 16 * 1024 * 1024  # 16 MB
+
+    @app.get("/api/documents")
+    def list_documents() -> JSONResponse:
+        ingestor = session.document_ingestor
+        if ingestor is None:
+            raise HTTPException(503, "RAG document store unavailable")
+        return JSONResponse({"documents": ingestor.list_documents()})
+
+    @app.post("/api/documents/upload")
+    async def upload_document(file: UploadFile = File(...)) -> JSONResponse:
+        ingestor = session.document_ingestor
+        if ingestor is None:
+            raise HTTPException(503, "RAG document store unavailable")
+        if not file.filename:
+            raise HTTPException(400, "missing filename")
+        body = await file.read()
+        if len(body) == 0:
+            raise HTTPException(400, "uploaded file is empty")
+        if len(body) > _MAX_DOCUMENT_UPLOAD_BYTES:
+            raise HTTPException(
+                413,
+                f"upload too large (limit {_MAX_DOCUMENT_UPLOAD_BYTES // (1024 * 1024)} MB)",
+            )
+        try:
+            result = ingestor.ingest(filename=file.filename, data=body)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except Exception as exc:
+            log.exception("document ingestion failed")
+            raise HTTPException(500, f"ingestion failed: {exc}") from exc
+        return JSONResponse({
+            "document": {
+                "document_id": result.document_id,
+                "title": result.title,
+                "chunk_count": result.chunk_count,
+                "bytes_indexed": result.bytes_indexed,
+            },
+            "documents": ingestor.list_documents(),
+        })
+
+    @app.delete("/api/documents/{document_id}")
+    def delete_document(document_id: str) -> JSONResponse:
+        ingestor = session.document_ingestor
+        if ingestor is None:
+            raise HTTPException(503, "RAG document store unavailable")
+        ok = ingestor.delete_document(document_id)
+        if not ok:
+            raise HTTPException(404, "document not found")
+        return JSONResponse({"deleted": document_id, "documents": ingestor.list_documents()})
 
     # ── Persona / static assets ─────────────────────────────────────
 

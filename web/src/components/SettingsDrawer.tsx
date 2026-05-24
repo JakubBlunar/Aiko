@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { api, type AudioDevices } from "../api";
-import type { AssistantSettings, Memory } from "../types";
+import type { AssistantSettings, Memory, RagDocument } from "../types";
 import { useAssistantStore } from "../store";
 
 const REACTIONS_FOR_MAPPING = [
@@ -40,6 +40,12 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
   const personaFileRef = useRef<HTMLInputElement | null>(null);
   const [personaBusy, setPersonaBusy] = useState(false);
   const [personaError, setPersonaError] = useState<string | null>(null);
+
+  const [documents, setDocuments] = useState<RagDocument[]>([]);
+  const [documentsBusy, setDocumentsBusy] = useState(false);
+  const [documentsError, setDocumentsError] = useState<string | null>(null);
+  const [documentsLoaded, setDocumentsLoaded] = useState(false);
+  const documentFileRef = useRef<HTMLInputElement | null>(null);
 
   const refreshAll = useCallback(async () => {
     setBusy(true);
@@ -118,6 +124,55 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
       setPersonaError(String(err));
     } finally {
       setPersonaBusy(false);
+    }
+  };
+
+  const refreshDocuments = useCallback(async () => {
+    setDocumentsBusy(true);
+    setDocumentsError(null);
+    try {
+      const res = await api.listDocuments();
+      setDocuments(res.documents);
+      setDocumentsLoaded(true);
+    } catch (err) {
+      setDocumentsError(String(err));
+    } finally {
+      setDocumentsBusy(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (open && !documentsLoaded) {
+      void refreshDocuments();
+    }
+  }, [open, documentsLoaded, refreshDocuments]);
+
+  const onUploadDocument = async (file: File) => {
+    setDocumentsBusy(true);
+    setDocumentsError(null);
+    try {
+      const result = await api.uploadDocument(file);
+      setDocuments(result.documents);
+    } catch (err) {
+      setDocumentsError(String(err));
+    } finally {
+      setDocumentsBusy(false);
+      if (documentFileRef.current) {
+        documentFileRef.current.value = "";
+      }
+    }
+  };
+
+  const onDeleteDocument = async (document_id: string) => {
+    setDocumentsBusy(true);
+    setDocumentsError(null);
+    try {
+      const result = await api.deleteDocument(document_id);
+      setDocuments(result.documents);
+    } catch (err) {
+      setDocumentsError(String(err));
+    } finally {
+      setDocumentsBusy(false);
     }
   };
 
@@ -297,6 +352,111 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                 </label>
               </Section>
 
+              <Section title="Proactive nudges (voice mode)">
+                <p className="text-[11px] text-ink-100/50">
+                  When voice mode is on and you've been quiet, Aiko can pick
+                  up a thread on her own. Tune how patient she is here.
+                </p>
+                <Row
+                  label="Silence threshold (s)"
+                  value={
+                    <input
+                      type="number"
+                      min={10}
+                      step={5}
+                      value={settings.proactive?.silence_seconds ?? 45}
+                      onChange={(e) =>
+                        void apply({
+                          proactive: {
+                            silence_seconds: Number(e.target.value),
+                          },
+                        })
+                      }
+                      className="w-24 rounded border border-white/10 bg-black/40 px-2 py-1 text-right text-xs text-ink-100"
+                    />
+                  }
+                />
+                <Row
+                  label="Cooldown (s)"
+                  value={
+                    <input
+                      type="number"
+                      min={30}
+                      step={10}
+                      value={settings.proactive?.cooldown_seconds ?? 120}
+                      onChange={(e) =>
+                        void apply({
+                          proactive: {
+                            cooldown_seconds: Number(e.target.value),
+                          },
+                        })
+                      }
+                      className="w-24 rounded border border-white/10 bg-black/40 px-2 py-1 text-right text-xs text-ink-100"
+                    />
+                  }
+                />
+              </Section>
+
+              <Section title="Tools">
+                <p className="text-[11px] text-ink-100/50">
+                  Tools let Aiko reach for fresh facts before answering: the
+                  current time, your notebook, or the public web. Disable any
+                  she shouldn't use.
+                </p>
+                <label className="mt-1 flex items-center gap-2 text-xs text-ink-100/70">
+                  <input
+                    type="checkbox"
+                    checked={settings.tools?.enabled ?? true}
+                    onChange={(e) =>
+                      void apply({ tools: { enabled: e.target.checked } })
+                    }
+                  />
+                  Tools enabled
+                </label>
+                <label className="ml-4 flex items-center gap-2 text-xs text-ink-100/70">
+                  <input
+                    type="checkbox"
+                    checked={settings.tools?.get_time ?? true}
+                    disabled={!(settings.tools?.enabled ?? true)}
+                    onChange={(e) =>
+                      void apply({ tools: { get_time: e.target.checked } })
+                    }
+                  />
+                  get_time — current date/time
+                </label>
+                <label className="ml-4 flex items-center gap-2 text-xs text-ink-100/70">
+                  <input
+                    type="checkbox"
+                    checked={settings.tools?.recall ?? true}
+                    disabled={!(settings.tools?.enabled ?? true)}
+                    onChange={(e) =>
+                      void apply({ tools: { recall: e.target.checked } })
+                    }
+                  />
+                  recall — search Aiko's notebook
+                </label>
+                <label className="ml-4 flex items-center gap-2 text-xs text-ink-100/70">
+                  <input
+                    type="checkbox"
+                    checked={settings.tools?.web_search ?? true}
+                    disabled={!(settings.tools?.enabled ?? true)}
+                    onChange={(e) =>
+                      void apply({ tools: { web_search: e.target.checked } })
+                    }
+                  />
+                  web_search — DuckDuckGo
+                </label>
+                {settings.tools?.available && settings.tools.available.length > 0 ? (
+                  <div className="rounded-md bg-white/[0.02] px-3 py-2 text-[11px] text-ink-100/60">
+                    Active: {settings.tools.available.join(", ")}
+                  </div>
+                ) : (
+                  <div className="rounded-md bg-white/[0.02] px-3 py-2 text-[11px] text-ink-100/50 italic">
+                    No tools currently available.
+                  </div>
+                )}
+              </Section>
+
               <Section title="Persona avatar (Live2D)">
                 {personaError ? (
                   <div className="rounded-md border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
@@ -428,6 +588,63 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                 )}
               </Section>
 
+              <Section title="Documents (RAG)">
+                <p className="text-[11px] text-ink-100/50">
+                  Drop in notes, docs, or PDFs and Aiko will be able to pull
+                  relevant chunks into the conversation. Indexed into the same
+                  retrieval substrate as chat history and memories.
+                </p>
+                {documentsError ? (
+                  <div className="rounded-md border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+                    {documentsError}
+                  </div>
+                ) : null}
+                <div className="flex items-center gap-2">
+                  <input
+                    ref={documentFileRef}
+                    type="file"
+                    accept=".md,.markdown,.txt,.pdf"
+                    disabled={documentsBusy}
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) void onUploadDocument(f);
+                    }}
+                    className="block w-full text-xs text-ink-100/70 file:mr-3 file:rounded file:border file:border-white/10 file:bg-white/5 file:px-2 file:py-1 file:text-xs file:text-ink-100"
+                  />
+                </div>
+                {documents.length === 0 ? (
+                  <p className="rounded-md border border-white/5 bg-white/[0.02] px-3 py-2 text-xs text-ink-100/50">
+                    No documents uploaded yet.
+                  </p>
+                ) : (
+                  <ul className="space-y-1.5">
+                    {documents.map((doc) => (
+                      <li
+                        key={doc.document_id}
+                        className="flex items-start justify-between gap-2 rounded-md border border-white/5 bg-white/[0.03] px-3 py-2 text-xs text-ink-100/80"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate font-medium">{doc.title}</p>
+                          <div className="mt-1 flex items-center gap-2 text-[10px] uppercase tracking-wide text-ink-100/40">
+                            <span>{doc.chunk_count} chunks</span>
+                            <span className="font-mono">{doc.document_id}</span>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={documentsBusy}
+                          onClick={() => void onDeleteDocument(doc.document_id)}
+                          className="shrink-0 rounded border border-white/10 px-2 py-0.5 text-[11px] text-ink-100/60 hover:border-rose-400/60 hover:text-rose-200"
+                          aria-label={`Remove document ${doc.title}`}
+                        >
+                          remove
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </Section>
+
               <Section title="What Aiko remembers">
                 <button
                   type="button"
@@ -508,7 +725,13 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-function Row({ label, value }: { label: string; value: string }) {
+function Row({
+  label,
+  value,
+}: {
+  label: string;
+  value: ReactNode;
+}) {
   return (
     <div className="flex items-center justify-between rounded-md bg-white/[0.02] px-3 py-1.5 text-[11px] text-ink-100/60">
       <span>{label}</span>

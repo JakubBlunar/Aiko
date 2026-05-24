@@ -22,3 +22,5 @@ realtimesst.log
 live-2d-models
 data/personas/active/
 data/personas/_staging_*/
+data/lancedb/
+data/documents/

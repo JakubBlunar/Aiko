@@ -4,6 +4,7 @@ import type {
   Memory,
   MetricsSnapshot,
   Persona,
+  ToolEvent,
   VoiceMode,
 } from "./types";
 
@@ -36,6 +37,7 @@ interface AssistantState {
   appendAssistantBubble: () => string; // returns id
   appendAssistantToken: (chunk: string) => void;
   finishAssistantBubble: () => void;
+  appendProactiveMessage: (content: string) => void;
   pushSystemMessage: (content: string) => void;
   clearMessages: () => void;
 
@@ -70,6 +72,28 @@ interface AssistantState {
   audioAmplitude: number;
   setPersona: (persona: Persona | null) => void;
   setAudioAmplitude: (level: number) => void;
+
+  // Toasts (transient corner notifications, e.g. "Aiko remembered something")
+  toasts: Toast[];
+  pushToast: (kind: ToastKind, text: string, ttlMs?: number) => void;
+  dismissToast: (id: string) => void;
+
+  // Tool activity strip (show "Aiko is checking the time / web / notebook")
+  toolActivity: ToolEvent[];
+  pushToolEvent: (event: ToolEvent) => void;
+  clearToolActivity: () => void;
+}
+
+export type ToastKind = "memory" | "info" | "warning";
+
+export interface Toast {
+  id: string;
+  kind: ToastKind;
+  text: string;
+  /** Wall-clock millis when the toast was created -- used for auto-dismiss. */
+  createdAt: number;
+  /** How long until auto-dismiss; 0 means sticky. */
+  ttlMs: number;
 }
 
 const REACTION_TAG_RE = /\[\[reaction:(\w+)\]\]/i;
@@ -209,6 +233,19 @@ export const useAssistantStore = create<AssistantState>((set) => ({
         },
       ],
     })),
+  appendProactiveMessage: (content) =>
+    set((state) => ({
+      messages: [
+        ...state.messages,
+        {
+          id: nextId(),
+          role: "assistant",
+          content: stripMetaMarkers(content),
+          createdAt: new Date().toISOString(),
+          kind: "proactive",
+        },
+      ],
+    })),
   clearMessages: () => {
     bubbleCounter = 0;
     set({ messages: [] });
@@ -257,6 +294,33 @@ export const useAssistantStore = create<AssistantState>((set) => ({
   setPersona: (persona) => set({ persona }),
   setAudioAmplitude: (level) =>
     set({ audioAmplitude: Math.max(0, Math.min(1, level)) }),
+
+  toasts: [],
+  pushToast: (kind, text, ttlMs = 4500) =>
+    set((state) => ({
+      toasts: [
+        ...state.toasts,
+        {
+          id: nextId(),
+          kind,
+          text,
+          createdAt: Date.now(),
+          ttlMs,
+        },
+      ],
+    })),
+  dismissToast: (id) =>
+    set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),
+
+  toolActivity: [],
+  pushToolEvent: (event) =>
+    set((state) => {
+      // Keep the strip short -- the latest 8 events are enough context.
+      const next = [...state.toolActivity, event];
+      const trimmed = next.length > 8 ? next.slice(next.length - 8) : next;
+      return { toolActivity: trimmed };
+    }),
+  clearToolActivity: () => set({ toolActivity: [] }),
 }));
 
 // Convenience getter without subscribing (used inside the WS hook).

@@ -6,7 +6,9 @@ import type {
   MemoriesResponse,
   Persona,
   PersonaResponse,
+  RagDocument,
   SessionRow,
+  UploadDocumentResponse,
 } from "./types";
 
 interface SessionListResponse {
@@ -106,4 +108,19 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patch),
     }),
+  listDocuments: () =>
+    jsonFetch<{ documents: RagDocument[] }>("/api/documents"),
+  uploadDocument: async (file: File): Promise<UploadDocumentResponse> => {
+    const form = new FormData();
+    form.append("file", file);
+    return jsonFetch<UploadDocumentResponse>("/api/documents/upload", {
+      method: "POST",
+      body: form,
+    });
+  },
+  deleteDocument: (document_id: string) =>
+    jsonFetch<{ deleted: string; documents: RagDocument[] }>(
+      `/api/documents/${encodeURIComponent(document_id)}`,
+      { method: "DELETE" },
+    ),
 };

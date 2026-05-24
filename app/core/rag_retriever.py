@@ -1,0 +1,305 @@
+"""Multi-source retrieval over the LanceDB :class:`RagStore`.
+
+Supersedes :class:`app.core.memory_retriever.MemoryRetriever`. Searches three
+tables in parallel and merges the hits with source-aware scoring:
+
+  - ``memories`` (durable cross-session facts; high prior weight)
+  - ``messages`` (chat history embeddings; recency-aware)
+  - ``documents`` (uploaded notes / PDFs)
+
+The output is a structured ``list[RagHit]`` *plus* a ready-to-paste prompt
+block. The prompt block intentionally splits "What you know about Jacob"
+(memories) from "Snippets you remembered" (messages) and "From your notes"
+(documents), so the LLM can use them with appropriate confidence.
+
+Design notes:
+  - Memory hits get a small salience boost inside :class:`RagStore`; we
+    additionally bias message hits down so a strong memory always wins ties.
+  - We dedupe by content-text after merging.
+  - Recency is folded into message scores via an exponential decay on
+    ``created_at``; older messages are penalized so RAG doesn't unearth a
+    five-month-old line on every turn.
+"""
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Any, Iterable, Sequence
+
+from app.core.rag_store import RagHit
+
+if TYPE_CHECKING:
+    from app.core.rag_store import RagStore
+    from app.llm.embedder import Embedder
+
+
+log = logging.getLogger("app.rag_retriever")
+
+
+# Tuning knobs. Kept small so we can iterate without breaking callers.
+_MEMORY_PRIOR = 0.05
+_MESSAGE_PRIOR = -0.04
+_DOCUMENT_PRIOR = 0.0
+# Half-life in days for message recency decay; messages older than ~3 weeks
+# get heavily penalized in the merged score.
+_MESSAGE_HALFLIFE_DAYS = 21.0
+
+
+class RagRetriever:
+    def __init__(
+        self,
+        store: "RagStore",
+        embedder: "Embedder",
+        *,
+        top_k: int = 6,
+        score_threshold: float = 0.4,
+        per_source_top_k: int = 6,
+        include_messages: bool = True,
+        include_documents: bool = True,
+    ) -> None:
+        self._store = store
+        self._embedder = embedder
+        self._top_k = max(0, int(top_k))
+        self._score_threshold = float(score_threshold)
+        self._per_source_top_k = max(1, int(per_source_top_k))
+        self._include_messages = bool(include_messages)
+        self._include_documents = bool(include_documents)
+
+    @property
+    def top_k(self) -> int:
+        return self._top_k
+
+    def update_settings(
+        self,
+        *,
+        top_k: int | None = None,
+        score_threshold: float | None = None,
+        include_messages: bool | None = None,
+        include_documents: bool | None = None,
+    ) -> None:
+        if top_k is not None:
+            self._top_k = max(0, int(top_k))
+        if score_threshold is not None:
+            self._score_threshold = max(0.0, min(1.0, float(score_threshold)))
+        if include_messages is not None:
+            self._include_messages = bool(include_messages)
+        if include_documents is not None:
+            self._include_documents = bool(include_documents)
+
+    # ── retrieval ───────────────────────────────────────────────────────
+
+    def retrieve(
+        self,
+        query_text: str,
+        *,
+        recent_turns: Iterable[str] | None = None,
+        exclude_session_id: str | None = None,
+    ) -> list[RagHit]:
+        """Return up to ``top_k`` merged hits across all sources.
+
+        ``recent_turns`` is an optional list of recent message texts used to
+        widen the query (concatenated). This dramatically improves retrieval
+        on follow-up questions that share little surface form with the prior
+        turn (e.g. "what did I say earlier?").
+        """
+        if self._top_k <= 0:
+            return []
+        query = self._build_query(query_text, recent_turns)
+        if not query:
+            return []
+        try:
+            embedding = self._embedder.embed(query)
+        except Exception:
+            log.debug("rag retriever: embed failed", exc_info=True)
+            return []
+
+        merged: list[RagHit] = []
+        try:
+            mem_hits = self._store.search_memories(
+                embedding,
+                top_k=self._per_source_top_k,
+                min_score=self._score_threshold,
+            )
+            for h in mem_hits:
+                h.score += _MEMORY_PRIOR
+                merged.append(h)
+        except Exception:
+            log.debug("memory search failed", exc_info=True)
+
+        if self._include_messages:
+            try:
+                msg_hits = self._store.search_messages(
+                    embedding,
+                    top_k=self._per_source_top_k,
+                    min_score=self._score_threshold,
+                )
+                for h in msg_hits:
+                    if exclude_session_id and h.source == "message":
+                        # Don't surface lines from the *current* session --
+                        # they're already in the recent-window context.
+                        if getattr(h.record, "session_id", None) == exclude_session_id:
+                            continue
+                    h.score = h.score + _MESSAGE_PRIOR + _recency_bonus(
+                        getattr(h.record, "created_at", "")
+                    )
+                    merged.append(h)
+            except Exception:
+                log.debug("message search failed", exc_info=True)
+
+        if self._include_documents:
+            try:
+                doc_hits = self._store.search_documents(
+                    embedding,
+                    top_k=self._per_source_top_k,
+                    min_score=self._score_threshold,
+                )
+                for h in doc_hits:
+                    h.score += _DOCUMENT_PRIOR
+                    merged.append(h)
+            except Exception:
+                log.debug("document search failed", exc_info=True)
+
+        # Dedupe by content text (case-insensitive, whitespace-stripped).
+        seen: set[str] = set()
+        unique: list[RagHit] = []
+        for h in sorted(merged, key=lambda x: x.score, reverse=True):
+            key = (h.text or "").strip().lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            unique.append(h)
+            if len(unique) >= self._top_k:
+                break
+        return unique
+
+    # ── formatting ──────────────────────────────────────────────────────
+
+    @staticmethod
+    def format_block(hits: list[RagHit]) -> str:
+        """Render hits into a system-prompt-ready block.
+
+        Three sections, in this order, each only emitted when non-empty:
+          - "What you know about Jacob (long-term memory):" -- memories with
+            ``kind`` in {fact, preference, event, relationship}.
+          - "Things you've shared / decided about yourself:" -- memories with
+            ``kind == "self"``.
+          - "Snippets you remembered from past chats:" -- message hits.
+          - "From your notes:" -- document hits.
+        """
+        if not hits:
+            return ""
+        jacob_lines: list[str] = []
+        self_lines: list[str] = []
+        message_lines: list[str] = []
+        document_lines: list[str] = []
+        for hit in hits:
+            text = (hit.text or "").strip()
+            if not text:
+                continue
+            if hit.source == "memory":
+                kind = (getattr(hit.record, "kind", "") or "").lower()
+                if kind in ("self", "self_tagged"):
+                    self_lines.append(f"- {text}")
+                else:
+                    jacob_lines.append(f"- {text}")
+            elif hit.source == "message":
+                role = (getattr(hit.record, "role", "") or "").lower()
+                speaker = "Jacob said" if role == "user" else "You said"
+                message_lines.append(f'- {speaker}: "{_truncate(text, 200)}"')
+            elif hit.source == "document":
+                title = getattr(hit.record, "title", "")
+                head = f"({title}) " if title else ""
+                document_lines.append(f"- {head}{_truncate(text, 240)}")
+        sections: list[str] = []
+        if jacob_lines:
+            sections.append(
+                "What you know about Jacob (long-term memory):\n"
+                + "\n".join(jacob_lines)
+            )
+        if self_lines:
+            sections.append(
+                "Things you've shared / decided about yourself:\n"
+                + "\n".join(self_lines)
+            )
+        if message_lines:
+            sections.append(
+                "Snippets you remembered from past chats:\n"
+                + "\n".join(message_lines)
+            )
+        if document_lines:
+            sections.append("From your notes:\n" + "\n".join(document_lines))
+        return "\n\n".join(sections)
+
+    def block_for(
+        self,
+        query_text: str,
+        *,
+        recent_turns: Iterable[str] | None = None,
+        exclude_session_id: str | None = None,
+    ) -> str:
+        hits = self.retrieve(
+            query_text,
+            recent_turns=recent_turns,
+            exclude_session_id=exclude_session_id,
+        )
+        return self.format_block(hits)
+
+    # ── internals ───────────────────────────────────────────────────────
+
+    @staticmethod
+    def _build_query(query_text: str, recent_turns: Iterable[str] | None) -> str:
+        base = (query_text or "").strip()
+        if not recent_turns:
+            return base
+        # Prepend a small recent-context snippet (last 2-3 turns) so search
+        # can pick up referents like "that" / "earlier".
+        chunks: list[str] = []
+        for t in recent_turns:
+            t = (t or "").strip()
+            if not t:
+                continue
+            chunks.append(t)
+        if not chunks:
+            return base
+        ctx = " | ".join(chunks[-3:])
+        if not base:
+            return ctx
+        return f"{ctx} || {base}"
+
+
+# ── helpers ─────────────────────────────────────────────────────────────────
+
+
+def _truncate(s: str, limit: int) -> str:
+    s = s.strip()
+    if len(s) <= limit:
+        return s
+    return s[: max(20, limit - 1)].rstrip() + "…"
+
+
+def _recency_bonus(created_at: str) -> float:
+    """Tiny bonus for recent messages, penalty for ancient ones.
+
+    Returns a value in roughly ``[-0.06, 0.06]``. Combined with the cosine
+    score (which is in ``[score_threshold, 1.0]`` by then), this nudges the
+    final ordering without overpowering raw similarity.
+    """
+    if not created_at:
+        return 0.0
+    try:
+        ts = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+    except Exception:
+        return 0.0
+    delta_days = (datetime.now(timezone.utc) - ts).total_seconds() / 86400.0
+    if delta_days < 0:
+        delta_days = 0.0
+    # Exponential decay halved every _MESSAGE_HALFLIFE_DAYS; bonus shrinks
+    # from 0.06 to ~0 as messages age.
+    import math
+
+    weight = math.pow(0.5, delta_days / _MESSAGE_HALFLIFE_DAYS)
+    return 0.06 * (weight - 0.5)
+
+

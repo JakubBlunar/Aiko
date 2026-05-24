@@ -3,6 +3,7 @@ import { ChatView } from "./components/ChatView";
 import { PersonaPanel } from "./components/PersonaPanel";
 import { SessionSidebar } from "./components/SessionSidebar";
 import { SettingsDrawer } from "./components/SettingsDrawer";
+import { Toasts } from "./components/Toasts";
 import { useAssistantSocket } from "./hooks/useAssistantSocket";
 
 export default function App() {
@@ -20,6 +21,7 @@ export default function App() {
       </main>
       <PersonaPanel />
       <SettingsDrawer open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <Toasts />
     </div>
   );
 }

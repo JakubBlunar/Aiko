@@ -4,24 +4,25 @@ Replaces the old ``_AgentWrapper`` + ``AgentController`` + ``TurnTriage`` +
 ``ReasonActReflect`` stack. One ``run()`` call:
 
   1. Build prompt via :class:`PromptAssembler`.
-  2. Stream from Ollama (cancellable via ``stop_requested``).
-  3. Parse ``[[reaction:X]]`` once at the start of the stream.
-  4. Strip meta tags for display; emit incremental text via ``on_token``.
-  5. Chunk text into sentences for TTS via ``on_tts_chunk``.
-  6. Persist the user + assistant messages.
-  7. Kick off background workers (summary).
-
-No tool-calling in v1 -- that hooks in later through
-``OllamaClient.chat_with_tools`` without touching the rest of the pipeline.
+  2. (Optional) Run a non-streaming ``chat_with_tools`` pass: if the model
+     emits tool calls, dispatch them and append the tool messages to the
+     prompt before streaming.
+  3. Stream from Ollama (cancellable via ``stop_requested``).
+  4. Parse ``[[reaction:X]]`` once at the start of the stream.
+  5. Strip meta tags for display; emit incremental text via ``on_token``.
+  6. Chunk text into sentences for TTS via ``on_tts_chunk``.
+  7. Persist the user + assistant messages.
+  8. Kick off background workers (summary).
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Callable, TYPE_CHECKING
+from typing import Any, Callable, TYPE_CHECKING
 
 from app.core.chat_database import ChatDatabase
 from app.core.prompt_assembler import PromptAssembler
@@ -45,7 +46,10 @@ if TYPE_CHECKING:
     from app.llm.embedder import Embedder
 
 
-_REMEMBER_TAG_RE = re.compile(r"\[\[remember:([^\]]+?)\]\]", flags=re.IGNORECASE)
+_REMEMBER_TAG_RE = re.compile(
+    r"\[\[remember(?::(?P<kind>self))?:(?P<body>[^\]]+?)\]\]",
+    flags=re.IGNORECASE,
+)
 
 
 log = logging.getLogger("app.turn_runner")
@@ -83,6 +87,9 @@ class TurnRunner:
         embedder: "Embedder | None" = None,
         self_tagged_salience: float = 0.7,
         on_memory_added: Callable[[object], None] | None = None,
+        tool_registry: "Any | None" = None,
+        on_tool_call: Callable[[str, dict[str, Any]], None] | None = None,
+        on_tool_result: Callable[[str, str, bool], None] | None = None,
     ) -> None:
         self._ollama = ollama
         self._db = db
@@ -96,7 +103,13 @@ class TurnRunner:
         self._embedder = embedder
         self._self_tagged_salience = max(0.0, min(1.0, float(self_tagged_salience)))
         self._on_memory_added = on_memory_added
+        self._tool_registry = tool_registry
+        self._on_tool_call = on_tool_call
+        self._on_tool_result = on_tool_result
         self._stop = threading.Event()
+
+    def set_tool_registry(self, registry: "Any | None") -> None:
+        self._tool_registry = registry
 
     def set_memory(
         self,
@@ -166,6 +179,17 @@ class TurnRunner:
             "turn start: model=%s session=%s ctx=%d max=%d msgs=%d",
             self._model, session_key[:8], self._context_window, self._max_tokens, len(messages),
         )
+
+        # ── Pass 1: tool calling (optional) ──────────────────────────────
+        # If a tool registry is attached we let the model decide whether it
+        # wants to call any tools before producing the spoken reply. Tool
+        # results are appended as ``role="tool"`` messages and the prompt is
+        # then sent through ``chat_stream`` for the user-facing reply.
+        if self._tool_registry is not None and len(self._tool_registry) > 0:
+            try:
+                self._maybe_run_tool_pass(messages, stop_requested=stop_requested)
+            except Exception:
+                log.exception("tool pre-pass failed; falling back to plain stream")
 
         # Streaming bookkeeping.
         accumulator: list[str] = []
@@ -301,6 +325,92 @@ class TurnRunner:
 
     # ── helpers ───────────────────────────────────────────────────────
 
+    def _maybe_run_tool_pass(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        stop_requested: StopPredicate | None,
+        max_rounds: int = 2,
+    ) -> None:
+        """Run up to ``max_rounds`` ``chat_with_tools`` passes and mutate
+        ``messages`` in place by appending the assistant's tool_calls and
+        the corresponding ``tool`` results.
+
+        We bail early if the model returns no tool calls, the stop event is
+        set, or anything goes sideways (the streaming pass is the
+        authoritative final reply, so silently dropping tool augmentation
+        is fine).
+        """
+        registry = self._tool_registry
+        if registry is None:
+            return
+        tool_schemas = registry.to_ollama_tools()
+        if not tool_schemas:
+            return
+
+        for round_idx in range(max_rounds):
+            if self._is_stop_requested(stop_requested) or self._stop.is_set():
+                return
+            try:
+                response = self._ollama.chat_with_tools(
+                    messages,
+                    options={
+                        "temperature": self._temperature,
+                        "num_ctx": self._context_window,
+                        # Tool selection rarely needs a long completion.
+                        "num_predict": min(self._max_tokens, 256),
+                    },
+                    tools=tool_schemas,
+                    model=self._model,
+                )
+            except Exception:
+                log.exception("chat_with_tools round %d failed", round_idx)
+                return
+            if not response.tool_calls:
+                return
+
+            assistant_msg: dict[str, Any] = {
+                "role": "assistant",
+                "content": response.content or "",
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": call.name,
+                            "arguments": call.arguments,
+                        }
+                    }
+                    for call in response.tool_calls
+                ],
+            }
+            messages.append(assistant_msg)
+
+            for call in response.tool_calls:
+                if self._on_tool_call is not None:
+                    try:
+                        self._on_tool_call(call.name, dict(call.arguments))
+                    except Exception:
+                        log.exception("on_tool_call listener failed")
+                result = registry.dispatch(
+                    call.name,
+                    call.arguments,
+                    call_id=call.call_id,
+                )
+                if self._on_tool_result is not None:
+                    try:
+                        self._on_tool_result(result.name, result.content, result.ok)
+                    except Exception:
+                        log.exception("on_tool_result listener failed")
+                tool_msg: dict[str, Any] = {
+                    "role": "tool",
+                    "name": result.name,
+                    "content": result.content,
+                }
+                messages.append(tool_msg)
+                log.info(
+                    "tool dispatch: name=%s ok=%s len=%d",
+                    result.name, result.ok, len(result.content),
+                )
+
     def _is_stop_requested(self, predicate: StopPredicate | None) -> bool:
         if predicate is None:
             return False
@@ -338,12 +448,17 @@ class TurnRunner:
             or not raw_text
         ):
             return
-        seen: set[str] = set()
+        seen: set[tuple[str, str]] = set()
         for match in _REMEMBER_TAG_RE.finditer(raw_text):
-            content = match.group(1).strip()
+            content = (match.group("body") or "").strip()
             if not content or len(content) < 4:
                 continue
-            key = content.lower()
+            kind_marker = (match.group("kind") or "").strip().lower()
+            # ``[[remember:self:...]]`` -> Aiko's own notes about herself,
+            # surfaced separately in the prompt block. Plain ``[[remember:...]]``
+            # remains a "self_tagged" Jacob fact (Aiko's explicit annotation).
+            kind = "self" if kind_marker == "self" else "self_tagged"
+            key = (kind, content.lower())
             if key in seen:
                 continue
             seen.add(key)
@@ -355,7 +470,7 @@ class TurnRunner:
             try:
                 memory = self._memory_store.add(
                     content=content,
-                    kind="self_tagged",
+                    kind=kind,
                     embedding=embedding,
                     salience=self._self_tagged_salience,
                     source_session=session_key,
@@ -365,7 +480,7 @@ class TurnRunner:
                 log.debug("self-tagged memory insert failed: %s", exc)
                 continue
             if memory is not None:
-                log.info("self-tagged memory: %s", content)
+                log.info("%s memory: %s", kind, content)
                 if self._on_memory_added is not None:
                     try:
                         self._on_memory_added(memory)

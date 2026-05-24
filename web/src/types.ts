@@ -10,6 +10,8 @@ export interface ChatMessage {
   streaming?: boolean;
   /** Optional reaction word emitted by the assistant via [[reaction:X]]. */
   reaction?: string;
+  /** Subtype hint -- e.g. "proactive" for unsolicited Aiko nudges. */
+  kind?: "proactive";
 }
 
 export interface SessionRow {
@@ -41,8 +43,32 @@ export interface AssistantSettings {
     vad_silence_seconds: number;
     barge_in_enabled: boolean;
   };
+  proactive?: {
+    silence_seconds: number;
+    cooldown_seconds: number;
+  };
+  tools?: {
+    enabled: boolean;
+    get_time: boolean;
+    recall: boolean;
+    web_search: boolean;
+    available: string[];
+  };
   voice_active?: boolean;
   session_key: string;
+}
+
+export interface ToolEvent {
+  /** Name of the tool, e.g. "get_time", "recall", "web_search". */
+  name: string;
+  /** "call" -- model invoked the tool. "result" -- dispatch returned. */
+  event: "call" | "result";
+  /** True when result was successful. Only set on "result". */
+  ok?: boolean;
+  /** Truncated JSON preview of the result payload. Only set on "result". */
+  preview?: string;
+  /** Wall-clock timestamp (ms since epoch) when this event was received. */
+  at: number;
 }
 
 export type VoiceMode =
@@ -58,6 +84,23 @@ export type MemoryKind =
   | "event"
   | "relationship"
   | "self_tagged";
+
+export interface RagDocument {
+  document_id: string;
+  title: string;
+  chunk_count: number;
+  created_at: string;
+}
+
+export interface UploadDocumentResponse {
+  document: {
+    document_id: string;
+    title: string;
+    chunk_count: number;
+    bytes_indexed: number;
+  };
+  documents: RagDocument[];
+}
 
 export interface Memory {
   id: number;
@@ -143,7 +186,14 @@ export type WsServerEvent =
   | { type: "stt_final"; text: string }
   | { type: "voice_state"; state: VoiceMode }
   | { type: "audio_level"; level: number }
-  | { type: "message"; role: string; speaker: string; content: string }
+  | {
+      type: "message";
+      role: string;
+      speaker: string;
+      content: string;
+      /** Subtype hint -- e.g. "proactive" for unsolicited Aiko nudges. */
+      kind?: "proactive";
+    }
   | { type: "session_changed"; session: string }
   | { type: "history_cleared"; session: string }
   | { type: "status"; message: string }
@@ -152,6 +202,16 @@ export type WsServerEvent =
   | { type: "memory_deleted"; id: number }
   | { type: "persona_changed"; persona: Persona | null }
   | { type: "audio_amplitude"; level: number }
+  | {
+      type: "tool_event";
+      event: "call" | "result";
+      payload: {
+        name: string;
+        ok?: boolean;
+        preview?: string;
+        arguments?: Record<string, unknown>;
+      };
+    }
   | { type: "pong" };
 
 export type WsClientCommand =

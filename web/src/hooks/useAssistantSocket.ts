@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
 import { api } from "../api";
+import { playDone, playThinking } from "../earcons";
 import { useAssistantStore } from "../store";
 import type { WsClientCommand, WsServerEvent } from "../types";
 
@@ -61,13 +62,17 @@ export function useAssistantSocket(): {
         // System messages (status events from background workers, etc.)
         // are pushed inline. User messages from the backend's
         // _notify_message hook (typed input or voice STT result) are
-        // appended as user bubbles. Assistant turns are streamed via
-        // the "token" event; we ignore the trailing "message" envelope
-        // for assistants to avoid duplicating the bubble.
+        // appended as user bubbles. Streamed assistant turns arrive via
+        // the "token" event, so we drop the trailing "message" envelope
+        // for them to avoid duplicating the bubble.
+        // Exception: proactive nudges aren't streamed -- they arrive as a
+        // single complete assistant message and need to be appended here.
         if (evt.role === "system") {
           store.pushSystemMessage(evt.content);
         } else if (evt.role === "user") {
           store.appendUserMessage(evt.content);
+        } else if (evt.role === "assistant" && evt.kind === "proactive") {
+          store.appendProactiveMessage(evt.content);
         }
         break;
 
@@ -84,6 +89,7 @@ export function useAssistantSocket(): {
         store.setMetrics(evt.metrics || {});
         store.setTurnInProgress(false);
         store.setStatus("");
+        store.clearToolActivity();
         break;
 
       case "tts_state":
@@ -99,6 +105,8 @@ export function useAssistantSocket(): {
             store.setVoiceMode("speaking");
           } else if (store.voiceMode === "speaking") {
             store.setVoiceMode("listening");
+            // Floor returns to user -- play the "done" earcon as a cue.
+            playDone();
           }
         }
         break;
@@ -112,12 +120,24 @@ export function useAssistantSocket(): {
         store.setStatus("");
         break;
 
-      case "voice_state":
+      case "voice_state": {
+        const previous = store.voiceMode;
         store.setVoiceMode(evt.state);
         if (evt.state === "off") {
           store.setAudioLevel(0);
         }
+        // Earcon when Aiko transitions into the thinking state from a
+        // user-driven listening or transcribing state. Skip if voice mode
+        // was already off (suppresses spurious chirps from history hydration).
+        if (
+          evt.state === "thinking" &&
+          previous !== "thinking" &&
+          previous !== "off"
+        ) {
+          playThinking();
+        }
         break;
+      }
 
       case "audio_level":
         store.setAudioLevel(evt.level);
@@ -132,9 +152,15 @@ export function useAssistantSocket(): {
         store.setTurnInProgress(false);
         break;
 
-      case "memory_added":
+      case "memory_added": {
         store.upsertMemory(evt.memory);
+        const text = (evt.memory.text || "").slice(0, 80);
+        store.pushToast(
+          "memory",
+          text ? `Aiko remembered: ${text}` : "Aiko remembered something",
+        );
         break;
+      }
 
       case "memory_deleted":
         store.removeMemory(evt.id);
@@ -146,6 +172,16 @@ export function useAssistantSocket(): {
 
       case "audio_amplitude":
         store.setAudioAmplitude(evt.level);
+        break;
+
+      case "tool_event":
+        store.pushToolEvent({
+          name: evt.payload.name,
+          event: evt.event,
+          ok: evt.payload.ok,
+          preview: evt.payload.preview,
+          at: Date.now(),
+        });
         break;
 
       case "pong":
