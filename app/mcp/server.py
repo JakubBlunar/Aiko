@@ -162,6 +162,44 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
         except Exception as exc:
             return f"get_reflection_stats failed: {exc}"
 
+    @mcp.tool()
+    def get_self_image_stats() -> str:
+        """Return SelfImageWorker counters + last-known mtime (Phase 2d)."""
+        try:
+            worker = getattr(session, "_self_image_worker", None)
+            payload: dict[str, object] = {"enabled": worker is not None}
+            if worker is not None:
+                payload.update(worker.stats())
+                try:
+                    target = worker._target_path  # type: ignore[attr-defined]
+                    if target.exists():
+                        payload["target_path"] = str(target)
+                        payload["mtime"] = target.stat().st_mtime
+                        payload["should_run_now"] = worker.should_run()
+                except Exception:
+                    pass
+            return json.dumps(payload, indent=2, default=str)
+        except Exception as exc:
+            return f"get_self_image_stats failed: {exc}"
+
+    @mcp.tool()
+    def trigger_self_image_pulse() -> str:
+        """Force a self-image pulse now (Phase 2d). Bypasses the daily gate."""
+        try:
+            worker = getattr(session, "_self_image_worker", None)
+            if worker is None:
+                return "self-image worker not enabled"
+            target = worker._target_path  # type: ignore[attr-defined]
+            try:
+                if target.exists():
+                    target.unlink()
+            except Exception:
+                pass
+            text = worker.pulse()
+            return text or "(no input — nothing written)"
+        except Exception as exc:
+            return f"trigger_self_image_pulse failed: {exc}"
+
     # ── Resources ────────────────────────────────────────────────────
 
     @mcp.resource("assistant://history")

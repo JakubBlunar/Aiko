@@ -170,6 +170,11 @@ class PromptAssembler:
         # block (formatted) for the current ``user_text``. Wired by
         # SessionController.
         self._rag_prefetch_lookup: Callable[[str], str | None] | None = None
+        # Phase 2d: optional callable -> list[str] of top self-memories,
+        # rendered as bullets after the prose self-image block.
+        self._pinned_self_memories_provider: (
+            Callable[[], list[str]] | None
+        ) = None
 
     def set_memory_retriever(self, retriever: "MemoryRetriever | None") -> None:
         self._memory_retriever = retriever
@@ -184,6 +189,17 @@ class PromptAssembler:
         """Optional Phase-1b cache: if it returns a non-empty block, we'll
         skip the live retrieval and reuse the speculative pre-fetch."""
         self._rag_prefetch_lookup = lookup
+
+    def set_pinned_self_memories_provider(
+        self,
+        provider: Callable[[], list[str]] | None,
+    ) -> None:
+        """Phase 2d: callable returning Aiko's top self-memories as bullets.
+
+        Folded into the self-image block on every prompt build (cheap mirror
+        read; ms-level). Setting it to ``None`` disables the bullets.
+        """
+        self._pinned_self_memories_provider = provider
 
     def set_inner_life_providers(
         self,
@@ -550,12 +566,22 @@ class PromptAssembler:
         return text
 
     def _load_self_image(self) -> str:
-        """Read and cache ``data/persona/self_image.txt`` (Phase 2d/4b output).
+        """Compose the self-image block (Phase 2d).
 
-        Returns the formatted "Lately you've been being someone who..."
-        block or empty when the file is absent. mtime-cached so the hot
-        path is a stat call.
+        Two pieces, joined with a blank line:
+          - prose paragraph from ``data/persona/self_image.txt`` (rebuilt
+            once per UTC day by SelfImageWorker; mtime-cached here)
+          - "Self-memories you hold:" bullets from the pinned provider
+
+        Either piece may be empty; the result is empty only when both are.
         """
+        prose = self._load_self_image_file()
+        pinned = self._render_pinned_self_memories_block()
+        parts = [p for p in (prose, pinned) if p]
+        return "\n\n".join(parts)
+
+    def _load_self_image_file(self) -> str:
+        """Read + mtime-cache the prose self-image file."""
         path = self._self_image_path
         if path is None:
             return ""
@@ -573,6 +599,29 @@ class PromptAssembler:
             text = "Lately:\n" + text
         self._self_image_cache = (mtime, text)
         return text
+
+    def _render_pinned_self_memories_block(self) -> str:
+        """Format up to N pinned self-memories as a bulleted block."""
+        provider = self._pinned_self_memories_provider
+        if provider is None:
+            return ""
+        try:
+            items = provider() or []
+        except Exception:
+            log.debug("pinned-self-memory provider raised", exc_info=True)
+            return ""
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            txt = (item or "").strip()
+            key = txt.lower()
+            if not txt or key in seen:
+                continue
+            seen.add(key)
+            cleaned.append(txt)
+        if not cleaned:
+            return ""
+        return "Self-memories you hold:\n" + "\n".join(f"- {c}" for c in cleaned)
 
     @staticmethod
     def _fit_history(
