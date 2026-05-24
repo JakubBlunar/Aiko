@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 import faulthandler
@@ -11,13 +12,19 @@ import threading
 import traceback
 from types import TracebackType
 
+from app.core.log_context import get_turn_id
+
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 CRASH_LOG_PATH = DATA_DIR / "crashlog.txt"
 
+LOG_FORMAT = "[%(asctime)s] %(levelname)s [%(name)s turn=%(turn)s] %(message)s"
+RING_BUFFER_CAPACITY = 1000
+
 _lock = threading.Lock()
 _fault_file = None
 _logger: logging.Logger | None = None
+_log_file_path: Path | None = None
 
 
 class _SpamFilter(logging.Filter):
@@ -30,34 +37,188 @@ class _SpamFilter(logging.Filter):
         return not any(tok in msg for tok in self._SUPPRESSED)
 
 
+class _TurnIdFilter(logging.Filter):
+    """Stamp every record with ``record.turn`` from the contextvar.
+
+    The format string references ``%(turn)s`` so this filter MUST run
+    before the record is emitted, otherwise the formatter raises
+    ``KeyError``. We attach it directly to every handler we create, and
+    set ``record.turn = "-"`` when no turn is active so unrelated lines
+    (boot, shutdown, scheduler idle) stay clean.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if not hasattr(record, "turn") or not record.turn:  # type: ignore[attr-defined]
+            record.turn = get_turn_id() or "-"
+        return True
+
+
+class _RingBufferHandler(logging.Handler):
+    """Thread-safe in-process ring buffer for the most recent log lines.
+
+    Records are stored as ``(level_no, name, turn, message, formatted)``
+    tuples so :func:`tail` can filter by level and module substring
+    cheaply without re-formatting. ``maxlen`` is fixed at
+    :data:`RING_BUFFER_CAPACITY`; older entries fall off the back.
+    """
+
+    def __init__(self, capacity: int = RING_BUFFER_CAPACITY) -> None:
+        super().__init__()
+        self._buffer: deque[tuple[int, str, str, str, str]] = deque(maxlen=capacity)
+        self._lock = threading.Lock()
+
+    def emit(self, record: logging.LogRecord) -> None:  # noqa: D401
+        try:
+            formatted = self.format(record)
+        except Exception:
+            formatted = record.getMessage()
+        turn = getattr(record, "turn", None) or "-"
+        entry = (
+            int(record.levelno),
+            str(record.name),
+            str(turn),
+            record.getMessage(),
+            formatted,
+        )
+        with self._lock:
+            self._buffer.append(entry)
+
+    def snapshot(self) -> list[tuple[int, str, str, str, str]]:
+        with self._lock:
+            return list(self._buffer)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._buffer.clear()
+
+
+_RING_HANDLER: _RingBufferHandler | None = None
+
+
+def _ring_handler() -> _RingBufferHandler:
+    """Return (lazily creating) the singleton ring-buffer handler."""
+    global _RING_HANDLER
+    if _RING_HANDLER is None:
+        _RING_HANDLER = _RingBufferHandler()
+    return _RING_HANDLER
+
+
+def _set_log_file_path(path: Path) -> None:
+    """Record the active rotating log file (used by :func:`read_log_file`)."""
+    global _log_file_path
+    _log_file_path = path
+
+
+def get_log_file_path() -> Path | None:
+    """Return the currently configured rotating log file path, if any."""
+    return _log_file_path
+
+
 def configure_logging(level_name: str | None = None) -> None:
-    """Configure app logger: console (stderr) with level from env LOG_LEVEL or argument. Call once at startup."""
+    """Configure app logger: stderr handler with level from env LOG_LEVEL or argument. Call once at startup.
+
+    For richer setups (rotating file, ring buffer, per-module overrides)
+    use :func:`configure_logging_full`. This thin wrapper exists for
+    backwards-compatibility with the existing ``__main__`` entrypoint.
+    """
+    configure_logging_full(level_name=level_name)
+
+
+def configure_logging_full(
+    *,
+    level_name: str | None = None,
+    module_levels: dict[str, str] | None = None,
+    file_enabled: bool = False,
+    file_path: str | os.PathLike[str] | None = None,
+    file_max_bytes: int = 5 * 1024 * 1024,
+    file_backup_count: int = 5,
+) -> None:
+    """Configure ``app.*`` logging: stderr + optional rotating file + ring buffer.
+
+    Idempotent — clears existing handlers on the ``app`` and root loggers.
+    The same formatter (``LOG_FORMAT``) and ``_TurnIdFilter`` are attached
+    to every handler so log lines look identical wherever they end up.
+    """
     global _logger
-    level = level_name or os.environ.get("LOG_LEVEL", "INFO")
-    if isinstance(level, str):
-        level = getattr(logging, level.upper(), logging.INFO)
-    if not isinstance(level, int):
-        level = logging.INFO
+
+    level = _coerce_level(level_name or os.environ.get("LOG_LEVEL"), default=logging.INFO)
+
+    formatter = logging.Formatter(LOG_FORMAT)
+    turn_filter = _TurnIdFilter()
+    spam_filter = _SpamFilter()
+
     _logger = logging.getLogger("app")
     _logger.setLevel(level)
     _logger.handlers.clear()
     _logger.propagate = False
-    handler = logging.StreamHandler(sys.stderr)
-    handler.setLevel(level)
-    handler.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s [app] %(message)s"))
-    _logger.addHandler(handler)
+
+    stderr_handler = logging.StreamHandler(sys.stderr)
+    stderr_handler.setLevel(level)
+    stderr_handler.setFormatter(formatter)
+    stderr_handler.addFilter(turn_filter)
+    _logger.addHandler(stderr_handler)
+
+    # In-process ring buffer always attached: cheap, instant access via MCP.
+    ring = _ring_handler()
+    ring.setLevel(logging.DEBUG)  # capture even DEBUG; tail() filters on read
+    ring.setFormatter(formatter)
+    ring.addFilter(turn_filter)
+    _logger.addHandler(ring)
+
+    if file_enabled:
+        try:
+            from logging.handlers import RotatingFileHandler
+
+            resolved = Path(file_path) if file_path else (DATA_DIR / "app.log")
+            if not resolved.is_absolute():
+                resolved = (DATA_DIR.parent / resolved).resolve()
+            resolved.parent.mkdir(parents=True, exist_ok=True)
+            file_handler = RotatingFileHandler(
+                resolved,
+                maxBytes=max(64 * 1024, int(file_max_bytes)),
+                backupCount=max(0, int(file_backup_count)),
+                encoding="utf-8",
+                delay=True,
+            )
+            file_handler.setLevel(level)
+            file_handler.setFormatter(formatter)
+            file_handler.addFilter(turn_filter)
+            _logger.addHandler(file_handler)
+            _set_log_file_path(resolved)
+        except Exception as exc:  # pragma: no cover - best-effort
+            sys.stderr.write(
+                f"[crash_logging] file logging disabled: {exc!r}\n"
+            )
 
     root = logging.getLogger()
     root.handlers.clear()
     root.setLevel(logging.WARNING)
     root_handler = logging.StreamHandler(sys.stderr)
     root_handler.setLevel(logging.WARNING)
-    root_handler.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s [%(name)s] %(message)s"))
-    root_handler.addFilter(_SpamFilter())
+    root_handler.setFormatter(formatter)
+    root_handler.addFilter(turn_filter)
+    root_handler.addFilter(spam_filter)
     root.addHandler(root_handler)
 
     for noisy in ("RealtimeSTT", "audio_recorder", "multiprocessing"):
         logging.getLogger(noisy).setLevel(logging.CRITICAL)
+
+    if module_levels:
+        for name, lvl in module_levels.items():
+            try:
+                logging.getLogger(str(name)).setLevel(_coerce_level(str(lvl), default=level))
+            except Exception:  # pragma: no cover
+                pass
+
+
+def _coerce_level(value: str | int | None, *, default: int) -> int:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip():
+        resolved = getattr(logging, value.strip().upper(), None)
+        if isinstance(resolved, int):
+            return resolved
+    return default
 
 
 def _write_line(entry: dict[str, object]) -> None:
@@ -166,3 +327,121 @@ def install_global_exception_hooks() -> None:
             previous_thread_hook(args)
 
         threading.excepthook = _thread_hook
+
+
+# ── public helpers (used by MCP tools and tests) ──────────────────────────
+
+
+def tail(
+    n: int = 200,
+    *,
+    level: str | int = "INFO",
+    module_contains: str | None = None,
+) -> list[str]:
+    """Return up to ``n`` most recent log lines from the in-process ring.
+
+    ``level`` filters by minimum severity (case-insensitive name or numeric).
+    ``module_contains`` is a substring matched against the logger name
+    (e.g. ``"prompt"`` matches ``app.core.prompt_assembler``).
+    """
+    handler = _RING_HANDLER
+    if handler is None:
+        return []
+    min_level = _coerce_level(level if isinstance(level, str) else int(level), default=logging.INFO)
+    needle = module_contains.lower() if module_contains else None
+    out: list[str] = []
+    for level_no, name, _turn, _msg, formatted in handler.snapshot():
+        if level_no < min_level:
+            continue
+        if needle and needle not in name.lower():
+            continue
+        out.append(formatted)
+    if n > 0 and len(out) > n:
+        out = out[-n:]
+    return out
+
+
+def read_log_file(
+    lines: int = 500,
+    *,
+    level: str | int = "INFO",
+    grep: str | None = None,
+    path: str | os.PathLike[str] | None = None,
+) -> list[str]:
+    """Tail the rotating ``data/app.log`` (and rolled siblings if needed).
+
+    Reads the active file plus ``.1``, ``.2`` … in reverse order until at
+    least ``lines`` candidate lines have been collected. Filters by
+    ``level`` (minimum severity, parsed from the formatted line) and an
+    optional case-insensitive substring ``grep``.
+    """
+    target = Path(path) if path is not None else _log_file_path
+    if target is None:
+        return []
+    target = Path(target)
+    if not target.exists() and not any(
+        Path(f"{target}.{i}").exists() for i in range(1, 10)
+    ):
+        return []
+
+    min_level = _coerce_level(level if isinstance(level, str) else int(level), default=logging.INFO)
+    needle = grep.lower() if grep else None
+
+    candidate_paths: list[Path] = []
+    if target.exists():
+        candidate_paths.append(target)
+    for i in range(1, 10):
+        rolled = Path(f"{target}.{i}")
+        if rolled.exists():
+            candidate_paths.append(rolled)
+
+    collected: list[str] = []
+    for candidate in candidate_paths:
+        try:
+            with candidate.open("r", encoding="utf-8", errors="replace") as fh:
+                file_lines = fh.readlines()
+        except OSError:
+            continue
+        # Walk newest-first so we can early-exit when we have enough.
+        for raw in reversed(file_lines):
+            line = raw.rstrip("\n")
+            if needle and needle not in line.lower():
+                continue
+            level_no = _parse_level_from_line(line)
+            if level_no < min_level:
+                continue
+            collected.append(line)
+            if lines > 0 and len(collected) >= lines:
+                break
+        if lines > 0 and len(collected) >= lines:
+            break
+
+    collected.reverse()
+    return collected
+
+
+def _parse_level_from_line(line: str) -> int:
+    """Best-effort extraction of the severity from a formatted log line."""
+    try:
+        # Expected shape: "[ts] LEVEL [name turn=…] message"
+        right = line.split("] ", 1)[1] if "] " in line else line
+        token = right.split(" ", 1)[0].upper()
+        resolved = getattr(logging, token, None)
+        if isinstance(resolved, int):
+            return resolved
+    except Exception:
+        pass
+    return logging.INFO
+
+
+def set_module_level(module: str, level: str | int) -> str:
+    """Bump a single logger to the requested level. Returns the resolved name."""
+    target = logging.getLogger(str(module))
+    target.setLevel(_coerce_level(level, default=logging.INFO))
+    return logging.getLevelName(target.level)
+
+
+def clear_ring_buffer() -> None:
+    """Test helper: drop everything from the in-process ring."""
+    if _RING_HANDLER is not None:
+        _RING_HANDLER.clear()

@@ -1,12 +1,16 @@
 """Real-time STT using RealtimeSTT (Whisper large-v1 + Silero VAD)."""
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
 
 from app.core.settings import AudioSettings, SttSettings
+
+
+log = logging.getLogger("app.stt.realtime_stt_service")
 
 try:
     import numpy as np
@@ -44,18 +48,38 @@ class RealtimeSttService:
         self._recorder: object | None = None
         self._lock = threading.Lock()
         self._last_error: str | None = None
+        self._loaded_model: str = ""
+        self._loaded_language: str = ""
         if AudioToTextRecorder is not None:
+            t0 = time.monotonic()
             try:
                 self._recorder = self._create_recorder()
             except Exception as exc:
                 self._last_error = f"RealtimeSTT init failed: {exc}"
                 self._recorder = None
+                log.error(
+                    "STT engine init failed: model=%s language=%s exc=%r",
+                    (self._settings.model or "large-v1"),
+                    (self._settings.language or "en"),
+                    exc,
+                )
+            else:
+                log.info(
+                    "STT engine ready: model=%s language=%s init_ms=%.0f",
+                    self._loaded_model, self._loaded_language,
+                    (time.monotonic() - t0) * 1000.0,
+                )
         else:
             self._last_error = "RealtimeSTT (AudioToTextRecorder) not installed"
+            log.warning(
+                "STT engine unavailable: RealtimeSTT (AudioToTextRecorder) not installed"
+            )
 
     def _create_recorder(self) -> object:
         model = (self._settings.model or "large-v1").strip() or "large-v1"
         language = (self._settings.language or "en").strip() or "en"
+        self._loaded_model = model
+        self._loaded_language = language
         return AudioToTextRecorder(
             model=model,
             language=language,
@@ -136,6 +160,12 @@ class RealtimeSttService:
         def callback(indata, _frames, _time_info, _status):
             self.feed_audio(indata)
 
+        log.debug(
+            "STT capture start: device=%s sample_rate=%d max_s=%.1f silence_s=%.1f",
+            device if device is not None else "default",
+            sample_rate, max_seconds, silence_seconds,
+        )
+        result = ""
         try:
             self.start_context()
             with sd.InputStream(
@@ -161,9 +191,21 @@ class RealtimeSttService:
                         silent_count += 1
                         if silent_count >= silence_chunks and last_text_len > 0:
                             break
-            return self.text()
+            result = self.text()
+            return result
         finally:
             self.stop_context()
+            duration_ms = (time.perf_counter() - start) * 1000.0
+            chars = len(result)
+            # INFO: one line per voice turn — comparable to "turn done" for typed
+            # turns. Full transcript text stays at DEBUG to avoid leaking
+            # transcripts into INFO-level logs.
+            log.info(
+                "STT capture done: chars=%d duration_ms=%.0f",
+                chars, duration_ms,
+            )
+            if chars and result:
+                log.debug("STT transcript: %s", result.replace("\n", " "))
 
     def transcribe(self, audio_path: str | Path) -> str:
         """Transcribe a WAV file by feeding its contents to the recorder."""

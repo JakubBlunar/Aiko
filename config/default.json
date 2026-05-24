@@ -65,7 +65,12 @@
     "pocket_tts_temp": 0.6
   },
   "logging": {
-    "level": "INFO"
+    "level": "INFO",
+    "module_levels": {},
+    "file_enabled": true,
+    "file_path": "data/app.log",
+    "file_max_bytes": 5242880,
+    "file_backup_count": 5
   },
   "mcp_server": {
     "enabled": true,

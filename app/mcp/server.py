@@ -471,6 +471,85 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
         except Exception as exc:
             return f"trigger_self_image_pulse failed: {exc}"
 
+    # ── Logs / debug introspection ────────────────────────────────────
+
+    @mcp.tool()
+    def tail_logs(
+        n: int = 200,
+        level: str = "INFO",
+        module_contains: str | None = None,
+    ) -> str:
+        """Return the most recent log lines from the in-process ring buffer.
+
+        ``level`` is the minimum severity (DEBUG/INFO/WARNING/ERROR).
+        ``module_contains`` filters by logger name substring (e.g.
+        ``"prompt"`` matches ``app.core.prompt_assembler``).
+        """
+        from app.core.crash_logging import tail
+        try:
+            lines = tail(n=int(n), level=str(level), module_contains=module_contains)
+        except Exception as exc:
+            return f"tail_logs failed: {exc}"
+        if not lines:
+            return "(no log lines matched)"
+        return "\n".join(lines)
+
+    @mcp.tool()
+    def read_log_file(
+        lines: int = 500,
+        level: str = "INFO",
+        grep: str | None = None,
+    ) -> str:
+        """Tail the rotating ``data/app.log`` (and rolled siblings if needed).
+
+        For cross-session investigations beyond the in-process ring's
+        ~1000-line window. ``grep`` is a case-insensitive substring.
+        """
+        from app.core.crash_logging import read_log_file as _read
+        try:
+            collected = _read(lines=int(lines), level=str(level), grep=grep)
+        except Exception as exc:
+            return f"read_log_file failed: {exc}"
+        if not collected:
+            return "(no log lines matched)"
+        return "\n".join(collected)
+
+    @mcp.tool()
+    def set_log_level(module: str, level: str) -> str:
+        """Bump a single logger to ``level`` at runtime (until app restart).
+
+        Example: ``set_log_level("app.core.prompt_assembler", "DEBUG")``.
+        Returns the resulting effective level.
+        """
+        from app.core.crash_logging import set_module_level
+        try:
+            resolved = set_module_level(str(module), str(level))
+        except Exception as exc:
+            return f"set_log_level failed: {exc}"
+        return f"{module} -> {resolved}"
+
+    @mcp.tool()
+    def get_log_config() -> str:
+        """Return the active logging configuration: file path, levels, ring size."""
+        try:
+            from app.core.crash_logging import (
+                RING_BUFFER_CAPACITY,
+                get_log_file_path,
+                _RING_HANDLER,
+            )
+            settings_logging = getattr(session._settings, "logging", None)
+            payload = {
+                "level": getattr(settings_logging, "level", "INFO"),
+                "file_enabled": bool(getattr(settings_logging, "file_enabled", True)),
+                "file_path": str(get_log_file_path() or ""),
+                "module_levels": dict(getattr(settings_logging, "module_levels", {}) or {}),
+                "ring_capacity": RING_BUFFER_CAPACITY,
+                "ring_used": len(_RING_HANDLER.snapshot()) if _RING_HANDLER else 0,
+            }
+            return json.dumps(payload, indent=2)
+        except Exception as exc:
+            return f"get_log_config failed: {exc}"
+
     # ── Resources ────────────────────────────────────────────────────
 
     @mcp.resource("assistant://history")

@@ -143,6 +143,10 @@ class SpeakingWindowScheduler:
             "windows_opened": 0,
             "windows_idle": 0,
         }
+        log.info(
+            "scheduler init: grace_ms=%d max_job_s=%.1f idle_s=%.1f",
+            self._grace_ms, self._max_job_seconds, self._idle_seconds,
+        )
 
     # ── lifecycle ─────────────────────────────────────────────────────────
 
@@ -161,6 +165,13 @@ class SpeakingWindowScheduler:
                 idle.join(timeout=1.0)
             except Exception:
                 pass
+        log.info(
+            "scheduler shutdown: submitted=%d ran=%d cancelled=%d skipped_stale=%d "
+            "windows_opened=%d windows_idle=%d",
+            int(self._stats["submitted"]), int(self._stats["ran"]),
+            int(self._stats["cancelled"]), int(self._stats["skipped_stale"]),
+            int(self._stats["windows_opened"]), int(self._stats["windows_idle"]),
+        )
 
     # ── submission ────────────────────────────────────────────────────────
 
@@ -293,6 +304,9 @@ class SpeakingWindowScheduler:
         arrive). Non-idle drains exit when the stop flag is set OR the heap
         empties — they're tied to the speaking window.
         """
+        drain_t0 = time.monotonic()
+        jobs_run = 0
+        ran_names: list[str] = []
         while not self._shutdown.is_set():
             if not idle and self._stop_flag.is_set() and self._stop_flag.is_urgent():
                 break
@@ -310,6 +324,8 @@ class SpeakingWindowScheduler:
                 log.exception("scheduled job %s raised", job.name)
             elapsed = time.monotonic() - t0
             self._stats["ran"] = int(self._stats["ran"]) + 1
+            jobs_run += 1
+            ran_names.append(job.name)
             log.debug(
                 "scheduler.done name=%s elapsed=%.2fs cancelled=%s",
                 job.name, elapsed, self._stop_flag.is_set(),
@@ -323,6 +339,20 @@ class SpeakingWindowScheduler:
                 # Actually no: a soft close means "wrap up and stop", so we
                 # break here too. Let the next window pick up remaining work.
                 break
+
+        if jobs_run > 0:
+            with self._lock:
+                queue_after = len(self._heap)
+            elapsed_ms = (time.monotonic() - drain_t0) * 1000.0
+            # Single structured summary so a `module_contains="scheduler"` tail
+            # gives a readable per-window picture without the per-job churn.
+            log.debug(
+                "scheduler drain: jobs_run=%d elapsed_ms=%.0f queue_after=%d "
+                "idle=%s names=%s",
+                jobs_run, elapsed_ms, queue_after,
+                "1" if idle else "0",
+                ",".join(ran_names) if ran_names else "-",
+            )
 
     def _pop_next_eligible(self) -> ScheduledJob | None:
         """Pop the highest-priority job, skipping stale dedupe entries."""

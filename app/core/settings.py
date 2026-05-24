@@ -90,6 +90,11 @@ class TtsSettings:
 @dataclass(slots=True)
 class LoggingSettings:
     level: str = "INFO"
+    module_levels: dict[str, str] = field(default_factory=dict)
+    file_enabled: bool = True
+    file_path: str = "data/app.log"
+    file_max_bytes: int = 5 * 1024 * 1024
+    file_backup_count: int = 5
 
 
 @dataclass(slots=True)
@@ -449,6 +454,15 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
         ),
         logging=LoggingSettings(
             level=str(logging_raw.get("level", "INFO")).strip().upper() or "INFO",
+            module_levels={
+                str(name): str(level).strip().upper()
+                for name, level in (logging_raw.get("module_levels") or {}).items()
+                if name and level
+            },
+            file_enabled=bool(logging_raw.get("file_enabled", True)),
+            file_path=str(logging_raw.get("file_path", "data/app.log") or "data/app.log"),
+            file_max_bytes=max(64 * 1024, int(logging_raw.get("file_max_bytes", 5 * 1024 * 1024))),
+            file_backup_count=max(0, int(logging_raw.get("file_backup_count", 5))),
         ),
         mcp_server=McpServerSettings(
             enabled=bool(mcp_server_raw.get("enabled", True)),

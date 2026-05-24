@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from typing import Any, Callable
 
 from app.core.session_text_utils import prepare_tts_text
@@ -51,6 +52,8 @@ class TtsQueue:
         self._lock = threading.Lock()
         self._pending: list[tuple[str, str | None]] = []
         self._playing = False
+        self._session_started_at: float | None = None
+        self._chunks_played = 0
 
     def set_amplitude_listener(
         self,
@@ -103,6 +106,7 @@ class TtsQueue:
         next_chunk: tuple[str, str | None] | None = None
         with self._lock:
             self._playing = False
+            self._chunks_played += 1
             if self._pending:
                 next_chunk = self._pending.pop(0)
                 self._playing = True
@@ -154,6 +158,29 @@ class TtsQueue:
             self._notify("end", {})
 
     def _notify(self, event: str, payload: dict[str, Any]) -> None:
+        # Per plan: state transitions are tweaking-only telemetry (the WS
+        # layer already broadcasts them to the UI). Keep at DEBUG so default
+        # INFO logs aren't flooded with one entry per spoken sentence.
+        if event == "start":
+            self._session_started_at = time.monotonic()
+            self._chunks_played = 0
+            with self._lock:
+                queue_depth = len(self._pending)
+            log.debug(
+                "tts state: idle -> speaking queue_depth=%d reaction=%s",
+                queue_depth, payload.get("reaction") or "-",
+            )
+        elif event == "end":
+            elapsed_ms = 0.0
+            if self._session_started_at is not None:
+                elapsed_ms = (time.monotonic() - self._session_started_at) * 1000.0
+            log.debug(
+                "tts state: speaking -> idle drained_chunks=%d elapsed_ms=%.0f",
+                self._chunks_played, elapsed_ms,
+            )
+            self._session_started_at = None
+            self._chunks_played = 0
+
         if self._listener is None:
             return
         try:
