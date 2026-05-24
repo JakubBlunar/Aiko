@@ -421,6 +421,8 @@ class SessionController:
             on_tool_result=lambda name, content, ok: self._notify_tool_event(
                 "result", {"name": name, "ok": bool(ok), "preview": (content or "")[:200]},
             ),
+            filler_threshold_ms=settings.agent.filler_first_token_ms,
+            filler_enabled=settings.agent.filler_enabled,
         )
         self._tool_event_listeners: list[Callable[[str, dict[str, Any]], None]] = []
         self._tool_registry = None
@@ -1203,6 +1205,9 @@ class SessionController:
             # Compaction state.
             "compaction_triggered": False,
             "compactions_total": 0,
+            # Phase 1c: time-to-first-stream-delta + filler injection.
+            "first_token_ms": 0.0,
+            "filler_emitted": False,
         }
 
     def get_last_metrics(self) -> dict[str, float | int | str]:
@@ -1331,6 +1336,8 @@ class SessionController:
             "context_source": str(self._context_source),
             "prompt_pct": prompt_pct,
             "compactions_total": int(self._compactions_total),
+            "first_token_ms": round(float(getattr(result, "first_token_ms", None) or 0.0), 1),
+            "filler_emitted": bool(getattr(result, "filler_emitted", False)),
         }
         if telemetry is not None:
             tdict = telemetry.as_dict()

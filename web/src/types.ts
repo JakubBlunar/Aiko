@@ -186,6 +186,9 @@ export interface MetricsSnapshot {
   // Compaction state.
   compaction_triggered?: boolean;
   compactions_total?: number;
+  // Phase 1c: time-to-first-stream-delta + slow-token filler.
+  first_token_ms?: number;
+  filler_emitted?: boolean;
 }
 
 export interface MetricsConfig {

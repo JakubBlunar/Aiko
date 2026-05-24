@@ -30,7 +30,9 @@
     "agenda_groom_every_n_turns": 8,
     "arc_update_every_n_turns": 1,
     "self_image_pulse_enabled": true,
-    "prepared_nudge_ttl_seconds": 600
+    "prepared_nudge_ttl_seconds": 600,
+    "filler_enabled": true,
+    "filler_first_token_ms": 800
   },
   "audio": {
     "sample_rate": 16000,
