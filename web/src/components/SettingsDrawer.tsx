@@ -1,7 +1,21 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type AudioDevices } from "../api";
 import type { AssistantSettings, Memory } from "../types";
 import { useAssistantStore } from "../store";
+
+const REACTIONS_FOR_MAPPING = [
+  "neutral",
+  "cheerful",
+  "excited",
+  "surprised",
+  "sad",
+  "angry",
+  "calm",
+  "serious",
+  "friendly",
+  "gentle",
+  "enthusiastic",
+] as const;
 
 interface SettingsDrawerProps {
   open: boolean;
@@ -20,6 +34,12 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
   const memoriesEnabled = useAssistantStore((s) => s.memoriesEnabled);
   const setMemories = useAssistantStore((s) => s.setMemories);
   const removeMemory = useAssistantStore((s) => s.removeMemory);
+
+  const persona = useAssistantStore((s) => s.persona);
+  const setPersona = useAssistantStore((s) => s.setPersona);
+  const personaFileRef = useRef<HTMLInputElement | null>(null);
+  const [personaBusy, setPersonaBusy] = useState(false);
+  const [personaError, setPersonaError] = useState<string | null>(null);
 
   const refreshAll = useCallback(async () => {
     setBusy(true);
@@ -69,6 +89,52 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
       removeMemory(memory.id);
     } catch (err) {
       setError(String(err));
+    }
+  };
+
+  const onUploadPersona = async (file: File) => {
+    setPersonaBusy(true);
+    setPersonaError(null);
+    try {
+      const next = await api.uploadPersona(file);
+      setPersona(next);
+    } catch (err) {
+      setPersonaError(String(err));
+    } finally {
+      setPersonaBusy(false);
+      if (personaFileRef.current) {
+        personaFileRef.current.value = "";
+      }
+    }
+  };
+
+  const onRemovePersona = async () => {
+    setPersonaBusy(true);
+    setPersonaError(null);
+    try {
+      await api.deletePersona();
+      setPersona(null);
+    } catch (err) {
+      setPersonaError(String(err));
+    } finally {
+      setPersonaBusy(false);
+    }
+  };
+
+  const onPatchMapping = async (patch: {
+    reaction_mapping?: Record<string, string>;
+    idle_motion_group?: string | null;
+    talk_motion_group?: string | null;
+  }) => {
+    setPersonaBusy(true);
+    setPersonaError(null);
+    try {
+      const result = await api.patchPersonaMapping(patch);
+      setPersona(result.persona);
+    } catch (err) {
+      setPersonaError(String(err));
+    } finally {
+      setPersonaBusy(false);
     }
   };
 
@@ -229,6 +295,137 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                   />
                   Allow barge-in (interrupt while Aiko is speaking)
                 </label>
+              </Section>
+
+              <Section title="Persona avatar (Live2D)">
+                {personaError ? (
+                  <div className="rounded-md border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+                    {personaError}
+                  </div>
+                ) : null}
+                <div className="flex items-center justify-between rounded-md bg-white/[0.02] px-3 py-2 text-[11px]">
+                  <span className="text-ink-100/60">Active</span>
+                  <span className="font-mono text-ink-100/80">
+                    {persona
+                      ? `${persona.display_name} (Cubism v${persona.cubism_version})`
+                      : "No model loaded"}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    ref={personaFileRef}
+                    type="file"
+                    accept=".zip,application/zip,application/x-zip-compressed"
+                    disabled={personaBusy}
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) {
+                        void onUploadPersona(file);
+                      }
+                    }}
+                    className="block w-full text-xs text-ink-100/70 file:mr-3 file:rounded-md file:border-0 file:bg-ink-400/30 file:px-3 file:py-1.5 file:text-xs file:text-ink-100 hover:file:bg-ink-400/50"
+                  />
+                </div>
+                {persona ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => void onRemovePersona()}
+                      disabled={personaBusy}
+                      className="w-full rounded-md border border-white/10 px-3 py-1.5 text-xs text-ink-100/70 hover:border-rose-400/60 hover:text-rose-200 disabled:opacity-50"
+                    >
+                      Remove model
+                    </button>
+                    {persona.expressions.length > 0 ? (
+                      <div className="mt-2 space-y-1.5">
+                        <p className="text-[11px] uppercase tracking-wide text-ink-100/50">
+                          Reaction expressions
+                        </p>
+                        {REACTIONS_FOR_MAPPING.map((reaction) => (
+                          <div
+                            key={reaction}
+                            className="flex items-center justify-between gap-2 rounded-md bg-white/[0.02] px-2 py-1 text-[11px]"
+                          >
+                            <span className="text-ink-100/60">{reaction}</span>
+                            <select
+                              value={persona.reaction_mapping[reaction] ?? ""}
+                              onChange={(e) =>
+                                void onPatchMapping({
+                                  reaction_mapping: {
+                                    ...persona.reaction_mapping,
+                                    [reaction]: e.target.value,
+                                  },
+                                })
+                              }
+                              disabled={personaBusy}
+                              className="max-w-[55%] rounded-md border border-white/10 bg-black/40 px-2 py-1 text-xs text-ink-100"
+                            >
+                              <option value="">(none)</option>
+                              {persona.expressions.map((expr) => (
+                                <option key={expr.name} value={expr.name}>
+                                  {expr.name}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                    {Object.keys(persona.motions).length > 0 ? (
+                      <div className="mt-2 space-y-1.5">
+                        <p className="text-[11px] uppercase tracking-wide text-ink-100/50">
+                          Motion groups
+                        </p>
+                        <div className="flex items-center justify-between gap-2 rounded-md bg-white/[0.02] px-2 py-1 text-[11px]">
+                          <span className="text-ink-100/60">Idle</span>
+                          <select
+                            value={persona.idle_motion_group ?? ""}
+                            onChange={(e) =>
+                              void onPatchMapping({
+                                idle_motion_group: e.target.value || null,
+                              })
+                            }
+                            disabled={personaBusy}
+                            className="max-w-[55%] rounded-md border border-white/10 bg-black/40 px-2 py-1 text-xs text-ink-100"
+                          >
+                            <option value="">(none)</option>
+                            {Object.keys(persona.motions).map((group) => (
+                              <option key={group} value={group}>
+                                {group}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="flex items-center justify-between gap-2 rounded-md bg-white/[0.02] px-2 py-1 text-[11px]">
+                          <span className="text-ink-100/60">Talk</span>
+                          <select
+                            value={persona.talk_motion_group ?? ""}
+                            onChange={(e) =>
+                              void onPatchMapping({
+                                talk_motion_group: e.target.value || null,
+                              })
+                            }
+                            disabled={personaBusy}
+                            className="max-w-[55%] rounded-md border border-white/10 bg-black/40 px-2 py-1 text-xs text-ink-100"
+                          >
+                            <option value="">(none)</option>
+                            {Object.keys(persona.motions).map((group) => (
+                              <option key={group} value={group}>
+                                {group}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                    ) : null}
+                  </>
+                ) : (
+                  <p className="rounded-md border border-white/5 bg-white/[0.02] px-3 py-2 text-[11px] text-ink-100/50">
+                    Upload a single Live2D model packaged as a .zip. The archive
+                    must contain a *.model3.json (Cubism 3+) or *.model.json
+                    (Cubism 2.1) entrypoint.
+                  </p>
+                )}
               </Section>
 
               <Section title="What Aiko remembers">

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef } from "react";
+import { api } from "../api";
 import { useAssistantStore } from "../store";
 import type { WsClientCommand, WsServerEvent } from "../types";
 
@@ -37,6 +38,13 @@ export function useAssistantSocket(): {
         // Re-sync voice mode if the backend was already running a loop
         // when this socket connected (e.g. page refresh mid-session).
         store.setVoiceMode(evt.voice_active ? "listening" : "off");
+        // Pull current persona once we know we're connected so the avatar
+        // hydrates on a hard refresh.
+        api.getPersona()
+          .then((res) => store.setPersona(res.persona))
+          .catch(() => {
+            /* persona endpoint missing or backend offline -- ignore */
+          });
         break;
 
       case "session_changed":
@@ -130,6 +138,14 @@ export function useAssistantSocket(): {
 
       case "memory_deleted":
         store.removeMemory(evt.id);
+        break;
+
+      case "persona_changed":
+        store.setPersona(evt.persona);
+        break;
+
+      case "audio_amplitude":
+        store.setAudioAmplitude(evt.level);
         break;
 
       case "pong":

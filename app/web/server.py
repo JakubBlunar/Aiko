@@ -20,7 +20,7 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from app.core.session_controller import SessionController
 
 from app.core.live_session import LiveSession
+from app.core.persona_manager import PersonaError
 
 
 log = logging.getLogger("app.web.server")
@@ -38,6 +39,11 @@ log = logging.getLogger("app.web.server")
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _DIST_DIR = _PROJECT_ROOT / "web" / "dist"
 _PERSONA_DIR = _PROJECT_ROOT / "data" / "persona"
+_PERSONAS_ROOT = _PROJECT_ROOT / "data" / "personas"
+
+# Maximum upload size for a Live2D model zip (matches the in-zip uncompressed
+# cap inside PersonaManager).
+_MAX_PERSONA_UPLOAD_BYTES = 200 * 1024 * 1024  # 200 MB compressed
 
 
 # ── Connection registry ────────────────────────────────────────────────
@@ -130,8 +136,30 @@ def create_web_app(session: "SessionController") -> FastAPI:
     def _on_tts_state(event: str, **payload: Any) -> None:
         hub.broadcast({"type": "tts_state", "event": event, **payload})
 
+    # Throttle amplitude broadcasts to <=30 Hz so we don't drown the WS.
+    _amp_state: dict[str, float] = {"last_sent": 0.0, "last_level": 0.0}
+    _AMP_INTERVAL = 1.0 / 30.0
+
+    def _on_amplitude(level: float) -> None:
+        import time as _time
+        now = _time.monotonic()
+        last_sent = _amp_state["last_sent"]
+        last_level = _amp_state["last_level"]
+        # Always emit zero immediately so the mouth closes when speech ends.
+        if level == 0.0 and last_level == 0.0:
+            return
+        if level != 0.0 and (now - last_sent) < _AMP_INTERVAL:
+            return
+        _amp_state["last_sent"] = now
+        _amp_state["last_level"] = level
+        hub.broadcast({"type": "audio_amplitude", "level": float(level)})
+
     session.add_message_listener(_on_message)
     session.add_tts_state_listener(_on_tts_state)
+    try:
+        session.add_tts_amplitude_listener(_on_amplitude)
+    except Exception:
+        log.debug("amplitude listener subscription failed", exc_info=True)
 
     def _on_memory_added(memory: Any) -> None:
         try:
@@ -331,7 +359,86 @@ def create_web_app(session: "SessionController") -> FastAPI:
         hub.broadcast({"type": "memory_deleted", "id": int(memory_id)})
         return JSONResponse({"deleted": int(memory_id)})
 
+    # ── REST: Live2D persona (avatar) ───────────────────────────────
+
+    def _persona_payload() -> dict[str, Any] | None:
+        manifest = session.persona_manager.current()
+        return manifest.to_dict() if manifest else None
+
+    @app.get("/api/persona")
+    def get_persona() -> JSONResponse:
+        return JSONResponse({"persona": _persona_payload()})
+
+    @app.post("/api/persona/upload")
+    async def upload_persona(file: UploadFile = File(...)) -> JSONResponse:
+        if not file.filename:
+            raise HTTPException(400, "missing filename")
+        lowered = file.filename.lower()
+        if not lowered.endswith(".zip"):
+            raise HTTPException(400, "expected a .zip file")
+        body = await file.read()
+        if len(body) == 0:
+            raise HTTPException(400, "uploaded file is empty")
+        if len(body) > _MAX_PERSONA_UPLOAD_BYTES:
+            raise HTTPException(
+                413,
+                f"upload too large (limit {_MAX_PERSONA_UPLOAD_BYTES // (1024 * 1024)} MB)",
+            )
+        import io as _io
+        buffer = _io.BytesIO(body)
+        try:
+            display = Path(file.filename).stem
+            manifest = session.persona_manager.install_from_zip(
+                buffer,
+                display_name=display or "Persona",
+            )
+        except PersonaError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except Exception as exc:
+            log.exception("persona upload failed")
+            raise HTTPException(500, f"upload failed: {exc}") from exc
+        payload = manifest.to_dict()
+        hub.broadcast({"type": "persona_changed", "persona": payload})
+        return JSONResponse({"persona": payload})
+
+    @app.delete("/api/persona")
+    def delete_persona() -> JSONResponse:
+        removed = session.persona_manager.delete()
+        hub.broadcast({"type": "persona_changed", "persona": None})
+        return JSONResponse({"removed": removed})
+
+    @app.patch("/api/persona/mapping")
+    async def patch_persona_mapping(payload: dict[str, Any]) -> JSONResponse:
+        reaction_mapping = payload.get("reaction_mapping")
+        if reaction_mapping is not None and not isinstance(reaction_mapping, dict):
+            raise HTTPException(400, "reaction_mapping must be an object")
+        idle = payload.get("idle_motion_group")
+        talk = payload.get("talk_motion_group")
+        manifest = session.persona_manager.update_mapping(
+            reaction_mapping=(
+                {str(k): str(v) for k, v in reaction_mapping.items()}
+                if reaction_mapping
+                else None
+            ),
+            idle_motion_group=str(idle) if idle is not None else None,
+            talk_motion_group=str(talk) if talk is not None else None,
+        )
+        if manifest is None:
+            raise HTTPException(404, "no active persona")
+        out = manifest.to_dict()
+        hub.broadcast({"type": "persona_changed", "persona": out})
+        return JSONResponse({"persona": out})
+
     # ── Persona / static assets ─────────────────────────────────────
+
+    # Always mount /personas so the active model is reachable as soon as it's
+    # uploaded. The directory is created up-front so StaticFiles doesn't 500.
+    _PERSONAS_ROOT.mkdir(parents=True, exist_ok=True)
+    app.mount(
+        "/personas",
+        StaticFiles(directory=str(_PERSONAS_ROOT), check_dir=False),
+        name="personas",
+    )
 
     if _PERSONA_DIR.exists():
         app.mount("/persona", StaticFiles(directory=str(_PERSONA_DIR)), name="persona")
@@ -350,7 +457,7 @@ def create_web_app(session: "SessionController") -> FastAPI:
         # SPA fallback: every non-API GET returns index.html so React Router works.
         @app.get("/{full_path:path}")
         def spa_fallback(full_path: str) -> FileResponse:
-            if full_path.startswith(("api/", "ws", "persona/", "assets/")):
+            if full_path.startswith(("api/", "ws", "persona/", "personas/", "assets/", "live2d/")):
                 raise HTTPException(404, "not found")
             target = _DIST_DIR / full_path
             if target.is_file():

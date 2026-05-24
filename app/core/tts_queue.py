@@ -42,13 +42,21 @@ class TtsQueue:
         *,
         enabled: bool = True,
         state_listener: StateListener | None = None,
+        amplitude_listener: Callable[[float], None] | None = None,
     ) -> None:
         self._tts = tts_engine
         self._enabled = bool(enabled)
         self._listener = state_listener
+        self._amplitude_listener = amplitude_listener
         self._lock = threading.Lock()
         self._pending: list[tuple[str, str | None]] = []
         self._playing = False
+
+    def set_amplitude_listener(
+        self,
+        listener: Callable[[float], None] | None,
+    ) -> None:
+        self._amplitude_listener = listener
 
     # ── public API ────────────────────────────────────────────────────────
 
@@ -121,8 +129,24 @@ class TtsQueue:
             ).start()
 
         self._notify("start", {"text": text, "reaction": reaction or ""})
+        amplitude_cb = self._amplitude_listener
         try:
-            self._tts.speak_async(text, reaction=reaction, on_done=self._on_chunk_done)
+            # Backends that don't take ``on_amplitude`` (e.g. older ones) are
+            # called without it; the avatar gracefully falls back to a noise
+            # mouth in that case.
+            try:
+                self._tts.speak_async(
+                    text,
+                    reaction=reaction,
+                    on_done=self._on_chunk_done,
+                    on_amplitude=amplitude_cb,
+                )
+            except TypeError:
+                self._tts.speak_async(
+                    text,
+                    reaction=reaction,
+                    on_done=self._on_chunk_done,
+                )
         except Exception as exc:
             log.warning("tts speak_async failed: %s", exc)
             with self._lock:

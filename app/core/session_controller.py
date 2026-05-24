@@ -40,6 +40,7 @@ from app.core.crash_logging import log_event
 from app.core.memory_extractor import MemoryExtractor
 from app.core.memory_retriever import MemoryRetriever
 from app.core.memory_store import MemoryStore
+from app.core.persona_manager import PersonaManager
 from app.core.proactive_director import ProactiveDirector
 from app.core.prompt_assembler import PromptAssembler
 from app.core.services.response_text_service import strip_action_meta_for_tts
@@ -148,6 +149,10 @@ class SessionController:
             Path(__file__).resolve().parents[2] / "data" / "chat_sessions.db"
         )
         self._chat_db = ChatDatabase(storage_path)
+
+        # ── Live2D persona manager ───────────────────────────────────────
+        personas_root = Path(__file__).resolve().parents[2] / "data" / "personas"
+        self._persona_manager = PersonaManager(personas_root)
 
         # ── Long-term memory (cross-session) ─────────────────────────────
         self._memory_settings = settings.memory
@@ -291,6 +296,8 @@ class SessionController:
         # ── Listeners ────────────────────────────────────────────────────
         self._message_listeners: list[Callable[[str, str], None]] = []
         self._tts_state_listeners: list[Callable[..., None]] = []
+        self._tts_amplitude_listeners: list[Callable[[float], None]] = []
+        self._tts.set_amplitude_listener(self._on_tts_amplitude)
         self._models_cache: list[str] | None = None
         self._models_cache_time = 0.0
         self._input_devices_cache: list[tuple[int, str]] | None = None
@@ -651,6 +658,7 @@ class SessionController:
             self._tts_engine,
             enabled=bool(self._settings.tts.enabled),
             state_listener=self._on_tts_state,
+            amplitude_listener=self._on_tts_amplitude,
         )
         self._apply_assistant_preferences()
         self._trace("tts.provider", f"Switched TTS provider to {normalized}")
@@ -720,6 +728,12 @@ class SessionController:
 
     # ── Listeners ────────────────────────────────────────────────────
 
+    # ── Persona ─────────────────────────────────────────────────────
+
+    @property
+    def persona_manager(self) -> PersonaManager:
+        return self._persona_manager
+
     # ── Memory accessors ────────────────────────────────────────────
 
     @property
@@ -782,6 +796,17 @@ class SessionController:
                 listener(event, **payload)
             except Exception:
                 log.debug("tts state listener raised", exc_info=True)
+
+    def add_tts_amplitude_listener(self, callback: Callable[[float], None]) -> None:
+        if callback and callback not in self._tts_amplitude_listeners:
+            self._tts_amplitude_listeners.append(callback)
+
+    def _on_tts_amplitude(self, level: float) -> None:
+        for listener in list(self._tts_amplitude_listeners):
+            try:
+                listener(float(level))
+            except Exception:
+                log.debug("tts amplitude listener raised", exc_info=True)
 
     # ── Models listing ───────────────────────────────────────────────
 

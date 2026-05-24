@@ -77,6 +77,38 @@ export interface MemoriesResponse {
   enabled: boolean;
 }
 
+// ── Live2D persona ───────────────────────────────────────────────────
+
+export interface ExpressionRef {
+  name: string;
+  file: string;
+}
+
+export interface MotionRef {
+  name: string;
+  file: string;
+}
+
+export interface Persona {
+  id: string;
+  display_name: string;
+  /** 2 = Cubism 2.1, 3 = Cubism 3+. */
+  cubism_version: number;
+  /** Filename within /personas/active/ (e.g. ``senko.model3.json``). */
+  entry_filename: string;
+  expressions: ExpressionRef[];
+  motions: Record<string, MotionRef[]>;
+  /** Mapping from reaction (cheerful/sad/...) to expression.name. */
+  reaction_mapping: Record<string, string>;
+  idle_motion_group: string | null;
+  talk_motion_group: string | null;
+  uploaded_at: string;
+}
+
+export interface PersonaResponse {
+  persona: Persona | null;
+}
+
 export interface MetricsSnapshot {
   mode?: string;
   capture_ms?: number;
@@ -118,6 +150,8 @@ export type WsServerEvent =
   | { type: "error"; message: string }
   | { type: "memory_added"; memory: Memory }
   | { type: "memory_deleted"; id: number }
+  | { type: "persona_changed"; persona: Persona | null }
+  | { type: "audio_amplitude"; level: number }
   | { type: "pong" };
 
 export type WsClientCommand =

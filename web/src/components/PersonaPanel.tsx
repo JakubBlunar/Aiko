@@ -1,22 +1,20 @@
 import { useEffect, useRef, useState } from "react";
+import { Live2DAvatar } from "./Live2DAvatar";
 import { useAssistantStore } from "../store";
 
 /**
- * Lean v1 persona panel.
+ * Persona panel.
  *
- * Renders a stylised SVG portrait of Aiko whose mouth opens/closes while TTS
- * is active and whose colour shifts with the assistant's reaction tag. This
- * works without external assets so the app is usable on a fresh checkout.
- *
- * To upgrade to Live2D later: detect a model file at ``/persona/<model>.json``
- * and lazy-load ``pixi-live2d-display`` here, replacing the SVG canvas. The
- * TTS state listener already provides everything the Live2D mouth-open
- * parameter needs.
+ * When a Live2D model has been uploaded via Settings, renders the live
+ * canvas with audio-amplitude lip-sync and reaction-driven expressions.
+ * Otherwise falls back to the stylised SVG portrait so the app still feels
+ * alive on a fresh checkout.
  */
 export function PersonaPanel() {
   const ttsState = useAssistantStore((s) => s.ttsState);
   const reaction = useAssistantStore((s) => s.reaction);
   const voiceMode = useAssistantStore((s) => s.voiceMode);
+  const persona = useAssistantStore((s) => s.persona);
 
   const [mouthOpen, setMouthOpen] = useState(0); // 0..1
   const animRef = useRef<number | null>(null);
@@ -73,71 +71,55 @@ export function PersonaPanel() {
           className="absolute inset-0 rounded-full opacity-40 blur-3xl transition-colors duration-700"
           style={{ background: palette.glow }}
         />
-        <svg
-          viewBox="0 0 200 220"
-          className="relative h-full w-full drop-shadow-2xl"
-          aria-hidden="true"
-        >
-          {/* Hair back */}
-          <ellipse
-            cx="100"
-            cy="125"
-            rx="78"
-            ry="95"
-            fill={palette.hairBack}
-          />
-          {/* Body suggestion */}
-          <path
-            d="M40 220 Q40 180 100 175 Q160 180 160 220 Z"
-            fill={palette.body}
-            opacity={0.85}
-          />
-          {/* Face */}
-          <ellipse
-            cx="100"
-            cy="115"
-            rx="48"
-            ry="58"
-            fill={palette.skin}
-          />
-          {/* Hair front bangs */}
-          <path
-            d="M55 95 Q60 50 100 55 Q140 50 145 95 Q130 75 100 80 Q70 75 55 95 Z"
-            fill={palette.hairFront}
-          />
-          {/* Side hair tufts */}
-          <path
-            d="M52 100 Q40 140 58 170 Q50 130 60 110 Z"
-            fill={palette.hairFront}
-          />
-          <path
-            d="M148 100 Q160 140 142 170 Q150 130 140 110 Z"
-            fill={palette.hairFront}
-          />
-          {/* Eyes */}
-          <g>
-            <ellipse cx="80" cy="118" rx="7" ry={eyeShape.height} fill="#1f1235" />
-            <ellipse cx="120" cy="118" rx="7" ry={eyeShape.height} fill="#1f1235" />
-            <circle cx="82" cy="116" r="2" fill="#fff" opacity={0.9} />
-            <circle cx="122" cy="116" r="2" fill="#fff" opacity={0.9} />
-          </g>
-          {/* Blush */}
-          <circle cx="73" cy="135" r="6" fill={palette.blush} opacity={0.55} />
-          <circle cx="127" cy="135" r="6" fill={palette.blush} opacity={0.55} />
-          {/* Mouth */}
-          <ellipse
-            cx="100"
-            cy={148 + mouthOpen * 2}
-            rx={6 + mouthOpen * 4}
-            ry={1 + mouthOpen * 7}
-            fill="#3b1d44"
-          />
-        </svg>
+        {persona ? (
+          <Live2DAvatar manifest={persona} />
+        ) : (
+          <svg
+            viewBox="0 0 200 220"
+            className="relative h-full w-full drop-shadow-2xl"
+            aria-hidden="true"
+          >
+            <ellipse cx="100" cy="125" rx="78" ry="95" fill={palette.hairBack} />
+            <path
+              d="M40 220 Q40 180 100 175 Q160 180 160 220 Z"
+              fill={palette.body}
+              opacity={0.85}
+            />
+            <ellipse cx="100" cy="115" rx="48" ry="58" fill={palette.skin} />
+            <path
+              d="M55 95 Q60 50 100 55 Q140 50 145 95 Q130 75 100 80 Q70 75 55 95 Z"
+              fill={palette.hairFront}
+            />
+            <path
+              d="M52 100 Q40 140 58 170 Q50 130 60 110 Z"
+              fill={palette.hairFront}
+            />
+            <path
+              d="M148 100 Q160 140 142 170 Q150 130 140 110 Z"
+              fill={palette.hairFront}
+            />
+            <g>
+              <ellipse cx="80" cy="118" rx="7" ry={eyeShape.height} fill="#1f1235" />
+              <ellipse cx="120" cy="118" rx="7" ry={eyeShape.height} fill="#1f1235" />
+              <circle cx="82" cy="116" r="2" fill="#fff" opacity={0.9} />
+              <circle cx="122" cy="116" r="2" fill="#fff" opacity={0.9} />
+            </g>
+            <circle cx="73" cy="135" r="6" fill={palette.blush} opacity={0.55} />
+            <circle cx="127" cy="135" r="6" fill={palette.blush} opacity={0.55} />
+            <ellipse
+              cx="100"
+              cy={148 + mouthOpen * 2}
+              rx={6 + mouthOpen * 4}
+              ry={1 + mouthOpen * 7}
+              fill="#3b1d44"
+            />
+          </svg>
+        )}
       </div>
 
       <div className="w-full max-w-xs text-center">
         <div className="text-sm font-medium text-ink-100">
-          {LABEL_FOR_REACTION[reaction] ?? "Neutral"}
+          {persona ? persona.display_name : LABEL_FOR_REACTION[reaction] ?? "Neutral"}
         </div>
         <div className="mt-1 text-[10px] uppercase tracking-[0.2em] text-ink-100/40">
           {ttsState === "speaking"
@@ -145,11 +127,13 @@ export function PersonaPanel() {
             : voiceMode !== "off"
               ? voiceMode
               : "idle"}
+          {persona ? ` · cubism v${persona.cubism_version}` : ""}
         </div>
-        <p className="mt-4 text-[11px] text-ink-100/40">
-          Drop a Live2D model into <code>data/persona/</code> to upgrade this
-          panel; the TTS state listener already drives the mouth.
-        </p>
+        {!persona && (
+          <p className="mt-4 text-[11px] text-ink-100/40">
+            Open Settings → Persona avatar to upload a Live2D model zip.
+          </p>
+        )}
       </div>
     </aside>
   );
