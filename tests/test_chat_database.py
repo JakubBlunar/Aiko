@@ -13,7 +13,6 @@ from app.core.chat_database import (
     ChatDatabase,
     MessageRow,
     SummaryRow,
-    PersonalityNoteRow,
     RecentTopicRow,
     _encode_embedding,
     _decode_embedding,
@@ -109,26 +108,22 @@ class TestMessages(unittest.TestCase):
         with _TempDB() as db:
             db.add_message("s1", "user", "hello")
             db.save_summary("s1", "summary", 10, 1)
-            db.upsert_personality_note("s1", "pref", "likes cats", 0.9)
             db.add_recent_topic("s1", "cats")
 
             deleted = db.clear_messages("s1")
             self.assertEqual(deleted, 1)
             self.assertEqual(db.get_message_count("s1"), 0)
             self.assertIsNone(db.get_latest_summary("s1"))
-            # personality and topics should survive default clear
-            self.assertGreater(len(db.get_personality_notes("s1")), 0)
+            # topics should survive default clear
             self.assertGreater(len(db.get_recent_topics("s1")), 0)
 
     def test_clear_messages_full_reset(self):
         with _TempDB() as db:
             db.add_message("s1", "user", "hello")
-            db.upsert_personality_note("s1", "pref", "likes cats", 0.9)
             db.add_recent_topic("s1", "cats")
 
             db.clear_messages("s1", full_reset=True)
             self.assertEqual(db.get_message_count("s1"), 0)
-            self.assertEqual(len(db.get_personality_notes("s1")), 0)
             self.assertEqual(len(db.get_recent_topics("s1")), 0)
 
 
@@ -186,62 +181,6 @@ class TestSummaries(unittest.TestCase):
             db.save_summary("s1", "new", 20, 10)
             row = db.get_latest_summary("s1")
             self.assertEqual(row.summary, "new")
-
-
-class TestPersonalityNotes(unittest.TestCase):
-    def test_upsert_creates_and_updates(self):
-        with _TempDB() as db:
-            nid = db.upsert_personality_note("s1", "preference", "likes cats", 0.8)
-            self.assertIsInstance(nid, int)
-            notes = db.get_personality_notes("s1")
-            self.assertEqual(len(notes), 1)
-            self.assertEqual(notes[0].note, "likes cats")
-            self.assertAlmostEqual(notes[0].confidence, 0.8)
-
-            nid2 = db.upsert_personality_note("s1", "preference", "likes cats", 0.95)
-            self.assertEqual(nid, nid2)
-            notes = db.get_personality_notes("s1")
-            self.assertEqual(len(notes), 1)
-            self.assertAlmostEqual(notes[0].confidence, 0.95)
-
-    def test_min_confidence_filter(self):
-        with _TempDB() as db:
-            db.upsert_personality_note("s1", "pref", "high conf", 0.9)
-            db.upsert_personality_note("s1", "pref", "low conf", 0.2)
-            high = db.get_personality_notes("s1", min_confidence=0.5)
-            self.assertEqual(len(high), 1)
-            self.assertEqual(high[0].note, "high conf")
-
-    def test_replace_personality_notes(self):
-        with _TempDB() as db:
-            db.upsert_personality_note("s1", "old", "old note", 0.8)
-            db.replace_personality_notes("s1", [
-                ("new", "note one", 0.9),
-                ("new", "note two", 0.7),
-            ])
-            notes = db.get_personality_notes("s1")
-            self.assertEqual(len(notes), 2)
-            texts = {n.note for n in notes}
-            self.assertEqual(texts, {"note one", "note two"})
-
-    def test_decay_and_prune(self):
-        with _TempDB() as db:
-            db.upsert_personality_note("s1", "a", "survives", 0.9)
-            db.upsert_personality_note("s1", "b", "pruned", 0.3)
-            pruned = db.decay_personality_notes("s1", decay_rate=0.15, prune_threshold=0.2)
-            self.assertEqual(pruned, 1)
-            notes = db.get_personality_notes("s1")
-            self.assertEqual(len(notes), 1)
-            self.assertEqual(notes[0].note, "survives")
-
-    def test_cap_personality_notes(self):
-        with _TempDB() as db:
-            for i in range(5):
-                db.upsert_personality_note("s1", "cat", f"note {i}", 0.5 + i * 0.1)
-            removed = db.cap_personality_notes("s1", max_notes=2)
-            self.assertEqual(removed, 3)
-            notes = db.get_personality_notes("s1")
-            self.assertEqual(len(notes), 2)
 
 
 class TestRecentTopics(unittest.TestCase):

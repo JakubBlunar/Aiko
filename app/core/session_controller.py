@@ -1,4 +1,4 @@
-"""Lean session controller for Aiko (English-tutor edition).
+"""Lean session controller for Aiko (witty companion edition).
 
 This is the single hub the UI talks to. It owns:
 
@@ -6,7 +6,7 @@ This is the single hub the UI talks to. It owns:
 - Ollama client + TurnRunner (the conversation loop)
 - TtsQueue + TTS engine
 - Microphone + RealtimeSTT
-- Background workers: SummaryWorker, LearnerProfile, ProactiveDirector
+- Background workers: SummaryWorker, ProactiveDirector
 - Embedded MCP server (optional, for Cursor debugging)
 
 The earlier ~2700-line implementation is preserved on the ``legacy-v0`` git
@@ -15,7 +15,7 @@ tag if anything needs to be referenced. This rewrite drops:
   - Embedding/recent-topics search
   - Live2D avatar
   - Action/agentic UI automation
-  - Personality decay + 0.5B judge model
+  - Structured learner profile + 0.5B judge model
 
 Public surface intentionally retains the method names the UI and MCP server
 already use, so callers don't have to change.
@@ -37,7 +37,6 @@ from app.audio.earcons import EarconPlayer
 from app.audio.mic_capture import MicrophoneCapture, list_output_devices
 from app.core.chat_database import ChatDatabase
 from app.core.crash_logging import log_event
-from app.core.learner_profile import LearnerProfile
 from app.core.proactive_director import ProactiveDirector
 from app.core.prompt_assembler import PromptAssembler
 from app.core.services.response_text_service import strip_action_meta_for_tts
@@ -169,14 +168,6 @@ class SessionController:
 
         # ── Prompt + workers + runner ────────────────────────────────────
         self._prompt_assembler = PromptAssembler(self._chat_db)
-        self._learner_profile = LearnerProfile(
-            self._chat_db,
-            self._ollama,
-            model=self._effective_chat_model,
-            update_every_n_turns=int(
-                getattr(settings.agent, "personality_update_every_n_turns", 4),
-            ),
-        )
         self._summary_worker = SummaryWorker(
             self._chat_db,
             self._ollama,
@@ -192,7 +183,6 @@ class SessionController:
             context_window=self._context_window,
             max_tokens=self._max_tokens,
             temperature=self._temperature,
-            learner_profile=self._learner_profile,
             summary_worker=self._summary_worker,
         )
         self._proactive = ProactiveDirector(
@@ -318,7 +308,6 @@ class SessionController:
         self._effective_chat_model = normalized
         self._turn_runner.update_runtime(model=normalized)
         # Update the cached model on workers too.
-        self._learner_profile._model = normalized  # type: ignore[attr-defined]
         self._summary_worker._model = normalized  # type: ignore[attr-defined]
         self._proactive.update_runtime(model=normalized)
 

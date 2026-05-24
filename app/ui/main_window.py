@@ -36,7 +36,6 @@ from PySide6.QtWidgets import (
 from app.core.session_controller import SessionController
 from app.core.settings import AppSettings, save_runtime_preferences
 from app.ui.decision_trace_dialog import DecisionTraceDialog
-from app.ui.memory_viewer_dialog import MemoryViewerDialog
 from app.ui.settings_dialog import SettingsDialog
 from app.ui.theme import (
     BUBBLE_ASSISTANT_BG,
@@ -260,13 +259,11 @@ class MainWindow(QMainWindow):
         conversation_layout.addWidget(self._status_label)
 
         self._settings_dialog = None
-        self._memory_dialog: MemoryViewerDialog | None = None
         self._trace_dialog: DecisionTraceDialog | None = None
         self._voice_cloning_dialog = None
 
         menu_bar = self.menuBar()
         view_menu = menu_bar.addMenu("View")
-        view_menu.addAction("Memory Viewer", self._open_memory_viewer)
         view_menu.addAction("Decision Trace", self._open_trace_viewer)
         try:
             from pocket_tts import TTSModel as _PT  # noqa: F401
@@ -641,21 +638,6 @@ class MainWindow(QMainWindow):
                         speaker = "User" if m.role == "user" else "Assistant"
                         lines.append(f"**{speaker}** ({ts}):\n{m.content}\n\n---\n")
                     Path(path).write_text("\n".join(lines), encoding="utf-8")
-
-    def _open_memory_viewer(self) -> None:
-        if self._memory_dialog is None:
-            self._memory_dialog = MemoryViewerDialog(
-                self._session, None,
-                initial_geometry=self._settings.ui.dialog_geometries.get("memory_viewer"),
-                persist_geometry=lambda geo: self._persist_dialog_geometry("memory_viewer", geo),
-            )
-            self._memory_dialog.finished.connect(self._on_memory_dialog_closed)
-        self._memory_dialog.show()
-        self._memory_dialog.raise_()
-        self._memory_dialog.activateWindow()
-
-    def _on_memory_dialog_closed(self) -> None:
-        self._memory_dialog = None
 
     def _open_voice_cloning(self) -> None:
         if self._voice_cloning_dialog is None:

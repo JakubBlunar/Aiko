@@ -25,7 +25,6 @@
     "personality_decay_rate": 0.1,
     "personality_max_notes": 40,
     "personality_token_budget": 300,
-    "personality_update_every_n_turns": 4,
     "proactive_silence_seconds": 45,
     "proactive_cooldown_seconds": 120,
     "proactive_speech_requires_live": true
@@ -67,5 +66,10 @@
   "mcp_server": {
     "enabled": true,
     "port": 6274
+  },
+  "web_server": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 6275
   }
 }

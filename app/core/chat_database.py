@@ -7,7 +7,6 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 
@@ -94,17 +93,6 @@ class SummaryRow:
     summary: str
     summary_tokens: int
     messages_summarized: int
-    updated_at: str
-
-
-@dataclass(slots=True)
-class PersonalityNoteRow:
-    id: int
-    session_id: str
-    category: str
-    note: str
-    confidence: float
-    created_at: str
     updated_at: str
 
 
@@ -392,116 +380,6 @@ class ChatDatabase:
                 (session_id, session_id, keep_latest),
             )
         conn.commit()
-
-    # ── Personality Notes ──
-
-    def get_personality_notes(
-        self,
-        session_id: str,
-        *,
-        min_confidence: float = 0.0,
-        limit: int | None = None,
-    ) -> list[PersonalityNoteRow]:
-        conn = self._get_conn()
-        query = (
-            "SELECT id, session_id, category, note, confidence, created_at, updated_at "
-            "FROM personality_notes WHERE session_id = ? AND confidence >= ? "
-            "ORDER BY confidence DESC, updated_at DESC"
-        )
-        params: list[Any] = [session_id, min_confidence]
-        if limit:
-            query += " LIMIT ?"
-            params.append(limit)
-        rows = conn.execute(query, params).fetchall()
-        return [PersonalityNoteRow(*r) for r in rows]
-
-    def upsert_personality_note(
-        self,
-        session_id: str,
-        category: str,
-        note: str,
-        confidence: float,
-    ) -> int:
-        """Insert or update a personality note. Matches on session_id + note text similarity."""
-        conn = self._get_conn()
-        now = _now_iso()
-        existing = conn.execute(
-            "SELECT id FROM personality_notes WHERE session_id = ? AND category = ? AND note = ?",
-            (session_id, category, note),
-        ).fetchone()
-        if existing:
-            conn.execute(
-                "UPDATE personality_notes SET confidence = ?, updated_at = ? WHERE id = ?",
-                (confidence, now, existing[0]),
-            )
-            conn.commit()
-            return existing[0]
-        cursor = conn.execute(
-            "INSERT INTO personality_notes (session_id, category, note, confidence, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (session_id, category, note, confidence, now, now),
-        )
-        conn.commit()
-        return cursor.lastrowid  # type: ignore[return-value]
-
-    def replace_personality_notes(
-        self,
-        session_id: str,
-        notes: list[tuple[str, str, float]],
-    ) -> None:
-        """Replace all personality notes for a session with a new set.
-
-        Each tuple is (category, note, confidence).
-        """
-        conn = self._get_conn()
-        now = _now_iso()
-        conn.execute("DELETE FROM personality_notes WHERE session_id = ?", (session_id,))
-        for category, note, confidence in notes:
-            conn.execute(
-                "INSERT INTO personality_notes (session_id, category, note, confidence, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (session_id, category, note, confidence, now, now),
-            )
-        conn.commit()
-
-    def decay_personality_notes(
-        self,
-        session_id: str,
-        decay_rate: float,
-        prune_threshold: float,
-    ) -> int:
-        """Decay all notes by decay_rate, prune those below threshold. Returns pruned count."""
-        conn = self._get_conn()
-        now = _now_iso()
-        conn.execute(
-            "UPDATE personality_notes SET confidence = confidence - ?, updated_at = ? "
-            "WHERE session_id = ?",
-            (decay_rate, now, session_id),
-        )
-        cursor = conn.execute(
-            "DELETE FROM personality_notes WHERE session_id = ? AND confidence < ?",
-            (session_id, prune_threshold),
-        )
-        conn.commit()
-        return cursor.rowcount
-
-    def cap_personality_notes(self, session_id: str, max_notes: int) -> int:
-        """Keep only the top max_notes by confidence. Returns deleted count."""
-        conn = self._get_conn()
-        excess_ids = conn.execute(
-            "SELECT id FROM personality_notes WHERE session_id = ? "
-            "ORDER BY confidence DESC, updated_at DESC LIMIT -1 OFFSET ?",
-            (session_id, max_notes),
-        ).fetchall()
-        if not excess_ids:
-            return 0
-        id_list = [r[0] for r in excess_ids]
-        placeholders = ",".join("?" * len(id_list))
-        cursor = conn.execute(
-            f"DELETE FROM personality_notes WHERE id IN ({placeholders})", id_list
-        )
-        conn.commit()
-        return cursor.rowcount
 
     # ── Recent Topics ──
 

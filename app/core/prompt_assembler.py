@@ -1,10 +1,9 @@
 """Build the message list sent to Ollama on every turn.
 
 Inputs (all optional):
-  - persona file (data/persona/aiko_english_tutor.txt)
+  - persona file (data/persona/aiko_companion.txt)
   - latest summary row (covers everything before the recent window)
   - last N messages from chat_database.messages
-  - learner profile rows from chat_database.personality_notes
   - the new user input
 
 Output: ``list[dict]`` ready for ``OllamaClient.chat_stream``.
@@ -14,7 +13,6 @@ purely token-budget based against ``context_window - max_tokens - safety``.
 from __future__ import annotations
 
 import logging
-from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +22,7 @@ from app.llm.token_utils import estimate_messages_tokens, estimate_tokens
 
 log = logging.getLogger("app.prompt_assembler")
 
-DEFAULT_PERSONA_PATH = Path("data/persona/aiko_english_tutor.txt")
+DEFAULT_PERSONA_PATH = Path("data/persona/aiko_companion.txt")
 
 # Reserve a buffer between (estimated tokens used) and (model's context window)
 # so we never send a request that bumps against the limit and gets truncated
@@ -67,14 +65,10 @@ class PromptAssembler:
         """
         persona = self._load_persona()
         summary = self._db.get_latest_summary(session_key)
-        notes = self._db.get_personality_notes(session_key)
 
         system_parts: list[str] = []
         if persona:
             system_parts.append(persona)
-        profile_block = self._format_learner_profile(notes)
-        if profile_block:
-            system_parts.append(profile_block)
         if summary and summary.summary.strip():
             system_parts.append(
                 "Earlier conversation (summary):\n" + summary.summary.strip()
@@ -123,26 +117,6 @@ class PromptAssembler:
             text = ""
         self._persona_cache = (mtime, text)
         return text
-
-    @staticmethod
-    def _format_learner_profile(notes: list[Any]) -> str:
-        if not notes:
-            return ""
-        grouped: dict[str, list[str]] = defaultdict(list)
-        for n in notes:
-            cat = (getattr(n, "category", "") or "general").strip() or "general"
-            note = (getattr(n, "note", "") or "").strip()
-            if note:
-                grouped[cat].append(note)
-        if not grouped:
-            return ""
-        lines = ["What I know about Jacob (the learner):"]
-        for cat in sorted(grouped.keys()):
-            entries = grouped[cat][:8]
-            label = cat.replace("_", " ").title()
-            joined = "; ".join(entries)
-            lines.append(f"- {label}: {joined}")
-        return "\n".join(lines)
 
     @staticmethod
     def _fit_history(
