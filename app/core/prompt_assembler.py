@@ -166,12 +166,24 @@ class PromptAssembler:
             Path(self_image_path) if self_image_path is not None else None
         )
         self._self_image_cache: tuple[float, str] | None = None
+        # Phase 1b: optional cache lookup that returns a pre-fetched RAG
+        # block (formatted) for the current ``user_text``. Wired by
+        # SessionController.
+        self._rag_prefetch_lookup: Callable[[str], str | None] | None = None
 
     def set_memory_retriever(self, retriever: "MemoryRetriever | None") -> None:
         self._memory_retriever = retriever
 
     def set_rag_retriever(self, retriever: "RagRetriever | None") -> None:
         self._rag_retriever = retriever
+
+    def set_rag_prefetch_lookup(
+        self,
+        lookup: Callable[[str], str | None] | None,
+    ) -> None:
+        """Optional Phase-1b cache: if it returns a non-empty block, we'll
+        skip the live retrieval and reuse the speculative pre-fetch."""
+        self._rag_prefetch_lookup = lookup
 
     def set_inner_life_providers(
         self,
@@ -278,10 +290,22 @@ class PromptAssembler:
 
         memory_block = ""
         if not aggressive:
+            # Phase 1b: try the speculative pre-fetch cache first. On a hit
+            # we skip the embed + multi-source retrieval entirely, saving
+            # ~80-300ms on the hot path. Misses fall through to live
+            # retrieval below.
+            if self._rag_prefetch_lookup is not None:
+                try:
+                    cached_block = self._rag_prefetch_lookup(user_text)
+                except Exception:
+                    log.debug("rag prefetch lookup raised", exc_info=True)
+                    cached_block = None
+                if cached_block:
+                    memory_block = cached_block
             # Prefer RAG (memories + messages + documents merged) when available.
             # Falls back to legacy single-source MemoryRetriever otherwise so we
             # stay functional on environments without LanceDB (probe failure).
-            if self._rag_retriever is not None:
+            if not memory_block and self._rag_retriever is not None:
                 try:
                     recent_turns = [
                         (row.content or "").strip()

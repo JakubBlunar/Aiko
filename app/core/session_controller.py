@@ -324,6 +324,28 @@ class SessionController:
             circadian=self._render_circadian_block,
         )
 
+        # Phase 1b: speculative RAG pre-fetcher. While the user is still
+        # talking (stt_partial events), we kick off background retrieval so
+        # the prompt build can reuse the result on the hot path.
+        self._rag_prefetcher = None
+        if getattr(self, "_rag_retriever", None) is not None:
+            try:
+                from app.core.rag_prefetcher import RagPrefetcher
+
+                self._rag_prefetcher = RagPrefetcher(
+                    self._rag_retriever,
+                    ttl_seconds=30.0,
+                    debounce_ms=400,
+                    min_partial_chars=12,
+                    similarity_threshold=0.55,
+                )
+                self._prompt_assembler.set_rag_prefetch_lookup(
+                    self._lookup_prefetched_rag_block,
+                )
+            except Exception:
+                log.warning("RagPrefetcher init failed", exc_info=True)
+                self._rag_prefetcher = None
+
         if (
             self._memory_settings.enabled
             and self._memory_settings.extractor_enabled
@@ -1359,6 +1381,22 @@ class SessionController:
             log.debug("circadian block render failed", exc_info=True)
             return ""
 
+    def _lookup_prefetched_rag_block(self, user_text: str) -> str | None:
+        """Phase 1b: PromptAssembler hook into the speculative pre-fetcher.
+
+        Returns ``None`` on a miss so the assembler falls through to the
+        live retriever. Allows up to ~250ms of waiting on an in-flight
+        fetch to soak up the embedding latency that the partial just paid.
+        """
+        prefetcher = getattr(self, "_rag_prefetcher", None)
+        if prefetcher is None:
+            return None
+        try:
+            return prefetcher.lookup(user_text, wait_pending_seconds=0.25)
+        except Exception:
+            log.debug("rag prefetch lookup raised", exc_info=True)
+            return None
+
     # ── Mood listeners (WS broadcast) ───────────────────────────────
 
     def add_mood_state_listener(
@@ -1402,6 +1440,15 @@ class SessionController:
             self._scheduler.on_user_speech()
         except Exception:
             log.debug("scheduler.on_user_speech failed", exc_info=True)
+        # Phase 1b: speculatively pre-fetch RAG hits for this partial. This
+        # is debounced + dedup'd inside the prefetcher so we don't hammer
+        # the embedder.
+        prefetcher = getattr(self, "_rag_prefetcher", None)
+        if prefetcher is not None:
+            try:
+                prefetcher.submit(text, exclude_session_id=self.session_key)
+            except Exception:
+                log.debug("rag prefetch submit failed", exc_info=True)
         try:
             hint = self._backchannel_gate.consider(text, now=time.monotonic())
         except Exception:
@@ -1742,6 +1789,11 @@ class SessionController:
             self._scheduler.stop()
         except Exception:
             log.debug("scheduler stop failed", exc_info=True)
+        if getattr(self, "_rag_prefetcher", None) is not None:
+            try:
+                self._rag_prefetcher.shutdown()
+            except Exception:
+                log.debug("rag prefetcher shutdown failed", exc_info=True)
         try:
             self._tts.stop()
         except Exception:
