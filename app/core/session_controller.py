@@ -359,6 +359,37 @@ class SessionController:
             log.warning("ReflectionWorker init failed", exc_info=True)
             self._reflection_worker = None
 
+        # Phase 3a: structured user profile + per-turn user-state estimator.
+        # The store is hot-path-safe (small SQL reads) and the estimator
+        # runs after every turn (regex only). The worker is LLM-driven and
+        # only fires every N user turns inside the speaking window.
+        self._user_profile_store = None
+        self._user_profile_worker = None
+        self._user_state_store = None
+        self._user_state_estimator = None
+        try:
+            from app.core.user_profile import (
+                UserProfileStore, UserProfileWorker,
+            )
+            from app.core.user_state import UserStateEstimator, UserStateStore
+
+            self._user_profile_store = UserProfileStore(self._chat_db)
+            self._user_state_store = UserStateStore(self._chat_db)
+            self._user_state_estimator = UserStateEstimator(self._user_state_store)
+            self._user_profile_worker = UserProfileWorker(
+                ollama=self._ollama,
+                db=self._chat_db,
+                store=self._user_profile_store,
+                model=self._effective_chat_model,
+                min_user_turns=settings.agent.user_profile_min_turns,
+            )
+        except Exception:
+            log.warning("user-profile / user-state init failed", exc_info=True)
+            self._user_profile_store = None
+            self._user_profile_worker = None
+            self._user_state_store = None
+            self._user_state_estimator = None
+
         # Phase 2d: daily self-image pulse + pinned top-self-memories.
         # The pulse rebuilds data/persona/self_image.txt at most once per
         # ~20h. Pinned bullets get folded into the prompt every turn so we
@@ -385,6 +416,8 @@ class SessionController:
         self._prompt_assembler.set_inner_life_providers(
             affect=self._render_affect_block,
             circadian=self._render_circadian_block,
+            profile=self._render_user_profile_block,
+            user_state=self._render_user_state_block,
         )
         self._prompt_assembler.set_pinned_self_memories_provider(
             self._top_pinned_self_memories,
@@ -1434,6 +1467,28 @@ class SessionController:
             log.debug("circadian block render failed", exc_info=True)
             return ""
 
+    def _render_user_profile_block(self) -> str:
+        """Phase 3a: bullet block of the high-confidence profile fields."""
+        store = getattr(self, "_user_profile_store", None)
+        if store is None:
+            return ""
+        try:
+            return store.render_block(self._user_id)
+        except Exception:
+            log.debug("user profile block render failed", exc_info=True)
+            return ""
+
+    def _render_user_state_block(self) -> str:
+        """Phase 3a: tiny per-turn 'Right now Jacob...' line."""
+        store = getattr(self, "_user_state_store", None)
+        if store is None:
+            return ""
+        try:
+            return store.render_block(self._user_id)
+        except Exception:
+            log.debug("user state block render failed", exc_info=True)
+            return ""
+
     def _top_pinned_self_memories(self, *, limit: int = 5) -> list[str]:
         """Phase 2d: hot-path provider for pinned self-memory bullets.
 
@@ -1459,6 +1514,58 @@ class SessionController:
             if len(out) >= int(limit):
                 break
         return out
+
+    def _maybe_schedule_user_profile_job(self) -> None:
+        """Phase 3a: enqueue UserProfileWorker via the speaking window."""
+        worker = getattr(self, "_user_profile_worker", None)
+        if worker is None:
+            return
+        try:
+            if not worker.should_run():
+                return
+        except Exception:
+            log.debug("profile worker should_run failed", exc_info=True)
+            return
+
+        session_key = self.session_key
+        user_id = self._user_id
+        history_window = 24
+
+        def _history_provider() -> list[tuple[str, str]]:
+            try:
+                rows = self._chat_db.get_messages(session_key, limit=history_window)
+            except Exception:
+                return []
+            return [
+                (str(r.role or ""), str(r.content or ""))
+                for r in rows
+                if r.role in ("user", "assistant")
+            ]
+
+        def _job(_stop_flag: Any) -> None:
+            if _stop_flag is not None and _stop_flag.is_set():
+                return
+            try:
+                worker.maybe_run(
+                    user_id,
+                    session_key=session_key,
+                    history_provider=_history_provider,
+                )
+            except Exception:
+                log.debug("user profile job raised", exc_info=True)
+
+        try:
+            from app.core.speaking_window_scheduler import ScheduledJob
+
+            self._scheduler.submit(ScheduledJob(
+                name="user_profile",
+                priority=60,
+                estimated_seconds=4.0,
+                callable=_job,
+                dedupe_key="user_profile",
+            ))
+        except Exception:
+            log.debug("user profile submit failed", exc_info=True)
 
     def _maybe_schedule_self_image_pulse(self) -> None:
         """Phase 2d: enqueue a daily self-image rebuild during TTS playback."""
@@ -1674,6 +1781,21 @@ class SessionController:
             self._maybe_schedule_self_image_pulse()
         except Exception:
             log.debug("self-image schedule failed", exc_info=True)
+
+        # Phase 3a: per-turn user-state heuristic (regex only, ~0.5ms).
+        estimator = getattr(self, "_user_state_estimator", None)
+        if estimator is not None:
+            try:
+                estimator.apply_turn(self._user_id, user_text=user_text)
+            except Exception:
+                log.debug("user-state estimator failed", exc_info=True)
+        worker = getattr(self, "_user_profile_worker", None)
+        if worker is not None:
+            try:
+                worker.notify_user_turn()
+                self._maybe_schedule_user_profile_job()
+            except Exception:
+                log.debug("user-profile schedule failed", exc_info=True)
 
     # ── Voice capture ────────────────────────────────────────────────
 
