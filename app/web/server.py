@@ -145,6 +145,9 @@ def create_web_app(session: "SessionController") -> FastAPI:
     def _on_metrics_updated(snapshot: dict[str, Any]) -> None:
         hub.broadcast({"type": "metrics_update", "metrics": snapshot})
 
+    def _on_mood_state(payload: dict[str, Any]) -> None:
+        hub.broadcast({"type": "mood_state", **payload})
+
     def _broadcast_context_window() -> None:
         hub.broadcast({
             "type": "context_window",
@@ -177,6 +180,10 @@ def create_web_app(session: "SessionController") -> FastAPI:
         session.add_metrics_listener(_on_metrics_updated)
     except Exception:
         log.debug("metrics listener subscription failed", exc_info=True)
+    try:
+        session.add_mood_state_listener(_on_mood_state)
+    except Exception:
+        log.debug("mood state listener subscription failed", exc_info=True)
     try:
         session.add_tts_amplitude_listener(_on_amplitude)
     except Exception:

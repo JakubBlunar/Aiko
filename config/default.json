@@ -20,7 +20,17 @@
     "summary_idle_seconds": 15,
     "summary_min_unsummarized_messages": 6,
     "summary_target_tokens": 600,
-    "max_prompt_tokens_pct": 0.8
+    "max_prompt_tokens_pct": 0.8,
+    "scheduler_idle_seconds": 20,
+    "scheduler_speaking_window_grace_ms": 200,
+    "scheduler_max_job_seconds": 8,
+    "reflection_min_seconds_between": 8,
+    "reflection_emotional_delta_threshold": 0.05,
+    "user_profile_min_turns": 6,
+    "agenda_groom_every_n_turns": 8,
+    "arc_update_every_n_turns": 1,
+    "self_image_pulse_enabled": true,
+    "prepared_nudge_ttl_seconds": 600
   },
   "audio": {
     "sample_rate": 16000,

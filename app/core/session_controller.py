@@ -35,7 +35,9 @@ from typing import Any
 
 from app.audio.earcons import EarconPlayer
 from app.audio.mic_capture import MicrophoneCapture, list_output_devices
+from app.core.affect_state import AffectStore, AffectUpdater
 from app.core.chat_database import ChatDatabase
+from app.core import circadian as _circadian
 from app.core.crash_logging import log_event
 from app.core.memory_extractor import MemoryExtractor
 from app.core.memory_retriever import MemoryRetriever
@@ -49,6 +51,7 @@ from app.core.session_text_utils import (
     sanitize_user_text,
 )
 from app.core.settings import AppSettings
+from app.core.speaking_window_scheduler import SpeakingWindowScheduler
 from app.core.summary_worker import SummaryWorker
 from app.core.tts_queue import TtsQueue
 from app.core.turn_runner import TurnRunner
@@ -154,6 +157,15 @@ class SessionController:
         # ── Live2D persona manager ───────────────────────────────────────
         personas_root = Path(__file__).resolve().parents[2] / "data" / "personas"
         self._persona_manager = PersonaManager(personas_root)
+
+        # ── Affect state (Phase 2b) ───────────────────────────────────────
+        # Persistent valence/arousal + named mood, updated post-turn (cheap
+        # math, no LLM). Read on the hot path by PromptAssembler to inject
+        # a tiny ambient block. ``mood_state`` WS event lets the avatar tint
+        # its idle motion.
+        self._affect_store = AffectStore(self._chat_db)
+        self._affect_updater = AffectUpdater(self._affect_store)
+        self._mood_listeners: list[Callable[[dict[str, Any]], None]] = []
 
         # ── Long-term memory (cross-session) ─────────────────────────────
         self._memory_settings = settings.memory
@@ -284,10 +296,21 @@ class SessionController:
         self._realtime_stt = RealtimeSttService(settings.stt, settings.audio)
 
         # ── Prompt + workers + runner ────────────────────────────────────
+        self_image_path = (
+            Path(__file__).resolve().parents[2] / "data" / "persona" / "self_image.txt"
+        )
         self._prompt_assembler = PromptAssembler(
             self._chat_db,
             memory_retriever=self._memory_retriever,
             rag_retriever=getattr(self, "_rag_retriever", None),
+            self_image_path=self_image_path,
+        )
+
+        # Wire inner-life providers (cheap SQL reads / pure functions).
+        # Each closure is hot-path-safe (see _safe_provider above).
+        self._prompt_assembler.set_inner_life_providers(
+            affect=self._render_affect_block,
+            circadian=self._render_circadian_block,
         )
 
         if (
@@ -308,6 +331,20 @@ class SessionController:
             except Exception:
                 log.warning("memory extractor failed to initialise", exc_info=True)
                 self._memory_extractor = None
+
+        # ── Speaking-window scheduler (Phase 2a) ─────────────────────
+        # Drains LLM-driven background jobs while Aiko is mid-TTS so the
+        # hot path stays cheap. Workers register themselves with this and
+        # submit jobs from `_post_turn` rather than running their own daemon
+        # threads. The scheduler is created up-front so workers can take a
+        # reference at construction time.
+        self._scheduler = SpeakingWindowScheduler(
+            speaking_window_grace_ms=settings.agent.scheduler_speaking_window_grace_ms,
+            max_job_seconds=settings.agent.scheduler_max_job_seconds,
+            idle_seconds=settings.agent.scheduler_idle_seconds,
+            is_quiet=lambda: not self._turn_in_progress,
+        )
+        self._scheduler.start_idle_loop()
 
         self._summary_worker = SummaryWorker(
             self._chat_db,
@@ -826,6 +863,23 @@ class SessionController:
 
     # ── Listeners ────────────────────────────────────────────────────
 
+    # ── Scheduler ───────────────────────────────────────────────────
+
+    @property
+    def scheduler(self) -> SpeakingWindowScheduler:
+        return self._scheduler
+
+    def notify_user_speech_started(self) -> None:
+        """Called by LiveSession when fresh user audio lands mid-window.
+
+        Background workers cooperatively cancel so the LLM channel is free
+        for the actual reply.
+        """
+        try:
+            self._scheduler.on_user_speech()
+        except Exception:
+            log.debug("scheduler.on_user_speech failed", exc_info=True)
+
     # ── Persona ─────────────────────────────────────────────────────
 
     @property
@@ -1002,6 +1056,11 @@ class SessionController:
                 and self._tts_turn_first_start_at is None
             ):
                 self._tts_turn_first_start_at = time.monotonic()
+            # Open the speaking window so background workers can drain.
+            try:
+                self._scheduler.on_tts_state("start")
+            except Exception:
+                log.debug("scheduler.on_tts_state(start) failed", exc_info=True)
         elif event == "end":
             # Queue is drained for this turn. Compute total tts_ms (LLM done
             # → audio fully played) and back-fill the last metrics record.
@@ -1023,6 +1082,11 @@ class SessionController:
                 self._tts_turn_first_start_at = None
                 # Re-broadcast metrics so the badge picks up the final tts_ms.
                 self._notify_metrics_updated()
+            # Close the scheduler window cooperatively.
+            try:
+                self._scheduler.on_tts_state("end")
+            except Exception:
+                log.debug("scheduler.on_tts_state(end) failed", exc_info=True)
         for listener in list(self._tts_state_listeners):
             try:
                 listener(event, **payload)
@@ -1202,6 +1266,16 @@ class SessionController:
         usage = result.usage
         telemetry = result.telemetry
 
+        # Post-turn inner-life (cheap, no LLM): updates affect state and
+        # broadcasts the mood_state WS event for avatar tinting.
+        try:
+            self._post_turn_inner_life(
+                user_text=cleaned,
+                reaction=getattr(result, "reaction", "neutral") or "neutral",
+            )
+        except Exception:
+            log.debug("post-turn inner life failed", exc_info=True)
+
         prompt_pct = 0.0
         if self._context_window > 0 and usage.prompt_tokens > 0:
             prompt_pct = round(usage.prompt_tokens / float(self._context_window), 4)
@@ -1248,6 +1322,77 @@ class SessionController:
     ) -> None:
         self._last_metrics = dict(metrics)  # type: ignore[arg-type]
         self._metrics_history.append(dict(metrics))  # type: ignore[arg-type]
+
+    # ── Inner-life block providers (Phase 2b, 2e, 3a, ...) ──────────
+
+    def _render_affect_block(self) -> str:
+        """Hot-path: read affect_state and format the ambient block."""
+        try:
+            from app.core.affect_state import render_ambient_block
+            state = self._affect_store.get(self._user_id)
+            return render_ambient_block(state)
+        except Exception:
+            log.debug("affect block render failed", exc_info=True)
+            return ""
+
+    def _render_circadian_block(self) -> str:
+        """Hot-path: pure function over the current local time."""
+        try:
+            state = self._affect_store.get(self._user_id)
+            cstate = _circadian.compute(
+                baseline_drift=state.baseline_arousal - 0.4,
+                baseline_sociability=state.baseline_valence,
+            )
+            return cstate.ambient_line()
+        except Exception:
+            log.debug("circadian block render failed", exc_info=True)
+            return ""
+
+    # ── Mood listeners (WS broadcast) ───────────────────────────────
+
+    def add_mood_state_listener(
+        self, callback: Callable[[dict[str, Any]], None],
+    ) -> None:
+        if callback and callback not in self._mood_listeners:
+            self._mood_listeners.append(callback)
+
+    def _notify_mood_state(self, payload: dict[str, Any]) -> None:
+        for listener in list(self._mood_listeners):
+            try:
+                listener(payload)
+            except Exception:
+                log.debug("mood state listener raised", exc_info=True)
+
+    def _post_turn_inner_life(
+        self,
+        *,
+        user_text: str,
+        reaction: str,
+    ) -> None:
+        """Run all post-turn inner-life updates (cheap, no LLM).
+
+        Currently:
+          - AffectUpdater.apply_turn (POST-TURN)
+          - mood_state WS broadcast
+
+        More post-turn jobs (user-state estimator, promise regex, agenda
+        regex) will hang off this method as the relevant phases land.
+        """
+        try:
+            state = self._affect_updater.apply_turn(
+                self._user_id,
+                reaction=reaction,
+                user_text=user_text,
+            )
+        except Exception:
+            log.debug("affect updater failed", exc_info=True)
+            return
+        self._notify_mood_state({
+            "label": state.mood_label,
+            "intensity": float(state.mood_intensity),
+            "valence": float(state.valence),
+            "arousal": float(state.arousal),
+        })
 
     # ── Voice capture ────────────────────────────────────────────────
 
@@ -1529,6 +1674,10 @@ class SessionController:
                 self._mcp_server_runner.stop()
             except Exception:
                 log.debug("mcp stop failed", exc_info=True)
+        try:
+            self._scheduler.stop()
+        except Exception:
+            log.debug("scheduler stop failed", exc_info=True)
         try:
             self._tts.stop()
         except Exception:

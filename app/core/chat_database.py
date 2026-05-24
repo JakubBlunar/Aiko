@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
 
 _CREATE_TABLES = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -49,6 +49,90 @@ CREATE TABLE IF NOT EXISTS memories (
 );
 CREATE INDEX IF NOT EXISTS idx_memories_kind ON memories(kind);
 CREATE INDEX IF NOT EXISTS idx_memories_salience ON memories(salience);
+
+-- Phase 2b: persistent emotional state per user.
+CREATE TABLE IF NOT EXISTS affect_state (
+    user_id TEXT PRIMARY KEY,
+    valence REAL NOT NULL DEFAULT 0.0,
+    arousal REAL NOT NULL DEFAULT 0.4,
+    baseline_valence REAL NOT NULL DEFAULT 0.0,
+    baseline_arousal REAL NOT NULL DEFAULT 0.4,
+    mood_label TEXT NOT NULL DEFAULT 'content',
+    mood_intensity REAL NOT NULL DEFAULT 0.5,
+    valence_trend_24h REAL NOT NULL DEFAULT 0.0,
+    arousal_trend_24h REAL NOT NULL DEFAULT 0.0,
+    updated_at TEXT NOT NULL
+);
+
+-- Phase 3a: structured user profile (one row per (user_id, field)).
+CREATE TABLE IF NOT EXISTS user_profile (
+    user_id TEXT NOT NULL,
+    field TEXT NOT NULL,
+    value TEXT NOT NULL,
+    confidence REAL NOT NULL DEFAULT 0.5,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, field)
+);
+
+-- Phase 3a: per-turn user state (single row per user, overwritten each turn).
+CREATE TABLE IF NOT EXISTS user_state_now (
+    user_id TEXT PRIMARY KEY,
+    perceived_mood TEXT NOT NULL DEFAULT 'unknown',
+    perceived_energy TEXT NOT NULL DEFAULT 'unknown',
+    perceived_focus TEXT NOT NULL DEFAULT 'unknown',
+    last_topic TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL
+);
+
+-- Phase 3b: relationship phase tracking (one row per user).
+CREATE TABLE IF NOT EXISTS user_relationship (
+    user_id TEXT PRIMARY KEY,
+    first_seen_at TEXT NOT NULL,
+    total_turns INTEGER NOT NULL DEFAULT 0,
+    total_sessions INTEGER NOT NULL DEFAULT 0,
+    last_milestone_at TEXT,
+    milestone_label TEXT
+);
+
+-- Phase 4a: agenda items extracted from [[agenda:...]] tags or auto-promoted.
+CREATE TABLE IF NOT EXISTS agenda (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    goal TEXT NOT NULL,
+    source_session TEXT,
+    created_at TEXT NOT NULL,
+    due_at TEXT,
+    status TEXT NOT NULL DEFAULT 'open',
+    importance REAL NOT NULL DEFAULT 0.5,
+    last_groomed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_agenda_user_status ON agenda(user_id, status);
+
+-- Phase 4c: rolling conversation arc label (single row per user).
+CREATE TABLE IF NOT EXISTS conversation_arc (
+    user_id TEXT PRIMARY KEY,
+    arc TEXT NOT NULL DEFAULT 'casual_check_in',
+    since_turn INTEGER NOT NULL DEFAULT 0,
+    confidence REAL NOT NULL DEFAULT 0.5,
+    updated_at TEXT NOT NULL
+);
+
+-- Phase 4c: prepared nudges (single row per user; ProactiveDirector consumes).
+CREATE TABLE IF NOT EXISTS prepared_nudge (
+    user_id TEXT PRIMARY KEY,
+    text TEXT NOT NULL,
+    source_kind TEXT NOT NULL DEFAULT 'mixed',
+    source_id TEXT,
+    prepared_at TEXT NOT NULL,
+    ttl_seconds REAL NOT NULL DEFAULT 600.0
+);
+
+-- Phase 4b: consolidator resume state (one row per user).
+CREATE TABLE IF NOT EXISTS consolidator_state (
+    user_id TEXT PRIMARY KEY,
+    last_cluster_index INTEGER NOT NULL DEFAULT 0,
+    last_run_at TEXT
+);
 """
 
 # Tables that existed in earlier schemas but are no longer used.
@@ -128,7 +212,9 @@ class ChatDatabase:
             return
         # On upgrade: drop tables that are no longer used so they stop wasting
         # space and confusing later readers. ``messages`` and
-        # ``session_summaries`` are kept intact.
+        # ``session_summaries`` are kept intact. The new Phase-2/3/4 tables
+        # are created above by ``executescript`` (CREATE IF NOT EXISTS), so
+        # an existing v3 database picks them up automatically here.
         for table in _OBSOLETE_TABLES:
             try:
                 conn.execute(f"DROP TABLE IF EXISTS {table}")
@@ -136,6 +222,17 @@ class ChatDatabase:
                 pass
         conn.execute("UPDATE schema_version SET version = ?", (_SCHEMA_VERSION,))
         conn.commit()
+
+    # ── Phase-2/3/4 helper hooks (used by AffectStore et al.) ────────
+
+    def _ensure_affect_state_schema(self) -> None:
+        """No-op: the table is already created in ``_init_schema``.
+
+        Exists so :class:`app.core.affect_state.AffectStore` can call it
+        defensively (the symbol is reserved for future field migrations
+        without breaking the AffectStore API).
+        """
+        return None
 
     def _migrate_langchain_history(self) -> None:
         """One-time migration: import rows from LangChain's message_store table if it exists."""

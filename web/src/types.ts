@@ -206,6 +206,24 @@ export interface MetricsResponse {
 
 // ── WebSocket message envelopes ──────────────────────────────────────
 
+/** Phase 2b: mood_state — a continuous valence/arousal/named-mood snapshot. */
+export interface MoodState {
+  label: string;
+  intensity: number;
+  valence: number;
+  arousal: number;
+}
+
+/** Phase 1a: backchannel hint derived from a stt_partial transcript. */
+export type BackchannelHint =
+  | "agreement"
+  | "disagreement"
+  | "surprise"
+  | "amusement"
+  | "concern"
+  | "confused"
+  | "thinking";
+
 export type WsServerEvent =
   | {
       type: "hello";
@@ -262,6 +280,8 @@ export type WsServerEvent =
         arguments?: Record<string, unknown>;
       };
     }
+  | ({ type: "mood_state" } & MoodState)
+  | { type: "backchannel"; hint: BackchannelHint; partial: string }
   | { type: "pong" };
 
 export type WsClientCommand =

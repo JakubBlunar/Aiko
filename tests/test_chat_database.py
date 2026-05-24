@@ -58,12 +58,35 @@ class TestSchemaCreation(unittest.TestCase):
             ):
                 self.assertNotIn(obsolete, tables)
 
-    def test_schema_version_is_v3(self):
+    def test_schema_version_is_current(self):
+        from app.core.chat_database import _SCHEMA_VERSION
         with _TempDB() as db:
             conn = db._get_conn()
             row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
             self.assertIsNotNone(row)
-            self.assertEqual(row[0], 3)
+            self.assertEqual(row[0], _SCHEMA_VERSION)
+
+    def test_inner_life_tables_created(self):
+        """Phase 2/3/4 tables exist on a fresh schema."""
+        with _TempDB() as db:
+            conn = db._get_conn()
+            tables = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            for expected in (
+                "affect_state",
+                "user_profile",
+                "user_state_now",
+                "user_relationship",
+                "agenda",
+                "conversation_arc",
+                "prepared_nudge",
+                "consolidator_state",
+            ):
+                self.assertIn(expected, tables)
 
 
 class TestMessages(unittest.TestCase):
