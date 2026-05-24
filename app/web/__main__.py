@@ -13,7 +13,10 @@ import sys
 import threading
 import time
 
-from app.core.crash_logging import configure_logging, install_global_exception_hooks
+from app.core.crash_logging import (
+    configure_logging_full,
+    install_global_exception_hooks,
+)
 from app.core.session_controller import SessionController
 from app.core.settings import load_settings
 from app.web.runner import WebServerRunner
@@ -26,12 +29,20 @@ log = logging.getLogger("app.web")
 def main() -> int:
     install_global_exception_hooks()
     settings = load_settings()
+    logging_settings = getattr(settings, "logging", None)
     log_level = (
         os.environ.get("LOG_LEVEL")
-        or getattr(getattr(settings, "logging", None), "level", None)
+        or getattr(logging_settings, "level", None)
         or "INFO"
     )
-    configure_logging(log_level)
+    configure_logging_full(
+        level_name=log_level,
+        module_levels=getattr(logging_settings, "module_levels", None) or {},
+        file_enabled=bool(getattr(logging_settings, "file_enabled", True)),
+        file_path=getattr(logging_settings, "file_path", None),
+        file_max_bytes=int(getattr(logging_settings, "file_max_bytes", 5 * 1024 * 1024)),
+        file_backup_count=int(getattr(logging_settings, "file_backup_count", 5)),
+    )
 
     log.info("Booting Aiko (web mode)...")
     session = SessionController(settings)

@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import secrets
 import threading
 import time
 from dataclasses import dataclass, field
@@ -26,6 +27,7 @@ from typing import Any, Callable, TYPE_CHECKING
 
 from app.core.chat_database import ChatDatabase
 from app.core.filler_injector import FillerInjector
+from app.core.log_context import reset_turn_id, set_turn_id
 from app.core.prompt_assembler import PromptAssembler, PromptTelemetry
 from app.core.services.response_text_service import (
     parse_reaction_at_start,
@@ -183,6 +185,33 @@ class TurnRunner:
         stop_requested: StopPredicate | None = None,
         save_user_message: bool = True,
     ) -> TurnResult:
+        # Allocate a short-lived correlation id so every nested log line
+        # carries `turn=…`. Cleared in the finally below regardless of how
+        # the inner body exits (success, return, exception).
+        turn_id = secrets.token_hex(4)
+        token = set_turn_id(turn_id)
+        try:
+            return self._run_inner(
+                session_key=session_key,
+                user_text=user_text,
+                on_token=on_token,
+                on_tts_chunk=on_tts_chunk,
+                stop_requested=stop_requested,
+                save_user_message=save_user_message,
+            )
+        finally:
+            reset_turn_id(token)
+
+    def _run_inner(
+        self,
+        *,
+        session_key: str,
+        user_text: str,
+        on_token: TokenCallback | None,
+        on_tts_chunk: TtsChunkCallback | None,
+        stop_requested: StopPredicate | None,
+        save_user_message: bool,
+    ) -> TurnResult:
         self._stop.clear()
         cleaned_user = sanitize_user_text(user_text)
         if not cleaned_user:
@@ -225,7 +254,10 @@ class TurnRunner:
                 aggressive=True,
             )
 
-        log.info(
+        # Per plan: "turn start" is tweaking-only telemetry, redundant with the
+        # end-of-turn structured INFO line. Stays DEBUG so default-INFO logs
+        # carry one entry per turn rather than two.
+        log.debug(
             "turn start: model=%s session=%s ctx=%d max=%d msgs=%d est=%d",
             self._model, session_key[:8], self._context_window, self._max_tokens,
             len(messages), telemetry.prompt_tokens_estimate,
@@ -405,15 +437,32 @@ class TurnRunner:
             )
             self._post_turn(session_key)
 
+        # Per plan: one structured INFO line per turn so a single grep
+        # (e.g. `turn=abc12345`) yields the headline metrics. The order of
+        # key=value pairs is part of the contract documented in
+        # AGENTS.md "Debugging via logs".
+        ctx_pct = (
+            (usage.prompt_tokens / self._context_window) * 100.0
+            if self._context_window and usage.prompt_tokens
+            else 0.0
+        )
+        tool_calls = sum(1 for m in messages if m.get("role") == "tool")
         log.info(
-            "turn done: %d chars, mood=%s, %d/%d tokens, %.0f ms (eval %.0f ms)%s",
+            "turn done: chars=%d mood=%s prompt=%d completion=%d ctx_pct=%.1f "
+            "first_token_ms=%s total_ms=%.0f eval_ms=%.0f tools=%d "
+            "compactions=%d filler=%s aborted=%s",
             len(cleaned),
             mood or "neutral",
             usage.prompt_tokens,
             usage.completion_tokens,
+            ctx_pct,
+            f"{first_token_ms:.0f}" if first_token_ms is not None else "-",
             duration_ms,
             usage.eval_duration_ms,
-            " [aborted]" if aborted else "",
+            tool_calls,
+            compactions_run,
+            "1" if self._filler.fired else "0",
+            "1" if aborted else "0",
         )
 
         # Carry-over for the *next* turn's filler tone.

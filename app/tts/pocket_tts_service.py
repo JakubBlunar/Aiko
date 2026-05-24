@@ -1,12 +1,16 @@
 """Pocket TTS backend -- CPU-only, 100M params, voice cloning support."""
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Callable
 from pathlib import Path
 import threading
 
 from app.core.settings import TtsSettings
+
+
+log = logging.getLogger("app.tts.pocket_tts_service")
 
 try:
     import numpy as np
@@ -68,6 +72,7 @@ class PocketTtsService:
             self._loaded.set()
 
     def _load_model(self) -> None:
+        t0 = time.monotonic()
         try:
             temp = getattr(self._settings, "pocket_tts_temp", 0.7) or 0.7
             model = TTSModel.load_model(temp=float(temp))
@@ -79,8 +84,13 @@ class PocketTtsService:
                 self._model = model
                 self._voice_state = voice_state
             self._last_error = None
+            log.info(
+                "TTS engine ready: provider=pocket-tts voice=%s temp=%.2f init_ms=%.0f",
+                voice_id, float(temp), (time.monotonic() - t0) * 1000.0,
+            )
         except Exception as exc:
             self._last_error = f"Pocket TTS load failed: {exc}"
+            log.error("TTS engine init failed: exc=%r", exc)
         finally:
             self._loaded.set()
 
@@ -125,8 +135,10 @@ class PocketTtsService:
             with self._cache_lock:
                 self._audio_cache.clear()
             self._settings.pocket_tts_voice = voice_id
+            log.info("TTS voice switched: voice=%s", voice_id)
             return True
-        except Exception:
+        except Exception as exc:
+            log.warning("TTS voice switch failed: voice=%s exc=%r", voice_id, exc)
             return False
 
     @staticmethod
@@ -250,6 +262,12 @@ class PocketTtsService:
     ) -> None:
         amplitude_thread: threading.Thread | None = None
         amplitude_stop = threading.Event()
+        chunk_chars = len(text)
+        gen_t0 = time.monotonic()
+        log.debug(
+            "TTS enqueue: chunk_chars=%d speed=%.2f", chunk_chars, speed,
+        )
+        played_ms = 0.0
         try:
             if sd is None:
                 return
@@ -262,6 +280,8 @@ class PocketTtsService:
 
             silence = np.zeros(int(sample_rate * 0.15), dtype=np.float32)
             audio_data = np.concatenate([audio_data, silence])
+            generate_ms = (time.monotonic() - gen_t0) * 1000.0
+            play_t0 = time.monotonic()
             sd.play(audio_data.reshape(-1, 1), sample_rate, device=self._output_device)
 
             # Spawn the lip-sync amplitude pacer right after audio starts so its
@@ -276,8 +296,17 @@ class PocketTtsService:
                 amplitude_thread.start()
 
             sd.wait()
+            played_ms = (time.monotonic() - play_t0) * 1000.0
+            log.debug(
+                "TTS play done: chunk_chars=%d generate_ms=%.0f played_ms=%.0f speed=%.2f",
+                chunk_chars, generate_ms, played_ms, speed,
+            )
         except Exception as exc:
             self._last_error = str(exc)
+            log.error(
+                "TTS playback failed: chunk_chars=%d exc=%r",
+                chunk_chars, exc,
+            )
         finally:
             amplitude_stop.set()
             if amplitude_thread is not None:

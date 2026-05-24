@@ -483,20 +483,43 @@ class PromptAssembler:
             compaction_triggered=bool(compaction_triggered),
         )
 
+        # Per plan: tweaking-only headline for the prompt build. Stays
+        # at DEBUG so default-INFO logs aren't flooded; bump
+        # `app.core.prompt_assembler` to DEBUG when tracing retrieval/budget.
+        # Field names align with AGENTS.md "Standard line shape".
+        inner_blocks_count = sum(
+            1
+            for n in (
+                telemetry.affect_tokens,
+                telemetry.circadian_tokens,
+                telemetry.profile_tokens,
+                telemetry.user_state_tokens,
+                telemetry.relationship_tokens,
+                telemetry.arc_tokens,
+                telemetry.narrative_tokens,
+                telemetry.agenda_tokens,
+                telemetry.self_image_tokens,
+            )
+            if n > 0
+        )
         log.debug(
-            "prompt built: ctx=%d budget=%d sys=%d hist=%d user=%d est=%d kept=%d "
-            "dropped=%d summary=%s compact=%s aggressive=%s",
+            "prompt built: ctx=%d budget=%d est_tokens=%d "
+            "sys=%d hist=%d user=%d rag_tokens=%d "
+            "history_msgs_in=%d history_msgs_out=%d inner_blocks=%d "
+            "summary_active=%s compaction=%s aggressive=%s",
             context_window,
             budget_tokens,
+            prompt_tokens_estimate,
             system_tokens,
             history_tokens,
             user_tokens,
-            prompt_tokens_estimate,
+            telemetry.rag_tokens,
             kept_count,
             dropped_count,
-            telemetry.summary_active,
-            telemetry.compaction_triggered,
-            aggressive,
+            inner_blocks_count,
+            "1" if telemetry.summary_active else "0",
+            "1" if telemetry.compaction_triggered else "0",
+            "1" if aggressive else "0",
         )
         return messages, telemetry
 

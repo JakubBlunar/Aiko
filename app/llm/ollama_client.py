@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import logging
 import threading
+import time
 from collections.abc import Generator
 from dataclasses import dataclass, field
 import json
@@ -9,6 +11,12 @@ from typing import Any
 import requests
 
 from app.core.settings import OllamaSettings
+
+
+log = logging.getLogger("app.llm.ollama_client")
+
+# One-shot per-base-url connection notices (INFO at most once per process).
+_announced_base_urls: set[str] = set()
 
 
 @dataclass(slots=True)
@@ -93,6 +101,36 @@ class OllamaClient:
     def _request_headers(self) -> dict[str, str] | None:
         return dict(self._headers) if self._headers else None
 
+    def _announce_connection(self, model: str) -> None:
+        """Log one INFO line the first time we successfully reach this server."""
+        key = self._base_url
+        if key in _announced_base_urls:
+            return
+        _announced_base_urls.add(key)
+        log.info(
+            "ollama connected: base_url=%s default_model=%s",
+            self._base_url, model,
+        )
+
+    def _log_http_error(
+        self,
+        endpoint: str,
+        response: "requests.Response",
+        *,
+        elapsed_ms: float,
+    ) -> None:
+        try:
+            snippet = response.text or ""
+        except Exception:
+            snippet = ""
+        if len(snippet) > 240:
+            snippet = snippet[:240] + "…"
+        log.error(
+            "ollama %s failed: status=%d reason=%s elapsed_ms=%.0f body=%s",
+            endpoint, response.status_code, response.reason, elapsed_ms,
+            snippet.replace("\n", " ") or "-",
+        )
+
     def chat(
         self,
         messages: list[dict[str, Any]],
@@ -127,13 +165,25 @@ class OllamaClient:
             payload["tools"] = tools
         if think:
             payload["think"] = True
-        response = requests.post(
-            f"{self._base_url}/api/chat",
-            json=payload,
-            timeout=self._timeout_seconds,
-            headers=self._request_headers(),
-        )
+        t0 = time.monotonic()
+        try:
+            response = requests.post(
+                f"{self._base_url}/api/chat",
+                json=payload,
+                timeout=self._timeout_seconds,
+                headers=self._request_headers(),
+            )
+        except requests.RequestException as exc:
+            elapsed_ms = (time.monotonic() - t0) * 1000.0
+            log.error(
+                "ollama chat transport error: model=%s msgs=%d tools=%d "
+                "elapsed_ms=%.0f exc=%r",
+                use_model, len(messages), len(tools or []), elapsed_ms, exc,
+            )
+            raise
+        elapsed_ms = (time.monotonic() - t0) * 1000.0
         if not response.ok:
+            self._log_http_error("chat", response, elapsed_ms=elapsed_ms)
             try:
                 err_body = response.text
                 if err_body and len(err_body) > 500:
@@ -154,11 +204,20 @@ class OllamaClient:
             eval_duration_ms=float(body.get("eval_duration", 0) or 0) / 1e6,
             prompt_eval_duration_ms=float(body.get("prompt_eval_duration", 0) or 0) / 1e6,
         )
+        self._announce_connection(use_model)
+        tool_calls = self._parse_tool_calls(message.get("tool_calls", []))
+        log.debug(
+            "ollama chat: model=%s msgs=%d tools=%d stream=0 elapsed_ms=%.0f "
+            "prompt_tokens=%d completion_tokens=%d tool_calls=%d",
+            use_model, len(messages), len(tools or []), elapsed_ms,
+            self.last_usage.prompt_tokens, self.last_usage.completion_tokens,
+            len(tool_calls),
+        )
         # When think=True, Ollama may also return message.thinking (reasoning trace);
         # we use content (final answer) for the response.
         return OllamaChatResponse(
             content=content,
-            tool_calls=self._parse_tool_calls(message.get("tool_calls", [])),
+            tool_calls=tool_calls,
         )
 
     def chat_stream(
@@ -200,36 +259,62 @@ class OllamaClient:
         if format_json:
             payload["format"] = "json"
         usage = OllamaUsage()
-        with requests.post(
-            f"{self._base_url}/api/chat",
-            json=payload,
-            stream=True,
-            timeout=self._timeout_seconds,
-            headers=self._request_headers(),
-        ) as response:
-            response.raise_for_status()
-            for line in response.iter_lines(decode_unicode=True):
-                if stop_event is not None and stop_event.is_set():
-                    response.close()
-                    break
-                if not line:
-                    continue
-                try:
-                    chunk = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(chunk, dict):
-                    continue
-                if chunk.get("done"):
-                    usage.prompt_tokens = int(chunk.get("prompt_eval_count", 0) or 0)
-                    usage.completion_tokens = int(chunk.get("eval_count", 0) or 0)
-                    usage.total_duration_ms = float(chunk.get("total_duration", 0) or 0) / 1e6
-                    usage.eval_duration_ms = float(chunk.get("eval_duration", 0) or 0) / 1e6
-                    usage.prompt_eval_duration_ms = float(chunk.get("prompt_eval_duration", 0) or 0) / 1e6
-                token = chunk.get("message", {}).get("content", "")
-                if token:
-                    yield token
+        t0 = time.monotonic()
+        first_token_ms: float | None = None
+        try:
+            with requests.post(
+                f"{self._base_url}/api/chat",
+                json=payload,
+                stream=True,
+                timeout=self._timeout_seconds,
+                headers=self._request_headers(),
+            ) as response:
+                if not response.ok:
+                    elapsed_ms = (time.monotonic() - t0) * 1000.0
+                    self._log_http_error("chat_stream", response, elapsed_ms=elapsed_ms)
+                response.raise_for_status()
+                for line in response.iter_lines(decode_unicode=True):
+                    if stop_event is not None and stop_event.is_set():
+                        response.close()
+                        break
+                    if not line:
+                        continue
+                    try:
+                        chunk = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(chunk, dict):
+                        continue
+                    if chunk.get("done"):
+                        usage.prompt_tokens = int(chunk.get("prompt_eval_count", 0) or 0)
+                        usage.completion_tokens = int(chunk.get("eval_count", 0) or 0)
+                        usage.total_duration_ms = float(chunk.get("total_duration", 0) or 0) / 1e6
+                        usage.eval_duration_ms = float(chunk.get("eval_duration", 0) or 0) / 1e6
+                        usage.prompt_eval_duration_ms = float(chunk.get("prompt_eval_duration", 0) or 0) / 1e6
+                    token = chunk.get("message", {}).get("content", "")
+                    if token:
+                        if first_token_ms is None:
+                            first_token_ms = (time.monotonic() - t0) * 1000.0
+                        yield token
+        except requests.RequestException as exc:
+            elapsed_ms = (time.monotonic() - t0) * 1000.0
+            log.error(
+                "ollama chat_stream transport error: model=%s elapsed_ms=%.0f exc=%r",
+                use_model, elapsed_ms, exc,
+            )
+            raise
         self.last_usage = usage
+        self._announce_connection(use_model)
+        elapsed_ms = (time.monotonic() - t0) * 1000.0
+        log.debug(
+            "ollama chat_stream done: model=%s msgs=%d elapsed_ms=%.0f "
+            "first_token_ms=%s prompt_tokens=%d completion_tokens=%d "
+            "stopped=%s",
+            use_model, len(messages), elapsed_ms,
+            f"{first_token_ms:.0f}" if first_token_ms is not None else "-",
+            usage.prompt_tokens, usage.completion_tokens,
+            "1" if (stop_event is not None and stop_event.is_set()) else "0",
+        )
 
     def chat_json(
         self,
@@ -263,12 +348,24 @@ class OllamaClient:
         }
         if format_json:
             payload["format"] = "json"
-        response = requests.post(
-            f"{self._base_url}/api/chat",
-            json=payload,
-            timeout=timeout_seconds if timeout_seconds is not None else self._timeout_seconds,
-            headers=self._request_headers(),
-        )
+        t0 = time.monotonic()
+        try:
+            response = requests.post(
+                f"{self._base_url}/api/chat",
+                json=payload,
+                timeout=timeout_seconds if timeout_seconds is not None else self._timeout_seconds,
+                headers=self._request_headers(),
+            )
+        except requests.RequestException as exc:
+            elapsed_ms = (time.monotonic() - t0) * 1000.0
+            log.error(
+                "ollama chat_json transport error: model=%s elapsed_ms=%.0f exc=%r",
+                use_model, elapsed_ms, exc,
+            )
+            raise
+        elapsed_ms = (time.monotonic() - t0) * 1000.0
+        if not response.ok:
+            self._log_http_error("chat_json", response, elapsed_ms=elapsed_ms)
         response.raise_for_status()
         body = response.json()
         message = body.get("message", {}) if isinstance(body, dict) else {}
@@ -279,6 +376,14 @@ class OllamaClient:
             total_duration_ms=float(body.get("total_duration", 0) or 0) / 1e6,
             eval_duration_ms=float(body.get("eval_duration", 0) or 0) / 1e6,
             prompt_eval_duration_ms=float(body.get("prompt_eval_duration", 0) or 0) / 1e6,
+        )
+        self._announce_connection(use_model)
+        log.debug(
+            "ollama chat_json: model=%s msgs=%d elapsed_ms=%.0f "
+            "prompt_tokens=%d completion_tokens=%d format_json=%s",
+            use_model, len(messages), elapsed_ms,
+            usage.prompt_tokens, usage.completion_tokens,
+            "1" if format_json else "0",
         )
         return content, usage
 
