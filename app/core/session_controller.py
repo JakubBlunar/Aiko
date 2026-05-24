@@ -43,7 +43,6 @@ from app.core.memory_store import MemoryStore
 from app.core.persona_manager import PersonaManager
 from app.core.proactive_director import ProactiveDirector
 from app.core.prompt_assembler import PromptAssembler
-from app.core.services.response_text_service import strip_action_meta_for_tts
 from app.core.session_text_utils import (
     infer_tts_reaction,
     prepare_tts_text,
@@ -64,7 +63,6 @@ log = logging.getLogger("app.session")
 @dataclass(slots=True)
 class SessionState:
     mic_enabled: bool
-    autonomy_mode: str
     session_type: str
 
 
@@ -381,15 +379,8 @@ class SessionController:
         self._live_voice_session_active = False
         self._turn_in_progress = False
         self._remember_history = settings.assistant.remember_history
-        self._autonomy_mode = (
-            str(getattr(settings.autonomy, "mode", "interactive") or "interactive").strip().lower()
-        )
-        if self._autonomy_mode not in {"manual", "interactive", "automatic"}:
-            self._autonomy_mode = "interactive"
-        self._active_goal = settings.autonomy.default_goal
         self._state = SessionState(
             mic_enabled=settings.audio.enable_microphone,
-            autonomy_mode=self._autonomy_mode,
             session_type="chat",
         )
         self._decision_trace: deque[dict[str, str]] = deque(maxlen=500)
@@ -495,42 +486,8 @@ class SessionController:
         self._remember_history = bool(value)
 
     @property
-    def autonomy_mode(self) -> str:
-        return self._autonomy_mode
-
-    def set_autonomy_mode(self, mode: str) -> None:
-        normalized = str(mode or "").strip().lower()
-        if normalized in {"manual", "interactive", "automatic"} and normalized != self._autonomy_mode:
-            self._autonomy_mode = normalized
-            self._state.autonomy_mode = normalized
-
-    @property
-    def active_goal(self) -> str:
-        return self._active_goal
-
-    @property
     def active_session_type(self) -> str:
         return "chat"
-
-    def set_active_session_type(self, session_type: str) -> None:
-        _ = session_type  # legacy no-op
-
-    @property
-    def agentic_narration_level(self) -> str:
-        level = str(
-            getattr(self._settings.autonomy, "agentic_narration_level", "summary") or "summary",
-        ).strip().lower()
-        return level if level in {"full", "summary", "off"} else "summary"
-
-    def get_tooling_config_paths(self) -> tuple[Path, Path]:
-        root = Path(__file__).resolve().parents[2]
-        default = root / (
-            self._settings.tooling.config_default_path or "config/tooling.default.json"
-        )
-        user = root / (
-            self._settings.tooling.config_user_path or "config/tooling.user.json"
-        )
-        return (default, user)
 
     # ── Audio: VAD / mic / output devices ───────────────────────────
 
@@ -663,27 +620,6 @@ class SessionController:
             return False
         self._realtime_stt = candidate
         return True
-
-    @property
-    def prosody_enabled(self) -> bool:
-        return bool(getattr(self._settings.stt.prosody, "enabled", False))
-
-    def set_prosody_enabled(self, value: bool) -> None:
-        self._settings.stt.prosody.enabled = bool(value)
-
-    @property
-    def prosody_include_in_prompt(self) -> bool:
-        return bool(getattr(self._settings.stt.prosody, "include_in_prompt", True))
-
-    def set_prosody_include_in_prompt(self, value: bool) -> None:
-        self._settings.stt.prosody.include_in_prompt = bool(value)
-
-    @property
-    def action_min_interval_seconds(self) -> float:
-        return float(self._settings.actions.min_action_interval_seconds)
-
-    def set_action_min_interval_seconds(self, value: float) -> None:
-        self._settings.actions.min_action_interval_seconds = max(0.0, float(value))
 
     # ── TTS API ──────────────────────────────────────────────────────
 
@@ -1032,53 +968,6 @@ class SessionController:
     def clear_decision_trace(self) -> None:
         self._decision_trace.clear()
 
-    @property
-    def emergency_hotkey(self) -> str:
-        return self._settings.actions.emergency_hotkey
-
-    @property
-    def emergency_stop_active(self) -> bool:
-        return False
-
-    def reset_emergency_stop(self) -> None:
-        return
-
-    @property
-    def has_pending_action(self) -> bool:
-        return False
-
-    @property
-    def pending_action_description(self) -> str:
-        return "none"
-
-    def approve_pending_action(self) -> tuple[str, str | None]:
-        return ("No pending action.", None)
-
-    def reject_pending_action(self) -> str:
-        return "No pending action."
-
-    def start_action_hotkey_listener(self) -> bool:
-        return False
-
-    def stop_action_hotkey_listener(self) -> None:
-        return
-
-    def tts_text_for_followup(self, followup: str) -> str:
-        if self.agentic_narration_level == "off":
-            return ""
-        return self.summarize_followup_for_tts(followup)
-
-    @staticmethod
-    def summarize_followup_for_tts(followup: str, *, max_steps: int = 3) -> str:
-        source = strip_action_meta_for_tts(str(followup or "")).strip()
-        if not source:
-            return ""
-        compact = " ".join(source.split())
-        if len(compact) > 220:
-            compact = compact[:217].rstrip() + "..."
-        _ = max_steps
-        return compact
-
     # ── Metrics ─────────────────────────────────────────────────────
 
     @staticmethod
@@ -1122,12 +1011,6 @@ class SessionController:
     def reset_latency_metrics(self) -> None:
         self._last_metrics = self._zero_metrics()
         self._metrics_history.clear()
-
-    def get_reading_status(self) -> dict[str, bool | int | str]:
-        return {"active": False, "window": "", "chunks": 0, "scroll_steps": 0, "max_scroll_steps": 0}
-
-    def get_agentic_status(self) -> dict[str, bool | int | str]:
-        return {"active": False, "objective": "", "auto_steps": 0, "max_auto_steps": 0}
 
     def get_conversation_memory(self, max_entries: int = 200) -> list[dict[str, str]]:
         rows = self._chat_db.get_messages(self.session_key, limit=max_entries)

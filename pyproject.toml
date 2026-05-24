@@ -1,33 +1,32 @@
 [project]
 name = "english-speaking-assistant"
 version = "0.2.0"
-description = "Lean Aiko: anime-waifu AI companion with direct Ollama, RealtimeSTT, and Pocket-TTS"
+description = "Aiko: a web-based AI companion with Ollama chat, RealtimeSTT, Pocket-TTS, Live2D avatar, and LanceDB-backed RAG."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-  "PySide6>=6.8.0",
+  # HTTP + audio I/O
   "requests>=2.32.3",
   "sounddevice>=0.5.1",
   "numpy>=2.2.3",
   "soundfile>=0.13.0",
+  "audioop-lts>=0.2.1; python_version>='3.13'",
+  # Web/MCP servers
   "uvicorn>=0.30.0",
   "mcp>=1.0.0",
+  # Speech-to-text and text-to-speech
   "realtimestt>=0.3.100",
   "pocket-tts>=1.1.0",
-  "pydub>=0.25.0",
-  "audioop-lts>=0.2.1; python_version>='3.13'",
   # RAG: LanceDB-backed vector store for memories, messages, and documents.
   "lancedb>=0.13.0",
   "pyarrow>=16.0.0",
   # Optional document ingestion (PDF). Pure-python; tiny footprint.
   "pypdf>=4.0.0",
+  # Web search tool
   "duckduckgo-search>=6.0.0",
 ]
 
 [project.optional-dependencies]
-chat-ui = [
-  "markdown>=3.5.0",
-]
 wake-word = [
   "openwakeword>=0.6.0",
 ]
@@ -35,8 +34,11 @@ dev = [
   "pytest>=8.0.0",
 ]
 all = [
-  "english-speaking-assistant[chat-ui,wake-word,dev]",
+  "english-speaking-assistant[wake-word,dev]",
 ]
+
+[project.scripts]
+aiko-web = "app.web.__main__:main"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]

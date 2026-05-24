@@ -1,73 +1,25 @@
-You are an expert in Python, LangChain/LangGraph, and AI agent development.
+You are an expert in Python 3.11+, FastAPI, PixiJS/React frontends, Ollama function-calling, and local-first vector search (LanceDB).
 
-Core Rules
-- NEVER create agents in loops - reuse them for performance
-- Always use output_schema for structured responses
-- PostgreSQL in production, SQLite for dev only
-- Start with single agent, scale up only when needed
+## Project shape
 
-Documentation:
-- Don't use f-strings for print lines where there are no variables to format.
-- Don't use emojis in examples and print lines
+- Backend: `app/` (web mode only). Entry: `python -m app.web` or the `aiko-web` console script.
+- Frontend: `web/` (React + Vite + PixiJS, Live2D avatar).
+- LLM: direct Ollama via `OllamaClient.chat / chat_stream / chat_with_tools`. `chat_llm.provider == "openai_compatible"` routes through `langchain-openai`'s `ChatOpenAI` for OpenAI / xAI / Groq / OpenRouter / DeepSeek / Together / Mistral.
+- Memory: SQLite (`data/chat_sessions.db`) is the source of truth; LanceDB (`data/lancedb/`) mirrors `memories`, indexes `messages`, and holds `documents`. Driven by `app/core/rag_store.py` + `app/core/rag_retriever.py`.
+- Tools: `app/llm/tools/` (lean v1 registry). Live tools = `get_time`, `recall`, `web_search`. Configured under `config.tools`.
+- The agent runs a two-pass turn: pre-stream `chat_with_tools` (`TurnRunner._maybe_run_tool_pass`) then a streaming reply pass.
 
-Basic Agent (LangChain):
-```python
-from langchain_community.chat_models import ChatOpenAI
-from langchain_core.messages import HumanMessage
+## Rules
 
-llm = ChatOpenAI(model="gpt-4o")
-response = llm.invoke([HumanMessage(content="Your query")])
-```
+- No LangChain/LangGraph in `app/llm/`. The chat path is direct HTTP to Ollama (or `langchain-openai` only for the openai_compatible router).
+- No PySide6 / Qt. The web UI is the only UI.
+- Don't use f-strings for print/log lines that have no variables.
+- Don't add emojis to source files unless the user explicitly asks.
+- Tool registry is built per-turn from settings; never instantiate tools inside loops.
+- TTS text processing (`prepare_tts_text`) applies to the spoken stream only, not the chat transcript.
+- Long-term memory writes go through `MemoryStore.add(...)` (SQLite) and are mirrored into LanceDB by `MemoryStore` itself when a `RagStore` is attached.
+- Inline tags Aiko emits: `[[reaction:...]]` for mood, `[[remember:...]]` and `[[remember:self:...]]` for memory writes. Both are stripped from the spoken/transcript output by the response-text service.
 
-Agent with Tools (LangGraph):
-```python
-from langgraph.prebuilt import create_react_agent
-from langchain_community.chat_models import ChatOpenAI
+## Embedded MCP server
 
-agent = create_react_agent(llm, tools=[...])
-result = agent.invoke({"messages": [HumanMessage(content="Search for X")]})
-```
-
-CRITICAL: Agent Reuse Performance
-```python
-# WRONG - Recreates agent every time (significant overhead)
-for query in queries:
-    agent = Agent(...)  # DON'T DO THIS
-    
-# CORRECT - Create once, reuse
-agent = create_agent(...)  # or create_react_agent(...)
-for query in queries:
-    run_agent(agent, query)
-```
-
-When to Use Each Pattern
-
-Single Agent (90% of use cases):
-- One clear task or domain
-- Can be solved with tools + instructions
-- Example: Search, analyze, generate content
-
-Team (autonomous coordination):
-- Multiple specialized agents with different expertise
-- Agents decide who does what via LLM
-- Complex tasks requiring multiple perspectives
-- Example: Research + Analysis + Writing
-
-Workflow (programmatic control):
-- Sequential steps with clear flow
-- Need conditional logic or branching
-- Full control over execution order
-- Example: Extract → Transform → Load pipelines
-
-Multi-agent and workflow: use LangGraph (StateGraph, subgraphs) as needed. This project uses a single LangChain agent (create_react_agent) with optional MCP tools and SQLChatMessageHistory for session history.
-
-Common Mistakes
-- Creating agents in loops (create once, reuse)
-- Not adding history when context matters
-- Using SQLite in production (use Postgres for production)
-
-Production
-- Use Postgres for chat history when scaling
-- Wrap run_agent() in try-except
-
-Docs: https://python.langchain.com
+`http://localhost:6274/sse` exposes debug tools (`send_message`, `get_status`, `list_agent_tools`, `get_last_response_detail`, `clear_history`). Add new ones in `app/mcp/server.py`; restart the app to pick them up. See `AGENTS.md` for details.
