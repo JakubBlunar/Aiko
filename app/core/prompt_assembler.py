@@ -12,6 +12,7 @@ Output: ``list[dict]`` ready for ``OllamaClient.chat_stream``.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
@@ -20,6 +21,7 @@ from app.llm.token_utils import estimate_messages_tokens, estimate_tokens
 
 if TYPE_CHECKING:
     from app.core.memory_retriever import MemoryRetriever
+    from app.core.rag_retriever import RagRetriever
 
 
 log = logging.getLogger("app.prompt_assembler")
@@ -40,15 +42,34 @@ class PromptAssembler:
         persona_path: Path | str = DEFAULT_PERSONA_PATH,
         recent_window: int = 20,
         memory_retriever: "MemoryRetriever | None" = None,
+        rag_retriever: "RagRetriever | None" = None,
     ) -> None:
         self._db = db
         self._persona_path = Path(persona_path)
         self._recent_window = max(2, int(recent_window))
         self._persona_cache: tuple[float, str] | None = None
         self._memory_retriever = memory_retriever
+        self._rag_retriever = rag_retriever
+        # Carry-over hint: the most recent assistant reaction. Lets the LLM
+        # keep an emotional through-line across turns without us writing it
+        # explicitly into the persona.
+        self._last_reaction: str | None = None
 
     def set_memory_retriever(self, retriever: "MemoryRetriever | None") -> None:
         self._memory_retriever = retriever
+
+    def set_rag_retriever(self, retriever: "RagRetriever | None") -> None:
+        self._rag_retriever = retriever
+
+    def set_last_reaction(self, reaction: str | None) -> None:
+        if not reaction:
+            self._last_reaction = None
+            return
+        cleaned = str(reaction).strip().lower()
+        if cleaned in ("", "neutral"):
+            self._last_reaction = None
+        else:
+            self._last_reaction = cleaned
 
     # ── public API ────────────────────────────────────────────────────────
 
@@ -72,18 +93,44 @@ class PromptAssembler:
         """
         persona = self._load_persona()
         summary = self._db.get_latest_summary(session_key)
+        history_msgs = self._db.get_messages(session_key, limit=self._recent_window)
 
         memory_block = ""
-        if self._memory_retriever is not None:
+        # Prefer RAG (memories + messages + documents merged) when available.
+        # Falls back to legacy single-source MemoryRetriever otherwise so we
+        # stay functional on environments without LanceDB (probe failure).
+        if self._rag_retriever is not None:
+            try:
+                recent_turns = [
+                    (row.content or "").strip()
+                    for row in history_msgs[-3:]
+                    if (row.content or "").strip()
+                ]
+                memory_block = self._rag_retriever.block_for(
+                    user_text,
+                    recent_turns=recent_turns,
+                    exclude_session_id=session_key,
+                )
+            except Exception:
+                log.debug("rag retrieval failed", exc_info=True)
+                memory_block = ""
+        if not memory_block and self._memory_retriever is not None:
             try:
                 memory_block = self._memory_retriever.block_for(user_text)
             except Exception:
                 log.debug("memory retrieval failed", exc_info=True)
                 memory_block = ""
 
+        ambient = self._ambient_block()
+        mood_hint = self._mood_carryover_hint()
+
         system_parts: list[str] = []
         if persona:
             system_parts.append(persona)
+        if ambient:
+            system_parts.append(ambient)
+        if mood_hint:
+            system_parts.append(mood_hint)
         if memory_block:
             system_parts.append(memory_block)
         if summary and summary.summary.strip():
@@ -93,7 +140,6 @@ class PromptAssembler:
 
         system_prompt = "\n\n---\n\n".join(p for p in system_parts if p)
 
-        history_msgs = self._db.get_messages(session_key, limit=self._recent_window)
         # history is oldest-first already
         messages: list[dict[str, Any]] = []
         if system_prompt:
@@ -118,6 +164,53 @@ class PromptAssembler:
         return messages
 
     # ── helpers ───────────────────────────────────────────────────────────
+
+    def _mood_carryover_hint(self) -> str:
+        """Mention Aiko's most recent emotional reaction so she keeps a
+        through-line across turns. Skip when neutral / unset.
+        """
+        reaction = self._last_reaction
+        if not reaction:
+            return ""
+        return (
+            f"Your last reaction was '{reaction}'. Carry that mood naturally "
+            f"into this turn unless the new context obviously calls for a "
+            f"different one."
+        )
+
+    @staticmethod
+    def _ambient_block() -> str:
+        """Light "what time is it" hint so Aiko can naturally pick up on the
+        time of day without us having to tell her every turn. Phrased as a
+        cue, not a directive -- the persona is responsible for tone.
+        """
+        try:
+            now = datetime.now().astimezone()
+        except Exception:
+            return ""
+        hour = now.hour
+        if hour < 5:
+            pod = "late night"
+        elif hour < 9:
+            pod = "early morning"
+        elif hour < 12:
+            pod = "morning"
+        elif hour < 14:
+            pod = "midday"
+        elif hour < 18:
+            pod = "afternoon"
+        elif hour < 22:
+            pod = "evening"
+        else:
+            pod = "late night"
+        # Use platform-safe format strings (Windows %-d / Unix %-d differ).
+        date_part = now.strftime("%A, %B %d").replace(" 0", " ")
+        time_part = now.strftime("%I:%M %p").lstrip("0")
+        return (
+            f"Right now it's {date_part}, {pod} ({time_part}). "
+            f"Use this naturally if it's relevant; don't announce the time "
+            f"unprompted."
+        )
 
     def _load_persona(self) -> str:
         path = self._persona_path

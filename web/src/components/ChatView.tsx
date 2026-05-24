@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAssistantStore } from "../store";
-import type { WsClientCommand } from "../types";
+import type { ToolEvent, WsClientCommand } from "../types";
 
 interface ChatViewProps {
   send: (cmd: WsClientCommand) => void;
@@ -42,6 +42,7 @@ export function ChatView({ send }: ChatViewProps) {
   const audioLevel = useAssistantStore((s) => s.audioLevel);
   const lastTranscript = useAssistantStore((s) => s.lastTranscript);
   const setLastTranscript = useAssistantStore((s) => s.setLastTranscript);
+  const toolActivity = useAssistantStore((s) => s.toolActivity);
 
   const [draft, setDraft] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -132,6 +133,9 @@ export function ChatView({ send }: ChatViewProps) {
             ))}
           </ul>
         )}
+        {toolActivity.length > 0 && turnInProgress ? (
+          <ToolActivityStrip activity={toolActivity} />
+        ) : null}
       </div>
 
       <div className="border-t border-white/5 bg-white/[0.02] px-6 py-4">
@@ -295,6 +299,51 @@ function ConnectionBadge() {
   );
 }
 
+const TOOL_LABELS: Record<string, { call: string; result: string; icon: string }> = {
+  get_time: {
+    call: "checking the time",
+    result: "got the current time",
+    icon: "⏱️",
+  },
+  recall: {
+    call: "searching her notebook",
+    result: "found something in her notebook",
+    icon: "📔",
+  },
+  web_search: {
+    call: "searching the web",
+    result: "found something on the web",
+    icon: "🔎",
+  },
+};
+
+function ToolActivityStrip({ activity }: { activity: ToolEvent[] }) {
+  if (activity.length === 0) return null;
+  const items = activity.slice(-4);
+  return (
+    <ul className="mx-auto mt-3 flex max-w-3xl flex-col gap-1 text-xs text-ink-100/55">
+      {items.map((evt, idx) => {
+        const meta = TOOL_LABELS[evt.name] ?? {
+          call: `running ${evt.name}`,
+          result: `${evt.name} returned`,
+          icon: "🛠",
+        };
+        const failed = evt.event === "result" && evt.ok === false;
+        const phrase = evt.event === "call" ? meta.call : failed ? `${evt.name} failed` : meta.result;
+        return (
+          <li
+            key={`${evt.name}-${evt.at}-${idx}`}
+            className={`flex items-center gap-2 ${failed ? "text-rose-300/80" : ""}`}
+          >
+            <span aria-hidden="true">{meta.icon}</span>
+            <span>aiko is {phrase}…</span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 function EmptyState() {
   return (
     <div className="mx-auto mt-24 max-w-md text-center">
@@ -319,6 +368,7 @@ interface BubbleProps {
   createdAt: string;
   streaming?: boolean;
   reaction?: string;
+  kind?: "proactive";
 }
 
 function MessageBubble({
@@ -327,6 +377,7 @@ function MessageBubble({
   createdAt,
   streaming,
   reaction,
+  kind,
 }: BubbleProps) {
   if (role === "system") {
     return (
@@ -337,6 +388,7 @@ function MessageBubble({
   }
 
   const isUser = role === "user";
+  const isProactive = !isUser && kind === "proactive";
   return (
     <li
       className={`flex flex-col gap-1 ${isUser ? "items-end" : "items-start"}`}
@@ -345,13 +397,16 @@ function MessageBubble({
         className={`whitespace-pre-wrap rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-md ${
           isUser
             ? "max-w-xl bg-ink-600/80 text-white"
-            : "max-w-2xl border border-white/10 bg-white/[0.04] text-ink-100"
+            : isProactive
+              ? "max-w-2xl border border-emerald-400/30 bg-emerald-500/[0.08] text-ink-100"
+              : "max-w-2xl border border-white/10 bg-white/[0.04] text-ink-100"
         } ${streaming ? "streaming-caret" : ""}`}
       >
         {content || (streaming ? "" : "(empty)")}
       </div>
       <div className="text-[10px] text-ink-100/40">
-        {isUser ? "you" : "aiko"} · {formatTime(createdAt)}
+        {isUser ? "you" : isProactive ? "aiko · proactive" : "aiko"} ·{" "}
+        {formatTime(createdAt)}
         {!isUser && reaction && reaction !== "neutral" ? ` · ${reaction}` : ""}
       </div>
     </li>

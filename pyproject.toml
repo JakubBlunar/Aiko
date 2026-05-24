@@ -16,6 +16,12 @@ dependencies = [
   "pocket-tts>=1.1.0",
   "pydub>=0.25.0",
   "audioop-lts>=0.2.1; python_version>='3.13'",
+  # RAG: LanceDB-backed vector store for memories, messages, and documents.
+  "lancedb>=0.13.0",
+  "pyarrow>=16.0.0",
+  # Optional document ingestion (PDF). Pure-python; tiny footprint.
+  "pypdf>=4.0.0",
+  "duckduckgo-search>=6.0.0",
 ]
 
 [project.optional-dependencies]

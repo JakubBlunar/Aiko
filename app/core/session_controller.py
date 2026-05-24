@@ -161,6 +161,9 @@ class SessionController:
         self._memory_retriever: MemoryRetriever | None = None
         self._memory_extractor: MemoryExtractor | None = None
         self._memory_listeners: list[Callable[[Any], None]] = []
+        # RAG: LanceDB-backed retrieval substrate. Owned by SessionController
+        # so it can be shared with MessageIndexer and DocumentIngestor.
+        self._rag_store = None  # type: ignore[var-annotated]
         if self._memory_settings.enabled:
             try:
                 self._embedder = Embedder(settings.ollama)
@@ -169,17 +172,94 @@ class SessionController:
                     max_memories=self._memory_settings.max_memories,
                     dedupe_threshold=self._memory_settings.dedupe_threshold,
                 )
+                # Boot RAG store (best-effort -- if probe / Lance fail, we
+                # gracefully fall back to the SQLite path).
+                try:
+                    from app.core.rag_store import auto_open as _rag_auto_open
+
+                    rag_root = (
+                        Path(__file__).resolve().parents[2] / "data" / "lancedb"
+                    )
+                    self._rag_store = _rag_auto_open(
+                        rag_root,
+                        embedder_model=self._embedder.model,
+                        embedder_probe=self._embedder,
+                    )
+                except Exception:
+                    log.warning("RAG bring-up failed", exc_info=True)
+                    self._rag_store = None
+                if self._rag_store is not None:
+                    try:
+                        self._memory_store.attach_rag_store(self._rag_store)
+                        self._memory_store.migrate_to_rag(self._rag_store)
+                    except Exception:
+                        log.warning("memory -> RAG migration failed", exc_info=True)
+                # Hook the chat-message indexer for live + backfill embedding.
+                self._message_indexer = None
+                if self._rag_store is not None and self._embedder is not None:
+                    try:
+                        from app.core.message_indexer import MessageIndexer
+
+                        self._message_indexer = MessageIndexer(
+                            self._chat_db, self._rag_store, self._embedder,
+                        )
+                        self._message_indexer.start(backfill=True)
+                    except Exception:
+                        log.warning("MessageIndexer failed to start", exc_info=True)
+                        self._message_indexer = None
                 self._memory_retriever = MemoryRetriever(
                     self._memory_store,
                     self._embedder,
                     top_k=self._memory_settings.top_k,
                     score_threshold=self._memory_settings.score_threshold,
                 )
+                # RagRetriever is the new read path; keeps the legacy
+                # MemoryRetriever as a fallback inside PromptAssembler.
+                self._rag_retriever = None
+                if self._rag_store is not None:
+                    try:
+                        from app.core.rag_retriever import RagRetriever
+
+                        self._rag_retriever = RagRetriever(
+                            self._rag_store,
+                            self._embedder,
+                            top_k=self._memory_settings.top_k,
+                            score_threshold=self._memory_settings.score_threshold,
+                        )
+                    except Exception:
+                        log.warning("RagRetriever failed to init", exc_info=True)
+                        self._rag_retriever = None
+                # DocumentIngestor: lets users upload notes / PDFs that get
+                # indexed into the same RagStore.
+                self._document_ingestor = None
+                if self._rag_store is not None and self._embedder is not None:
+                    try:
+                        from app.core.document_ingestor import DocumentIngestor
+
+                        docs_root = (
+                            Path(__file__).resolve().parents[2] / "data" / "documents"
+                        )
+                        self._document_ingestor = DocumentIngestor(
+                            self._rag_store,
+                            self._embedder,
+                            storage_root=docs_root,
+                        )
+                    except Exception:
+                        log.warning("DocumentIngestor failed to init", exc_info=True)
+                        self._document_ingestor = None
             except Exception:
                 log.warning("memory subsystem failed to initialise", exc_info=True)
                 self._embedder = None
                 self._memory_store = None
                 self._memory_retriever = None
+                self._rag_store = None
+                self._message_indexer = None
+                self._rag_retriever = None
+                self._document_ingestor = None
+        else:
+            self._message_indexer = None
+            self._rag_retriever = None
+            self._document_ingestor = None
 
         # ── TTS engine + queue ───────────────────────────────────────────
         self._output_device = getattr(settings.audio, "output_device", None)
@@ -206,6 +286,7 @@ class SessionController:
         self._prompt_assembler = PromptAssembler(
             self._chat_db,
             memory_retriever=self._memory_retriever,
+            rag_retriever=getattr(self, "_rag_retriever", None),
         )
 
         if (
@@ -235,6 +316,17 @@ class SessionController:
             memory_extractor=self._memory_extractor,
         )
         self._summary_worker.start()
+        # Slow background decay so unused memories drift down over weeks. We
+        # also opportunistically prune so the store doesn't unbounded-grow.
+        self._memory_decay_stop = threading.Event()
+        self._memory_decay_thread: threading.Thread | None = None
+        if self._memory_store is not None:
+            self._memory_decay_thread = threading.Thread(
+                target=self._memory_decay_loop,
+                name="MemoryDecay",
+                daemon=True,
+            )
+            self._memory_decay_thread.start()
         self._turn_runner = TurnRunner(
             self._ollama,
             self._chat_db,
@@ -248,7 +340,19 @@ class SessionController:
             embedder=self._embedder,
             self_tagged_salience=self._memory_settings.self_tagged_salience,
             on_memory_added=self._notify_memory_added,
+            on_tool_call=lambda name, args: self._notify_tool_event(
+                "call", {"name": name, "arguments": args},
+            ),
+            on_tool_result=lambda name, content, ok: self._notify_tool_event(
+                "result", {"name": name, "ok": bool(ok), "preview": (content or "")[:200]},
+            ),
         )
+        self._tool_event_listeners: list[Callable[[str, dict[str, Any]], None]] = []
+        self._tool_registry = None
+        try:
+            self.rebuild_tool_registry()
+        except Exception:
+            log.warning("initial tool registry build failed", exc_info=True)
         self._proactive = ProactiveDirector(
             self._ollama,
             self._chat_db,
@@ -261,6 +365,7 @@ class SessionController:
                 getattr(settings.agent, "proactive_cooldown_seconds", 120.0),
             ),
             context_window=self._context_window,
+            notify_message=self._notify_message,
         )
 
         # ── Runtime state ────────────────────────────────────────────────
@@ -734,6 +839,71 @@ class SessionController:
     def persona_manager(self) -> PersonaManager:
         return self._persona_manager
 
+    # ── RAG / documents ─────────────────────────────────────────────
+
+    @property
+    def rag_store(self):
+        return getattr(self, "_rag_store", None)
+
+    @property
+    def document_ingestor(self):
+        return getattr(self, "_document_ingestor", None)
+
+    # ── Tools ───────────────────────────────────────────────────────
+
+    @property
+    def tool_registry(self):
+        return getattr(self, "_tool_registry", None)
+
+    def available_tool_names(self) -> list[str]:
+        registry = getattr(self, "_tool_registry", None)
+        if registry is None:
+            return []
+        try:
+            return registry.names()
+        except Exception:
+            return []
+
+    def rebuild_tool_registry(self) -> None:
+        """Rebuild the tool registry after settings change.
+
+        Reads the current ``settings.tools`` block, constructs a fresh
+        registry, and hands it to the active :class:`TurnRunner`.
+        """
+        try:
+            from app.llm.tools import build_default_registry, ToolRegistry
+        except Exception:
+            log.warning("tool registry import failed", exc_info=True)
+            self._tool_registry = None
+            if hasattr(self, "_turn_runner"):
+                self._turn_runner.set_tool_registry(None)
+            return
+
+        tools_cfg = getattr(self._settings, "tools", None)
+        if tools_cfg is None or not getattr(tools_cfg, "enabled", True):
+            self._tool_registry = ToolRegistry()
+            self._turn_runner.set_tool_registry(self._tool_registry)
+            return
+
+        registry = ToolRegistry()
+        try:
+            from app.llm.tools.builtins import GetTimeTool, RecallTool, WebSearchTool
+            if getattr(tools_cfg, "get_time", True):
+                registry.register(GetTimeTool())
+            if getattr(tools_cfg, "recall", True) and getattr(self, "_rag_retriever", None) is not None:
+                registry.register(RecallTool(self._rag_retriever))
+            if getattr(tools_cfg, "web_search", True):
+                try:
+                    registry.register(WebSearchTool())
+                except Exception:
+                    log.info("web_search tool unavailable (duckduckgo-search missing?)")
+        except Exception:
+            log.warning("tool registry build failed", exc_info=True)
+        self._tool_registry = registry
+        if hasattr(self, "_turn_runner"):
+            self._turn_runner.set_tool_registry(registry)
+        log.info("tool registry rebuilt: %s", registry.names())
+
     # ── Memory accessors ────────────────────────────────────────────
 
     @property
@@ -786,11 +956,37 @@ class SessionController:
             except Exception:
                 log.debug("message listener raised", exc_info=True)
 
+    def add_tool_event_listener(
+        self, callback: Callable[[str, dict[str, Any]], None],
+    ) -> None:
+        listeners = getattr(self, "_tool_event_listeners", None)
+        if listeners is None:
+            listeners = []
+            self._tool_event_listeners = listeners
+        if callback and callback not in listeners:
+            listeners.append(callback)
+
+    def _notify_tool_event(self, event: str, payload: dict[str, Any]) -> None:
+        listeners = getattr(self, "_tool_event_listeners", None) or []
+        for listener in list(listeners):
+            try:
+                listener(event, payload)
+            except Exception:
+                log.debug("tool event listener raised", exc_info=True)
+
     def add_tts_state_listener(self, callback: Callable[..., None]) -> None:
         if callback and callback not in self._tts_state_listeners:
             self._tts_state_listeners.append(callback)
 
     def _on_tts_state(self, event: str, payload: dict[str, Any]) -> None:
+        # Carry the last assistant reaction over to the next turn so the
+        # mood doesn't reset to "neutral" every time. Phase E mood-carryover.
+        if event == "start":
+            reaction = (payload or {}).get("reaction")
+            try:
+                self._prompt_assembler.set_last_reaction(reaction)
+            except Exception:
+                log.debug("set_last_reaction failed", exc_info=True)
         for listener in list(self._tts_state_listeners):
             try:
                 listener(event, **payload)
@@ -1242,6 +1438,37 @@ class SessionController:
         from app.tts.pocket_tts_service import PocketTtsService
         return PocketTtsService(settings.tts, output_device=output_device)
 
+    # ── Memory decay daemon ─────────────────────────────────────────
+
+    def _memory_decay_loop(self) -> None:
+        """Tick once a day to gently decay salience and prune the store.
+
+        Wakes every 60s so shutdown can interrupt promptly. The actual decay
+        only fires once 24h have elapsed since the last tick.
+        """
+        store = self._memory_store
+        if store is None:
+            return
+        interval_seconds = 24 * 60 * 60
+        last_tick = time.monotonic()
+        while not self._memory_decay_stop.wait(60.0):
+            now = time.monotonic()
+            if now - last_tick < interval_seconds:
+                continue
+            last_tick = now
+            try:
+                # Small daily decrement; matches the 0.02/day default in
+                # MemoryStore.decay's signature.
+                store.decay(by=0.02)
+            except Exception:
+                log.debug("memory decay failed", exc_info=True)
+            try:
+                pruned = store.prune()
+                if pruned:
+                    log.info("memory decay: pruned %d low-salience memories", pruned)
+            except Exception:
+                log.debug("memory prune failed", exc_info=True)
+
     # ── Shutdown ────────────────────────────────────────────────────
 
     def shutdown(self) -> None:
@@ -1254,6 +1481,17 @@ class SessionController:
             self._tts.stop()
         except Exception:
             pass
+        try:
+            self._memory_decay_stop.set()
+            if self._memory_decay_thread is not None:
+                self._memory_decay_thread.join(timeout=1.5)
+        except Exception:
+            log.debug("memory decay stop failed", exc_info=True)
+        if getattr(self, "_message_indexer", None) is not None:
+            try:
+                self._message_indexer.stop()
+            except Exception:
+                log.debug("message indexer stop failed", exc_info=True)
         try:
             self._summary_worker.stop()
         except Exception:

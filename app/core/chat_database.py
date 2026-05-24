@@ -88,6 +88,25 @@ class ChatDatabase:
         self._init_schema(self._get_conn())
         self._migrate_langchain_history()
         self._backfill_legacy_meta_tags()
+        # Listeners notified after each successful add_message. Used by
+        # :class:`app.core.message_indexer.MessageIndexer` to embed and write
+        # to the RAG store asynchronously.
+        self._add_listeners: list[Any] = []
+
+    def add_message_listener(self, callback: Any) -> None:
+        """Register a ``callback(MessageRow)`` invoked after add_message.
+
+        Listeners run synchronously on the caller thread; they should
+        offload any heavy work themselves.
+        """
+        if callback is not None and callback not in self._add_listeners:
+            self._add_listeners.append(callback)
+
+    def remove_message_listener(self, callback: Any) -> None:
+        try:
+            self._add_listeners.remove(callback)
+        except ValueError:
+            pass
 
     def _get_conn(self) -> sqlite3.Connection:
         conn = getattr(self._local, "conn", None)
@@ -222,13 +241,30 @@ class ChatDatabase:
         token_count: int = 0,
     ) -> int:
         conn = self._get_conn()
+        created_at = _now_iso()
         cursor = conn.execute(
             "INSERT INTO messages (session_id, role, content, token_count, created_at) "
             "VALUES (?, ?, ?, ?, ?)",
-            (session_id, role, content, token_count, _now_iso()),
+            (session_id, role, content, token_count, created_at),
         )
         conn.commit()
-        return cursor.lastrowid  # type: ignore[return-value]
+        msg_id = int(cursor.lastrowid or 0)
+        if self._add_listeners:
+            row = MessageRow(
+                id=msg_id,
+                session_id=session_id,
+                role=role,
+                content=content,
+                token_count=token_count,
+                created_at=created_at,
+            )
+            for listener in list(self._add_listeners):
+                try:
+                    listener(row)
+                except Exception:
+                    # Listeners must not break the write path.
+                    pass
+        return msg_id
 
     def get_messages(
         self,

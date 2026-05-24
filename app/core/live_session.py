@@ -66,6 +66,8 @@ class LiveSession:
         self._max_pending = 2
         self._processing = threading.Event()
         self._last_audio_emit = 0.0
+        # Activity / silence tracking for proactive nudges.
+        self._last_activity_monotonic = 0.0
 
     # ── public API ────────────────────────────────────────────────────────
 
@@ -117,6 +119,7 @@ class LiveSession:
 
     def _run(self) -> None:
         self._emit("voice_state", {"state": "listening"})
+        self._last_activity_monotonic = time.monotonic()
         capture_thread = threading.Thread(
             target=self._capture_loop,
             daemon=True,
@@ -131,10 +134,14 @@ class LiveSession:
                     if self._pending:
                         item = self._pending.popleft()
                 if item is None:
+                    self._maybe_proactive()
                     time.sleep(0.05)
                     continue
 
                 wav_path, capture_ms = item
+                # Real user activity -- reset the silence clock so we don't
+                # immediately nudge after a turn finishes.
+                self._last_activity_monotonic = time.monotonic()
 
                 # Barge-in: if Aiko is mid-speech and a new phrase just
                 # landed, stop her so we can react to the new input.
@@ -192,6 +199,10 @@ class LiveSession:
 
                 if self._stop_requested:
                     break
+                # Reset silence clock once Aiko's turn fully ends -- otherwise
+                # we'd immediately nudge again because the timer was running
+                # while she spoke.
+                self._last_activity_monotonic = time.monotonic()
                 self._emit("voice_state", {"state": "listening"})
         except Exception:
             log.exception("live session main loop crashed")
@@ -261,6 +272,36 @@ class LiveSession:
                         wav_path.unlink(missing_ok=True)
                     except Exception:
                         pass
+
+    def _maybe_proactive(self) -> None:
+        """Nudge the proactive director if the user has been silent.
+
+        Mirrors :meth:`app.ui.live_worker.LivePracticeWorker._maybe_proactive`
+        but routes through the new :meth:`SessionController.notify_silence`
+        path so the WS client gets a normal assistant message + tts_state
+        flow, just like a typed turn.
+        """
+        if self._processing.is_set():
+            return
+        try:
+            if self._session.is_tts_playing():
+                return
+        except Exception:
+            return
+        agent = getattr(self._session, "_settings", None)
+        if agent is not None:
+            agent = getattr(agent, "agent", None)
+        silence_threshold = float(getattr(agent, "proactive_silence_seconds", 45.0))
+        idle = time.monotonic() - self._last_activity_monotonic
+        if idle < silence_threshold:
+            return
+        try:
+            self._session.generate_proactive_message()
+        except Exception:
+            log.debug("notify_silence failed", exc_info=True)
+        # Whether or not the director actually spoke (cooldown can swallow
+        # the call), reset the clock so we don't keep firing every tick.
+        self._last_activity_monotonic = time.monotonic()
 
     def _wait_for_tts_drain(self) -> None:
         # Up to ~30s; bail early if a stop was requested.

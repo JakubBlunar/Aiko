@@ -155,7 +155,7 @@ class TestSelfTaggedExtraction(unittest.TestCase):
             "[[reaction:cheerful]] Hi! [[remember:Jacob just adopted a cat "
             "named Mochi]] So what's up?"
         )
-        tags = [m.group(1).strip() for m in _REMEMBER_TAG_RE.finditer(raw)]
+        tags = [m.group("body").strip() for m in _REMEMBER_TAG_RE.finditer(raw)]
         self.assertEqual(tags, ["Jacob just adopted a cat named Mochi"])
 
     def test_self_tagged_round_trip(self) -> None:
@@ -172,7 +172,7 @@ class TestSelfTaggedExtraction(unittest.TestCase):
             )
             inserted = 0
             for match in _REMEMBER_TAG_RE.finditer(raw_text):
-                content = match.group(1).strip()
+                content = match.group("body").strip()
                 emb = embedder.embed(content)
                 mem = store.add(
                     content=content,
@@ -188,6 +188,20 @@ class TestSelfTaggedExtraction(unittest.TestCase):
             mem = store.list_recent(limit=1)[0]
             self.assertEqual(mem.kind, "self_tagged")
             self.assertAlmostEqual(mem.salience, 0.7, places=2)
+
+    def test_self_prefix_marks_kind_self(self) -> None:
+        from app.core.turn_runner import _REMEMBER_TAG_RE
+
+        raw = (
+            "[[reaction:gentle]] Hmm, true.\n"
+            "[[remember:self:I prefer cozy stories over horror]]"
+        )
+        matches = list(_REMEMBER_TAG_RE.finditer(raw))
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0].group("kind"), "self")
+        self.assertEqual(
+            matches[0].group("body"), "I prefer cozy stories over horror",
+        )
 
 
 if __name__ == "__main__":

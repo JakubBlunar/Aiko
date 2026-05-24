@@ -183,6 +183,39 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
     return () => unsub();
   }, [manifest.id, manifest.reaction_mapping, manifest.talk_motion_group]);
 
+  // ── 4. Idle motion loop -- only fires when not speaking. Uses a jittered
+  //    8-15 s schedule so the avatar never sits perfectly still.
+  useEffect(() => {
+    const idleGroup = manifest.idle_motion_group;
+    if (!idleGroup) {
+      return;
+    }
+    let timeoutId: number | null = null;
+    const scheduleNext = () => {
+      const delay = 8000 + Math.random() * 7000;
+      timeoutId = window.setTimeout(() => {
+        const model = modelRef.current;
+        const ts = useAssistantStore.getState().ttsState;
+        if (model && ts !== "speaking") {
+          try {
+            (model as unknown as {
+              motion: (group: string, index?: number, priority?: number) => void;
+            }).motion(idleGroup, undefined, MotionPriority.IDLE);
+          } catch (err) {
+            console.debug("idle motion failed", err);
+          }
+        }
+        scheduleNext();
+      }, delay);
+    };
+    scheduleNext();
+    return () => {
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+    };
+  }, [manifest.id, manifest.idle_motion_group]);
+
   return (
     <div
       ref={containerRef}
