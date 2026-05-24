@@ -346,6 +346,25 @@ class SessionController:
                 log.warning("RagPrefetcher init failed", exc_info=True)
                 self._rag_prefetcher = None
 
+        # Phase 2c: ReflectionWorker — LLM journal that runs inside the
+        # speaking window at low priority. Writes open_question / callback
+        # / reflection memories that the RAG retriever surfaces later.
+        self._reflection_worker = None
+        try:
+            from app.core.reflection_worker import ReflectionWorker
+
+            self._reflection_worker = ReflectionWorker(
+                ollama=self._ollama,
+                memory_store=self._memory_store,
+                embedder=self._embedder,
+                model=self._effective_chat_model,
+                min_seconds_between=settings.agent.reflection_min_seconds_between,
+                emotional_delta_threshold=settings.agent.reflection_emotional_delta_threshold,
+            )
+        except Exception:
+            log.warning("ReflectionWorker init failed", exc_info=True)
+            self._reflection_worker = None
+
         if (
             self._memory_settings.enabled
             and self._memory_settings.extractor_enabled
@@ -1304,12 +1323,14 @@ class SessionController:
         usage = result.usage
         telemetry = result.telemetry
 
-        # Post-turn inner-life (cheap, no LLM): updates affect state and
-        # broadcasts the mood_state WS event for avatar tinting.
+        # Post-turn inner-life (cheap, no LLM on the hot path): updates
+        # affect state, broadcasts mood_state WS, and submits the
+        # ReflectionWorker job to the speaking window scheduler.
         try:
             self._post_turn_inner_life(
                 user_text=cleaned,
                 reaction=getattr(result, "reaction", "neutral") or "neutral",
+                assistant_text=getattr(result, "text", "") or "",
             )
         except Exception:
             log.debug("post-turn inner life failed", exc_info=True)
@@ -1486,16 +1507,24 @@ class SessionController:
         *,
         user_text: str,
         reaction: str,
+        assistant_text: str = "",
     ) -> None:
         """Run all post-turn inner-life updates (cheap, no LLM).
 
         Currently:
           - AffectUpdater.apply_turn (POST-TURN)
           - mood_state WS broadcast
+          - ReflectionWorker scheduling (Phase 2c) — submitted to the
+            speaking window so the LLM call hides under TTS playback.
 
         More post-turn jobs (user-state estimator, promise regex, agenda
         regex) will hang off this method as the relevant phases land.
         """
+        try:
+            affect_before = self._affect_store.get(self._user_id)
+        except Exception:
+            log.debug("affect snapshot failed", exc_info=True)
+            affect_before = None
         try:
             state = self._affect_updater.apply_turn(
                 self._user_id,
@@ -1511,6 +1540,45 @@ class SessionController:
             "valence": float(state.valence),
             "arousal": float(state.arousal),
         })
+
+        # Phase 2c: schedule a reflection during TTS playback.
+        worker = getattr(self, "_reflection_worker", None)
+        if worker is not None:
+            session_key = self.session_key
+            user_snapshot = (user_text or "")[:1500]
+            assistant_snapshot = (assistant_text or "")[:1500]
+            reaction_snapshot = reaction or "neutral"
+            affect_after = state
+
+            def _job(_stop_flag: Any) -> None:
+                # Honor cooperative cancel before the LLM call too.
+                if _stop_flag is not None and _stop_flag.is_set():
+                    return
+                try:
+                    worker.maybe_run(
+                        session_key=session_key,
+                        user_text=user_snapshot,
+                        assistant_text=assistant_snapshot,
+                        reaction=reaction_snapshot,
+                        affect_before=affect_before,
+                        affect_after=affect_after,
+                        on_memory_added=self._notify_memory_added,
+                    )
+                except Exception:
+                    log.debug("reflection job raised", exc_info=True)
+
+            try:
+                from app.core.speaking_window_scheduler import ScheduledJob
+
+                self._scheduler.submit(ScheduledJob(
+                    name="reflection",
+                    priority=50,  # mid — reactive jobs (cancel) run sooner
+                    estimated_seconds=4.0,
+                    callable=_job,
+                    dedupe_key="reflection",
+                ))
+            except Exception:
+                log.debug("reflection job submit failed", exc_info=True)
 
     # ── Voice capture ────────────────────────────────────────────────
 
