@@ -53,3 +53,14 @@ body {
   animation: pulse-caret 1.1s ease-in-out infinite;
   color: rgba(167, 139, 250, 0.8);
 }
+
+/* Phase 5a: gentle glow pulse used for the avatar "thinking" aura. */
+@keyframes aikoThinkingPulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 0.95;
+  }
+}

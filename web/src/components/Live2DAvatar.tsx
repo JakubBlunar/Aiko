@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import * as PIXI from "pixi.js";
 import { Live2DModel, MotionPriority } from "pixi-live2d-display";
 import { useAssistantStore } from "../store";
-import type { BackchannelHint, Persona } from "../types";
+import type { BackchannelHint, Persona, VoiceMode } from "../types";
 
 // Make pixi-live2d-display drive its own ticker via the standard PIXI ticker.
 // (The library expects this to be registered exactly once before any model is
@@ -244,8 +244,10 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
     };
   }, [manifest.id, manifest.reaction_mapping]);
 
-  // ── 5. Idle motion loop -- only fires when not speaking. Uses a jittered
-  //    8-15 s schedule so the avatar never sits perfectly still.
+  // ── 5. Idle motion loop -- only fires when not speaking. Cadence is
+  //    biased by Aiko's current mood arousal: more restless = quicker
+  //    idle motions, more tired/calm = slower. Falls back to the
+  //    8-15 s neutral baseline.
   useEffect(() => {
     const idleGroup = manifest.idle_motion_group;
     if (!idleGroup) {
@@ -253,11 +255,20 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
     }
     let timeoutId: number | null = null;
     const scheduleNext = () => {
-      const delay = 8000 + Math.random() * 7000;
+      const moodNow = useAssistantStore.getState().mood;
+      const { min, max } = idleCadenceMs(moodNow.label, moodNow.arousal);
+      const delay = min + Math.random() * (max - min);
       timeoutId = window.setTimeout(() => {
         const model = modelRef.current;
-        const ts = useAssistantStore.getState().ttsState;
-        if (model && ts !== "speaking") {
+        const state = useAssistantStore.getState();
+        // Don't intrude on speaking, listening (user mid-utterance),
+        // or thinking — the body language for those is handled below.
+        const blocked =
+          state.ttsState === "speaking" ||
+          state.voiceMode === "listening" ||
+          state.voiceMode === "transcribing" ||
+          state.voiceMode === "thinking";
+        if (model && !blocked) {
           try {
             (model as unknown as {
               motion: (group: string, index?: number, priority?: number) => void;
@@ -277,18 +288,65 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
     };
   }, [manifest.id, manifest.idle_motion_group]);
 
+  // ── 6. Voice-mode driven listening / thinking expressions (Phase 5a) ──
+  //   When the user is talking ("listening" / "transcribing") we softly
+  //   apply a thoughtful expression so Aiko looks engaged. When the LLM
+  //   is composing a reply ("thinking") we apply a 'thoughtful' pose
+  //   while the avatar waits. State transitions out of these modes
+  //   restore the persistent reaction.
+  useEffect(() => {
+    const unsub = useAssistantStore.subscribe((state, prev) => {
+      const model = modelRef.current;
+      if (!model) {
+        return;
+      }
+      if (state.voiceMode === prev.voiceMode) {
+        return;
+      }
+      const next = state.voiceMode;
+      if (next === "listening" || next === "transcribing") {
+        const expr = pickModeExpression(manifest, "listening");
+        applyExpressionByName(model, expr);
+        return;
+      }
+      if (next === "thinking") {
+        const expr = pickModeExpression(manifest, "thinking");
+        applyExpressionByName(model, expr);
+        return;
+      }
+      // Restore the persistent reaction when leaving listening/thinking.
+      applyReaction(model, manifest, state.reaction);
+    });
+    return () => unsub();
+  }, [manifest.id, manifest.reaction_mapping]);
+
   // Phase 2b: subtle mood tinting on the avatar container. Subscribed via
   // useAssistantStore so it re-renders whenever the WS pushes mood_state.
   const mood = useAssistantStore((s) => s.mood);
+  const voiceMode = useAssistantStore((s) => s.voiceMode);
+  const turnInProgress = useAssistantStore((s) => s.turnInProgress);
+  const ttsState = useAssistantStore((s) => s.ttsState);
   const tintFilter = moodToFilter(mood.label, mood.intensity);
+  const auraStyle = stateAura(voiceMode, turnInProgress, ttsState);
 
   return (
     <div
-      ref={containerRef}
-      className="relative h-full w-full transition-[filter] duration-700 ease-out"
-      style={{ filter: tintFilter }}
+      className="relative h-full w-full"
       aria-label={`${manifest.display_name} (Live2D)`}
-    />
+    >
+      {auraStyle && (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 transition-opacity duration-500 ease-out"
+          style={auraStyle}
+        />
+      )}
+      <div
+        ref={containerRef}
+        className="relative h-full w-full transition-[filter] duration-700 ease-out"
+        style={{ filter: tintFilter }}
+      />
+    </div>
   );
 }
 
@@ -402,6 +460,96 @@ function pickBackchannelExpression(
     }
   }
   return undefined;
+}
+
+// Phase 5a: persona-mapped expression for Voice/listening/thinking states.
+const _MODE_TO_REACTION: Record<"listening" | "thinking", string[]> = {
+  listening: ["thoughtful", "calm", "neutral", "friendly", "attentive"],
+  thinking: ["thoughtful", "concerned", "calm", "serious", "neutral"],
+};
+
+function pickModeExpression(
+  manifest: Persona,
+  mode: "listening" | "thinking",
+): string | undefined {
+  const candidates = _MODE_TO_REACTION[mode];
+  for (const reaction of candidates) {
+    const expr = manifest.reaction_mapping[reaction];
+    if (expr) {
+      return expr;
+    }
+  }
+  for (const expr of manifest.expressions) {
+    if (expr.name.toLowerCase().includes(mode)) {
+      return expr.name;
+    }
+  }
+  return undefined;
+}
+
+function applyExpressionByName(
+  model: InstanceType<typeof Live2DModel>,
+  expressionName: string | undefined,
+): void {
+  if (!expressionName) {
+    return;
+  }
+  try {
+    (model as unknown as {
+      expression: (name?: string) => void;
+    }).expression(expressionName);
+  } catch (err) {
+    console.debug("expression() failed", expressionName, err);
+  }
+}
+
+// Phase 5a: a soft glow overlay that signals listening / thinking /
+// speaking. CSS-only — no per-frame rAF cost.
+function stateAura(
+  voiceMode: VoiceMode,
+  turnInProgress: boolean,
+  ttsState: "idle" | "speaking",
+): React.CSSProperties | null {
+  if (ttsState === "speaking") {
+    return {
+      background:
+        "radial-gradient(circle at 50% 70%, rgba(255,210,160,0.18), transparent 65%)",
+      opacity: 0.8,
+    };
+  }
+  if (voiceMode === "thinking" || turnInProgress) {
+    return {
+      background:
+        "radial-gradient(circle at 50% 60%, rgba(180,200,255,0.18), transparent 60%)",
+      animation: "aikoThinkingPulse 2.4s ease-in-out infinite",
+      opacity: 0.85,
+    };
+  }
+  if (voiceMode === "listening" || voiceMode === "transcribing") {
+    return {
+      background:
+        "radial-gradient(circle at 50% 60%, rgba(160,255,200,0.16), transparent 60%)",
+      opacity: 0.7,
+    };
+  }
+  return null;
+}
+
+// Phase 5a: idle motion cadence biased by mood arousal.
+function idleCadenceMs(
+  label: string,
+  arousal: number,
+): { min: number; max: number } {
+  const a = Math.max(0, Math.min(1, arousal || 0.4));
+  if (label === "tired" || label === "melancholy") {
+    return { min: 12000, max: 22000 };
+  }
+  if (label === "restless" || label === "playful" || label === "curious") {
+    return { min: 4500, max: 9500 };
+  }
+  // Neutral baseline tilted by arousal: more arousal -> quicker idle.
+  const base = 8000 + (1 - a) * 4000; // 8000..12000 at low arousal
+  return { min: base, max: base + 6000 };
 }
 
 // Phase 2b: very subtle CSS filter tinting based on mood label + intensity.
