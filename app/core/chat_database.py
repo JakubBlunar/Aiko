@@ -390,6 +390,44 @@ class ChatDatabase:
                     pass
         return msg_id
 
+    def update_message_content(
+        self,
+        message_id: int,
+        content: str,
+        *,
+        token_count: int | None = None,
+    ) -> bool:
+        """Replace the ``content`` (and optionally ``token_count``) of an
+        existing message row.
+
+        Used by the voice-merge flow in ``SessionController``: when phrase B
+        is detected as a continuation of phrase A while the in-flight LLM
+        turn hasn't reached TTS yet, we merge the texts into the existing
+        ``role="user"`` row instead of inserting a second one. Persisting
+        the row update before the merged turn re-runs keeps the chat
+        history a single coherent user message.
+
+        Returns True if a row was updated, False if no row matched the id.
+        """
+        if message_id <= 0:
+            return False
+        from app.llm.token_utils import estimate_tokens
+
+        cleaned = str(content or "")
+        conn = self._get_conn()
+        if token_count is None:
+            cursor = conn.execute(
+                "UPDATE messages SET content = ?, token_count = ? WHERE id = ?",
+                (cleaned, estimate_tokens(cleaned), int(message_id)),
+            )
+        else:
+            cursor = conn.execute(
+                "UPDATE messages SET content = ?, token_count = ? WHERE id = ?",
+                (cleaned, int(token_count), int(message_id)),
+            )
+        conn.commit()
+        return bool(cursor.rowcount)
+
     def get_messages(
         self,
         session_id: str,
