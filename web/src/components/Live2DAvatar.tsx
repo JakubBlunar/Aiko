@@ -91,7 +91,11 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
         }
         modelRef.current = model;
         app.stage.addChild(model);
-        fitModelToContainer(model, app, manifest.settings.scale_multiplier ?? 1);
+        fitModelToContainer(
+          model,
+          app,
+          manifest.settings.scale_multiplier ?? 1,
+        );
 
         // The first reaction we already have in the store should drive the
         // initial expression so the avatar doesn't pop in with the default.
@@ -188,9 +192,15 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
         if (ts === "speaking" && manifest.talk_motion_group) {
           try {
             // Random index within the group; library signature: motion(group, index?, priority?).
-            (model as unknown as {
-              motion: (group: string, index?: number, priority?: number) => void;
-            }).motion(
+            (
+              model as unknown as {
+                motion: (
+                  group: string,
+                  index?: number,
+                  priority?: number,
+                ) => void;
+              }
+            ).motion(
               manifest.talk_motion_group,
               undefined,
               MotionPriority.NORMAL,
@@ -226,15 +236,18 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
       }
       lastBackchannelAt = state.backchannelAt;
       const expressionName = pickBackchannelExpression(
-        manifest, state.backchannelHint,
+        manifest,
+        state.backchannelHint,
       );
       if (!expressionName) {
         return;
       }
       try {
-        (model as unknown as {
-          expression: (name?: string) => void;
-        }).expression(expressionName);
+        (
+          model as unknown as {
+            expression: (name?: string) => void;
+          }
+        ).expression(expressionName);
       } catch (err) {
         console.debug("backchannel expression failed", err);
       }
@@ -291,9 +304,15 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
           state.voiceMode === "thinking";
         if (model && !blocked) {
           try {
-            (model as unknown as {
-              motion: (group: string, index?: number, priority?: number) => void;
-            }).motion(idleGroup, undefined, MotionPriority.IDLE);
+            (
+              model as unknown as {
+                motion: (
+                  group: string,
+                  index?: number,
+                  priority?: number,
+                ) => void;
+              }
+            ).motion(idleGroup, undefined, MotionPriority.IDLE);
           } catch (err) {
             console.debug("idle motion failed", err);
           }
@@ -381,7 +400,7 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
     // Idle-break threshold: after this much time without the cursor
     // moving, treat the user as "not engaging right now" and ease
     // gaze to centre so she stops staring at a stale cursor position.
-    const IDLE_BREAK_MS = 2500;
+    const IDLE_BREAK_MS = 1500;
 
     const tick = () => {
       const model = modelRef.current;
@@ -393,10 +412,9 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
         const isListening = vm === "listening" || vm === "transcribing";
         const isSpeaking = ts === "speaking";
         const isThinking =
-          (vm === "thinking" || (turnInProgress && ts !== "speaking"));
+          vm === "thinking" || (turnInProgress && ts !== "speaking");
         const now = performance.now();
-        const isIdle =
-          !windowFocused || now - lastMouseMoveAt > IDLE_BREAK_MS;
+        const isIdle = !windowFocused || now - lastMouseMoveAt > IDLE_BREAK_MS;
 
         if (isListening || isSpeaking) {
           // Conversation has the floor — lock eye contact regardless
@@ -404,7 +422,7 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
           // because the user is typically sitting just below the
           // screen; this reads as "looking at you".
           target.x = 0;
-          target.y = 0.20;
+          target.y = 0.2;
         } else if (isThinking) {
           // Slow wander off-axis. Phase it by epoch so multiple
           // mounts don't end up in lockstep.
@@ -428,7 +446,7 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
         // Micro-saccades every 1.5-3 s so the gaze never freezes.
         if (now - lastSaccadeAt > 1500 + Math.random() * 1500) {
           lastSaccadeAt = now;
-          microSaccade.x = (Math.random() - 0.5) * 0.10;
+          microSaccade.x = (Math.random() - 0.5) * 0.1;
           microSaccade.y = (Math.random() - 0.5) * 0.06;
         }
         // Decay the saccade so it's a brief flick, not a sustained offset.
@@ -441,13 +459,15 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
         const fx = target.x + microSaccade.x;
         const fy = target.y + microSaccade.y;
         try {
-          const fc = (model as unknown as {
-            internalModel?: {
-              focusController?: {
-                focus: (x: number, y: number, instant?: boolean) => void;
+          const fc = (
+            model as unknown as {
+              internalModel?: {
+                focusController?: {
+                  focus: (x: number, y: number, instant?: boolean) => void;
+                };
               };
-            };
-          }).internalModel?.focusController;
+            }
+          ).internalModel?.focusController;
           fc?.focus(fx, fy);
         } catch {
           // Minimal models without ParamAngle/EyeBall params still
@@ -522,6 +542,7 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
     const catEarIds = manifest.cat_ear_param_ids ?? [];
     const hasAnyEffect =
       caps.has_pajamas ||
+      caps.has_pajamas_hooded ||
       caps.has_day_clothes ||
       caps.has_blush ||
       caps.has_sweat ||
@@ -537,8 +558,17 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
     }
 
     // Per-effect envelope state (smoothed value in [0, on_value]).
+    // Three mutually-exclusive outfit envelopes — exactly one ramps to
+    // 1 at a time, the others decay to 0. ``pajamas`` and
+    // ``pajamas_hooded`` BOTH contribute to ``Param16`` (the alternate-
+    // outfit toggle) on rigs like Alexia where pajamas-with-cap is
+    // pajamas + an extra hood param. The render loop sums each
+    // binding's contribution per-frame instead of overwriting, so the
+    // shared param stays at on_value during a pajamas <-> hooded
+    // crossfade and smoothly fades to 0 only when ``day`` wins.
     const outfitEnvelope: Record<string, number> = {
       pajamas: 0,
+      pajamas_hooded: 0,
       day: 0,
     };
     const blushEnvelope = { value: 0 };
@@ -551,7 +581,10 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
     let sassTriggeredAt = -Infinity;
     // Transient overlay pulses keyed by capability name with their
     // wall-clock expiry time + the binding to drive.
-    const pulses: Record<string, { until: number; binding: typeof overlays[string] }> = {};
+    const pulses: Record<
+      string,
+      { until: number; binding: (typeof overlays)[string] }
+    > = {};
     let lastOverlayKey: { name: string; expiresAt: number } | null = null;
 
     // LLM-driven gestures use the same ``[[overlay:X]]`` grammar but
@@ -589,9 +622,11 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
       if (!core) {
         return;
       }
-      const cm4 = (core as {
-        setParameterValueById?: (id: string, v: number) => void;
-      }).setParameterValueById;
+      const cm4 = (
+        core as {
+          setParameterValueById?: (id: string, v: number) => void;
+        }
+      ).setParameterValueById;
       if (typeof cm4 === "function") {
         try {
           cm4.call(core, paramId, value);
@@ -600,9 +635,11 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
           /* fall through */
         }
       }
-      const cm2 = (core as {
-        setParamFloat?: (id: string, v: number) => void;
-      }).setParamFloat;
+      const cm2 = (
+        core as {
+          setParamFloat?: (id: string, v: number) => void;
+        }
+      ).setParamFloat;
       if (typeof cm2 === "function") {
         try {
           cm2.call(core, paramId, value);
@@ -638,9 +675,11 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
           // model can still emit ``[[overlay:wink_left]]`` on a rig
           // without independent eyes; we silently drop it.
           const capKey =
-            name === "tail_wag" ? "has_tail_wag"
-            : name === "ear_wiggle" ? "has_ear_wiggle"
-            : "has_wink";
+            name === "tail_wag"
+              ? "has_tail_wag"
+              : name === "ear_wiggle"
+                ? "has_ear_wiggle"
+                : "has_wink";
           if (caps[capKey]) {
             gestures[name] = { until: overlay.expiresAt };
           }
@@ -657,30 +696,73 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
       }
 
       // Auto-outfit cross-fade. ~800ms ease so a circadian flip
-      // doesn't visibly snap. Pajamas excludes day clothes and
-      // vice versa, so we drive both envelopes from the same
-      // resolved value. Each binding may carry MULTIPLE param
-      // contributions (Alexia's pajamas = body-clothes + hood),
-      // so the envelope scales every contribution uniformly.
+      // doesn't visibly snap. The outfit selection is mutually
+      // exclusive — at most one of ``pajamas`` / ``pajamas_hooded``
+      // / ``day`` envelopes ramps to 1, the others decay to 0.
+      //
+      // Multiple bindings can legitimately reference the same
+      // Live2D param (e.g. on Alexia ``pajamas`` and
+      // ``pajamas_hooded`` BOTH set Param16=30; only
+      // ``pajamas_hooded`` adds Param17=30). Sequential
+      // ``setParam(p.param_id, env*on_value)`` writes would have the
+      // last binding stomp the first, and the inactive envelope
+      // (=0) silently zeros out the active one's contribution.
+      // Instead we accumulate contributions per param-id and write
+      // the sum once at the end — during a pajamas <-> hooded
+      // crossfade Param16 stays at 30 (= 0.5*30 + 0.5*30) while
+      // Param17 smoothly fades from 0 to 30.
       const fadePerSec = 1 / 0.8;
-      if (caps.has_pajamas || caps.has_day_clothes) {
+      const hasAnyOutfitCap =
+        caps.has_pajamas ||
+        caps.has_pajamas_hooded ||
+        caps.has_day_clothes;
+      if (hasAnyOutfitCap) {
         const pajamasTarget = resolvedOutfit === "pajamas" ? 1 : 0;
+        const pajamasHoodedTarget =
+          resolvedOutfit === "pajamas_hooded" ? 1 : 0;
         const dayTarget = resolvedOutfit === "day" ? 1 : 0;
         outfitEnvelope.pajamas = approach(
-          outfitEnvelope.pajamas, pajamasTarget, dt * fadePerSec,
+          outfitEnvelope.pajamas,
+          pajamasTarget,
+          dt * fadePerSec,
+        );
+        outfitEnvelope.pajamas_hooded = approach(
+          outfitEnvelope.pajamas_hooded,
+          pajamasHoodedTarget,
+          dt * fadePerSec,
         );
         outfitEnvelope.day = approach(
-          outfitEnvelope.day, dayTarget, dt * fadePerSec,
+          outfitEnvelope.day,
+          dayTarget,
+          dt * fadePerSec,
         );
-        if (caps.has_pajamas && outfits.pajamas) {
-          for (const p of outfits.pajamas.params) {
-            setParam(p.param_id, outfitEnvelope.pajamas * p.on_value);
+        const outfitParamSums: Record<string, number> = {};
+        const accumulate = (
+          binding: typeof outfits.pajamas | undefined,
+          envelope: number,
+        ) => {
+          if (!binding) {
+            return;
           }
+          for (const p of binding.params) {
+            outfitParamSums[p.param_id] =
+              (outfitParamSums[p.param_id] ?? 0) + envelope * p.on_value;
+          }
+        };
+        if (caps.has_pajamas) {
+          accumulate(outfits.pajamas, outfitEnvelope.pajamas);
         }
-        if (caps.has_day_clothes && outfits.day_clothes) {
-          for (const p of outfits.day_clothes.params) {
-            setParam(p.param_id, outfitEnvelope.day * p.on_value);
-          }
+        if (caps.has_pajamas_hooded) {
+          accumulate(
+            outfits.pajamas_hooded,
+            outfitEnvelope.pajamas_hooded,
+          );
+        }
+        if (caps.has_day_clothes) {
+          accumulate(outfits.day_clothes, outfitEnvelope.day);
+        }
+        for (const [paramId, value] of Object.entries(outfitParamSums)) {
+          setParam(paramId, value);
         }
       }
 
@@ -690,7 +772,9 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
         const blushTarget =
           blushMoodLabels.has(moodLabel) && moodIntensity > 0.4 ? 1 : 0;
         blushEnvelope.value = approach(
-          blushEnvelope.value, blushTarget, dt * (1 / 0.6),
+          blushEnvelope.value,
+          blushTarget,
+          dt * (1 / 0.6),
         );
         setParam(
           overlays.blush.param_id,
@@ -875,9 +959,11 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
           const model = modelRef.current;
           if (model) {
             try {
-              (model as unknown as {
-                expression: (n?: string) => void;
-              }).expression(exprName);
+              (
+                model as unknown as {
+                  expression: (n?: string) => void;
+                }
+              ).expression(exprName);
             } catch {
               /* swallow */
             }
@@ -949,9 +1035,11 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
       return;
     }
     try {
-      (model as unknown as {
-        motion: (group: string, index?: number) => void;
-      }).motion(avatarMotion.group, avatarMotion.index);
+      (
+        model as unknown as {
+          motion: (group: string, index?: number) => void;
+        }
+      ).motion(avatarMotion.group, avatarMotion.index);
     } catch (err) {
       console.debug("LLM motion playback failed", err);
     }
@@ -1042,9 +1130,11 @@ function applyMouthOpen(
   manifest: AvatarProfile,
   level: number,
 ): void {
-  const core = (model as unknown as {
-    internalModel: { coreModel: unknown };
-  }).internalModel?.coreModel;
+  const core = (
+    model as unknown as {
+      internalModel: { coreModel: unknown };
+    }
+  ).internalModel?.coreModel;
   if (!core) {
     return;
   }
@@ -1063,12 +1153,16 @@ function applyMouthOpen(
             ? MOUTH_PARAM_CUBISM_2
             : MOUTH_PARAM_CUBISM_4,
         ];
-  const cm4 = (core as {
-    setParameterValueById?: (id: string, value: number) => void;
-  }).setParameterValueById;
-  const cm2 = (core as {
-    setParamFloat?: (id: string, value: number) => void;
-  }).setParamFloat;
+  const cm4 = (
+    core as {
+      setParameterValueById?: (id: string, value: number) => void;
+    }
+  ).setParameterValueById;
+  const cm2 = (
+    core as {
+      setParamFloat?: (id: string, value: number) => void;
+    }
+  ).setParamFloat;
   for (const id of params) {
     if (typeof cm4 === "function") {
       try {
@@ -1098,9 +1192,11 @@ function applyReaction(
     return;
   }
   try {
-    (model as unknown as {
-      expression: (name?: string) => void;
-    }).expression(expressionName);
+    (
+      model as unknown as {
+        expression: (name?: string) => void;
+      }
+    ).expression(expressionName);
   } catch (err) {
     console.debug("expression() failed", expressionName, err);
   }
@@ -1113,28 +1209,28 @@ function applyReaction(
 // post-dates the model load). Keeps a minimal subset of the canonical
 // chain so unknown reactions still produce *some* visual change.
 const _REACTION_NEIGHBOURS: Record<string, string[]> = {
-  amused:       ["cheerful", "playful", "friendly", "warm", "neutral"],
-  playful:      ["amused", "cheerful", "excited", "friendly", "warm"],
+  amused: ["cheerful", "playful", "friendly", "warm", "neutral"],
+  playful: ["amused", "cheerful", "excited", "friendly", "warm"],
   enthusiastic: ["excited", "cheerful", "playful", "friendly"],
-  curious:      ["thoughtful", "surprised", "friendly", "neutral"],
-  tender:       ["warm", "gentle", "friendly", "calm", "neutral"],
-  warm:         ["friendly", "gentle", "tender", "cheerful", "neutral"],
-  thoughtful:   ["serious", "calm", "concerned", "neutral"],
-  wistful:      ["sad", "melancholy", "thoughtful", "calm", "gentle"],
-  concerned:    ["serious", "sad", "thoughtful", "neutral"],
-  melancholy:   ["sad", "wistful", "tired", "calm", "neutral"],
-  tired:        ["calm", "melancholy", "neutral", "sad"],
-  frustrated:   ["angry", "concerned", "serious", "neutral"],
-  gentle:       ["warm", "calm", "friendly", "tender", "neutral"],
-  friendly:     ["warm", "cheerful", "neutral", "calm"],
-  calm:         ["neutral", "thoughtful", "gentle", "warm"],
-  serious:      ["thoughtful", "concerned", "neutral"],
-  surprised:    ["excited", "curious", "amused", "neutral"],
-  cheerful:     ["amused", "friendly", "warm", "playful", "neutral"],
-  excited:      ["enthusiastic", "cheerful", "playful", "surprised", "neutral"],
-  sad:          ["melancholy", "wistful", "concerned", "neutral"],
-  angry:        ["frustrated", "serious", "concerned", "neutral"],
-  neutral:      ["calm", "friendly", "warm"],
+  curious: ["thoughtful", "surprised", "friendly", "neutral"],
+  tender: ["warm", "gentle", "friendly", "calm", "neutral"],
+  warm: ["friendly", "gentle", "tender", "cheerful", "neutral"],
+  thoughtful: ["serious", "calm", "concerned", "neutral"],
+  wistful: ["sad", "melancholy", "thoughtful", "calm", "gentle"],
+  concerned: ["serious", "sad", "thoughtful", "neutral"],
+  melancholy: ["sad", "wistful", "tired", "calm", "neutral"],
+  tired: ["calm", "melancholy", "neutral", "sad"],
+  frustrated: ["angry", "concerned", "serious", "neutral"],
+  gentle: ["warm", "calm", "friendly", "tender", "neutral"],
+  friendly: ["warm", "cheerful", "neutral", "calm"],
+  calm: ["neutral", "thoughtful", "gentle", "warm"],
+  serious: ["thoughtful", "concerned", "neutral"],
+  surprised: ["excited", "curious", "amused", "neutral"],
+  cheerful: ["amused", "friendly", "warm", "playful", "neutral"],
+  excited: ["enthusiastic", "cheerful", "playful", "surprised", "neutral"],
+  sad: ["melancholy", "wistful", "concerned", "neutral"],
+  angry: ["frustrated", "serious", "concerned", "neutral"],
+  neutral: ["calm", "friendly", "warm"],
 };
 
 function resolveReactionExpression(
@@ -1224,9 +1320,11 @@ function applyExpressionByName(
     return;
   }
   try {
-    (model as unknown as {
-      expression: (name?: string) => void;
-    }).expression(expressionName);
+    (
+      model as unknown as {
+        expression: (name?: string) => void;
+      }
+    ).expression(expressionName);
   } catch (err) {
     console.debug("expression() failed", expressionName, err);
   }

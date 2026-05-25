@@ -245,9 +245,32 @@ class GrammarAddendumTests(unittest.TestCase):
         block = _build_outfit_grammar_addendum({"has_pajamas": True})
         self.assertIn("- [[outfit:pajamas]]", block)
         self.assertNotIn("- [[outfit:day]]", block)
+        self.assertNotIn("- [[outfit:pajamas_hooded]]", block)
         block2 = _build_outfit_grammar_addendum({"has_day_clothes": True})
         self.assertIn("- [[outfit:day]]", block2)
         self.assertNotIn("- [[outfit:pajamas]]", block2)
+        self.assertNotIn("- [[outfit:pajamas_hooded]]", block2)
+
+    def test_outfit_addendum_advertises_pajamas_hooded_variant(self) -> None:
+        # Hooded pajamas is a capability-gated bullet just like the
+        # bare pajamas / day options: present iff ``has_pajamas_hooded``
+        # is True, and unaffected by the other outfit flags.
+        block = _build_outfit_grammar_addendum({"has_pajamas_hooded": True})
+        self.assertIn("- [[outfit:pajamas_hooded]]", block)
+        self.assertNotIn("- [[outfit:pajamas]]", block)
+        self.assertNotIn("- [[outfit:day]]", block)
+
+    def test_outfit_addendum_full_rig_lists_all_three(self) -> None:
+        # Real Alexia exposes all three outfit caps; the grammar must
+        # advertise every supported variant so the LLM can pick.
+        block = _build_outfit_grammar_addendum({
+            "has_pajamas": True,
+            "has_pajamas_hooded": True,
+            "has_day_clothes": True,
+        })
+        self.assertIn("- [[outfit:pajamas]]", block)
+        self.assertIn("- [[outfit:pajamas_hooded]]", block)
+        self.assertIn("- [[outfit:day]]", block)
 
     def test_outfit_addendum_empty_without_outfit_caps(self) -> None:
         self.assertEqual(

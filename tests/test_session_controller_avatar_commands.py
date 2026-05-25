@@ -29,6 +29,7 @@ from app.core.session_controller import SessionController
 def _make_avatar(
     *,
     has_pajamas: bool = True,
+    has_pajamas_hooded: bool = False,
     has_day: bool = True,
     motions: dict[str, list[MotionRef]] | None = None,
 ) -> AvatarProfile:
@@ -42,10 +43,19 @@ def _make_avatar(
             params=[OutfitParam(param_id="ParamP", on_value=30.0)],
             label_en="Pajamas",
         )
+    if has_pajamas_hooded:
+        capabilities["has_pajamas_hooded"] = True
+        outfits["pajamas_hooded"] = OutfitBinding(
+            params=[
+                OutfitParam(param_id="ParamP", on_value=30.0),
+                OutfitParam(param_id="ParamH", on_value=30.0),
+            ],
+            label_en="Pajamas (hooded)",
+        )
     if has_day:
         capabilities["has_day_clothes"] = True
         outfits["day_clothes"] = OutfitBinding(
-            params=[OutfitParam(param_id="ParamD", on_value=30.0)],
+            params=[],
             label_en="Day clothes",
         )
     return AvatarProfile(
@@ -175,6 +185,116 @@ class OutfitOverrideTests(unittest.TestCase):
         )
         controller._emit_avatar_outfit("pajamas")
         self.assertEqual(captured, [])
+
+
+class PajamasHoodedVariantTests(unittest.TestCase):
+    """Coverage for the second pajama variant on rigs that ship both:
+    a bare-pajamas binding (Param16 only) and a hooded variant
+    (Param16 + Param17). Verifies the resolve precedence, the LLM
+    ``[[outfit:pajamas_hooded]]`` dispatch, and the user-forced
+    ``auto_outfit="pajamas_hooded"`` path."""
+
+    def _full_rig(self, **kwargs: Any) -> AvatarProfile:
+        return _make_avatar(
+            has_pajamas=True,
+            has_pajamas_hooded=True,
+            has_day=True,
+            **kwargs,
+        )
+
+    def test_llm_emit_dispatches_pajamas_hooded(self) -> None:
+        controller = _make_controller(self._full_rig())
+        controller._period_override = "morning"
+        captured: list[dict[str, Any]] = []
+        controller._avatar_settings_listeners.append(
+            lambda snap: captured.append(dict(snap))
+        )
+        controller._emit_avatar_outfit("pajamas_hooded")
+        self.assertEqual(controller._llm_outfit_override, "pajamas_hooded")
+        self.assertEqual(controller.resolve_auto_outfit(), "pajamas_hooded")
+        self.assertEqual(len(captured), 1)
+
+    def test_llm_emit_skipped_when_only_hooded_capability_missing(self) -> None:
+        # Rig has bare pajamas but not hooded — directive must drop.
+        controller = _make_controller(_make_avatar(has_pajamas_hooded=False))
+        controller._emit_avatar_outfit("pajamas_hooded")
+        self.assertEqual(controller._llm_outfit_override, "")
+
+    def test_user_forced_pajamas_hooded_resolves_to_hooded(self) -> None:
+        controller = _make_controller(
+            self._full_rig(), auto_outfit="pajamas_hooded",
+        )
+        # User-forced mode wins regardless of circadian period.
+        controller._period_override = "morning"
+        self.assertEqual(controller.resolve_auto_outfit(), "pajamas_hooded")
+        controller._period_override = "late_night"
+        self.assertEqual(controller.resolve_auto_outfit(), "pajamas_hooded")
+
+    def test_user_forced_pajamas_hooded_falls_back_when_unsupported(self) -> None:
+        # Rig only ships bare pajamas. Forced "pajamas_hooded" should
+        # gracefully degrade to the bare variant rather than silently
+        # showing day clothes.
+        controller = _make_controller(
+            _make_avatar(has_pajamas_hooded=False),
+            auto_outfit="pajamas_hooded",
+        )
+        self.assertEqual(controller.resolve_auto_outfit(), "pajamas")
+
+    def test_circadian_auto_prefers_bare_pajamas_when_both_present(self) -> None:
+        # At night with both variants supported, auto mode picks the
+        # bare variant — the hooded one is opt-in via UI / LLM.
+        controller = _make_controller(self._full_rig())
+        controller._period_override = "late_night"
+        self.assertEqual(controller.resolve_auto_outfit(), "pajamas")
+
+    def test_circadian_auto_falls_back_to_hooded_when_bare_missing(self) -> None:
+        # Only the hooded variant available — auto mode at night must
+        # still hit pajamas (the hooded one) rather than day clothes.
+        controller = _make_controller(
+            _make_avatar(has_pajamas=False, has_pajamas_hooded=True),
+        )
+        controller._period_override = "late_night"
+        self.assertEqual(controller.resolve_auto_outfit(), "pajamas_hooded")
+
+    def test_user_forced_pajamas_falls_back_to_hooded_when_bare_missing(
+        self,
+    ) -> None:
+        # ``auto_outfit="pajamas"`` should respect the user's intent
+        # ("they want pajamas") even when the rig only ships hooded.
+        controller = _make_controller(
+            _make_avatar(has_pajamas=False, has_pajamas_hooded=True),
+            auto_outfit="pajamas",
+        )
+        self.assertEqual(controller.resolve_auto_outfit(), "pajamas_hooded")
+
+    def test_unknown_outfit_name_still_rejected(self) -> None:
+        # Regression: the new variant must not have widened the
+        # accept-list to anything containing "pajamas".
+        controller = _make_controller(self._full_rig())
+        controller._emit_avatar_outfit("pajamas_silly")
+        self.assertEqual(controller._llm_outfit_override, "")
+
+    def test_user_mode_pajamas_hooded_persists_via_update(self) -> None:
+        # ``update_avatar_settings`` must accept the new mode so the
+        # SettingsDrawer can persist it just like "day" or "pajamas".
+        controller = _make_controller(self._full_rig())
+        controller._patched: list[dict[str, Any]] = []  # type: ignore[attr-defined]
+
+        def _capture(patch: dict[str, Any]) -> None:
+            controller._patched.append(patch)  # type: ignore[attr-defined]
+
+        with mock.patch(
+            "app.core.session_controller.persist_user_overrides",
+            side_effect=_capture,
+        ):
+            snap = controller.update_avatar_settings(
+                auto_outfit="pajamas_hooded",
+            )
+        self.assertEqual(snap["auto_outfit"], "pajamas_hooded")
+        self.assertEqual(
+            controller._patched,  # type: ignore[attr-defined]
+            [{"avatar": {"auto_outfit": "pajamas_hooded"}}],
+        )
 
 
 class MotionDispatchTests(unittest.TestCase):

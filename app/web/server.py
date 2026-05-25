@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from app.core.session_controller import SessionController
 
 from app.core.live_session import LiveSession
+from app.core.settings import OUTFIT_MODES
 
 
 log = logging.getLogger("app.web.server")
@@ -613,9 +614,11 @@ def create_web_app(session: "SessionController") -> FastAPI:
             scale = scale_value
         if outfit is not None:
             outfit_normalized = str(outfit).strip().lower()
-            if outfit_normalized not in {"auto", "day", "pajamas"}:
+            if outfit_normalized not in OUTFIT_MODES:
                 raise HTTPException(
-                    400, "auto_outfit must be one of: auto, day, pajamas",
+                    400,
+                    "auto_outfit must be one of: "
+                    + ", ".join(sorted(OUTFIT_MODES)),
                 )
             outfit = outfit_normalized
         snapshot = session.update_avatar_settings(

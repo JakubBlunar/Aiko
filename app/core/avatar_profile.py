@@ -80,10 +80,12 @@ class OutfitParam:
     """One parameter contribution inside a multi-param outfit binding.
 
     Outfits in real Cubism rigs aren't always single-param toggles —
-    Alexia's "pajamas" is body-clothes (Param16=30) **and** hood
-    (Param17=30) together. Storing the contributions as a list lets
-    the renderer cross-fade each component independently against the
-    same envelope.
+    Alexia's "pajamas_hooded" is body-clothes (Param16=30) **and**
+    sleeping cap (Param17=30) together, while plain "pajamas" is just
+    Param16=30 on its own and "day_clothes" is the bare baseline (no
+    params active). Storing the contributions as a list lets the
+    renderer cross-fade each component independently against the same
+    envelope.
     """
 
     param_id: str
@@ -163,8 +165,16 @@ _CAPABILITY_SYNONYMS: dict[str, tuple[str, ...]] = {
     # not a separate toggle, and adding it as its own capability gave
     # us a phantom "Param17 alone" binding that produced a hood
     # floating without the body.
-    "pajamas":     ("睡衣", "pajama", "shuiyi"),
-    "day_clothes": ("衣服", "outfit", "yifu"),
+    "pajamas":        ("睡衣", "pajama", "shuiyi"),
+    # ``pajamas_hooded`` is the "pajamas + sleeping cap" variant. There
+    # isn't a clean Chinese single-word for it (the source label was
+    # ``衣服托帽子`` = "clothes with hood"), so synonym matching is
+    # English-leaning. Detection still works via the ``yfmz`` →
+    # ``pajamas_hooded`` entry in ``_ALEXIA_EXPR_TO_CAPABILITY`` for
+    # Alexia; the synonyms are here so a future rig that names its hood
+    # param "pajamas_hood" / "sleep_cap" still flips ``has_*`` on.
+    "pajamas_hooded": ("pajamas hooded", "sleep cap", "nightcap", "睡衣帽"),
+    "day_clothes":    ("衣服", "outfit", "yifu"),
     # Stage-direction overlays
     "blush":       ("脸红", "blush", "lh", "lianhong"),
     "sweat":       ("汗", "sweat"),
@@ -239,8 +249,38 @@ _ALEXIA_EXPR_TO_CAPABILITY: dict[str, str] = {
     "xxy":   "stars",
     "y":     "dizzy",
     "lzx":   "grin",          # Param54 = 咧嘴笑 = toothy grin
-    "yf":    "day_clothes",
-    "yfmz":  "pajamas",       # outfit + hat = pajama costume
+    # Outfit mapping (verified VISUALLY against the actual Alexia rig
+    # by toggling each radio in the SettingsDrawer; do NOT trust the
+    # original Chinese parameter names alone — they're misleading):
+    #
+    #   - BASELINE (Param16=0, Param17=0) renders the casual day
+    #     clothes (streetwear). ``day_clothes`` is therefore the
+    #     "no params active" outfit; its binding stays around as an
+    #     empty shell so ``has_day_clothes`` lights up for the UI
+    #     radio.
+    #   - ``yf.exp3.json`` (Param16=30 alone) renders pajamas WITH
+    #     the sleeping hoodie up → ``pajamas_hooded`` capability.
+    #     (Counter-intuitive given the file is just "yf" = 衣服 =
+    #     "clothes", but the rig's default art for the alternate
+    #     outfit ships hooded — Param17 LIFTS the hood off, it does
+    #     not add one.)
+    #   - ``yfmz.exp3.json`` (Param16=30 + Param17=30, original
+    #     Chinese label 衣服托帽子 = "clothes with hat lifted up";
+    #     ``托`` = "to lift / hold up", so the literal meaning is
+    #     "clothes [with the] hat held up", i.e. the hood is
+    #     pulled DOWN off the head) renders pajamas WITHOUT the
+    #     hood → bare ``pajamas`` capability.
+    #
+    # Net effect at the renderer:
+    #   pajamas         binding ← {Param16: 30, Param17: 30}
+    #   pajamas_hooded  binding ← {Param16: 30}
+    # Both reference Param16 — the additive-sum write strategy in
+    # Live2DAvatar.tsx is what keeps Param16 stable while only
+    # Param17 fades during a pajamas <-> hooded crossfade.
+    #
+    # See ``docs/alexia-model-notes.md`` for the full rig audit.
+    "yf":    "pajamas_hooded",
+    "yfmz":  "pajamas",
     "yjys1": "eye_color_a",
     "yjys2": "eye_color_b",
     "zs1":   "pose",
@@ -477,7 +517,31 @@ def _parse_groups(entry_data: dict) -> tuple[list[str], list[str]]:
     return lip_sync, eye_blink
 
 
-_OUTFIT_CAPABILITIES = frozenset({"pajamas", "day_clothes"})
+_OUTFIT_CAPABILITIES = frozenset({"pajamas", "pajamas_hooded", "day_clothes"})
+
+
+# Outfit capabilities that imply the existence of ``day_clothes`` as the
+# baseline ("nothing toggled") fallback. When any of these are detected
+# we synthesise an empty ``day_clothes`` binding so the SettingsDrawer
+# radio always has the "Day" option even though no exp3.json activates
+# it (day clothes = baseline = no params written).
+_PAJAMA_VARIANT_CAPABILITIES = frozenset({"pajamas", "pajamas_hooded"})
+
+
+def _outfit_mutex_for(cap: str) -> tuple[str, ...]:
+    """Return the ``mutex_with`` tuple for outfit capability ``cap``.
+
+    All known outfit capabilities are mutually exclusive — selecting
+    one fades the others out. Returns ``()`` for an unknown capability
+    so the loader degrades gracefully on rigs we haven't curated.
+    """
+    if cap == "pajamas":
+        return ("day_clothes", "pajamas_hooded")
+    if cap == "pajamas_hooded":
+        return ("day_clothes", "pajamas")
+    if cap == "day_clothes":
+        return ("pajamas", "pajamas_hooded")
+    return ()
 
 
 def _detect_capabilities(
@@ -574,11 +638,7 @@ def _detect_capabilities(
                 OutfitBinding(
                     params=outfit_params,
                     label_en=cap.replace("_", " "),
-                    mutex_with=(
-                        ("day_clothes",) if cap == "pajamas"
-                        else ("pajamas",) if cap == "day_clothes"
-                        else ()
-                    ),
+                    mutex_with=_outfit_mutex_for(cap),
                 ),
             )
         else:
@@ -591,6 +651,34 @@ def _detect_capabilities(
                     label_en=cap.replace("_", " "),
                 ),
             )
+
+    # ``day_clothes`` reconciliation. The model's natural day-clothes
+    # outfit is its BASELINE state (no outfit params active); the only
+    # reason ``day_clothes`` exists as a capability at all is so the
+    # SettingsDrawer radio always offers it as the "off" option. We
+    # therefore force its binding to an empty param list:
+    #   - If it was never created, synthesise one (driven by the
+    #     presence of any pajama variant -- there has to be a "not
+    #     wearing pajamas" baseline to fade back to).
+    #   - If a curated ``yf.exp3.json`` accidentally created a
+    #     ``day_clothes`` binding back when ``yf`` was mapped to it,
+    #     wipe its params -- shared param ids would otherwise cause
+    #     the renderer's per-frame writes to clobber the active
+    #     pajama variant's contribution down to zero.
+    has_pajama_variant = any(
+        cap in outfits for cap in _PAJAMA_VARIANT_CAPABILITIES
+    )
+    if has_pajama_variant:
+        capabilities["has_day_clothes"] = True
+        binding = outfits.get("day_clothes")
+        if binding is None:
+            outfits["day_clothes"] = OutfitBinding(
+                params=[],
+                label_en="day clothes",
+                mutex_with=_outfit_mutex_for("day_clothes"),
+            )
+        else:
+            binding.params = []
 
     # Body-rotation flags. These are pure presence checks against the
     # standard Cubism parameter IDs because the body-language layer
