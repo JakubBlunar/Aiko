@@ -1,0 +1,29 @@
+{
+  "Version": 3,
+  "Parameters": [
+    { "Id": "ParamAngleX", "GroupId": "", "Name": "角度 X" },
+    { "Id": "ParamAngleY", "GroupId": "", "Name": "角度 Y" },
+    { "Id": "ParamBodyAngleY", "GroupId": "", "Name": "身体 Y" },
+    { "Id": "ParamBodyAngleZ", "GroupId": "", "Name": "身体 Z" },
+    { "Id": "ParamMouthOpenY", "GroupId": "", "Name": "口の開閉" },
+    { "Id": "ParamEyeLOpen", "GroupId": "", "Name": "左眼\u3000开闭" },
+    { "Id": "ParamEyeROpen", "GroupId": "", "Name": "右眼\u3000开闭" },
+    { "Id": "Param38", "GroupId": "", "Name": "左耳1" },
+    { "Id": "Param39", "GroupId": "", "Name": "左耳2" },
+    { "Id": "Param40", "GroupId": "", "Name": "右耳1" },
+    { "Id": "Param41", "GroupId": "", "Name": "右耳2" },
+    { "Id": "Param58", "GroupId": "", "Name": "脸红" },
+    { "Id": "Param44", "GroupId": "", "Name": "汗" },
+    { "Id": "Param16", "GroupId": "", "Name": "衣服" },
+    { "Id": "Param17", "GroupId": "", "Name": "衣服托帽子" },
+    { "Id": "Param13", "GroupId": "", "Name": "睡衣" },
+    { "Id": "Param54", "GroupId": "", "Name": "咧嘴笑" },
+    { "Id": "Param64", "GroupId": "", "Name": "带眼镜" },
+    { "Id": "Param_Angle_Rotation_0_ArtMesh202", "GroupId": "", "Name": "猫尾 1" },
+    { "Id": "Param_Angle_Rotation_1_ArtMesh202", "GroupId": "", "Name": "猫尾 2" }
+  ],
+  "Parts": [
+    { "Id": "PartHair", "Name": "頭髪" },
+    { "Id": "PartEars", "Name": "猫耳朵" }
+  ]
+}

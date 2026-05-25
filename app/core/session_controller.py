@@ -43,7 +43,7 @@ from app.core.crash_logging import log_event
 from app.core.memory_extractor import MemoryExtractor
 from app.core.memory_retriever import MemoryRetriever
 from app.core.memory_store import MemoryStore
-from app.core.persona_manager import PersonaManager
+from app.core.avatar_profile import AvatarProfile, AvatarProfileError, from_disk as _avatar_from_disk
 from app.core.proactive_director import ProactiveDirector
 from app.core.prompt_assembler import PromptAssembler
 from app.core.session_text_utils import (
@@ -51,7 +51,7 @@ from app.core.session_text_utils import (
     prepare_tts_text,
     sanitize_user_text,
 )
-from app.core.settings import AppSettings
+from app.core.settings import AppSettings, persist_user_overrides
 from app.core.speaking_window_scheduler import SpeakingWindowScheduler
 from app.core.summary_worker import SummaryWorker
 from app.core.tts_queue import TtsQueue
@@ -179,9 +179,39 @@ class SessionController:
         )
         self._chat_db = ChatDatabase(storage_path)
 
-        # ── Live2D persona manager ───────────────────────────────────────
-        personas_root = Path(__file__).resolve().parents[2] / "data" / "personas"
-        self._persona_manager = PersonaManager(personas_root)
+        # ── Live2D avatar (fixed Alexia bundle) ─────────────────────────
+        # Replaces the old upload-based persona pipeline. The avatar root
+        # is gitignored so missing files at boot have to degrade
+        # gracefully — fall through with ``self._avatar = None`` and
+        # the FastAPI / WS layers serve a minimal "not loaded" payload
+        # instead of crashing the controller.
+        avatar_root = Path(settings.avatar.root_dir)
+        if not avatar_root.is_absolute():
+            avatar_root = Path(__file__).resolve().parents[2] / avatar_root
+        self._avatar_root: Path = avatar_root
+        try:
+            self._avatar: AvatarProfile | None = _avatar_from_disk(
+                avatar_root, display_name=Path(settings.avatar.entry_filename).stem,
+            )
+        except AvatarProfileError as exc:
+            log.warning("Avatar load failed (%s); rendering will be disabled", exc)
+            self._avatar = None
+        # User-tunable knobs that layer on top of the immutable profile.
+        self._avatar_settings_runtime = {
+            "scale_multiplier": float(settings.avatar.scale_multiplier),
+            "auto_outfit": str(settings.avatar.auto_outfit),
+        }
+        self._avatar_settings_listeners: list[Callable[[dict[str, Any]], None]] = []
+        self._avatar_overlay_listeners: list[Callable[[dict[str, Any]], None]] = []
+        self._avatar_motion_listeners: list[Callable[[dict[str, Any]], None]] = []
+        # LLM-driven sticky outfit override. Set when the assistant says
+        # ``[[outfit:NAME]]`` mid-reply; cleared when the circadian
+        # period rolls over OR when the user manually flips
+        # ``auto_outfit`` to anything non-``"auto"``. Stored alongside
+        # the period that was active when the override landed so we
+        # can detect a flip without subscribing to circadian events.
+        self._llm_outfit_override: str = ""
+        self._llm_outfit_override_period: str = ""
 
         # ── Affect state (Phase 2b) ───────────────────────────────────────
         # Persistent valence/arousal + named mood, updated post-turn (cheap
@@ -725,6 +755,9 @@ class SessionController:
             catchphrase=self._render_catchphrase_block,
             petname=self._render_petname_block,
             ambient_noise=self._render_ambient_noise_block,
+            avatar_capabilities=self._avatar_capabilities,
+            pajama=self._render_pajama_block,
+            motion_names=self._avatar_motion_names,
         )
         self._prompt_assembler.set_pinned_self_memories_provider(
             self._top_pinned_self_memories,
@@ -1437,11 +1470,294 @@ class SessionController:
         except Exception:
             log.debug("scheduler.on_user_speech failed", exc_info=True)
 
-    # ── Persona ─────────────────────────────────────────────────────
+    # ── Avatar (fixed Alexia bundle) ─────────────────────────────────
 
     @property
-    def persona_manager(self) -> PersonaManager:
-        return self._persona_manager
+    def avatar(self) -> AvatarProfile | None:
+        """The loaded :class:`AvatarProfile`, or ``None`` if files are missing."""
+        return self._avatar
+
+    @property
+    def avatar_root(self) -> Path:
+        return self._avatar_root
+
+    def avatar_payload(self) -> dict[str, Any]:
+        """Wire-format payload combining the immutable profile + runtime knobs."""
+        base = self._avatar.to_dict() if self._avatar is not None else {
+            "display_name": "",
+            "entry_filename": "",
+            "cubism_version": 3,
+            "expressions": [],
+            "motions": {},
+            "reaction_mapping": {},
+            "lip_sync_ids": [],
+            "eye_blink_ids": [],
+            "parameters": [],
+            "parts": [],
+            "capabilities": {},
+            "overlays": {},
+            "outfits": {},
+        }
+        base["settings"] = dict(self._avatar_settings_runtime)
+        base["loaded"] = self._avatar is not None
+        # Snapshot the world state the renderer needs for Tier-3 effects:
+        # the circadian period drives auto-outfit; the resolved outfit
+        # tells the renderer the *current* answer (which it can then
+        # cross-fade into without recomputing the rule).
+        base["circadian_period"] = self.current_circadian_period()
+        base["resolved_outfit"] = self.resolve_auto_outfit()
+        return base
+
+    def update_avatar_settings(
+        self,
+        *,
+        scale_multiplier: float | None = None,
+        auto_outfit: str | None = None,
+    ) -> dict[str, Any]:
+        """Patch the user-tunable avatar knobs and notify listeners.
+
+        Changes are written back to ``config/user.json`` so the next
+        app launch starts with the user's preferred scale / outfit
+        instead of resetting to the defaults baked into the dataclass.
+        """
+        changed = False
+        persist_patch: dict[str, Any] = {}
+        if scale_multiplier is not None:
+            try:
+                value = max(0.1, min(8.0, float(scale_multiplier)))
+            except (TypeError, ValueError):
+                value = self._avatar_settings_runtime["scale_multiplier"]
+            if value != self._avatar_settings_runtime["scale_multiplier"]:
+                self._avatar_settings_runtime["scale_multiplier"] = value
+                self._settings.avatar.scale_multiplier = value
+                persist_patch["scale_multiplier"] = value
+                changed = True
+        if auto_outfit is not None:
+            normalized = str(auto_outfit).strip().lower()
+            if normalized in {"auto", "day", "pajamas"}:
+                if normalized != self._avatar_settings_runtime["auto_outfit"]:
+                    self._avatar_settings_runtime["auto_outfit"] = normalized
+                    self._settings.avatar.auto_outfit = normalized
+                    persist_patch["auto_outfit"] = normalized
+                    changed = True
+        snapshot = dict(self._avatar_settings_runtime)
+        if changed:
+            if persist_patch:
+                # Best-effort: a write failure (e.g. read-only volume)
+                # must not break the in-memory update or the WS push.
+                try:
+                    persist_user_overrides({"avatar": persist_patch})
+                except Exception:
+                    log.warning(
+                        "failed to persist avatar settings to user.json",
+                        exc_info=True,
+                    )
+            for cb in list(self._avatar_settings_listeners):
+                try:
+                    cb(dict(snapshot))
+                except Exception:
+                    log.debug("avatar settings listener failed", exc_info=True)
+        return snapshot
+
+    def add_avatar_settings_listener(
+        self, cb: Callable[[dict[str, Any]], None]
+    ) -> None:
+        if cb not in self._avatar_settings_listeners:
+            self._avatar_settings_listeners.append(cb)
+
+    def remove_avatar_settings_listener(
+        self, cb: Callable[[dict[str, Any]], None]
+    ) -> None:
+        if cb in self._avatar_settings_listeners:
+            self._avatar_settings_listeners.remove(cb)
+
+    def add_avatar_overlay_listener(
+        self, cb: Callable[[dict[str, Any]], None]
+    ) -> None:
+        if cb not in self._avatar_overlay_listeners:
+            self._avatar_overlay_listeners.append(cb)
+
+    def remove_avatar_overlay_listener(
+        self, cb: Callable[[dict[str, Any]], None]
+    ) -> None:
+        if cb in self._avatar_overlay_listeners:
+            self._avatar_overlay_listeners.remove(cb)
+
+    def current_circadian_period(self) -> str:
+        """Return the current period name (``morning``, ``night``, ...)."""
+        try:
+            return str(_circadian.compute().period)
+        except Exception:
+            return ""
+
+    def resolve_auto_outfit(self) -> str:
+        """Resolve the active outfit according to priority rules.
+
+        Returns ``"pajamas"``, ``"day"``, or ``""`` (no preference / model
+        doesn't support outfits at all).
+
+        Priority (highest → lowest):
+          1. User-forced ``auto_outfit`` (set via ``/api/avatar``).
+             Always wins; clears any LLM override as a side-effect.
+          2. LLM-driven ``[[outfit:X]]`` override. Sticky until the next
+             circadian period boundary, then auto-expired.
+          3. Circadian default (``night``/``late_night`` → pajamas).
+        """
+        avatar = self._avatar
+        if avatar is None:
+            return ""
+        mode = self._avatar_settings_runtime.get("auto_outfit", "auto")
+        has_pajamas = bool(avatar.capabilities.get("has_pajamas", False))
+        has_day = bool(avatar.capabilities.get("has_day_clothes", False))
+        if mode == "pajamas":
+            # User took control — drop any pending LLM override so a
+            # later switch back to "auto" doesn't resurrect a stale one.
+            self._llm_outfit_override = ""
+            self._llm_outfit_override_period = ""
+            return "pajamas" if has_pajamas else ("day" if has_day else "")
+        if mode == "day":
+            self._llm_outfit_override = ""
+            self._llm_outfit_override_period = ""
+            return "day" if has_day else ""
+        period = self.current_circadian_period()
+        # LLM override applies in "auto" mode only, and only inside the
+        # circadian period it was set in. Crossing the period boundary
+        # auto-expires it so morning naturally flips back to day clothes.
+        if self._llm_outfit_override:
+            if (
+                self._llm_outfit_override_period
+                and period
+                and period != self._llm_outfit_override_period
+            ):
+                self._llm_outfit_override = ""
+                self._llm_outfit_override_period = ""
+            else:
+                override = self._llm_outfit_override
+                if override == "pajamas" and has_pajamas:
+                    return "pajamas"
+                if override == "day" and has_day:
+                    return "day"
+                # Override no longer realisable (capability vanished on
+                # avatar swap); clear and fall through.
+                self._llm_outfit_override = ""
+                self._llm_outfit_override_period = ""
+        # Auto: night/late_night → pajamas (when supported), else day.
+        if period in {"night", "late_night"} and has_pajamas:
+            return "pajamas"
+        return "day" if has_day else ""
+
+    def _emit_avatar_overlay(self, name: str, *, duration_ms: int = 1500) -> None:
+        """Forward an LLM-driven ``[[overlay:X]]`` to the renderer.
+
+        Skipped silently if the loaded avatar doesn't support the
+        requested overlay (capability ``has_X`` is False) — keeps a
+        minimal future model from spamming the WS with effects it
+        can't render.
+        """
+        if not name:
+            return
+        avatar = self._avatar
+        if avatar is None:
+            return
+        cap_key = f"has_{name.strip().lower()}"
+        if not avatar.capabilities.get(cap_key, False):
+            return
+        payload = {
+            "name": name.strip().lower(),
+            "duration_ms": int(max(150, duration_ms)),
+        }
+        for cb in list(self._avatar_overlay_listeners):
+            try:
+                cb(dict(payload))
+            except Exception:
+                log.debug("avatar overlay listener failed", exc_info=True)
+
+    def _emit_avatar_outfit(self, name: str) -> None:
+        """Apply an LLM-driven ``[[outfit:X]]`` directive.
+
+        Sticky until the circadian period rolls over (handled lazily
+        in :meth:`resolve_auto_outfit`). Ignored entirely when the
+        user has manually forced an outfit via the settings panel —
+        we don't want a stale narrative line ("…and slip into
+        pajamas…") fighting an explicit user choice.
+        """
+        if not name:
+            return
+        normalized = str(name).strip().lower()
+        if normalized not in {"pajamas", "day"}:
+            return
+        avatar = self._avatar
+        if avatar is None:
+            return
+        mode = self._avatar_settings_runtime.get("auto_outfit", "auto")
+        if mode != "auto":
+            return  # User override wins; silently drop the LLM directive.
+        caps = avatar.capabilities
+        if normalized == "pajamas" and not caps.get("has_pajamas", False):
+            return
+        if normalized == "day" and not caps.get("has_day_clothes", False):
+            return
+        period = self.current_circadian_period()
+        prev_resolved = self.resolve_auto_outfit()
+        self._llm_outfit_override = normalized
+        self._llm_outfit_override_period = period
+        new_resolved = self.resolve_auto_outfit()
+        if new_resolved == prev_resolved:
+            # No-op (already in this outfit). Don't spam listeners.
+            return
+        snapshot = dict(self._avatar_settings_runtime)
+        for cb in list(self._avatar_settings_listeners):
+            try:
+                cb(dict(snapshot))
+            except Exception:
+                log.debug("avatar settings listener failed", exc_info=True)
+
+    def _emit_avatar_motion(self, name: str) -> None:
+        """Forward an LLM-driven ``[[motion:X]]`` to the renderer.
+
+        Looks up the motion file in the loaded rig's ``motions`` map
+        and emits an ``avatar_motion`` event with the resolved
+        ``group`` + ``index`` so ``pixi-live2d-display`` can call
+        ``model.motion(group, index)`` directly. Unknown / unsupported
+        motion names are silently dropped (LLM hallucinated).
+        """
+        if not name:
+            return
+        avatar = self._avatar
+        if avatar is None:
+            return
+        normalized = str(name).strip().lower()
+        if not normalized:
+            return
+        for group, refs in (avatar.motions or {}).items():
+            for idx, ref in enumerate(refs):
+                if (ref.name or "").lower() == normalized:
+                    payload = {
+                        "name": ref.name,
+                        "group": str(group),
+                        "index": int(idx),
+                    }
+                    for cb in list(self._avatar_motion_listeners):
+                        try:
+                            cb(dict(payload))
+                        except Exception:
+                            log.debug(
+                                "avatar motion listener failed",
+                                exc_info=True,
+                            )
+                    return
+
+    def add_avatar_motion_listener(
+        self, cb: Callable[[dict[str, Any]], None]
+    ) -> None:
+        if cb not in self._avatar_motion_listeners:
+            self._avatar_motion_listeners.append(cb)
+
+    def remove_avatar_motion_listener(
+        self, cb: Callable[[dict[str, Any]], None]
+    ) -> None:
+        if cb in self._avatar_motion_listeners:
+            self._avatar_motion_listeners.remove(cb)
 
     # ── RAG / documents ─────────────────────────────────────────────
 
@@ -1875,6 +2191,9 @@ class SessionController:
                 on_token=on_token,
                 on_tts_chunk=wrapped_tts_cb,
                 on_earcon=on_earcon_cb,
+                on_overlay=self._emit_avatar_overlay,
+                on_outfit=self._emit_avatar_outfit,
+                on_motion=self._emit_avatar_motion,
                 stop_requested=stop_requested,
                 resume_user_message_id=user_message_id,
             )
@@ -2194,6 +2513,49 @@ class SessionController:
                 _job()
         except Exception:
             log.debug("resume opener submit failed", exc_info=True)
+
+    def _avatar_capabilities(self) -> dict[str, bool] | None:
+        """Hot-path: hand the prompt-assembler the loaded avatar's
+        capability flags so it can build the dynamic ``[[overlay:X]]``
+        / ``[[outfit:X]]`` grammar blocks. Returns ``None`` when no
+        avatar is loaded.
+        """
+        avatar = self._avatar
+        if avatar is None:
+            return None
+        return dict(avatar.capabilities)
+
+    def _avatar_motion_names(self) -> list[str]:
+        """Hot-path: return every motion-file stem the loaded rig
+        ships, in declaration order. The prompt-assembler crosses
+        these against ``_MOTION_GRAMMAR_DESCRIPTIONS`` to decide
+        which ``[[motion:X]]`` lines to advertise.
+        """
+        avatar = self._avatar
+        if avatar is None:
+            return []
+        names: list[str] = []
+        for refs in (avatar.motions or {}).values():
+            for ref in refs:
+                if ref.name:
+                    names.append(ref.name)
+        return names
+
+    def _render_pajama_block(self) -> str:
+        """Quiet-conversation cue: emitted only when the auto-outfit
+        resolves to pajamas. Soft prompt nudge layered on top of the
+        regular circadian block to keep the tone matched to her outfit.
+        """
+        try:
+            if self.resolve_auto_outfit() == "pajamas":
+                return (
+                    "You're in pajamas; the conversation is a quieter "
+                    "one — softer cadence, smaller sentences, gentler "
+                    "warmth."
+                )
+        except Exception:
+            log.debug("pajama block render failed", exc_info=True)
+        return ""
 
     def _render_circadian_block(self) -> str:
         """Hot-path: pure function over the current local time."""
@@ -3077,6 +3439,8 @@ class SessionController:
             "intensity": float(state.mood_intensity),
             "valence": float(state.valence),
             "arousal": float(state.arousal),
+            "circadian_period": self.current_circadian_period(),
+            "resolved_outfit": self.resolve_auto_outfit(),
         })
 
         # Phase 2c: schedule a reflection during TTS playback.

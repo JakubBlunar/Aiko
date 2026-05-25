@@ -2,11 +2,12 @@
 
 import type {
   AssistantSettings,
+  AvatarProfile,
+  AvatarResponse,
+  AvatarSettingsKnobs,
   ChatMessage,
   MemoriesResponse,
   MetricsResponse,
-  Persona,
-  PersonaResponse,
   RagDocument,
   SessionRow,
   UploadDocumentResponse,
@@ -87,29 +88,17 @@ export const api = {
     jsonFetch<{ deleted: number }>(`/api/memories/${id}`, {
       method: "DELETE",
     }),
-  getPersona: () => jsonFetch<PersonaResponse>("/api/persona"),
-  uploadPersona: async (file: File): Promise<Persona> => {
-    const form = new FormData();
-    form.append("file", file);
-    const result = await jsonFetch<{ persona: Persona }>(
-      "/api/persona/upload",
-      { method: "POST", body: form },
-    );
-    return result.persona;
-  },
-  deletePersona: () =>
-    jsonFetch<{ removed: boolean }>("/api/persona", { method: "DELETE" }),
-  patchPersonaMapping: (patch: {
-    reaction_mapping?: Record<string, string>;
-    idle_motion_group?: string | null;
-    talk_motion_group?: string | null;
-    scale_multiplier?: number;
-  }) =>
-    jsonFetch<{ persona: Persona }>("/api/persona/mapping", {
+  getAvatar: () => jsonFetch<AvatarResponse>("/api/avatar"),
+  patchAvatarSettings: async (
+    patch: Partial<AvatarSettingsKnobs>,
+  ): Promise<AvatarProfile> => {
+    const result = await jsonFetch<AvatarResponse>("/api/avatar", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patch),
-    }),
+    });
+    return result.avatar;
+  },
   listDocuments: () =>
     jsonFetch<{ documents: RagDocument[] }>("/api/documents"),
   uploadDocument: async (file: File): Promise<UploadDocumentResponse> => {

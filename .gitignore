@@ -19,8 +19,7 @@ data/browser-profile/
 *.wav
 *.log
 realtimesst.log
-live-2d-models
-data/personas/active/
-data/personas/_staging_*/
+live-2d-models/
 data/lancedb/
 data/documents/
+data/personas/

@@ -57,6 +57,9 @@ class _FakeTurnRunner:
         on_token=None,
         on_tts_chunk=None,
         on_earcon=None,
+        on_overlay=None,
+        on_outfit=None,
+        on_motion=None,
         stop_requested=None,
         resume_user_message_id=None,
     ) -> TurnResult:
@@ -66,6 +69,9 @@ class _FakeTurnRunner:
             "on_token": on_token,
             "on_tts_chunk": on_tts_chunk,
             "on_earcon": on_earcon,
+            "on_overlay": on_overlay,
+            "on_outfit": on_outfit,
+            "on_motion": on_motion,
             "stop_requested": stop_requested,
             "resume_user_message_id": resume_user_message_id,
         })

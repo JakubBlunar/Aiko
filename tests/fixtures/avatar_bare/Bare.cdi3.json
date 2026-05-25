@@ -1,0 +1,8 @@
+{
+  "Version": 3,
+  "Parameters": [
+    { "Id": "ParamAngleX", "GroupId": "", "Name": "角度 X" },
+    { "Id": "ParamMouthOpenY", "GroupId": "", "Name": "口の開閉" }
+  ],
+  "Parts": []
+}

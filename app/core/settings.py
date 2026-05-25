@@ -131,6 +131,24 @@ class EndpointingSettings:
 
 
 @dataclass(slots=True)
+class AvatarSettings:
+    """Single bundled Live2D avatar (Alexia) + user-tunable knobs.
+
+    The avatar files themselves are gitignored at ``root_dir``.
+    ``scale_multiplier`` and ``auto_outfit`` are the only fields the
+    UI lets the user change at runtime.
+    """
+
+    root_dir: str = "live-2d-models/Alexia"
+    entry_filename: str = "Alexia.model3.json"
+    scale_multiplier: float = 1.0
+    # "auto" -> circadian-driven (pajamas at night when has_pajamas)
+    # "day"  -> always day clothes
+    # "pajamas" -> always pajamas (when supported, else day fallback)
+    auto_outfit: str = "auto"
+
+
+@dataclass(slots=True)
 class AgentSettings:
     """Lean v1 conversation agent knobs.
 
@@ -312,6 +330,7 @@ class AppSettings:
     chat_llm: ChatLlmSettings = field(default_factory=ChatLlmSettings)
     tools: ToolsSettings = field(default_factory=ToolsSettings)
     endpointing: EndpointingSettings = field(default_factory=EndpointingSettings)
+    avatar: AvatarSettings = field(default_factory=AvatarSettings)
 
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "default.json"
@@ -363,6 +382,43 @@ def _read_merged_overrides(*paths: Path) -> dict[str, Any]:
             continue
         merged = _deep_merge(merged, current)
     return merged
+
+
+def persist_user_overrides(
+    patch: dict[str, Any], *, path: Path | None = None
+) -> None:
+    """Deep-merge ``patch`` into ``user.json`` and write it back atomically.
+
+    Used by callers that mutate user-tunable knobs at runtime (avatar
+    scale, outfit, etc.) and need the change to survive an app restart.
+    The next ``load_settings`` call sees the new values because we
+    invalidate the in-process cache for the touched path.
+
+    The file is created on first write; existing keys outside ``patch``
+    are preserved by the deep-merge (so persisting an avatar tweak does
+    not clobber the tts/audio overrides the user set in another tab).
+    """
+    target = path or USER_CONFIG_PATH
+    if not isinstance(patch, dict) or not patch:
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        existing = _read_config(target)
+    except Exception:
+        existing = {}
+    merged = _deep_merge(existing, patch)
+    # Atomic-ish write: stage to a sibling temp and rename so a crash
+    # mid-write can't truncate the live file. ``Path.replace`` is atomic
+    # on the same volume on Windows + POSIX.
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    tmp.write_text(
+        json.dumps(merged, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    tmp.replace(target)
+    # Drop the cache entry so the next ``_read_config`` re-reads from
+    # disk instead of returning the stale pre-patch dict.
+    _config_cache.pop(str(target), None)
 
 
 def _normalize_tts_length_scale(value: Any) -> float:
@@ -452,6 +508,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
     chat_llm_raw = raw.get("chat_llm", {}) or {}
     tools_raw = raw.get("tools", {}) or {}
     endpointing_raw = raw.get("endpointing", {}) or {}
+    avatar_raw = raw.get("avatar", {}) or {}
 
     return AppSettings(
         assistant=AssistantSettings(
@@ -621,5 +678,15 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             sentence_final_markers=[
                 str(x) for x in (endpointing_raw.get("sentence_final_markers") or []) if x
             ],
+        ),
+        avatar=AvatarSettings(
+            root_dir=str(avatar_raw.get("root_dir", "live-2d-models/Alexia") or "live-2d-models/Alexia").strip(),
+            entry_filename=str(avatar_raw.get("entry_filename", "Alexia.model3.json") or "Alexia.model3.json").strip(),
+            scale_multiplier=max(0.1, min(8.0, float(avatar_raw.get("scale_multiplier", 1.0) or 1.0))),
+            auto_outfit=(
+                str(avatar_raw.get("auto_outfit", "auto") or "auto").strip().lower()
+                if str(avatar_raw.get("auto_outfit", "auto") or "auto").strip().lower() in {"auto", "day", "pajamas"}
+                else "auto"
+            ),
         ),
     )

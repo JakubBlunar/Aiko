@@ -1,0 +1,19 @@
+{
+  "Version": 3,
+  "FileReferences": {
+    "Moc": "Bare.moc3",
+    "Textures": ["textures/texture_00.png"],
+    "Expressions": [
+      { "Name": "smile", "File": "expressions/smile.exp3.json" },
+      { "Name": "frown", "File": "expressions/frown.exp3.json" }
+    ],
+    "Motions": {}
+  },
+  "Groups": [
+    {
+      "Target": "Parameter",
+      "Name": "LipSync",
+      "Ids": ["ParamMouthOpenY"]
+    }
+  ]
+}

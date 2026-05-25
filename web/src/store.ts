@@ -1,11 +1,16 @@
 import { create } from "zustand";
 import type {
+  AvatarMotionState,
+  AvatarOverlayState,
+  AvatarProfile,
+  AvatarSettingsKnobs,
   BackchannelHint,
   ChatMessage,
+  CircadianPeriod,
   Memory,
   MetricsSnapshot,
   MoodState,
-  Persona,
+  ResolvedOutfit,
   ToolEvent,
   VoiceMode,
 } from "./types";
@@ -82,11 +87,32 @@ interface AssistantState {
   upsertMemory: (memory: Memory) => void;
   removeMemory: (id: number) => void;
 
-  // Live2D persona avatar
-  persona: Persona | null;
+  // Live2D avatar (fixed Alexia bundle).
+  avatar: AvatarProfile | null;
   /** Lip-sync amplitude in [0, 1]; updated at <=30 Hz from the WS. */
   audioAmplitude: number;
-  setPersona: (persona: Persona | null) => void;
+  /**
+   * Latest transient overlay pulse fired by the LLM via ``[[overlay:X]]``.
+   * Cleared when ``expiresAt`` passes (renderer effects watch this).
+   */
+  avatarOverlay: AvatarOverlayState | null;
+  /** Latest LLM-driven ``[[motion:X]]`` directive. The renderer subscribes
+   * by reference identity (object changes only when a new motion fires)
+   * and calls ``model.motion(group, index)``. */
+  avatarMotion: AvatarMotionState | null;
+  setAvatar: (avatar: AvatarProfile | null) => void;
+  /** Patch only the user-tunable runtime knobs without rebuilding the profile. */
+  setAvatarSettings: (settings: Partial<AvatarSettingsKnobs>) => void;
+  /**
+   * Patch the world-state pieces of the avatar (circadian period, resolved
+   * outfit) that get refreshed by post-turn ``mood_state`` broadcasts.
+   */
+  updateAvatarWorldState: (next: {
+    circadian_period?: CircadianPeriod;
+    resolved_outfit?: ResolvedOutfit;
+  }) => void;
+  setAvatarOverlay: (overlay: AvatarOverlayState | null) => void;
+  setAvatarMotion: (motion: AvatarMotionState | null) => void;
   setAudioAmplitude: (level: number) => void;
 
   // Phase 2b: persistent mood snapshot, updated post-turn.
@@ -331,9 +357,39 @@ export const useAssistantStore = create<AssistantState>((set) => ({
       memories: state.memories.filter((m) => m.id !== id),
     })),
 
-  persona: null,
+  avatar: null,
   audioAmplitude: 0,
-  setPersona: (persona) => set({ persona }),
+  avatarOverlay: null,
+  avatarMotion: null,
+  setAvatar: (avatar) => set({ avatar }),
+  setAvatarSettings: (settings) =>
+    set((state) => {
+      if (!state.avatar) {
+        return state;
+      }
+      return {
+        avatar: {
+          ...state.avatar,
+          settings: { ...state.avatar.settings, ...settings },
+        },
+      };
+    }),
+  updateAvatarWorldState: (next) =>
+    set((state) => {
+      if (!state.avatar) {
+        return state;
+      }
+      const merged: AvatarProfile = { ...state.avatar };
+      if (next.circadian_period !== undefined) {
+        merged.circadian_period = next.circadian_period;
+      }
+      if (next.resolved_outfit !== undefined) {
+        merged.resolved_outfit = next.resolved_outfit;
+      }
+      return { avatar: merged };
+    }),
+  setAvatarOverlay: (overlay) => set({ avatarOverlay: overlay }),
+  setAvatarMotion: (motion) => set({ avatarMotion: motion }),
   setAudioAmplitude: (level) =>
     set({ audioAmplitude: Math.max(0, Math.min(1, level)) }),
 
