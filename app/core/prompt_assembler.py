@@ -37,6 +37,27 @@ DEFAULT_PERSONA_PATH = Path("data/persona/aiko_companion.txt")
 DEFAULT_SELF_IMAGE_PATH = Path("data/persona/self_image.txt")
 
 
+# Phase 1c: stage-direction grammar. Folded into the system prompt
+# right after the persona so the model knows about it without us having
+# to mutate the user-customisable persona file.
+_SPEECH_GRAMMAR_ADDENDUM = (
+    "Stage-direction grammar (use sparingly, once or twice a turn at most, "
+    "only at clause boundaries):\n"
+    "- [[laugh]] — a short audible laugh\n"
+    "- [[sigh]] — a soft sigh\n"
+    "- [[gasp]] — a quick gasp of surprise\n"
+    "- [[hum]] — a thoughtful hum\n"
+    "These are spoken as audio cues; do not say the word out loud.\n"
+    "\n"
+    "Self-correction grammar: if you realise mid-sentence you said "
+    "something wrong, correct yourself with "
+    "`[[correct]]old text[[/correct]]new text`. The old span is shown "
+    "with a strike-through in the chat and a short \"tsk\" cue plays. "
+    "Use sparingly — once or twice a session at most, never as a stylistic "
+    "tic."
+)
+
+
 def _safe_provider(provider: Callable[[], str] | None) -> str:
     """Run an inner-life block provider, swallowing exceptions.
 
@@ -214,6 +235,15 @@ class PromptAssembler:
         self._arc_provider: Callable[[], str] | None = None
         self._narrative_provider: Callable[[], str] | None = None
         self._agenda_provider: Callable[[], str] | None = None
+        # Per-turn dynamic blocks: not part of ``_StaticSlices`` because
+        # they change every utterance. ``vocal_tone`` is set immediately
+        # before the live turn dispatch by ``SessionController`` after
+        # analysing the captured WAV; ``catchphrase`` is set by the
+        # speaking-window mining job.
+        self._vocal_tone_provider: Callable[[], str] | None = None
+        self._catchphrase_provider: Callable[[], str] | None = None
+        self._petname_provider: Callable[[], str] | None = None
+        self._ambient_noise_provider: Callable[[], str] | None = None
         self._self_image_path = (
             Path(self_image_path) if self_image_path is not None else None
         )
@@ -264,6 +294,10 @@ class PromptAssembler:
         arc: Callable[[], str] | None = None,
         narrative: Callable[[], str] | None = None,
         agenda: Callable[[], str] | None = None,
+        vocal_tone: Callable[[], str] | None = None,
+        catchphrase: Callable[[], str] | None = None,
+        petname: Callable[[], str] | None = None,
+        ambient_noise: Callable[[], str] | None = None,
     ) -> None:
         """Register optional inner-life block providers.
 
@@ -287,6 +321,14 @@ class PromptAssembler:
             self._narrative_provider = narrative
         if agenda is not None:
             self._agenda_provider = agenda
+        if vocal_tone is not None:
+            self._vocal_tone_provider = vocal_tone
+        if catchphrase is not None:
+            self._catchphrase_provider = catchphrase
+        if petname is not None:
+            self._petname_provider = petname
+        if ambient_noise is not None:
+            self._ambient_noise_provider = ambient_noise
 
     def set_last_reaction(self, reaction: str | None) -> None:
         if not reaction:
@@ -612,9 +654,24 @@ class PromptAssembler:
         if summary and summary.summary.strip():
             summary_text = "Earlier conversation (summary):\n" + summary.summary.strip()
 
+        # Per-turn dynamic blocks read fresh on every assemble (NOT cached
+        # in static slices). Vocal-tone is captured by the live-capture
+        # path; catchphrase / pet-name / ambient noise come from cheap
+        # store reads.
+        vocal_tone_block = _safe_provider(self._vocal_tone_provider)
+        catchphrase_block = _safe_provider(self._catchphrase_provider)
+        petname_block = _safe_provider(self._petname_provider)
+        ambient_noise_block = _safe_provider(self._ambient_noise_provider)
+
         system_parts: list[str] = []
         if persona:
             system_parts.append(persona)
+            # Phase 1c: speech grammar addendum sits immediately after the
+            # persona so the model picks up the [[laugh]] / [[sigh]] /
+            # [[gasp]] / [[hum]] grammar without us editing the
+            # user-customisable persona file. Constant cost; under 60
+            # tokens.
+            system_parts.append(_SPEECH_GRAMMAR_ADDENDUM)
         if self_image_block:
             system_parts.append(self_image_block)
         if narrative_block:
@@ -623,12 +680,16 @@ class PromptAssembler:
             system_parts.append(ambient)
         if circadian_block:
             system_parts.append(circadian_block)
+        if ambient_noise_block:
+            system_parts.append(ambient_noise_block)
         if affect_block:
             system_parts.append(affect_block)
         if mood_hint:
             system_parts.append(mood_hint)
         if relationship_block:
             system_parts.append(relationship_block)
+        if petname_block:
+            system_parts.append(petname_block)
         if profile_block:
             system_parts.append(profile_block)
         if user_state_block:
@@ -637,6 +698,10 @@ class PromptAssembler:
             system_parts.append(arc_block)
         if agenda_block:
             system_parts.append(agenda_block)
+        if catchphrase_block:
+            system_parts.append(catchphrase_block)
+        if vocal_tone_block:
+            system_parts.append(vocal_tone_block)
         if memory_block:
             system_parts.append(memory_block)
         if summary_text:

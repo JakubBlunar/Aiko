@@ -214,6 +214,41 @@ class AgentSettings:
     # All hints are text-only — engines that ignore punctuation are safe.
     cadence_enabled: bool = True
 
+    # ── Resume opener (Phase 2a) ──────────────────────────────────────
+    # When the time since the last assistant turn exceeds this many
+    # hours, controller bootstrap schedules a one-shot NarrativeWeaver
+    # pass that primes a "welcome back" line into PreparedNudgeStore.
+    # ProactiveDirector consumes it on first silence; on the typed path
+    # the prompt assembler folds it into the system block so the LLM
+    # opens naturally. Set to 0 to disable the opener entirely.
+    resume_opener_min_hours: float = 4.0
+    # TTL applied to the resume nudge so it survives until the user
+    # actually starts a session — longer than the speaking-window TTL.
+    resume_opener_ttl_seconds: float = 1800.0  # 30 min
+
+    # ── Dream worker (Phase 2b) ───────────────────────────────────────
+    # Bootstrap-time reflection that fires once per app start when the
+    # gap since the last assistant turn exceeds this threshold. Writes
+    # a salience-boosted ``reflection`` memory tagged ``[dream]`` so the
+    # resume opener can prefer it. Set ``enabled=false`` to disable.
+    dream_worker_enabled: bool = True
+    dream_worker_min_hours_since_last: float = 6.0
+
+    # ── Catchphrase miner (Phase 2c) ──────────────────────────────────
+    # Walks the recent history and promotes 3-7-word phrases that recur
+    # ≥ N times across both user and assistant turns. Surfaced through
+    # the "Aiko's running jokes with Jacob:" inner-life block.
+    catchphrase_miner_enabled: bool = True
+    catchphrase_miner_min_seconds_between: float = 600.0
+    catchphrase_miner_min_new_user_turns: int = 6
+    catchphrase_miner_min_total_count: int = 3
+    # Phase 4c: CuriosityWorker — emits a one-line "next-turn"
+    # follow-up question when the recent conversation has gone shallow.
+    curiosity_worker_enabled: bool = True
+    curiosity_worker_min_turns_between: int = 3
+    curiosity_worker_min_seconds_between: float = 60.0
+    curiosity_worker_max_user_word_count: int = 8
+
 
 @dataclass(slots=True)
 class McpServerSettings:
@@ -494,6 +529,34 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             relationship_pulse_min_hours=max(24.0, float(agent_raw.get("relationship_pulse_min_hours", 168.0))),
             relationship_pulse_min_turns=max(5, int(agent_raw.get("relationship_pulse_min_turns", 30))),
             cadence_enabled=bool(agent_raw.get("cadence_enabled", True)),
+            resume_opener_min_hours=max(0.0, float(agent_raw.get("resume_opener_min_hours", 4.0))),
+            resume_opener_ttl_seconds=max(60.0, float(agent_raw.get("resume_opener_ttl_seconds", 1800.0))),
+            dream_worker_enabled=bool(agent_raw.get("dream_worker_enabled", True)),
+            dream_worker_min_hours_since_last=max(
+                0.0, float(agent_raw.get("dream_worker_min_hours_since_last", 6.0)),
+            ),
+            catchphrase_miner_enabled=bool(agent_raw.get("catchphrase_miner_enabled", True)),
+            catchphrase_miner_min_seconds_between=max(
+                30.0, float(agent_raw.get("catchphrase_miner_min_seconds_between", 600.0)),
+            ),
+            catchphrase_miner_min_new_user_turns=max(
+                1, int(agent_raw.get("catchphrase_miner_min_new_user_turns", 6)),
+            ),
+            catchphrase_miner_min_total_count=max(
+                2, int(agent_raw.get("catchphrase_miner_min_total_count", 3)),
+            ),
+            curiosity_worker_enabled=bool(
+                agent_raw.get("curiosity_worker_enabled", True),
+            ),
+            curiosity_worker_min_turns_between=max(
+                1, int(agent_raw.get("curiosity_worker_min_turns_between", 3)),
+            ),
+            curiosity_worker_min_seconds_between=max(
+                0.0, float(agent_raw.get("curiosity_worker_min_seconds_between", 60.0)),
+            ),
+            curiosity_worker_max_user_word_count=max(
+                1, int(agent_raw.get("curiosity_worker_max_user_word_count", 8)),
+            ),
         ),
         logging=LoggingSettings(
             level=str(logging_raw.get("level", "INFO")).strip().upper() or "INFO",

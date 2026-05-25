@@ -174,6 +174,7 @@ class MicrophoneCapture:
         stop_requested: Callable[[], bool] | None = None,
         on_speech_start: Callable[[], None] | None = None,
         on_audio_level: Callable[[float], None] | None = None,
+        on_silence_level: Callable[[float], None] | None = None,
         on_chunk: Callable[[np.ndarray], None] | None = None,
         endpoint_check: Callable[[float, int], str] | None = None,
     ) -> np.ndarray | None:
@@ -264,6 +265,21 @@ class MicrophoneCapture:
                 )
                 if on_audio_level:
                     on_audio_level(level)
+
+                # Phase 4b: ambient-noise sampling. We only fire the
+                # silence callback when *neither* VAD nor a basic
+                # energy floor thinks this chunk has speech in it; the
+                # controller folds the level into a 30-second EMA used
+                # for the prompt cue + Pocket-TTS volume nudge.
+                if (
+                    on_silence_level is not None
+                    and not vad_speech
+                    and level < float(level_threshold)
+                ):
+                    try:
+                        on_silence_level(level)
+                    except Exception:
+                        pass
 
                 if not speech_started:
                     pre_roll.append(chunk.copy())
@@ -425,6 +441,7 @@ class MicrophoneCapture:
         stop_requested: Callable[[], bool] | None = None,
         on_speech_start: Callable[[], None] | None = None,
         on_audio_level: Callable[[float], None] | None = None,
+        on_silence_level: Callable[[float], None] | None = None,
         on_chunk: Callable[[np.ndarray], None] | None = None,
         endpoint_check: Callable[[float, int], str] | None = None,
     ) -> Path | None:
@@ -441,6 +458,7 @@ class MicrophoneCapture:
             stop_requested=stop_requested,
             on_speech_start=on_speech_start,
             on_audio_level=on_audio_level,
+            on_silence_level=on_silence_level,
             on_chunk=on_chunk,
             endpoint_check=endpoint_check,
         )

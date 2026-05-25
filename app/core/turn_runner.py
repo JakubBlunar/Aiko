@@ -32,6 +32,7 @@ from app.core.prompt_assembler import PromptAssembler, PromptTelemetry
 from app.core.services.response_text_service import (
     parse_reaction_at_start,
     safe_visible_prefix,
+    split_text_with_stage_directions,
     strip_all_meta_tags,
 )
 from app.core.session_text_utils import (
@@ -60,6 +61,11 @@ log = logging.getLogger("app.turn_runner")
 
 TokenCallback = Callable[[str], None]
 TtsChunkCallback = Callable[[str, str], None]
+# Phase 1c: stage-direction earcon callback. Receives the kind name
+# (``laugh`` / ``sigh`` / ``gasp`` / ``hum`` / ``tsk``) at the *exact*
+# point in the stream where it appeared, so the TTS pipeline can
+# splice the earcon between text chunks.
+EarconCallback = Callable[[str], None]
 """Signature: ``(prepared_text, reaction)``."""
 
 StopPredicate = Callable[[], bool]
@@ -181,6 +187,51 @@ class TurnRunner:
     def request_stop(self) -> None:
         self._stop.set()
 
+    @staticmethod
+    def _dispatch_chunk_with_earcons(
+        chunk: str,
+        *,
+        mood: str,
+        on_tts_chunk: TtsChunkCallback,
+        on_earcon: EarconCallback | None,
+    ) -> None:
+        """Phase 1c: split a sentence into text + stage-direction
+        earcons and emit each piece in order.
+
+        ``prepare_tts_text`` strips every ``[[...]]`` indiscriminately,
+        so we MUST extract the earcon side-channel here before that
+        runs. Pieces are dispatched in stream order so a sentence like
+        "Yeah [[laugh]] right" plays "Yeah" → laugh-earcon → "right".
+
+        Phase 3c: ``[[correct]]old[[/correct]]new`` blocks emit a
+        synthetic ``tsk`` earcon at the correction boundary (right
+        before the new text) so the avatar audibly catches itself,
+        then the new text is spoken normally.
+        """
+        # Phase 3c: turn each [[correct]]…[[/correct]] into a tsk-earcon
+        # marker so it lands in the same earcon channel everything else
+        # uses. The replacement happens BEFORE
+        # ``split_text_with_stage_directions`` so the boundary marker
+        # interleaves with any other earcons in stream order.
+        from app.core.services.response_text_service import (
+            _CORRECTION_BLOCK_PATTERN,
+        )
+
+        chunk_with_tsk = _CORRECTION_BLOCK_PATTERN.sub("[[tsk]]", chunk)
+        pieces = split_text_with_stage_directions(chunk_with_tsk)
+        if not pieces:
+            return
+        for kind, content in pieces:
+            if kind == "text":
+                prepared = prepare_tts_text(content)
+                if prepared:
+                    on_tts_chunk(prepared, mood)
+            elif kind == "earcon" and on_earcon is not None:
+                try:
+                    on_earcon(content)
+                except Exception:
+                    log.debug("on_earcon raised", exc_info=True)
+
     def run(
         self,
         session_key: str,
@@ -188,6 +239,7 @@ class TurnRunner:
         *,
         on_token: TokenCallback | None = None,
         on_tts_chunk: TtsChunkCallback | None = None,
+        on_earcon: EarconCallback | None = None,
         stop_requested: StopPredicate | None = None,
         resume_user_message_id: int | None = None,
     ) -> TurnResult:
@@ -202,6 +254,7 @@ class TurnRunner:
                 user_text=user_text,
                 on_token=on_token,
                 on_tts_chunk=on_tts_chunk,
+                on_earcon=on_earcon,
                 stop_requested=stop_requested,
                 resume_user_message_id=resume_user_message_id,
             )
@@ -215,6 +268,7 @@ class TurnRunner:
         user_text: str,
         on_token: TokenCallback | None,
         on_tts_chunk: TtsChunkCallback | None,
+        on_earcon: EarconCallback | None,
         stop_requested: StopPredicate | None,
         resume_user_message_id: int | None,
     ) -> TurnResult:
@@ -370,9 +424,12 @@ class TurnRunner:
                             tts_buffer, flush=False,
                         )
                         for chunk in chunks:
-                            prepared = prepare_tts_text(chunk)
-                            if prepared:
-                                on_tts_chunk(prepared, mood or "neutral")
+                            self._dispatch_chunk_with_earcons(
+                                chunk,
+                                mood=mood or "neutral",
+                                on_tts_chunk=on_tts_chunk,
+                                on_earcon=on_earcon,
+                            )
 
         except Exception as exc:
             self._filler.disarm()
@@ -407,9 +464,12 @@ class TurnRunner:
         if on_tts_chunk is not None and not aborted and tts_buffer.strip():
             chunks, _ = drain_tts_stream_chunks(tts_buffer, flush=True)
             for chunk in chunks:
-                prepared = prepare_tts_text(chunk)
-                if prepared:
-                    on_tts_chunk(prepared, mood or "neutral")
+                self._dispatch_chunk_with_earcons(
+                    chunk,
+                    mood=mood or "neutral",
+                    on_tts_chunk=on_tts_chunk,
+                    on_earcon=on_earcon,
+                )
 
         # Merge the tool-pass usage into the streaming-pass usage so the turn
         # totals reflect every Ollama call we made.

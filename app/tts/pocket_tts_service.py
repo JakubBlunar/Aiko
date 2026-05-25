@@ -27,19 +27,44 @@ except ImportError:
 
 _BUILTIN_VOICES = ["alba", "marius", "javert", "jean", "fantine", "cosette", "eponine", "azelma"]
 
+# Reaction-to-speed multipliers. Capped to ±8% so the samplerate-only
+# pitch shift in :meth:`PocketTtsService._speak_worker` doesn't fall
+# into chipmunk territory at the high end or "underwater" at the low
+# end. These are the *baseline* per-reaction speeds; the cadence layer
+# can further nudge per-sentence via the ``speed`` kwarg on
+# :meth:`speak_async`. Includes every reaction the affect/cadence
+# pipeline emits (matches ``app.core.affect_state._REACTION_IMPULSE``)
+# so a missing entry here means the LLM produced something we don't
+# recognise — silently falls back to 1.0 via ``.get(..., 1.0)``.
 _REACTION_SPEED: dict[str, float] = {
-    "excited": 1.1,
-    "enthusiastic": 1.08,
-    "cheerful": 1.08,
-    "angry": 1.05,
-    "surprised": 1.05,
-    "friendly": 1.02,
-    "neutral": 1.0,
-    "calm": 0.95,
-    "serious": 0.95,
-    "sad": 0.92,
-    "gentle": 0.92,
+    "excited":      1.08,
+    "enthusiastic": 1.07,
+    "cheerful":     1.06,
+    "amused":       1.05,
+    "playful":      1.05,
+    "surprised":    1.06,
+    "curious":      1.04,
+    "friendly":     1.02,
+    "warm":         1.00,
+    "tender":       0.97,
+    "neutral":      1.00,
+    "thoughtful":   0.96,
+    "wistful":      0.95,
+    "calm":         0.95,
+    "serious":      0.95,
+    "concerned":    0.94,
+    "sad":          0.93,
+    "melancholy":   0.93,
+    "tired":        0.93,
+    "gentle":       0.94,
+    "angry":        1.04,
+    "frustrated":   1.03,
 }
+
+# Hard caps applied AFTER any caller-supplied speed, so a runaway
+# cadence multiplier can't push us into uncanny territory.
+_SPEED_MIN = 0.92
+_SPEED_MAX = 1.08
 
 
 class PocketTtsService:
@@ -208,14 +233,30 @@ class PocketTtsService:
         reaction: str | None = None,
         on_done: Callable[[], None] | None = None,
         on_amplitude: Callable[[float], None] | None = None,
+        *,
+        speed: float | None = None,
     ) -> None:
+        """Synthesise and play ``text``.
+
+        ``speed`` (when provided) overrides the reaction-derived
+        baseline so the cadence layer can apply per-sentence nudges on
+        top of the per-reaction default. Final value is clamped to
+        ``[_SPEED_MIN, _SPEED_MAX]`` to avoid pitch artefacts.
+        """
         if not self._settings.enabled or not (text or "").strip():
             return
         self._stop_requested.clear()
-        speed = self.reaction_to_speed(reaction)
+        if speed is None:
+            final_speed = self.reaction_to_speed(reaction)
+        else:
+            try:
+                final_speed = float(speed)
+            except (TypeError, ValueError):
+                final_speed = self.reaction_to_speed(reaction)
+        final_speed = max(_SPEED_MIN, min(_SPEED_MAX, final_speed))
         self._speech_thread = threading.Thread(
             target=self._speak_worker,
-            args=(text.strip(), on_done, speed, on_amplitude),
+            args=(text.strip(), on_done, final_speed, on_amplitude),
             daemon=True,
         )
         self._speech_thread.start()
@@ -282,14 +323,27 @@ class PocketTtsService:
             audio_data = np.concatenate([audio_data, silence])
             generate_ms = (time.monotonic() - gen_t0) * 1000.0
             play_t0 = time.monotonic()
-            sd.play(audio_data.reshape(-1, 1), sample_rate, device=self._output_device)
+            # Pocket-TTS doesn't expose a native speed knob; the
+            # samplerate trick below rescales playback rate to match the
+            # requested ``speed``. Side effect: pitch shifts by the same
+            # factor, which is acceptable inside the ±8% cap (`_SPEED_*`).
+            playback_rate = (
+                int(sample_rate * speed)
+                if abs(speed - 1.0) > 1e-3
+                else sample_rate
+            )
+            sd.play(
+                audio_data.reshape(-1, 1),
+                playback_rate,
+                device=self._output_device,
+            )
 
             # Spawn the lip-sync amplitude pacer right after audio starts so its
             # emissions line up with what the user is hearing.
             if on_amplitude is not None:
                 amplitude_thread = threading.Thread(
                     target=self._amplitude_pacer,
-                    args=(audio_data, sample_rate, on_amplitude, amplitude_stop),
+                    args=(audio_data, playback_rate, on_amplitude, amplitude_stop),
                     daemon=True,
                     name="pocket-tts-amp",
                 )

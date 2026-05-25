@@ -206,6 +206,44 @@ class ProsodyDispatcherTests(unittest.TestCase):
         d.analyze("Are you okay?", "neutral")
         self.assertEqual(sent, [])
 
+    def test_speed_passthrough_when_enqueue_supports_it(self):
+        """Phase 1b: when the enqueue callable accepts ``speed=``, the
+        per-sentence speed_hint must actually flow through."""
+        sent: list[tuple[str, str | None, float]] = []
+
+        def enqueue(text: str, reaction: str | None = None, speed: float = 1.0):
+            sent.append((text, reaction, speed))
+
+        d = ProsodyDispatcher(enqueue, rng=random.Random(0))
+
+        def context_provider() -> CadenceContext:
+            return CadenceContext(
+                base_reaction="thoughtful",
+                mood_label="tired",
+                circadian_drowsy=True,
+                rng=random.Random(0),
+            )
+
+        d.set_context_provider(context_provider)
+        d.dispatch("Let me think about that for a moment.", "thoughtful")
+        # All emitted chunks should carry a speed below 1.0 because the
+        # cadence layer slows thoughtful + drowsy speech.
+        self.assertTrue(sent)
+        for _text, _reaction, speed in sent:
+            self.assertLess(speed, 1.0)
+
+    def test_speed_omitted_when_enqueue_is_legacy_two_arg(self):
+        """Legacy two-arg enqueue callables (no ``speed`` kwarg) must
+        still work — TypeError fallback drops the speed silently."""
+        legacy_calls: list[tuple[str, str | None]] = []
+
+        def legacy_enqueue(text: str, reaction: str | None = None):
+            legacy_calls.append((text, reaction))
+
+        d = ProsodyDispatcher(legacy_enqueue, rng=random.Random(0))
+        d.dispatch("Hello there.", "warm")
+        self.assertEqual(len(legacy_calls), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

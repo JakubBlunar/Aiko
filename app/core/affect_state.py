@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from app.core.chat_database import ChatDatabase
+    from app.core.vocal_tone import VocalTone
 
 
 log = logging.getLogger("app.affect")
@@ -263,8 +264,16 @@ class AffectUpdater:
         *,
         reaction: str | None,
         user_text: str | None,
+        user_tone: "VocalTone | None" = None,
     ) -> AffectState:
-        """Apply one turn's worth of evidence and persist the result."""
+        """Apply one turn's worth of evidence and persist the result.
+
+        ``user_tone`` is the optional vocal-tone signal from
+        :func:`app.core.vocal_tone.analyse_wav`. When supplied, its
+        ``arousal_hint`` (already capped at ±0.10) nudges Aiko's arousal
+        target on top of the reaction-based impulse — the "she catches
+        on when you sound tired or excited" signal.
+        """
         state = self._store.get(user_id)
         # 1) decay toward baseline based on elapsed time.
         elapsed_s = self._seconds_since(state.updated_at)
@@ -281,8 +290,16 @@ class AffectUpdater:
         rxn = (reaction or "neutral").strip().lower()
         impulse_val, impulse_aro = _REACTION_IMPULSE.get(rxn, (0.0, 0.0))
         hint_val, hint_aro = _user_hint_delta(user_text or "")
+        # Vocal-tone arousal nudge: only fires when ``confident=True``.
+        # Half-strength (0.5x) so the prompt-reaction impulse stays the
+        # primary driver and noisy estimates don't whip the mood.
+        tone_aro = 0.0
+        if user_tone is not None and getattr(user_tone, "confident", False):
+            tone_aro = float(getattr(user_tone, "arousal_hint", 0.0)) * 0.5
         target_val = state.baseline_valence + impulse_val + hint_val
-        target_aro = state.baseline_arousal + impulse_aro + hint_aro
+        target_aro = (
+            state.baseline_arousal + impulse_aro + hint_aro + tone_aro
+        )
         # Clamp targets so a single huge reaction can't push us off-scale.
         target_val = max(-1.0, min(1.0, target_val))
         target_aro = max(0.0, min(1.0, target_aro))

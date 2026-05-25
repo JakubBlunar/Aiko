@@ -65,6 +65,11 @@ class CadenceContext:
     mood_valence: float = 0.0
     circadian_period: str = ""
     circadian_drowsy: bool = False
+    # Phase 4b: ambient-noise speed multiplier from
+    # :class:`AmbientNoiseTracker`. 1.0 in quiet rooms, slightly
+    # below 1.0 (down to 0.96) when the room is loud so listeners
+    # have more time per word against the background.
+    ambient_noise_speed: float = 1.0
     rng: random.Random = field(default_factory=random.Random)
 
 
@@ -173,6 +178,14 @@ def _speed_hint(reaction: str, ctx: CadenceContext) -> float:
         base *= 0.95
     if ctx.circadian_drowsy:
         base *= 0.97
+    # Phase 4b: ambient-noise nudge. A noisy room slows speech a hair
+    # so the listener has more time per word; quiet rooms don't move.
+    try:
+        noise_mult = float(ctx.ambient_noise_speed)
+    except (TypeError, ValueError):
+        noise_mult = 1.0
+    if 0.85 < noise_mult < 1.15:
+        base *= noise_mult
     return float(round(base, 3))
 
 
@@ -204,7 +217,11 @@ def analyze_sentence(text: str, ctx: CadenceContext) -> ProsodyParams:
 # ── dispatcher ──────────────────────────────────────────────────────────
 
 
-EnqueueCallable = Callable[[str, str | None], None]
+# The dispatcher's ``_enqueue`` is structurally compatible with both
+# ``TtsQueue.enqueue`` (which accepts an optional ``speed=`` kwarg) and
+# legacy two-argument enqueue callables. We pass speed via try/TypeError
+# so a caller can plug in either one.
+EnqueueCallable = Callable[..., None]
 
 
 class ProsodyDispatcher:
@@ -298,9 +315,34 @@ class ProsodyDispatcher:
             if params.pause_after_ms or params.pause_before_ms:
                 self._stats["pauses_added"] += 1
         if params.prefix_text:
-            self._enqueue(params.prefix_text, params.prefix_reaction or params.reaction)
-        # The carrier sentence with its (possibly adjusted) reaction.
-        self._enqueue(_apply_text_pauses(text, params), params.reaction)
+            # Prefix interjections ride at the carrier sentence's speed
+            # so a "Hmm," doesn't accidentally land at neutral pace
+            # ahead of a slowed thoughtful sentence.
+            self._enqueue_with_speed(
+                params.prefix_text,
+                params.prefix_reaction or params.reaction,
+                params.speed_hint,
+            )
+        self._enqueue_with_speed(
+            _apply_text_pauses(text, params),
+            params.reaction,
+            params.speed_hint,
+        )
+
+    def _enqueue_with_speed(
+        self,
+        text: str,
+        reaction: str | None,
+        speed: float,
+    ) -> None:
+        """Forward to the enqueue callable, opportunistically passing
+        ``speed=``. Legacy two-arg enqueues are tolerated via TypeError
+        so this dispatcher works against bare ``TtsQueue.enqueue`` and
+        any older shim callers may have wired in."""
+        try:
+            self._enqueue(text, reaction, speed=float(speed))
+        except TypeError:
+            self._enqueue(text, reaction)
 
 
 _TRAILING_PUNCT_RE = re.compile(r"[\s\.\?!\,;:]+\Z")
