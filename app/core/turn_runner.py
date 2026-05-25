@@ -189,7 +189,7 @@ class TurnRunner:
         on_token: TokenCallback | None = None,
         on_tts_chunk: TtsChunkCallback | None = None,
         stop_requested: StopPredicate | None = None,
-        save_user_message: bool = True,
+        resume_user_message_id: int | None = None,
     ) -> TurnResult:
         # Allocate a short-lived correlation id so every nested log line
         # carries `turn=…`. Cleared in the finally below regardless of how
@@ -203,7 +203,7 @@ class TurnRunner:
                 on_token=on_token,
                 on_tts_chunk=on_tts_chunk,
                 stop_requested=stop_requested,
-                save_user_message=save_user_message,
+                resume_user_message_id=resume_user_message_id,
             )
         finally:
             reset_turn_id(token)
@@ -216,14 +216,19 @@ class TurnRunner:
         on_token: TokenCallback | None,
         on_tts_chunk: TtsChunkCallback | None,
         stop_requested: StopPredicate | None,
-        save_user_message: bool,
+        resume_user_message_id: int | None,
     ) -> TurnResult:
         self._stop.clear()
         cleaned_user = sanitize_user_text(user_text)
         if not cleaned_user:
             return TurnResult(text="", reaction="neutral")
 
-        if save_user_message:
+        # ``resume_user_message_id`` set: caller (voice merge in
+        # ``SessionController.process_live_capture``) already updated the
+        # existing user row in the chat DB with the merged text, so we
+        # must NOT insert a duplicate ``role="user"`` row here. The id
+        # is captured purely for the structured log line below.
+        if resume_user_message_id is None:
             self._db.add_message(
                 session_id=session_key,
                 role="user",
@@ -264,9 +269,10 @@ class TurnRunner:
         # end-of-turn structured INFO line. Stays DEBUG so default-INFO logs
         # carry one entry per turn rather than two.
         log.debug(
-            "turn start: model=%s session=%s ctx=%d max=%d msgs=%d est=%d",
+            "turn start: model=%s session=%s ctx=%d max=%d msgs=%d est=%d resume_id=%s",
             self._model, session_key[:8], self._context_window, self._max_tokens,
             len(messages), telemetry.prompt_tokens_estimate,
+            resume_user_message_id if resume_user_message_id is not None else "-",
         )
 
         # ── Pass 1: tool calling (optional) ──────────────────────────────

@@ -58,6 +58,7 @@ from app.core.tts_queue import TtsQueue
 from app.core.turn_runner import TurnRunner
 from app.llm.embedder import Embedder
 from app.llm.ollama_client import OllamaClient
+from app.llm.token_utils import estimate_tokens
 from app.stt import endpointing as _endpointing
 from app.stt.realtime_stt_service import RealtimeSttService
 
@@ -69,6 +70,27 @@ log = logging.getLogger("app.session")
 class SessionState:
     mic_enabled: bool
     session_type: str
+
+
+@dataclass
+class _MergeBuffer:
+    """Per-session state that lets the next live phrase merge into the
+    current in-flight LLM turn instead of bargeing in.
+
+    Set when ``chat_once_streaming`` begins streaming a live-mode turn.
+    Cleared on TTS start (window closes), on the merged-restart path,
+    on barge-in (existing flow), on session change, and on shutdown.
+
+    Locked via ``SessionController._merge_lock`` because it's read on the
+    capture-loop thread (``feed_stt_partial`` early abort) and written on
+    the chat thread (``chat_once_streaming`` TTS-start hook).
+    """
+    session_key: str
+    turn_runner: TurnRunner
+    user_text: str
+    user_message_id: int
+    tts_started: bool = False
+    awaiting_phrase_b: bool = False
 
 
 # ── Provider helpers (env-name fallback for OpenAI-compatible base URLs) ──
@@ -187,6 +209,17 @@ class SessionController:
         # Throttle for the WS partial broadcast so a 5 Hz cap doesn't
         # require touching every listener implementation.
         self._last_partial_broadcast_at: float = 0.0
+
+        # ── Voice utterance merge ───────────────────────────────────────
+        # When the user pauses mid-thought ("Hey aiko how … are you doing
+        # today"), the endpointer commits phrase A and the LLM starts
+        # streaming. If a partial of phrase B arrives before TTS has
+        # started speaking, we abort the in-flight turn, merge the texts
+        # into the existing user row, and re-run with the combined text.
+        # See ``feed_stt_partial`` (early abort) and ``process_live_capture``
+        # (merge branch) for the runtime flow.
+        self._merge_buffer: dict[str, _MergeBuffer] = {}
+        self._merge_lock = threading.Lock()
 
         # ── Long-term memory (cross-session) ─────────────────────────────
         self._memory_settings = settings.memory
@@ -813,6 +846,9 @@ class SessionController:
         return f"{self._user_id}:{self._session_id}" if self._user_id else self._session_id
 
     def switch_session(self, session_id: str) -> None:
+        # Drop any pending voice merge buffer; the new session starts
+        # without an in-flight phrase A waiting for a continuation.
+        self._clear_merge_buffer()
         self._session_id = session_id
 
     def new_session(self) -> str:
@@ -821,7 +857,54 @@ class SessionController:
         return new_id
 
     def clear_conversation_memory(self) -> None:
+        self._clear_merge_buffer()
         self._chat_db.clear_messages(self.session_key, full_reset=True)
+
+    def _clear_merge_buffer(self, session_key: str | None = None) -> None:
+        """Drop the voice merge buffer (one specific session, or all).
+
+        Called on session change, on full clear, on shutdown, and
+        whenever the merge window naturally closes (TTS-start, merge
+        branch consumed it, barge-in flow took over).
+        """
+        with self._merge_lock:
+            if session_key is None:
+                self._merge_buffer.clear()
+            else:
+                self._merge_buffer.pop(session_key, None)
+
+    def _wrap_tts_chunk_for_merge(
+        self,
+        inner: Callable[[str, str], None] | None,
+        merge_key: str,
+    ) -> Callable[[str, str], None]:
+        """Return a TTS-chunk callback that closes the merge window on
+        the first invocation and then forwards every chunk to ``inner``.
+
+        Once the first audio chunk is enqueued the user has crossed the
+        "Aiko is now speaking" boundary; any subsequent partial speech
+        falls back to the existing barge-in flow rather than the merge
+        flow. Setting ``tts_started=True`` makes ``feed_stt_partial`` skip
+        the early-abort path even if the buffer is still in the dict.
+        """
+        first_chunk_seen = False
+
+        def _wrapped(prepared_text: str, reaction: str) -> None:
+            nonlocal first_chunk_seen
+            if not first_chunk_seen:
+                first_chunk_seen = True
+                with self._merge_lock:
+                    buf = self._merge_buffer.get(merge_key)
+                    if buf is not None:
+                        buf.tts_started = True
+                # Once TTS has started the merge window is closed; drop
+                # the buffer so we don't keep a reference to a runner
+                # whose stream is past the abort-friendly point.
+                self._clear_merge_buffer(merge_key)
+            if inner is not None:
+                inner(prepared_text, reaction)
+
+        return _wrapped
 
     # ── Settings getters / setters ───────────────────────────────────
 
@@ -1570,6 +1653,7 @@ class SessionController:
         capture_ms: float = 0.0,
         stt_ms: float = 0.0,
         user_vocal_tone: str | None = None,
+        _resume_message_id: int | None = None,
     ) -> str:
         _ = user_vocal_tone  # not used in v1; reserved for prosody hints
         cleaned = sanitize_user_text(user_text or "")
@@ -1583,6 +1667,47 @@ class SessionController:
         # so we never persist it across restarts.
         session_key = self.session_key if self._remember_history else f"{self.session_key}:noremember"
 
+        # ── Voice merge bookkeeping ────────────────────────────────────
+        # For live-mode turns we install a ``_MergeBuffer`` so that:
+        #   1. ``feed_stt_partial`` can detect a continuation (phrase B
+        #      starting before TTS began) and abort this turn early.
+        #   2. ``process_live_capture`` can merge phrase B's text into
+        #      the existing user row and call back into us with
+        #      ``_resume_message_id`` set.
+        # The buffer key is ``self.session_key`` (the user-facing one),
+        # not the ``:noremember`` variant, because the capture-side
+        # callers don't know about the noremember mode.
+        merge_key = self.session_key
+        user_message_id: int
+        if _resume_message_id is not None:
+            user_message_id = int(_resume_message_id)
+            log.info(
+                "voice merge: resuming turn user_msg_id=%d merged_chars=%d",
+                user_message_id, len(cleaned),
+            )
+        else:
+            user_message_id = self._chat_db.add_message(
+                session_id=session_key,
+                role="user",
+                content=cleaned,
+                token_count=estimate_tokens(cleaned),
+            )
+
+        if mode == "live":
+            with self._merge_lock:
+                self._merge_buffer[merge_key] = _MergeBuffer(
+                    session_key=merge_key,
+                    turn_runner=self._turn_runner,
+                    user_text=cleaned,
+                    user_message_id=user_message_id,
+                    tts_started=False,
+                    awaiting_phrase_b=False,
+                )
+        else:
+            # Typed turn: drop any stale buffer that might have been left
+            # by a prior live phrase that hasn't completed cleanly.
+            self._clear_merge_buffer(merge_key)
+
         self._turn_in_progress = True
         t0 = time.perf_counter()
         try:
@@ -1592,15 +1717,28 @@ class SessionController:
                 tts_chunk_cb = (
                     prosody.dispatch if prosody is not None else self._tts.enqueue
                 )
+
+            wrapped_tts_cb = self._wrap_tts_chunk_for_merge(
+                tts_chunk_cb, merge_key,
+            ) if mode == "live" and tts_chunk_cb is not None else tts_chunk_cb
+
             result = self._turn_runner.run(
                 session_key,
                 cleaned,
                 on_token=on_token,
-                on_tts_chunk=tts_chunk_cb,
+                on_tts_chunk=wrapped_tts_cb,
                 stop_requested=stop_requested,
+                resume_user_message_id=user_message_id,
             )
         finally:
             self._turn_in_progress = False
+            # The merge window is meaningful only while this turn is the
+            # in-flight one. When the turn returns we drop the buffer so a
+            # late partial can't fire ``request_stop()`` on a runner that's
+            # already moved on. The TTS-start hook usually clears it
+            # earlier; this is the belt-and-braces case for short or
+            # tool-only turns that produced no TTS.
+            self._clear_merge_buffer(merge_key)
 
         llm_ms = (time.perf_counter() - t0) * 1000.0
         total_ms = capture_ms + stt_ms + llm_ms
@@ -2309,6 +2447,33 @@ class SessionController:
                 self._scheduler.on_user_speech()
             except Exception:
                 log.debug("scheduler.on_user_speech failed", exc_info=True)
+            # Voice merge early-abort: a partial fired during the
+            # in-flight LLM turn (TTS hasn't started yet). Tell the
+            # runner to stop so its tokens don't waste any more compute,
+            # and flag the buffer so ``process_live_capture`` knows to
+            # take the merge branch when phrase B's WAV transcribes.
+            # Guarded on the partial length so the very first ASR
+            # twitch ("uh", "h-") doesn't pre-emptively kill phrase A.
+            buf_runner = None
+            with self._merge_lock:
+                buf = self._merge_buffer.get(self.session_key)
+                if (
+                    buf is not None
+                    and not buf.tts_started
+                    and not buf.awaiting_phrase_b
+                    and len(text) >= 12
+                ):
+                    buf.awaiting_phrase_b = True
+                    buf_runner = buf.turn_runner
+            if buf_runner is not None:
+                log.info(
+                    "voice merge: aborting in-flight turn on partial "
+                    "speech-start (chars=%d)", len(text),
+                )
+                try:
+                    buf_runner.request_stop()
+                except Exception:
+                    log.debug("turn_runner.request_stop raised", exc_info=True)
         # Phase 1b / listening window: speculatively pre-fetch RAG hits
         # for this partial. The prefetcher is debounced + dedup'd, but on
         # the ``final`` path we want it to run immediately if possible —
@@ -2918,6 +3083,61 @@ class SessionController:
             return None
         self._live_no_speech_streak = 0
         self._trace("stt.mic", f"live transcribe ({len(text)} chars)")
+
+        # ── Voice merge branch ────────────────────────────────────────
+        # If ``feed_stt_partial`` aborted the previous turn and TTS still
+        # hasn't started, fold this phrase's text into the existing user
+        # row and restart the turn with the combined text instead of
+        # firing a brand-new ``role="user"`` message. The merge buffer
+        # is consumed (popped) so a third phrase starts a fresh turn
+        # unless ``chat_once_streaming`` re-installs a buffer (which it
+        # always does for live mode, enabling N-way merge).
+        merge_text: str | None = None
+        merge_user_message_id: int | None = None
+        with self._merge_lock:
+            buf = self._merge_buffer.get(self.session_key)
+            if (
+                buf is not None
+                and buf.awaiting_phrase_b
+                and not buf.tts_started
+            ):
+                merged = (buf.user_text + " " + text).strip()
+                merge_text = merged
+                merge_user_message_id = buf.user_message_id
+                # Pop here to avoid a partial fired between this line and
+                # ``chat_once_streaming`` re-installing the buffer
+                # racing on stale state.
+                self._merge_buffer.pop(self.session_key, None)
+        if merge_text is not None and merge_user_message_id is not None:
+            try:
+                self._chat_db.update_message_content(
+                    merge_user_message_id, merge_text,
+                )
+            except Exception:
+                log.exception(
+                    "voice merge: update_message_content failed; "
+                    "falling back to fresh turn",
+                )
+                merge_text = None
+                merge_user_message_id = None
+        if merge_text is not None and merge_user_message_id is not None:
+            log.info(
+                "voice merge: restarting turn with combined text "
+                "(user_msg_id=%d combined_chars=%d)",
+                merge_user_message_id, len(merge_text),
+            )
+            response = self.chat_once_streaming(
+                user_text=merge_text,
+                on_token=on_token,
+                stop_requested=stop_requested,
+                on_generation_status=on_generation_status,
+                mode="live",
+                capture_ms=capture_ms,
+                stt_ms=stt_ms,
+                _resume_message_id=merge_user_message_id,
+            )
+            return merge_text, response
+
         response = self.chat_once_streaming(
             user_text=text,
             on_token=on_token,
@@ -3020,6 +3240,13 @@ class SessionController:
     # ── Shutdown ────────────────────────────────────────────────────
 
     def shutdown(self) -> None:
+        # Clear the voice merge buffer first so a tail-end partial that
+        # races shutdown can't try to call ``request_stop()`` on a
+        # half-torn-down ``TurnRunner``.
+        try:
+            self._clear_merge_buffer()
+        except Exception:
+            log.debug("merge buffer clear on shutdown failed", exc_info=True)
         if self._mcp_server_runner is not None:
             try:
                 self._mcp_server_runner.stop()
