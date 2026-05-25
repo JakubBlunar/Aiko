@@ -3,3 +3,15 @@ dist
 *.log
 .DS_Store
 .vite
+
+# ``vite.config.ts`` is the source of truth. tsc occasionally drops a
+# compiled ``vite.config.js`` and ``vite.config.d.ts`` next to it (e.g.
+# if someone runs ``tsc`` without ``--noEmit`` from this folder). Vite
+# loads the ``.ts`` natively, so any compiled siblings are dead weight
+# and can drift out of sync — block them from re-appearing in git.
+vite.config.js
+vite.config.d.ts
+
+# ``tsc -b`` (build mode, used by ``npm run build``) writes per-project
+# incremental build caches. Machine-specific and noisy in diffs.
+*.tsbuildinfo

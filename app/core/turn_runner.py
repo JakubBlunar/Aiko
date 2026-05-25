@@ -101,6 +101,7 @@ class TurnRunner:
         on_tool_result: Callable[[str, str, bool], None] | None = None,
         filler_threshold_ms: int = 800,
         filler_enabled: bool = True,
+        listen_extensions_provider: Callable[[], int] | None = None,
     ) -> None:
         self._ollama = ollama
         self._db = db
@@ -127,6 +128,11 @@ class TurnRunner:
         # Best-effort carry-over of the previous reaction so the filler tone
         # matches recent texture. Updated at the end of each successful run.
         self._last_reaction: str | None = None
+        # Phase 6 of listening_window_prefetch: callable that returns the
+        # most recent live-capture extension count so the "turn done:"
+        # log line can show how often hesitation extended the listening
+        # window. Returns 0 when not in live voice mode.
+        self._listen_extensions_provider = listen_extensions_provider
 
     def set_tool_registry(self, registry: "Any | None") -> None:
         self._tool_registry = registry
@@ -447,10 +453,17 @@ class TurnRunner:
             else 0.0
         )
         tool_calls = sum(1 for m in messages if m.get("role") == "tool")
+        listen_extensions = 0
+        if self._listen_extensions_provider is not None:
+            try:
+                listen_extensions = int(self._listen_extensions_provider() or 0)
+            except Exception:
+                listen_extensions = 0
         log.info(
             "turn done: chars=%d mood=%s prompt=%d completion=%d ctx_pct=%.1f "
             "first_token_ms=%s total_ms=%.0f eval_ms=%.0f tools=%d "
-            "compactions=%d filler=%s aborted=%s",
+            "compactions=%d filler=%s aborted=%s "
+            "rag_prefetch=%s prebuild=%s listen_extensions=%d",
             len(cleaned),
             mood or "neutral",
             usage.prompt_tokens,
@@ -463,6 +476,9 @@ class TurnRunner:
             compactions_run,
             "1" if self._filler.fired else "0",
             "1" if aborted else "0",
+            telemetry.rag_prefetch_event,
+            telemetry.slice_cache_event,
+            listen_extensions,
         )
 
         # Carry-over for the *next* turn's filler tone.

@@ -58,6 +58,7 @@ from app.core.tts_queue import TtsQueue
 from app.core.turn_runner import TurnRunner
 from app.llm.embedder import Embedder
 from app.llm.ollama_client import OllamaClient
+from app.stt import endpointing as _endpointing
 from app.stt.realtime_stt_service import RealtimeSttService
 
 
@@ -125,6 +126,7 @@ class SessionController:
             base_url=chat_base_url,
             api_key=api_key or None,
             extra_headers=extra_headers or None,
+            keep_alive=chat_llm.keep_alive,
         )
         self._chat_provider = "ollama"
 
@@ -177,6 +179,14 @@ class SessionController:
             Callable[[BackchannelHint, str], None]
         ] = []
         self._stt_partial_listeners: list[Callable[[str], None]] = []
+        # Most recent partial we observed during the current live phrase,
+        # keyed by session_key. ``process_live_capture`` reads it to fire
+        # one final RAG prefetch right before transcribe(wav) so retrieval
+        # runs in parallel with Whisper.
+        self._last_live_partial: dict[str, str] = {}
+        # Throttle for the WS partial broadcast so a 5 Hz cap doesn't
+        # require touching every listener implementation.
+        self._last_partial_broadcast_at: float = 0.0
 
         # ── Long-term memory (cross-session) ─────────────────────────────
         self._memory_settings = settings.memory
@@ -331,6 +341,11 @@ class SessionController:
         )
 
 
+        # Listening-window telemetry: extensions counter set by
+        # ``capture_live_phrase`` and consumed by ``TurnRunner`` for the
+        # "turn done:" log line. Reset per phrase.
+        self._last_listen_extensions: int = 0
+
         # Phase 1b: speculative RAG pre-fetcher. While the user is still
         # talking (stt_partial events), we kick off background retrieval so
         # the prompt build can reuse the result on the hot path.
@@ -352,6 +367,25 @@ class SessionController:
             except Exception:
                 log.warning("RagPrefetcher init failed", exc_info=True)
                 self._rag_prefetcher = None
+
+        # Phase 3 of listening_window_prefetch: small 1-worker executor for
+        # cheap RAM/SQLite pre-warm tasks (static prompt slice rebuilds)
+        # so the capture loop thread isn't blocked. Separate from
+        # ``_rag_prefetcher`` because that one is sized for RAG retrieval
+        # latency and we don't want prompt prebuilds queued behind it.
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+
+            self._listening_window_executor: ThreadPoolExecutor | None = (
+                ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="listen-prebuild",
+                )
+            )
+        except Exception:
+            self._listening_window_executor = None
+        # Track whether a prebuild is already in-flight so we don't pile up
+        # duplicates from rapid partial updates.
+        self._prebuild_in_flight: bool = False
 
         # Phase 2c: ReflectionWorker — LLM journal that runs inside the
         # speaking window at low priority. Writes open_question / callback
@@ -629,6 +663,9 @@ class SessionController:
             ),
             filler_threshold_ms=settings.agent.filler_first_token_ms,
             filler_enabled=settings.agent.filler_enabled,
+            listen_extensions_provider=lambda: int(
+                getattr(self, "_last_listen_extensions", 0) or 0
+            ),
         )
         self._tool_event_listeners: list[Callable[[str, dict[str, Any]], None]] = []
         self._tool_registry = None
@@ -2169,6 +2206,52 @@ class SessionController:
             log.debug("rag prefetch lookup raised", exc_info=True)
             return None
 
+    def _recent_turn_texts(self, *, limit: int = 3) -> list[str]:
+        """Return the last ``limit`` non-empty message texts for query expansion.
+
+        Mirrors :meth:`PromptAssembler.assemble_with_budget`'s slicing so
+        prefetched RAG queries hit the same cache key as the live one.
+        """
+        try:
+            rows = self._chat_db.get_messages(self.session_key, limit=limit)
+        except Exception:
+            return []
+        out: list[str] = []
+        for row in rows[-limit:]:
+            text = (getattr(row, "content", "") or "").strip()
+            if text:
+                out.append(text)
+        return out
+
+    def _submit_prompt_prebuild(self) -> None:
+        """Schedule a static-slice prompt prebuild on the listening executor.
+
+        Coalesces concurrent requests via ``_prebuild_in_flight`` so a
+        burst of partials doesn't queue redundant work. Safe to call from
+        the capture loop thread; runs entirely off-thread.
+        """
+        executor = getattr(self, "_listening_window_executor", None)
+        assembler = getattr(self, "_prompt_assembler", None)
+        if executor is None or assembler is None:
+            return
+        if self._prebuild_in_flight:
+            return
+        self._prebuild_in_flight = True
+
+        def _run() -> None:
+            try:
+                assembler.prebuild_static_slices(self.session_key)
+            except Exception:
+                log.debug("prompt prebuild raised", exc_info=True)
+            finally:
+                self._prebuild_in_flight = False
+
+        try:
+            executor.submit(_run)
+        except RuntimeError:
+            # Executor shut down — drop silently.
+            self._prebuild_in_flight = False
+
     # ── Mood listeners (WS broadcast) ───────────────────────────────
 
     def add_mood_state_listener(
@@ -2189,13 +2272,24 @@ class SessionController:
         if callback and callback not in self._backchannel_listeners:
             self._backchannel_listeners.append(callback)
 
-    def feed_stt_partial(self, partial_text: str) -> BackchannelHint | None:
+    def feed_stt_partial(
+        self,
+        partial_text: str,
+        *,
+        final: bool = False,
+    ) -> BackchannelHint | None:
         """Hot-path entry point for partial STT text (every ~200ms).
 
         Forwards the partial to all subscribed listeners, then runs the
         regex backchannel classifier through the rate-limit gate. If a new
         hint fires, broadcasts it to backchannel listeners. Returns the
         hint (or ``None``) so callers can also use it locally.
+
+        ``final=True`` signals "the WAV has just been committed and we're
+        about to call ``transcribe(wav)``". The prefetcher gets the most
+        recent partial as a high-priority submission so the RAG retrieval
+        runs in parallel with Whisper. Backchannel hints are skipped in
+        the final path (the user is already done talking).
         """
         text = (partial_text or "").strip()
         for listener in list(self._stt_partial_listeners):
@@ -2207,20 +2301,40 @@ class SessionController:
             return None
         # Notify the scheduler so any in-flight background job knows fresh
         # user audio is landing — they can pre-empt and free the LLM
-        # channel before the user finishes speaking.
-        try:
-            self._scheduler.on_user_speech()
-        except Exception:
-            log.debug("scheduler.on_user_speech failed", exc_info=True)
-        # Phase 1b: speculatively pre-fetch RAG hits for this partial. This
-        # is debounced + dedup'd inside the prefetcher so we don't hammer
-        # the embedder.
+        # channel before the user finishes speaking. (Skip on final: the
+        # WAV is already committed; nothing in-flight should be cancelled
+        # at this point because we want any prefetch to *complete*.)
+        if not final:
+            try:
+                self._scheduler.on_user_speech()
+            except Exception:
+                log.debug("scheduler.on_user_speech failed", exc_info=True)
+        # Phase 1b / listening window: speculatively pre-fetch RAG hits
+        # for this partial. The prefetcher is debounced + dedup'd, but on
+        # the ``final`` path we want it to run immediately if possible —
+        # transcribe(wav) will block for ~100-500 ms and we want the RAG
+        # retrieval to finish in that window.
         prefetcher = getattr(self, "_rag_prefetcher", None)
         if prefetcher is not None:
             try:
-                prefetcher.submit(text, exclude_session_id=self.session_key)
+                recent_turns = self._recent_turn_texts(limit=3)
+                prefetcher.submit(
+                    text,
+                    recent_turns=recent_turns,
+                    exclude_session_id=self.session_key,
+                )
             except Exception:
                 log.debug("rag prefetch submit failed", exc_info=True)
+        # Phase 3 of listening_window_prefetch: pre-build the static prompt
+        # slices for the eventual turn. This is RAM/SQLite-cheap (5-20 ms),
+        # but we hop to a small executor so the capture loop thread never
+        # blocks. The first prebuild during a phrase populates the cache;
+        # ``assemble_with_budget`` consults it on commit.
+        self._submit_prompt_prebuild()
+        # Final path skips the rest: backchannel hints don't make sense
+        # once the user has stopped talking.
+        if final:
+            return None
         try:
             hint = self._backchannel_gate.consider(text, now=time.monotonic())
         except Exception:
@@ -2517,32 +2631,216 @@ class SessionController:
             relax = min(0.7, 0.18 * float(self._live_no_speech_streak))
             live_level_threshold = max(0.002, live_level_threshold * (1.0 - relax))
         end_threshold = max(0.004, float(self._vad_level_threshold) * 0.4)
-        silence_seconds = min(6.0, max(1.5, float(self._vad_silence_seconds) + 0.4))
+
+        # Tiered endpointing: when enabled, the loop's own
+        # silence_seconds_to_stop becomes the *hard* turn boundary
+        # (`turn_silence_seconds`). The endpoint_check we pass below can
+        # break out earlier on a sentence-final partial, or extend the
+        # window on a hesitation marker. Legacy mode keeps the original
+        # `vad_silence_seconds + 0.4` clamp.
+        endpointing_cfg = self._settings.endpointing
+        if endpointing_cfg.enabled:
+            silence_seconds = max(
+                0.4, float(endpointing_cfg.turn_silence_seconds)
+            )
+        else:
+            silence_seconds = min(
+                6.0, max(1.5, float(self._vad_silence_seconds) + 0.4)
+            )
         use_webrtc = self._live_no_speech_streak < 3
+
+        # Snapshot the recorder's current text on speech-start so we only
+        # consider the suffix produced by THIS capture as the partial
+        # transcript. Avoids carry-over from previous phrases that the
+        # recorder may still be decoding.
+        partial_baseline = [""]
+        extension_count = [0]
+        last_partial_chars = [0]
+        # Debounce / dedup state for the listening-window prefetch hook
+        # (Phase 1 of the listening_window_prefetch plan). We feed
+        # ``feed_stt_partial`` periodically — every ~400 ms once the
+        # partial has grown by >= 6 chars — so the existing
+        # ``RagPrefetcher`` machinery actually runs during live voice
+        # mode without one submission per chunk.
+        last_fed_partial = [""]
+        last_fed_at = [0.0]
+        # The most recent partial we observed in this phrase, stashed so
+        # ``process_live_capture`` can fire a final prefetch right before
+        # ``transcribe(wav)``.
+        last_seen_partial = [""]
+
+        def _on_speech_start() -> None:
+            if endpointing_cfg.enabled and endpointing_cfg.use_partial_transcript:
+                try:
+                    partial_baseline[0] = self._realtime_stt.text() or ""
+                except Exception:
+                    partial_baseline[0] = ""
+            # Reset listening-window state for this phrase.
+            last_fed_partial[0] = ""
+            last_fed_at[0] = 0.0
+            last_seen_partial[0] = ""
+
+        def _maybe_feed_partial(partial: str) -> None:
+            """Debounced bridge from the capture loop to feed_stt_partial.
+
+            Triggers everything wired to ``feed_stt_partial``: scheduler
+            cancel of background LLM workers, RAG prefetch, backchannel
+            classifier, frontend partial broadcast.
+            """
+            if not partial or len(partial) < 12:
+                return
+            now = time.monotonic()
+            # 400 ms debounce; require >= 6 new chars since last feed so
+            # tiny edits to the partial don't refire.
+            if (now - last_fed_at[0]) < 0.4:
+                return
+            if abs(len(partial) - len(last_fed_partial[0])) < 6 and partial == last_fed_partial[0]:
+                return
+            last_fed_partial[0] = partial
+            last_fed_at[0] = now
+            try:
+                self.feed_stt_partial(partial)
+            except Exception:
+                log.debug("feed_stt_partial from capture loop raised", exc_info=True)
+
+        # Throttle the periodic partial read inside _on_chunk so we don't
+        # call ``stt.text()`` on every chunk. ``feed_stt_partial`` itself
+        # is also debounced in ``_maybe_feed_partial``; this just bounds
+        # how often we *try*.
+        last_chunk_partial_check = [0.0]
+
+        def _on_chunk(chunk_arr: Any) -> None:
+            if not (endpointing_cfg.enabled and endpointing_cfg.use_partial_transcript):
+                return
+            try:
+                self._realtime_stt.feed_audio(chunk_arr)
+            except Exception:
+                pass
+            # Periodically read the partial during continuous speech so the
+            # listening-window prefetch fires even when there are no silence
+            # boundaries to trigger ``_endpoint_check``. Every ~500 ms is
+            # enough — RAG retrieval needs roughly that long anyway.
+            now = time.monotonic()
+            if now - last_chunk_partial_check[0] < 0.5:
+                return
+            last_chunk_partial_check[0] = now
+            partial = _read_partial()
+            if partial:
+                last_seen_partial[0] = partial
+                _maybe_feed_partial(partial)
+
+        def _read_partial() -> str:
+            try:
+                full = self._realtime_stt.text() or ""
+            except Exception:
+                return ""
+            base = partial_baseline[0]
+            if base and full.startswith(base):
+                return full[len(base):]
+            return full
+
+        def _endpoint_check(silence_s: float, _spoken: int) -> str:
+            if not endpointing_cfg.enabled:
+                return "wait"
+            # Lazy partial fetch: only call text() when we're at or past
+            # the earliest decision tier (fast_close). Below that we know
+            # decide() returns "wait" anyway.
+            min_tier = min(
+                float(endpointing_cfg.fast_close_silence_seconds),
+                float(endpointing_cfg.phrase_silence_seconds),
+            )
+            partial = ""
+            if (
+                silence_s >= min_tier
+                and endpointing_cfg.use_partial_transcript
+            ):
+                partial = _read_partial()
+            if partial:
+                last_seen_partial[0] = partial
+                # Bridge to listening-window machinery (debounced inside).
+                _maybe_feed_partial(partial)
+            decision = _endpointing.decide(silence_s, partial, endpointing_cfg)
+            if decision == "extend":
+                extension_count[0] += 1
+            # Throttle DEBUG noise: only emit when we've actually crossed a
+            # tier OR when we have a non-trivial decision. The decide()
+            # call itself is cheap; the log line carries the trace.
+            if silence_s >= min_tier or decision != "wait":
+                last_partial_chars[0] = len(partial)
+                log.debug(
+                    "endpoint decide: silence_s=%.2f partial_chars=%d "
+                    "hesitation=%s sentence_final=%s decision=%s extensions=%d",
+                    silence_s,
+                    len(partial),
+                    "1" if _endpointing.is_hesitation_marker(partial) else "0",
+                    "1" if _endpointing.is_sentence_final(partial) else "0",
+                    decision,
+                    extension_count[0],
+                )
+            return decision
 
         if on_generation_status:
             on_generation_status("listening")
         capture_started = time.perf_counter()
-        wav_path = self._microphone.capture_phrase_to_wav(
-            max_seconds=max_listen_seconds,
-            max_wait_for_speech_start_seconds=12.0,
-            use_webrtc_vad=use_webrtc,
-            silence_seconds_to_stop=silence_seconds,
-            level_threshold=live_level_threshold,
-            end_level_threshold=end_threshold,
-            min_speech_seconds_before_stop=1.5,
-            speech_start_grace_seconds=0.8,
-            max_seconds_after_speech_start=18.0,
-            stop_requested=stop_requested,
-            on_speech_start=None,
-            on_audio_level=on_audio_level,
+        # Hold the STT recorder context open just for the duration of the
+        # capture so feed_audio + text() work for partial-driven endpointing.
+        # We close it before returning so the subsequent transcribe(wav)
+        # call in process_live_capture gets a fresh context and doesn't
+        # double-feed the same audio.
+        wants_partial = (
+            endpointing_cfg.enabled and endpointing_cfg.use_partial_transcript
         )
+        if wants_partial:
+            try:
+                self._realtime_stt.start_context()
+            except Exception:
+                log.debug("STT start_context failed; partial endpointing disabled", exc_info=True)
+                wants_partial = False
+        try:
+            wav_path = self._microphone.capture_phrase_to_wav(
+                max_seconds=max_listen_seconds,
+                max_wait_for_speech_start_seconds=12.0,
+                use_webrtc_vad=use_webrtc,
+                silence_seconds_to_stop=silence_seconds,
+                level_threshold=live_level_threshold,
+                end_level_threshold=end_threshold,
+                min_speech_seconds_before_stop=1.5,
+                speech_start_grace_seconds=0.8,
+                max_seconds_after_speech_start=18.0,
+                stop_requested=stop_requested,
+                on_speech_start=_on_speech_start,
+                on_audio_level=on_audio_level,
+                on_chunk=_on_chunk if wants_partial else None,
+                endpoint_check=_endpoint_check if endpointing_cfg.enabled else None,
+            )
+        finally:
+            if wants_partial:
+                try:
+                    self._realtime_stt.stop_context()
+                except Exception:
+                    log.debug("STT stop_context failed", exc_info=True)
         capture_ms = (time.perf_counter() - capture_started) * 1000.0
         if wav_path is None:
             self._live_no_speech_streak += 1
             if on_generation_status:
                 on_generation_status(f"listening (retry {self._live_no_speech_streak})")
+            # No phrase captured: clear any stale partial so we don't fire
+            # a final prefetch with text that was abandoned.
+            self._last_live_partial.pop(self.session_key, None)
+            self._last_listen_extensions = 0
             return None
+        # Stash the most recent partial for the STT-processing-window
+        # prefetch in :meth:`process_live_capture`.
+        if last_seen_partial[0]:
+            self._last_live_partial[self.session_key] = last_seen_partial[0]
+        else:
+            self._last_live_partial.pop(self.session_key, None)
+        self._last_listen_extensions = int(extension_count[0])
+        if extension_count[0] > 0:
+            log.info(
+                "live phrase: extensions=%d capture_ms=%.0f",
+                extension_count[0], capture_ms,
+            )
         return wav_path, capture_ms
 
     def capture_ptt_phrase(
@@ -2584,6 +2882,17 @@ class SessionController:
             self._earcons.play("listening")
         except Exception:
             pass
+        # Listening-window prefetch (Phase 2): fire one final RAG prefetch
+        # using the most recent partial we observed during capture, right
+        # before Whisper blocks the thread. The prefetcher runs on its own
+        # background executor so this is non-blocking; by the time
+        # transcribe(wav) returns, retrieval is usually cached.
+        last_partial = self._last_live_partial.pop(self.session_key, "")
+        if last_partial:
+            try:
+                self.feed_stt_partial(last_partial, final=True)
+            except Exception:
+                log.debug("final feed_stt_partial failed", exc_info=True)
         try:
             if on_generation_status:
                 on_generation_status("transcribing")
@@ -2725,6 +3034,13 @@ class SessionController:
                 self._rag_prefetcher.shutdown()
             except Exception:
                 log.debug("rag prefetcher shutdown failed", exc_info=True)
+        if getattr(self, "_listening_window_executor", None) is not None:
+            try:
+                self._listening_window_executor.shutdown(
+                    wait=False, cancel_futures=True,
+                )
+            except Exception:
+                log.debug("listening window executor shutdown failed", exc_info=True)
         try:
             self._tts.stop()
         except Exception:

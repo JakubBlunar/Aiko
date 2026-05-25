@@ -80,6 +80,7 @@ class OllamaClient:
         api_key: str | None = None,
         base_url: str | None = None,
         extra_headers: dict[str, str] | None = None,
+        keep_alive: str | None = None,
     ) -> None:
         self._settings = settings
         self._timeout_seconds = timeout_seconds if timeout_seconds is not None else settings.timeout
@@ -93,6 +94,14 @@ class OllamaClient:
             headers["Authorization"] = f"Bearer {api_key.strip()}"
         self._headers: dict[str, str] = headers
         self.last_usage: OllamaUsage = OllamaUsage()
+        # Default ``keep_alive`` for chat requests. Ollama unloads models
+        # 5m after the last request by default; bumping this keeps the
+        # chat model warm across the typical idle gap between turns so
+        # we don't pay model-load latency on first token. Per-call
+        # ``keep_alive`` arguments override this default.
+        self._default_keep_alive: str = (
+            (keep_alive or "").strip() or "30m"
+        )
 
     @property
     def base_url(self) -> str:
@@ -150,6 +159,7 @@ class OllamaClient:
         tools: list[dict[str, Any]] | None = None,
         model: str | None = None,
         think: bool = False,
+        keep_alive: str | None = None,
     ) -> OllamaChatResponse:
         merged_options: dict[str, object] = {"temperature": self._settings.temperature}
         if options:
@@ -161,6 +171,11 @@ class OllamaClient:
             "stream": False,
             "options": merged_options,
         }
+        effective_keep_alive = (
+            (keep_alive or "").strip() or self._default_keep_alive
+        )
+        if effective_keep_alive:
+            payload["keep_alive"] = effective_keep_alive
         if tools:
             payload["tools"] = tools
         if think:
@@ -226,7 +241,7 @@ class OllamaClient:
         options: dict[str, object] | None = None,
         *,
         model: str | None = None,
-        keep_alive: str | None = "10m",
+        keep_alive: str | None = None,
         stop_event: threading.Event | None = None,
         format_json: bool = False,
         think: bool = False,
@@ -254,8 +269,11 @@ class OllamaClient:
             "think": bool(think),
             "options": merged_options,
         }
-        if keep_alive:
-            payload["keep_alive"] = keep_alive
+        effective_keep_alive = (
+            (keep_alive or "").strip() if keep_alive is not None else self._default_keep_alive
+        )
+        if effective_keep_alive:
+            payload["keep_alive"] = effective_keep_alive
         if format_json:
             payload["format"] = "json"
         usage = OllamaUsage()
@@ -325,6 +343,7 @@ class OllamaClient:
         timeout_seconds: float | None = None,
         format_json: bool = True,
         think: bool = False,
+        keep_alive: str | None = None,
     ) -> tuple[str, OllamaUsage]:
         """One-shot non-streaming call (defaults to ``format=json``).
 
@@ -338,14 +357,18 @@ class OllamaClient:
         if options:
             merged_options.update(options)
         use_model = (model or "").strip() or self._settings.chat_model
+        effective_keep_alive = (
+            (keep_alive or "").strip() if keep_alive is not None else self._default_keep_alive
+        )
         payload: dict[str, Any] = {
             "model": use_model,
             "messages": messages,
             "stream": False,
-            "keep_alive": "10m",
             "think": bool(think),
             "options": merged_options,
         }
+        if effective_keep_alive:
+            payload["keep_alive"] = effective_keep_alive
         if format_json:
             payload["format"] = "json"
         t0 = time.monotonic()

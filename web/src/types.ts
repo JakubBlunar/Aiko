@@ -47,6 +47,15 @@ export interface AssistantSettings {
     silence_seconds: number;
     cooldown_seconds: number;
   };
+  endpointing?: {
+    enabled: boolean;
+    use_partial_transcript: boolean;
+    phrase_silence_seconds: number;
+    turn_silence_seconds: number;
+    fast_close_silence_seconds: number;
+    hesitation_extend_to_turn: boolean;
+    barge_in_min_speech_seconds: number;
+  };
   tools?: {
     enabled: boolean;
     get_time: boolean;
@@ -145,6 +154,19 @@ export interface Persona {
   reaction_mapping: Record<string, string>;
   idle_motion_group: string | null;
   talk_motion_group: string | null;
+  /**
+   * Cubism 3 ``Groups[name=LipSync].Ids``. Empty for Cubism 2 or models
+   * that don't declare a LipSync group; the renderer falls back to the
+   * generic ``ParamMouthOpenY`` / ``PARAM_MOUTH_OPEN_Y`` defaults.
+   */
+  lip_sync_ids?: string[];
+  /** Cubism 3 ``Groups[name=EyeBlink].Ids``. Reserved for future use. */
+  eye_blink_ids?: string[];
+  /**
+   * Multiplier on top of the bounds-fit scale. 1.0 is "auto-fit", anything
+   * higher zooms in. Backend clamps to [0.3, 3.0].
+   */
+  scale_multiplier?: number;
   uploaded_at: string;
 }
 
@@ -254,6 +276,7 @@ export type WsServerEvent =
       reaction?: string;
     }
   | { type: "stt_partial"; text: string }
+  | { type: "stt_partial_live"; text: string }
   | { type: "stt_final"; text: string }
   | { type: "voice_state"; state: VoiceMode }
   | { type: "audio_level"; level: number }

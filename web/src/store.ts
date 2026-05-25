@@ -63,9 +63,17 @@ interface AssistantState {
   voiceMode: VoiceMode;
   audioLevel: number;
   lastTranscript: string;
+  /**
+   * Live partial transcript (Phase 5 of listening_window_prefetch).
+   * Set on each stt_partial_live broadcast; cleared on stt_final or when
+   * the voice session ends. Rendered as a single transient "Hearing: …"
+   * line above the chat input — never appended to the chat history.
+   */
+  currentPartial: string;
   setVoiceMode: (mode: VoiceMode) => void;
   setAudioLevel: (level: number) => void;
   setLastTranscript: (text: string) => void;
+  setCurrentPartial: (text: string) => void;
 
   // Long-term memories
   memories: Memory[];
@@ -285,10 +293,21 @@ export const useAssistantStore = create<AssistantState>((set) => ({
   voiceMode: "off",
   audioLevel: 0,
   lastTranscript: "",
-  setVoiceMode: (mode) => set({ voiceMode: mode }),
+  currentPartial: "",
+  setVoiceMode: (mode) =>
+    set(() => {
+      const next: Partial<AssistantState> = { voiceMode: mode };
+      // Voice session ended -> the live "Hearing: …" line should disappear
+      // even if no stt_final lands (e.g. user toggled mic off mid-utterance).
+      if (mode === "off") {
+        next.currentPartial = "";
+      }
+      return next;
+    }),
   setAudioLevel: (level) =>
     set({ audioLevel: Math.max(0, Math.min(1, level)) }),
   setLastTranscript: (text) => set({ lastTranscript: text }),
+  setCurrentPartial: (text) => set({ currentPartial: text }),
 
   memories: [],
   memoriesEnabled: true,

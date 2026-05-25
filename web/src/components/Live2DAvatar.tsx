@@ -78,7 +78,12 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
     appRef.current = app;
 
     let cancelled = false;
-    const url = "/personas/" + manifest.entry_filename.replace(/^\/+/, "");
+    // Backend extracts uploads into ``data/personas/active/`` and serves
+    // the parent directory at ``/personas``. ``manifest.entry_filename``
+    // is zip-relative (e.g. ``"a02/a02.model3.json"``) so we prepend
+    // ``active/`` to land on the actual file.
+    const url =
+      "/personas/active/" + manifest.entry_filename.replace(/^\/+/, "");
 
     Live2DModel.from(url, { autoInteract: false })
       .then((model) => {
@@ -88,7 +93,7 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
         }
         modelRef.current = model;
         app.stage.addChild(model);
-        fitModelToContainer(model, app);
+        fitModelToContainer(model, app, manifest.scale_multiplier ?? 1);
 
         // The first reaction we already have in the store should drive the
         // initial expression so the avatar doesn't pop in with the default.
@@ -104,7 +109,11 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
       if (!modelRef.current || !appRef.current) {
         return;
       }
-      fitModelToContainer(modelRef.current, appRef.current);
+      fitModelToContainer(
+        modelRef.current,
+        appRef.current,
+        manifest.scale_multiplier ?? 1,
+      );
     };
     window.addEventListener("resize", handleResize);
 
@@ -127,6 +136,20 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
       lastTtsStateRef.current = "idle";
     };
   }, [manifest.id, manifest.entry_filename, manifest.cubism_version]);
+
+  // ── 1b. React to scale_multiplier changes without rebuilding the model.
+  //    The user can drag a slider in Persona settings; refit live so the
+  //    canvas stays smooth instead of remounting (which flashes).
+  useEffect(() => {
+    if (!modelRef.current || !appRef.current) {
+      return;
+    }
+    fitModelToContainer(
+      modelRef.current,
+      appRef.current,
+      manifest.scale_multiplier ?? 1,
+    );
+  }, [manifest.scale_multiplier]);
 
   // ── 2. Lip-sync: rAF loop reads audioAmplitude from the store and eases ──
   useEffect(() => {
@@ -355,22 +378,40 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
 function fitModelToContainer(
   model: InstanceType<typeof Live2DModel>,
   app: PIXI.Application,
+  multiplier: number = 1,
 ): void {
-  // ``getBounds`` reflects the model's untransformed size; downscale until the
-  // model fits the panel with a small margin.
+  // ``getBounds`` reflects the *currently transformed* size, not the
+  // model's natural size, so we have to reset the scale first or we'd
+  // compound the previous fit on every resize.
+  model.scale.set(1);
   const bounds = model.getBounds();
   if (!bounds.width || !bounds.height) {
     return;
   }
   const margin = 0.92;
-  const scale = Math.min(
+  const fit = Math.min(
     (app.screen.width * margin) / bounds.width,
     (app.screen.height * margin) / bounds.height,
   );
-  model.scale.set(scale);
+  model.scale.set(fit * multiplier);
+
+  // The PIXI canvas is the viewport — at multiplier 1.0 the auto-fit
+  // makes the whole model render inside it, but at higher zoom levels
+  // the model is *larger* than the canvas and parts will be clipped.
+  // We slide the anchor up the model so the visible window centers
+  // on the face/torso region as zoom grows, instead of staying locked
+  // to the feet (which would crop the head off-screen). At
+  // ``multiplier <= 1`` we keep the classic feet-on-floor framing.
+  //   1.0x → anchor.y 1.0  (bottom — see whole character)
+  //   1.5x → anchor.y 0.67 (lower-third anchor — torso framed)
+  //   2.0x → anchor.y 0.5  (center — head and chest in frame)
+  //   3.0x → anchor.y 0.33 (upper-third — face fills frame)
+  //   4.0x → anchor.y 0.3  (clamped, prevents anchoring above hairline)
+  const zoom = Math.max(1, multiplier);
+  const anchorY = Math.max(0.3, 1 / zoom);
   model.x = app.screen.width / 2;
-  model.y = app.screen.height;
-  model.anchor.set(0.5, 1.0);
+  model.y = app.screen.height * anchorY;
+  model.anchor.set(0.5, anchorY);
 }
 
 function applyMouthOpen(
@@ -384,29 +425,42 @@ function applyMouthOpen(
   if (!core) {
     return;
   }
-  const param =
-    manifest.cubism_version === 2 ? MOUTH_PARAM_CUBISM_2 : MOUTH_PARAM_CUBISM_4;
-  // The two SDK variants disagree on method names. Try Cubism 4 first, fall
-  // back to Cubism 2's legacy API.
+  // Prefer parameter IDs declared in the model's ``Groups[LipSync]`` (the
+  // canonical source of truth). Fall back to the convention default for
+  // each Cubism version when the model didn't declare any. Parameter
+  // names vary widely: modern Cubism 4 uses ``ParamMouthOpenY``,
+  // Cubism-3-ported-from-Cubism-2 models keep the legacy
+  // ``PARAM_MOUTH_OPEN_Y``, custom rigs may use anything else.
+  const declared = manifest.lip_sync_ids;
+  const params: string[] =
+    declared && declared.length > 0
+      ? declared
+      : [
+          manifest.cubism_version === 2
+            ? MOUTH_PARAM_CUBISM_2
+            : MOUTH_PARAM_CUBISM_4,
+        ];
   const cm4 = (core as {
     setParameterValueById?: (id: string, value: number) => void;
   }).setParameterValueById;
-  if (typeof cm4 === "function") {
-    try {
-      cm4.call(core, param, level);
-      return;
-    } catch {
-      /* fall through */
-    }
-  }
   const cm2 = (core as {
     setParamFloat?: (id: string, value: number) => void;
   }).setParamFloat;
-  if (typeof cm2 === "function") {
-    try {
-      cm2.call(core, param, level);
-    } catch {
-      /* swallow */
+  for (const id of params) {
+    if (typeof cm4 === "function") {
+      try {
+        cm4.call(core, id, level);
+        continue;
+      } catch {
+        /* fall through to cm2 */
+      }
+    }
+    if (typeof cm2 === "function") {
+      try {
+        cm2.call(core, id, level);
+      } catch {
+        /* swallow */
+      }
     }
   }
 }
