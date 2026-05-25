@@ -3,5 +3,9 @@
     "assistant": {
       "url": "http://localhost:6274/sse"
     }
+  },
+  "playwright": {
+    "command": "npx",
+    "args": ["@playwright/mcp@latest"]
   }
 }

@@ -51,7 +51,12 @@ from app.core.session_text_utils import (
     prepare_tts_text,
     sanitize_user_text,
 )
-from app.core.settings import AppSettings, persist_user_overrides
+from app.core.settings import (
+    AppSettings,
+    OUTFIT_MODES,
+    persist_user_overrides,
+    read_user_overrides,
+)
 from app.core.speaking_window_scheduler import SpeakingWindowScheduler
 from app.core.summary_worker import SummaryWorker
 from app.core.tts_queue import TtsQueue
@@ -121,7 +126,12 @@ class SessionController:
     def __init__(self, settings: AppSettings) -> None:
         self._settings = settings
         self._user_id = (settings.assistant.user_id or "default").strip() or "default"
-        self._session_id = "main"
+        # Restore the session the user was last viewing so closing the
+        # browser tab (or the whole app) doesn't snap them back to the
+        # primordial "main" conversation. Persistence happens in
+        # ``switch_session`` — see ``_resolve_initial_session_id`` for
+        # the fallback chain.
+        self._session_id = self._resolve_initial_session_id(default="main")
 
         # ── Chat LLM client (Ollama or Ollama Cloud) ──────────────────────
         chat_llm = settings.chat_llm
@@ -1017,12 +1027,65 @@ class SessionController:
         self._clear_merge_buffer()
         with self._vocal_tone_lock:
             self._last_vocal_tone = None
-        self._session_id = session_id
+        normalized = (session_id or "").strip()
+        if not normalized:
+            return
+        self._session_id = normalized
+        # Best-effort: a write failure (read-only volume, locked file)
+        # must not break the in-memory switch — the user just lands
+        # back on whatever was previously persisted on next launch.
+        try:
+            persist_user_overrides({"session": {"last_active_id": normalized}})
+        except Exception:
+            log.debug("failed to persist last_active_id", exc_info=True)
 
     def new_session(self) -> str:
         new_id = str(uuid.uuid4())[:8]
         self.switch_session(new_id)
         return new_id
+
+    def _resolve_initial_session_id(self, *, default: str = "main") -> str:
+        """Pick the session id to land on at startup.
+
+        Priority (first match wins):
+
+        1. ``user.json``'s ``session.last_active_id`` if it's a non-empty
+           string. Honoured even when the underlying session has no
+           messages yet — this lets a "New session" → tab-close →
+           reopen sequence keep the user on their fresh empty session.
+        2. The most recently active session in the chat DB. Saves users
+           who never had a persisted preference (first-run, downgrade
+           from a build without persistence) from the cold "main"
+           default if they've already chatted before.
+        3. ``default`` (``"main"``).
+
+        Pure read — no writes — so failures here just fall through.
+        """
+        try:
+            saved = (
+                read_user_overrides()
+                .get("session", {})
+                .get("last_active_id", "")
+            )
+            if isinstance(saved, str) and saved.strip():
+                return saved.strip()
+        except Exception:
+            log.debug("read_user_overrides failed during startup", exc_info=True)
+        try:
+            rows = self._chat_db.list_sessions()
+            if rows:
+                most_recent = rows[0].get("session_id", "")
+                # ``list_sessions`` returns the full ``user_id:session_id``
+                # composite key; strip the user prefix so the value is
+                # consistent with what ``_session_id`` stores everywhere
+                # else (the session_key property re-prepends it).
+                if isinstance(most_recent, str) and ":" in most_recent:
+                    most_recent = most_recent.split(":", 1)[1]
+                if most_recent.strip():
+                    return most_recent.strip()
+        except Exception:
+            log.debug("list_sessions failed during startup", exc_info=True)
+        return default
 
     def clear_conversation_memory(self) -> None:
         self._clear_merge_buffer()
@@ -1534,7 +1597,7 @@ class SessionController:
                 changed = True
         if auto_outfit is not None:
             normalized = str(auto_outfit).strip().lower()
-            if normalized in {"auto", "day", "pajamas"}:
+            if normalized in OUTFIT_MODES:
                 if normalized != self._avatar_settings_runtime["auto_outfit"]:
                     self._avatar_settings_runtime["auto_outfit"] = normalized
                     self._settings.avatar.auto_outfit = normalized
@@ -1593,28 +1656,46 @@ class SessionController:
     def resolve_auto_outfit(self) -> str:
         """Resolve the active outfit according to priority rules.
 
-        Returns ``"pajamas"``, ``"day"``, or ``""`` (no preference / model
-        doesn't support outfits at all).
+        Returns ``"pajamas"``, ``"pajamas_hooded"``, ``"day"``, or ``""``
+        (no preference / model doesn't support outfits at all).
 
         Priority (highest → lowest):
           1. User-forced ``auto_outfit`` (set via ``/api/avatar``).
              Always wins; clears any LLM override as a side-effect.
           2. LLM-driven ``[[outfit:X]]`` override. Sticky until the next
              circadian period boundary, then auto-expired.
-          3. Circadian default (``night``/``late_night`` → pajamas).
+          3. Circadian default (``night``/``late_night`` → pajamas
+             variant; falls back to the hooded variant when the bare
+             one isn't supported).
         """
         avatar = self._avatar
         if avatar is None:
             return ""
         mode = self._avatar_settings_runtime.get("auto_outfit", "auto")
-        has_pajamas = bool(avatar.capabilities.get("has_pajamas", False))
-        has_day = bool(avatar.capabilities.get("has_day_clothes", False))
+        caps = avatar.capabilities
+        has_pajamas = bool(caps.get("has_pajamas", False))
+        has_pajamas_hooded = bool(caps.get("has_pajamas_hooded", False))
+        has_day = bool(caps.get("has_day_clothes", False))
+        # User-forced modes (priority 1). Each falls back through the
+        # other pajama variant before giving up to ``day`` / ``""`` so a
+        # rig that only ships one of the two still respects the user's
+        # intent ("they wanted pajamas, give them whichever exists").
         if mode == "pajamas":
-            # User took control — drop any pending LLM override so a
-            # later switch back to "auto" doesn't resurrect a stale one.
             self._llm_outfit_override = ""
             self._llm_outfit_override_period = ""
-            return "pajamas" if has_pajamas else ("day" if has_day else "")
+            if has_pajamas:
+                return "pajamas"
+            if has_pajamas_hooded:
+                return "pajamas_hooded"
+            return "day" if has_day else ""
+        if mode == "pajamas_hooded":
+            self._llm_outfit_override = ""
+            self._llm_outfit_override_period = ""
+            if has_pajamas_hooded:
+                return "pajamas_hooded"
+            if has_pajamas:
+                return "pajamas"
+            return "day" if has_day else ""
         if mode == "day":
             self._llm_outfit_override = ""
             self._llm_outfit_override_period = ""
@@ -1635,15 +1716,21 @@ class SessionController:
                 override = self._llm_outfit_override
                 if override == "pajamas" and has_pajamas:
                     return "pajamas"
+                if override == "pajamas_hooded" and has_pajamas_hooded:
+                    return "pajamas_hooded"
                 if override == "day" and has_day:
                     return "day"
                 # Override no longer realisable (capability vanished on
                 # avatar swap); clear and fall through.
                 self._llm_outfit_override = ""
                 self._llm_outfit_override_period = ""
-        # Auto: night/late_night → pajamas (when supported), else day.
-        if period in {"night", "late_night"} and has_pajamas:
-            return "pajamas"
+        # Auto: night/late_night → pajamas (preferred bare variant when
+        # supported, else hooded), otherwise day clothes.
+        if period in {"night", "late_night"}:
+            if has_pajamas:
+                return "pajamas"
+            if has_pajamas_hooded:
+                return "pajamas_hooded"
         return "day" if has_day else ""
 
     def _emit_avatar_overlay(self, name: str, *, duration_ms: int = 1500) -> None:
@@ -1684,7 +1771,7 @@ class SessionController:
         if not name:
             return
         normalized = str(name).strip().lower()
-        if normalized not in {"pajamas", "day"}:
+        if normalized not in {"pajamas", "pajamas_hooded", "day"}:
             return
         avatar = self._avatar
         if avatar is None:
@@ -1694,6 +1781,10 @@ class SessionController:
             return  # User override wins; silently drop the LLM directive.
         caps = avatar.capabilities
         if normalized == "pajamas" and not caps.get("has_pajamas", False):
+            return
+        if normalized == "pajamas_hooded" and not caps.get(
+            "has_pajamas_hooded", False,
+        ):
             return
         if normalized == "day" and not caps.get("has_day_clothes", False):
             return
@@ -2547,7 +2638,9 @@ class SessionController:
         regular circadian block to keep the tone matched to her outfit.
         """
         try:
-            if self.resolve_auto_outfit() == "pajamas":
+            # Either pajama variant warrants the quieter-tone nudge —
+            # the hood doesn't change the vibe, just the silhouette.
+            if self.resolve_auto_outfit() in {"pajamas", "pajamas_hooded"}:
                 return (
                     "You're in pajamas; the conversation is a quieter "
                     "one — softer cadence, smaller sentences, gentler "

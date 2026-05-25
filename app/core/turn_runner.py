@@ -99,6 +99,11 @@ class TurnResult:
     first_token_ms: float | None = None  # Phase 1c: time-to-first-stream-delta
     filler_emitted: bool = False  # Phase 1c: did the slow-first-token filler fire?
     raw_text: str = ""  # Phase 4a: full pre-strip output (for tag extraction)
+    # True when the LLM omitted ``[[reaction:X]]`` and we had to default to
+    # ``neutral`` so the response still got spoken / side-channels still
+    # dispatched. Surfaced by the MCP ``get_last_response_detail`` tool so
+    # we can see at a glance whether grammar compliance is degrading.
+    mood_fallback: bool = False
 
 
 class TurnRunner:
@@ -510,6 +515,69 @@ class TurnRunner:
             parsed_mood, full_raw = parse_reaction_at_start(full_raw)
             if parsed_mood is not None:
                 mood = parsed_mood
+        # Visibility: log the raw output once per turn so we can finally
+        # see whether the LLM is emitting structural tags or only prose.
+        # ``%r`` keeps multi-line responses on a single log line. The
+        # tag-presence summary is greppable ("llm tags:") so the common
+        # "is reaction missing again?" question takes seconds to answer.
+        log.info("llm raw response: %r", full_raw)
+        log.info(
+            "llm tags: reaction=%s outfit=%s motion=%s overlay=%s remember=%s",
+            "Y" if "[[reaction:" in full_raw else "n",
+            "Y" if "[[outfit:" in full_raw else "n",
+            "Y" if "[[motion:" in full_raw else "n",
+            "Y" if "[[overlay:" in full_raw else "n",
+            "Y" if "[[remember" in full_raw else "n",
+        )
+        # Mood fallback: when the LLM forgets ``[[reaction:X]]`` the
+        # streaming branch's ``mood is not None`` gate suppressed every
+        # TTS chunk for the whole turn. Default to ``neutral`` here so
+        # the final-flush path below picks up the full body in one go.
+        mood_fallback = False
+        if mood is None:
+            mood = "neutral"
+            mood_fallback = True
+            log.info(
+                "mood fallback: defaulting to neutral (LLM omitted "
+                "[[reaction:X]] tag)",
+            )
+        # Side-channel dispatch from the un-stripped raw text. The
+        # per-chunk path inside ``_dispatch_chunk_with_earcons`` runs
+        # against ``tts_buffer`` which is filled from
+        # ``safe_visible_prefix(body)`` -- and that helper already
+        # strips overlay/outfit/motion tags via ``strip_all_meta_tags``
+        # before the dispatcher ever sees them. End result: per-chunk
+        # ``on_outfit`` / ``on_motion`` / ``on_overlay`` were silently
+        # never firing, even on the happy ``[[reaction:X]]`` path. Run
+        # the extraction once here against ``full_raw`` (the only copy
+        # of the text that still carries the tags) so the callbacks
+        # fire exactly once per tag, in stream order, regardless of
+        # whether the reaction tag was emitted.
+        from app.core.services.response_text_service import (
+            _MOTION_TAG_PATTERN,
+            _OUTFIT_TAG_PATTERN,
+            _OVERLAY_TAG_PATTERN,
+        )
+
+        if not aborted:
+            if on_overlay is not None:
+                for match in _OVERLAY_TAG_PATTERN.finditer(full_raw):
+                    try:
+                        on_overlay(match.group(1).strip().lower())
+                    except Exception:
+                        log.debug("on_overlay raised", exc_info=True)
+            if on_outfit is not None:
+                for match in _OUTFIT_TAG_PATTERN.finditer(full_raw):
+                    try:
+                        on_outfit(match.group(1).strip().lower())
+                    except Exception:
+                        log.debug("on_outfit raised", exc_info=True)
+            if on_motion is not None:
+                for match in _MOTION_TAG_PATTERN.finditer(full_raw):
+                    try:
+                        on_motion(match.group(1).strip().lower())
+                    except Exception:
+                        log.debug("on_motion raised", exc_info=True)
         body_text = strip_all_meta_tags(full_raw)
         # Final-flush: emit any tail that the streaming holdback was sitting on
         # (e.g. a "[[" that turned out NOT to be a tag) so the UI bubble lands
@@ -597,7 +665,7 @@ class TurnRunner:
         log.info(
             "turn done: chars=%d mood=%s prompt=%d completion=%d ctx_pct=%.1f "
             "first_token_ms=%s total_ms=%.0f eval_ms=%.0f tools=%d "
-            "compactions=%d filler=%s aborted=%s "
+            "compactions=%d filler=%s aborted=%s mood_fallback=%s "
             "rag_prefetch=%s prebuild=%s listen_extensions=%d",
             len(cleaned),
             mood or "neutral",
@@ -611,6 +679,7 @@ class TurnRunner:
             compactions_run,
             "1" if self._filler.fired else "0",
             "1" if aborted else "0",
+            "1" if mood_fallback else "0",
             telemetry.rag_prefetch_event,
             telemetry.slice_cache_event,
             listen_extensions,
@@ -630,6 +699,7 @@ class TurnRunner:
             first_token_ms=first_token_ms,
             filler_emitted=self._filler.fired,
             raw_text=full_raw,
+            mood_fallback=mood_fallback,
         )
 
     # ── helpers ───────────────────────────────────────────────────────

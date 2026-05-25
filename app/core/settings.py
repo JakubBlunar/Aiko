@@ -130,6 +130,20 @@ class EndpointingSettings:
     sentence_final_markers: list[str] = field(default_factory=list)
 
 
+# Allow-list for ``AvatarSettings.auto_outfit``. Single source of truth
+# shared by the settings loader, the web ``PATCH /api/avatar`` validator,
+# and ``SessionController.update_avatar_settings`` so adding a new
+# outfit only requires one edit here. Update the matching TS literal
+# (``AvatarSettingsKnobs.auto_outfit``) in ``web/src/types.ts`` when
+# this changes.
+OUTFIT_MODES: frozenset[str] = frozenset({
+    "auto",
+    "day",
+    "pajamas",
+    "pajamas_hooded",
+})
+
+
 @dataclass(slots=True)
 class AvatarSettings:
     """Single bundled Live2D avatar (Alexia) + user-tunable knobs.
@@ -142,9 +156,11 @@ class AvatarSettings:
     root_dir: str = "live-2d-models/Alexia"
     entry_filename: str = "Alexia.model3.json"
     scale_multiplier: float = 1.0
-    # "auto" -> circadian-driven (pajamas at night when has_pajamas)
-    # "day"  -> always day clothes
-    # "pajamas" -> always pajamas (when supported, else day fallback)
+    # See ``OUTFIT_MODES`` above for the accepted values.
+    #   "auto"            -> circadian-driven (pajamas at night when supported)
+    #   "day"             -> always day clothes (baseline)
+    #   "pajamas"         -> always pajamas (no sleeping cap)
+    #   "pajamas_hooded"  -> always pajamas with sleeping cap
     auto_outfit: str = "auto"
 
 
@@ -382,6 +398,22 @@ def _read_merged_overrides(*paths: Path) -> dict[str, Any]:
             continue
         merged = _deep_merge(merged, current)
     return merged
+
+
+def read_user_overrides(*, path: Path | None = None) -> dict[str, Any]:
+    """Return the deserialised contents of ``user.json``.
+
+    Convenience wrapper around the cached ``_read_config`` so callers
+    that need to look up a single user-only key (e.g. the last-active
+    session id, which doesn't have a slot on the ``AppSettings``
+    dataclass) don't have to import the private helper.
+    Missing file → empty dict.
+    """
+    target = path or USER_CONFIG_PATH
+    try:
+        return _read_config(target)
+    except Exception:
+        return {}
 
 
 def persist_user_overrides(
@@ -685,7 +717,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             scale_multiplier=max(0.1, min(8.0, float(avatar_raw.get("scale_multiplier", 1.0) or 1.0))),
             auto_outfit=(
                 str(avatar_raw.get("auto_outfit", "auto") or "auto").strip().lower()
-                if str(avatar_raw.get("auto_outfit", "auto") or "auto").strip().lower() in {"auto", "day", "pajamas"}
+                if str(avatar_raw.get("auto_outfit", "auto") or "auto").strip().lower() in OUTFIT_MODES
                 else "auto"
             ),
         ),

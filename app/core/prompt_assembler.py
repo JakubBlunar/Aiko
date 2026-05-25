@@ -184,14 +184,20 @@ def _build_outfit_grammar_addendum(capabilities: dict[str, bool] | None) -> str:
     if not capabilities:
         return ""
     has_pajamas = capabilities.get("has_pajamas", False)
+    has_pajamas_hooded = capabilities.get("has_pajamas_hooded", False)
     has_day = capabilities.get("has_day_clothes", False)
-    if not (has_pajamas or has_day):
+    if not (has_pajamas or has_pajamas_hooded or has_day):
         return ""
     lines: list[str] = []
     if has_pajamas:
         lines.append(
             "[[outfit:pajamas]] — change into pajamas "
             "(settling in for the night, sticky until morning)"
+        )
+    if has_pajamas_hooded:
+        lines.append(
+            "[[outfit:pajamas_hooded]] — same pajamas but with the "
+            "sleeping cap on (cold night, extra cozy, hooded variant)"
         )
     if has_day:
         lines.append(

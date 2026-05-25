@@ -184,8 +184,16 @@ export interface CdiPart {
 
 export interface AvatarSettingsKnobs {
   scale_multiplier: number;
-  /** "auto" -> circadian-driven; "day" / "pajamas" -> forced. */
-  auto_outfit: "auto" | "day" | "pajamas";
+  /**
+   * Outfit selection mode. Mirrors the Python ``OUTFIT_MODES``
+   * allow-list in ``app/core/settings.py`` -- update both sides in
+   * lockstep when adding a new outfit.
+   *  - ``auto``           -> circadian-driven (pajamas at night)
+   *  - ``day``            -> always day clothes (baseline)
+   *  - ``pajamas``        -> always pajamas (no sleeping cap)
+   *  - ``pajamas_hooded`` -> always pajamas with sleeping cap
+   */
+  auto_outfit: "auto" | "day" | "pajamas" | "pajamas_hooded";
 }
 
 export interface AvatarProfile {
@@ -321,7 +329,7 @@ export type CircadianPeriod =
   | "";
 
 /** Resolved outfit name. ``""`` means the avatar has no outfit toggles at all. */
-export type ResolvedOutfit = "pajamas" | "day" | "";
+export type ResolvedOutfit = "pajamas" | "pajamas_hooded" | "day" | "";
 
 /** Phase 1a: backchannel hint derived from a stt_partial transcript. */
 export type BackchannelHint =

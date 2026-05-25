@@ -93,27 +93,119 @@ class CapabilityDetectionTests(unittest.TestCase):
         self.assertIsInstance(pj, OutfitBinding)
         self.assertIsInstance(day, OutfitBinding)
         assert pj is not None and day is not None
+        # All other outfit capabilities must appear in mutex_with so
+        # the renderer fades them out when this one ramps up.
         self.assertIn("day_clothes", pj.mutex_with)
+        self.assertIn("pajamas_hooded", pj.mutex_with)
         self.assertIn("pajamas", day.mutex_with)
+        self.assertIn("pajamas_hooded", day.mutex_with)
 
-    def test_outfit_bindings_are_multi_param_from_exp3(self) -> None:
-        # Pajamas should carry BOTH Param16 (clothes body) and Param17
-        # (clothes-with-hood) at on_value=30, parsed from yfmz.exp3.json.
-        # Day-clothes should only retain Param16 (the others have
-        # Value=0 in yf.exp3.json and are filtered as "no contribution").
+    def test_alexia_outfit_capability_mapping_matches_visual_rig(self) -> None:
+        # Locks in the visual outfit assignment for Alexia so a future
+        # refactor can't silently flip ``yf`` <-> ``yfmz`` again. See
+        # ``app.core.avatar_profile._ALEXIA_EXPR_TO_CAPABILITY`` (and
+        # ``docs/alexia-model-notes.md`` for the full audit).
+        #
+        # User-confirmed visual mapping (May 2026):
+        #   - BASELINE                   -> day clothes (streetwear)
+        #   - yf  (Param16=30 only)      -> pajamas + hood UP
+        #   - yfmz (Param16=30,Param17=30) -> pajamas, hood pulled DOWN
+        # Param17 is a "lift hood off" toggle, not an "add hood" one.
+        from app.core.avatar_profile import _ALEXIA_EXPR_TO_CAPABILITY
+        self.assertEqual(_ALEXIA_EXPR_TO_CAPABILITY["yf"], "pajamas_hooded")
+        self.assertEqual(_ALEXIA_EXPR_TO_CAPABILITY["yfmz"], "pajamas")
+
+    def test_outfit_bindings_match_visual_rig(self) -> None:
+        # Three outfit bindings must exist for the rig, with the
+        # canonical param assignments (see ``docs/alexia-model-notes``):
+        #   - pajamas        -> Param16 + Param17 (from yfmz; Param17
+        #                       lifts the hood off, leaving bare pajamas)
+        #   - pajamas_hooded -> Param16 alone (from yf; default art is
+        #                       hooded, so just toggling the alternate
+        #                       outfit gets you the hooded look)
+        #   - day_clothes    -> empty params list (baseline = no toggle;
+        #                       the binding still exists so the
+        #                       SettingsDrawer radio always offers the
+        #                       "Day" option even though no exp3 file
+        #                       activates it)
         profile = from_disk(_MIN)
         pj = profile.outfits.get("pajamas")
+        hooded = profile.outfits.get("pajamas_hooded")
         day = profile.outfits.get("day_clothes")
-        assert pj is not None and day is not None
+        assert pj is not None and hooded is not None and day is not None
+        # pajamas: both Param16 and Param17 at on_value=30 (hood-off)
         self.assertTrue(all(isinstance(p, OutfitParam) for p in pj.params))
-        pj_ids = [p.param_id for p in pj.params]
-        self.assertIn("Param16", pj_ids)
-        self.assertIn("Param17", pj_ids)
+        pj_ids = sorted(p.param_id for p in pj.params)
+        self.assertEqual(pj_ids, ["Param16", "Param17"])
         for p in pj.params:
             self.assertEqual(p.on_value, 30.0)
-        day_ids = [p.param_id for p in day.params]
-        self.assertEqual(day_ids, ["Param16"])
-        self.assertEqual(day.params[0].on_value, 30.0)
+        # pajamas_hooded: Param16 only at on_value=30 (hood-on default)
+        self.assertEqual(
+            [p.param_id for p in hooded.params], ["Param16"],
+        )
+        self.assertEqual(hooded.params[0].on_value, 30.0)
+        # day_clothes: empty (baseline)
+        self.assertEqual(day.params, [])
+
+    def test_pajama_variants_share_param16_for_additive_renderer(self) -> None:
+        # The two pajama variants intentionally BOTH carry Param16 so
+        # the additive-sum renderer keeps Param16 at on_value during
+        # a pajamas <-> pajamas_hooded crossfade. Only Param17 fades
+        # in/out (the hood toggle). day_clothes stays empty so it
+        # never contributes a competing zero write.
+        profile = from_disk(_MIN)
+        pj = profile.outfits.get("pajamas")
+        hooded = profile.outfits.get("pajamas_hooded")
+        day = profile.outfits.get("day_clothes")
+        assert pj is not None and hooded is not None and day is not None
+        pj_ids = {p.param_id for p in pj.params}
+        hooded_ids = {p.param_id for p in hooded.params}
+        day_ids = {p.param_id for p in day.params}
+        self.assertEqual(
+            pj_ids & hooded_ids, {"Param16"},
+            "pajama variants must share Param16 for additive crossfade",
+        )
+        # The hood-toggle (Param17) lives in the bare pajamas binding
+        # only — that's what visually removes the hood. The hooded
+        # variant relies on Param17 staying at zero.
+        self.assertIn("Param17", pj_ids)
+        self.assertNotIn("Param17", hooded_ids)
+        self.assertEqual(
+            pj_ids & day_ids, set(),
+            "day_clothes must not share params with pajamas",
+        )
+        self.assertEqual(
+            hooded_ids & day_ids, set(),
+            "day_clothes must not share params with pajamas_hooded",
+        )
+
+    def test_outfit_capability_flags_set_for_alexia(self) -> None:
+        # All three outfit capabilities must light up so the
+        # SettingsDrawer can render the four-radio control (auto,
+        # day, pajamas, pajamas_hooded) without a missing option.
+        profile = from_disk(_MIN)
+        self.assertTrue(profile.capabilities.get("has_pajamas", False))
+        self.assertTrue(profile.capabilities.get("has_pajamas_hooded", False))
+        self.assertTrue(profile.capabilities.get("has_day_clothes", False))
+
+    def test_outfit_mutex_lists_other_two_outfits(self) -> None:
+        # Mutex tuples drive the "fade siblings out" envelope logic in
+        # the renderer; each outfit must list the *other two* as its
+        # mutually-exclusive peers so a switch transitions cleanly.
+        profile = from_disk(_MIN)
+        pj = profile.outfits.get("pajamas")
+        hooded = profile.outfits.get("pajamas_hooded")
+        day = profile.outfits.get("day_clothes")
+        assert pj is not None and hooded is not None and day is not None
+        self.assertEqual(
+            sorted(pj.mutex_with), sorted(("day_clothes", "pajamas_hooded")),
+        )
+        self.assertEqual(
+            sorted(hooded.mutex_with), sorted(("day_clothes", "pajamas")),
+        )
+        self.assertEqual(
+            sorted(day.mutex_with), sorted(("pajamas", "pajamas_hooded")),
+        )
 
     def test_cat_tail_param_ids_are_collected_in_order(self) -> None:
         profile = from_disk(_MIN)

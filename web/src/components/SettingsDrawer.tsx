@@ -667,9 +667,26 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                         Outfit
                       </p>
                       <div className="flex flex-col gap-1 rounded-md bg-white/[0.02] px-3 py-2 text-[11px]">
-                        {(["auto", "day", "pajamas"] as const).map((mode) => {
+                        {(
+                          [
+                            "auto",
+                            "day",
+                            "pajamas",
+                            "pajamas_hooded",
+                          ] as const
+                        ).map((mode) => {
                           const supported =
-                            mode !== "pajamas" || (avatar?.capabilities.has_pajamas ?? false);
+                            mode === "auto" ||
+                            mode === "day" ||
+                            (mode === "pajamas" &&
+                              (avatar?.capabilities.has_pajamas ?? false)) ||
+                            (mode === "pajamas_hooded" &&
+                              (avatar?.capabilities.has_pajamas_hooded ?? false));
+                          // Friendlier labels for snake_case modes.
+                          const label =
+                            mode === "pajamas_hooded"
+                              ? "Pajamas (hooded)"
+                              : mode.charAt(0).toUpperCase() + mode.slice(1);
                           return (
                             <label
                               key={mode}
@@ -688,13 +705,14 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                                 disabled={avatarBusy || !avatar || !supported}
                                 className="accent-ink-400"
                               />
-                              <span className="capitalize">{mode}</span>
+                              <span>{label}</span>
                               {mode === "auto" ? (
                                 <span className="text-ink-100/40">
                                   · circadian-driven
                                 </span>
                               ) : null}
-                              {mode === "pajamas" && !supported ? (
+                              {(mode === "pajamas" || mode === "pajamas_hooded") &&
+                              !supported ? (
                                 <span className="text-ink-100/40">
                                   · not supported by current avatar
                                 </span>

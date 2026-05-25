@@ -92,6 +92,7 @@ You are encouraged to add any MCP tool you need to debug a problem. Common examp
 - TTS text processing (`prepare_tts_text` in `app/core/session_text_utils.py`) applies only to the spoken stream, not the chat transcript.
 - SQLite (`data/chat_sessions.db`) is the source of truth; LanceDB (`data/lancedb/`) mirrors `memories`, asynchronously indexes `messages`, and holds chunked uploaded `documents`.
 - Inline tags Aiko emits: `[[reaction:...]]` (mood, drives Live2D expression and TTS prosody) and `[[remember:...]]` / `[[remember:self:...]]` (writes a long-term memory). Both are stripped from the spoken/chat output.
+- Live2D rig (Alexia) parameter quirks — outfit / hood / synonyms — are documented in [`docs/alexia-model-notes.md`](docs/alexia-model-notes.md). **Read it before changing `app/core/avatar_profile.py` or the outfit code paths in `web/src/components/Live2DAvatar.tsx`.**
 - Frontend state lives in `web/src/store.ts` (Zustand). The WebSocket hook (`web/src/hooks/useAssistantSocket.ts`) is the single point that mutates store state from server events.
 
 ## Debugging via logs
