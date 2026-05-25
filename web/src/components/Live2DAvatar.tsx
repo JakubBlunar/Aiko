@@ -311,6 +311,125 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
     };
   }, [manifest.id, manifest.idle_motion_group]);
 
+  // ── 5b. Live2D gaze (Phase 3a — Aiko human-like upgrades) ─────────────
+  //   Drives ``model.focus(x, y)`` every animation frame so the avatar's
+  //   eyes / head track a target point. Three modes selected by current
+  //   state:
+  //     - **idle / speaking**: track the mouse cursor (eased toward
+  //       the centre when the cursor leaves the canvas).
+  //     - **listening (user mid-utterance)**: lock on a "looking at you"
+  //       point biased slightly upward so it reads as eye contact.
+  //     - **thinking (LLM streaming, no TTS yet)**: drift gaze off-axis
+  //       with a slow random wander.
+  //   Tiny micro-saccades (±5 px equivalent in normalised space) are
+  //   layered on so the gaze never feels frozen.
+  useEffect(() => {
+    const container = containerRef.current;
+    const app = appRef.current;
+    if (!container || !app) {
+      return;
+    }
+    // Gaze coordinates in pixi-live2d-display's ``focus`` space are in
+    // [-1, 1] for both axes; (0, 0) is straight ahead.
+    const target = { x: 0, y: 0 };
+    const smoothed = { x: 0, y: 0 };
+    const microSaccade = { x: 0, y: 0 };
+    let lastSaccadeAt = 0;
+    let mouseInside = false;
+    const mouseNorm = { x: 0, y: 0 };
+    let raf = 0;
+
+    const setMouseFromEvent = (e: PointerEvent) => {
+      const rect = container.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) {
+        return;
+      }
+      // Normalise to [-1, 1]. Y is *flipped* because the Live2D focus
+      // space uses up = +1 (screen Y grows downward).
+      mouseNorm.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      mouseNorm.y = -(((e.clientY - rect.top) / rect.height) * 2 - 1);
+      mouseInside = true;
+    };
+    const handleLeave = () => {
+      mouseInside = false;
+    };
+
+    container.addEventListener("pointermove", setMouseFromEvent);
+    container.addEventListener("pointerenter", setMouseFromEvent);
+    container.addEventListener("pointerleave", handleLeave);
+
+    const tick = () => {
+      const model = modelRef.current;
+      if (model) {
+        const state = useAssistantStore.getState();
+        const ts = state.ttsState;
+        const vm = state.voiceMode;
+        const turnInProgress = state.turnInProgress;
+        const isListening = vm === "listening" || vm === "transcribing";
+        const isThinking =
+          (vm === "thinking" || (turnInProgress && ts !== "speaking"));
+
+        if (isListening) {
+          // Lock toward an "attention point": centred X, slight upward
+          // bias so the avatar reads as making eye contact with the
+          // user (typically sitting just below the screen).
+          target.x = 0;
+          target.y = 0.20;
+        } else if (isThinking) {
+          // Slow wander off-axis. Phase it by epoch so multiple
+          // mounts don't end up in lockstep.
+          const t = performance.now() / 1000;
+          target.x = 0.35 * Math.sin(t * 0.6);
+          target.y = 0.18 * Math.cos(t * 0.43) + 0.05;
+        } else if (mouseInside) {
+          // Mouse-follow: clamp to a comfortable range. Live2D's eye
+          // travel saturates near the bounds anyway; staying in
+          // [-0.7, 0.7] keeps the look natural.
+          target.x = Math.max(-0.7, Math.min(0.7, mouseNorm.x));
+          target.y = Math.max(-0.5, Math.min(0.7, mouseNorm.y));
+        } else {
+          // Mouse outside the canvas → ease back toward centre.
+          target.x *= 0.92;
+          target.y *= 0.92;
+        }
+
+        // Micro-saccades every 1.5-3 s so the gaze never freezes.
+        const now = performance.now();
+        if (now - lastSaccadeAt > 1500 + Math.random() * 1500) {
+          lastSaccadeAt = now;
+          microSaccade.x = (Math.random() - 0.5) * 0.10;
+          microSaccade.y = (Math.random() - 0.5) * 0.06;
+        }
+        // Decay the saccade so it's a brief flick, not a sustained offset.
+        microSaccade.x *= 0.92;
+        microSaccade.y *= 0.92;
+
+        // Critically-damped easing toward target + saccade.
+        const fx = target.x + microSaccade.x;
+        const fy = target.y + microSaccade.y;
+        smoothed.x += (fx - smoothed.x) * 0.12;
+        smoothed.y += (fy - smoothed.y) * 0.12;
+        try {
+          (model as unknown as {
+            focus: (x: number, y: number) => void;
+          }).focus(smoothed.x, smoothed.y);
+        } catch {
+          // Some minimal models lack ``ParamAngleX/Y/Z`` parameters; the
+          // library handles that internally but defensively swallow.
+        }
+      }
+      raf = window.requestAnimationFrame(tick);
+    };
+    raf = window.requestAnimationFrame(tick);
+
+    return () => {
+      window.cancelAnimationFrame(raf);
+      container.removeEventListener("pointermove", setMouseFromEvent);
+      container.removeEventListener("pointerenter", setMouseFromEvent);
+      container.removeEventListener("pointerleave", handleLeave);
+    };
+  }, [manifest.id]);
+
   // ── 6. Voice-mode driven listening / thinking expressions (Phase 5a) ──
   //   When the user is talking ("listening" / "transcribing") we softly
   //   apply a thoughtful expression so Aiko looks engaged. When the LLM
@@ -470,7 +589,7 @@ function applyReaction(
   manifest: Persona,
   reaction: string,
 ): void {
-  const expressionName = manifest.reaction_mapping[reaction];
+  const expressionName = resolveReactionExpression(manifest, reaction);
   if (!expressionName) {
     return;
   }
@@ -481,6 +600,57 @@ function applyReaction(
   } catch (err) {
     console.debug("expression() failed", expressionName, err);
   }
+}
+
+// Phase 3b: semantic-neighbour fallback for reactions the persona
+// hasn't mapped explicitly. Mirrors the table in
+// ``app/core/persona_manager.py``. Per-persona mappings stay
+// authoritative; this only fires when the reaction was emitted but
+// has no direct entry.
+const _REACTION_NEIGHBOURS: Record<string, string[]> = {
+  amused:       ["cheerful", "playful", "friendly", "warm", "neutral"],
+  playful:      ["amused", "cheerful", "excited", "friendly", "warm"],
+  enthusiastic: ["excited", "cheerful", "playful", "friendly"],
+  curious:      ["thoughtful", "surprised", "friendly", "neutral"],
+  tender:       ["warm", "gentle", "friendly", "calm", "neutral"],
+  warm:         ["friendly", "gentle", "tender", "cheerful", "neutral"],
+  thoughtful:   ["serious", "calm", "concerned", "neutral"],
+  wistful:      ["sad", "melancholy", "thoughtful", "calm", "gentle"],
+  concerned:    ["serious", "sad", "thoughtful", "neutral"],
+  melancholy:   ["sad", "wistful", "tired", "calm", "neutral"],
+  tired:        ["calm", "melancholy", "neutral", "sad"],
+  frustrated:   ["angry", "concerned", "serious", "neutral"],
+  gentle:       ["warm", "calm", "friendly", "tender", "neutral"],
+  friendly:     ["warm", "cheerful", "neutral", "calm"],
+  calm:         ["neutral", "thoughtful", "gentle", "warm"],
+  serious:      ["thoughtful", "concerned", "neutral"],
+  surprised:    ["excited", "curious", "amused", "neutral"],
+  cheerful:     ["amused", "friendly", "warm", "playful", "neutral"],
+  excited:      ["enthusiastic", "cheerful", "playful", "surprised", "neutral"],
+  sad:          ["melancholy", "wistful", "concerned", "neutral"],
+  angry:        ["frustrated", "serious", "concerned", "neutral"],
+  neutral:      ["calm", "friendly", "warm"],
+};
+
+function resolveReactionExpression(
+  manifest: Persona,
+  reaction: string,
+): string | undefined {
+  if (!reaction) {
+    return undefined;
+  }
+  const direct = manifest.reaction_mapping[reaction];
+  if (direct) {
+    return direct;
+  }
+  const neighbours = _REACTION_NEIGHBOURS[reaction] || [];
+  for (const fallback of neighbours) {
+    const expr = manifest.reaction_mapping[fallback];
+    if (expr) {
+      return expr;
+    }
+  }
+  return undefined;
 }
 
 // Phase 1a: map a backchannel hint to an expression name in the persona.

@@ -56,6 +56,7 @@ class _FakeTurnRunner:
         *,
         on_token=None,
         on_tts_chunk=None,
+        on_earcon=None,
         stop_requested=None,
         resume_user_message_id=None,
     ) -> TurnResult:
@@ -64,6 +65,7 @@ class _FakeTurnRunner:
             "user_text": user_text,
             "on_token": on_token,
             "on_tts_chunk": on_tts_chunk,
+            "on_earcon": on_earcon,
             "stop_requested": stop_requested,
             "resume_user_message_id": resume_user_message_id,
         })
@@ -110,6 +112,8 @@ def _make_controller(
     controller._turn_runner = runner if runner is not None else _FakeTurnRunner()
     controller._merge_buffer = {}
     controller._merge_lock = threading.Lock()
+    controller._last_vocal_tone = None
+    controller._vocal_tone_lock = threading.Lock()
     controller._remember_history = True
     controller._turn_in_progress = False
     controller._compactions_total = 0

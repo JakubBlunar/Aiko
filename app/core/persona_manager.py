@@ -28,19 +28,33 @@ log = logging.getLogger("app.persona_manager")
 
 # ── Constants ───────────────────────────────────────────────────────────
 
-# Reactions Aiko can emit (must stay in sync with the persona prompt).
+# Reactions Aiko can emit. Phase 3b extends the canonical set so all
+# 17 affect-pipeline reactions have a name; previously only 11 were
+# represented here, so reactions like ``wistful`` and ``amused`` had no
+# default mapping and silently fell through to neutral on most personas.
 REACTIONS: tuple[str, ...] = (
     "neutral",
     "cheerful",
     "excited",
+    "enthusiastic",
+    "amused",
+    "playful",
     "surprised",
-    "sad",
-    "angry",
+    "curious",
+    "friendly",
+    "warm",
+    "tender",
+    "thoughtful",
+    "wistful",
     "calm",
     "serious",
-    "friendly",
+    "concerned",
+    "sad",
+    "melancholy",
+    "tired",
     "gentle",
-    "enthusiastic",
+    "angry",
+    "frustrated",
 )
 
 # Synonyms the default-mapping fuzzy match looks for in expression filenames.
@@ -48,15 +62,83 @@ _REACTION_SYNONYMS: dict[str, tuple[str, ...]] = {
     "neutral": ("normal", "default", "neutral", "idle"),
     "cheerful": ("smile", "happy", "joy", "cheer", "cheerful", "grin"),
     "excited": ("excite", "wow", "yay", "shine", "sparkle"),
+    "enthusiastic": ("excite", "shine", "sparkle", "yay", "fun"),
+    "amused": ("smile", "grin", "laugh", "amused", "smirk"),
+    "playful": ("playful", "wink", "tongue", "smirk", "fun"),
     "surprised": ("surprise", "shock", "wow", "gasp"),
-    "sad": ("sad", "cry", "tear", "unhappy", "sob"),
-    "angry": ("angry", "anger", "mad", "rage", "pout"),
+    "curious": ("curious", "wonder", "interest", "head"),
+    "friendly": ("friendly", "smile", "wink", "warm"),
+    "warm": ("warm", "soft", "smile", "blush"),
+    "tender": ("tender", "soft", "blush", "warm"),
+    "thoughtful": ("thoughtful", "thinking", "ponder", "look"),
+    "wistful": ("wistful", "sigh", "soft", "look"),
     "calm": ("calm", "relax", "peace", "soft"),
     "serious": ("serious", "stern", "thinking", "frown"),
-    "friendly": ("friendly", "smile", "wink", "warm"),
+    "concerned": ("concern", "worry", "sad", "frown"),
+    "sad": ("sad", "cry", "tear", "unhappy", "sob"),
+    "melancholy": ("sad", "tear", "down", "blue"),
+    "tired": ("tired", "sleep", "yawn", "weary"),
     "gentle": ("gentle", "soft", "kind", "warm"),
-    "enthusiastic": ("excite", "shine", "sparkle", "yay", "fun"),
+    "angry": ("angry", "anger", "mad", "rage", "pout"),
+    "frustrated": ("frustrated", "annoy", "pout", "angry"),
 }
+
+# Phase 3b: semantic-neighbour fallbacks. Used when a persona's
+# ``reaction_mapping`` does not have an entry for a reaction the
+# affect/cadence pipeline emitted. We walk the candidate list in order
+# and return the first one that *does* have a mapping. Ensures every
+# reaction triggers *some* visual change even on minimal-expression
+# models, instead of dropping silently to the persona default.
+#
+# Per-persona overrides remain authoritative — this only fires when
+# the requested reaction is missing.
+_REACTION_NEIGHBOURS: dict[str, tuple[str, ...]] = {
+    "amused":      ("cheerful", "playful", "friendly", "warm", "neutral"),
+    "playful":     ("amused", "cheerful", "excited", "friendly", "warm"),
+    "enthusiastic": ("excited", "cheerful", "playful", "friendly"),
+    "curious":     ("thoughtful", "surprised", "friendly", "neutral"),
+    "tender":      ("warm", "gentle", "friendly", "calm", "neutral"),
+    "warm":        ("friendly", "gentle", "tender", "cheerful", "neutral"),
+    "thoughtful":  ("serious", "calm", "concerned", "neutral"),
+    "wistful":     ("sad", "melancholy", "thoughtful", "calm", "gentle"),
+    "concerned":   ("serious", "sad", "thoughtful", "neutral"),
+    "melancholy":  ("sad", "wistful", "tired", "calm", "neutral"),
+    "tired":       ("calm", "melancholy", "neutral", "sad"),
+    "frustrated":  ("angry", "concerned", "serious", "neutral"),
+    "gentle":      ("warm", "calm", "friendly", "tender", "neutral"),
+    "friendly":    ("warm", "cheerful", "neutral", "calm"),
+    "calm":        ("neutral", "thoughtful", "gentle", "warm"),
+    "serious":     ("thoughtful", "concerned", "neutral"),
+    "surprised":   ("excited", "curious", "amused", "neutral"),
+    "cheerful":    ("amused", "friendly", "warm", "playful", "neutral"),
+    "excited":     ("enthusiastic", "cheerful", "playful", "surprised", "neutral"),
+    "sad":         ("melancholy", "wistful", "concerned", "neutral"),
+    "angry":       ("frustrated", "serious", "concerned", "neutral"),
+    "neutral":     ("calm", "friendly", "warm"),
+}
+
+
+def resolve_reaction(
+    reaction: str | None,
+    reaction_mapping: dict[str, str],
+) -> str | None:
+    """Phase 3b: pick the best expression name for a reaction.
+
+    Returns the persona's mapping for ``reaction`` if present, else
+    walks ``_REACTION_NEIGHBOURS`` for the closest semantic neighbour
+    that *is* mapped, else ``None``.
+    """
+    if not reaction or not reaction_mapping:
+        return None
+    key = reaction.strip().lower()
+    direct = reaction_mapping.get(key)
+    if direct:
+        return direct
+    for fallback in _REACTION_NEIGHBOURS.get(key, ()):
+        mapped = reaction_mapping.get(fallback)
+        if mapped:
+            return mapped
+    return None
 
 # Hard caps to defang malicious zips.
 _MAX_UNCOMPRESSED_BYTES = 500 * 1024 * 1024   # 500 MB

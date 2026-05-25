@@ -53,6 +53,10 @@ VALID_SOURCE_KINDS: tuple[str, ...] = (
     "reflection",
     "agenda",
     "mixed",
+    # Phase 2a: a "welcome back" opener primed at controller bootstrap
+    # after a long-enough gap. Behaves like ``mixed`` but lets us track
+    # the metric and apply a longer default TTL.
+    "resume",
 )
 
 
@@ -201,6 +205,20 @@ Rules:
 - Output ONLY the sentence. No quotes, no JSON, no prose around it."""
 
 
+_RESUME_PROMPT = """\
+You are Aiko coming back to Jacob after a noticeable gap (hours, not
+minutes). You'll receive a brief recap of what's been on your mind:
+the rolling summary of your last conversation, plus a few callbacks
+or open questions you were sitting with.
+
+Compose ONE short, warm "welcome back" line (≤ 25 words) that picks
+up gently — referencing one specific thread feels human and natural;
+a generic "hi, how are you" does not. First-person, conversational,
+no restart, no greeting boilerplate.
+
+Output ONLY the sentence. No quotes, no JSON, no prose around it."""
+
+
 @dataclass(slots=True)
 class _Candidate:
     kind: str
@@ -276,6 +294,101 @@ class NarrativeWeaver:
             return False
         # If we already have a fresh prepared nudge, don't bother.
         return self._store.get_fresh(user_id) is None
+
+    def prepare_resume_opener(
+        self,
+        user_id: str,
+        *,
+        rolling_summary: str = "",
+        hours_since_last: float | None = None,
+        ttl_seconds: float | None = None,
+        on_prepared: Callable[[PreparedNudge], None] | None = None,
+    ) -> PreparedNudge | None:
+        """Phase 2a: prime a one-shot "welcome back" line.
+
+        Bypasses the normal throttle (a resume opener is a one-time
+        event tied to controller bootstrap, not a periodic refill).
+        Uses :data:`_RESUME_PROMPT` instead of the default weave prompt
+        so the LLM produces a gap-aware line; falls back gracefully
+        when no LLM is available by composing a callback-flavoured
+        sentence from the top inner-life surface. Stores under
+        ``source_kind="resume"`` and a longer default TTL.
+        """
+        ttl = max(60.0, float(ttl_seconds if ttl_seconds is not None else self._ttl))
+        candidates = self._collect_candidates(user_id)
+        chosen = self._weighted_pick(candidates) if candidates else None
+        text: str | None = None
+        if self._ollama is not None:
+            text = self._weave_resume(rolling_summary, chosen, hours_since_last)
+        if not text and chosen is not None:
+            text = _fallback_phrasing(chosen)
+        if not text and rolling_summary:
+            text = _resume_fallback_from_summary(rolling_summary)
+        if not text:
+            return None
+        nudge = self._store.upsert(
+            user_id,
+            text=text,
+            source_kind="resume",
+            source_id=str(chosen.source_id) if chosen is not None else None,
+            ttl_seconds=ttl,
+        )
+        if nudge is None:
+            return None
+        self._stats["completed"] += 1
+        self._stats["from_resume"] = self._stats.get("from_resume", 0) + 1
+        if on_prepared is not None:
+            try:
+                on_prepared(nudge)
+            except Exception:
+                log.debug("on_prepared (resume) raised", exc_info=True)
+        log.info(
+            "resume opener primed (chars=%d gap_h=%s source=%s)",
+            len(text),
+            f"{hours_since_last:.1f}" if hours_since_last is not None else "?",
+            chosen.kind if chosen is not None else "summary_only",
+        )
+        return nudge
+
+    def _weave_resume(
+        self,
+        rolling_summary: str,
+        candidate: "_Candidate | None",
+        hours_since_last: float | None,
+    ) -> str | None:
+        if self._ollama is None:
+            return None
+        try:
+            parts: list[str] = []
+            if hours_since_last is not None:
+                parts.append(f"Hours since last turn: {hours_since_last:.1f}")
+            if rolling_summary:
+                parts.append(
+                    "Rolling summary of last conversation:\n"
+                    + rolling_summary.strip()[:1200]
+                )
+            if candidate is not None:
+                parts.append(
+                    f"Top inner-life thread ({candidate.kind}): "
+                    f"{candidate.text.strip()[:300]}"
+                )
+            user_payload = "\n\n".join(parts) if parts else "(no recent context)"
+            messages = [
+                {"role": "system", "content": _RESUME_PROMPT},
+                {"role": "user", "content": user_payload},
+            ]
+            raw = self._ollama.chat(
+                messages,
+                options={
+                    "temperature": 0.55,
+                    "num_predict": self._max_tokens,
+                },
+                model=self._model,
+            )
+        except Exception:
+            log.debug("resume opener LLM call failed", exc_info=True)
+            return None
+        return _clean_weave_output(raw) or None
 
     def maybe_run(
         self,
@@ -432,6 +545,18 @@ _FALLBACK_FORMATS: dict[str, tuple[str, ...]] = {
         "How's {x} going?",
     ),
 }
+
+
+def _resume_fallback_from_summary(rolling_summary: str) -> str | None:
+    """Compose a soft "welcome back" line from the rolling summary
+    when no LLM and no inner-life candidate are available. Pulls the
+    first ~80 chars of the summary and glues a generic opener.
+    """
+    text = (rolling_summary or "").strip()
+    if not text:
+        return None
+    snippet = text[:80].rsplit(" ", 1)[0].rstrip(",;:")
+    return f"Hey — I've been sitting with what we were saying about {snippet}…"
 
 
 def _fallback_phrasing(candidate: _Candidate) -> str | None:

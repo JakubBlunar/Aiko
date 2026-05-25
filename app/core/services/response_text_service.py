@@ -153,6 +153,66 @@ _REMEMBER_OPEN_TAIL_PATTERN = re.compile(
     r"\[\[remember:[^\]]*\Z",
     flags=re.IGNORECASE,
 )
+
+# Phase 3c: self-correction grammar.
+#   [[correct]]old text[[/correct]]new text
+# Behaviour:
+#   - TTS says ONLY the ``new text`` (the old text was a slip).
+#   - Chat UI keeps the structured marker so it can render the old text
+#     with strikethrough and the new text as a replacement (the
+#     stripped-down text-only fallback also keeps just the new text).
+#   - A ``tsk`` earcon plays at the correction boundary (handled by
+#     :class:`TurnRunner` on top of the existing earcon plumbing).
+_CORRECTION_OPEN = "[[correct]]"
+_CORRECTION_CLOSE = "[[/correct]]"
+_CORRECTION_BLOCK_PATTERN = re.compile(
+    r"\[\[correct\]\]([\s\S]*?)\[\[/correct\]\]",
+    flags=re.IGNORECASE,
+)
+# Matches an unclosed [[correct]]... at end of string. Used by
+# :func:`safe_visible_prefix` to hold back the in-progress correction.
+_CORRECTION_OPEN_TAIL_PATTERN = re.compile(
+    r"\[\[correct\]\][\s\S]*\Z",
+    flags=re.IGNORECASE,
+)
+
+
+def extract_corrections(text: str) -> list[tuple[str, int]]:
+    """Return ``(old_text, end_offset)`` pairs for every fully-formed
+    ``[[correct]]old[[/correct]]`` block in ``text``. ``end_offset`` is
+    the character position **just after** ``[[/correct]]`` in the
+    original string — useful for splicing in a ``tsk`` earcon at the
+    boundary.
+    """
+    source = str(text or "")
+    out: list[tuple[str, int]] = []
+    for match in _CORRECTION_BLOCK_PATTERN.finditer(source):
+        out.append((match.group(1), match.end()))
+    return out
+
+
+def strip_correction_for_tts(text: str) -> str:
+    """Drop the ``old`` text from every correction block so TTS only
+    speaks the corrected version. Surrounding whitespace is preserved
+    so we don't merge two sentences accidentally.
+    """
+    source = str(text or "")
+    if not source:
+        return source
+    return _CORRECTION_BLOCK_PATTERN.sub("", source)
+
+# Phase 1c: stage-direction earcons. ``[[laugh]]`` / ``[[sigh]]`` etc.
+# are stripped from chat text and surfaced as side-channel markers
+# routed to ``EarconPlayer``. ``[[tsk]]`` is reserved for Phase 3c
+# (self-correction) but lives in the same grammar so we don't have
+# to re-thread the parser later.
+STAGE_DIRECTION_KINDS: tuple[str, ...] = (
+    "laugh", "sigh", "gasp", "hum", "tsk",
+)
+_STAGE_DIRECTION_PATTERN = re.compile(
+    r"\[\[(" + "|".join(STAGE_DIRECTION_KINDS) + r")\]\]",
+    flags=re.IGNORECASE,
+)
 # Phase 4a: [[agenda:goal]] / [[agenda:0.7:goal]] — extracted by
 # AgendaStore in SessionController and stripped from user-visible text.
 _AGENDA_TAG_PATTERN = re.compile(
@@ -187,6 +247,14 @@ def strip_all_meta_tags(text: str) -> str:
     s = str(text or "")
     if not s:
         return s
+    # Phase 3c: drop ``[[correct]]old[[/correct]]`` blocks entirely so
+    # only the corrected text survives in plain-text views (TTS, DB
+    # transcript). The chat UI receives the raw text upstream and is
+    # expected to render strikethrough on the ``old`` span itself.
+    s = _CORRECTION_BLOCK_PATTERN.sub("", s)
+    # Unclosed correction opener at end of stream: hide the in-progress
+    # ``old`` text until the close arrives.
+    s = _CORRECTION_OPEN_TAIL_PATTERN.sub("", s)
     # Drop fully-formed detail blocks first (greedy on the *content*).
     s = _DETAIL_BLOCK_PATTERN.sub("", s)
     # Drop an unclosed detail opener that runs off the end of the string.
@@ -200,11 +268,59 @@ def strip_all_meta_tags(text: str) -> str:
     # Phase 4a: same treatment for [[agenda:...]].
     s = _AGENDA_TAG_PATTERN.sub("", s)
     s = _AGENDA_OPEN_TAIL_PATTERN.sub("", s)
+    # Phase 1c: stage-direction earcons are stripped from display text;
+    # the audio side-channel pulls them via :func:`extract_stage_directions`
+    # before this stripping runs. Stripping here keeps the chat
+    # transcript clean even if the side-channel was skipped.
+    s = _STAGE_DIRECTION_PATTERN.sub("", s)
     # Strip the spoken/reaction markers (content kept for spoken).
     for tag in (_SPOKEN_OPEN, _SPOKEN_CLOSE):
         s = re.sub(re.escape(tag), "", s, flags=re.IGNORECASE)
     s = _REACTION_TAG_PATTERN.sub("", s)
     return s
+
+
+def split_text_with_stage_directions(text: str) -> list[tuple[str, str]]:
+    """Split ``text`` into a sequence of ``("text", chunk)`` /
+    ``("earcon", kind)`` pairs preserving order.
+
+    Used by :class:`TtsQueue` to interleave short audio cues (laughs,
+    sighs, gasps) into spoken playback. The text chunks still carry
+    everything else (reaction tags, etc.); the caller is expected to
+    run :func:`strip_all_meta_tags` on them before synthesis.
+
+    Example::
+
+        >>> split_text_with_stage_directions("Yeah [[laugh]] right.")
+        [("text", "Yeah "), ("earcon", "laugh"), ("text", " right.")]
+    """
+    source = str(text or "")
+    if not source:
+        return []
+    pieces: list[tuple[str, str]] = []
+    cursor = 0
+    for match in _STAGE_DIRECTION_PATTERN.finditer(source):
+        if match.start() > cursor:
+            pieces.append(("text", source[cursor : match.start()]))
+        pieces.append(("earcon", match.group(1).strip().lower()))
+        cursor = match.end()
+    if cursor < len(source):
+        pieces.append(("text", source[cursor:]))
+    return pieces
+
+
+def extract_stage_directions(text: str) -> list[tuple[str, int]]:
+    """Return ``(kind, char_position)`` markers as they appear in
+    ``text``. Position is the offset *into the original string* (not the
+    cleaned one) so callers can choose to splice them in pre- or
+    post-strip. Most callers should prefer
+    :func:`split_text_with_stage_directions`.
+    """
+    source = str(text or "")
+    return [
+        (m.group(1).strip().lower(), m.start())
+        for m in _STAGE_DIRECTION_PATTERN.finditer(source)
+    ]
 
 
 # Tokens that mark the start of a meta block but might not yet be complete in
@@ -217,6 +333,13 @@ _META_OPENERS = (
     "[[detail]]",
     "[[/detail]]",
     "[[remember:",
+    "[[laugh]]",
+    "[[sigh]]",
+    "[[gasp]]",
+    "[[hum]]",
+    "[[tsk]]",
+    "[[correct]]",
+    "[[/correct]]",
 )
 
 

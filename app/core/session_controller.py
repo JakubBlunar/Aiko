@@ -221,6 +221,15 @@ class SessionController:
         self._merge_buffer: dict[str, _MergeBuffer] = {}
         self._merge_lock = threading.Lock()
 
+        # ── Vocal tone (Phase 1a) ────────────────────────────────────────
+        # The most recent vocal-tone signal produced by ``analyse_wav``
+        # in ``process_live_capture``. Read by the prompt provider and by
+        # ``_post_turn_inner_life`` so AffectUpdater can react. Reset to
+        # ``None`` after the turn closes so a typed turn or a long pause
+        # doesn't replay stale paralinguistics.
+        self._last_vocal_tone: Any = None
+        self._vocal_tone_lock = threading.Lock()
+
         # ── Long-term memory (cross-session) ─────────────────────────────
         self._memory_settings = settings.memory
         self._embedder: Embedder | None = None
@@ -333,10 +342,18 @@ class SessionController:
         self._tts_engine = self._build_tts_service(
             settings, output_device=self._output_device,
         )
+        # Earcon player must be created before TtsQueue so the queue can
+        # use it for stage-direction splicing (Phase 1c). Construction
+        # is cheap (no I/O until the first tone is requested).
+        self._earcons = EarconPlayer(
+            enabled=getattr(settings.audio, "earcons_enabled", True),
+            output_device=self._output_device,
+        )
         self._tts = TtsQueue(
             self._tts_engine,
             enabled=bool(settings.tts.enabled),
             state_listener=self._on_tts_state,
+            earcon_player=self._earcons,
         )
         # Phase 5b: ProsodyDispatcher wraps tts.enqueue with per-sentence
         # cadence. Context provider is wired below once affect/circadian
@@ -356,10 +373,6 @@ class SessionController:
         # ── Microphone + STT ─────────────────────────────────────────────
         self._microphone = MicrophoneCapture(settings.audio)
         self._microphone_device = settings.audio.microphone_device
-        self._earcons = EarconPlayer(
-            enabled=getattr(settings.audio, "earcons_enabled", True),
-            output_device=self._output_device,
-        )
         self._realtime_stt = RealtimeSttService(settings.stt, settings.audio)
 
         # ── Prompt + workers + runner ────────────────────────────────────
@@ -438,6 +451,108 @@ class SessionController:
         except Exception:
             log.warning("ReflectionWorker init failed", exc_info=True)
             self._reflection_worker = None
+
+        # Phase 2b: DreamWorker — bootstrap-time reflection that runs
+        # once per app start when the gap since the last assistant turn
+        # exceeds a threshold. Writes a kind=reflection memory tagged
+        # ``[dream]`` so the resume opener / NarrativeWeaver can prefer
+        # it as a candidate when seeding the welcome-back line.
+        self._dream_worker = None
+        if bool(getattr(settings.agent, "dream_worker_enabled", True)):
+            try:
+                from app.core.dream_worker import DreamWorker
+
+                self._dream_worker = DreamWorker(
+                    ollama=self._ollama,
+                    memory_store=self._memory_store,
+                    embedder=self._embedder,
+                    model=self._effective_chat_model,
+                    chat_db=self._chat_db,
+                    min_hours_since_last=float(
+                        getattr(
+                            settings.agent,
+                            "dream_worker_min_hours_since_last", 6.0,
+                        ),
+                    ),
+                )
+            except Exception:
+                log.warning("DreamWorker init failed", exc_info=True)
+                self._dream_worker = None
+
+        # Phase 2c: CatchphraseMiner — speaking-window job that mines
+        # recurring 3-7-word phrases across recent user + assistant
+        # turns. Surfaced via the catchphrase inner-life block.
+        self._catchphrase_miner = None
+        if bool(getattr(settings.agent, "catchphrase_miner_enabled", True)):
+            try:
+                from app.core.catchphrase_miner import CatchphraseMiner
+
+                self._catchphrase_miner = CatchphraseMiner(
+                    chat_db=self._chat_db,
+                    memory_store=self._memory_store,
+                    embedder=self._embedder,
+                    min_seconds_between=float(
+                        getattr(
+                            settings.agent,
+                            "catchphrase_miner_min_seconds_between", 600.0,
+                        ),
+                    ),
+                    min_new_user_turns=int(
+                        getattr(
+                            settings.agent,
+                            "catchphrase_miner_min_new_user_turns", 6,
+                        ),
+                    ),
+                    min_total_count=int(
+                        getattr(
+                            settings.agent,
+                            "catchphrase_miner_min_total_count", 3,
+                        ),
+                    ),
+                )
+            except Exception:
+                log.warning("CatchphraseMiner init failed", exc_info=True)
+                self._catchphrase_miner = None
+
+        # Phase 4b: ambient-noise tracker. EMAs the mic floor during
+        # silence-only chunks so the prompt + Pocket-TTS know whether
+        # the room is quiet, hums, or is loudly noisy. Optional: the
+        # capture path is a no-op if the tracker is None.
+        self._ambient_noise = None
+        try:
+            from app.core.ambient_noise import AmbientNoiseTracker
+
+            self._ambient_noise = AmbientNoiseTracker()
+        except Exception:
+            log.warning("AmbientNoiseTracker init failed", exc_info=True)
+            self._ambient_noise = None
+
+        # Phase 4c: CuriosityWorker — emits a small "next-turn"
+        # follow-up question into the open_question store when the
+        # current arc is shallow and the user hasn't been asking much.
+        self._curiosity_worker = None
+        if bool(getattr(settings.agent, "curiosity_worker_enabled", True)):
+            try:
+                from app.core.curiosity_worker import CuriosityWorker
+
+                self._curiosity_worker = CuriosityWorker(
+                    ollama=self._ollama,
+                    memory_store=self._memory_store,
+                    embedder=self._embedder,
+                    model=self._effective_chat_model,
+                    min_turns_between=int(
+                        getattr(settings.agent, "curiosity_worker_min_turns_between", 3),
+                    ),
+                    min_seconds_between=float(
+                        getattr(settings.agent, "curiosity_worker_min_seconds_between", 60.0),
+                    ),
+                    max_user_word_count=int(
+                        getattr(settings.agent, "curiosity_worker_max_user_word_count", 8),
+                    ),
+                )
+            except Exception:
+                log.warning("CuriosityWorker init failed", exc_info=True)
+                self._curiosity_worker = None
 
         # Phase 3b: relationship tracker (turn / session counters + phase
         # + milestones). Hot-path safe: a single SQLite row per user.
@@ -606,6 +721,10 @@ class SessionController:
             relationship=self._render_relationship_block,
             agenda=self._render_agenda_block,
             arc=self._render_arc_block,
+            vocal_tone=self._render_vocal_tone_block,
+            catchphrase=self._render_catchphrase_block,
+            petname=self._render_petname_block,
+            ambient_noise=self._render_ambient_noise_block,
         )
         self._prompt_assembler.set_pinned_self_memories_provider(
             self._top_pinned_self_memories,
@@ -832,6 +951,20 @@ class SessionController:
             except Exception:
                 log.warning("Failed to start embedded MCP server", exc_info=True)
 
+        # ── Phase 2a + 2b: resume opener + dream worker ─────────────────
+        # Both ride the listening-window executor so init never blocks
+        # on an LLM round-trip. The dream pass writes a salience-boosted
+        # ``reflection`` memory; the resume pass then has a fresher
+        # candidate to weave when it primes the welcome-back line.
+        try:
+            self._maybe_schedule_dream_pass()
+        except Exception:
+            log.debug("dream pass schedule failed", exc_info=True)
+        try:
+            self._maybe_schedule_resume_opener()
+        except Exception:
+            log.debug("resume opener schedule failed", exc_info=True)
+
     # ── State ─────────────────────────────────────────────────────────
 
     @property
@@ -849,6 +982,8 @@ class SessionController:
         # Drop any pending voice merge buffer; the new session starts
         # without an in-flight phrase A waiting for a continuation.
         self._clear_merge_buffer()
+        with self._vocal_tone_lock:
+            self._last_vocal_tone = None
         self._session_id = session_id
 
     def new_session(self) -> str:
@@ -1208,6 +1343,7 @@ class SessionController:
             enabled=bool(self._settings.tts.enabled),
             state_listener=self._on_tts_state,
             amplitude_listener=self._on_tts_amplitude,
+            earcon_player=self._earcons,
         )
         # Phase 5b: re-bind the ProsodyDispatcher to the new queue.
         prosody = getattr(self, "_prosody", None)
@@ -1705,18 +1841,29 @@ class SessionController:
                 )
         else:
             # Typed turn: drop any stale buffer that might have been left
-            # by a prior live phrase that hasn't completed cleanly.
+            # by a prior live phrase that hasn't completed cleanly. Also
+            # clear the vocal-tone snapshot — paralinguistics from the
+            # previous voice phrase don't apply to a typed message.
             self._clear_merge_buffer(merge_key)
+            with self._vocal_tone_lock:
+                self._last_vocal_tone = None
 
         self._turn_in_progress = True
         t0 = time.perf_counter()
         try:
             tts_chunk_cb = None
+            on_earcon_cb = None
             if bool(self._settings.tts.enabled):
                 prosody = getattr(self, "_prosody", None)
                 tts_chunk_cb = (
                     prosody.dispatch if prosody is not None else self._tts.enqueue
                 )
+                # Phase 1c: route stage-direction earcons (``[[laugh]]``,
+                # ``[[sigh]]`` etc.) into the same TTS queue so they
+                # play *between* spoken chunks at the right moment.
+                tts_queue = getattr(self, "_tts", None)
+                if tts_queue is not None and hasattr(tts_queue, "enqueue_earcon"):
+                    on_earcon_cb = tts_queue.enqueue_earcon
 
             wrapped_tts_cb = self._wrap_tts_chunk_for_merge(
                 tts_chunk_cb, merge_key,
@@ -1727,6 +1874,7 @@ class SessionController:
                 cleaned,
                 on_token=on_token,
                 on_tts_chunk=wrapped_tts_cb,
+                on_earcon=on_earcon_cb,
                 stop_requested=stop_requested,
                 resume_user_message_id=user_message_id,
             )
@@ -1825,6 +1973,228 @@ class SessionController:
             log.debug("affect block render failed", exc_info=True)
             return ""
 
+    def _render_vocal_tone_block(self) -> str:
+        """Phase 1a: per-turn paralinguistic cue from the captured WAV.
+
+        Returns an empty string when no live capture has happened yet
+        this turn or when the analyser couldn't get a confident estimate
+        (very short utterance, silence, missing audio dependencies). The
+        snapshot is left in place after the turn so an immediate retry
+        path can still see it; it's cleared explicitly when a fresh
+        live phrase commits or by ``_clear_vocal_tone_after_turn``.
+        """
+        try:
+            with self._vocal_tone_lock:
+                tone = self._last_vocal_tone
+            if tone is None:
+                return ""
+            return tone.to_prompt_line()
+        except Exception:
+            log.debug("vocal tone block render failed", exc_info=True)
+            return ""
+
+    def _render_catchphrase_block(self) -> str:
+        """Phase 2c: "Aiko's running jokes with Jacob" inner-life block.
+
+        Hot-path mirror read; no LLM. Surfaces up to 3 catchphrase
+        memories sorted by salience so the LLM keeps using the top
+        few naturally.
+        """
+        store = getattr(self, "_memory_store", None)
+        if store is None:
+            return ""
+        try:
+            top = store.list_top(limit=24)
+        except Exception:
+            return ""
+        phrases: list[str] = []
+        for mem in top:
+            if (mem.kind or "").lower() != "catchphrase":
+                continue
+            content = (mem.content or "").strip()
+            if not content:
+                continue
+            phrases.append(content)
+            if len(phrases) >= 3:
+                break
+        if not phrases:
+            return ""
+        bullets = "\n".join(f"- {p}" for p in phrases)
+        return "Aiko's running jokes with Jacob:\n" + bullets
+
+    # ── Phase 2a + 2b: bootstrap-time inner-life ────────────────────────
+
+    def _maybe_schedule_dream_pass(self) -> None:
+        """Bootstrap-time check: when the gap since the last assistant
+        message exceeds ``dream_worker_min_hours_since_last`` and we
+        have an LLM + embedder + memory store, schedule a one-shot
+        :class:`DreamWorker.maybe_run` job on the listening-window
+        executor. Runs *before* the resume opener so the resume weaver
+        can pick up the freshly-written dream memory as a candidate.
+        """
+        worker = getattr(self, "_dream_worker", None)
+        memory = getattr(self, "_memory_store", None)
+        executor = getattr(self, "_listening_window_executor", None)
+        if worker is None or memory is None:
+            return
+        threshold = float(
+            getattr(
+                self._settings.agent,
+                "dream_worker_min_hours_since_last",
+                6.0,
+            ),
+        )
+        if threshold <= 0.0:
+            return
+        gap_h = self._last_assistant_age_hours()
+        if gap_h is None or gap_h < threshold:
+            return
+
+        def _job() -> None:
+            try:
+                rolling = ""
+                try:
+                    row = self._chat_db.get_latest_summary(self.session_key)
+                    rolling = (row.summary if row is not None else "") or ""
+                except Exception:
+                    rolling = ""
+                callbacks = self._top_inner_life_contents("callback", limit=3)
+                self_memories = self._top_inner_life_contents("self", limit=3)
+                affect = None
+                try:
+                    affect = self._affect_store.get(self._user_id)
+                except Exception:
+                    affect = None
+                worker.maybe_run(
+                    user_id=self._user_id,
+                    session_key=self.session_key,
+                    hours_since_last=gap_h,
+                    rolling_summary=rolling,
+                    recent_callbacks=callbacks,
+                    recent_self_memories=self_memories,
+                    affect=affect,
+                )
+            except Exception:
+                log.debug("dream worker job failed", exc_info=True)
+
+        try:
+            if executor is not None:
+                executor.submit(_job)
+            else:
+                _job()
+        except Exception:
+            log.debug("dream worker submit failed", exc_info=True)
+
+    def _top_inner_life_contents(
+        self, kind: str, *, limit: int = 3,
+    ) -> list[str]:
+        """Return up to ``limit`` content strings of the top-salience
+        memories of the requested kind. Used by the dream pass to seed
+        the prompt with recent threads / self-thoughts.
+        """
+        store = getattr(self, "_memory_store", None)
+        if store is None:
+            return []
+        try:
+            top = store.list_top(limit=max(limit * 4, 12))
+        except Exception:
+            return []
+        out: list[str] = []
+        for mem in top:
+            if (mem.kind or "").lower() != kind:
+                continue
+            content = (mem.content or "").strip()
+            if not content:
+                continue
+            out.append(content)
+            if len(out) >= limit:
+                break
+        return out
+
+    def _last_assistant_age_hours(self) -> float | None:
+        """Return how many hours ago the last assistant message was
+        written, or ``None`` when there's no history at all (so the
+        caller can skip the resume opener for fresh installs)."""
+        try:
+            messages = self._chat_db.get_messages(self.session_key)
+        except Exception:
+            return None
+        last_assistant_at: str | None = None
+        for row in reversed(messages):
+            if (row.role or "").lower() == "assistant":
+                last_assistant_at = getattr(row, "created_at", None)
+                break
+        if not last_assistant_at:
+            return None
+        try:
+            from datetime import datetime, timezone
+
+            ts = datetime.fromisoformat(
+                str(last_assistant_at).replace("Z", "+00:00"),
+            )
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
+            return max(0.0, (now - ts).total_seconds() / 3600.0)
+        except Exception:
+            return None
+
+    def _maybe_schedule_resume_opener(self) -> None:
+        """Bootstrap-time check: when the gap since the last assistant
+        message exceeds ``resume_opener_min_hours`` and we have a
+        weaver + nudge store, schedule a one-shot resume-opener job
+        on the listening-window executor.
+        """
+        weaver = getattr(self, "_narrative_weaver", None)
+        store = getattr(self, "_prepared_nudge_store", None)
+        executor = getattr(self, "_listening_window_executor", None)
+        if weaver is None or store is None:
+            return
+        threshold = float(
+            getattr(self._settings.agent, "resume_opener_min_hours", 4.0),
+        )
+        if threshold <= 0.0:
+            return
+        gap_h = self._last_assistant_age_hours()
+        if gap_h is None or gap_h < threshold:
+            return
+        # Don't replace a fresh prepared nudge that's already there
+        # (e.g. one the speaking-window weaver primed yesterday).
+        existing = store.get_fresh(self._user_id)
+        if existing is not None and existing.source_kind == "resume":
+            return
+
+        ttl = float(
+            getattr(self._settings.agent, "resume_opener_ttl_seconds", 1800.0),
+        )
+
+        def _job() -> None:
+            try:
+                rolling = ""
+                try:
+                    row = self._chat_db.get_latest_summary(self.session_key)
+                    rolling = (row.summary if row is not None else "") or ""
+                except Exception:
+                    rolling = ""
+                weaver.prepare_resume_opener(
+                    self._user_id,
+                    rolling_summary=rolling,
+                    hours_since_last=gap_h,
+                    ttl_seconds=ttl,
+                )
+            except Exception:
+                log.debug("resume opener job failed", exc_info=True)
+
+        try:
+            if executor is not None:
+                executor.submit(_job)
+            else:
+                # Fallback: run inline. Only happens when the listening
+                # executor failed to spin up (very rare).
+                _job()
+        except Exception:
+            log.debug("resume opener submit failed", exc_info=True)
+
     def _render_circadian_block(self) -> str:
         """Hot-path: pure function over the current local time."""
         try:
@@ -1856,6 +2226,15 @@ class SessionController:
             ctx.circadian_drowsy = bool(getattr(cstate, "drowsy", False))
         except Exception:
             log.debug("cadence circadian lookup failed", exc_info=True)
+        # Phase 4b: ambient-noise speed multiplier. Default 1.0 (quiet
+        # room); the EMA tracker returns a slightly lower value when
+        # the room is loud so spoken cadence slows a hair.
+        tracker = getattr(self, "_ambient_noise", None)
+        if tracker is not None:
+            try:
+                ctx.ambient_noise_speed = float(tracker.tts_speed_multiplier())
+            except Exception:
+                log.debug("cadence ambient-noise lookup failed", exc_info=True)
         return ctx
 
     def _render_user_profile_block(self) -> str:
@@ -1889,6 +2268,50 @@ class SessionController:
             return tracker.ambient_line(self._user_id)
         except Exception:
             log.debug("relationship block render failed", exc_info=True)
+            return ""
+
+    def _render_ambient_noise_block(self) -> str:
+        """Phase 4b: render the ambient-noise prompt cue (empty if quiet)."""
+        tracker = getattr(self, "_ambient_noise", None)
+        if tracker is None:
+            return ""
+        try:
+            return tracker.prompt_block()
+        except Exception:
+            log.debug("ambient noise block render failed", exc_info=True)
+            return ""
+
+    def _on_mic_silence_level(self, level: float) -> None:
+        """Phase 4b: forwarded from :class:`MicrophoneCapture` for every
+        capture chunk classified as silence (no VAD speech, level under
+        threshold). Folds into the EMA tracker; safe to call from any
+        thread.
+        """
+        tracker = getattr(self, "_ambient_noise", None)
+        if tracker is None:
+            return
+        try:
+            tracker.observe(float(level))
+        except Exception:
+            log.debug("ambient noise observe failed", exc_info=True)
+
+    def _render_petname_block(self) -> str:
+        """Phase 2d: address-style cue keyed off the current relationship
+        phase. Empty in the ``new`` phase because the persona already
+        covers introductions; non-empty after that.
+        """
+        tracker = getattr(self, "_relationship_tracker", None)
+        if tracker is None:
+            return ""
+        try:
+            from datetime import datetime, timezone
+
+            from app.core.relationship import render_petname_block
+
+            state = tracker.get(self._user_id)
+            return render_petname_block(state, now=datetime.now(timezone.utc))
+        except Exception:
+            log.debug("petname block render failed", exc_info=True)
             return ""
 
     def _render_agenda_block(self) -> str:
@@ -2328,6 +2751,94 @@ class SessionController:
         except Exception:
             log.debug("relationship pulse submit failed", exc_info=True)
 
+    def _maybe_schedule_curiosity(
+        self,
+        *,
+        user_text: str,
+        assistant_text: str,
+    ) -> None:
+        """Phase 4c: enqueue a curiosity-follow-up pass.
+
+        Mid-priority (75) so it lands between agenda (lower) and arc
+        (higher). Internally throttled to ``min_turns_between`` /
+        ``min_seconds_between`` and skips automatically when the arc
+        isn't shallow.
+        """
+        worker = getattr(self, "_curiosity_worker", None)
+        if worker is None:
+            return
+        store = getattr(self, "_arc_store", None)
+        arc_label = "casual_check_in"
+        if store is not None:
+            try:
+                state = store.get_or_default(self._user_id)
+                arc_label = getattr(state, "arc", arc_label) or arc_label
+            except Exception:
+                log.debug("curiosity arc lookup failed", exc_info=True)
+        session_key = self.session_key
+        user_snap = (user_text or "")[:1000]
+        asst_snap = (assistant_text or "")[:1000]
+
+        def _job(stop_flag: Any) -> None:
+            if stop_flag is not None and stop_flag.is_set():
+                return
+            try:
+                worker.maybe_run(
+                    session_key=session_key,
+                    user_text=user_snap,
+                    assistant_text=asst_snap,
+                    arc_label=arc_label,
+                    on_memory_added=self._notify_memory_added,
+                )
+            except Exception:
+                log.debug("curiosity worker job raised", exc_info=True)
+
+        try:
+            from app.core.speaking_window_scheduler import ScheduledJob
+
+            self._scheduler.submit(ScheduledJob(
+                name="curiosity",
+                priority=75,
+                estimated_seconds=2.5,
+                callable=_job,
+                dedupe_key="curiosity",
+            ))
+        except Exception:
+            log.debug("curiosity worker submit failed", exc_info=True)
+
+    def _maybe_schedule_catchphrase_miner(self) -> None:
+        """Phase 2c: enqueue the recurring-phrase miner.
+
+        Low-priority (90) so it lands after the more reactive workers
+        (reflection, narrative weaver). Internally throttled to one
+        run per ``catchphrase_miner_min_seconds_between`` window.
+        """
+        miner = getattr(self, "_catchphrase_miner", None)
+        if miner is None:
+            return
+        session_key = self.session_key
+
+        def _job(stop_flag: Any) -> None:
+            if stop_flag is not None and stop_flag.is_set():
+                return
+            try:
+                miner.maybe_run(session_key=session_key)
+            except Exception:
+                log.debug("catchphrase miner job raised", exc_info=True)
+
+        try:
+            from app.core.speaking_window_scheduler import ScheduledJob
+
+            self._scheduler.submit(ScheduledJob(
+                name="catchphrase_miner",
+                priority=90,
+                estimated_seconds=2.5,
+                callable=_job,
+                dedupe_key="catchphrase_miner",
+            ))
+        except Exception:
+            log.debug("catchphrase miner submit failed", exc_info=True)
+
     def _lookup_prefetched_rag_block(self, user_text: str) -> str | None:
         """Phase 1b: PromptAssembler hook into the speculative pre-fetcher.
 
@@ -2550,10 +3061,13 @@ class SessionController:
             log.debug("affect snapshot failed", exc_info=True)
             affect_before = None
         try:
+            with self._vocal_tone_lock:
+                tone = self._last_vocal_tone
             state = self._affect_updater.apply_turn(
                 self._user_id,
                 reaction=reaction,
                 user_text=user_text,
+                user_tone=tone,
             )
         except Exception:
             log.debug("affect updater failed", exc_info=True)
@@ -2714,6 +3228,19 @@ class SessionController:
             self._maybe_schedule_relationship_pulse()
         except Exception:
             log.debug("relationship pulse schedule failed", exc_info=True)
+        # Phase 2c (Aiko human-like upgrades): mine recurring phrases.
+        try:
+            self._maybe_schedule_catchphrase_miner()
+        except Exception:
+            log.debug("catchphrase miner schedule failed", exc_info=True)
+        # Phase 4c: small follow-up question on shallow arcs.
+        try:
+            self._maybe_schedule_curiosity(
+                user_text=user_text,
+                assistant_text=assistant_text,
+            )
+        except Exception:
+            log.debug("curiosity worker schedule failed", exc_info=True)
 
     # ── Voice capture ────────────────────────────────────────────────
 
@@ -2975,6 +3502,7 @@ class SessionController:
                 stop_requested=stop_requested,
                 on_speech_start=_on_speech_start,
                 on_audio_level=on_audio_level,
+                on_silence_level=self._on_mic_silence_level,
                 on_chunk=_on_chunk if wants_partial else None,
                 endpoint_check=_endpoint_check if endpointing_cfg.enabled else None,
             )
@@ -3058,6 +3586,26 @@ class SessionController:
                 self.feed_stt_partial(last_partial, final=True)
             except Exception:
                 log.debug("final feed_stt_partial failed", exc_info=True)
+        # Phase 1a: vocal-tone analysis. Runs before Whisper so the
+        # ~3-5 ms FFT/RMS pass piggybacks on the same I/O cache and
+        # the result is available for the prompt builder by the time
+        # ``chat_once_streaming`` runs. Failures are swallowed — the
+        # block provider just returns "" and nothing else cares.
+        try:
+            from app.core.vocal_tone import analyse_wav
+
+            tone = analyse_wav(wav_path)
+            with self._vocal_tone_lock:
+                self._last_vocal_tone = tone
+            if tone.confident:
+                log.info(
+                    "vocal tone: energy=%s pitch=%s pace=%s arousal_hint=%+.2f",
+                    tone.energy, tone.pitch, tone.pace, tone.arousal_hint,
+                )
+        except Exception:
+            log.debug("vocal tone analysis failed", exc_info=True)
+            with self._vocal_tone_lock:
+                self._last_vocal_tone = None
         try:
             if on_generation_status:
                 on_generation_status("transcribing")

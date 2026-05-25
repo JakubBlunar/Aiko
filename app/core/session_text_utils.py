@@ -119,6 +119,16 @@ def prepare_tts_text(text: str) -> str:
     cleaned = re.sub(r"\*(.+?)\*", r"\1", cleaned)
     cleaned = re.sub(r"__(.+?)__", r"\1", cleaned)
     cleaned = re.sub(r"_(.+?)_", r"\1", cleaned)
+    # Phase 3c: drop ``[[correct]]old[[/correct]]`` blocks entirely so
+    # TTS only speaks the corrected text (the ``new`` half lives
+    # *outside* the block). Done before the generic ``[[...]]`` strip
+    # below so the inner ``old`` text doesn't slip through.
+    cleaned = re.sub(
+        r"\[\[correct\]\][\s\S]*?\[\[/correct\]\]",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
     # Remove any remaining [[...]] tags (reaction, spoken, detail, etc.)
     cleaned = re.sub(r"\[\[[^\]]*\]\]", "", cleaned)
     # Remove brackets

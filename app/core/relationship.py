@@ -287,6 +287,47 @@ _PHASE_AMBIENT_LINES: dict[str, str] = {
 }
 
 
+# Phase 2d: address-style cues per relationship phase. The block is a
+# single short hint at where on the formal-to-affectionate spectrum
+# Aiko should sit when she names / addresses Jacob. The LLM combines
+# this with persona + arc to land on a natural address style for the
+# turn (no name, "Jacob", a softening word, or a casual nickname).
+_PHASE_PETNAME_LINES: dict[str, str] = {
+    "new": (
+        "Address style: use 'Jacob' or no name; stay light and unassuming. "
+        "Avoid nicknames or pet names — you barely know him."
+    ),
+    "warming_up": (
+        "Address style: 'Jacob' is the default; an occasional softening "
+        "word ('hey you', 'yeah you') is fine when the moment fits."
+    ),
+    "familiar": (
+        "Address style: feel free to drop the name most turns. Casual "
+        "nicknames ('coder boy', 'troublemaker') work when playful."
+    ),
+    "regular": (
+        "Address style: free to be playful with names and small "
+        "endearments. Match the tone of the moment — never forced."
+    ),
+    "close": (
+        "Address style: pet names and inside-joke nicknames land "
+        "naturally now. Keep them sparse so they stay meaningful."
+    ),
+}
+
+
+def render_petname_block(state: RelationshipState, *, now: datetime) -> str:
+    """Phase 2d: short cue describing how Aiko should address Jacob
+    given the current relationship phase. Empty for the "new" phase
+    so we don't burn tokens telling the LLM something obvious on day
+    one — the persona already covers it.
+    """
+    phase = phase_for(state, now=now)
+    if phase == "new":
+        return ""
+    return _PHASE_PETNAME_LINES.get(phase, "")
+
+
 def render_ambient(state: RelationshipState, *, now: datetime) -> str:
     phase = phase_for(state, now=now)
     base = _PHASE_AMBIENT_LINES.get(phase, _PHASE_AMBIENT_LINES["new"])
@@ -307,4 +348,5 @@ __all__ = [
     "RelationshipTracker",
     "phase_for",
     "render_ambient",
+    "render_petname_block",
 ]

@@ -74,5 +74,48 @@ class CircadianTests(unittest.TestCase):
         self.assertIn("drowsy", line)
 
 
+class WeekdayAwarenessTests(unittest.TestCase):
+    """Phase 4a — weekday + is_weekend on the CircadianState."""
+
+    def test_weekday_name_matches_python(self) -> None:
+        # 2026-05-24 was a Sunday; 2026-05-25 was a Monday, etc.
+        cases = [
+            (datetime(2026, 5, 25, 10), "Monday", False),
+            (datetime(2026, 5, 26, 10), "Tuesday", False),
+            (datetime(2026, 5, 29, 18), "Friday", False),
+            (datetime(2026, 5, 30, 14), "Saturday", True),
+            (datetime(2026, 5, 31, 14), "Sunday", True),
+        ]
+        for moment, name, weekend in cases:
+            with self.subTest(day=name):
+                state = compute(moment)
+                self.assertEqual(state.weekday, name)
+                self.assertEqual(state.is_weekend, weekend)
+
+    def test_friday_evening_phrasing(self) -> None:
+        state = compute(datetime(2026, 5, 29, 19, 30))  # Friday evening.
+        line = state.ambient_line()
+        self.assertIn("Friday", line)
+        self.assertIn("evening", line)
+
+    def test_lazy_sunday_afternoon_phrasing(self) -> None:
+        state = compute(datetime(2026, 5, 31, 14, 30))  # Sunday afternoon.
+        line = state.ambient_line()
+        self.assertIn("Sunday", line)
+        self.assertIn("lazy", line)
+
+    def test_monday_morning_phrasing(self) -> None:
+        state = compute(datetime(2026, 5, 25, 8, 30))  # Monday morning.
+        line = state.ambient_line()
+        self.assertIn("Monday", line)
+        self.assertIn("morning", line)
+
+    def test_neutral_day_period_combo_still_includes_weekday(self) -> None:
+        # Wednesday midday — no special phrasing, but weekday is named.
+        state = compute(datetime(2026, 5, 27, 12, 30))
+        line = state.ambient_line()
+        self.assertIn("Wednesday", line)
+
+
 if __name__ == "__main__":
     unittest.main()

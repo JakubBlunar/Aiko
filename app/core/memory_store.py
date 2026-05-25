@@ -53,6 +53,12 @@ VALID_KINDS = {
     # Phase 3c — explicit promises ("I'll do X", "remind me to Y").
     # Surfaced through RAG and consumed by ProactiveDirector.
     "promise",
+    # "Aiko human-like upgrades" Phase 2c — recurring 3-7-word phrases
+    # spoken by both Jacob and Aiko, mined offline by
+    # :class:`CatchphraseMiner`. Surfaced through a dedicated
+    # "Aiko's running jokes with Jacob:" inner-life block in the prompt
+    # assembler (cap of 3 entries).
+    "catchphrase",
 }
 
 

@@ -493,6 +493,57 @@ interface BubbleProps {
   kind?: "proactive";
 }
 
+// Phase 3c: parse `[[correct]]old[[/correct]]new` into renderable
+// pieces. ``new`` is the text immediately following the close tag,
+// up to the next sentence-ending punctuation or string end. We render
+// ``old`` as a strikethrough span and ``new`` as plain text so the
+// reader sees Aiko catching her own slip.
+type CorrectionPiece =
+  | { kind: "text"; value: string }
+  | { kind: "correction"; old: string };
+
+function parseCorrections(text: string): CorrectionPiece[] {
+  if (!text) {
+    return [];
+  }
+  const out: CorrectionPiece[] = [];
+  const re = /\[\[correct\]\]([\s\S]*?)\[\[\/correct\]\]/gi;
+  let last = 0;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text)) !== null) {
+    if (match.index > last) {
+      out.push({ kind: "text", value: text.slice(last, match.index) });
+    }
+    out.push({ kind: "correction", old: match[1] });
+    last = match.index + match[0].length;
+  }
+  if (last < text.length) {
+    out.push({ kind: "text", value: text.slice(last) });
+  }
+  return out;
+}
+
+function renderMessageContent(content: string): React.ReactNode {
+  const pieces = parseCorrections(content);
+  if (pieces.length <= 1) {
+    return content;
+  }
+  return pieces.map((piece, idx) => {
+    if (piece.kind === "correction") {
+      return (
+        <span
+          key={idx}
+          className="text-ink-100/45 line-through decoration-ink-100/40 mr-1"
+          title="Aiko corrected herself"
+        >
+          {piece.old}
+        </span>
+      );
+    }
+    return <span key={idx}>{piece.value}</span>;
+  });
+}
+
 function MessageBubble({
   role,
   content,
@@ -524,7 +575,13 @@ function MessageBubble({
               : "max-w-2xl border border-white/10 bg-white/[0.04] text-ink-100"
         } ${streaming ? "streaming-caret" : ""}`}
       >
-        {content || (streaming ? "" : "(empty)")}
+        {content
+          ? isUser
+            ? content
+            : renderMessageContent(content)
+          : streaming
+            ? ""
+            : "(empty)"}
       </div>
       <div className="text-[10px] text-ink-100/40">
         {isUser ? "you" : isProactive ? "aiko · proactive" : "aiko"} ·{" "}

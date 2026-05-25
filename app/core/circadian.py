@@ -46,20 +46,28 @@ class CircadianState:
     sociability_bias: float  # -0.3..+0.3
     hour: int
     minute: int
+    # Phase 4a: weekday awareness. ``weekday`` is the long English name
+    # ("Monday", "Friday", …) so the LLM can use it verbatim in
+    # responses; ``is_weekend`` is True on Saturday and Sunday.
+    weekday: str = "Monday"
+    is_weekend: bool = False
 
     def ambient_line(self) -> str:
         """Render the small one-line cue we paste into the system prompt."""
         period_phrase = _PERIOD_PHRASES.get(self.period, self.period)
         time_part = _format_clock(self.hour, self.minute)
+        # Phase 4a: blend a day-of-week phrase into the cue when it
+        # carries meaning ("Friday evening", "lazy Sunday afternoon",
+        # "Monday morning"). For neutral combinations we just say the
+        # weekday so the LLM still has the data point.
+        day_phrase = _day_phrase(self.weekday, self.is_weekend, self.period)
+        prefix = f"It's {day_phrase}, {time_part} ({period_phrase})"
         if self.drowsy:
             return (
-                f"It's {time_part} ({period_phrase}); your energy is low "
+                f"{prefix}; your energy is low "
                 f"({self.energy:.2f}) and you feel a bit drowsy."
             )
-        return (
-            f"It's {time_part} ({period_phrase}); your energy is "
-            f"{self.energy:.2f}."
-        )
+        return f"{prefix}; your energy is {self.energy:.2f}."
 
 
 _PERIOD_PHRASES: dict[CircadianPeriod, str] = {
@@ -71,6 +79,35 @@ _PERIOD_PHRASES: dict[CircadianPeriod, str] = {
     "evening": "evening",
     "night": "night",
 }
+
+
+# Phase 4a: lookups for the colourful day/period phrasings. Anything
+# not present here falls through to "Monday morning" / "Tuesday
+# afternoon" — the weekday is always mentioned because that's the
+# whole point of the upgrade.
+_WEEKDAY_NAMES: tuple[str, ...] = (
+    "Monday", "Tuesday", "Wednesday", "Thursday",
+    "Friday", "Saturday", "Sunday",
+)
+
+
+def _day_phrase(weekday: str, is_weekend: bool, period: CircadianPeriod) -> str:
+    """Compose a short phrase like "Friday evening" or "lazy Sunday
+    afternoon". Returns the bare weekday name when the period doesn't
+    pair naturally with a colour adjective.
+    """
+    name = (weekday or "").strip().title() or "Monday"
+    if is_weekend and period == "afternoon":
+        return f"a lazy {name} afternoon"
+    if name == "Friday" and period in ("evening", "night"):
+        return f"{name} {period.replace('_', ' ')}"
+    if name == "Monday" and period == "morning":
+        return f"{name} morning"
+    if name == "Sunday" and period == "evening":
+        return f"a quiet {name} evening"
+    if period in ("late_night", "early_morning"):
+        return f"{name}, in the {_PERIOD_PHRASES[period]}"
+    return f"{name} {_PERIOD_PHRASES.get(period, period)}"
 
 
 def _format_clock(hour: int, minute: int) -> str:
@@ -157,6 +194,15 @@ def compute(
     daytime_kick = (energy - 0.5) * 0.3
     raw_bias = daytime_kick + (0.3 * float(baseline_sociability))
     sociability_bias = max(-0.3, min(0.3, raw_bias))
+    # Phase 4a: weekday + weekend. ``datetime.weekday()`` returns
+    # Monday=0..Sunday=6 — same order as ``_WEEKDAY_NAMES``.
+    try:
+        weekday_idx = int(now.weekday())
+    except Exception:
+        weekday_idx = 0
+    weekday_idx = max(0, min(6, weekday_idx))
+    weekday_name = _WEEKDAY_NAMES[weekday_idx]
+    is_weekend = weekday_idx >= 5
     return CircadianState(
         period=period,
         energy=round(energy, 3),
@@ -164,4 +210,6 @@ def compute(
         sociability_bias=round(sociability_bias, 3),
         hour=hour,
         minute=minute,
+        weekday=weekday_name,
+        is_weekend=is_weekend,
     )
