@@ -176,7 +176,87 @@ patcher is idempotent.
 
 ---
 
-## 5. Things future agents have already gotten wrong
+## 5. Cubism update pipeline — write order matters for lip-sync
+
+This isn't Alexia-specific but it's traps you'll hit the moment you
+touch `Live2DAvatar.tsx`. Each frame, `pixi-live2d-display`'s
+`Cubism4InternalModel#update(dt, now)` runs in this exact order
+(verified by reading
+`web/node_modules/pixi-live2d-display/dist/cubism4.es.js`,
+class `Cubism4InternalModel`):
+
+1. `emit("beforeMotionUpdate")`
+2. `motionManager.update(coreModel, now)` — drives parameters from
+   the active `.motion3.json` curves. **Talk motions and idle
+   motions can include `ParamMouthOpenY` keyframes**, in which case
+   they unconditionally overwrite whatever the previous step wrote.
+3. `emit("afterMotionUpdate")`
+4. `coreModel.saveParameters()` — snapshots the current parameter
+   values for the next frame's restore.
+5. `expressionManager.update(coreModel, now)` — applies the active
+   expression's per-parameter values using the expression's `Blend`
+   mode (`Add` / `Multiply` / `Overwrite`).
+6. `eyeBlink` (if no motion is active), `updateFocus`,
+   `updateNaturalMovements` (breath), `physics.evaluate`,
+   `pose.updateParameters`.
+7. `emit("beforeModelUpdate")` — last hook before render.
+8. `coreModel.update()` — applies parameters to the rig and renders.
+9. `coreModel.loadParameters()` — restores the snapshot from step 4
+   so the next frame's input baseline is post-motion, pre-expression.
+
+### Lip-sync MUST hook step 7
+
+The mouth amplitude is broadcast from the backend over WebSocket
+(`audio_amplitude` events) and stored in
+`useAssistantStore.audioAmplitude`. Driving the rig from a plain
+`requestAnimationFrame` callback fires **before step 1**, which
+means any talk-motion mouth curve at step 2 silently overwrites our
+write. The visible symptom is "mouth frozen during TTS", and it is
+particularly cruel because it works for rigs whose talk motion
+doesn't include the mouth — so the regression went unnoticed for a
+while.
+
+The fix in place (`Live2DAvatar.tsx`, the lip-sync `useEffect`):
+
+```typescript
+internalModel.on("beforeModelUpdate", () => {
+  const target = useAssistantStore.getState().audioAmplitude || 0;
+  const next = prev + (target - prev) * 0.35;          // ease
+  applyMouthOpen(model, manifest, clamp01(next));
+});
+```
+
+Because step 7 fires AFTER motion + expression + breath, our value
+is what gets rendered in step 8 — regardless of what any of the
+upstream stages wrote. Any future per-frame parameter that competes
+with motions / expressions (e.g. a custom blink override) should be
+written from this same hook.
+
+### Expressions don't auto-clear
+
+`pixi-live2d-display`'s `Live2DModel.expression(name)` is
+apply-only. There is no `model.expression()`-to-cycle convention
+that survives the bundle's expression manager idiom. To clear the
+active expression you must reach into the manager:
+
+```typescript
+model.internalModel.motionManager.expressionManager?.resetExpression();
+```
+
+`resetExpression()` swaps to a synthesised empty expression
+(`defaultExpression`, created in `ExpressionManager.init()` with no
+parameters), which immediately stops any param overrides from the
+previous expression. This is what `applyReaction(model, manifest,
+"neutral")` now does instead of silently returning — see
+`Live2DAvatar.tsx::applyReaction`. Without it, a reaction expression
+applied earlier in the turn stayed frozen on the face after TTS
+ended (idle motion would resume but the eyes/mouth shape from the
+last expression remained baked in until the next non-empty
+reaction).
+
+---
+
+## 6. Things future agents have already gotten wrong
 
 Specific traps that have actually happened in this codebase and the
 mitigation in place:
@@ -206,10 +286,20 @@ mitigation in place:
    `app/web/server.py` (`PATCH /api/avatar`), and `web/src/types.ts`.
    Use the `OUTFIT_MODES` constant on the Python side; only
    `web/src/types.ts` needs a manual edit when adding a new mode.
+7. **Driving lip-sync from a pre-`update()` rAF**. Writing
+   `ParamMouthOpenY` from a plain `requestAnimationFrame` runs
+   before `motionManager.update()`, which silently overwrites the
+   value if the active motion has mouth keyframes. Use
+   `internalModel.on("beforeModelUpdate", ...)` instead — see §5.
+8. **Treating `model.expression(name)` as both apply AND clear**.
+   It only applies. To clear, call
+   `internalModel.motionManager.expressionManager.resetExpression()`.
+   The reaction-on-neutral path was previously a silent no-op; it
+   left the previous expression stuck.
 
 ---
 
-## 6. When in doubt, run these
+## 7. When in doubt, run these
 
 ```bash
 python -m pytest tests/test_avatar_profile.py -v        # capability detection

@@ -153,24 +153,97 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
     );
   }, [manifest.settings.scale_multiplier]);
 
-  // ── 2. Lip-sync: rAF loop reads audioAmplitude from the store and eases ──
+  // ── 2. Lip-sync: write ParamMouthOpenY in the ``beforeModelUpdate``
+  //    hook so motion / expression / breath can't override us.
+  //
+  //    Cubism4InternalModel.update() runs in this order each frame
+  //    (see pixi-live2d-display source, ``Cubism4InternalModel#update``):
+  //
+  //        1. emit("beforeMotionUpdate")
+  //        2. motionManager.update()        <-- talk/idle motions write
+  //                                              ParamMouthOpenY HERE if
+  //                                              the .motion3.json has
+  //                                              mouth keyframes.
+  //        3. emit("afterMotionUpdate")
+  //        4. coreModel.saveParameters()    <-- per-frame snapshot
+  //        5. expressionManager.update()
+  //        6. eyeBlink / focus / breath / physics / pose
+  //        7. emit("beforeModelUpdate")     <-- WE HOOK HERE
+  //        8. coreModel.update()            <-- renders this frame
+  //        9. coreModel.loadParameters()    <-- restores from snapshot
+  //
+  //    Writing the mouth at "beforeModelUpdate" means our amplitude is
+  //    the value rendered in step 8 regardless of what motion or
+  //    expression wrote earlier in the pipeline. The previous design
+  //    used a standalone rAF that fired BEFORE step 1, so any talk
+  //    motion with mouth keyframes silently overwrote the lip-sync at
+  //    step 2 -- visible as the mouth freezing during TTS.
+  //
+  //    The internal model is created asynchronously by ``Live2DModel
+  //    .from(...)`` (see the model-load effect above). We poll one rAF
+  //    at a time until ``modelRef.current.internalModel`` exists, then
+  //    attach the listener. Cleanup detaches it.
   useEffect(() => {
-    let raf = 0;
-    const tick = () => {
-      const model = modelRef.current;
-      if (model) {
-        const target = useAssistantStore.getState().audioAmplitude || 0;
-        // Critically-damped easing toward target -- avoids the step-look that
-        // raw 30 Hz amplitude updates would produce on a 60 Hz canvas.
-        const prev = mouthSmoothRef.current;
-        const next = prev + (target - prev) * 0.35;
-        mouthSmoothRef.current = next < 0 ? 0 : next > 1 ? 1 : next;
-        applyMouthOpen(model, manifest, mouthSmoothRef.current);
-      }
-      raf = window.requestAnimationFrame(tick);
+    let pollRaf = 0;
+    type InternalModelEmitter = {
+      on: (event: string, fn: () => void) => void;
+      off: (event: string, fn: () => void) => void;
     };
-    raf = window.requestAnimationFrame(tick);
-    return () => window.cancelAnimationFrame(raf);
+    let registered:
+      | { emitter: InternalModelEmitter; handler: () => void }
+      | null = null;
+
+    const handleBeforeModelUpdate = () => {
+      const model = modelRef.current;
+      if (!model) {
+        return;
+      }
+      const target = useAssistantStore.getState().audioAmplitude || 0;
+      // Critically-damped easing toward target — avoids the step-look
+      // that raw 30 Hz amplitude updates would produce on a 60 Hz
+      // canvas. The smoothing factor matches the previous rAF version.
+      const prev = mouthSmoothRef.current;
+      const next = prev + (target - prev) * 0.35;
+      mouthSmoothRef.current = next < 0 ? 0 : next > 1 ? 1 : next;
+      applyMouthOpen(model, manifest, mouthSmoothRef.current);
+    };
+
+    const tryRegister = () => {
+      const model = modelRef.current as unknown as {
+        internalModel?: InternalModelEmitter;
+      } | null;
+      const emitter = model?.internalModel;
+      if (
+        emitter &&
+        typeof emitter.on === "function" &&
+        typeof emitter.off === "function"
+      ) {
+        emitter.on("beforeModelUpdate", handleBeforeModelUpdate);
+        registered = { emitter, handler: handleBeforeModelUpdate };
+        return;
+      }
+      pollRaf = window.requestAnimationFrame(tryRegister);
+    };
+    pollRaf = window.requestAnimationFrame(tryRegister);
+
+    return () => {
+      if (pollRaf) {
+        window.cancelAnimationFrame(pollRaf);
+        pollRaf = 0;
+      }
+      if (registered) {
+        try {
+          registered.emitter.off(
+            "beforeModelUpdate",
+            registered.handler,
+          );
+        } catch (err) {
+          console.debug("lipsync listener detach failed", err);
+        }
+        registered = null;
+      }
+      mouthSmoothRef.current = 0;
+    };
   }, [manifest.cubism_version]);
 
   // ── 3. Reaction changes -> expression + talk-motion on speaking start ──
@@ -1189,6 +1262,31 @@ function applyReaction(
 ): void {
   const expressionName = resolveReactionExpression(manifest, reaction);
   if (!expressionName) {
+    // Empty mapping = "neutral" / unmapped reaction. Previously this
+    // early-returned, which left the PREVIOUS expression stuck on the
+    // face — Aiko ended TTS with cheerful eyes and never went back to
+    // resting. Switch to the empty default expression on the
+    // ExpressionManager so any active overlay is dropped immediately.
+    // pixi-live2d-display's ExpressionManager.resetExpression() runs
+    // ``_setExpression(this.defaultExpression)``, which is a created-
+    // empty motion that sets no params (see node_modules/
+    // pixi-live2d-display/dist/cubism4.es.js, ``ExpressionManager``).
+    try {
+      const exprMgr = (
+        model as unknown as {
+          internalModel?: {
+            motionManager?: {
+              expressionManager?: {
+                resetExpression?: () => void;
+              };
+            };
+          };
+        }
+      ).internalModel?.motionManager?.expressionManager;
+      exprMgr?.resetExpression?.();
+    } catch (err) {
+      console.debug("expression reset failed", err);
+    }
     return;
   }
   try {
