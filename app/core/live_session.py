@@ -144,15 +144,24 @@ class LiveSession:
                 self._last_activity_monotonic = time.monotonic()
 
                 # Barge-in: if Aiko is mid-speech and a new phrase just
-                # landed, stop her so we can react to the new input.
+                # landed, stop her so we can react to the new input. Gate
+                # on a minimum sustained speech duration so a throat-clear
+                # or background cough doesn't interrupt her.
                 if (
                     self._session.barge_in_enabled()
                     and self._session.is_tts_playing()
                 ):
-                    try:
-                        self._session.stop_tts()
-                    except Exception:
-                        log.debug("barge-in stop_tts failed", exc_info=True)
+                    if self._capture_meets_barge_in_threshold(capture_ms):
+                        try:
+                            self._session.stop_tts()
+                        except Exception:
+                            log.debug("barge-in stop_tts failed", exc_info=True)
+                    else:
+                        log.debug(
+                            "barge-in suppressed: capture_ms=%.0f < min_speech_ms=%.0f",
+                            capture_ms,
+                            self._barge_in_min_speech_ms(),
+                        )
 
                 self._processing.set()
                 try:
@@ -320,11 +329,26 @@ class LiveSession:
             return True
         # Barge-in: if a fresh phrase arrived while Aiko was responding,
         # abort the current stream so we can react to the new input.
+        # Same sustained-speech gate as the main loop applies — short
+        # captures (cough, "yeah", throat-clear) don't abort the turn.
         if self._session.barge_in_enabled():
             with self._pending_lock:
-                if self._pending:
+                pending_items = list(self._pending)
+            for _, capture_ms in pending_items:
+                if self._capture_meets_barge_in_threshold(capture_ms):
                     return True
         return False
+
+    def _barge_in_min_speech_ms(self) -> float:
+        try:
+            return float(
+                self._session._settings.endpointing.barge_in_min_speech_seconds
+            ) * 1000.0
+        except Exception:
+            return 700.0
+
+    def _capture_meets_barge_in_threshold(self, capture_ms: float) -> bool:
+        return float(capture_ms) >= self._barge_in_min_speech_ms()
 
     def _on_audio_level(self, level: float) -> None:
         now = time.monotonic()

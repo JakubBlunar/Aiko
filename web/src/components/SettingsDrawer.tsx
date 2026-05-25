@@ -223,6 +223,7 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
     reaction_mapping?: Record<string, string>;
     idle_motion_group?: string | null;
     talk_motion_group?: string | null;
+    scale_multiplier?: number;
   }) => {
     setPersonaBusy(true);
     setPersonaError(null);
@@ -475,6 +476,98 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                   }
                 />
               </Section>
+
+              <Section title="Endpointing (when do I stop listening?)">
+                <p className="text-[11px] text-ink-100/50">
+                  Aiko waits for silence to know your turn is over. With
+                  hesitation extension on, words like "um", "and...", or
+                  "you know" reset the silence clock so you have the full
+                  end-of-thought window to find the next word.
+                </p>
+                <Row
+                  label="End-of-thought wait (s)"
+                  value={
+                    <input
+                      type="number"
+                      min={1}
+                      max={5}
+                      step={0.1}
+                      value={
+                        settings.endpointing?.turn_silence_seconds ?? 3.0
+                      }
+                      onChange={(e) =>
+                        void apply({
+                          endpointing: {
+                            turn_silence_seconds: Number(e.target.value),
+                          },
+                        })
+                      }
+                      className="w-24 rounded border border-white/10 bg-black/40 px-2 py-1 text-right text-xs text-ink-100"
+                    />
+                  }
+                />
+                <Row
+                  label="Quick-close wait (s)"
+                  value={
+                    <input
+                      type="number"
+                      min={0.4}
+                      max={2}
+                      step={0.1}
+                      value={
+                        settings.endpointing?.phrase_silence_seconds ?? 1.0
+                      }
+                      onChange={(e) =>
+                        void apply({
+                          endpointing: {
+                            phrase_silence_seconds: Number(e.target.value),
+                          },
+                        })
+                      }
+                      className="w-24 rounded border border-white/10 bg-black/40 px-2 py-1 text-right text-xs text-ink-100"
+                    />
+                  }
+                />
+                <Row
+                  label="Sustained-speech for barge-in (s)"
+                  value={
+                    <input
+                      type="number"
+                      min={0.2}
+                      max={1.5}
+                      step={0.1}
+                      value={
+                        settings.endpointing?.barge_in_min_speech_seconds ?? 0.7
+                      }
+                      onChange={(e) =>
+                        void apply({
+                          endpointing: {
+                            barge_in_min_speech_seconds: Number(e.target.value),
+                          },
+                        })
+                      }
+                      className="w-24 rounded border border-white/10 bg-black/40 px-2 py-1 text-right text-xs text-ink-100"
+                    />
+                  }
+                />
+                <label className="mt-1 flex items-center gap-2 text-xs text-ink-100/70">
+                  <input
+                    type="checkbox"
+                    checked={
+                      settings.endpointing?.hesitation_extend_to_turn ?? true
+                    }
+                    onChange={(e) =>
+                      void apply({
+                        endpointing: {
+                          hesitation_extend_to_turn: e.target.checked,
+                        },
+                      })
+                    }
+                  />
+                  Extend capture on hesitation words ("um", "and", "you
+                  know"…)
+                </label>
+              </Section>
                 </>
               ) : null}
 
@@ -665,6 +758,69 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                         </div>
                       </div>
                     ) : null}
+                    <div className="mt-2 space-y-1.5">
+                      <p className="text-[11px] uppercase tracking-wide text-ink-100/50">
+                        Avatar size
+                      </p>
+                      <div className="flex items-center gap-3 rounded-md bg-white/[0.02] px-2 py-2">
+                        <input
+                          type="range"
+                          min={0.5}
+                          max={4}
+                          step={0.05}
+                          value={persona.scale_multiplier ?? 1}
+                          // Optimistic local update so the avatar refits
+                          // smoothly as you drag. The PATCH request only
+                          // fires on release (onPointerUp / onKeyUp) so we
+                          // don't hammer the backend with 40 disk writes
+                          // for a single drag.
+                          onChange={(e) => {
+                            const v = Number(e.target.value);
+                            setPersona({
+                              ...persona,
+                              scale_multiplier: v,
+                            });
+                          }}
+                          onPointerUp={(e) =>
+                            void onPatchMapping({
+                              scale_multiplier: Number(
+                                (e.target as HTMLInputElement).value,
+                              ),
+                            })
+                          }
+                          onKeyUp={(e) => {
+                            if (
+                              e.key === "ArrowLeft" ||
+                              e.key === "ArrowRight" ||
+                              e.key === "Home" ||
+                              e.key === "End"
+                            ) {
+                              void onPatchMapping({
+                                scale_multiplier: Number(
+                                  (e.target as HTMLInputElement).value,
+                                ),
+                              });
+                            }
+                          }}
+                          disabled={personaBusy}
+                          className="flex-1 accent-ink-400"
+                          aria-label="Avatar scale multiplier"
+                        />
+                        <span className="w-10 text-right text-[11px] tabular-nums text-ink-100/70">
+                          {(persona.scale_multiplier ?? 1).toFixed(2)}x
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void onPatchMapping({ scale_multiplier: 1 })
+                          }
+                          disabled={personaBusy}
+                          className="rounded border border-white/10 px-2 py-0.5 text-[10px] text-ink-100/60 hover:border-ink-400 hover:text-ink-100"
+                        >
+                          Reset
+                        </button>
+                      </div>
+                    </div>
                   </>
                 ) : (
                   <p className="rounded-md border border-white/5 bg-white/[0.02] px-3 py-2 text-[11px] text-ink-100/50">

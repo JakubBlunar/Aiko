@@ -103,6 +103,7 @@ export const api = {
     reaction_mapping?: Record<string, string>;
     idle_motion_group?: string | null;
     talk_motion_group?: string | null;
+    scale_multiplier?: number;
   }) =>
     jsonFetch<{ persona: Persona }>("/api/persona/mapping", {
       method: "PATCH",

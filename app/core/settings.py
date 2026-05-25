@@ -43,6 +43,13 @@ class ChatLlmSettings:
     # short paragraphs which is plenty for chat AND tool summaries; raise
     # for long-form code generation. Set to 0 / negative to disable.
     max_tokens: int = 512
+    # How long Ollama should keep the chat model loaded in VRAM after a
+    # request completes. Default is "5m" upstream; bumping to "30m" keeps
+    # the model warm across the typical idle gap between conversational
+    # turns so we don't pay model-load latency on first token. Accepts any
+    # Ollama duration string ("30m", "1h", "-1" for "until unloaded").
+    # Tune down for shared-GPU setups where holding VRAM is expensive.
+    keep_alive: str = "30m"
 
 
 @dataclass(slots=True)
@@ -95,6 +102,32 @@ class LoggingSettings:
     file_path: str = "data/app.log"
     file_max_bytes: int = 5 * 1024 * 1024
     file_backup_count: int = 5
+
+
+@dataclass(slots=True)
+class EndpointingSettings:
+    """Tiered live-mic endpointing knobs.
+
+    See :mod:`app.stt.endpointing` for the semantics. With defaults, a
+    finished sentence ("…thanks.") closes ~0.6 s after the last spoken
+    chunk, an ambiguous pause closes at ~3 s, and a hesitation marker
+    ("…and uh") resets the silence counter so the user has a fresh ~3 s
+    window to find the next word — bounded by ``turn_silence_seconds``.
+
+    ``barge_in_min_speech_seconds`` is the minimum amount of speech a
+    capture must contain before it is allowed to interrupt Aiko's TTS
+    (only consulted when ``audio.barge_in_enabled`` is on).
+    """
+
+    enabled: bool = True
+    use_partial_transcript: bool = True
+    phrase_silence_seconds: float = 1.0
+    turn_silence_seconds: float = 3.0
+    fast_close_silence_seconds: float = 0.6
+    hesitation_extend_to_turn: bool = True
+    barge_in_min_speech_seconds: float = 0.7
+    hesitation_markers: list[str] = field(default_factory=list)
+    sentence_final_markers: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -243,6 +276,7 @@ class AppSettings:
     memory: MemorySettings = field(default_factory=MemorySettings)
     chat_llm: ChatLlmSettings = field(default_factory=ChatLlmSettings)
     tools: ToolsSettings = field(default_factory=ToolsSettings)
+    endpointing: EndpointingSettings = field(default_factory=EndpointingSettings)
 
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "default.json"
@@ -341,6 +375,13 @@ def _parse_chat_llm(raw: dict[str, Any]) -> ChatLlmSettings:
     except (TypeError, ValueError):
         max_tokens = 512
 
+    keep_alive_raw = payload.get("keep_alive", "30m")
+    keep_alive = (
+        str(keep_alive_raw).strip()
+        if keep_alive_raw not in (None, "")
+        else "30m"
+    )
+
     return ChatLlmSettings(
         provider=provider_raw,
         model=str(payload.get("model", "") or "").strip(),
@@ -351,6 +392,7 @@ def _parse_chat_llm(raw: dict[str, Any]) -> ChatLlmSettings:
         temperature=temperature,
         extra_headers=extra_headers,
         max_tokens=max_tokens,
+        keep_alive=keep_alive,
     )
 
 
@@ -374,6 +416,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
     memory_raw = raw.get("memory", {}) or {}
     chat_llm_raw = raw.get("chat_llm", {}) or {}
     tools_raw = raw.get("tools", {}) or {}
+    endpointing_raw = raw.get("endpointing", {}) or {}
 
     return AppSettings(
         assistant=AssistantSettings(
@@ -488,5 +531,32 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             get_time=bool(tools_raw.get("get_time", True)),
             recall=bool(tools_raw.get("recall", True)),
             web_search=bool(tools_raw.get("web_search", True)),
+        ),
+        endpointing=EndpointingSettings(
+            enabled=bool(endpointing_raw.get("enabled", True)),
+            use_partial_transcript=bool(
+                endpointing_raw.get("use_partial_transcript", True)
+            ),
+            phrase_silence_seconds=max(
+                0.2, float(endpointing_raw.get("phrase_silence_seconds", 1.0))
+            ),
+            turn_silence_seconds=max(
+                0.4, float(endpointing_raw.get("turn_silence_seconds", 3.0))
+            ),
+            fast_close_silence_seconds=max(
+                0.1, float(endpointing_raw.get("fast_close_silence_seconds", 0.6))
+            ),
+            hesitation_extend_to_turn=bool(
+                endpointing_raw.get("hesitation_extend_to_turn", True)
+            ),
+            barge_in_min_speech_seconds=max(
+                0.0, float(endpointing_raw.get("barge_in_min_speech_seconds", 0.7))
+            ),
+            hesitation_markers=[
+                str(x) for x in (endpointing_raw.get("hesitation_markers") or []) if x
+            ],
+            sentence_final_markers=[
+                str(x) for x in (endpointing_raw.get("sentence_final_markers") or []) if x
+            ],
         ),
     )

@@ -61,14 +61,28 @@ export function PersonaPanel() {
   const eyeShape = REACTION_EYES[reaction] ?? REACTION_EYES.neutral;
 
   return (
-    <aside className="hidden h-full w-[340px] shrink-0 flex-col items-center justify-between border-l border-white/5 bg-gradient-to-b from-white/[0.04] to-transparent px-4 py-6 lg:flex">
+    <aside className="hidden h-full w-[340px] shrink-0 flex-col items-center border-l border-white/5 bg-gradient-to-b from-white/[0.04] to-transparent px-4 py-6 lg:flex">
       <div className="text-xs uppercase tracking-[0.2em] text-ink-100/40">
         Aiko
       </div>
 
-      <div className="relative flex aspect-square w-full max-w-xs items-center justify-center">
+      {/*
+        For Live2D personas, let the avatar fill the entire vertical
+        space between the header label and the name footer so the canvas
+        gets ~340 × ~900 px instead of a 320 × 320 square in the middle
+        of the rail. ``Live2DAvatar`` itself handles fitting the model
+        within whatever box it's given. The decorative SVG fallback was
+        designed against a square viewBox so we keep it constrained.
+      */}
+      <div
+        className={
+          persona
+            ? "relative my-4 flex w-full flex-1 items-center justify-center overflow-hidden"
+            : "relative my-auto flex aspect-square w-full max-w-xs items-center justify-center"
+        }
+      >
         <div
-          className="absolute inset-0 rounded-full opacity-40 blur-3xl transition-colors duration-700"
+          className="pointer-events-none absolute inset-0 rounded-full opacity-40 blur-3xl transition-colors duration-700"
           style={{ background: palette.glow }}
         />
         {persona ? (

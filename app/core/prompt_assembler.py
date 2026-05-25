@@ -16,13 +16,14 @@ that don't need telemetry.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
-from app.core.chat_database import ChatDatabase, MessageRow
+from app.core.chat_database import ChatDatabase, MessageRow, SummaryRow
 from app.llm.token_utils import estimate_messages_tokens, estimate_tokens
 
 if TYPE_CHECKING:
@@ -96,6 +97,12 @@ class PromptTelemetry:
     summary_active: bool = False
     summary_messages: int = 0
     compaction_triggered: bool = False
+    # Listening-window prefetch events (Phase 6 of
+    # listening_window_prefetch). Each one is "hit" / "miss" / "skip" so
+    # the "turn done:" log line can show at a glance whether the prewarm
+    # actually paid off this turn.
+    rag_prefetch_event: str = "skip"
+    slice_cache_event: str = "skip"
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -125,7 +132,45 @@ class PromptTelemetry:
             "summary_active": bool(self.summary_active),
             "summary_messages": int(self.summary_messages),
             "compaction_triggered": bool(self.compaction_triggered),
+            "rag_prefetch_event": str(self.rag_prefetch_event),
+            "slice_cache_event": str(self.slice_cache_event),
         }
+
+
+@dataclass(slots=True)
+class _StaticSlices:
+    """Pre-built prompt parts that don't depend on ``user_text`` or RAG.
+
+    Produced by :meth:`PromptAssembler.prebuild_static_slices` during the
+    listening window and consumed by :meth:`assemble_with_budget` at
+    commit. Reuse is gated by ``cache_key`` — when any of (session, history
+    watermark, persona/self-image mtime, last reaction, recent_window) has
+    moved, the cache is treated as invalid and the assembler falls through
+    to the standard build path.
+
+    ``ambient_block`` is the only field that can be a few minutes stale
+    (time-of-day band) — that drift is acceptable since the band only
+    crosses every few hours and the user wouldn't notice the difference
+    between "morning" and "midday" in a 4 s phrase.
+    """
+
+    cache_key: tuple
+    persona: str
+    self_image_block: str
+    summary_row: SummaryRow | None
+    already_summarized: int
+    history_msgs: list[MessageRow]
+    ambient: str
+    mood_hint: str
+    affect_block: str
+    circadian_block: str
+    profile_block: str
+    user_state_block: str
+    relationship_block: str
+    arc_block: str
+    narrative_block: str
+    agenda_block: str
+    built_at: float
 
 
 class PromptAssembler:
@@ -149,6 +194,13 @@ class PromptAssembler:
         # keep an emotional through-line across turns without us writing it
         # explicitly into the persona.
         self._last_reaction: str | None = None
+        # Listening-window slice cache (Phase 3 of the
+        # listening_window_prefetch plan). Single-entry-per-session is
+        # sufficient — there's only ever one active conversation per
+        # process. Last hit/miss is exposed via ``last_slice_cache_event``
+        # so :class:`TurnRunner` can fold it into the "turn done:" log.
+        self._slice_cache: dict[str, _StaticSlices] = {}
+        self._last_slice_cache_event: str = "skip"
 
         # Phase-2/3/4 block providers. Each callable returns a short text
         # snippet (or ``""`` to skip) that gets folded into the system
@@ -252,6 +304,161 @@ class PromptAssembler:
         """Force re-read on next ``build()`` call."""
         self._persona_cache = None
 
+    @property
+    def last_slice_cache_event(self) -> str:
+        """``"hit"`` / ``"miss"`` / ``"skip"`` from the most recent build.
+
+        ``skip`` means no static-slice cache was consulted (e.g., aggressive
+        rebuild after compaction). The value is set as a side effect of
+        :meth:`assemble_with_budget`; callers should read it immediately
+        after the call.
+        """
+        return self._last_slice_cache_event
+
+    def reset_slice_cache(self, session_key: str | None = None) -> None:
+        """Drop the listening-window slice cache for ``session_key``.
+
+        Called by :class:`SessionController` whenever long-lived state
+        the slices depend on changes (e.g., persona reload, session
+        switch, model change). Pass ``None`` to clear all sessions.
+        """
+        if session_key is None:
+            self._slice_cache.clear()
+        else:
+            self._slice_cache.pop(session_key, None)
+
+    def prebuild_static_slices(
+        self, session_key: str, *, aggressive: bool = False,
+    ) -> _StaticSlices:
+        """Build everything the prompt needs except the user message and RAG.
+
+        Safe to call from any thread. Result is stashed in a per-session
+        cache; :meth:`assemble_with_budget` will reuse it if the cache key
+        still matches at commit. Cheap (5-20 ms total: persona/self-image
+        disk reads, two SQLite queries, ~8 inner-life provider callbacks)
+        and idempotent — calling it more than once during the same phrase
+        just refreshes the cache.
+        """
+        slices = self._build_static_slices(session_key, aggressive=aggressive)
+        self._slice_cache[session_key] = slices
+        return slices
+
+    def _build_static_slices(
+        self, session_key: str, *, aggressive: bool,
+    ) -> _StaticSlices:
+        return self._build_static_slices_with_history(
+            session_key,
+            aggressive=aggressive,
+            history_msgs=None,
+            summary=None,
+            already_summarized=None,
+        )
+
+    def _build_static_slices_with_history(
+        self,
+        session_key: str,
+        *,
+        aggressive: bool,
+        history_msgs: list[MessageRow] | None,
+        summary: SummaryRow | None,
+        already_summarized: int | None,
+    ) -> _StaticSlices:
+        """Static slice builder with optional pre-fetched history/summary.
+
+        ``assemble_with_budget``'s cache-miss path already paid for the
+        SQLite reads to compute the live cache key; it passes them in
+        here so we don't double-read. Pass ``None`` for any value to
+        fetch fresh.
+        """
+        persona = self._load_persona()
+        self_image_block = self._load_self_image()
+        if summary is None and already_summarized is None:
+            summary = self._db.get_latest_summary(session_key)
+            already_summarized = (
+                int(summary.messages_summarized)
+                if (summary and summary.summary.strip())
+                else 0
+            )
+        elif already_summarized is None:
+            already_summarized = (
+                int(summary.messages_summarized)
+                if (summary and summary.summary.strip())
+                else 0
+            )
+        recent_window = (
+            self._recent_window if not aggressive else max(2, self._recent_window // 2)
+        )
+        if history_msgs is None:
+            history_msgs = self._db.get_messages(session_key, limit=recent_window)
+            if already_summarized > 0:
+                history_msgs = [
+                    row for row in history_msgs
+                    if getattr(row, "id", 0) and int(row.id) > already_summarized
+                ]
+        ambient = self._ambient_block()
+        mood_hint = self._mood_carryover_hint()
+        circadian_block = _safe_provider(self._circadian_provider)
+        affect_block = _safe_provider(self._affect_provider)
+        profile_block = _safe_provider(self._profile_provider)
+        user_state_block = _safe_provider(self._user_state_provider)
+        relationship_block = _safe_provider(self._relationship_provider)
+        arc_block = _safe_provider(self._arc_provider)
+        narrative_block = _safe_provider(self._narrative_provider)
+        agenda_block = "" if aggressive else _safe_provider(self._agenda_provider)
+        cache_key = self._compute_static_cache_key(
+            session_key, history_msgs, recent_window, aggressive,
+        )
+        return _StaticSlices(
+            cache_key=cache_key,
+            persona=persona,
+            self_image_block=self_image_block,
+            summary_row=summary,
+            already_summarized=already_summarized,
+            history_msgs=history_msgs,
+            ambient=ambient,
+            mood_hint=mood_hint,
+            affect_block=affect_block,
+            circadian_block=circadian_block,
+            profile_block=profile_block,
+            user_state_block=user_state_block,
+            relationship_block=relationship_block,
+            arc_block=arc_block,
+            narrative_block=narrative_block,
+            agenda_block=agenda_block,
+            built_at=time.monotonic(),
+        )
+
+    def _compute_static_cache_key(
+        self,
+        session_key: str,
+        history_msgs: list[MessageRow],
+        recent_window: int,
+        aggressive: bool,
+    ) -> tuple:
+        try:
+            persona_mtime = self._persona_path.stat().st_mtime
+        except OSError:
+            persona_mtime = 0.0
+        self_image_mtime = 0.0
+        if self._self_image_path is not None:
+            try:
+                self_image_mtime = self._self_image_path.stat().st_mtime
+            except OSError:
+                self_image_mtime = 0.0
+        history_max_id = 0
+        if history_msgs:
+            history_max_id = max(int(getattr(m, "id", 0) or 0) for m in history_msgs)
+        return (
+            session_key,
+            history_max_id,
+            len(history_msgs),
+            persona_mtime,
+            self_image_mtime,
+            self._last_reaction or "",
+            recent_window,
+            bool(aggressive),
+        )
+
     def build(
         self,
         session_key: str,
@@ -288,23 +495,78 @@ class PromptAssembler:
         recent-message window and drops the RAG block (the rolling summary
         already encodes long-term context).
         """
-        persona = self._load_persona()
-        summary = self._db.get_latest_summary(session_key)
-        already_summarized = (
-            int(summary.messages_summarized) if (summary and summary.summary.strip()) else 0
+        # Listening-window cache hit (Phase 3): if the slices we built
+        # speculatively while the user was speaking still match the
+        # session's static state, skip the persona/self-image disk reads,
+        # the two SQLite queries, and the eight inner-life providers.
+        # Otherwise build fresh and stash the result for next turn.
+        recent_window = (
+            self._recent_window if not aggressive else max(2, self._recent_window // 2)
         )
+        cached = self._slice_cache.get(session_key)
+        slice_event = "miss"
+        if cached is not None:
+            try:
+                # We rebuild history_msgs to recompute the live cache key —
+                # this is the same SQL the cache would have run, so when
+                # the cache is stale we still pay only one query (we then
+                # reuse `live_history` for the build below).
+                live_history = self._db.get_messages(session_key, limit=recent_window)
+                live_summary = self._db.get_latest_summary(session_key)
+                live_already = (
+                    int(live_summary.messages_summarized)
+                    if (live_summary and live_summary.summary.strip())
+                    else 0
+                )
+                if live_already > 0:
+                    live_history = [
+                        row for row in live_history
+                        if getattr(row, "id", 0) and int(row.id) > live_already
+                    ]
+                live_key = self._compute_static_cache_key(
+                    session_key, live_history, recent_window, aggressive,
+                )
+            except Exception:
+                live_key = None
+                live_history = None
+                live_summary = None
+                live_already = 0
+            if live_key is not None and live_key == cached.cache_key:
+                slices = cached
+                slice_event = "hit"
+            else:
+                self._slice_cache.pop(session_key, None)
+                slices = self._build_static_slices_with_history(
+                    session_key,
+                    aggressive=aggressive,
+                    history_msgs=live_history,
+                    summary=live_summary,
+                    already_summarized=live_already,
+                )
+                self._slice_cache[session_key] = slices
+        else:
+            slices = self._build_static_slices(session_key, aggressive=aggressive)
+            self._slice_cache[session_key] = slices
+        self._last_slice_cache_event = slice_event
 
-        recent_window = self._recent_window if not aggressive else max(2, self._recent_window // 2)
-        history_msgs = self._db.get_messages(session_key, limit=recent_window)
-        # Drop the verbatim tail that is already encoded in the rolling summary
-        # (avoids sending the same content twice).
-        if already_summarized > 0:
-            history_msgs = [
-                row for row in history_msgs
-                if getattr(row, "id", 0) and int(row.id) > already_summarized
-            ]
+        persona = slices.persona
+        self_image_block = slices.self_image_block
+        summary = slices.summary_row
+        already_summarized = slices.already_summarized
+        history_msgs = slices.history_msgs
+        ambient = slices.ambient
+        mood_hint = slices.mood_hint
+        affect_block = slices.affect_block
+        circadian_block = slices.circadian_block
+        profile_block = slices.profile_block
+        user_state_block = slices.user_state_block
+        relationship_block = slices.relationship_block
+        arc_block = slices.arc_block
+        narrative_block = slices.narrative_block
+        agenda_block = slices.agenda_block
 
         memory_block = ""
+        rag_prefetch_event = "skip"
         if not aggressive:
             # Phase 1b: try the speculative pre-fetch cache first. On a hit
             # we skip the embed + multi-source retrieval entirely, saving
@@ -318,6 +580,9 @@ class PromptAssembler:
                     cached_block = None
                 if cached_block:
                     memory_block = cached_block
+                    rag_prefetch_event = "hit"
+                else:
+                    rag_prefetch_event = "miss"
             # Prefer RAG (memories + messages + documents merged) when available.
             # Falls back to legacy single-source MemoryRetriever otherwise so we
             # stay functional on environments without LanceDB (probe failure).
@@ -342,19 +607,6 @@ class PromptAssembler:
                 except Exception:
                     log.debug("memory retrieval failed", exc_info=True)
                     memory_block = ""
-
-        ambient = self._ambient_block()
-        mood_hint = self._mood_carryover_hint()
-        # Phase-2/3/4 inner-life blocks (each returns "" to skip).
-        circadian_block = _safe_provider(self._circadian_provider)
-        affect_block = _safe_provider(self._affect_provider)
-        profile_block = _safe_provider(self._profile_provider)
-        user_state_block = _safe_provider(self._user_state_provider)
-        relationship_block = _safe_provider(self._relationship_provider)
-        arc_block = _safe_provider(self._arc_provider)
-        narrative_block = _safe_provider(self._narrative_provider)
-        agenda_block = "" if aggressive else _safe_provider(self._agenda_provider)
-        self_image_block = self._load_self_image()
 
         summary_text = ""
         if summary and summary.summary.strip():
@@ -481,6 +733,8 @@ class PromptAssembler:
             summary_active=bool(summary_text),
             summary_messages=int(already_summarized),
             compaction_triggered=bool(compaction_triggered),
+            rag_prefetch_event=rag_prefetch_event,
+            slice_cache_event=slice_event,
         )
 
         # Per plan: tweaking-only headline for the prompt build. Stays

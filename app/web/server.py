@@ -181,6 +181,26 @@ def create_web_app(session: "SessionController") -> FastAPI:
         _amp_state["last_level"] = level
         hub.broadcast({"type": "audio_amplitude", "level": float(level)})
 
+    # Throttle partial broadcasts to <=5 Hz. Frontend renders a single
+    # transient "Hearing: ..." line that updates in place — sub-200ms
+    # updates would make it strobe.
+    _partial_state: dict[str, Any] = {"last_sent": 0.0, "last_text": ""}
+    _PARTIAL_INTERVAL = 1.0 / 5.0
+
+    def _on_stt_partial(text: str) -> None:
+        import time as _time
+        text = (text or "").strip()
+        if not text:
+            return
+        now = _time.monotonic()
+        if text == _partial_state["last_text"]:
+            return
+        if (now - _partial_state["last_sent"]) < _PARTIAL_INTERVAL:
+            return
+        _partial_state["last_sent"] = now
+        _partial_state["last_text"] = text
+        hub.broadcast({"type": "stt_partial_live", "text": text})
+
     session.add_message_listener(_on_message)
     session.add_tts_state_listener(_on_tts_state)
     try:
@@ -199,6 +219,10 @@ def create_web_app(session: "SessionController") -> FastAPI:
         session.add_tts_amplitude_listener(_on_amplitude)
     except Exception:
         log.debug("amplitude listener subscription failed", exc_info=True)
+    try:
+        session.add_stt_partial_listener(_on_stt_partial)
+    except Exception:
+        log.debug("stt partial listener subscription failed", exc_info=True)
 
     def _on_memory_added(memory: Any) -> None:
         try:
@@ -356,6 +380,27 @@ def create_web_app(session: "SessionController") -> FastAPI:
                 "silence_seconds": float(getattr(s.agent, "proactive_silence_seconds", 45.0)),
                 "cooldown_seconds": float(getattr(s.agent, "proactive_cooldown_seconds", 120.0)),
             },
+            "endpointing": {
+                "enabled": bool(getattr(s.endpointing, "enabled", True)),
+                "use_partial_transcript": bool(
+                    getattr(s.endpointing, "use_partial_transcript", True)
+                ),
+                "phrase_silence_seconds": float(
+                    getattr(s.endpointing, "phrase_silence_seconds", 1.0)
+                ),
+                "turn_silence_seconds": float(
+                    getattr(s.endpointing, "turn_silence_seconds", 3.0)
+                ),
+                "fast_close_silence_seconds": float(
+                    getattr(s.endpointing, "fast_close_silence_seconds", 0.6)
+                ),
+                "hesitation_extend_to_turn": bool(
+                    getattr(s.endpointing, "hesitation_extend_to_turn", True)
+                ),
+                "barge_in_min_speech_seconds": float(
+                    getattr(s.endpointing, "barge_in_min_speech_seconds", 0.7)
+                ),
+            },
             "tools": {
                 "enabled": bool(getattr(s.tools, "enabled", True)),
                 "get_time": bool(getattr(s.tools, "get_time", True)),
@@ -421,6 +466,47 @@ def create_web_app(session: "SessionController") -> FastAPI:
                 session.rebuild_tool_registry()
             except Exception:
                 log.debug("rebuild_tool_registry failed", exc_info=True)
+        endpointing_cfg = payload.get("endpointing") or {}
+        if endpointing_cfg:
+            ecfg = session._settings.endpointing
+            if "enabled" in endpointing_cfg:
+                ecfg.enabled = bool(endpointing_cfg["enabled"])
+            if "use_partial_transcript" in endpointing_cfg:
+                ecfg.use_partial_transcript = bool(
+                    endpointing_cfg["use_partial_transcript"]
+                )
+            if "hesitation_extend_to_turn" in endpointing_cfg:
+                ecfg.hesitation_extend_to_turn = bool(
+                    endpointing_cfg["hesitation_extend_to_turn"]
+                )
+            if "phrase_silence_seconds" in endpointing_cfg:
+                try:
+                    ecfg.phrase_silence_seconds = max(
+                        0.2, float(endpointing_cfg["phrase_silence_seconds"])
+                    )
+                except (TypeError, ValueError):
+                    pass
+            if "turn_silence_seconds" in endpointing_cfg:
+                try:
+                    ecfg.turn_silence_seconds = max(
+                        0.4, float(endpointing_cfg["turn_silence_seconds"])
+                    )
+                except (TypeError, ValueError):
+                    pass
+            if "fast_close_silence_seconds" in endpointing_cfg:
+                try:
+                    ecfg.fast_close_silence_seconds = max(
+                        0.1, float(endpointing_cfg["fast_close_silence_seconds"])
+                    )
+                except (TypeError, ValueError):
+                    pass
+            if "barge_in_min_speech_seconds" in endpointing_cfg:
+                try:
+                    ecfg.barge_in_min_speech_seconds = max(
+                        0.0, float(endpointing_cfg["barge_in_min_speech_seconds"])
+                    )
+                except (TypeError, ValueError):
+                    pass
         return get_settings()
 
     @app.get("/api/models")
@@ -533,6 +619,14 @@ def create_web_app(session: "SessionController") -> FastAPI:
             raise HTTPException(400, "reaction_mapping must be an object")
         idle = payload.get("idle_motion_group")
         talk = payload.get("talk_motion_group")
+        scale = payload.get("scale_multiplier")
+        if scale is not None:
+            try:
+                scale = float(scale)
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(
+                    400, "scale_multiplier must be a number",
+                ) from exc
         manifest = session.persona_manager.update_mapping(
             reaction_mapping=(
                 {str(k): str(v) for k, v in reaction_mapping.items()}
@@ -541,6 +635,7 @@ def create_web_app(session: "SessionController") -> FastAPI:
             ),
             idle_motion_group=str(idle) if idle is not None else None,
             talk_motion_group=str(talk) if talk is not None else None,
+            scale_multiplier=scale,
         )
         if manifest is None:
             raise HTTPException(404, "no active persona")

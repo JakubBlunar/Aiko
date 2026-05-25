@@ -174,7 +174,35 @@ class MicrophoneCapture:
         stop_requested: Callable[[], bool] | None = None,
         on_speech_start: Callable[[], None] | None = None,
         on_audio_level: Callable[[float], None] | None = None,
+        on_chunk: Callable[[np.ndarray], None] | None = None,
+        endpoint_check: Callable[[float, int], str] | None = None,
     ) -> np.ndarray | None:
+        """Capture a single phrase and return mono float32 samples.
+
+        ``on_chunk`` is invoked with every speech-region chunk (after a
+        copy) so the caller can feed a parallel STT recorder for live
+        partial transcripts. It is **not** called during pre-roll or
+        silence-only chunks before speech starts; once speech is detected
+        the pre-roll buffer is replayed so the parallel recorder gets the
+        same audio the WAV does.
+
+        ``endpoint_check`` lets the caller override the simple
+        ``silence_seconds_to_stop`` cap with a tiered decision based on
+        the live partial transcript. Called once per silence chunk after
+        ``min_speech_seconds_before_stop`` has elapsed; receives
+        ``(silence_seconds, spoken_chunks)`` and returns one of:
+
+        - ``"commit"`` — break now (e.g. sentence-final partial at the
+          fast tier, or hard turn boundary reached).
+        - ``"extend"`` — reset the silence counter (hesitation marker
+          detected; user gets a fresh phrase budget).
+        - ``"wait"`` — fall through to the loop's normal cap; the
+          ``silence_seconds_to_stop`` value the caller passed acts as the
+          hard turn boundary.
+
+        When ``endpoint_check`` is ``None`` the loop uses pure
+        ``silence_seconds_to_stop`` (legacy behaviour).
+        """
         sample_rate = self._settings.sample_rate
         channels = self._settings.channels
         chunk_frames = int(sample_rate * 0.1)
@@ -261,6 +289,16 @@ class MicrophoneCapture:
                             on_speech_start()
                         # pre_roll already includes the current chunk; do not append it twice.
                         captured.extend(pre_roll)
+                        # Replay the pre-roll into the parallel STT recorder
+                        # so its partial reflects the same audio the WAV
+                        # contains (otherwise the first ~1.2 s of speech
+                        # is missing from `stt.text()`).
+                        if on_chunk is not None:
+                            for buffered in pre_roll:
+                                try:
+                                    on_chunk(buffered)
+                                except Exception:
+                                    pass
                 else:
                     if (
                         max_speech_duration is not None
@@ -270,6 +308,13 @@ class MicrophoneCapture:
                         break
 
                     captured.append(chunk.copy())
+                    if on_chunk is not None:
+                        try:
+                            on_chunk(chunk)
+                        except Exception:
+                            # The parallel STT feed is best-effort; we never
+                            # want a feed_audio error to abort the capture.
+                            pass
                     spoken_chunks += 1
                     has_vad = vad is not None
                     if has_vad:
@@ -284,6 +329,27 @@ class MicrophoneCapture:
 
                     if spoken_chunks < speech_start_grace_chunks:
                         continue
+
+                    # Tiered endpointing: ask the caller's check first. It
+                    # can break early (commit) or extend the window
+                    # (extend → reset the silence counter so the user gets
+                    # a fresh phrase budget after a hesitation marker).
+                    # The loop's own silence_chunks_to_stop is the hard
+                    # cap and fires regardless when reached.
+                    if (
+                        endpoint_check is not None
+                        and spoken_chunks >= min_speech_chunks_before_stop
+                    ):
+                        try:
+                            decision = endpoint_check(
+                                silence_chunks * 0.1, spoken_chunks
+                            )
+                        except Exception:
+                            decision = "wait"
+                        if decision == "commit":
+                            break
+                        elif decision == "extend":
+                            silence_chunks = 0
 
                     if (
                         silence_chunks >= silence_chunks_to_stop
@@ -359,6 +425,8 @@ class MicrophoneCapture:
         stop_requested: Callable[[], bool] | None = None,
         on_speech_start: Callable[[], None] | None = None,
         on_audio_level: Callable[[float], None] | None = None,
+        on_chunk: Callable[[np.ndarray], None] | None = None,
+        endpoint_check: Callable[[float, int], str] | None = None,
     ) -> Path | None:
         samples = self.capture_phrase(
             max_seconds=max_seconds,
@@ -373,6 +441,8 @@ class MicrophoneCapture:
             stop_requested=stop_requested,
             on_speech_start=on_speech_start,
             on_audio_level=on_audio_level,
+            on_chunk=on_chunk,
+            endpoint_check=endpoint_check,
         )
         if samples is None:
             return None

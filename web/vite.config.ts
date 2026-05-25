@@ -78,6 +78,12 @@ export default defineConfig({
     proxy: {
       "/api": httpProxy,
       "/persona": httpProxy,
+      // ``/persona`` and ``/personas`` are mounted as separate static
+      // dirs by the FastAPI backend (``data/persona`` for prose persona
+      // text, ``data/personas`` for uploaded Live2D models). Vite uses
+      // path-segment-aware matching, so ``/persona`` does NOT cover
+      // ``/personas/...`` — list both explicitly.
+      "/personas": httpProxy,
       "/ws": wsProxy,
     },
   },

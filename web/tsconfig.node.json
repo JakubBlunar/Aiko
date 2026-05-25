@@ -1,11 +1,19 @@
 {
+  // Type-checks ``vite.config.ts`` only. Vite reads the file directly
+  // via its embedded esbuild — it never asks tsc to compile it — so we
+  // set ``noEmit: true`` to prevent ``tsc -b`` from dropping a stale
+  // ``vite.config.js`` + ``vite.config.d.ts`` next to the source. The
+  // top-level ``tsconfig.json`` no longer references this project for
+  // the same reason: TS forbids ``noEmit`` on referenced projects, and
+  // a project reference would force the emit back on. Tooling and IDEs
+  // discover this file via the ``include`` glob below.
   "compilerOptions": {
-    "composite": true,
     "skipLibCheck": true,
     "module": "ESNext",
     "moduleResolution": "bundler",
     "allowSyntheticDefaultImports": true,
-    "strict": true
+    "strict": true,
+    "noEmit": true
   },
   "include": ["vite.config.ts"]
 }

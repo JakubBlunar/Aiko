@@ -140,8 +140,17 @@ export function useAssistantSocket(): {
         store.setStatus(`Listening: ${evt.text}`);
         break;
 
+      case "stt_partial_live":
+        // Single transient line above the chat input — the latest partial
+        // we're hearing right now. Replaces any previous partial in place.
+        store.setCurrentPartial(evt.text);
+        break;
+
       case "stt_final":
         store.setLastTranscript(evt.text);
+        // Clear the live partial so the transient line vanishes the
+        // instant the real transcript lands.
+        store.setCurrentPartial("");
         store.setStatus("");
         break;
 
@@ -235,7 +244,19 @@ export function useAssistantSocket(): {
     const ws = new WebSocket(resolveWsUrl());
     socketRef.current = ws;
 
+    // React StrictMode (and HMR) double-invoke the mount effect, so the
+    // FIRST socket's ``open`` / ``message`` / ``close`` events can fire
+    // *after* the second mount has installed a fresh socket. Without
+    // this guard the orphaned socket would (a) dispatch its messages
+    // through ``handleEvent`` — duplicating every streamed token in the
+    // chat — and (b) when its ``close`` fires, null out the active
+    // socket ref and schedule a reconnect, leaving us with two live
+    // connections forever. Bail out unless the listener fired on the
+    // socket that's still the canonical one.
+    const isCurrent = () => socketRef.current === ws;
+
     ws.addEventListener("open", () => {
+      if (!isCurrent()) return;
       setConnection({ status: "connected", lastError: null });
       if (pingIntervalRef.current) {
         window.clearInterval(pingIntervalRef.current);
@@ -248,6 +269,7 @@ export function useAssistantSocket(): {
     });
 
     ws.addEventListener("message", (event) => {
+      if (!isCurrent()) return;
       try {
         const parsed = JSON.parse(event.data) as WsServerEvent;
         handleEvent(parsed);
@@ -270,6 +292,7 @@ export function useAssistantSocket(): {
     };
 
     ws.addEventListener("close", () => {
+      if (!isCurrent()) return;
       setConnection({ status: "disconnected", lastError: null });
       if (pingIntervalRef.current) {
         window.clearInterval(pingIntervalRef.current);
@@ -280,6 +303,7 @@ export function useAssistantSocket(): {
     });
 
     ws.addEventListener("error", () => {
+      if (!isCurrent()) return;
       setConnection({ status: "disconnected", lastError: "websocket error" });
     });
   }, [handleEvent, setConnection]);

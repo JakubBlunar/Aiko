@@ -50,6 +50,7 @@ class RealtimeSttService:
         self._last_error: str | None = None
         self._loaded_model: str = ""
         self._loaded_language: str = ""
+        self._context_active: bool = False
         if AudioToTextRecorder is not None:
             t0 = time.monotonic()
             try:
@@ -122,17 +123,31 @@ class RealtimeSttService:
             return ""
 
     def start_context(self) -> None:
-        """Enter recorder context (start processing). Use with feed_audio then text()."""
-        if self._recorder is not None and hasattr(self._recorder, "__enter__"):
+        """Enter recorder context (idempotent). Use with feed_audio then text()."""
+        if self._recorder is None or not hasattr(self._recorder, "__enter__"):
+            return
+        if getattr(self, "_context_active", False):
+            return
+        try:
             self._recorder.__enter__()
+            self._context_active = True
+        except Exception as exc:
+            self._last_error = f"start_context failed: {exc}"
+            log.warning("STT start_context failed: exc=%r", exc)
 
     def stop_context(self) -> None:
-        """Exit recorder context."""
-        if self._recorder is not None and hasattr(self._recorder, "__exit__"):
-            try:
-                self._recorder.__exit__(None, None, None)
-            except (BrokenPipeError, OSError, EOFError):
-                pass
+        """Exit recorder context (idempotent)."""
+        if self._recorder is None or not hasattr(self._recorder, "__exit__"):
+            return
+        if not getattr(self, "_context_active", False):
+            return
+        try:
+            self._recorder.__exit__(None, None, None)
+        except (BrokenPipeError, OSError, EOFError):
+            pass
+        except Exception as exc:
+            log.debug("STT stop_context raised: exc=%r", exc)
+        self._context_active = False
 
     def record_until_silence(
         self,
@@ -165,9 +180,14 @@ class RealtimeSttService:
             device if device is not None else "default",
             sample_rate, max_seconds, silence_seconds,
         )
+        # Don't fight a context that's already managed elsewhere (LiveSession
+        # keeps the recorder live across phrases). We only start/stop when
+        # this method is the owner.
+        owns_context = not self._context_active
         result = ""
         try:
-            self.start_context()
+            if owns_context:
+                self.start_context()
             with sd.InputStream(
                 samplerate=sample_rate,
                 channels=channels,
@@ -194,7 +214,8 @@ class RealtimeSttService:
             result = self.text()
             return result
         finally:
-            self.stop_context()
+            if owns_context:
+                self.stop_context()
             duration_ms = (time.perf_counter() - start) * 1000.0
             chars = len(result)
             # INFO: one line per voice turn — comparable to "turn done" for typed
@@ -214,6 +235,10 @@ class RealtimeSttService:
         path = Path(audio_path)
         if not path.exists():
             return ""
+        # Don't fight a context that's already managed elsewhere. When the
+        # caller (e.g. LiveSession) holds the context open we still feed
+        # the WAV bytes; we just let them manage start/stop.
+        owns_context = not self._context_active
         try:
             with wave.open(str(path), "rb") as wav:
                 rate = wav.getframerate()
@@ -221,7 +246,8 @@ class RealtimeSttService:
                 width = wav.getsampwidth()
                 chunk_frames = rate // 5
                 chunk_bytes = chunk_frames * nch * width
-                self.start_context()
+                if owns_context:
+                    self.start_context()
                 try:
                     while True:
                         data = wav.readframes(chunk_frames)
@@ -230,6 +256,7 @@ class RealtimeSttService:
                         self._recorder.feed_audio(data)
                     return self.text()
                 finally:
-                    self.stop_context()
+                    if owns_context:
+                        self.stop_context()
         except Exception:
             return ""

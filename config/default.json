@@ -12,7 +12,8 @@
   },
   "chat_llm": {
     "provider": "ollama",
-    "max_tokens": 512
+    "max_tokens": 512,
+    "keep_alive": "30m"
   },
   "agent": {
     "proactive_silence_seconds": 45,
@@ -95,5 +96,14 @@
     "get_time": true,
     "recall": true,
     "web_search": true
+  },
+  "endpointing": {
+    "enabled": true,
+    "use_partial_transcript": true,
+    "phrase_silence_seconds": 1.0,
+    "turn_silence_seconds": 3.0,
+    "fast_close_silence_seconds": 0.6,
+    "hesitation_extend_to_turn": true,
+    "barge_in_min_speech_seconds": 0.7
   }
 }

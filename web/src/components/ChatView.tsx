@@ -43,6 +43,7 @@ export function ChatView({ send }: ChatViewProps) {
   const audioLevel = useAssistantStore((s) => s.audioLevel);
   const lastTranscript = useAssistantStore((s) => s.lastTranscript);
   const setLastTranscript = useAssistantStore((s) => s.setLastTranscript);
+  const currentPartial = useAssistantStore((s) => s.currentPartial);
   const toolActivity = useAssistantStore((s) => s.toolActivity);
   const sessionKey = useAssistantStore((s) => s.sessionKey);
 
@@ -52,6 +53,15 @@ export function ChatView({ send }: ChatViewProps) {
   // Tracks whether we've already done the "land at bottom" jump for the
   // current session. Reset when the session key or first-load completes.
   const initialScrolledRef = useRef<string | null>(null);
+  // ``followingTail`` captures the user's intent: true while they are
+  // pinned to (or near) the bottom; false the moment they scroll up to
+  // read history. We update this from ``scroll`` events so the value
+  // reflects the *previous* layout, before a new message arrives. Then
+  // when a message lands, we stick to bottom iff this flag is true —
+  // which sidesteps the old "compare distance against the new
+  // scrollHeight" race that broke for messages taller than the
+  // threshold (anything > 120 px would silently un-stick the chat).
+  const followingTailRef = useRef(true);
 
   // Hide the transcript pill ~3s after we receive a final transcript.
   useEffect(() => {
@@ -66,13 +76,30 @@ export function ChatView({ send }: ChatViewProps) {
     initialScrolledRef.current = null;
   }, [sessionKey]);
 
+  // Maintain ``followingTailRef`` from the user's scroll position. We
+  // use a small 32 px threshold here because the scroll listener fires
+  // *during* user gestures (no race with new messages), so its only
+  // job is detecting "is the user at the bottom right now?".
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+      followingTailRef.current = distance < 32;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+
   // Scroll behavior:
   //   1. On first paint with messages (or after a session switch), jump
   //      straight to the bottom — the user wants to land on the most
   //      recent message.
   //   2. On subsequent updates (streaming tokens, new turn), only stick
-  //      to the bottom if the user is already within ~120px of it, so
-  //      we don't yank them away while they're scrolling history.
+  //      to the bottom if the user was already at the tail just before
+  //      this update landed. ``followingTailRef`` is set from the
+  //      scroll listener above, so it reflects intent — not a heuristic
+  //      against the now-stale post-render geometry.
   useEffect(() => {
     const el = scrollRef.current;
     if (!el || messages.length === 0) return;
@@ -85,15 +112,16 @@ export function ChatView({ send }: ChatViewProps) {
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
           const node = scrollRef.current;
-          if (node) node.scrollTop = node.scrollHeight;
+          if (node) {
+            node.scrollTop = node.scrollHeight;
+            followingTailRef.current = true;
+          }
         });
       });
       return;
     }
 
-    const stickToBottom =
-      el.scrollHeight - el.scrollTop - el.clientHeight < 120;
-    if (stickToBottom) {
+    if (followingTailRef.current) {
       el.scrollTop = el.scrollHeight;
     }
   }, [messages, sessionKey]);
@@ -189,6 +217,7 @@ export function ChatView({ send }: ChatViewProps) {
             voiceMode={voiceMode}
             audioLevel={audioLevel}
             lastTranscript={lastTranscript}
+            currentPartial={currentPartial}
           />
           <div className="flex items-center gap-2">
             <MicButton
@@ -290,11 +319,17 @@ interface VoiceStripProps {
   voiceMode: "off" | "listening" | "transcribing" | "thinking" | "speaking";
   audioLevel: number;
   lastTranscript: string;
+  currentPartial: string;
 }
 
-function VoiceStrip({ voiceMode, audioLevel, lastTranscript }: VoiceStripProps) {
+function VoiceStrip({
+  voiceMode,
+  audioLevel,
+  lastTranscript,
+  currentPartial,
+}: VoiceStripProps) {
   const isOn = voiceMode !== "off";
-  if (!isOn && !lastTranscript) {
+  if (!isOn && !lastTranscript && !currentPartial) {
     return null;
   }
   const labelMap: Record<VoiceStripProps["voiceMode"], string> = {
@@ -304,6 +339,9 @@ function VoiceStrip({ voiceMode, audioLevel, lastTranscript }: VoiceStripProps) 
     thinking: "Thinking…",
     speaking: "Speaking…",
   };
+  // Show the live partial only while we're actively listening — once
+  // the user has stopped talking the "you said:" pill takes over.
+  const showPartial = currentPartial && voiceMode === "listening";
   return (
     <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
       {isOn ? (
@@ -320,6 +358,12 @@ function VoiceStrip({ voiceMode, audioLevel, lastTranscript }: VoiceStripProps) 
             {labelMap[voiceMode]}
           </span>
           <AudioMeter level={audioLevel} active={voiceMode === "listening"} />
+        </span>
+      ) : null}
+      {showPartial ? (
+        <span className="inline-flex max-w-full items-center gap-2 truncate rounded-full border border-pink-400/20 bg-pink-500/5 px-3 py-1 text-pink-100/70">
+          <span className="text-pink-100/40">hearing:</span>
+          <span className="italic truncate">{currentPartial}…</span>
         </span>
       ) : null}
       {lastTranscript ? (
