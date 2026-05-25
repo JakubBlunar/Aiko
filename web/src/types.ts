@@ -129,7 +129,7 @@ export interface MemoriesResponse {
   enabled: boolean;
 }
 
-// ── Live2D persona ───────────────────────────────────────────────────
+// ── Live2D avatar (fixed Alexia bundle) ─────────────────────────────
 
 export interface ExpressionRef {
   name: string;
@@ -141,37 +141,108 @@ export interface MotionRef {
   file: string;
 }
 
-export interface Persona {
+/** Single overlay binding (sweat / blush / dizzy / question / ...). */
+export interface OverlayBinding {
+  /**
+   * Either a real Live2D parameter id (drives the param directly) or
+   * a synthetic ``"expr:<name>"`` value pointing at an expression
+   * file the renderer can call ``model.expression(name)`` on.
+   */
+  param_id: string;
+  on_value: number;
+  decay_ms: number;
+  label_en: string;
+}
+
+/** One parameter contribution inside a multi-param outfit binding. */
+export interface OutfitParam {
+  param_id: string;
+  on_value: number;
+}
+
+/** Outfit binding (day clothes / pajamas). Composed of one-or-more
+ * parameter contributions because real Cubism rigs almost always
+ * encode an outfit as a *combination* (clothes body + hood + pose
+ * flag), not a single toggle. */
+export interface OutfitBinding {
+  params: OutfitParam[];
+  label_en: string;
+  /** Other outfit names this one excludes (e.g. ``["day_clothes"]``). */
+  mutex_with: string[];
+}
+
+export interface CdiParameter {
   id: string;
+  name: string;
+  group_id?: string;
+}
+
+export interface CdiPart {
+  id: string;
+  name: string;
+}
+
+export interface AvatarSettingsKnobs {
+  scale_multiplier: number;
+  /** "auto" -> circadian-driven; "day" / "pajamas" -> forced. */
+  auto_outfit: "auto" | "day" | "pajamas";
+}
+
+export interface AvatarProfile {
   display_name: string;
-  /** 2 = Cubism 2.1, 3 = Cubism 3+. */
-  cubism_version: number;
-  /** Filename within /personas/active/ (e.g. ``senko.model3.json``). */
+  /** Filename within /avatar/ (e.g. ``Alexia.model3.json``). */
   entry_filename: string;
+  cubism_version: number;
   expressions: ExpressionRef[];
   motions: Record<string, MotionRef[]>;
   /** Mapping from reaction (cheerful/sad/...) to expression.name. */
   reaction_mapping: Record<string, string>;
   idle_motion_group: string | null;
   talk_motion_group: string | null;
-  /**
-   * Cubism 3 ``Groups[name=LipSync].Ids``. Empty for Cubism 2 or models
-   * that don't declare a LipSync group; the renderer falls back to the
-   * generic ``ParamMouthOpenY`` / ``PARAM_MOUTH_OPEN_Y`` defaults.
-   */
   lip_sync_ids?: string[];
-  /** Cubism 3 ``Groups[name=EyeBlink].Ids``. Reserved for future use. */
   eye_blink_ids?: string[];
-  /**
-   * Multiplier on top of the bounds-fit scale. 1.0 is "auto-fit", anything
-   * higher zooms in. Backend clamps to [0.3, 3.0].
-   */
-  scale_multiplier?: number;
-  uploaded_at: string;
+  parameters: CdiParameter[];
+  parts: CdiPart[];
+  /** Capability flags keyed by ``has_<name>`` (has_pajamas, has_blush, ...). */
+  capabilities: Record<string, boolean>;
+  overlays: Record<string, OverlayBinding>;
+  outfits: Record<string, OutfitBinding>;
+  /** All cat-tail param IDs in declaration order. Empty when the
+   * loaded model isn't a cat-girl rig. */
+  cat_tail_param_ids: string[];
+  /** All cat-ear segment param IDs in declaration order. Empty when
+   * the model has no per-side ear segments addressable. */
+  cat_ear_param_ids: string[];
+  /** User-tunable runtime knobs layered on top of the immutable profile. */
+  settings: AvatarSettingsKnobs;
+  /** False = the bundle directory was missing on disk at boot. */
+  loaded: boolean;
+  /** Latest circadian period (drives auto-outfit). */
+  circadian_period?: CircadianPeriod;
+  /** Resolved outfit ("pajamas"/"day"/""), recomputed server-side. */
+  resolved_outfit?: ResolvedOutfit;
 }
 
-export interface PersonaResponse {
-  persona: Persona | null;
+export interface AvatarResponse {
+  avatar: AvatarProfile;
+}
+
+/** Transient overlay pulse driven by ``[[overlay:X]]`` tags from the LLM. */
+export interface AvatarOverlayState {
+  name: string;
+  /** Wall-clock ms (Date.now() + duration_ms) when the pulse fades out. */
+  expiresAt: number;
+}
+
+/** One-shot motion playback driven by ``[[motion:X]]`` tags from the LLM.
+ * The renderer subscribes by reference identity (a fresh object indicates a
+ * new motion to play) and calls ``model.motion(group, index)``. */
+export interface AvatarMotionState {
+  name: string;
+  group: string;
+  index: number;
+  /** Wall-clock ms when the directive arrived; used as a debounce key. */
+  firedAt: number;
 }
 
 export interface MetricsSnapshot {
@@ -239,6 +310,19 @@ export interface MoodState {
   arousal: number;
 }
 
+export type CircadianPeriod =
+  | "late_night"
+  | "early_morning"
+  | "morning"
+  | "midday"
+  | "afternoon"
+  | "evening"
+  | "night"
+  | "";
+
+/** Resolved outfit name. ``""`` means the avatar has no outfit toggles at all. */
+export type ResolvedOutfit = "pajamas" | "day" | "";
+
 /** Phase 1a: backchannel hint derived from a stt_partial transcript. */
 export type BackchannelHint =
   | "agreement"
@@ -258,6 +342,7 @@ export type WsServerEvent =
       voice_active?: boolean;
       context_window?: number;
       context_source?: string;
+      avatar?: AvatarProfile;
     }
   | { type: "token"; chunk: string }
   | { type: "turn_done"; metrics: MetricsSnapshot }
@@ -294,7 +379,19 @@ export type WsServerEvent =
   | { type: "error"; message: string }
   | { type: "memory_added"; memory: Memory }
   | { type: "memory_deleted"; id: number }
-  | { type: "persona_changed"; persona: Persona | null }
+  | {
+      type: "avatar_settings_changed";
+      settings: AvatarSettingsKnobs;
+      resolved_outfit?: ResolvedOutfit;
+      circadian_period?: CircadianPeriod;
+    }
+  | { type: "avatar_overlay"; name: string; duration_ms: number }
+  | {
+      type: "avatar_motion";
+      name: string;
+      group: string;
+      index: number;
+    }
   | { type: "audio_amplitude"; level: number }
   | {
       type: "tool_event";
@@ -306,7 +403,11 @@ export type WsServerEvent =
         arguments?: Record<string, unknown>;
       };
     }
-  | ({ type: "mood_state" } & MoodState)
+  | ({
+      type: "mood_state";
+      circadian_period?: CircadianPeriod;
+      resolved_outfit?: ResolvedOutfit;
+    } & MoodState)
   | { type: "backchannel"; hint: BackchannelHint; partial: string }
   | { type: "pong" };
 

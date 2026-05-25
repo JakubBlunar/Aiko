@@ -77,13 +77,12 @@ export default defineConfig({
     port: 5173,
     proxy: {
       "/api": httpProxy,
-      "/persona": httpProxy,
-      // ``/persona`` and ``/personas`` are mounted as separate static
-      // dirs by the FastAPI backend (``data/persona`` for prose persona
-      // text, ``data/personas`` for uploaded Live2D models). Vite uses
-      // path-segment-aware matching, so ``/persona`` does NOT cover
-      // ``/personas/...`` — list both explicitly.
-      "/personas": httpProxy,
+      // ``/avatar`` -> the bundled Alexia model files (FastAPI mounts
+      // them out of ``live-2d-models/Alexia/`` at runtime).
+      "/avatar": httpProxy,
+      // ``/persona-text`` -> ``data/persona/`` (self-image text used
+      // by the inner-life prompt; nothing to do with the avatar).
+      "/persona-text": httpProxy,
       "/ws": wsProxy,
     },
   },

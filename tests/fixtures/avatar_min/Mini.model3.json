@@ -1,0 +1,34 @@
+{
+  "Version": 3,
+  "FileReferences": {
+    "Moc": "Mini.moc3",
+    "Textures": ["textures/texture_00.png"],
+    "Physics": "Mini.physics3.json",
+    "DisplayInfo": "Mini.cdi3.json",
+    "Expressions": [
+      { "Name": "lh", "File": "expressions/lh.exp3.json" },
+      { "Name": "h",  "File": "expressions/h.exp3.json" },
+      { "Name": "wh", "File": "expressions/wh.exp3.json" },
+      { "Name": "lzx", "File": "expressions/lzx.exp3.json" },
+      { "Name": "yf", "File": "expressions/yf.exp3.json" },
+      { "Name": "yfmz", "File": "expressions/yfmz.exp3.json" }
+    ],
+    "Motions": {
+      "Idle": [
+        { "File": "motion/idle_loop.motion3.json" }
+      ]
+    }
+  },
+  "Groups": [
+    {
+      "Target": "Parameter",
+      "Name": "LipSync",
+      "Ids": ["ParamMouthOpenY"]
+    },
+    {
+      "Target": "Parameter",
+      "Name": "EyeBlink",
+      "Ids": ["ParamEyeLOpen", "ParamEyeROpen"]
+    }
+  ]
+}

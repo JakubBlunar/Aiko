@@ -10,7 +10,13 @@ import unittest
 from pathlib import Path
 
 from app.core.chat_database import ChatDatabase
-from app.core.prompt_assembler import PromptAssembler, PromptTelemetry
+from app.core.prompt_assembler import (
+    PromptAssembler,
+    PromptTelemetry,
+    _build_motion_grammar_addendum,
+    _build_outfit_grammar_addendum,
+    _build_overlay_grammar_addendum,
+)
 
 
 class _TempDb:
@@ -191,6 +197,74 @@ class PromptAssemblerBudgetTests(unittest.TestCase):
             )
             self.assertGreater(telem_normal.rag_tokens, 0)
             self.assertEqual(telem_aggressive.rag_tokens, 0)
+
+
+class GrammarAddendumTests(unittest.TestCase):
+    """Spot-checks on the new dynamic prompt addendum builders.
+
+    These are the prompt-side surface that nudges the LLM into using
+    ``[[overlay:tail_wag]]`` / ``[[outfit:day]]`` etc. instead of
+    falling back to italic prose stage directions.
+    """
+
+    def test_overlay_addendum_includes_both_winks_under_has_wink(self) -> None:
+        # ``has_wink`` is the single capability flag covering both
+        # eyes; the gesture grammar advertises ``wink_left`` AND
+        # ``wink_right`` even though there's no separate flag for
+        # each. Without the flag-override this test would catch a
+        # silent regression where the wink lines disappear.
+        block = _build_overlay_grammar_addendum({
+            "has_wink": True,
+            "has_tail_wag": True,
+        })
+        self.assertIn("[[overlay:wink_left]]", block)
+        self.assertIn("[[overlay:wink_right]]", block)
+        self.assertIn("[[overlay:tail_wag]]", block)
+
+    def test_overlay_addendum_split_into_emotional_and_gesture_tiers(self) -> None:
+        block = _build_overlay_grammar_addendum({
+            "has_blush": True,
+            "has_wink": True,
+            "has_tail_wag": True,
+        })
+        self.assertIn("Emotional overlays", block)
+        self.assertIn("Body gestures", block)
+        # The gesture tier explicitly forbids prose stage directions.
+        self.assertIn("*shakes tail*", block)
+        self.assertIn("never replace", block.lower())
+
+    def test_overlay_addendum_empty_when_no_caps(self) -> None:
+        self.assertEqual(_build_overlay_grammar_addendum({}), "")
+        self.assertEqual(_build_overlay_grammar_addendum(None), "")
+
+    def test_outfit_addendum_advertises_only_what_rig_supports(self) -> None:
+        # The bullet rule lines (``- [[outfit:X]]``) are gated on the
+        # capability flags. The illustrative example may still mention
+        # ``[[outfit:day]]`` even when the rig only supports pajamas;
+        # we check the bullet specifically.
+        block = _build_outfit_grammar_addendum({"has_pajamas": True})
+        self.assertIn("- [[outfit:pajamas]]", block)
+        self.assertNotIn("- [[outfit:day]]", block)
+        block2 = _build_outfit_grammar_addendum({"has_day_clothes": True})
+        self.assertIn("- [[outfit:day]]", block2)
+        self.assertNotIn("- [[outfit:pajamas]]", block2)
+
+    def test_outfit_addendum_empty_without_outfit_caps(self) -> None:
+        self.assertEqual(
+            _build_outfit_grammar_addendum({"has_blush": True}),
+            "",
+        )
+
+    def test_motion_addendum_intersects_rig_with_registry(self) -> None:
+        # Rig ships ``dh`` (cloth sway, not in registry) and ``wave``
+        # (in registry). Only the wave should surface.
+        block = _build_motion_grammar_addendum(["dh", "wave"])
+        self.assertIn("[[motion:wave]]", block)
+        self.assertNotIn("[[motion:dh]]", block)
+
+    def test_motion_addendum_empty_when_no_recognised_motions(self) -> None:
+        self.assertEqual(_build_motion_grammar_addendum(["dh"]), "")
+        self.assertEqual(_build_motion_grammar_addendum([]), "")
 
 
 if __name__ == "__main__":

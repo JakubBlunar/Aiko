@@ -30,7 +30,6 @@ if TYPE_CHECKING:
     from app.core.session_controller import SessionController
 
 from app.core.live_session import LiveSession
-from app.core.persona_manager import PersonaError
 
 
 log = logging.getLogger("app.web.server")
@@ -38,12 +37,11 @@ log = logging.getLogger("app.web.server")
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _DIST_DIR = _PROJECT_ROOT / "web" / "dist"
-_PERSONA_DIR = _PROJECT_ROOT / "data" / "persona"
-_PERSONAS_ROOT = _PROJECT_ROOT / "data" / "personas"
-
-# Maximum upload size for a Live2D model zip (matches the in-zip uncompressed
-# cap inside PersonaManager).
-_MAX_PERSONA_UPLOAD_BYTES = 200 * 1024 * 1024  # 200 MB compressed
+# ``data/persona`` is unrelated to the Live2D pipeline — it stores the
+# self-image text used by the inner-life prompt. We rename the static
+# mount to ``/persona-text/`` so it doesn't collide with the new
+# ``/avatar/`` mount and so future readers don't confuse the two.
+_PERSONA_TEXT_DIR = _PROJECT_ROOT / "data" / "persona"
 
 
 # ── Connection registry ────────────────────────────────────────────────
@@ -249,6 +247,37 @@ def create_web_app(session: "SessionController") -> FastAPI:
         session.add_tool_event_listener(_on_tool_event)
     except Exception:
         log.debug("tool event listener subscription failed", exc_info=True)
+
+    def _on_avatar_settings(settings_snapshot: dict[str, Any]) -> None:
+        # Inline the resolved outfit + circadian period so the
+        # frontend cross-fade reacts the *moment* the LLM emits
+        # [[outfit:X]] (or the user flips auto_outfit), instead of
+        # waiting for the next mood_state broadcast.
+        hub.broadcast({
+            "type": "avatar_settings_changed",
+            "settings": dict(settings_snapshot),
+            "resolved_outfit": session.resolve_auto_outfit(),
+            "circadian_period": session.current_circadian_period(),
+        })
+
+    def _on_avatar_overlay(payload: dict[str, Any]) -> None:
+        hub.broadcast({"type": "avatar_overlay", **payload})
+
+    def _on_avatar_motion(payload: dict[str, Any]) -> None:
+        hub.broadcast({"type": "avatar_motion", **payload})
+
+    try:
+        session.add_avatar_settings_listener(_on_avatar_settings)
+    except Exception:
+        log.debug("avatar settings listener subscription failed", exc_info=True)
+    try:
+        session.add_avatar_overlay_listener(_on_avatar_overlay)
+    except Exception:
+        log.debug("avatar overlay listener subscription failed", exc_info=True)
+    try:
+        session.add_avatar_motion_listener(_on_avatar_motion)
+    except Exception:
+        log.debug("avatar motion listener subscription failed", exc_info=True)
 
     # ── Live (continuous voice) session ─────────────────────────────
     # One global instance per backend; SessionController already serializes
@@ -564,84 +593,40 @@ def create_web_app(session: "SessionController") -> FastAPI:
         hub.broadcast({"type": "memory_deleted", "id": int(memory_id)})
         return JSONResponse({"deleted": int(memory_id)})
 
-    # ── REST: Live2D persona (avatar) ───────────────────────────────
+    # ── REST: Live2D avatar (fixed Alexia bundle) ───────────────────
 
-    def _persona_payload() -> dict[str, Any] | None:
-        manifest = session.persona_manager.current()
-        return manifest.to_dict() if manifest else None
+    @app.get("/api/avatar")
+    def get_avatar() -> JSONResponse:
+        return JSONResponse({"avatar": session.avatar_payload()})
 
-    @app.get("/api/persona")
-    def get_persona() -> JSONResponse:
-        return JSONResponse({"persona": _persona_payload()})
-
-    @app.post("/api/persona/upload")
-    async def upload_persona(file: UploadFile = File(...)) -> JSONResponse:
-        if not file.filename:
-            raise HTTPException(400, "missing filename")
-        lowered = file.filename.lower()
-        if not lowered.endswith(".zip"):
-            raise HTTPException(400, "expected a .zip file")
-        body = await file.read()
-        if len(body) == 0:
-            raise HTTPException(400, "uploaded file is empty")
-        if len(body) > _MAX_PERSONA_UPLOAD_BYTES:
-            raise HTTPException(
-                413,
-                f"upload too large (limit {_MAX_PERSONA_UPLOAD_BYTES // (1024 * 1024)} MB)",
-            )
-        import io as _io
-        buffer = _io.BytesIO(body)
-        try:
-            display = Path(file.filename).stem
-            manifest = session.persona_manager.install_from_zip(
-                buffer,
-                display_name=display or "Persona",
-            )
-        except PersonaError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        except Exception as exc:
-            log.exception("persona upload failed")
-            raise HTTPException(500, f"upload failed: {exc}") from exc
-        payload = manifest.to_dict()
-        hub.broadcast({"type": "persona_changed", "persona": payload})
-        return JSONResponse({"persona": payload})
-
-    @app.delete("/api/persona")
-    def delete_persona() -> JSONResponse:
-        removed = session.persona_manager.delete()
-        hub.broadcast({"type": "persona_changed", "persona": None})
-        return JSONResponse({"removed": removed})
-
-    @app.patch("/api/persona/mapping")
-    async def patch_persona_mapping(payload: dict[str, Any]) -> JSONResponse:
-        reaction_mapping = payload.get("reaction_mapping")
-        if reaction_mapping is not None and not isinstance(reaction_mapping, dict):
-            raise HTTPException(400, "reaction_mapping must be an object")
-        idle = payload.get("idle_motion_group")
-        talk = payload.get("talk_motion_group")
+    @app.patch("/api/avatar")
+    async def patch_avatar(payload: dict[str, Any]) -> JSONResponse:
         scale = payload.get("scale_multiplier")
+        outfit = payload.get("auto_outfit")
         if scale is not None:
             try:
-                scale = float(scale)
+                scale_value = float(scale)
             except (TypeError, ValueError) as exc:
                 raise HTTPException(
                     400, "scale_multiplier must be a number",
                 ) from exc
-        manifest = session.persona_manager.update_mapping(
-            reaction_mapping=(
-                {str(k): str(v) for k, v in reaction_mapping.items()}
-                if reaction_mapping
-                else None
-            ),
-            idle_motion_group=str(idle) if idle is not None else None,
-            talk_motion_group=str(talk) if talk is not None else None,
+            scale = scale_value
+        if outfit is not None:
+            outfit_normalized = str(outfit).strip().lower()
+            if outfit_normalized not in {"auto", "day", "pajamas"}:
+                raise HTTPException(
+                    400, "auto_outfit must be one of: auto, day, pajamas",
+                )
+            outfit = outfit_normalized
+        snapshot = session.update_avatar_settings(
             scale_multiplier=scale,
+            auto_outfit=outfit,
         )
-        if manifest is None:
-            raise HTTPException(404, "no active persona")
-        out = manifest.to_dict()
-        hub.broadcast({"type": "persona_changed", "persona": out})
-        return JSONResponse({"persona": out})
+        hub.broadcast({
+            "type": "avatar_settings_changed",
+            "settings": dict(snapshot),
+        })
+        return JSONResponse({"avatar": session.avatar_payload()})
 
     # ── REST: documents (RAG corpus) ────────────────────────────────
 
@@ -696,19 +681,29 @@ def create_web_app(session: "SessionController") -> FastAPI:
             raise HTTPException(404, "document not found")
         return JSONResponse({"deleted": document_id, "documents": ingestor.list_documents()})
 
-    # ── Persona / static assets ─────────────────────────────────────
+    # ── Avatar / static assets ──────────────────────────────────────
 
-    # Always mount /personas so the active model is reachable as soon as it's
-    # uploaded. The directory is created up-front so StaticFiles doesn't 500.
-    _PERSONAS_ROOT.mkdir(parents=True, exist_ok=True)
+    # Bundled Live2D avatar (Alexia by default). The directory is
+    # gitignored, so we tolerate it being missing at boot — the
+    # SessionController already fell back to ``avatar = None`` in that
+    # case and the front-end shows the empty-avatar placeholder.
+    avatar_root = session.avatar_root
+    avatar_root.mkdir(parents=True, exist_ok=True)
     app.mount(
-        "/personas",
-        StaticFiles(directory=str(_PERSONAS_ROOT), check_dir=False),
-        name="personas",
+        "/avatar",
+        StaticFiles(directory=str(avatar_root), check_dir=False),
+        name="avatar",
     )
 
-    if _PERSONA_DIR.exists():
-        app.mount("/persona", StaticFiles(directory=str(_PERSONA_DIR)), name="persona")
+    # Self-image text mount (data/persona/self_image.txt). Renamed to
+    # ``/persona-text/`` to avoid the singular-vs-plural footgun the
+    # avatar work introduced.
+    if _PERSONA_TEXT_DIR.exists():
+        app.mount(
+            "/persona-text",
+            StaticFiles(directory=str(_PERSONA_TEXT_DIR)),
+            name="persona-text",
+        )
 
     if _DIST_DIR.exists():
         app.mount(
@@ -724,7 +719,7 @@ def create_web_app(session: "SessionController") -> FastAPI:
         # SPA fallback: every non-API GET returns index.html so React Router works.
         @app.get("/{full_path:path}")
         def spa_fallback(full_path: str) -> FileResponse:
-            if full_path.startswith(("api/", "ws", "persona/", "personas/", "assets/", "live2d/")):
+            if full_path.startswith(("api/", "ws", "avatar/", "persona-text/", "assets/", "live2d/")):
                 raise HTTPException(404, "not found")
             target = _DIST_DIR / full_path
             if target.is_file():
@@ -763,7 +758,8 @@ def create_web_app(session: "SessionController") -> FastAPI:
                 "voice_active": bool(live_session.is_active),
                 "context_window": session.context_window_size,
                 "context_source": session.context_window_source,
-            }))
+                "avatar": session.avatar_payload(),
+            }, default=str))
         except Exception:
             pass
 

@@ -42,16 +42,19 @@ export function useAssistantSocket(): {
             evt.context_source ?? "fallback",
           );
         }
-        // Re-sync voice mode if the backend was already running a loop
-        // when this socket connected (e.g. page refresh mid-session).
         store.setVoiceMode(evt.voice_active ? "listening" : "off");
-        // Pull current persona once we know we're connected so the avatar
-        // hydrates on a hard refresh.
-        api.getPersona()
-          .then((res) => store.setPersona(res.persona))
-          .catch(() => {
-            /* persona endpoint missing or backend offline -- ignore */
-          });
+        // The hello frame includes the avatar payload; on a stale
+        // backend that doesn't, fall back to a /api/avatar fetch so
+        // the renderer hydrates anyway.
+        if (evt.avatar) {
+          store.setAvatar(evt.avatar);
+        } else {
+          api.getAvatar()
+            .then((res) => store.setAvatar(res.avatar))
+            .catch(() => {
+              /* avatar endpoint missing or backend offline -- ignore */
+            });
+        }
         break;
 
       case "session_changed":
@@ -200,8 +203,34 @@ export function useAssistantSocket(): {
         store.removeMemory(evt.id);
         break;
 
-      case "persona_changed":
-        store.setPersona(evt.persona);
+      case "avatar_settings_changed":
+        store.setAvatarSettings(evt.settings);
+        // Server now inlines resolved_outfit + circadian_period so the
+        // cross-fade reacts immediately to LLM [[outfit:X]] directives
+        // and to the user flipping ``auto_outfit`` via the panel
+        // (instead of waiting for the next mood_state broadcast).
+        if (evt.circadian_period !== undefined || evt.resolved_outfit !== undefined) {
+          store.updateAvatarWorldState({
+            circadian_period: evt.circadian_period,
+            resolved_outfit: evt.resolved_outfit,
+          });
+        }
+        break;
+
+      case "avatar_overlay":
+        store.setAvatarOverlay({
+          name: evt.name,
+          expiresAt: Date.now() + Math.max(150, evt.duration_ms),
+        });
+        break;
+
+      case "avatar_motion":
+        store.setAvatarMotion({
+          name: evt.name,
+          group: evt.group,
+          index: evt.index,
+          firedAt: Date.now(),
+        });
         break;
 
       case "audio_amplitude":
@@ -225,6 +254,12 @@ export function useAssistantSocket(): {
           valence: evt.valence,
           arousal: evt.arousal,
         });
+        if (evt.circadian_period || evt.resolved_outfit) {
+          store.updateAvatarWorldState({
+            circadian_period: evt.circadian_period,
+            resolved_outfit: evt.resolved_outfit,
+          });
+        }
         break;
 
       case "backchannel":

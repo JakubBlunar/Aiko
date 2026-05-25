@@ -1,6 +1,6 @@
 import { useState } from "react";
+import { AvatarPanel } from "./components/AvatarPanel";
 import { ChatView } from "./components/ChatView";
-import { PersonaPanel } from "./components/PersonaPanel";
 import { SessionSidebar } from "./components/SessionSidebar";
 import { SettingsDrawer } from "./components/SettingsDrawer";
 import { Toasts } from "./components/Toasts";
@@ -19,7 +19,7 @@ export default function App() {
       <main className="flex h-full min-w-0 flex-1">
         <ChatView send={send} />
       </main>
-      <PersonaPanel />
+      <AvatarPanel />
       <SettingsDrawer open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <Toasts />
     </div>

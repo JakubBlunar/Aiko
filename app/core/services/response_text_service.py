@@ -224,6 +224,79 @@ _AGENDA_OPEN_TAIL_PATTERN = re.compile(
     flags=re.IGNORECASE,
 )
 
+# Alexia bundle: [[overlay:NAME]] fires a transient overlay pulse on
+# the avatar (sweat / blush / dizzy / question / ...). The grammar
+# is identical in shape to ``[[reaction:X]]`` — the LLM emits one
+# inline and the renderer pulses the corresponding parameter for
+# ~1.5s. Stripped from chat text and TTS; surfaced to the avatar via
+# the ``avatar_overlay`` WS event by :class:`TurnRunner`.
+_OVERLAY_TAG_PATTERN = re.compile(
+    r"\[\[overlay:([A-Za-z_][A-Za-z0-9_]*)\]\]",
+    flags=re.IGNORECASE,
+)
+_OVERLAY_OPEN_TAIL_PATTERN = re.compile(
+    r"\[\[overlay:[^\]]*\Z",
+    flags=re.IGNORECASE,
+)
+# Alexia bundle: [[outfit:NAME]] is a persistent outfit override.
+# Same shape as overlay but the SessionController treats it as
+# sticky state (until the next circadian boundary) rather than a
+# transient pulse.
+_OUTFIT_TAG_PATTERN = re.compile(
+    r"\[\[outfit:([A-Za-z_][A-Za-z0-9_]*)\]\]",
+    flags=re.IGNORECASE,
+)
+_OUTFIT_OPEN_TAIL_PATTERN = re.compile(
+    r"\[\[outfit:[^\]]*\Z",
+    flags=re.IGNORECASE,
+)
+# Alexia bundle: [[motion:NAME]] plays a Live2D motion file.
+_MOTION_TAG_PATTERN = re.compile(
+    r"\[\[motion:([A-Za-z_][A-Za-z0-9_]*)\]\]",
+    flags=re.IGNORECASE,
+)
+_MOTION_OPEN_TAIL_PATTERN = re.compile(
+    r"\[\[motion:[^\]]*\Z",
+    flags=re.IGNORECASE,
+)
+
+
+def extract_overlays(text: str) -> list[tuple[str, int]]:
+    """Return ``(name, char_offset)`` overlay markers from ``text``.
+
+    Position is the offset *into the original string* so callers can
+    splice the dispatch in at the right point in the stream.
+    """
+    source = str(text or "")
+    if not source:
+        return []
+    return [
+        (m.group(1).strip().lower(), m.start())
+        for m in _OVERLAY_TAG_PATTERN.finditer(source)
+    ]
+
+
+def extract_outfit_commands(text: str) -> list[tuple[str, int]]:
+    """Return ``(name, char_offset)`` ``[[outfit:NAME]]`` markers."""
+    source = str(text or "")
+    if not source:
+        return []
+    return [
+        (m.group(1).strip().lower(), m.start())
+        for m in _OUTFIT_TAG_PATTERN.finditer(source)
+    ]
+
+
+def extract_motion_commands(text: str) -> list[tuple[str, int]]:
+    """Return ``(name, char_offset)`` ``[[motion:NAME]]`` markers."""
+    source = str(text or "")
+    if not source:
+        return []
+    return [
+        (m.group(1).strip().lower(), m.start())
+        for m in _MOTION_TAG_PATTERN.finditer(source)
+    ]
+
 
 def strip_all_meta_tags(text: str) -> str:
     """Remove every closed meta tag the assistant emits.
@@ -268,6 +341,17 @@ def strip_all_meta_tags(text: str) -> str:
     # Phase 4a: same treatment for [[agenda:...]].
     s = _AGENDA_TAG_PATTERN.sub("", s)
     s = _AGENDA_OPEN_TAIL_PATTERN.sub("", s)
+    # Alexia bundle: drop fully-formed overlay / outfit / motion tags
+    # + their unclosed openers at end-of-stream. Side-channel
+    # (TurnRunner) extracted them earlier; stripping here guarantees
+    # they never leak into the chat transcript or TTS even if that
+    # side-channel was skipped.
+    s = _OVERLAY_TAG_PATTERN.sub("", s)
+    s = _OVERLAY_OPEN_TAIL_PATTERN.sub("", s)
+    s = _OUTFIT_TAG_PATTERN.sub("", s)
+    s = _OUTFIT_OPEN_TAIL_PATTERN.sub("", s)
+    s = _MOTION_TAG_PATTERN.sub("", s)
+    s = _MOTION_OPEN_TAIL_PATTERN.sub("", s)
     # Phase 1c: stage-direction earcons are stripped from display text;
     # the audio side-channel pulls them via :func:`extract_stage_directions`
     # before this stripping runs. Stripping here keeps the chat
@@ -340,6 +424,9 @@ _META_OPENERS = (
     "[[tsk]]",
     "[[correct]]",
     "[[/correct]]",
+    "[[overlay:",
+    "[[outfit:",
+    "[[motion:",
 )
 
 
@@ -363,6 +450,8 @@ def _looks_like_partial_opener(suffix: str) -> bool:
     if lowered.startswith("[[reaction:") and "]]" not in lowered:
         return True
     if lowered.startswith("[[remember:") and "]]" not in lowered:
+        return True
+    if lowered.startswith("[[overlay:") and "]]" not in lowered:
         return True
     # Mid-tag like ``[[d`` / ``[[de`` / ``[[s`` etc.
     if lowered.startswith("[["):

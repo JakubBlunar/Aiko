@@ -58,6 +58,208 @@ _SPEECH_GRAMMAR_ADDENDUM = (
 )
 
 
+# Alexia bundle: short English label table for overlay capabilities.
+# When the loaded avatar exposes one of these (``capabilities.has_X ==
+# True``), the matching ``[[overlay:X]]`` line gets folded into the
+# speech grammar addendum so the LLM knows it's available.
+# Emotional / incidental overlays — auto-fired by the renderer too
+# (blush on tender mood, sweat on concerned mood). The LLM uses them
+# sparingly to reinforce the spoken emotion.
+_OVERLAY_EMOTIONAL_DESCRIPTIONS: dict[str, str] = {
+    "sweat": "[[overlay:sweat]] — a single sweat-drop (concern or pressure)",
+    "blush": "[[overlay:blush]] — a quick blush (warmth, embarrassment)",
+    "dizzy": "[[overlay:dizzy]] — dizzy/spiral marks (overwhelmed, dazed)",
+    "stars": "[[overlay:stars]] — sparkling star eyes (excitement, awe)",
+    "question": "[[overlay:question]] — a floating question mark (confusion)",
+    "cry": "[[overlay:cry]] — small tears (sadness, gentle hurt)",
+    "angry_marks": "[[overlay:angry_marks]] — anger-marks (frustration)",
+    "grin": "[[overlay:grin]] — a wide grin overlay (mischief)",
+    "sticker": "[[overlay:sticker]] — a sticker decoration (playful aside)",
+    "glasses": "[[overlay:glasses]] — slipping on regular glasses (focus mode)",
+    "sunglasses": "[[overlay:sunglasses]] — slipping on sunglasses (cool moment)",
+}
+
+# Direct-action gestures — the user explicitly asked for a body
+# action ("wink at me", "wag your tail", "wiggle your ears"). These
+# MUST be tagged: the renderer drives the bespoke param dispatch.
+# Falling back to prose stage directions (e.g. ``*shakes tail*``)
+# would leave the avatar still and waste the user's request.
+_OVERLAY_GESTURE_DESCRIPTIONS: dict[str, str] = {
+    "wink_left": "[[overlay:wink_left]] — quick left-eye wink (~0.6 s)",
+    "wink_right": "[[overlay:wink_right]] — quick right-eye wink (~0.6 s)",
+    "tail_wag": "[[overlay:tail_wag]] — happy tail-wag burst (~2 s, additive on the natural wag)",
+    "ear_wiggle": "[[overlay:ear_wiggle]] — quick cat-ear flick (~0.6 s)",
+}
+
+# Combined view kept for tests / external introspection so existing
+# imports still resolve.
+_OVERLAY_GRAMMAR_DESCRIPTIONS: dict[str, str] = {
+    **_OVERLAY_EMOTIONAL_DESCRIPTIONS,
+    **_OVERLAY_GESTURE_DESCRIPTIONS,
+}
+
+
+# A few gesture overlays don't have a matching ``has_<cap>`` flag —
+# both winks share ``has_wink``, so the simple
+# ``f"has_{cap}"`` lookup would silently drop them. This table maps
+# the gesture key to the actual capability flag it should consult.
+_OVERLAY_GESTURE_FLAG_OVERRIDES: dict[str, str] = {
+    "wink_left": "has_wink",
+    "wink_right": "has_wink",
+}
+
+
+def _build_overlay_grammar_addendum(capabilities: dict[str, bool] | None) -> str:
+    """Render the dynamic ``[[overlay:X]]`` block based on what the
+    currently-loaded avatar supports.
+
+    Two tiers:
+
+    * Emotional overlays (blush, sweat, ...) are framed as
+      *use sparingly* — they reinforce a feeling but shouldn't
+      distract.
+    * Direct-action gestures (wink, tail_wag, ear_wiggle) are framed
+      as *use eagerly when the user asks* — defaulting to
+      ``*italic*`` stage-direction prose leaves the avatar still
+      and feels worse than no answer at all.
+
+    Returns ``""`` when no overlay capabilities are available so the
+    LLM never sees grammar rules for effects that wouldn't render.
+    """
+    if not capabilities:
+        return ""
+    emotional = [
+        line
+        for cap, line in _OVERLAY_EMOTIONAL_DESCRIPTIONS.items()
+        if capabilities.get(f"has_{cap}", False)
+    ]
+    gestures = [
+        line
+        for cap, line in _OVERLAY_GESTURE_DESCRIPTIONS.items()
+        if capabilities.get(
+            _OVERLAY_GESTURE_FLAG_OVERRIDES.get(cap, f"has_{cap}"),
+            False,
+        )
+    ]
+    if not emotional and not gestures:
+        return ""
+    sections: list[str] = []
+    if emotional:
+        sections.append(
+            "Emotional overlays (use sparingly — at most one per turn, "
+            "and only when the emotion really calls for it):\n"
+            + "\n".join(f"- {line}" for line in emotional)
+        )
+    if gestures:
+        sections.append(
+            "Body gestures (use whenever the user asks for the action, "
+            "OR when one fits the moment naturally — playful winks, "
+            "happy tail-wags, curious ear-flicks). Emit the tag inline "
+            "in your reply; it costs you nothing and makes the avatar "
+            "actually move. NEVER replace these with prose stage "
+            "directions like *shakes tail* or *winks* — those don't "
+            "animate anything. Examples:\n"
+            "  user: \"wink at me\"  ->  \"[[overlay:wink_right]] there.\"\n"
+            "  user: \"wag your tail\"  ->  \"hah, fine - [[overlay:tail_wag]] happy now?\"\n"
+            + "\n".join(f"- {line}" for line in gestures)
+        )
+    sections.append(
+        "Tags are visual side-channels — never read the keyword aloud."
+    )
+    return "\n\n".join(sections)
+
+
+def _build_outfit_grammar_addendum(capabilities: dict[str, bool] | None) -> str:
+    """Render the ``[[outfit:X]]`` directive block.
+
+    Only emitted when the loaded avatar has at least one outfit
+    capability. The directive is sticky — once Aiko changes she
+    stays in that outfit until the next circadian period boundary
+    (or until the user manually overrides via the settings panel).
+
+    Like body gestures, outfit changes MUST be tagged when the user
+    asks: just describing the change in prose leaves the avatar
+    visually unchanged.
+    """
+    if not capabilities:
+        return ""
+    has_pajamas = capabilities.get("has_pajamas", False)
+    has_day = capabilities.get("has_day_clothes", False)
+    if not (has_pajamas or has_day):
+        return ""
+    lines: list[str] = []
+    if has_pajamas:
+        lines.append(
+            "[[outfit:pajamas]] — change into pajamas "
+            "(settling in for the night, sticky until morning)"
+        )
+    if has_day:
+        lines.append(
+            "[[outfit:day]] — change into day clothes "
+            "(getting up / starting the day)"
+        )
+    return (
+        "Outfit changes — when the user asks you to change clothes, "
+        "OR when it narratively fits (settling in for bed, getting up "
+        "in the morning), emit the matching tag inline in your reply. "
+        "Sticky until the next circadian boundary so you don't need "
+        "to repeat. NEVER replace with prose like \"changes into "
+        "pajamas\" — the tag is what actually swaps the costume.\n"
+        "Example:\n"
+        "  user: \"change into your casual clothes\"  "
+        "->  \"sure thing, [[outfit:day]] better?\"\n"
+        + "\n".join(f"- {line}" for line in lines)
+        + "\n"
+        "[[outfit:X]] is a stage direction — never read the keyword aloud."
+    )
+
+
+# Registry of motion-file stems → human descriptions. The grammar
+# only advertises a ``[[motion:X]]`` line when (a) the rig actually
+# ships a motion with that stem, AND (b) the stem is in this
+# registry. This keeps the LLM from being told about generic
+# motion files like ``dh.motion3.json`` (cloth sway) while still
+# auto-surfacing user-authored gesture motions the moment they're
+# dropped into the rig.
+_MOTION_GRAMMAR_DESCRIPTIONS: dict[str, str] = {
+    "wave": "[[motion:wave]] — wave hello (greeting)",
+    "nod": "[[motion:nod]] — nod yes (agreement)",
+    "shake": "[[motion:shake]] — shake head no (disagreement, denial)",
+    "bow": "[[motion:bow]] — small bow (formality, gratitude)",
+    "shrug": "[[motion:shrug]] — shrug (uncertainty, dismissal)",
+    "stretch": "[[motion:stretch]] — stretch (waking up, relief)",
+    "dance": "[[motion:dance]] — quick happy dance (excitement)",
+}
+
+
+def _build_motion_grammar_addendum(motion_names: list[str]) -> str:
+    """Render the ``[[motion:X]]`` block for every motion the rig ships
+    that's also in :data:`_MOTION_GRAMMAR_DESCRIPTIONS`.
+
+    Returns ``""`` when no recognised motions are present (the LLM
+    never even hears about ``[[motion:X]]`` in that case).
+    """
+    if not motion_names:
+        return ""
+    lowered = {n.lower() for n in motion_names if n}
+    available = [
+        _MOTION_GRAMMAR_DESCRIPTIONS[stem]
+        for stem in _MOTION_GRAMMAR_DESCRIPTIONS
+        if stem in lowered
+    ]
+    if not available:
+        return ""
+    return (
+        "Body motions — full-body animations played by the rig. Emit "
+        "the tag inline when the user asks for the gesture, or when "
+        "one really fits the moment. Just like body gestures, never "
+        "fall back to prose stage directions:\n"
+        + "\n".join(f"- {line}" for line in available)
+        + "\n"
+        "[[motion:X]] is a stage direction — never read the keyword aloud."
+    )
+
+
 def _safe_provider(provider: Callable[[], str] | None) -> str:
     """Run an inner-life block provider, swallowing exceptions.
 
@@ -244,6 +446,19 @@ class PromptAssembler:
         self._catchphrase_provider: Callable[[], str] | None = None
         self._petname_provider: Callable[[], str] | None = None
         self._ambient_noise_provider: Callable[[], str] | None = None
+        # Alexia bundle: capability lookup → drives the dynamic overlay
+        # grammar block, plus a pajama hint provider for the
+        # quiet-conversation cue when auto-outfit resolves to pajamas.
+        self._avatar_capabilities_provider: (
+            Callable[[], dict[str, bool] | None] | None
+        ) = None
+        self._pajama_provider: Callable[[], str] | None = None
+        # Phase: motion grammar — provider returns the list of motion
+        # filename stems (e.g. ``["wave", "nod", "dh"]``) registered in
+        # the loaded rig, in declaration order. Crossed with the
+        # ``_MOTION_GRAMMAR_DESCRIPTIONS`` registry to decide which
+        # ``[[motion:X]]`` lines to advertise.
+        self._motion_names_provider: Callable[[], list[str]] | None = None
         self._self_image_path = (
             Path(self_image_path) if self_image_path is not None else None
         )
@@ -298,6 +513,9 @@ class PromptAssembler:
         catchphrase: Callable[[], str] | None = None,
         petname: Callable[[], str] | None = None,
         ambient_noise: Callable[[], str] | None = None,
+        avatar_capabilities: Callable[[], dict[str, bool] | None] | None = None,
+        pajama: Callable[[], str] | None = None,
+        motion_names: Callable[[], list[str]] | None = None,
     ) -> None:
         """Register optional inner-life block providers.
 
@@ -329,6 +547,12 @@ class PromptAssembler:
             self._petname_provider = petname
         if ambient_noise is not None:
             self._ambient_noise_provider = ambient_noise
+        if avatar_capabilities is not None:
+            self._avatar_capabilities_provider = avatar_capabilities
+        if pajama is not None:
+            self._pajama_provider = pajama
+        if motion_names is not None:
+            self._motion_names_provider = motion_names
 
     def set_last_reaction(self, reaction: str | None) -> None:
         if not reaction:
@@ -662,6 +886,29 @@ class PromptAssembler:
         catchphrase_block = _safe_provider(self._catchphrase_provider)
         petname_block = _safe_provider(self._petname_provider)
         ambient_noise_block = _safe_provider(self._ambient_noise_provider)
+        pajama_block = _safe_provider(self._pajama_provider)
+
+        # Alexia bundle: capability lookup is *not* a string provider —
+        # it returns the raw flags so we can build the overlay /
+        # outfit grammar dynamically per-prompt. Defensive: swallow
+        # any provider error.
+        capabilities: dict[str, bool] | None = None
+        if self._avatar_capabilities_provider is not None:
+            try:
+                capabilities = self._avatar_capabilities_provider()
+            except Exception:
+                log.debug("avatar capabilities provider raised", exc_info=True)
+                capabilities = None
+        overlay_grammar_block = _build_overlay_grammar_addendum(capabilities)
+        outfit_grammar_block = _build_outfit_grammar_addendum(capabilities)
+        motion_names: list[str] = []
+        if self._motion_names_provider is not None:
+            try:
+                motion_names = list(self._motion_names_provider() or [])
+            except Exception:
+                log.debug("motion names provider raised", exc_info=True)
+                motion_names = []
+        motion_grammar_block = _build_motion_grammar_addendum(motion_names)
 
         system_parts: list[str] = []
         if persona:
@@ -672,6 +919,12 @@ class PromptAssembler:
             # user-customisable persona file. Constant cost; under 60
             # tokens.
             system_parts.append(_SPEECH_GRAMMAR_ADDENDUM)
+            if overlay_grammar_block:
+                system_parts.append(overlay_grammar_block)
+            if outfit_grammar_block:
+                system_parts.append(outfit_grammar_block)
+            if motion_grammar_block:
+                system_parts.append(motion_grammar_block)
         if self_image_block:
             system_parts.append(self_image_block)
         if narrative_block:
@@ -680,6 +933,11 @@ class PromptAssembler:
             system_parts.append(ambient)
         if circadian_block:
             system_parts.append(circadian_block)
+        if pajama_block:
+            # Pajama-aware cue lands right next to the circadian block
+            # so the LLM sees both pieces of "what time is it / what
+            # are you wearing" in one neighbourhood.
+            system_parts.append(pajama_block)
         if ambient_noise_block:
             system_parts.append(ambient_noise_block)
         if affect_block:

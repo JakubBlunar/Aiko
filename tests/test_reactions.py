@@ -1,9 +1,14 @@
-"""Tests for Phase 3b reaction-vocabulary alignment + semantic fallbacks."""
+"""Tests for ``app.core.reactions`` — vocabulary + semantic fallbacks.
+
+This file used to live as ``test_persona_manager_reaction_fallbacks.py``;
+it was renamed when the reaction tables moved out of ``persona_manager``
+into their own module as part of the Alexia avatar bundling work.
+"""
 from __future__ import annotations
 
 import unittest
 
-from app.core.persona_manager import (
+from app.core.reactions import (
     REACTIONS,
     _REACTION_NEIGHBOURS,
     _REACTION_SYNONYMS,
@@ -28,8 +33,6 @@ class ReactionsCoverageTests(unittest.TestCase):
             self.assertGreater(len(_REACTION_SYNONYMS[r]), 0)
 
     def test_every_neighbour_is_a_known_reaction(self) -> None:
-        # Sanity: don't put fallbacks for reactions that don't exist in
-        # the canonical set (silently ignored, but it would be a typo bug).
         canonical = set(REACTIONS)
         for src, neighbours in _REACTION_NEIGHBOURS.items():
             self.assertIn(src, canonical, f"unknown source reaction {src!r}")
@@ -52,12 +55,9 @@ class ResolveReactionTests(unittest.TestCase):
         self.assertEqual(resolve_reaction("wistful", mapping), "ponder")
 
     def test_returns_none_when_no_neighbour_is_mapped(self) -> None:
-        # "tired" → calm → melancholy → neutral → sad. None of those
-        # are mapped, so we return None instead of a wrong fallback.
         self.assertIsNone(resolve_reaction("tired", {"angry": "rage"}))
 
     def test_neutral_in_amused_chain(self) -> None:
-        # "amused" → cheerful → playful → friendly → warm → neutral.
         mapping = {"neutral": "default"}
         self.assertEqual(resolve_reaction("amused", mapping), "default")
 
@@ -67,7 +67,6 @@ class ResolveReactionTests(unittest.TestCase):
         self.assertIsNone(resolve_reaction("amused", {}))
 
     def test_unknown_reaction_returns_none(self) -> None:
-        # No fallback chain for completely unknown reactions.
         self.assertIsNone(resolve_reaction("ecstatic", {"cheerful": "smile"}))
 
 

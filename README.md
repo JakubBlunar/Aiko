@@ -113,8 +113,9 @@ The agent runs a pre-stream `chat_with_tools` pass; if a tool call appears, it e
 
 ## Live2D avatar
 
-- Models live in `data/personas/`. Upload a zip from the web UI; it gets unpacked and registered as the new active persona.
-- The avatar plays an idle motion loop, syncs lip movement to TTS audio amplitude, and switches expressions based on `[[reaction:...]]` tags Aiko emits.
+- The bundled avatar (Alexia by default) lives at `live-2d-models/Alexia/`. The directory is gitignored so each developer drops their own copy in. `app/core/avatar_profile.py` reads `*.model3.json` + `*.cdi3.json` at boot, infers a capability map (pajamas, blush, sweat, cat tail, glasses, …), and serves the files at `/avatar/`.
+- The avatar plays an idle motion loop, syncs lip movement to TTS audio amplitude, switches expressions based on `[[reaction:...]]` tags, and supports Tier-3 auto-driven effects: pajamas at night, auto-blush on tender moods, auto-sweat on concerned reactions, and a cat-tail wag whose frequency tracks the current arousal. The LLM can also fire transient overlays via `[[overlay:sweat]]` / `[[overlay:blush]]` / etc. — only those whose capability is detected on the loaded model are advertised in the system prompt.
+- User-tunable knobs (scale, auto-outfit mode) live in `config.avatar` and on the Avatar tab of the Settings drawer.
 
 ## Voice
 
@@ -126,7 +127,7 @@ The agent runs a pre-stream `chat_with_tools` pass; if a tool call appears, it e
 .\.venv\Scripts\python.exe -m pytest tests/
 ```
 
-The suite covers the live surface end-to-end: `TurnRunner`, `RagStore`, `MessageIndexer`, `DocumentIngestor`, `MemoryStore`, `ChatDatabase`, `PersonaManager`, `OllamaClient` tool calls, the response-text service, and the tool registry.
+The suite covers the live surface end-to-end: `TurnRunner`, `RagStore`, `MessageIndexer`, `DocumentIngestor`, `MemoryStore`, `ChatDatabase`, `AvatarProfile`, `OllamaClient` tool calls, the response-text service, and the tool registry.
 
 ## Notes
 
