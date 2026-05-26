@@ -291,9 +291,21 @@ _ALEXIA_EXPR_TO_CAPABILITY: dict[str, str] = {
 # are the canonical ``REACTIONS`` set; values are expression filenames
 # (without the ``.exp3.json`` suffix). Empty string = "no overlay,
 # rely on eye-smile / mouth-form for the look".
+#
+# NOTE on ``bbt`` (Param60): originally used as a generic "happy
+# sticker" overlay slot for cheerful / amused. Visual inspection on
+# the live rig revealed the overlay actually renders as a sad / cry-
+# leaning face decoration (the pinyin ``bbt`` is opaque and the
+# parts list right next to ``Param59 = Cry`` was misleading). It is
+# *not* suitable for positive reactions. ``lzx`` (Param54 = 咧嘴笑
+# = toothy grin) is the only happy overlay the rig ships, so both
+# ``amused`` and ``cheerful`` share it. ``[[overlay:grin]]`` still
+# pulses ``lzx`` transiently on demand — the OverlayChannel re-applies
+# the persistent reaction afterwards, so a cheerful turn that also
+# emits ``[[overlay:grin]]`` simply sustains the smile.
 _ALEXIA_REACTION_MAP: dict[str, str] = {
-    "amused":       "bbt",
-    "cheerful":     "bbt",
+    "amused":       "lzx",
+    "cheerful":     "lzx",
     "playful":      "zs1",
     "excited":      "xxy",
     "enthusiastic": "xxy",

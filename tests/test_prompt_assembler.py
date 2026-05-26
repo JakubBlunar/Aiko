@@ -13,6 +13,7 @@ from app.core.chat_database import ChatDatabase
 from app.core.prompt_assembler import (
     PromptAssembler,
     PromptTelemetry,
+    _SPEECH_GRAMMAR_ADDENDUM,
     _build_motion_grammar_addendum,
     _build_outfit_grammar_addendum,
     _build_overlay_grammar_addendum,
@@ -199,6 +200,112 @@ class PromptAssemblerBudgetTests(unittest.TestCase):
             self.assertEqual(telem_aggressive.rag_tokens, 0)
 
 
+class NarrativeBlockProviderTests(unittest.TestCase):
+    """The ``narrative`` slot is the inner-monologue line that surfaces
+    a fresh prepared nudge ("On your mind: ...") in typed-mode turns.
+
+    Until A1 it was wired to ``None`` and silently dropped. These tests
+    lock in the new per-turn freshness (so a content change between two
+    successive ``assemble_with_budget`` calls is reflected immediately,
+    NOT cached behind ``history_max_id``) and the empty-string skip.
+    """
+
+    def test_narrative_block_surfaces_when_provider_returns_text(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="s5",
+                role="user",
+                content="hi",
+                token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                narrative=lambda: "On your mind: yesterday's debugging session.",
+            )
+            messages, telem = assembler.assemble_with_budget(
+                "s5",
+                "what's up?",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertGreater(telem.narrative_tokens, 0)
+            self.assertIn(
+                "On your mind: yesterday's debugging session.",
+                messages[0]["content"],
+            )
+
+    def test_narrative_block_silent_when_provider_empty(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="s6",
+                role="user",
+                content="hi",
+                token_count=2,
+            )
+            # No provider registered at all -> default ``None`` -> empty.
+            _, telem_unwired = assembler.assemble_with_budget(
+                "s6",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertEqual(telem_unwired.narrative_tokens, 0)
+            # Provider returning empty string -> still skipped.
+            assembler.set_inner_life_providers(narrative=lambda: "")
+            _, telem_empty = assembler.assemble_with_budget(
+                "s6",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertEqual(telem_empty.narrative_tokens, 0)
+
+    def test_narrative_block_refreshes_per_turn_not_cached(self) -> None:
+        """Regression guard: the ``_StaticSlices`` cache must NOT include
+        the narrative block. A nudge can flip between turns even when
+        ``history_max_id`` doesn't move (NarrativeWeaver runs every N
+        turns, ProactiveDirector consumes nudges) — caching it would
+        surface stale text indefinitely.
+        """
+        narrative_value = ["A loose thread: chase the cat-tail bug."]
+
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="s7",
+                role="user",
+                content="hi",
+                token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                narrative=lambda: narrative_value[0],
+            )
+            messages_a, _ = assembler.assemble_with_budget(
+                "s7",
+                "first turn",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertIn("chase the cat-tail bug", messages_a[0]["content"])
+
+            # Same session, same history watermark — flip the provider
+            # output. If the static-slice cache was retaining narrative
+            # we'd still see the old text.
+            narrative_value[0] = "Something you said you'd do: ship the docs."
+            messages_b, _ = assembler.assemble_with_budget(
+                "s7",
+                "second turn",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertNotIn("chase the cat-tail bug", messages_b[0]["content"])
+            self.assertIn(
+                "Something you said you'd do: ship the docs.",
+                messages_b[0]["content"],
+            )
+
+
 class GrammarAddendumTests(unittest.TestCase):
     """Spot-checks on the new dynamic prompt addendum builders.
 
@@ -309,6 +416,38 @@ class GrammarAddendumTests(unittest.TestCase):
         block = _build_overlay_grammar_addendum({"has_tail_wag": True})
         self.assertIn("[[motion:tail_wag]]", block)
         self.assertIn("[[overlay:tail_wag]]", block)
+
+
+class SpeechGrammarAddendumTests(unittest.TestCase):
+    """The ``_SPEECH_GRAMMAR_ADDENDUM`` mirrors persona-side rules in a
+    place that survives a user rewriting / deleting their persona file.
+    Locks in the existing stage-direction + correction grammar plus the
+    new "match Jacob's register" cue from A2 (user-affect awareness).
+    """
+
+    def test_addendum_advertises_core_stage_directions(self) -> None:
+        for tag in ("[[laugh]]", "[[sigh]]", "[[gasp]]", "[[hum]]"):
+            self.assertIn(tag, _SPEECH_GRAMMAR_ADDENDUM)
+        self.assertIn("[[correct]]", _SPEECH_GRAMMAR_ADDENDUM)
+
+    def test_addendum_instructs_aiko_to_match_user_register(self) -> None:
+        """A2: when the prompt mentions ``User sounds: …`` or
+        ``Right now Jacob: …`` (vocal_tone / user_state blocks),
+        Aiko should mirror the register instead of ignoring the cue.
+        Without this nudge the LLM treats the cues as decoration.
+        """
+        addendum = _SPEECH_GRAMMAR_ADDENDUM
+        self.assertIn("Match Jacob's register", addendum)
+        # Anchor on the actual block names so a future rename of the
+        # vocal_tone / user_state prompt prefixes catches this test
+        # before it ships.
+        self.assertIn("User sounds:", addendum)
+        self.assertIn("Right now Jacob:", addendum)
+        # Behavioral instruction must explicitly forbid the mechanical
+        # phrasing we observed in early prototypes.
+        addendum_lower = addendum.lower()
+        self.assertIn("naturally", addendum_lower)
+        self.assertIn("never quote the system line", addendum_lower)
 
 
 if __name__ == "__main__":

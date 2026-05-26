@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any, Iterable, Sequence
 from app.core.rag_store import RagHit
 
 if TYPE_CHECKING:
+    from app.core.memory_store import MemoryStore
     from app.core.rag_store import RagStore
     from app.llm.embedder import Embedder
 
@@ -44,6 +45,29 @@ _DOCUMENT_PRIOR = 0.0
 # get heavily penalized in the merged score.
 _MESSAGE_HALFLIFE_DAYS = 21.0
 
+# Memory recency / revival tuning. The plain cosine + salience scoring is
+# stateless across turns, so a single high-salience callback would surface
+# every turn until the user manually deletes it. These two adjustments fix
+# that without weakening relevance:
+#
+#   * If a memory was last surfaced within ``_MEMORY_RECENCY_PENALTY_HOURS``
+#     we subtract ``_MEMORY_RECENCY_PENALTY`` from its score so the
+#     second-best candidate gets a real chance to win.
+#   * If a memory was used at least once but hasn't been touched in
+#     ``_MEMORY_REVIVAL_DAYS`` days, we add ``_MEMORY_REVIVAL_BONUS`` so
+#     stale threads can re-emerge with an "oh, whatever happened with…"
+#     framing instead of being lost forever under fresher hits.
+#
+# The deltas are intentionally smaller than the typical cosine gap between
+# top results (~0.05-0.10) so the recency signal nudges ordering without
+# overpowering relevance. ``_MEMORY_RECENCY_PENALTY`` is roughly twice the
+# revival bonus because suppressing a stale repeat is more valuable than
+# resurrecting a dormant one.
+_MEMORY_RECENCY_PENALTY_HOURS = 6.0
+_MEMORY_RECENCY_PENALTY = 0.08
+_MEMORY_REVIVAL_DAYS = 7.0
+_MEMORY_REVIVAL_BONUS = 0.04
+
 
 class RagRetriever:
     def __init__(
@@ -56,6 +80,7 @@ class RagRetriever:
         per_source_top_k: int = 6,
         include_messages: bool = True,
         include_documents: bool = True,
+        memory_store: "MemoryStore | None" = None,
     ) -> None:
         self._store = store
         self._embedder = embedder
@@ -64,6 +89,13 @@ class RagRetriever:
         self._per_source_top_k = max(1, int(per_source_top_k))
         self._include_messages = bool(include_messages)
         self._include_documents = bool(include_documents)
+        # Optional handle to the canonical SQLite memory store. When set,
+        # ``retrieve`` calls ``MemoryStore.mark_used`` on the memory hits
+        # it surfaces so subsequent turns can apply the recency penalty
+        # / revival bonus tuned above. Plumbing tolerates ``None`` so
+        # tests and lean deployments can run without it; the recency
+        # signal then simply stays at 0.
+        self._memory_store = memory_store
 
     @property
     def top_k(self) -> int:
@@ -121,7 +153,10 @@ class RagRetriever:
                 min_score=self._score_threshold,
             )
             for h in mem_hits:
-                h.score += _MEMORY_PRIOR
+                h.score += _MEMORY_PRIOR + _memory_recency_adjust(
+                    last_used_at=getattr(h.record, "last_used_at", None),
+                    use_count=int(getattr(h.record, "use_count", 0) or 0),
+                )
                 merged.append(h)
         except Exception:
             log.debug("memory search failed", exc_info=True)
@@ -170,6 +205,33 @@ class RagRetriever:
             unique.append(h)
             if len(unique) >= self._top_k:
                 break
+
+        # Bump ``last_used_at`` / ``use_count`` for every memory we're
+        # actually surfacing this turn. Closes the loop with the recency
+        # penalty above: a memory we just sent the LLM gets penalised on
+        # the very next turn, breaking the "always wins" feedback loop
+        # the legacy retriever suffered from. Best-effort — a broken
+        # store must not abort the prompt build.
+        if self._memory_store is not None:
+            ids: list[int] = []
+            for hit in unique:
+                if hit.source != "memory":
+                    continue
+                raw = getattr(hit.record, "id", None)
+                if raw is None:
+                    continue
+                try:
+                    ids.append(int(raw))
+                except (TypeError, ValueError):
+                    # Lance memory ids are stringified ints; anything
+                    # that doesn't parse cleanly is a non-canonical row
+                    # we can't reach via the SQLite mirror anyway.
+                    continue
+            if ids:
+                try:
+                    self._memory_store.mark_used(ids)
+                except Exception:
+                    log.debug("mark_used failed", exc_info=True)
         return unique
 
     # ── formatting ──────────────────────────────────────────────────────
@@ -301,5 +363,49 @@ def _recency_bonus(created_at: str) -> float:
 
     weight = math.pow(0.5, delta_days / _MESSAGE_HALFLIFE_DAYS)
     return 0.06 * (weight - 0.5)
+
+
+def _hours_since(iso_ts: str | None) -> float | None:
+    """Hours elapsed between ``iso_ts`` (UTC ISO-8601) and now, or
+    ``None`` for missing / unparseable values.
+
+    Negative deltas (clock skew) are clamped to 0.0 so a future-dated
+    timestamp doesn't accidentally trigger the revival bonus.
+    """
+    if not iso_ts:
+        return None
+    try:
+        ts = datetime.fromisoformat(str(iso_ts).replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+    seconds = (datetime.now(timezone.utc) - ts).total_seconds()
+    return max(0.0, seconds / 3600.0)
+
+
+def _memory_recency_adjust(
+    *,
+    last_used_at: str | None,
+    use_count: int,
+) -> float:
+    """Per-memory score nudge based on how recently it was surfaced.
+
+    See the constants at the top of the module for the rationale. The
+    function is total: it returns 0.0 for never-used memories, for
+    parse failures, and for the "in-between" zone (used some time ago,
+    not yet stale enough to revive).
+    """
+    hours = _hours_since(last_used_at)
+    if hours is None:
+        # Never surfaced -> no adjustment. Fresh discovery wins on its
+        # own merits.
+        return 0.0
+    if hours < _MEMORY_RECENCY_PENALTY_HOURS:
+        return -_MEMORY_RECENCY_PENALTY
+    days = hours / 24.0
+    if days >= _MEMORY_REVIVAL_DAYS and use_count > 0:
+        return _MEMORY_REVIVAL_BONUS
+    return 0.0
 
 
