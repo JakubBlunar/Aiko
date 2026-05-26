@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import * as PIXI from "pixi.js";
 import { Live2DModel, MotionPriority } from "pixi-live2d-display";
+import { backendBase } from "../desktop/runtime";
 import { useAssistantStore } from "../store";
 import type { AvatarProfile, VoiceMode } from "../types";
 import {
@@ -99,8 +100,14 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
     let cancelled = false;
     // The bundled avatar (Alexia by default) is served by FastAPI at
     // ``/avatar/``. ``manifest.entry_filename`` is the file name
-    // relative to that mount (e.g. ``"Alexia.model3.json"``).
-    const url = "/avatar/" + manifest.entry_filename.replace(/^\/+/, "");
+    // relative to that mount (e.g. ``"Alexia.model3.json"``). Inside a
+    // Tauri webview we resolve through the absolute backend origin
+    // because the webview's own origin (``tauri://localhost``) doesn't
+    // serve the model files.
+    const url =
+      backendBase().http +
+      "/avatar/" +
+      manifest.entry_filename.replace(/^\/+/, "");
 
     Live2DModel.from(url, { autoInteract: false })
       .then((model) => {

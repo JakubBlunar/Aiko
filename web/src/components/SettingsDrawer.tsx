@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { api, type AudioDevices } from "../api";
+import { desktop as desktopCommands } from "../desktop/commands";
+import { isTauri } from "../desktop/runtime";
 import type {
   AssistantSettings,
   AvatarSettingsKnobs,
   Memory,
   MetricsResponse,
+  PersonaWindowSettings,
   RagDocument,
 } from "../types";
 import { useAssistantStore } from "../store";
@@ -49,6 +52,14 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
   const setAvatarSettings = useAssistantStore((s) => s.setAvatarSettings);
   const [avatarBusy, setAvatarBusy] = useState(false);
   const [avatarError, setAvatarError] = useState<string | null>(null);
+
+  const personaWindow = useAssistantStore(
+    (s) => s.desktop?.persona_window ?? null,
+  );
+  const setPersonaWindow = useAssistantStore((s) => s.setPersonaWindow);
+  const [personaBusy, setPersonaBusy] = useState(false);
+  const [personaError, setPersonaError] = useState<string | null>(null);
+  const tauri = isTauri();
 
   const [documents, setDocuments] = useState<RagDocument[]>([]);
   const [documentsBusy, setDocumentsBusy] = useState(false);
@@ -122,6 +133,21 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
       setAvatarError(String(err));
     } finally {
       setAvatarBusy(false);
+    }
+  };
+
+  const onPatchPersonaWindow = async (
+    patch: Partial<PersonaWindowSettings>,
+  ) => {
+    setPersonaBusy(true);
+    setPersonaError(null);
+    try {
+      const next = await api.patchPersonaWindow(patch);
+      setPersonaWindow(next.persona_window);
+    } catch (err) {
+      setPersonaError(String(err));
+    } finally {
+      setPersonaBusy(false);
     }
   };
 
@@ -795,6 +821,114 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                         gitignored so each developer drops their own copy in.
                       </p>
                     )}
+                  </Section>
+
+                  <Section title="Persona window (desktop)">
+                    {personaError ? (
+                      <div className="rounded-md border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+                        {personaError}
+                      </div>
+                    ) : null}
+                    <p className="text-[11px] text-ink-100/50">
+                      Floating, frameless window that shows just the avatar
+                      plus a mic toggle and one-line composer. Settings persist
+                      across restarts; the controls work in the browser too,
+                      but the actual window only opens in the Tauri desktop
+                      shell.
+                    </p>
+                    <div className="space-y-1.5">
+                      <p className="text-[11px] uppercase tracking-wide text-ink-100/50">
+                        Width — {personaWindow?.width ?? 320}px
+                      </p>
+                      <input
+                        type="range"
+                        min={220}
+                        max={800}
+                        step={10}
+                        value={personaWindow?.width ?? 320}
+                        onChange={(event) => {
+                          const v = Number(event.target.value);
+                          setPersonaWindow({ width: v });
+                        }}
+                        onPointerUp={(event) => {
+                          void onPatchPersonaWindow({
+                            width: Number(
+                              (event.target as HTMLInputElement).value,
+                            ),
+                          });
+                        }}
+                        onKeyUp={(event) => {
+                          void onPatchPersonaWindow({
+                            width: Number(
+                              (event.target as HTMLInputElement).value,
+                            ),
+                          });
+                        }}
+                        disabled={personaBusy}
+                        className="w-full accent-ink-400"
+                        aria-label="Persona window width"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <p className="text-[11px] uppercase tracking-wide text-ink-100/50">
+                        Height — {personaWindow?.height ?? 480}px
+                      </p>
+                      <input
+                        type="range"
+                        min={280}
+                        max={1024}
+                        step={10}
+                        value={personaWindow?.height ?? 480}
+                        onChange={(event) => {
+                          const v = Number(event.target.value);
+                          setPersonaWindow({ height: v });
+                        }}
+                        onPointerUp={(event) => {
+                          void onPatchPersonaWindow({
+                            height: Number(
+                              (event.target as HTMLInputElement).value,
+                            ),
+                          });
+                        }}
+                        onKeyUp={(event) => {
+                          void onPatchPersonaWindow({
+                            height: Number(
+                              (event.target as HTMLInputElement).value,
+                            ),
+                          });
+                        }}
+                        disabled={personaBusy}
+                        className="w-full accent-ink-400"
+                        aria-label="Persona window height"
+                      />
+                    </div>
+                    <label className="flex items-center gap-2 text-[12px] text-ink-100/80">
+                      <input
+                        type="checkbox"
+                        checked={personaWindow?.always_on_top ?? true}
+                        onChange={(event) =>
+                          void onPatchPersonaWindow({
+                            always_on_top: event.target.checked,
+                          })
+                        }
+                        disabled={personaBusy}
+                        className="accent-ink-400"
+                      />
+                      Always on top
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => void desktopCommands.openPersona()}
+                      disabled={!tauri}
+                      title={
+                        tauri
+                          ? "Open the floating persona window"
+                          : "Persona window is only available in the Tauri desktop shell"
+                      }
+                      className="rounded-md border border-white/10 px-3 py-1.5 text-xs text-ink-100/80 hover:border-pink-400 hover:text-pink-100 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      Open persona window
+                    </button>
                   </Section>
                 </>
               ) : null}

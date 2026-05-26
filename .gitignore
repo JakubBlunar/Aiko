@@ -23,3 +23,5 @@ live-2d-models/
 data/lancedb/
 data/documents/
 data/personas/
+web/src-tauri/target/
+web/src-tauri/gen/

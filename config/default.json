@@ -112,5 +112,12 @@
     "scale_multiplier": 1.0,
     "auto_outfit": "auto",
     "expressiveness": 1.0
+  },
+  "desktop": {
+    "persona_window": {
+      "width": 320,
+      "height": 480,
+      "always_on_top": true
+    }
   }
 }

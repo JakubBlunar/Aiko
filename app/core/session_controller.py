@@ -268,6 +268,19 @@ class SessionController:
             "expressiveness": float(settings.avatar.expressiveness),
         }
         self._avatar_settings_listeners: list[Callable[[dict[str, Any]], None]] = []
+        # ── Tauri shell knobs (Phase B / desktop) ────────────────────────
+        # Runtime cache for the persona-window geometry. Mirrors the
+        # avatar pattern: load from settings, clamp on every patch,
+        # broadcast a WS event on change so any open shell window can
+        # react. Browser-only deployments simply ignore the broadcasts.
+        self._desktop_settings_runtime = {
+            "persona_window": {
+                "width": int(settings.desktop.persona_window.width),
+                "height": int(settings.desktop.persona_window.height),
+                "always_on_top": bool(settings.desktop.persona_window.always_on_top),
+            }
+        }
+        self._desktop_settings_listeners: list[Callable[[dict[str, Any]], None]] = []
         self._avatar_overlay_listeners: list[Callable[[dict[str, Any]], None]] = []
         self._avatar_motion_listeners: list[Callable[[dict[str, Any]], None]] = []
         # LLM-driven sticky outfit override. Set when the assistant says
@@ -1720,6 +1733,100 @@ class SessionController:
     ) -> None:
         if cb in self._avatar_settings_listeners:
             self._avatar_settings_listeners.remove(cb)
+
+    # ── Desktop / Tauri shell knobs ──────────────────────────────────────
+
+    def desktop_settings(self) -> dict[str, Any]:
+        """Return a deep copy of the desktop runtime cache.
+
+        The web layer hands this off as part of the WS ``hello`` snapshot
+        so a freshly-connected window (main or persona) immediately knows
+        the configured persona-window geometry.
+        """
+        persona = self._desktop_settings_runtime["persona_window"]
+        return {
+            "persona_window": dict(persona),
+        }
+
+    def update_desktop_settings(
+        self,
+        *,
+        persona_window_width: int | None = None,
+        persona_window_height: int | None = None,
+        persona_window_always_on_top: bool | None = None,
+    ) -> dict[str, Any]:
+        """Patch persona-window geometry and notify listeners.
+
+        Mirrors :meth:`update_avatar_settings`: clamps via the helpers in
+        ``app.core.settings``, persists the change to ``config/user.json``
+        (so an app restart picks the new value up), and broadcasts a
+        ``desktop_settings_changed`` event to every connected client.
+        """
+        from app.core.settings import (
+            clamp_persona_window_width,
+            clamp_persona_window_height,
+        )
+
+        persona = self._desktop_settings_runtime["persona_window"]
+        changed = False
+        persist_patch: dict[str, Any] = {}
+
+        if persona_window_width is not None:
+            value = clamp_persona_window_width(
+                persona_window_width, fallback=int(persona["width"])
+            )
+            if value != int(persona["width"]):
+                persona["width"] = value
+                self._settings.desktop.persona_window.width = value
+                persist_patch["width"] = value
+                changed = True
+        if persona_window_height is not None:
+            value = clamp_persona_window_height(
+                persona_window_height, fallback=int(persona["height"])
+            )
+            if value != int(persona["height"]):
+                persona["height"] = value
+                self._settings.desktop.persona_window.height = value
+                persist_patch["height"] = value
+                changed = True
+        if persona_window_always_on_top is not None:
+            value = bool(persona_window_always_on_top)
+            if value != bool(persona["always_on_top"]):
+                persona["always_on_top"] = value
+                self._settings.desktop.persona_window.always_on_top = value
+                persist_patch["always_on_top"] = value
+                changed = True
+
+        snapshot = self.desktop_settings()
+        if changed:
+            if persist_patch:
+                try:
+                    persist_user_overrides(
+                        {"desktop": {"persona_window": persist_patch}}
+                    )
+                except Exception:
+                    log.warning(
+                        "failed to persist desktop settings to user.json",
+                        exc_info=True,
+                    )
+            for cb in list(self._desktop_settings_listeners):
+                try:
+                    cb(dict(snapshot))
+                except Exception:
+                    log.debug("desktop settings listener failed", exc_info=True)
+        return snapshot
+
+    def add_desktop_settings_listener(
+        self, cb: Callable[[dict[str, Any]], None]
+    ) -> None:
+        if cb not in self._desktop_settings_listeners:
+            self._desktop_settings_listeners.append(cb)
+
+    def remove_desktop_settings_listener(
+        self, cb: Callable[[dict[str, Any]], None]
+    ) -> None:
+        if cb in self._desktop_settings_listeners:
+            self._desktop_settings_listeners.remove(cb)
 
     def add_avatar_overlay_listener(
         self, cb: Callable[[dict[str, Any]], None]

@@ -20,6 +20,16 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* Persona window: clobber the gradient so the transparent Tauri webview
+   actually shows through. ``html.persona`` is set on mount by
+   ``PersonaWindow.tsx`` and removed on unmount; in a regular browser
+   tab the class never lands so the chat layout keeps its dark gradient. */
+html.persona,
+html.persona body,
+html.persona #root {
+  background: transparent !important;
+}
+
 /* Subtle scrollbar styling matching the dark theme */
 ::-webkit-scrollbar {
   width: 10px;
