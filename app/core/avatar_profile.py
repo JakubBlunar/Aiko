@@ -292,17 +292,22 @@ _ALEXIA_EXPR_TO_CAPABILITY: dict[str, str] = {
 # (without the ``.exp3.json`` suffix). Empty string = "no overlay,
 # rely on eye-smile / mouth-form for the look".
 #
-# NOTE on ``bbt`` (Param60): originally used as a generic "happy
-# sticker" overlay slot for cheerful / amused. Visual inspection on
-# the live rig revealed the overlay actually renders as a sad / cry-
-# leaning face decoration (the pinyin ``bbt`` is opaque and the
-# parts list right next to ``Param59 = Cry`` was misleading). It is
-# *not* suitable for positive reactions. ``lzx`` (Param54 = 咧嘴笑
-# = toothy grin) is the only happy overlay the rig ships, so both
-# ``amused`` and ``cheerful`` share it. ``[[overlay:grin]]`` still
-# pulses ``lzx`` transiently on demand — the OverlayChannel re-applies
-# the persistent reaction afterwards, so a cheerful turn that also
-# emits ``[[overlay:grin]]`` simply sustains the smile.
+# NOTE on ``bbt`` (Param60): originally mis-mapped as a generic
+# "happy sticker" overlay for cheerful / amused. Visual inspection on
+# the live rig revealed the overlay actually renders as a more
+# pronounced / dramatic cry face decoration (the pinyin ``bbt`` is
+# opaque, and Param60 sits next to ``Param59 = Cry`` which was the
+# clue we missed). After the audit:
+#
+#   - ``amused`` / ``cheerful`` moved to ``lzx`` (Param54 = 咧嘴笑
+#     = toothy grin) — the only positive overlay the rig ships.
+#   - ``bbt`` is now the visual for the new canonical ``cry`` reaction
+#     (more intense than ``sad`` → ``k`` / Param59).
+#
+# ``[[overlay:grin]]`` still pulses ``lzx`` transiently on demand —
+# the OverlayChannel re-applies the persistent reaction afterwards,
+# so a cheerful turn that also emits ``[[overlay:grin]]`` simply
+# sustains the smile.
 _ALEXIA_REACTION_MAP: dict[str, str] = {
     "amused":       "lzx",
     "cheerful":     "lzx",
@@ -322,6 +327,12 @@ _ALEXIA_REACTION_MAP: dict[str, str] = {
     "concerned":    "k",
     "sad":          "k",
     "melancholy":   "k",
+    # ``cry`` is the more dramatic / pronounced cry overlay (Param60 =
+    # bbt). Different param from ``sad``/``k`` (Param59 = "Cry" /
+    # tear streaks) so we get a visibly distinct distressed face for
+    # the most intense distress reaction. See §3a in
+    # ``docs/alexia-model-notes.md`` for the bbt visual audit.
+    "cry":          "bbt",
     "tired":        "y",
     "neutral":      "",
     "angry":        "sq",

@@ -73,6 +73,7 @@ _REACTION_TO_TONE: dict[str, str] = {
     "concerned": "concerned",
     "sad": "concerned",
     "melancholy": "concerned",
+    "cry": "concerned",
     "tired": "concerned",
     "curious": "curious",
     "surprised": "curious",
