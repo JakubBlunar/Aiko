@@ -604,6 +604,7 @@ def create_web_app(session: "SessionController") -> FastAPI:
     async def patch_avatar(payload: dict[str, Any]) -> JSONResponse:
         scale = payload.get("scale_multiplier")
         outfit = payload.get("auto_outfit")
+        expressiveness = payload.get("expressiveness")
         if scale is not None:
             try:
                 scale_value = float(scale)
@@ -621,9 +622,22 @@ def create_web_app(session: "SessionController") -> FastAPI:
                     + ", ".join(sorted(OUTFIT_MODES)),
                 )
             outfit = outfit_normalized
+        if expressiveness is not None:
+            try:
+                expressiveness_value = float(expressiveness)
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(
+                    400, "expressiveness must be a number",
+                ) from exc
+            if expressiveness_value < 0.0 or expressiveness_value > 1.5:
+                raise HTTPException(
+                    400, "expressiveness must be between 0.0 and 1.5",
+                )
+            expressiveness = expressiveness_value
         snapshot = session.update_avatar_settings(
             scale_multiplier=scale,
             auto_outfit=outfit,
+            expressiveness=expressiveness,
         )
         hub.broadcast({
             "type": "avatar_settings_changed",

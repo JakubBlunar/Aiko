@@ -230,6 +230,7 @@ export function useAssistantSocket(): {
           group: evt.group,
           index: evt.index,
           firedAt: Date.now(),
+          priority: evt.priority,
         });
         break;
 

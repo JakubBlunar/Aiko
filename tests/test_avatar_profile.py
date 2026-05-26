@@ -14,6 +14,7 @@ from tempfile import TemporaryDirectory
 from app.core.avatar_profile import (
     AvatarProfile,
     AvatarProfileError,
+    ExpressionParam,
     OutfitBinding,
     OutfitParam,
     OverlayBinding,
@@ -358,6 +359,73 @@ class CapabilityDetectionTests(unittest.TestCase):
         self.assertEqual(profile.outfits, {})
         self.assertEqual(profile.cat_tail_param_ids, [])
         self.assertEqual(profile.cat_ear_param_ids, [])
+        # No exp3 files in the bare rig either — ``expression_params``
+        # should be empty so ExpressionChannel falls back to the
+        # rig's natural Add-blend amplitude.
+        self.assertEqual(profile.expression_params, {})
+
+
+class ExpressionParamBindingTests(unittest.TestCase):
+    """Verify the ``.exp3.json`` -> ``ExpressionParam`` plumbing the
+    ``ExpressionChannel`` continuous-expressiveness layer reads from
+    on the wire."""
+
+    def test_expression_params_keyed_by_expression_name(self) -> None:
+        profile = from_disk(_MIN)
+        # ``yfmz.exp3.json`` ships Param16/Param17/Param61 with the
+        # zero-Value Param61 stripped. Same for ``yf.exp3.json``.
+        yfmz = profile.expression_params.get("yfmz")
+        yf = profile.expression_params.get("yf")
+        self.assertIsNotNone(yfmz, "missing expression_params entry for yfmz")
+        self.assertIsNotNone(yf, "missing expression_params entry for yf")
+        assert yfmz is not None and yf is not None
+        for binding in yfmz:
+            self.assertIsInstance(binding, ExpressionParam)
+            self.assertGreater(binding.on_value, 0)
+        ids = sorted(b.param_id for b in yfmz)
+        self.assertEqual(ids, ["Param16", "Param17"])
+        for binding in yfmz:
+            self.assertEqual(binding.on_value, 30.0)
+
+    def test_zero_value_params_are_stripped(self) -> None:
+        # Live2D treats Value=0 as "no contribution"; our parser
+        # filters those so the renderer doesn't waste a frame writing
+        # zeros that the manager would write anyway.
+        profile = from_disk(_MIN)
+        for name, bindings in profile.expression_params.items():
+            for binding in bindings:
+                self.assertNotEqual(
+                    binding.on_value, 0,
+                    f"expression {name!r} kept a zero-value param "
+                    f"{binding.param_id!r}",
+                )
+
+    def test_missing_exp3_files_are_skipped(self) -> None:
+        # The Mini model3.json references ``lh`` / ``h`` / ``wh`` /
+        # ``lzx`` files that don't exist on disk in the fixture. The
+        # parser must silently skip those rather than crash; the
+        # renderer falls back to the manager's natural amplitude when
+        # a binding is absent.
+        profile = from_disk(_MIN)
+        # Only ``yf`` and ``yfmz`` actually have exp3 files in the
+        # mini fixture, so those are the only entries we expect.
+        self.assertEqual(set(profile.expression_params.keys()), {"yf", "yfmz"})
+
+    def test_expression_params_round_trip_through_to_dict(self) -> None:
+        # The WS payload serialises ``AvatarProfile.to_dict()`` so the
+        # new field must survive the dataclass -> dict -> json
+        # encode without dropping bindings.
+        profile = from_disk(_MIN)
+        encoded = profile.to_dict()
+        self.assertIn("expression_params", encoded)
+        ep = encoded["expression_params"]
+        self.assertIn("yf", ep)
+        # ``asdict`` flattens ExpressionParam to a plain dict.
+        first = ep["yf"][0]
+        self.assertIn("param_id", first)
+        self.assertIn("on_value", first)
+        # Final sanity: the whole structure is JSON-serialisable.
+        json.dumps(encoded)
 
 
 class ReactionMappingTests(unittest.TestCase):

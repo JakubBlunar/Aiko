@@ -61,6 +61,15 @@ class Motion:
     fps: float
     loop: bool
     curves: list[Curve]
+    # model3.json motion-group label this gesture belongs to.
+    # ``Tap`` is the canonical "one-shot user-triggered gesture"
+    # bucket (nod / shake / bow). ``Backchannel`` is a separate
+    # bucket the renderer enqueues on listening backchannel hints
+    # (tilt_left / tilt_right / microshake) at low priority so a
+    # full reaction motion can pre-empt them. See
+    # ``app/core/session_controller._emit_backchannel_motion`` for
+    # how the bucket is consumed.
+    group: str = "Tap"
 
 
 # ── Gesture authoring ──────────────────────────────────────────────────
@@ -147,7 +156,86 @@ def _bow() -> Motion:
     )
 
 
-GESTURES: list[Motion] = [_nod(), _shake(), _bow()]
+# ── Backchannel micro-gestures (Phase B2) ─────────────────────────────
+
+
+def _tilt_motion(name: str, target: float) -> Motion:
+    """Listening tilt — head leans to one side, brief hold, returns.
+
+    ~0.6s total: 0.25s ramp out, 0.10s hold, 0.25s ramp back. Picked
+    to feel like a "go on" listening cue rather than a reaction. The
+    amplitude (-8/+8 deg on ``ParamAngleX``) is small enough that it
+    layers cleanly on top of the gaze-tracking head angle without
+    twisting the rig out of line with the eyes.
+    """
+    return Motion(
+        name=name,
+        duration=0.6,
+        fps=30.0,
+        loop=False,
+        group="Backchannel",
+        curves=[
+            Curve(
+                param_id="ParamAngleX",
+                keyframes=[
+                    (0.0, 0.0),
+                    (0.25, target),
+                    (0.35, target),
+                    (0.6, 0.0),
+                ],
+            ),
+        ],
+    )
+
+
+def _tilt_left() -> Motion:
+    return _tilt_motion("tilt_left", -8.0)
+
+
+def _tilt_right() -> Motion:
+    return _tilt_motion("tilt_right", 8.0)
+
+
+def _microshake() -> Motion:
+    """Tiny "I'm not following you" micro-shake on ``ParamAngleZ``.
+
+    Two oscillations at +/-3 deg over 0.7s, easing back to 0. Lower
+    amplitude than the full ``shake`` motion so it layers cleanly
+    when the user is mid-utterance and we don't want to interrupt
+    the gaze direction. Driving ``ParamAngleZ`` (head roll) instead
+    of ``ParamAngleX`` (yaw) keeps the eyes pointed at the speaker
+    while the head wobbles, which reads as "slight confusion" rather
+    than "no".
+    """
+    return Motion(
+        name="microshake",
+        duration=0.7,
+        fps=30.0,
+        loop=False,
+        group="Backchannel",
+        curves=[
+            Curve(
+                param_id="ParamAngleZ",
+                keyframes=[
+                    (0.0, 0.0),
+                    (0.175, -3.0),
+                    (0.35, 3.0),
+                    (0.525, -2.0),
+                    (0.7, 0.0),
+                ],
+            ),
+        ],
+    )
+
+
+GESTURES: list[Motion] = [
+    _nod(),
+    _shake(),
+    _bow(),
+    _tilt_left(),
+    _tilt_right(),
+    _microshake(),
+]
 
 
 # ── Motion-file rendering ──────────────────────────────────────────────
@@ -201,47 +289,62 @@ def _render(motion: Motion) -> dict:
     }
 
 
-def _write_motions() -> list[str]:
-    """Render every gesture and write it to ``MOTION_DIR``."""
-    written: list[str] = []
-    for motion in GESTURES:
-        out_path = MOTION_DIR / f"{motion.name}.motion3.json"
+def _write_motions(
+    gestures: list[Motion] | None = None,
+    motion_dir: Path | None = None,
+) -> list[tuple[str, str]]:
+    """Render every gesture and write it to ``motion_dir``.
+
+    Returns ``[(filename, group_name), ...]`` so the caller knows
+    which model3.json motion bucket each file belongs to.
+    """
+    target = motion_dir or MOTION_DIR
+    written: list[tuple[str, str]] = []
+    for motion in gestures or GESTURES:
+        out_path = target / f"{motion.name}.motion3.json"
         out_path.write_text(
             # Tabs match the indentation style Live2D Editor produces
             # for the original ``dh.motion3.json`` so diffs stay quiet.
             json.dumps(_render(motion), indent="\t"),
             encoding="utf-8",
         )
-        written.append(out_path.name)
+        written.append((out_path.name, motion.group))
     return written
 
 
 # ── model3.json patching ───────────────────────────────────────────────
 
 
-def _patch_model3(filenames: list[str]) -> int:
-    """Append every new motion file under a ``Tap`` group.
+def _patch_model3(
+    entries: list[tuple[str, str]],
+    model3_path: Path | None = None,
+) -> int:
+    """Append every new motion file under its declared group.
+
+    Idempotent — entries that already exist for the same group +
+    filename are skipped, so a re-run after a partial generation
+    only writes the missing ones.
 
     The existing ``""`` (default) group keeps the ``dh`` idle loop.
-    Putting one-shot gestures under ``Tap`` matches the Live2D Editor
-    convention and keeps groups semantically meaningful — the LLM's
-    motion lookup is name-based so the group label is purely for the
-    Editor UI.
+    ``Tap`` carries the LLM-driven one-shots (nod / shake / bow);
+    ``Backchannel`` is the listening-cue bucket (tilt_*, microshake)
+    that the renderer enqueues at idle priority so a regular reaction
+    motion can pre-empt it.
     """
-    model3_path = ROOT / "Alexia.model3.json"
-    data = json.loads(model3_path.read_text(encoding="utf-8"))
+    path = model3_path or (ROOT / "Alexia.model3.json")
+    data = json.loads(path.read_text(encoding="utf-8"))
     motions: dict = data.setdefault("FileReferences", {}).setdefault(
         "Motions", {}
     )
-    tap = motions.setdefault("Tap", [])
-    existing = {entry.get("File") for entry in tap if isinstance(entry, dict)}
     added = 0
-    for fname in filenames:
+    for fname, group in entries:
+        bucket = motions.setdefault(group, [])
+        existing = {entry.get("File") for entry in bucket if isinstance(entry, dict)}
         if fname in existing:
             continue
-        tap.append({"File": fname})
+        bucket.append({"File": fname})
         added += 1
-    model3_path.write_text(
+    path.write_text(
         json.dumps(data, indent="\t") + "\n", encoding="utf-8",
     )
     return added
@@ -252,8 +355,9 @@ def main() -> None:
         raise SystemExit(f"avatar root not found: {ROOT}")
     written = _write_motions()
     added = _patch_model3(written)
-    print(f"Wrote {len(written)} motion file(s): {', '.join(written)}")
-    print(f"Patched Alexia.model3.json (added {added} new Tap entries)")
+    file_summary = ", ".join(name for name, _ in written)
+    print(f"Wrote {len(written)} motion file(s): {file_summary}")
+    print(f"Patched Alexia.model3.json (added {added} new motion entries)")
 
 
 if __name__ == "__main__":

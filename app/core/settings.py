@@ -149,8 +149,8 @@ class AvatarSettings:
     """Single bundled Live2D avatar (Alexia) + user-tunable knobs.
 
     The avatar files themselves are gitignored at ``root_dir``.
-    ``scale_multiplier`` and ``auto_outfit`` are the only fields the
-    UI lets the user change at runtime.
+    ``scale_multiplier``, ``auto_outfit`` and ``expressiveness`` are
+    the fields the UI lets the user change at runtime.
     """
 
     root_dir: str = "live-2d-models/Alexia"
@@ -162,6 +162,12 @@ class AvatarSettings:
     #   "pajamas"         -> always pajamas (no sleeping cap)
     #   "pajamas_hooded"  -> always pajamas with sleeping cap
     auto_outfit: str = "auto"
+    # Body-language intensity multiplier consumed by the renderer's
+    # AmbientBodyChannel and ExpressionChannel. ``0.0`` mutes every
+    # mood-driven amplitude (breath sway, body tilts, expression
+    # strength, sass burst, …); ``1.0`` is the authored default;
+    # ``1.5`` exaggerates within safe rig limits. Clamped on load.
+    expressiveness: float = 1.0
 
 
 @dataclass(slots=True)
@@ -720,5 +726,6 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                 if str(avatar_raw.get("auto_outfit", "auto") or "auto").strip().lower() in OUTFIT_MODES
                 else "auto"
             ),
+            expressiveness=max(0.0, min(1.5, float(avatar_raw.get("expressiveness", 1.0) or 1.0))),
         ),
     )

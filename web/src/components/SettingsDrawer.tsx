@@ -664,6 +664,64 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                     </div>
                     <div className="mt-2 space-y-1.5">
                       <p className="text-[11px] uppercase tracking-wide text-ink-100/50">
+                        Body language intensity
+                      </p>
+                      <div className="flex items-center gap-3 rounded-md bg-white/[0.02] px-2 py-2">
+                        <input
+                          type="range"
+                          min={0}
+                          max={1.5}
+                          step={0.05}
+                          value={avatar?.settings.expressiveness ?? 1}
+                          onChange={(e) => {
+                            const v = Number(e.target.value);
+                            setAvatarSettings({ expressiveness: v });
+                          }}
+                          onPointerUp={(e) =>
+                            void onPatchAvatarSettings({
+                              expressiveness: Number(
+                                (e.target as HTMLInputElement).value,
+                              ),
+                            })
+                          }
+                          onKeyUp={(e) => {
+                            if (
+                              e.key === "ArrowLeft" ||
+                              e.key === "ArrowRight" ||
+                              e.key === "Home" ||
+                              e.key === "End"
+                            ) {
+                              void onPatchAvatarSettings({
+                                expressiveness: Number(
+                                  (e.target as HTMLInputElement).value,
+                                ),
+                              });
+                            }
+                          }}
+                          disabled={avatarBusy || !avatar}
+                          className="flex-1 accent-ink-400"
+                          aria-label="Avatar body language intensity"
+                        />
+                        <span className="w-10 text-right text-[11px] tabular-nums text-ink-100/70">
+                          {(avatar?.settings.expressiveness ?? 1).toFixed(2)}x
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void onPatchAvatarSettings({ expressiveness: 1 })
+                          }
+                          disabled={avatarBusy || !avatar}
+                          className="rounded border border-white/10 px-2 py-0.5 text-[10px] text-ink-100/60 hover:border-ink-400 hover:text-ink-100"
+                        >
+                          Reset
+                        </button>
+                      </div>
+                      <p className="text-[10px] text-ink-100/40">
+                        0 mutes mood-driven body language; 1 is the default; up to 1.5 amplifies.
+                      </p>
+                    </div>
+                    <div className="mt-2 space-y-1.5">
+                      <p className="text-[11px] uppercase tracking-wide text-ink-100/50">
                         Outfit
                       </p>
                       <div className="flex flex-col gap-1 rounded-md bg-white/[0.02] px-3 py-2 text-[11px]">

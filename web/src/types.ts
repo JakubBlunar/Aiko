@@ -160,6 +160,15 @@ export interface OutfitParam {
   on_value: number;
 }
 
+/** One parameter contribution inside an expression file binding.
+ * Mirrors :class:`app.core.avatar_profile.ExpressionParam` and is
+ * consumed by the renderer's ExpressionChannel arousal-scaler so a
+ * single ``cheerful`` reaction reads quieter at low arousal. */
+export interface ExpressionParam {
+  param_id: string;
+  on_value: number;
+}
+
 /** Outfit binding (day clothes / pajamas). Composed of one-or-more
  * parameter contributions because real Cubism rigs almost always
  * encode an outfit as a *combination* (clothes body + hood + pose
@@ -184,6 +193,14 @@ export interface CdiPart {
 
 export interface AvatarSettingsKnobs {
   scale_multiplier: number;
+  /**
+   * Body-language intensity multiplier consumed by the renderer.
+   * ``0.0`` mutes every mood-driven amplitude (breath sway, body
+   * tilts, expression strength, sass burst, ...); ``1.0`` is the
+   * authored default; ``1.5`` exaggerates within safe rig limits.
+   * Backend clamps to [0.0, 1.5] in ``AppSettings.avatar``.
+   */
+  expressiveness: number;
   /**
    * Outfit selection mode. Mirrors the Python ``OUTFIT_MODES``
    * allow-list in ``app/core/settings.py`` -- update both sides in
@@ -215,6 +232,13 @@ export interface AvatarProfile {
   capabilities: Record<string, boolean>;
   overlays: Record<string, OverlayBinding>;
   outfits: Record<string, OutfitBinding>;
+  /** Expression-file → list of (Param ID, Value) bindings parsed from
+   * each rig's ``.exp3.json``. The ExpressionChannel reads this to
+   * arousal-scale the same params the rig's ``expressionManager`` is
+   * Add-blending each frame, so a single ``cheerful`` reaction reads
+   * quieter at low arousal. Optional for forward compatibility with
+   * minimal rigs / older cached payloads. */
+  expression_params?: Record<string, ExpressionParam[]>;
   /** All cat-tail param IDs in declaration order. Empty when the
    * loaded model isn't a cat-girl rig. */
   cat_tail_param_ids: string[];
@@ -251,6 +275,15 @@ export interface AvatarMotionState {
   index: number;
   /** Wall-clock ms when the directive arrived; used as a debounce key. */
   firedAt: number;
+  /** Optional priority lane the renderer should enqueue this motion on:
+   *   - ``idle`` (B2 listening micro-cues): low priority, pre-empted
+   *     by any ``normal`` motion that lands during the same listening
+   *     window;
+   *   - ``normal`` (default): the LLM-driven gesture path;
+   *   - ``force``: bypasses the lane and stops whatever is playing.
+   * Backwards-compatible: payloads without this field are treated as
+   * ``normal``. */
+  priority?: "idle" | "normal" | "force";
 }
 
 export interface MetricsSnapshot {
@@ -399,6 +432,10 @@ export type WsServerEvent =
       name: string;
       group: string;
       index: number;
+      /** Optional priority lane (B2 listening micro-cues use ``"idle"``).
+       * Backwards-compatible: payloads without this field are
+       * treated as the default normal lane. */
+      priority?: "idle" | "normal" | "force";
     }
   | { type: "audio_amplitude"; level: number }
   | {

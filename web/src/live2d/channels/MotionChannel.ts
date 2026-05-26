@@ -90,7 +90,7 @@ export class MotionChannel implements AvatarChannel {
     if (!manifest.motions || !manifest.motions[event.group]) {
       return;
     }
-    adapter.motion(event.group, event.index, MOTION_PRIORITY.NORMAL);
+    adapter.motion(event.group, event.index, motionPriority(event.priority));
   }
 
   onTtsState(next: "idle" | "speaking"): void {
@@ -112,5 +112,23 @@ export class MotionChannel implements AvatarChannel {
     // ``undefined`` lets pixi-live2d-display pick a random index in
     // the group — exactly what the legacy useEffect did.
     adapter.motion(group, undefined, MOTION_PRIORITY.NORMAL);
+  }
+}
+
+/** Map the optional ``priority`` lane on an ``AvatarMotionState`` to
+ * the numeric pixi-live2d-display priority. Default ``"normal"`` so
+ * every existing (priority-less) ``[[motion:X]]`` event behaves
+ * exactly as before this knob was added. */
+function motionPriority(value: AvatarMotionState["priority"]): number {
+  switch (value) {
+    case "idle":
+      return MOTION_PRIORITY.IDLE;
+    case "force":
+      return MOTION_PRIORITY.FORCE;
+    case "normal":
+    case undefined:
+      return MOTION_PRIORITY.NORMAL;
+    default:
+      return MOTION_PRIORITY.NORMAL;
   }
 }

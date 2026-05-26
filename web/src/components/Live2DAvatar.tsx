@@ -145,6 +145,7 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
               resolvedOutfit: s.avatar?.resolved_outfit ?? "",
               backchannelHint: s.backchannelHint ?? "",
               circadianPeriod: s.avatar?.circadian_period ?? "",
+              expressiveness: s.avatar?.settings?.expressiveness ?? 1,
             };
           },
         });

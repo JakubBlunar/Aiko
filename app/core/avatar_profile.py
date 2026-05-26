@@ -93,6 +93,26 @@ class OutfitParam:
 
 
 @dataclass(slots=True)
+class ExpressionParam:
+    """One parameter contribution inside an expression file binding.
+
+    Mirrors :class:`OutfitParam` but for the ``ExpressionChannel``
+    continuous-expressiveness layer. Expressions are normally
+    Add-blended by pixi-live2d-display's ``expressionManager`` from
+    the ``Value`` field of each ``.exp3.json``. The renderer's
+    ``tickPreModel`` arousal-scaler reads this list to know which
+    params it can gently override at low arousal (writing
+    ``on_value * scale`` directly) without fighting the manager's
+    own additive contribution. Param IDs that show up here are *also*
+    in the model's parameter table — the renderer is free to ignore
+    bindings whose IDs aren't on the loaded rig.
+    """
+
+    param_id: str
+    on_value: float = 30.0
+
+
+@dataclass(slots=True)
 class OutfitBinding:
     """Outfit toggle composed of one-or-more parameter contributions.
 
@@ -129,6 +149,16 @@ class AvatarProfile:
     capabilities: dict[str, bool] = field(default_factory=dict)
     overlays: dict[str, OverlayBinding] = field(default_factory=dict)
     outfits: dict[str, OutfitBinding] = field(default_factory=dict)
+    # Expression-file → list of (Param ID, Value) bindings parsed from
+    # each ``.exp3.json``. Mirrors the ``outfits`` shape but exposes
+    # *every* expression's params (not just the outfit ones). The
+    # renderer's continuous-expressiveness layer reads this to do an
+    # arousal-scaled write of the same params the rig's
+    # ``expressionManager`` is Add-blending each frame, so a single
+    # ``cheerful`` reaction reads quieter at low arousal. Skipped
+    # bindings (missing or unparseable exp3) silently absent — the
+    # renderer falls back to the manager's natural amplitude.
+    expression_params: dict[str, list[ExpressionParam]] = field(default_factory=dict)
     # All param IDs whose cdi3 ``Name`` matched a cat-tail synonym,
     # in declaration order. The renderer uses this to drive the
     # arousal-modulated tail wag without hardcoding segment counts.
@@ -201,14 +231,21 @@ _CAPABILITY_SYNONYMS: dict[str, tuple[str, ...]] = {
 }
 
 
-# Body-rotation parameter probes. The cdi3 lookup checks for these
-# *exact* IDs (not synonym matches) because the names are part of
-# the Cubism standard parameter set; we only want to flip the
-# capability flags when the rig actually exposes them so the
+# Body-rotation + ambient-driver parameter probes. The lookup checks
+# for these *exact* IDs (not synonym matches) because the names are
+# part of the Cubism standard parameter set; we only want to flip
+# the capability flags when the rig actually exposes them so the
 # renderer's body-language layer is a no-op on minimal models.
+#
+# ``has_breath`` is included here so the
+# ``AmbientBodyChannel.tickPreModel`` continuous-expressiveness pass
+# can override the breath driver with an arousal-scaled wave on
+# rigs that expose ``ParamBreath``, and silently no-op on minimal
+# rigs that don't.
 _BODY_ANGLE_PROBES: dict[str, str] = {
     "has_body_angle_y": "ParamBodyAngleY",
     "has_body_angle_z": "ParamBodyAngleZ",
+    "has_breath": "ParamBreath",
 }
 
 
@@ -430,6 +467,7 @@ def from_disk(root: Path | str, *, display_name: str = "") -> AvatarProfile:
         expressions=expressions,
         capabilities=capabilities,
     )
+    expression_params = _build_expression_params(expressions, root_path)
     idle_motion_group = _pick_motion_group(motions, ("idle", "tick", "loop"))
     talk_motion_group = _pick_motion_group(motions, ("tap", "talk", "anim", "story"))
 
@@ -449,6 +487,7 @@ def from_disk(root: Path | str, *, display_name: str = "") -> AvatarProfile:
         capabilities=capabilities,
         overlays=overlays,
         outfits=outfits,
+        expression_params=expression_params,
         cat_tail_param_ids=cat_tail_param_ids,
         cat_ear_param_ids=cat_ear_param_ids,
     )
@@ -757,6 +796,32 @@ def _detect_capabilities(
     )
 
 
+def _build_expression_params(
+    expressions: list[ExpressionRef],
+    root: Path,
+) -> dict[str, list[ExpressionParam]]:
+    """Parse each loaded expression's exp3 file into the
+    ``expression_params`` map consumed by the frontend
+    ``ExpressionChannel`` continuous-expressiveness layer.
+
+    Each entry is keyed by the expression *name* (the filename minus
+    ``.exp3.json``) and maps to the same ``(param_id, value)`` pairs
+    that ``expressionManager`` Add-blends every frame. Missing /
+    unparseable exp3s degrade gracefully — the renderer falls back to
+    the manager's natural amplitude when a binding isn't there.
+    """
+    out: dict[str, list[ExpressionParam]] = {}
+    for expr in expressions:
+        bindings = _parse_exp3_params(root, expr.file)
+        if not bindings:
+            continue
+        out[expr.name] = [
+            ExpressionParam(param_id=b.param_id, on_value=b.on_value)
+            for b in bindings
+        ]
+    return out
+
+
 def _parse_exp3_params(root: Path, rel_file: str) -> list[OutfitParam]:
     """Read a Cubism 3 ``.exp3.json`` and return its ``Parameters``
     array as :class:`OutfitParam` entries.
@@ -853,6 +918,7 @@ def _pick_motion_group(
 __all__ = [
     "AvatarProfile",
     "AvatarProfileError",
+    "ExpressionParam",
     "ExpressionRef",
     "MotionRef",
     "OverlayBinding",
