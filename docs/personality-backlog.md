@@ -202,6 +202,67 @@ is a huge presence multiplier and pairs naturally with her curiosity.
 
 ---
 
+## E. Memory architecture
+
+### E1. Scratchpad / archive memory tiers
+
+**Motivation.** Today there are effectively two tiers — the rolling
+per-session summary (`SummaryWorker` writes `session_summaries`) and
+the long-term `MemoryStore` (capped at `memory.max_memories`,
+distilled by `MemoryExtractor` / `ReflectionWorker` /
+`PromiseExtractor` / `[[remember:...]]` tags). Cap-bump (500 → 5000)
+plus the new `pinned` semantic from the memory-editor pass cover
+"don't forget what matters" cheaply, but everything in the long-term
+store is still a flat pool: a half-baked observation from yesterday
+sits next to a year-old anchor relationship fact, and `decay()` /
+`prune()` treat them with the same coarse `salience + use_count`
+heuristic. A real two-tier split would let recent unverified
+observations live in a faster-decay "scratchpad" that auto-promotes
+or auto-forgets, while long-stable memories drift into a low-touch
+"archive" that retrieval still hits but writes never disturb.
+
+**Key files.**
+- [`app/core/memory_store.py`](../app/core/memory_store.py) — would
+  grow per-tier `decay_rate` / `prune_score` knobs and a `tier` column
+  alongside the new `pinned` from the memory-editor pass.
+- [`app/core/chat_database.py`](../app/core/chat_database.py) —
+  schema bump to add `tier TEXT NOT NULL DEFAULT 'long_term'`.
+- New: `app/core/memory_promotion_worker.py` — a daily worker that
+  walks scratchpad rows older than `scratchpad_ttl_days`, promotes
+  rows that retrieved at least N times, deletes the rest. Mirrors the
+  `MemoryConsolidator` cadence.
+- [`app/core/rag_retriever.py`](../app/core/rag_retriever.py) —
+  per-tier scoring offsets so scratchpad hits are cheaper to surface
+  on recency but archive hits aren't penalised on dormancy.
+
+**Sketched approach.**
+- Three tiers: `scratchpad` (fast decay, days-to-weeks lifetime),
+  `long_term` (today's default), `archive` (decay rate ≈ 0, retrieval
+  bonus dampened so it doesn't crowd recent context).
+- New writes from `MemoryExtractor` land in `scratchpad`. `[[remember:
+  self:...]]` self-tags and `PromiseExtractor` go straight to
+  `long_term` (the user already explicitly anchored those).
+- Promotion: `scratchpad` → `long_term` after surviving ~7 days AND
+  retrieved ≥ 3 times, OR pinned (pin always promotes). Demotion:
+  `long_term` → `archive` after ~180 days untouched.
+- `MemoryStore.prune()` enforces a per-tier cap so a noisy week of
+  scratchpad churn can't push out long-term memories.
+- The Memory tab gains a tier column + per-tier filter (mirrors
+  the kind filter pattern from the editor work).
+
+**Open questions.**
+- Should the tier be auto-derived from kind + age, or stored
+  explicitly? Explicit is cleaner for the UI ("I want to *force*
+  this into archive") but adds writes; derivation keeps the table
+  thinner.
+- Does archive need its own LanceDB table (cheaper indexing) or is a
+  filtered query on the existing one enough?
+- Interaction with the existing `MemoryConsolidator` — does it
+  consolidate within a tier only, or across? Probably within, otherwise
+  a scratchpad merge could corrupt a long-term row.
+
+---
+
 ## Other ideas considered
 
 - **Second TTS provider behind `TtsEngine`.** Pocket-TTS is the only
@@ -220,12 +281,19 @@ is a huge presence multiplier and pairs naturally with her curiosity.
   The plumbing is there in [`app/core/live_session.py`](../app/core/live_session.py);
   flip the flag and validate against the existing
   `barge_in_min_speech_seconds` floor.
-- **User-facing memory editor in the web UI.** The MCP debug surface can
-  list / mutate memories, but there's no in-app way for Jacob to inspect
-  what Aiko remembers. A "Memory" tab listing top-salience memories
-  with edit / delete buttons (calling new
-  `/api/memories` endpoints over the existing `MemoryStore`) would
-  make her notebook explicit.
+- **User-facing memory editor in the web UI.** DONE — shipped as a
+  dedicated "Memory" tab in `SettingsDrawer.tsx`. Adds full
+  edit-in-place / manual create / pin toggle / kind filter / sort /
+  paginated list (page size 50). Pinned rows are skipped by `decay()`
+  and never selected as `prune()` victims; `RagRetriever` adds a
+  `+0.05` score bonus for pinned hits via a SQLite-mirror lookup
+  (LanceDB stays untouched to avoid a destructive vector-store
+  rebuild). Cap bumped from 500 to 5000. Pagination + filter live on
+  the server side (`GET /api/memories` grew `offset` / `kind` query
+  params and a `total` / `cap` response). New WS event:
+  `memory_updated`. New endpoints: `PATCH /api/memories/{id}`,
+  `POST /api/memories`, `POST /api/memories/{id}/pin`. Schema v5
+  migration in `chat_database.py` adds the `pinned` column.
 - **"Shared moments" episodic memory kind.** Today
   `event` / `callback` / `reflection` are loosely episodic but flat.
   A new `shared_moment` kind with structured `(when, what, vibe)`

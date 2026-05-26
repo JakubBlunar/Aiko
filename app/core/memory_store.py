@@ -74,6 +74,14 @@ class Memory:
     created_at: str
     last_used_at: str | None
     use_count: int
+    # Pinned rows are user-curated as "always keep". They are skipped by
+    # ``decay()`` and never selected as victims by ``prune()``. Pinning a
+    # row also nudges ``salience`` to ``1.0`` so an un-pin doesn't snap to a
+    # stale low value (see :meth:`MemoryStore.set_pinned`). The flag lives
+    # in SQLite only -- the LanceDB mirror is intentionally not aware of
+    # it; the retriever applies a small score bonus by joining against the
+    # in-memory mirror at query time.
+    pinned: bool = False
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -86,6 +94,7 @@ class Memory:
             "created_at": self.created_at,
             "last_used_at": self.last_used_at,
             "use_count": int(self.use_count),
+            "pinned": bool(self.pinned),
         }
 
 
@@ -186,7 +195,7 @@ class MemoryStore:
         try:
             rows = conn.execute(
                 "SELECT id, content, kind, salience, embedding, source_session, "
-                "source_message_id, created_at, last_used_at, use_count "
+                "source_message_id, created_at, last_used_at, use_count, pinned "
                 "FROM memories"
             ).fetchall()
         except sqlite3.OperationalError:
@@ -207,6 +216,7 @@ class MemoryStore:
                     created_at=r[7],
                     last_used_at=r[8],
                     use_count=int(r[9]),
+                    pinned=bool(r[10]),
                 )
                 for r in rows
             }
@@ -271,8 +281,8 @@ class MemoryStore:
         cursor = conn.execute(
             "INSERT INTO memories ("
             "  content, kind, salience, embedding, source_session, "
-            "  source_message_id, created_at, last_used_at, use_count"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)",
+            "  source_message_id, created_at, last_used_at, use_count, pinned"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0)",
             (
                 cleaned,
                 kind,
@@ -297,6 +307,7 @@ class MemoryStore:
             created_at=now,
             last_used_at=None,
             use_count=0,
+            pinned=False,
         )
         with self._lock:
             self._mirror[new_id] = memory
@@ -369,30 +380,176 @@ class MemoryStore:
                 log.debug("rag delete_memory failed", exc_info=True)
         return cursor.rowcount > 0
 
+    def update(
+        self,
+        memory_id: int,
+        *,
+        content: str | None = None,
+        kind: str | None = None,
+        salience: float | None = None,
+        embedding: np.ndarray | None = None,
+    ) -> Memory | None:
+        """Patch one or more fields on an existing memory.
+
+        Pass ``embedding`` alongside ``content`` to refresh the vector index;
+        callers that change content without supplying an embedding silently
+        keep the stale vector (used by tests). The LanceDB mirror is upserted
+        whenever any field changes so retrieval stays in sync.
+
+        Returns the updated :class:`Memory` snapshot, or ``None`` if the row
+        doesn't exist.
+        """
+        with self._lock:
+            mem = self._mirror.get(int(memory_id))
+        if mem is None:
+            return None
+
+        new_content = mem.content
+        if content is not None:
+            cleaned = str(content).strip()
+            if len(cleaned) < 4:
+                return None
+            new_content = cleaned
+
+        new_kind = mem.kind
+        if kind is not None:
+            requested = str(kind).strip().lower() or "fact"
+            new_kind = requested if requested in VALID_KINDS else "fact"
+
+        new_salience = mem.salience
+        if salience is not None:
+            new_salience = max(0.0, min(1.0, float(salience)))
+
+        new_embedding = mem.embedding
+        if embedding is not None:
+            emb = np.asarray(embedding, dtype=np.float32)
+            if emb.size > 0:
+                norm = float(np.linalg.norm(emb))
+                if norm > 0.0:
+                    emb = emb / norm
+                new_embedding = emb
+
+        conn = self._get_conn()
+        conn.execute(
+            "UPDATE memories SET content = ?, kind = ?, salience = ?, embedding = ? "
+            "WHERE id = ?",
+            (
+                new_content,
+                new_kind,
+                float(new_salience),
+                _encode(new_embedding),
+                int(memory_id),
+            ),
+        )
+        conn.commit()
+
+        with self._lock:
+            mem.content = new_content
+            mem.kind = new_kind
+            mem.salience = new_salience
+            mem.embedding = new_embedding
+            updated = mem
+
+        if self._rag is not None:
+            try:
+                # ``add_memory`` upserts on id; safe to call for plain
+                # field changes too.
+                self._rag.add_memory(
+                    record_id=str(int(memory_id)),
+                    content=updated.content,
+                    kind=updated.kind,
+                    embedding=updated.embedding,
+                    salience=updated.salience,
+                    source_session=updated.source_session,
+                    source_message_id=updated.source_message_id,
+                    created_at=updated.created_at,
+                )
+            except Exception:
+                log.debug("rag update mirror failed", exc_info=True)
+        return updated
+
+    def set_pinned(self, memory_id: int, pinned: bool) -> Memory | None:
+        """Pin or unpin a memory.
+
+        Pinning nudges ``salience`` up to ``1.0`` so a future un-pin does not
+        snap back to a stale low value. Un-pinning leaves the existing
+        salience intact -- decay will gradually walk it back down.
+        """
+        with self._lock:
+            mem = self._mirror.get(int(memory_id))
+        if mem is None:
+            return None
+        new_pinned = 1 if pinned else 0
+        new_salience = mem.salience
+        if pinned:
+            new_salience = max(new_salience, 1.0)
+        conn = self._get_conn()
+        conn.execute(
+            "UPDATE memories SET pinned = ?, salience = ? WHERE id = ?",
+            (new_pinned, float(new_salience), int(memory_id)),
+        )
+        conn.commit()
+        with self._lock:
+            mem.pinned = bool(pinned)
+            mem.salience = new_salience
+            updated = mem
+        if self._rag is not None and pinned:
+            # Mirror the salience bump so retrieval scoring matches what
+            # the SQLite store believes.
+            try:
+                self._rag.add_memory(
+                    record_id=str(int(memory_id)),
+                    content=updated.content,
+                    kind=updated.kind,
+                    embedding=updated.embedding,
+                    salience=updated.salience,
+                    source_session=updated.source_session,
+                    source_message_id=updated.source_message_id,
+                    created_at=updated.created_at,
+                )
+            except Exception:
+                log.debug("rag pin mirror failed", exc_info=True)
+        return updated
+
+    def get(self, memory_id: int) -> Memory | None:
+        with self._lock:
+            return self._mirror.get(int(memory_id))
+
     def decay(self, by: float = 0.02) -> None:
-        """Slowly forget unused memories. Call from background worker."""
+        """Slowly forget unused memories. Call from background worker.
+
+        Pinned rows are skipped: they're explicitly user-curated as "don't
+        let this fade".
+        """
         if by <= 0:
             return
         conn = self._get_conn()
         with self._lock:
             for mem in self._mirror.values():
+                if mem.pinned:
+                    continue
                 mem.salience = max(0.0, mem.salience - float(by))
         conn.execute(
-            "UPDATE memories SET salience = MAX(0.0, salience - ?)",
+            "UPDATE memories SET salience = MAX(0.0, salience - ?) WHERE pinned = 0",
             (float(by),),
         )
         conn.commit()
 
     def prune(self) -> int:
-        """Delete the lowest-priority memories until count <= max_memories."""
+        """Delete the lowest-priority memories until count <= max_memories.
+
+        Pinned rows are never selected as victims; if every row is pinned we
+        simply leave the store over-cap rather than evicting curated content.
+        """
         with self._lock:
             count = len(self._mirror)
         if count <= self._max:
             return 0
-        # Score = salience + 0.1 * (use_count clamped to 10) - recency penalty
-        # Lowest scoring rows are deleted first.
+        # Score = salience + 0.1 * (use_count clamped to 10).
+        # Lowest scoring non-pinned rows are deleted first.
+        candidates = [m for m in self._mirror.values() if not m.pinned]
         ranked = sorted(
-            self._mirror.values(),
+            candidates,
             key=lambda m: (
                 m.salience + 0.05 * min(m.use_count, 20)
             ),
@@ -447,23 +604,57 @@ class MemoryStore:
         scored.sort(key=lambda h: h.score, reverse=True)
         return scored[: max(1, int(top_k))]
 
-    def list_recent(self, limit: int = 50) -> list[Memory]:
+    def list_recent(
+        self,
+        limit: int = 50,
+        *,
+        offset: int = 0,
+        kind: str | None = None,
+    ) -> list[Memory]:
         with self._lock:
-            mems = sorted(
-                self._mirror.values(),
-                key=lambda m: m.created_at,
-                reverse=True,
-            )
-        return mems[: max(1, int(limit))]
+            mems = list(self._mirror.values())
+        if kind:
+            kind_norm = kind.strip().lower()
+            mems = [m for m in mems if m.kind == kind_norm]
+        mems.sort(key=lambda m: m.created_at, reverse=True)
+        # Pinned rows always float to the top of the recent list so the
+        # editor's default view shows curated rows first regardless of
+        # creation date.
+        mems.sort(key=lambda m: (0 if m.pinned else 1))
+        start = max(0, int(offset))
+        stop = start + max(1, int(limit))
+        return mems[start:stop]
 
-    def list_top(self, limit: int = 50) -> list[Memory]:
+    def list_top(
+        self,
+        limit: int = 50,
+        *,
+        offset: int = 0,
+        kind: str | None = None,
+    ) -> list[Memory]:
         with self._lock:
-            mems = sorted(
-                self._mirror.values(),
-                key=lambda m: (m.salience, m.use_count),
-                reverse=True,
-            )
-        return mems[: max(1, int(limit))]
+            mems = list(self._mirror.values())
+        if kind:
+            kind_norm = kind.strip().lower()
+            mems = [m for m in mems if m.kind == kind_norm]
+        mems.sort(
+            key=lambda m: (
+                0 if m.pinned else 1,
+                -m.salience,
+                -m.use_count,
+            ),
+        )
+        start = max(0, int(offset))
+        stop = start + max(1, int(limit))
+        return mems[start:stop]
+
+    def count_memories(self, kind: str | None = None) -> int:
+        with self._lock:
+            mems = self._mirror.values()
+            if kind:
+                kind_norm = kind.strip().lower()
+                return sum(1 for m in mems if m.kind == kind_norm)
+            return len(self._mirror)
 
     def count(self) -> int:
         with self._lock:

@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_SCHEMA_VERSION = 4
+_SCHEMA_VERSION = 5
 
 _CREATE_TABLES = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -45,7 +45,12 @@ CREATE TABLE IF NOT EXISTS memories (
     source_message_id INTEGER,
     created_at TEXT NOT NULL,
     last_used_at TEXT,
-    use_count INTEGER NOT NULL DEFAULT 0
+    use_count INTEGER NOT NULL DEFAULT 0,
+    -- Schema v5: pinned rows are never decayed or pruned. User-curated
+    -- "always keep this" flag wired through MemoryStore.set_pinned(). Old
+    -- databases get this column added via the v4->v5 ALTER in
+    -- ``_init_schema`` below; new databases get it from this CREATE.
+    pinned INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_memories_kind ON memories(kind);
 CREATE INDEX IF NOT EXISTS idx_memories_salience ON memories(salience);
@@ -247,6 +252,15 @@ class ChatDatabase:
                 conn.execute(f"DROP TABLE IF EXISTS {table}")
             except Exception:
                 pass
+        # v4 -> v5: add ``memories.pinned`` column to existing databases.
+        # New tables created above by ``CREATE TABLE IF NOT EXISTS`` already
+        # include the column, so this only touches upgraded databases. SQLite
+        # raises ``OperationalError`` when the column already exists -- we
+        # swallow that so re-running the migration is a no-op.
+        try:
+            conn.execute("ALTER TABLE memories ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
         conn.execute("UPDATE schema_version SET version = ?", (_SCHEMA_VERSION,))
         conn.commit()
 

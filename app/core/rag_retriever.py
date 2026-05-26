@@ -67,6 +67,11 @@ _MEMORY_RECENCY_PENALTY_HOURS = 6.0
 _MEMORY_RECENCY_PENALTY = 0.08
 _MEMORY_REVIVAL_DAYS = 7.0
 _MEMORY_REVIVAL_BONUS = 0.04
+# Bonus for memories the user has explicitly pinned via the Memory tab.
+# Pinning is a curation signal ("I want this surfaced when relevant"); a
+# small additive nudge gives pinned hits the edge over equally-similar
+# unpinned siblings without overpowering raw cosine relevance.
+_MEMORY_PINNED_BONUS = 0.05
 
 
 class RagRetriever:
@@ -157,6 +162,24 @@ class RagRetriever:
                     last_used_at=getattr(h.record, "last_used_at", None),
                     use_count=int(getattr(h.record, "use_count", 0) or 0),
                 )
+                # Pin status lives in the SQLite mirror, not LanceDB --
+                # apply the bonus by joining against ``MemoryStore`` here.
+                # Wrapped in a broad try/except because a misbehaving or
+                # duck-typed memory store must not abort retrieval (the
+                # outer except for the whole memory branch would drop
+                # every memory hit, see test_mark_used_failure_does_not_
+                # break_retrieval).
+                if self._memory_store is not None:
+                    try:
+                        raw_id = getattr(h.record, "id", None)
+                        if raw_id is not None and hasattr(
+                            self._memory_store, "get"
+                        ):
+                            mem = self._memory_store.get(int(raw_id))
+                            if mem is not None and getattr(mem, "pinned", False):
+                                h.score += _MEMORY_PINNED_BONUS
+                    except Exception:
+                        log.debug("pinned-bonus lookup failed", exc_info=True)
                 merged.append(h)
         except Exception:
             log.debug("memory search failed", exc_info=True)

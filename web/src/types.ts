@@ -92,7 +92,29 @@ export type MemoryKind =
   | "preference"
   | "event"
   | "relationship"
-  | "self_tagged";
+  | "self_tagged"
+  | "self"
+  | "open_question"
+  | "callback"
+  | "reflection"
+  | "promise"
+  | "catchphrase";
+
+export const MEMORY_KINDS: readonly MemoryKind[] = [
+  "fact",
+  "preference",
+  "event",
+  "relationship",
+  "self",
+  "self_tagged",
+  "callback",
+  "promise",
+  "reflection",
+  "open_question",
+  "catchphrase",
+];
+
+export type MemoryOrder = "recent" | "top";
 
 export interface RagDocument {
   document_id: string;
@@ -121,12 +143,35 @@ export interface Memory {
   created_at: string;
   last_used_at: string | null;
   use_count: number;
+  pinned: boolean;
 }
 
 export interface MemoriesResponse {
   memories: Memory[];
   count: number;
+  total: number;
+  cap: number;
   enabled: boolean;
+}
+
+export interface MemoryUpdatePatch {
+  content?: string;
+  kind?: MemoryKind | string;
+  salience?: number;
+}
+
+export interface MemoryCreatePayload {
+  content: string;
+  kind?: MemoryKind | string;
+  salience?: number;
+}
+
+/** Server response for ``POST /api/memories``. Either ``memory`` (a brand
+ * new row was created) or ``deduped_into`` (the new content collapsed into
+ * an existing near-duplicate whose salience was bumped). */
+export interface MemoryCreateResponse {
+  memory?: Memory;
+  deduped_into?: Memory;
 }
 
 // ── Live2D avatar (fixed Alexia bundle) ─────────────────────────────
@@ -437,6 +482,7 @@ export type WsServerEvent =
   | { type: "status"; message: string }
   | { type: "error"; message: string }
   | { type: "memory_added"; memory: Memory }
+  | { type: "memory_updated"; memory: Memory }
   | { type: "memory_deleted"; id: number }
   | {
       type: "avatar_settings_changed";

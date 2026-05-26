@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api, type AudioDevices } from "../api";
 import { desktop as desktopCommands } from "../desktop/commands";
 import { isTauri } from "../desktop/runtime";
@@ -6,10 +6,12 @@ import type {
   AssistantSettings,
   AvatarSettingsKnobs,
   Memory,
+  MemoryOrder,
   MetricsResponse,
   PersonaWindowSettings,
   RagDocument,
 } from "../types";
+import { MEMORY_KINDS } from "../types";
 import { useAssistantStore } from "../store";
 
 interface SettingsDrawerProps {
@@ -17,7 +19,13 @@ interface SettingsDrawerProps {
   onClose: () => void;
 }
 
-type SettingsTabId = "chat" | "voice" | "tools" | "avatar" | "knowledge";
+type SettingsTabId =
+  | "chat"
+  | "voice"
+  | "tools"
+  | "avatar"
+  | "memory"
+  | "knowledge";
 
 interface TabSpec {
   id: SettingsTabId;
@@ -30,8 +38,11 @@ const SETTINGS_TABS: ReadonlyArray<TabSpec> = [
   { id: "voice", label: "Voice", icon: "🎙️" },
   { id: "tools", label: "Tools", icon: "🛠️" },
   { id: "avatar", label: "Avatar", icon: "🌸" },
+  { id: "memory", label: "Memory", icon: "📒" },
   { id: "knowledge", label: "Knowledge", icon: "📚" },
 ];
+
+const MEMORY_PAGE_SIZE = 50;
 
 export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
   const [settings, setSettings] = useState<AssistantSettings | null>(null);
@@ -41,11 +52,29 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<SettingsTabId>("chat");
-  const [memoriesOpen, setMemoriesOpen] = useState(false);
-  const memories = useAssistantStore((s) => s.memories);
+  const memoryView = useAssistantStore((s) => s.memoryView);
   const memoriesEnabled = useAssistantStore((s) => s.memoriesEnabled);
-  const setMemories = useAssistantStore((s) => s.setMemories);
-  const removeMemory = useAssistantStore((s) => s.removeMemory);
+  const setMemoryView = useAssistantStore((s) => s.setMemoryView);
+  const setMemoryPage = useAssistantStore((s) => s.setMemoryPage);
+  const setMemoryKindFilter = useAssistantStore((s) => s.setMemoryKindFilter);
+  const setMemoryOrder = useAssistantStore((s) => s.setMemoryOrder);
+  const applyMemoryUpdated = useAssistantStore((s) => s.applyMemoryUpdated);
+  const applyMemoryDeleted = useAssistantStore((s) => s.applyMemoryDeleted);
+  const applyMemoryAdded = useAssistantStore((s) => s.applyMemoryAdded);
+  const [memoryError, setMemoryError] = useState<string | null>(null);
+  const [memoryBusy, setMemoryBusy] = useState(false);
+  const [memoryEditingId, setMemoryEditingId] = useState<number | null>(null);
+  const [memoryDraft, setMemoryDraft] = useState<{
+    content: string;
+    kind: string;
+    salience: number;
+  }>({ content: "", kind: "fact", salience: 0.5 });
+  const [memoryNewOpen, setMemoryNewOpen] = useState(false);
+  const [memoryNewDraft, setMemoryNewDraft] = useState<{
+    content: string;
+    kind: string;
+    salience: number;
+  }>({ content: "", kind: "fact", salience: 0.6 });
 
   const avatar = useAssistantStore((s) => s.avatar);
   const setAvatar = useAssistantStore((s) => s.setAvatar);
@@ -91,14 +120,50 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
     }
   }, []);
 
-  const refreshMemories = useCallback(async () => {
-    try {
-      const data = await api.listMemories(50, "recent");
-      setMemories(data.memories, data.enabled);
-    } catch (err) {
-      setError(String(err));
-    }
-  }, [setMemories]);
+  const refreshMemories = useCallback(
+    async (overrides?: {
+      page?: number;
+      kindFilter?: string | null;
+      order?: MemoryOrder;
+    }) => {
+      const page = overrides?.page ?? memoryView.page;
+      const kindFilter =
+        overrides?.kindFilter !== undefined
+          ? overrides.kindFilter
+          : memoryView.kindFilter;
+      const order = overrides?.order ?? memoryView.order;
+      setMemoryBusy(true);
+      setMemoryError(null);
+      try {
+        const data = await api.listMemories({
+          limit: MEMORY_PAGE_SIZE,
+          offset: page * MEMORY_PAGE_SIZE,
+          order,
+          kind: kindFilter,
+        });
+        setMemoryView({
+          items: data.memories,
+          total: data.total,
+          cap: data.cap,
+          enabled: data.enabled,
+          page,
+          pageSize: MEMORY_PAGE_SIZE,
+          kindFilter,
+          order,
+        });
+      } catch (err) {
+        setMemoryError(String(err));
+      } finally {
+        setMemoryBusy(false);
+      }
+    },
+    [
+      memoryView.page,
+      memoryView.kindFilter,
+      memoryView.order,
+      setMemoryView,
+    ],
+  );
 
   useEffect(() => {
     if (open) {
@@ -106,20 +171,157 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
     }
   }, [open, refreshAll]);
 
+  // Refresh the memory page whenever the user opens the Memory tab or
+  // changes filter / sort / page. The dependencies are explicit so a
+  // stale ``refreshMemories`` closure can't fire a duplicate fetch.
   useEffect(() => {
-    if (open && memoriesOpen) {
-      void refreshMemories();
-    }
-  }, [open, memoriesOpen, refreshMemories]);
+    if (!open || activeTab !== "memory") return;
+    void refreshMemories();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    open,
+    activeTab,
+    memoryView.page,
+    memoryView.kindFilter,
+    memoryView.order,
+  ]);
 
   const onDeleteMemory = async (memory: Memory) => {
+    setMemoryError(null);
     try {
       await api.deleteMemory(memory.id);
-      removeMemory(memory.id);
+      applyMemoryDeleted(memory.id);
+      // If the page just emptied (and we're not on page 0), step back
+      // and re-fetch so the user lands on the now-last page instead of
+      // staring at an empty list.
+      const remaining = memoryView.items.length - 1;
+      if (remaining <= 0 && memoryView.page > 0) {
+        setMemoryPage(memoryView.page - 1);
+      } else {
+        // Re-fetch in place to keep the page topped up to ``pageSize``
+        // when there are still rows beyond the current page.
+        void refreshMemories();
+      }
     } catch (err) {
-      setError(String(err));
+      setMemoryError(String(err));
     }
   };
+
+  const onStartEditMemory = (memory: Memory) => {
+    setMemoryEditingId(memory.id);
+    setMemoryDraft({
+      content: memory.content,
+      kind: memory.kind,
+      salience: memory.salience,
+    });
+  };
+
+  const onCancelEditMemory = () => {
+    setMemoryEditingId(null);
+  };
+
+  const onSaveEditMemory = async (memory: Memory) => {
+    setMemoryBusy(true);
+    setMemoryError(null);
+    try {
+      const patch: {
+        content?: string;
+        kind?: string;
+        salience?: number;
+      } = {};
+      const trimmed = memoryDraft.content.trim();
+      if (trimmed && trimmed !== memory.content) patch.content = trimmed;
+      if (memoryDraft.kind && memoryDraft.kind !== memory.kind) {
+        patch.kind = memoryDraft.kind;
+      }
+      if (
+        Number.isFinite(memoryDraft.salience) &&
+        Math.abs(memoryDraft.salience - memory.salience) > 1e-4
+      ) {
+        patch.salience = memoryDraft.salience;
+      }
+      if (Object.keys(patch).length === 0) {
+        setMemoryEditingId(null);
+        return;
+      }
+      const result = await api.updateMemory(memory.id, patch);
+      applyMemoryUpdated(result.memory);
+      setMemoryEditingId(null);
+    } catch (err) {
+      setMemoryError(String(err));
+    } finally {
+      setMemoryBusy(false);
+    }
+  };
+
+  const onPinMemory = async (memory: Memory, pinned: boolean) => {
+    setMemoryError(null);
+    try {
+      const result = await api.pinMemory(memory.id, pinned);
+      applyMemoryUpdated(result.memory);
+    } catch (err) {
+      setMemoryError(String(err));
+    }
+  };
+
+  const onCreateMemory = async () => {
+    const trimmed = memoryNewDraft.content.trim();
+    if (trimmed.length < 4) {
+      setMemoryError("Memory content needs at least 4 characters.");
+      return;
+    }
+    setMemoryBusy(true);
+    setMemoryError(null);
+    try {
+      const result = await api.createMemory({
+        content: trimmed,
+        kind: memoryNewDraft.kind,
+        salience: memoryNewDraft.salience,
+      });
+      if (result.memory) {
+        applyMemoryAdded(result.memory);
+        setMemoryNewDraft({ content: "", kind: "fact", salience: 0.6 });
+        setMemoryNewOpen(false);
+        // Rerun the fetch so ``total`` and the visible page reflect
+        // server-side ordering instead of the client-side prepend.
+        void refreshMemories({ page: 0 });
+      } else if (result.deduped_into) {
+        const head = (result.deduped_into.content || "").slice(0, 80);
+        setMemoryError(
+          `Looks similar to memory #${result.deduped_into.id}` +
+            (head ? ` ("${head}")` : "") +
+            " — bumped its salience instead.",
+        );
+        applyMemoryUpdated(result.deduped_into);
+        setMemoryNewDraft({ content: "", kind: "fact", salience: 0.6 });
+        setMemoryNewOpen(false);
+      }
+    } catch (err) {
+      setMemoryError(String(err));
+    } finally {
+      setMemoryBusy(false);
+    }
+  };
+
+  const memoryPageCount = useMemo(() => {
+    if (memoryView.pageSize <= 0) return 1;
+    return Math.max(1, Math.ceil(memoryView.total / memoryView.pageSize));
+  }, [memoryView.total, memoryView.pageSize]);
+
+  const memoryRangeLabel = useMemo(() => {
+    if (memoryView.total === 0) return "0 of 0";
+    const start = memoryView.page * memoryView.pageSize + 1;
+    const end = Math.min(
+      memoryView.total,
+      start + memoryView.items.length - 1,
+    );
+    return `${start}-${end} of ${memoryView.total}`;
+  }, [
+    memoryView.page,
+    memoryView.pageSize,
+    memoryView.items.length,
+    memoryView.total,
+  ]);
 
   const onPatchAvatarSettings = async (
     patch: Partial<AvatarSettingsKnobs>,
@@ -992,68 +1194,58 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                 )}
               </Section>
 
-              <Section title="What Aiko remembers">
-                <button
-                  type="button"
-                  onClick={() => setMemoriesOpen((v) => !v)}
-                  className="flex w-full items-center justify-between rounded-md border border-white/10 bg-black/30 px-3 py-2 text-left text-xs text-ink-100/70 hover:border-ink-400 hover:text-ink-100"
-                >
-                  <span>
-                    {memoriesOpen
-                      ? "Hide memories"
-                      : "Show long-term memories"}
-                  </span>
-                  <span className="font-mono text-ink-100/40">
-                    {memoriesEnabled ? `${memories.length}` : "off"}
-                  </span>
-                </button>
-                {memoriesOpen ? (
-                  !memoriesEnabled ? (
-                    <p className="rounded-md border border-white/5 bg-white/[0.02] px-3 py-2 text-xs text-ink-100/50">
-                      Long-term memory is disabled in config (memory.enabled).
-                    </p>
-                  ) : memories.length === 0 ? (
-                    <p className="rounded-md border border-white/5 bg-white/[0.02] px-3 py-2 text-xs text-ink-100/50">
-                      Nothing remembered yet. Memories are mined after a few
-                      turns of conversation, or whenever Aiko writes a private
-                      [[remember]] tag.
-                    </p>
-                  ) : (
-                    <ul className="space-y-1.5">
-                      {memories.map((memory) => (
-                        <li
-                          key={memory.id}
-                          className="flex items-start justify-between gap-2 rounded-md border border-white/5 bg-white/[0.03] px-3 py-2 text-xs text-ink-100/80"
-                        >
-                          <div className="min-w-0 flex-1">
-                            <p className="break-words">{memory.content}</p>
-                            <div className="mt-1 flex items-center gap-2 text-[10px] uppercase tracking-wide text-ink-100/40">
-                              <span className="rounded bg-white/5 px-1.5 py-0.5 text-ink-100/60">
-                                {memory.kind}
-                              </span>
-                              <span>
-                                salience {(memory.salience * 100).toFixed(0)}%
-                              </span>
-                              {memory.use_count > 0 ? (
-                                <span>used {memory.use_count}x</span>
-                              ) : null}
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => void onDeleteMemory(memory)}
-                            className="shrink-0 rounded border border-white/10 px-2 py-0.5 text-[11px] text-ink-100/60 hover:border-rose-400/60 hover:text-rose-200"
-                            aria-label={`Forget memory ${memory.id}`}
-                          >
-                            forget
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  )
-                ) : null}
+              <Section title="Long-term memories">
+                <p className="text-[11px] text-ink-100/50">
+                  Memories live in their own tab. Switch to{" "}
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab("memory")}
+                    className="underline decoration-dotted underline-offset-2 hover:text-ink-100"
+                  >
+                    Memory
+                  </button>{" "}
+                  to inspect, edit, pin, or add memories.
+                </p>
               </Section>
                 </>
+              ) : null}
+
+              {activeTab === "memory" ? (
+                <MemoryTab
+                  view={memoryView}
+                  enabled={memoriesEnabled}
+                  busy={memoryBusy}
+                  error={memoryError}
+                  pageCount={memoryPageCount}
+                  rangeLabel={memoryRangeLabel}
+                  editingId={memoryEditingId}
+                  draft={memoryDraft}
+                  setDraft={setMemoryDraft}
+                  newOpen={memoryNewOpen}
+                  setNewOpen={setMemoryNewOpen}
+                  newDraft={memoryNewDraft}
+                  setNewDraft={setMemoryNewDraft}
+                  onSetKindFilter={setMemoryKindFilter}
+                  onSetOrder={setMemoryOrder}
+                  onSetPage={setMemoryPage}
+                  onRefresh={() => {
+                    void refreshMemories();
+                  }}
+                  onStartEdit={onStartEditMemory}
+                  onCancelEdit={onCancelEditMemory}
+                  onSaveEdit={(memory) => {
+                    void onSaveEditMemory(memory);
+                  }}
+                  onPin={(memory, pinned) => {
+                    void onPinMemory(memory, pinned);
+                  }}
+                  onDelete={(memory) => {
+                    void onDeleteMemory(memory);
+                  }}
+                  onCreate={() => {
+                    void onCreateMemory();
+                  }}
+                />
               ) : null}
             </>
           ) : null}
@@ -1086,6 +1278,361 @@ function Row({
       <span>{label}</span>
       <span className="font-mono text-ink-100/80">{value}</span>
     </div>
+  );
+}
+
+interface MemoryDraft {
+  content: string;
+  kind: string;
+  salience: number;
+}
+
+interface MemoryTabProps {
+  view: {
+    items: Memory[];
+    total: number;
+    cap: number;
+    page: number;
+    pageSize: number;
+    kindFilter: string | null;
+    order: MemoryOrder;
+  };
+  enabled: boolean;
+  busy: boolean;
+  error: string | null;
+  pageCount: number;
+  rangeLabel: string;
+  editingId: number | null;
+  draft: MemoryDraft;
+  setDraft: (draft: MemoryDraft) => void;
+  newOpen: boolean;
+  setNewOpen: (open: boolean) => void;
+  newDraft: MemoryDraft;
+  setNewDraft: (draft: MemoryDraft) => void;
+  onSetKindFilter: (kind: string | null) => void;
+  onSetOrder: (order: MemoryOrder) => void;
+  onSetPage: (page: number) => void;
+  onRefresh: () => void;
+  onStartEdit: (memory: Memory) => void;
+  onCancelEdit: () => void;
+  onSaveEdit: (memory: Memory) => void;
+  onPin: (memory: Memory, pinned: boolean) => void;
+  onDelete: (memory: Memory) => void;
+  onCreate: () => void;
+}
+
+function MemoryTab({
+  view,
+  enabled,
+  busy,
+  error,
+  pageCount,
+  rangeLabel,
+  editingId,
+  draft,
+  setDraft,
+  newOpen,
+  setNewOpen,
+  newDraft,
+  setNewDraft,
+  onSetKindFilter,
+  onSetOrder,
+  onSetPage,
+  onRefresh,
+  onStartEdit,
+  onCancelEdit,
+  onSaveEdit,
+  onPin,
+  onDelete,
+  onCreate,
+}: MemoryTabProps) {
+  if (!enabled) {
+    return (
+      <Section title="Memory">
+        <p className="rounded-md border border-white/5 bg-white/[0.02] px-3 py-2 text-xs text-ink-100/50">
+          Long-term memory is disabled in config (memory.enabled).
+        </p>
+      </Section>
+    );
+  }
+
+  return (
+    <Section title="Memory">
+      <div className="flex items-center justify-between gap-2 text-[11px] text-ink-100/50">
+        <span>
+          Showing {rangeLabel}
+          {view.cap ? (
+            <span className="text-ink-100/30"> · cap {view.cap}</span>
+          ) : null}
+        </span>
+        <button
+          type="button"
+          onClick={onRefresh}
+          disabled={busy}
+          className="rounded border border-white/10 px-2 py-0.5 text-[11px] text-ink-100/60 hover:border-ink-400 hover:text-ink-100 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {busy ? "Loading..." : "Refresh"}
+        </button>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="flex items-center gap-1 text-[11px] text-ink-100/60">
+          <span>Filter:</span>
+          <select
+            value={view.kindFilter ?? ""}
+            onChange={(e) => onSetKindFilter(e.target.value || null)}
+            className="rounded border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-ink-100/80 focus:border-ink-400 focus:outline-none"
+          >
+            <option value="">all kinds</option>
+            {MEMORY_KINDS.map((k) => (
+              <option key={k} value={k}>
+                {k}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex items-center gap-1 text-[11px] text-ink-100/60">
+          <span>Sort:</span>
+          <select
+            value={view.order}
+            onChange={(e) => onSetOrder(e.target.value as MemoryOrder)}
+            className="rounded border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-ink-100/80 focus:border-ink-400 focus:outline-none"
+          >
+            <option value="recent">recent first</option>
+            <option value="top">top salience</option>
+          </select>
+        </label>
+        <button
+          type="button"
+          onClick={() => setNewOpen(!newOpen)}
+          className="ml-auto rounded border border-white/10 px-2 py-1 text-[11px] text-ink-100/70 hover:border-emerald-400/60 hover:text-emerald-100"
+        >
+          {newOpen ? "Cancel" : "+ Add memory"}
+        </button>
+      </div>
+
+      {error ? (
+        <div className="rounded-md border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+          {error}
+        </div>
+      ) : null}
+
+      {newOpen ? (
+        <div className="space-y-2 rounded-md border border-emerald-400/30 bg-emerald-500/5 p-3">
+          <textarea
+            value={newDraft.content}
+            onChange={(e) =>
+              setNewDraft({ ...newDraft, content: e.target.value })
+            }
+            placeholder="What should Aiko remember?"
+            rows={3}
+            className="w-full resize-y rounded border border-white/10 bg-black/30 px-2 py-1.5 text-xs text-ink-100 placeholder-ink-100/30 focus:border-ink-400 focus:outline-none"
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="flex items-center gap-1 text-[11px] text-ink-100/60">
+              <span>kind:</span>
+              <select
+                value={newDraft.kind}
+                onChange={(e) =>
+                  setNewDraft({ ...newDraft, kind: e.target.value })
+                }
+                className="rounded border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-ink-100/80"
+              >
+                {MEMORY_KINDS.map((k) => (
+                  <option key={k} value={k}>
+                    {k}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex items-center gap-1 text-[11px] text-ink-100/60">
+              <span>salience {Math.round(newDraft.salience * 100)}%:</span>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={newDraft.salience}
+                onChange={(e) =>
+                  setNewDraft({ ...newDraft, salience: Number(e.target.value) })
+                }
+              />
+            </label>
+            <button
+              type="button"
+              onClick={onCreate}
+              disabled={busy || newDraft.content.trim().length < 4}
+              className="ml-auto rounded border border-emerald-400/40 bg-emerald-500/10 px-3 py-1 text-[11px] text-emerald-100 hover:border-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Save
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {view.items.length === 0 ? (
+        <p className="rounded-md border border-white/5 bg-white/[0.02] px-3 py-2 text-xs text-ink-100/50">
+          {view.kindFilter
+            ? `No memories with kind "${view.kindFilter}".`
+            : "Nothing remembered yet. Memories are mined after a few turns of conversation, or whenever Aiko writes a private [[remember]] tag."}
+        </p>
+      ) : (
+        <ul className="space-y-1.5">
+          {view.items.map((memory) => {
+            const isEditing = editingId === memory.id;
+            return (
+              <li
+                key={memory.id}
+                className={`rounded-md border px-3 py-2 text-xs ${
+                  memory.pinned
+                    ? "border-amber-400/40 bg-amber-500/5"
+                    : "border-white/5 bg-white/[0.03]"
+                }`}
+              >
+                {isEditing ? (
+                  <div className="space-y-2">
+                    <textarea
+                      value={draft.content}
+                      onChange={(e) =>
+                        setDraft({ ...draft, content: e.target.value })
+                      }
+                      rows={3}
+                      className="w-full resize-y rounded border border-white/10 bg-black/30 px-2 py-1.5 text-xs text-ink-100 focus:border-ink-400 focus:outline-none"
+                    />
+                    <div className="flex flex-wrap items-center gap-2">
+                      <label className="flex items-center gap-1 text-[11px] text-ink-100/60">
+                        <span>kind:</span>
+                        <select
+                          value={draft.kind}
+                          onChange={(e) =>
+                            setDraft({ ...draft, kind: e.target.value })
+                          }
+                          className="rounded border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-ink-100/80"
+                        >
+                          {MEMORY_KINDS.map((k) => (
+                            <option key={k} value={k}>
+                              {k}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="flex items-center gap-1 text-[11px] text-ink-100/60">
+                        <span>salience {Math.round(draft.salience * 100)}%:</span>
+                        <input
+                          type="range"
+                          min={0}
+                          max={1}
+                          step={0.05}
+                          value={draft.salience}
+                          onChange={(e) =>
+                            setDraft({
+                              ...draft,
+                              salience: Number(e.target.value),
+                            })
+                          }
+                        />
+                      </label>
+                      <div className="ml-auto flex gap-1">
+                        <button
+                          type="button"
+                          onClick={onCancelEdit}
+                          className="rounded border border-white/10 px-2 py-0.5 text-[11px] text-ink-100/60 hover:border-white/30 hover:text-ink-100"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onSaveEdit(memory)}
+                          disabled={busy || draft.content.trim().length < 4}
+                          className="rounded border border-ink-400/40 bg-ink-500/20 px-2 py-0.5 text-[11px] text-ink-100 hover:border-ink-400 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          Save
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      <p className="break-words text-ink-100/90">{memory.content}</p>
+                      <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-wide text-ink-100/40">
+                        <span className="rounded bg-white/5 px-1.5 py-0.5 text-ink-100/60">
+                          {memory.kind}
+                        </span>
+                        <span>
+                          salience {(memory.salience * 100).toFixed(0)}%
+                        </span>
+                        {memory.use_count > 0 ? (
+                          <span>used {memory.use_count}x</span>
+                        ) : null}
+                        {memory.pinned ? (
+                          <span className="rounded bg-amber-500/20 px-1.5 py-0.5 text-amber-200">
+                            pinned
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 flex-col gap-1">
+                      <button
+                        type="button"
+                        onClick={() => onPin(memory, !memory.pinned)}
+                        className={`rounded border px-2 py-0.5 text-[11px] ${
+                          memory.pinned
+                            ? "border-amber-400/60 text-amber-200 hover:bg-amber-500/10"
+                            : "border-white/10 text-ink-100/60 hover:border-amber-400/60 hover:text-amber-200"
+                        }`}
+                        aria-label={memory.pinned ? "Unpin memory" : "Pin memory"}
+                      >
+                        {memory.pinned ? "unpin" : "pin"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onStartEdit(memory)}
+                        className="rounded border border-white/10 px-2 py-0.5 text-[11px] text-ink-100/60 hover:border-ink-400 hover:text-ink-100"
+                      >
+                        edit
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onDelete(memory)}
+                        className="rounded border border-white/10 px-2 py-0.5 text-[11px] text-ink-100/60 hover:border-rose-400/60 hover:text-rose-200"
+                        aria-label={`Forget memory ${memory.id}`}
+                      >
+                        forget
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      {pageCount > 1 ? (
+        <div className="flex items-center justify-center gap-3 pt-1 text-[11px] text-ink-100/60">
+          <button
+            type="button"
+            onClick={() => onSetPage(view.page - 1)}
+            disabled={busy || view.page <= 0}
+            className="rounded border border-white/10 px-2 py-0.5 text-[11px] hover:border-ink-400 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Prev
+          </button>
+          <span className="font-mono text-ink-100/40">
+            page {view.page + 1} of {pageCount}
+          </span>
+          <button
+            type="button"
+            onClick={() => onSetPage(view.page + 1)}
+            disabled={busy || view.page + 1 >= pageCount}
+            className="rounded border border-white/10 px-2 py-0.5 text-[11px] hover:border-ink-400 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Next
+          </button>
+        </div>
+      ) : null}
+    </Section>
   );
 }
 
