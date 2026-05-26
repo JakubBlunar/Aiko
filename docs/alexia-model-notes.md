@@ -115,7 +115,7 @@ Highlights of the parameter map relevant to the agent:
 | `Param57` | Angry | `has_angry_marks` |
 | `Param58` | Blush | `has_blush` |
 | `Param59` | Cry | `has_cry` |
-| `Param60` | bbt | `has_sticker` (generic overlay; **visually a sad/cry-leaning face decoration — NOT a happy sticker; see §3 for details**) |
+| `Param60` | bbt | `has_sticker` (generic overlay; **visually a pronounced cry-face overlay — used for the `cry` reaction; see §3a**) |
 | `Param61` | Pose 1 | `has_pose` (held to 0 by yf/yfmz exp3 to suppress pose during outfit fade) |
 
 The standard Cubism head/body/breath/eye params (`ParamAngleX/Y/Z`,
@@ -133,7 +133,7 @@ ones the agent uses:
 
 | File | Pinyin → meaning | Maps to |
 |---|---|---|
-| `bbt.exp3.json` | bbt (opaque pinyin; visually a sad / distressed face overlay despite sitting in the "sticker" capability slot) | sticker overlay — **do NOT use for positive reactions**; see §3a |
+| `bbt.exp3.json` | bbt (opaque pinyin; visually a pronounced cry / distressed face overlay) | sticker overlay slot — owned by the `cry` reaction; see §3a |
 | `dyj.exp3.json` | 带眼镜 (with glasses) | `has_glasses` |
 | `lh.exp3.json`  | 脸红 (blush) | `has_blush` |
 | `lzx.exp3.json` | 咧嘴笑 (grin) | `has_grin` |
@@ -156,7 +156,7 @@ building the `OutfitBinding`, so `Param17: 0` in `yf.exp3.json` does
 NOT end up in the hooded binding. That's why the binding ends up as
 `{Param16: 30}` cleanly.
 
-### 3a. ``bbt`` is *not* a happy sticker — reaction-mapping caveat
+### 3a. ``bbt`` is the dramatic cry overlay (not a happy sticker)
 
 The cdi3 / model3 label ``bbt`` (Param60) gives no clue about the
 overlay's actual visual content. Param60 also sits adjacent to
@@ -166,19 +166,35 @@ to treat it as a generic happy sticker slot for ``cheerful`` and
 ``amused`` reactions.
 
 Visual inspection on the live rig (set ``Param60=30`` in the
-SettingsDrawer) shows ``bbt`` actually renders as a **sad / cry-
-leaning face decoration** — not a happy badge. Mapping a positive
-reaction to it produced a regression where ``[[reaction:cheerful]]``
-visibly cried on screen.
+SettingsDrawer) shows ``bbt`` actually renders as a **pronounced
+cry-face overlay** — distinct from but more intense than ``k`` /
+Param59 (the subtle "tear streaks" cry). Mapping a positive reaction
+to it produced a regression where ``[[reaction:cheerful]]`` visibly
+cried on screen.
 
-The current Alexia rig does not ship a soft-smile overlay; ``lzx``
-(Param54 = 咧嘴笑 = toothy grin) is the only positive overlay. Both
-``cheerful`` and ``amused`` are therefore mapped to ``lzx`` in
-``_ALEXIA_REACTION_MAP``. The ``[[overlay:grin]]`` LLM grammar tag
-still pulses ``lzx`` as a transient overlay; OverlayChannel
-re-applies the persistent reaction on slot release, so a cheerful
-turn that also emits ``[[overlay:grin]]`` simply sustains the
-existing grin without churning between expressions.
+Current authoritative mapping after the audit:
+
+| Reaction       | Expression  | Param         | Visual                      |
+|----------------|-------------|---------------|-----------------------------|
+| ``cheerful``   | ``lzx``     | Param54 = Grin | toothy grin / wide smile    |
+| ``amused``     | ``lzx``     | Param54 = Grin | (shared with cheerful)      |
+| ``sad``        | ``k``       | Param59 = Cry | quiet tear streaks          |
+| ``melancholy`` | ``k``       | Param59 = Cry | (shared with sad)           |
+| ``concerned``  | ``k``       | Param59 = Cry | (shared with sad)           |
+| ``cry``        | ``bbt``     | Param60 = bbt | dramatic / pronounced cry   |
+
+The ``cry`` reaction is the most distressed entry in the canonical
+reaction set (``app/core/reactions.py`` — see ``REACTIONS``), with
+the lowest TTS speed (0.92, right at the safe-range floor) and the
+most negative valence impulse (-0.18 vs sad's -0.15) in
+``app/core/affect_state.py``. The persona prompt explicitly tells the
+LLM to reserve it for genuinely moving / distressing moments.
+
+The ``[[overlay:grin]]`` LLM grammar tag still pulses ``lzx`` as a
+transient overlay; OverlayChannel re-applies the persistent reaction
+on slot release, so a cheerful turn that also emits
+``[[overlay:grin]]`` simply sustains the existing grin without
+churning between expressions.
 
 **Future rigs**: when bringing in a new model with a softer-smile
 overlay (e.g. closed-eye smile, blush-cheek smile), prefer that for

@@ -37,6 +37,12 @@ REACTIONS: tuple[str, ...] = (
     "concerned",
     "sad",
     "melancholy",
+    # ``cry`` is a more intense form of ``sad`` — used when the user
+    # shares deeply moving / distressing news, or when Aiko is overwhelmed
+    # in roleplay. Distinct from ``sad`` so the avatar can show a more
+    # pronounced cry overlay (Alexia: ``bbt``, Param60) rather than the
+    # quieter "tear" overlay (Alexia: ``k``, Param59).
+    "cry",
     "tired",
     "gentle",
     "angry",
@@ -66,6 +72,7 @@ _REACTION_SYNONYMS: dict[str, tuple[str, ...]] = {
     "concerned": ("concern", "worry", "sad", "frown"),
     "sad": ("sad", "cry", "tear", "unhappy", "sob"),
     "melancholy": ("sad", "tear", "down", "blue"),
+    "cry": ("cry", "crying", "weep", "wail", "sob", "tears", "bawl"),
     "tired": ("tired", "sleep", "yawn", "weary"),
     "gentle": ("gentle", "soft", "kind", "warm"),
     "angry": ("angry", "anger", "mad", "rage", "pout"),
@@ -102,6 +109,9 @@ _REACTION_NEIGHBOURS: dict[str, tuple[str, ...]] = {
     "cheerful":    ("amused", "friendly", "warm", "playful", "neutral"),
     "excited":     ("enthusiastic", "cheerful", "playful", "surprised", "neutral"),
     "sad":         ("melancholy", "wistful", "concerned", "neutral"),
+    # ``cry`` falls back to ``sad`` first so models without a distinct
+    # cry overlay still produce a sad-leaning visual.
+    "cry":         ("sad", "melancholy", "wistful", "concerned", "neutral"),
     "angry":       ("frustrated", "serious", "concerned", "neutral"),
     "neutral":     ("calm", "friendly", "warm"),
 }

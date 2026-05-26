@@ -56,6 +56,11 @@ _REACTION_IMPULSE: dict[str, tuple[float, float]] = {
     "concerned":    (-0.08, +0.04),
     "sad":          (-0.15, -0.10),
     "melancholy":   (-0.12, -0.08),
+    # ``cry`` is the most distressed reaction in the canonical set — a
+    # touch more negative valence than ``sad`` and slightly higher
+    # arousal because crying is an emotionally activated state, not a
+    # withdrawn one.
+    "cry":          (-0.18, -0.05),
     "angry":        (-0.10, +0.20),
     "frustrated":   (-0.08, +0.12),
     "surprised":    ( 0.00, +0.15),

@@ -55,6 +55,10 @@ _REACTION_SPEED: dict[str, float] = {
     "concerned":    0.94,
     "sad":          0.93,
     "melancholy":   0.93,
+    # ``cry`` is the slowest reaction — choked / strained delivery
+    # right at the safe-range floor (any lower would cross into
+    # underwater-pitch territory after the samplerate-only shift).
+    "cry":          0.92,
     "tired":        0.93,
     "gentle":       0.94,
     "angry":        1.04,
