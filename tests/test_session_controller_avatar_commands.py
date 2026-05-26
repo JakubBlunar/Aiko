@@ -354,6 +354,88 @@ class MotionDispatchTests(unittest.TestCase):
         controller._emit_avatar_motion("wave")
         self.assertEqual(captured, [])
 
+    def test_motion_name_matching_known_overlay_routes_to_overlay(self) -> None:
+        """``[[motion:tail_wag]]`` from a confused LLM should still wag the
+        tail: the safety net in ``_emit_avatar_motion`` re-routes the misroute
+        to ``_emit_avatar_overlay`` when the avatar advertises the
+        corresponding ``has_<name>`` capability.
+        """
+        avatar = _make_avatar(motions={
+            "Talk": [MotionRef(name="nod", file="motions/nod.motion3.json")],
+        })
+        avatar.capabilities["has_tail_wag"] = True
+        controller = _make_controller(avatar)
+        overlay_captured: list[dict[str, Any]] = []
+        motion_captured: list[dict[str, Any]] = []
+        controller._avatar_overlay_listeners.append(
+            lambda payload: overlay_captured.append(dict(payload))
+        )
+        controller._avatar_motion_listeners.append(
+            lambda payload: motion_captured.append(dict(payload))
+        )
+        controller._emit_avatar_motion("tail_wag")
+        self.assertEqual(motion_captured, [])
+        self.assertEqual(len(overlay_captured), 1)
+        self.assertEqual(overlay_captured[0]["name"], "tail_wag")
+
+    def test_motion_name_misroute_is_case_insensitive(self) -> None:
+        avatar = _make_avatar(motions={})
+        avatar.capabilities["has_ear_wiggle"] = True
+        controller = _make_controller(avatar)
+        overlay_captured: list[dict[str, Any]] = []
+        controller._avatar_overlay_listeners.append(
+            lambda payload: overlay_captured.append(dict(payload))
+        )
+        controller._emit_avatar_motion("Ear_Wiggle")
+        self.assertEqual(len(overlay_captured), 1)
+        self.assertEqual(overlay_captured[0]["name"], "ear_wiggle")
+
+    def test_motion_unknown_and_not_overlay_still_silently_dropped(self) -> None:
+        """If the name matches neither a motion stem nor an overlay capability
+        we keep the existing silent-drop behaviour — no listeners get poked.
+        """
+        avatar = _make_avatar(motions={
+            "Talk": [MotionRef(name="nod", file="motions/nod.motion3.json")],
+        })
+        avatar.capabilities["has_tail_wag"] = True
+        controller = _make_controller(avatar)
+        overlay_captured: list[dict[str, Any]] = []
+        motion_captured: list[dict[str, Any]] = []
+        controller._avatar_overlay_listeners.append(
+            lambda payload: overlay_captured.append(dict(payload))
+        )
+        controller._avatar_motion_listeners.append(
+            lambda payload: motion_captured.append(dict(payload))
+        )
+        controller._emit_avatar_motion("salsa")
+        self.assertEqual(motion_captured, [])
+        self.assertEqual(overlay_captured, [])
+
+    def test_known_motion_takes_precedence_over_overlay_capability(self) -> None:
+        """A name that IS a valid motion stem must still hit the motion
+        listener even if there happens to also be a ``has_<name>`` capability
+        — the safety net is a fallthrough, never an override.
+        """
+        avatar = _make_avatar(motions={
+            "Talk": [MotionRef(name="nod", file="motions/nod.motion3.json")],
+        })
+        # Hypothetical scenario: future avatar advertises ``has_nod`` overlay
+        # alongside a real motion file. Motion file wins.
+        avatar.capabilities["has_nod"] = True
+        controller = _make_controller(avatar)
+        overlay_captured: list[dict[str, Any]] = []
+        motion_captured: list[dict[str, Any]] = []
+        controller._avatar_overlay_listeners.append(
+            lambda payload: overlay_captured.append(dict(payload))
+        )
+        controller._avatar_motion_listeners.append(
+            lambda payload: motion_captured.append(dict(payload))
+        )
+        controller._emit_avatar_motion("nod")
+        self.assertEqual(overlay_captured, [])
+        self.assertEqual(len(motion_captured), 1)
+        self.assertEqual(motion_captured[0]["name"], "nod")
+
 
 class UpdateAvatarSettingsPersistenceTests(unittest.TestCase):
     """``update_avatar_settings`` must mirror the change to ``user.json``

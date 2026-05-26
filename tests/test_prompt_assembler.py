@@ -289,6 +289,27 @@ class GrammarAddendumTests(unittest.TestCase):
         self.assertEqual(_build_motion_grammar_addendum(["dh"]), "")
         self.assertEqual(_build_motion_grammar_addendum([]), "")
 
+    def test_motion_grammar_clarifies_gestures_are_overlays(self) -> None:
+        """The motion block must explicitly steer the LLM away from
+        ``[[motion:tail_wag]]`` / ``[[motion:wink_*]]`` / ``[[motion:ear_wiggle]]``
+        — those are overlays. Without the contrast clarifier the model
+        confused the two channels and the request fell on the floor.
+        """
+        block = _build_motion_grammar_addendum(["wave"])
+        self.assertIn("[[overlay:", block)
+        block_lower = block.lower()
+        self.assertIn("tail-wag", block_lower)
+
+    def test_overlay_gesture_grammar_contrasts_with_motion(self) -> None:
+        """The body-gestures section in the overlay block must contrast
+        with the motion channel: an explicit ``[[motion:tail_wag]] does
+        nothing`` line (or equivalent) is the one nudge that pushed the
+        LLM to consistently pick the overlay tag in our regression turn.
+        """
+        block = _build_overlay_grammar_addendum({"has_tail_wag": True})
+        self.assertIn("[[motion:tail_wag]]", block)
+        self.assertIn("[[overlay:tail_wag]]", block)
+
 
 if __name__ == "__main__":
     unittest.main()

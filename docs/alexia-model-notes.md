@@ -254,6 +254,53 @@ ended (idle motion would resume but the eyes/mouth shape from the
 last expression remained baked in until the next non-empty
 reaction).
 
+### Overlay pulses also push expressions — and need a restore
+
+A second class of expression-on-the-rig writes is the `expr:`-bound
+overlay pulse. When the LLM emits e.g. `[[overlay:grin]]` and the
+binding's `param_id` starts with `expr:` (overlays that don't map to
+a single param — grin, stars, sticker), the tier-3 RAF pulse handler
+fires `model.expression(exprName)` once when the pulse first lands.
+That call goes through the same expression slot as `applyReaction`,
+which means it both (a) clobbers the persistent reaction expression
+for the duration of the pulse, and (b) sits permanently on the rig
+when the pulse ends — `expression(name)` is apply-only, and the
+reaction-subscribe `useEffect` only re-applies when `state.reaction`
+*changes*. Two consecutive turns with the same reaction value (both
+`neutral`, both `cheerful`, …) leave the overlay expression baked in
+forever.
+
+The fix in place (`Live2DAvatar.tsx`):
+
+- `lastExprOverlayUntilRef` tracks the pulse's `performance.now()`-
+  based deadline when the `expression(name)` call fires.
+- The tier-3 RAF checks `now >= lastExprOverlayUntilRef.current` and
+  unconditionally calls `applyReaction(model, manifest, fresh)` with
+  the current reaction (which routes to `resetExpression()` when
+  `fresh` is empty). This is the **only** path that handles
+  same-value reaction sequences.
+- The reaction-subscribe `useEffect` defers its `applyReaction` call
+  while a pulse is in flight (overlay owns the slot); the deferred
+  reaction is the value the RAF restores once the pulse expires.
+
+### Wall-clock vs monotonic clock — pulse deadlines
+
+`overlay.expiresAt` arrives from the WS handler as `Date.now() +
+duration_ms` (wall-clock, ~1.7e12). The tier-3 RAF uses `const now =
+performance.now()` (monotonic, ~1e4 on a fresh page). Comparing them
+directly is the kind of bug that turns every pulse into a permanent
+on-state and every gesture boost into a permanent multiplier. The
+ingest path now converts at storage time:
+
+```typescript
+const remainingMs = Math.max(0, overlay.expiresAt - Date.now());
+gestures[name] = { until: now + remainingMs };
+pulses[overlay.name] = { until: now + remainingMs, binding };
+```
+
+Any future timer-driven state in the tier-3 RAF must use
+`performance.now()` time as well, or convert at the boundary.
+
 ---
 
 ## 6. Things future agents have already gotten wrong
@@ -296,6 +343,31 @@ mitigation in place:
    `internalModel.motionManager.expressionManager.resetExpression()`.
    The reaction-on-neutral path was previously a silent no-op; it
    left the previous expression stuck.
+9. **Mixing motion and overlay tags**. `tail_wag`, `wink_left`,
+   `wink_right`, and `ear_wiggle` are advertised as `[[overlay:X]]`
+   even though they animate over time. Motions are only `.motion3.json`
+   file stems (`wave`, `nod`, `shake`, `bow`, `shrug`, `stretch`,
+   `dance`). The LLM has emitted `[[motion:tail_wag]]` in the wild;
+   `SessionController._emit_avatar_motion` now re-routes the misroute
+   to `_emit_avatar_overlay` when the corresponding `has_<name>`
+   capability exists, but the prompt grammar should still steer the
+   model. The contrast clarifier in both grammar builders
+   (`_build_motion_grammar_addendum` /
+   `_build_overlay_grammar_addendum`) is what nudges the LLM at the
+   source.
+10. **Wall-clock-typed deadlines compared against `performance.now()`**.
+    `overlay.expiresAt` is `Date.now() + duration_ms`; the tier-3 RAF
+    uses `performance.now()`. Convert at the boundary when ingesting
+    overlays into `pulses` / `gestures`. See §5 for the snippet. The
+    pre-fix bug made every pulse and gesture sticky forever (~50 year
+    delta between the two clocks).
+11. **`expr:`-bound overlay sticking past its lifetime**. The tier-3
+    pulse handler fires `model.expression(name)` once per pulse. The
+    `expression(name)` call goes through the same slot as the
+    persistent reaction; without an explicit restore the overlay
+    expression sits on the rig forever. See §5 for the restore
+    pattern (`lastExprOverlayUntilRef` + unconditional `applyReaction`
+    on expiry).
 
 ---
 

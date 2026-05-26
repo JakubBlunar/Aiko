@@ -32,6 +32,14 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
   const lastReactionRef = useRef<string>("");
   // Track talk motion start so we don't spam motion() each token frame.
   const lastTtsStateRef = useRef<"idle" | "speaking">("idle");
+  // ``performance.now()`` deadline of the currently-active expression-bound
+  // overlay pulse (``[[overlay:grin]]``, ``[[overlay:stars]]``, etc.). 0 when
+  // none is running. The tier-3 RAF expiry handler uses this to unconditionally
+  // re-apply the persistent reaction (via ``applyReaction``) when the pulse
+  // ends, otherwise the transient ``model.expression(...)`` call would sit on
+  // the rig forever and lipsync would keep getting clobbered by the baked-in
+  // smile / star-eye morph. See ``docs/alexia-model-notes.md`` §5.
+  const lastExprOverlayUntilRef = useRef<number>(0);
 
   // ── 1. Boot Pixi + load the Live2D model. Reruns when persona changes. ──
   useEffect(() => {
@@ -136,6 +144,7 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
       mouthSmoothRef.current = 0;
       lastReactionRef.current = "";
       lastTtsStateRef.current = "idle";
+      lastExprOverlayUntilRef.current = 0;
     };
   }, [manifest.entry_filename, manifest.cubism_version]);
 
@@ -255,8 +264,19 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
       }
       if (state.reaction !== prev.reaction) {
         if (state.reaction !== lastReactionRef.current) {
-          applyReaction(model, manifest, state.reaction);
-          lastReactionRef.current = state.reaction;
+          // An expression-bound overlay (``[[overlay:grin]]`` etc.) is
+          // currently owning the expression slot via ``model.expression(...)``.
+          // If we apply the new reaction now, the LLM-controlled overlay would
+          // be cut short. The tier-3 RAF expiry handler will re-apply the
+          // (already-updated) ``state.reaction`` once the overlay's deadline
+          // passes, so we just record it as the desired target and skip the
+          // immediate write.
+          if (lastExprOverlayUntilRef.current > performance.now()) {
+            lastReactionRef.current = state.reaction;
+          } else {
+            applyReaction(model, manifest, state.reaction);
+            lastReactionRef.current = state.reaction;
+          }
         }
       }
       const ts = state.ttsState;
@@ -742,6 +762,15 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
         // New overlay event from the WS. Gesture-named overlays
         // (wink, tail_wag, ear_wiggle) take a bespoke handler; the
         // rest fall through to the param-on-decay pulse model.
+        //
+        // ``overlay.expiresAt`` arrives in wall-clock time (``Date.now()``
+        // based, set by ``useAssistantSocket``); the RAF here runs on
+        // ``performance.now()``. Convert to the monotonic clock so the
+        // ``now >= until`` expiry checks below actually fire — otherwise
+        // every pulse / gesture sticks forever (the wall clock is ~50 years
+        // ahead of the page-load epoch).
+        const remainingMs = Math.max(0, overlay.expiresAt - Date.now());
+        const perfUntil = now + remainingMs;
         const name = overlay.name as GestureKind;
         if (GESTURE_NAMES.has(name)) {
           // Gate the gesture on its capability flag — a poorly-prompted
@@ -754,13 +783,13 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
                 ? "has_ear_wiggle"
                 : "has_wink";
           if (caps[capKey]) {
-            gestures[name] = { until: overlay.expiresAt };
+            gestures[name] = { until: perfUntil };
           }
         } else {
           const binding = overlays[overlay.name];
           if (binding) {
             pulses[overlay.name] = {
-              until: overlay.expiresAt,
+              until: perfUntil,
               binding,
             };
           }
@@ -1041,6 +1070,12 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
               /* swallow */
             }
           }
+          // Record the deadline so the expiry block below can restore the
+          // persistent reaction expression once this overlay ends — the
+          // ``expression(name)`` call above bypasses ``applyReaction`` and
+          // would otherwise sit baked into the rig (mouth shape, eye morph)
+          // until the next reaction change, breaking lipsync.
+          lastExprOverlayUntilRef.current = pulse.until;
           // Mark fired by mutating a copy so we don't spam expression()
           // on every frame for the duration of the pulse.
           pulse.binding = {
@@ -1051,6 +1086,25 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
       }
       for (const k of expiredKeys) {
         delete pulses[k];
+      }
+
+      // Expression-overlay expiry restore. Runs unconditionally (not gated on
+      // a reaction change) because two consecutive turns can share the same
+      // reaction value (e.g. both ``neutral``), and the reaction-subscribe
+      // effect only fires ``applyReaction`` on changes. Without this hook a
+      // single ``[[overlay:grin]]`` on a neutral turn would leave the model
+      // smiling forever, with the mouth-shape morph clobbering lipsync.
+      if (
+        lastExprOverlayUntilRef.current > 0 &&
+        now >= lastExprOverlayUntilRef.current
+      ) {
+        lastExprOverlayUntilRef.current = 0;
+        const model = modelRef.current;
+        if (model) {
+          const fresh = useAssistantStore.getState().reaction;
+          applyReaction(model, manifest, fresh);
+          lastReactionRef.current = fresh;
+        }
       }
 
       raf = window.requestAnimationFrame(tick);
