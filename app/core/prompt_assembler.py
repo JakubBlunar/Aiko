@@ -158,7 +158,9 @@ def _build_overlay_grammar_addendum(capabilities: dict[str, bool] | None) -> str
             "in your reply; it costs you nothing and makes the avatar "
             "actually move. NEVER replace these with prose stage "
             "directions like *shakes tail* or *winks* — those don't "
-            "animate anything. Examples:\n"
+            "animate anything. These are OVERLAYS — use [[overlay:X]], "
+            "NOT [[motion:X]]. ``[[motion:tail_wag]]`` does nothing; "
+            "the right tag is ``[[overlay:tail_wag]]``. Examples:\n"
             "  user: \"wink at me\"  ->  \"[[overlay:wink_right]] there.\"\n"
             "  user: \"wag your tail\"  ->  \"hah, fine - [[overlay:tail_wag]] happy now?\"\n"
             + "\n".join(f"- {line}" for line in gestures)
@@ -259,7 +261,11 @@ def _build_motion_grammar_addendum(motion_names: list[str]) -> str:
         "Body motions — full-body animations played by the rig. Emit "
         "the tag inline when the user asks for the gesture, or when "
         "one really fits the moment. Just like body gestures, never "
-        "fall back to prose stage directions:\n"
+        "fall back to prose stage directions. The list below is the "
+        "ONLY set of valid motion stems; tail-wags, winks, and "
+        "ear-flicks are NOT motions — they live under [[overlay:X]] "
+        "(see the body-gestures section above). ``[[motion:tail_wag]]`` "
+        "does nothing.\n"
         + "\n".join(f"- {line}" for line in available)
         + "\n"
         "[[motion:X]] is a stage direction — never read the keyword aloud."

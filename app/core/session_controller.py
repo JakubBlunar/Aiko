@@ -1809,8 +1809,19 @@ class SessionController:
         Looks up the motion file in the loaded rig's ``motions`` map
         and emits an ``avatar_motion`` event with the resolved
         ``group`` + ``index`` so ``pixi-live2d-display`` can call
-        ``model.motion(group, index)`` directly. Unknown / unsupported
-        motion names are silently dropped (LLM hallucinated).
+        ``model.motion(group, index)`` directly.
+
+        Safety net: when ``name`` is NOT a motion file stem but IS a
+        known overlay/gesture capability on the loaded rig (e.g. the
+        LLM emitted ``[[motion:tail_wag]]`` instead of the correct
+        ``[[overlay:tail_wag]]``), re-route to ``_emit_avatar_overlay``
+        so the action still plays. Logged at INFO so the misroute is
+        visible alongside the ``llm tags:`` line — the prompt grammar
+        should still steer the model to the right channel, but
+        forgiving the mistake is much better than silently dropping.
+
+        Unknown names that match neither a motion nor an overlay are
+        still silently dropped (LLM hallucinated).
         """
         if not name:
             return
@@ -1837,6 +1848,16 @@ class SessionController:
                                 exc_info=True,
                             )
                     return
+        # Misroute safety net: the LLM emitted ``[[motion:foo]]`` but
+        # ``foo`` is an overlay capability on this rig. Forward to the
+        # overlay path so the visual effect actually plays.
+        if avatar.capabilities.get(f"has_{normalized}", False):
+            log.info(
+                "avatar motion '%s' has no motion file but matches "
+                "an overlay capability; routing as overlay",
+                normalized,
+            )
+            self._emit_avatar_overlay(normalized)
 
     def add_avatar_motion_listener(
         self, cb: Callable[[dict[str, Any]], None]

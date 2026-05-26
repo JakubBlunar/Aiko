@@ -157,6 +157,40 @@ class MoodFallbackTtsTests(unittest.TestCase):
         self.assertEqual(overlays, ["blush"])
         self.assertTrue(result.mood_fallback)
 
+    def test_overlay_and_motion_both_dispatched_when_reaction_missing(
+        self,
+    ) -> None:
+        """Regression for the 26-May turn that triggered this whole audit:
+        the LLM emitted both ``[[overlay:stars]]`` (correct channel) and
+        ``[[motion:tail_wag]]`` (wrong channel — tail_wag is an overlay)
+        in the same reply without a leading ``[[reaction:X]]``. Both raw
+        callbacks must fire at end-of-stream so the misroute even has a
+        chance of being caught by the ``SessionController`` safety net.
+        """
+        runner = _build_runner(
+            stream_tokens=[
+                "oh hi! ",
+                "[[overlay:stars]] ",
+                "[[motion:tail_wag]] ",
+                "missed you!",
+            ],
+        )
+        overlays: list[str] = []
+        motions: list[str] = []
+        result = runner.run(
+            session_key="default:main",
+            user_text="hey",
+            on_tts_chunk=lambda text, mood: None,
+            on_overlay=lambda name: overlays.append(name),
+            on_motion=lambda name: motions.append(name),
+        )
+        self.assertEqual(overlays, ["stars"])
+        self.assertEqual(motions, ["tail_wag"])
+        self.assertTrue(result.mood_fallback)
+        # Both tags must be stripped from the persisted body.
+        self.assertNotIn("[[overlay:", result.text)
+        self.assertNotIn("[[motion:", result.text)
+
 
 class MoodFallbackMetricTests(unittest.TestCase):
     """The ``mood_fallback`` flag should accurately mirror whether the
