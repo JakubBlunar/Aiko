@@ -115,7 +115,7 @@ Highlights of the parameter map relevant to the agent:
 | `Param57` | Angry | `has_angry_marks` |
 | `Param58` | Blush | `has_blush` |
 | `Param59` | Cry | `has_cry` |
-| `Param60` | bbt | `has_sticker` (generic overlay) |
+| `Param60` | bbt | `has_sticker` (generic overlay; **visually a sad/cry-leaning face decoration — NOT a happy sticker; see §3 for details**) |
 | `Param61` | Pose 1 | `has_pose` (held to 0 by yf/yfmz exp3 to suppress pose during outfit fade) |
 
 The standard Cubism head/body/breath/eye params (`ParamAngleX/Y/Z`,
@@ -133,7 +133,7 @@ ones the agent uses:
 
 | File | Pinyin → meaning | Maps to |
 |---|---|---|
-| `bbt.exp3.json` | bbt | sticker overlay |
+| `bbt.exp3.json` | bbt (opaque pinyin; visually a sad / distressed face overlay despite sitting in the "sticker" capability slot) | sticker overlay — **do NOT use for positive reactions**; see §3a |
 | `dyj.exp3.json` | 带眼镜 (with glasses) | `has_glasses` |
 | `lh.exp3.json`  | 脸红 (blush) | `has_blush` |
 | `lzx.exp3.json` | 咧嘴笑 (grin) | `has_grin` |
@@ -155,6 +155,35 @@ for `has_hood` once upon a time** — keep it explicit.
 building the `OutfitBinding`, so `Param17: 0` in `yf.exp3.json` does
 NOT end up in the hooded binding. That's why the binding ends up as
 `{Param16: 30}` cleanly.
+
+### 3a. ``bbt`` is *not* a happy sticker — reaction-mapping caveat
+
+The cdi3 / model3 label ``bbt`` (Param60) gives no clue about the
+overlay's actual visual content. Param60 also sits adjacent to
+``Param59 = Cry`` in the parameter list and inherits the same
+"symbol expression" part group, which led the initial mapping pass
+to treat it as a generic happy sticker slot for ``cheerful`` and
+``amused`` reactions.
+
+Visual inspection on the live rig (set ``Param60=30`` in the
+SettingsDrawer) shows ``bbt`` actually renders as a **sad / cry-
+leaning face decoration** — not a happy badge. Mapping a positive
+reaction to it produced a regression where ``[[reaction:cheerful]]``
+visibly cried on screen.
+
+The current Alexia rig does not ship a soft-smile overlay; ``lzx``
+(Param54 = 咧嘴笑 = toothy grin) is the only positive overlay. Both
+``cheerful`` and ``amused`` are therefore mapped to ``lzx`` in
+``_ALEXIA_REACTION_MAP``. The ``[[overlay:grin]]`` LLM grammar tag
+still pulses ``lzx`` as a transient overlay; OverlayChannel
+re-applies the persistent reaction on slot release, so a cheerful
+turn that also emits ``[[overlay:grin]]`` simply sustains the
+existing grin without churning between expressions.
+
+**Future rigs**: when bringing in a new model with a softer-smile
+overlay (e.g. closed-eye smile, blush-cheek smile), prefer that for
+``cheerful`` and reserve ``lzx``-equivalents for ``amused`` /
+``playful``. Do not reintroduce ``bbt`` for any positive reaction.
 
 ---
 
@@ -178,8 +207,17 @@ patcher is idempotent.
 
 ## 5. Cubism update pipeline — write order matters for lip-sync
 
+> **As of Phase 11 of the engine refactor**, every per-frame
+> parameter write lives in `web/src/live2d/channels/` and is
+> driven by `AvatarEngine`. `Live2DAvatar.tsx` now only does Pixi
+> setup, model load, and the idle-motion timer. The
+> `beforeModelUpdate` hook below is owned by `LipsyncChannel`
+> (registered on the engine, fired exactly once per frame). When
+> debugging mouth-freezing during TTS, check `LipsyncChannel`
+> first, not the component.
+
 This isn't Alexia-specific but it's traps you'll hit the moment you
-touch `Live2DAvatar.tsx`. Each frame, `pixi-live2d-display`'s
+touch the live2d engine. Each frame, `pixi-live2d-display`'s
 `Cubism4InternalModel#update(dt, now)` runs in this exact order
 (verified by reading
 `web/node_modules/pixi-live2d-display/dist/cubism4.es.js`,
@@ -216,21 +254,29 @@ particularly cruel because it works for rigs whose talk motion
 doesn't include the mouth — so the regression went unnoticed for a
 while.
 
-The fix in place (`Live2DAvatar.tsx`, the lip-sync `useEffect`):
+The fix in place lives in `web/src/live2d/channels/LipsyncChannel.ts`:
 
 ```typescript
-internalModel.on("beforeModelUpdate", () => {
-  const target = useAssistantStore.getState().audioAmplitude || 0;
-  const next = prev + (target - prev) * 0.35;          // ease
-  applyMouthOpen(model, manifest, clamp01(next));
-});
+tickPreModel(): void {
+  const target = deps.getStoreSnapshot().audioAmplitude || 0;
+  this._smoothed = clamp(
+    this._smoothed + (target - this._smoothed) * SMOOTH_FACTOR,
+    0, 1,
+  );
+  for (const id of this._paramIds) {
+    adapter.setParam(id, this._smoothed);
+  }
+}
 ```
 
-Because step 7 fires AFTER motion + expression + breath, our value
-is what gets rendered in step 8 — regardless of what any of the
-upstream stages wrote. Any future per-frame parameter that competes
-with motions / expressions (e.g. a custom blink override) should be
-written from this same hook.
+`AvatarEngine.start()` wires `adapter.onBeforeModelUpdate(...)`
+exactly once and fans the hook out to every channel that
+implements `tickPreModel`. Because step 7 fires AFTER motion +
+expression + breath, our value is what gets rendered in step 8 —
+regardless of what any of the upstream stages wrote. Any future
+per-frame parameter that competes with motions / expressions (e.g.
+a custom blink override) should be implemented as a channel that
+writes inside `tickPreModel`.
 
 ### Expressions don't auto-clear
 
@@ -246,60 +292,64 @@ model.internalModel.motionManager.expressionManager?.resetExpression();
 `resetExpression()` swaps to a synthesised empty expression
 (`defaultExpression`, created in `ExpressionManager.init()` with no
 parameters), which immediately stops any param overrides from the
-previous expression. This is what `applyReaction(model, manifest,
-"neutral")` now does instead of silently returning — see
-`Live2DAvatar.tsx::applyReaction`. Without it, a reaction expression
-applied earlier in the turn stayed frozen on the face after TTS
-ended (idle motion would resume but the eyes/mouth shape from the
-last expression remained baked in until the next non-empty
-reaction).
+previous expression. This is what `ExpressionChannel` does for
+empty / unmapped reactions — see
+`web/src/live2d/channels/ExpressionChannel.ts` (`_applyTarget`).
+Without it, a reaction expression applied earlier in the turn
+stayed frozen on the face after TTS ended (idle motion would
+resume but the eyes/mouth shape from the last expression remained
+baked in until the next non-empty reaction).
 
 ### Overlay pulses also push expressions — and need a restore
 
 A second class of expression-on-the-rig writes is the `expr:`-bound
 overlay pulse. When the LLM emits e.g. `[[overlay:grin]]` and the
 binding's `param_id` starts with `expr:` (overlays that don't map to
-a single param — grin, stars, sticker), the tier-3 RAF pulse handler
-fires `model.expression(exprName)` once when the pulse first lands.
-That call goes through the same expression slot as `applyReaction`,
-which means it both (a) clobbers the persistent reaction expression
-for the duration of the pulse, and (b) sits permanently on the rig
-when the pulse ends — `expression(name)` is apply-only, and the
-reaction-subscribe `useEffect` only re-applies when `state.reaction`
-*changes*. Two consecutive turns with the same reaction value (both
-`neutral`, both `cheerful`, …) leave the overlay expression baked in
-forever.
+a single param — grin, stars, sticker), `OverlayChannel` fires
+`adapter.expression(exprName)` once when the pulse first lands.
+That call goes through the same expression slot as the persistent
+reaction, which means it both (a) clobbers the persistent reaction
+expression for the duration of the pulse, and (b) sits permanently
+on the rig when the pulse ends — `expression(name)` is apply-only,
+and the persistent reaction is only re-applied when its value
+*changes*. Two consecutive turns with the same reaction value
+(both `neutral`, both `cheerful`, …) would otherwise leave the
+overlay expression baked in forever.
 
-The fix in place (`Live2DAvatar.tsx`):
+The fix in place lives in three coordinated channels:
 
-- `lastExprOverlayUntilRef` tracks the pulse's `performance.now()`-
-  based deadline when the `expression(name)` call fires.
-- The tier-3 RAF checks `now >= lastExprOverlayUntilRef.current` and
-  unconditionally calls `applyReaction(model, manifest, fresh)` with
-  the current reaction (which routes to `resetExpression()` when
-  `fresh` is empty). This is the **only** path that handles
-  same-value reaction sequences.
-- The reaction-subscribe `useEffect` defers its `applyReaction` call
-  while a pulse is in flight (overlay owns the slot); the deferred
-  reaction is the value the RAF restores once the pulse expires.
+- `OverlayChannel` writes `engineState.exprSlotLockUntil = pulse.until`
+  on the first frame of an `expr:`-bound pulse and fires
+  `adapter.expression(name)` exactly once.
+- `ExpressionChannel` reads `exprSlotLockUntil > now` to defer
+  reaction writes while the overlay owns the slot (otherwise a
+  fresh reaction would cut the overlay short).
+- `AvatarEngine` watches `exprSlotLockUntil` on every tier-3 tick,
+  zeroes it on expiry, and fans `onExpressionSlotReleased` to every
+  channel. `ExpressionChannel.onExpressionSlotReleased` re-applies
+  whatever its current target is (reaction or voice-mode override
+  or `resetExpression()` for empty mappings). This is the **only**
+  path that handles same-value reaction sequences.
 
 ### Wall-clock vs monotonic clock — pulse deadlines
 
 `overlay.expiresAt` arrives from the WS handler as `Date.now() +
-duration_ms` (wall-clock, ~1.7e12). The tier-3 RAF uses `const now =
-performance.now()` (monotonic, ~1e4 on a fresh page). Comparing them
-directly is the kind of bug that turns every pulse into a permanent
-on-state and every gesture boost into a permanent multiplier. The
-ingest path now converts at storage time:
+duration_ms` (wall-clock, ~1.7e12). The engine + channels use
+`performance.now()` (monotonic, ~1e4 on a fresh page). Comparing
+them directly is the kind of bug that turns every pulse into a
+permanent on-state and every gesture boost into a permanent
+multiplier. The conversion is centralised in
+`AvatarEngine.dispatchOverlay`:
 
 ```typescript
 const remainingMs = Math.max(0, overlay.expiresAt - Date.now());
-gestures[name] = { until: now + remainingMs };
-pulses[overlay.name] = { until: now + remainingMs, binding };
+const until = this._now() + remainingMs;
+this._fanOut("onOverlay", (channel) => channel.onOverlay?.({ name, until }));
 ```
 
-Any future timer-driven state in the tier-3 RAF must use
-`performance.now()` time as well, or convert at the boundary.
+Channels can blindly compare against `deps.now()`. Any new
+timer-driven state added to a channel must use `deps.now()` (or
+the engine's monotonic clock), never `Date.now()`.
 
 ---
 

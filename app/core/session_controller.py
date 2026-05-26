@@ -341,6 +341,7 @@ class SessionController:
                             self._embedder,
                             top_k=self._memory_settings.top_k,
                             score_threshold=self._memory_settings.score_threshold,
+                            memory_store=self._memory_store,
                         )
                     except Exception:
                         log.warning("RagRetriever failed to init", exc_info=True)
@@ -761,6 +762,7 @@ class SessionController:
             relationship=self._render_relationship_block,
             agenda=self._render_agenda_block,
             arc=self._render_arc_block,
+            narrative=self._render_narrative_block,
             vocal_tone=self._render_vocal_tone_block,
             catchphrase=self._render_catchphrase_block,
             petname=self._render_petname_block,
@@ -2423,6 +2425,58 @@ class SessionController:
         except Exception:
             log.debug("vocal tone block render failed", exc_info=True)
             return ""
+
+    # Per-source-kind framing for the narrative inner-monologue block.
+    # The framing nudges the LLM to surface the line in a kind-appropriate
+    # tone without dictating exact wording. Source kinds come from
+    # ``app/core/prepared_nudge.py::VALID_SOURCE_KINDS``.
+    _NARRATIVE_LABELS: dict[str, str] = {
+        "open_question": "Something you've been wanting to ask Jacob",
+        "callback": "A loose thread to circle back to",
+        "promise": "Something you said you'd do",
+        "reflection": "On your mind",
+        "agenda": "A goal you're tracking",
+        "resume": "Where you left off last time",
+        "mixed": "On your mind",
+    }
+
+    def _render_narrative_block(self) -> str:
+        """Inner-monologue cue surfaced from the prepared-nudge store.
+
+        Reads (without consuming) the same nudge that the live-voice
+        ``ProactiveDirector`` would speak during silence, and folds it
+        into the system prompt so a *typed* turn has the same
+        situational awareness ("oh, and there's that thing I wanted to
+        ask…"). The LLM decides whether to actually pick it up — we
+        just put it on the table.
+
+        Non-consuming on purpose: typed turns don't pre-empt with the
+        nudge text, they only react if the conversation goes that way.
+        ``ProactiveDirector`` keeps exclusive ownership of ``consume``.
+
+        Returns ``""`` whenever the store hasn't been initialised, no
+        fresh nudge is available, or the nudge has empty text — which
+        means the block is silently skipped and contributes 0 prompt
+        tokens.
+        """
+        store = getattr(self, "_prepared_nudge_store", None)
+        if store is None:
+            return ""
+        try:
+            nudge = store.get_fresh(self._user_id)
+        except Exception:
+            log.debug("narrative block: get_fresh raised", exc_info=True)
+            return ""
+        if nudge is None:
+            return ""
+        text = (nudge.text or "").strip()
+        if not text:
+            return ""
+        label = self._NARRATIVE_LABELS.get(
+            (nudge.source_kind or "").strip().lower(),
+            "On your mind",
+        )
+        return f"{label}: {text}"
 
     def _render_catchphrase_block(self) -> str:
         """Phase 2c: "Aiko's running jokes with Jacob" inner-life block.

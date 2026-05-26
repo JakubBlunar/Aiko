@@ -54,7 +54,14 @@ _SPEECH_GRAMMAR_ADDENDUM = (
     "`[[correct]]old text[[/correct]]new text`. The old span is shown "
     "with a strike-through in the chat and a short \"tsk\" cue plays. "
     "Use sparingly — once or twice a session at most, never as a stylistic "
-    "tic."
+    "tic.\n"
+    "\n"
+    "Match Jacob's register: when the prompt mentions \"User sounds: …\" "
+    "or \"Right now Jacob: …\", treat those as real cues — if he sounds "
+    "tired or his mood reads low, soften and shorten your reply; if he's "
+    "pumped, ride the energy. Acknowledge a clear shift once, naturally "
+    "(\"you sound wiped\"), never mechanically — and never quote the "
+    "system line back at him."
 )
 
 
@@ -403,7 +410,6 @@ class _StaticSlices:
     user_state_block: str
     relationship_block: str
     arc_block: str
-    narrative_block: str
     agenda_block: str
     built_at: float
 
@@ -681,7 +687,6 @@ class PromptAssembler:
         user_state_block = _safe_provider(self._user_state_provider)
         relationship_block = _safe_provider(self._relationship_provider)
         arc_block = _safe_provider(self._arc_provider)
-        narrative_block = _safe_provider(self._narrative_provider)
         agenda_block = "" if aggressive else _safe_provider(self._agenda_provider)
         cache_key = self._compute_static_cache_key(
             session_key, history_msgs, recent_window, aggressive,
@@ -701,7 +706,6 @@ class PromptAssembler:
             user_state_block=user_state_block,
             relationship_block=relationship_block,
             arc_block=arc_block,
-            narrative_block=narrative_block,
             agenda_block=agenda_block,
             built_at=time.monotonic(),
         )
@@ -840,7 +844,6 @@ class PromptAssembler:
         user_state_block = slices.user_state_block
         relationship_block = slices.relationship_block
         arc_block = slices.arc_block
-        narrative_block = slices.narrative_block
         agenda_block = slices.agenda_block
 
         memory_block = ""
@@ -893,12 +896,16 @@ class PromptAssembler:
         # Per-turn dynamic blocks read fresh on every assemble (NOT cached
         # in static slices). Vocal-tone is captured by the live-capture
         # path; catchphrase / pet-name / ambient noise come from cheap
-        # store reads.
+        # store reads. Narrative reads from the prepared-nudge store,
+        # whose contents change between turns even when ``history_max_id``
+        # doesn't move (NarrativeWeaver runs every N turns, ProactiveDirector
+        # consumes nudges) — caching it would surface stale text.
         vocal_tone_block = _safe_provider(self._vocal_tone_provider)
         catchphrase_block = _safe_provider(self._catchphrase_provider)
         petname_block = _safe_provider(self._petname_provider)
         ambient_noise_block = _safe_provider(self._ambient_noise_provider)
         pajama_block = _safe_provider(self._pajama_provider)
+        narrative_block = _safe_provider(self._narrative_provider)
 
         # Alexia bundle: capability lookup is *not* a string provider —
         # it returns the raw flags so we can build the overlay /

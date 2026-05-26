@@ -1,0 +1,242 @@
+# Aiko personality backlog
+
+Ideas surfaced during the personality brainstorm that we *didn't* ship in
+the depth pass that delivered A1 (narrative inner-monologue), A2 (Aiko
+reading Jacob's affect), and A3 (RAG recency / revival). Each section is
+short on purpose: motivation, key files, sketched approach, and one or
+two open questions. Pick any item up later as a standalone plan.
+
+The numbering matches the labels used during the brainstorm so chat
+history stays grep-able.
+
+---
+
+## B. Continuous expressiveness (renderer side)
+
+### B1. Body-language driven by the mood vector continuously
+
+**Motivation.** Today the avatar's body is dynamic in two modes: idle
+(physics3 + breath + blink) and tag-pulses (~1.5 s overlays from
+`[[overlay:X]]`). The persistent affect vector (`valence`, `arousal`,
+`mood_label`) is published over WS but the renderer only consumes it for
+gating — not for continuous modulation. The same neutral reaction reads
+the same whether Aiko is tense or content.
+
+**Key files.**
+- [`app/core/affect_state.py`](../app/core/affect_state.py) — already
+  produces the vector; `render_ambient_block` puts it in the prompt.
+- [`web/src/store.ts`](../web/src/store.ts) — `mood`, `affectVector`
+  store fields are already exposed.
+- [`web/src/components/Live2DAvatar.tsx`](../web/src/components/Live2DAvatar.tsx)
+  — tier-3 RAF loop is the place to wire continuous parameters.
+
+**Sketched approach.**
+- Read `affectVector` once per RAF tick.
+- Map `arousal` → `breath_freq_multiplier` (0.7–1.4) and
+  `blink_rate_multiplier` (0.6–1.5); map `valence` → `body_tilt_y_bias`
+  (a small persistent +/- on `ParamBodyAngleY` so a low-valence pose
+  slumps slightly).
+- Smooth via the same `approach()` ease the outfit envelopes use so
+  transitions don't snap on a mood update.
+- Gate on capability flags (`has_body_angle_y`, `has_breath`) so models
+  without those params get a quiet no-op.
+
+**Open questions.**
+- Where do we tune the mapping curves? A small constants block in the
+  renderer is fine for v1, but a settings drawer slider for "expressiveness"
+  would make this user-tweakable.
+- Should the persistent reaction expression also fade its intensity by
+  arousal (e.g. quieter `cheerful` when arousal is low)?
+
+---
+
+### B2. Listening micro-nods on backchannel hints
+
+**Motivation.** The backchannel classifier already detects
+`agreement` / `disagreement` / `surprise` / `thinking` on STT partials and
+fires avatar overlays for emotional reactions. But the body doesn't move
+— a subtle nod / shake / tilt during listening is a huge presence cue.
+
+**Key files.**
+- [`app/core/backchannel_classifier.py`](../app/core/backchannel_classifier.py)
+  — already classifies hints, drives overlays.
+- [`app/core/session_controller.py`](../app/core/session_controller.py)
+  `on_stt_partial` — call site that fans hints out.
+- Motion files added recently: `nod.motion3.json`, `shake.motion3.json`
+  (see [`scripts/generate_alexia_motions.py`](../scripts/generate_alexia_motions.py)).
+
+**Sketched approach.**
+- Map `agreement` → `nod`, `disagreement` → `shake`, `thinking` → small
+  head-tilt motion. Reuse the existing motion-broadcast WS event.
+- Rate-limit at the same `BackchannelGate.min_repeat_seconds` (1.5 s) so
+  a chatty listen-window doesn't spam motions.
+- Lower priority than the STT-end full reaction — when a turn commits, an
+  in-flight listening motion should yield gracefully (use the
+  `pixi-live2d-display` motion priority lanes).
+
+**Open questions.**
+- Need new lightweight micro-tilt motion files for `thinking` /
+  `confused`, or can we reuse a damped shake?
+
+---
+
+## C. Proactive outside Live voice
+
+### C1. Proactive ping in text-mode chat
+
+**Motivation.** `ProactiveDirector` only fires from `live_session.py`
+when the user is in voice mode and silence exceeds a threshold. In typed
+chat Aiko is purely reactive — even if she has a fresh callback she
+wants to bring up, she waits forever for Jacob to type first.
+
+**Key files.**
+- [`app/core/proactive_director.py`](../app/core/proactive_director.py) —
+  director already speaks via `PreparedNudge.consume`.
+- [`app/core/live_session.py`](../app/core/live_session.py) — current
+  silence-trigger call site.
+- [`app/core/session_controller.py`](../app/core/session_controller.py) —
+  would need a typed-mode silence timer.
+
+**Sketched approach.**
+- Add an optional silence timer to `SessionController` that arms when a
+  typed turn ends and disarms on the next user input.
+- Threshold: `agent.proactive_silence_seconds_typed` (separate config
+  knob, default ~3-5 minutes — much longer than voice's 45 s so it
+  doesn't feel spammy).
+- On fire: call `_consume_prepared_nudge` and dispatch an assistant
+  message via the same WS path as a normal turn (so the UI shows it as
+  "Aiko ·"). Treat it like a barge-in turn — don't run RAG or
+  expensive workers, just speak.
+- Cooldown: `agent.proactive_cooldown_seconds_typed` so we never fire
+  twice in a row even if the user keeps ignoring her.
+
+**Open questions.**
+- Persist last-fired timestamp to disk (so a browser refresh doesn't
+  reset cooldown)? `config/user.json` like `last_active_id` is the
+  obvious place.
+- Distinct browser-tab-visibility behaviour? `document.visibilityState`
+  on the frontend could mute the ping when the tab is hidden.
+
+---
+
+## D. New tools / capabilities
+
+### D1. Calendar / reminders tool
+
+**Motivation.** `promise` memories already capture "I'll do X" but they
+have no time component. A real reminders tool would let Aiko answer
+"remind me about the dentist on Tuesday" and surface it at the right
+moment via the existing proactive director.
+
+**Key files (new + existing).**
+- New: `app/core/reminders_store.py` (SQLite-backed, simple `id, text,
+  due_at, fired_at, source_message_id` table).
+- New: `app/llm/tools/reminders.py` — `set_reminder(text, when)` and
+  `list_reminders()` agent tools.
+- Existing: [`app/llm/tools/builtins.py`](../app/llm/tools/builtins.py)
+  `build_default_registry` — register the new tools, gated on a
+  config flag.
+- Existing: [`app/core/proactive_director.py`](../app/core/proactive_director.py)
+  — extend `_pick_topic` to surface a due-but-unfired reminder ahead of
+  generic nudges.
+
+**Sketched approach.**
+- Tool: parse `when` as ISO-8601 OR a small natural-language helper
+  (`dateparser` or a tiny regex set: "tomorrow at 3pm", "in 2 hours").
+  Don't reach for a full NLP stack — keep it boring.
+- A periodic check (~60 s) in `SessionController` polls the store for
+  reminders whose `due_at <= now` and `fired_at IS NULL`, picks the
+  earliest, marks fired, and triggers a proactive turn (reuses C1 if
+  shipped).
+- Visible in the web UI via a small "reminders" panel reading the same
+  table over an `/api/reminders` endpoint.
+
+**Open questions.**
+- Recurring reminders (every Tuesday)? Out of scope for v1; one-shot is
+  the 80% case.
+- Notifications when the browser tab is closed? Web Push is heavy; a
+  dock badge / system notification via Tauri/Electron would be cleaner.
+
+---
+
+### D2. Image vision tool
+
+**Motivation.** Ollama supports vision models (`llava`, `qwen2.5-vl`,
+etc.). Letting Jacob drop an image into the chat and have Aiko comment
+on it ("oh, that's a cute desk setup — what's that on your monitor?")
+is a huge presence multiplier and pairs naturally with her curiosity.
+
+**Key files.**
+- [`app/llm/ollama_client.py`](../app/llm/ollama_client.py) —
+  `chat_with_tools` would need to accept image attachments. Ollama's
+  `/api/chat` already supports `images: [base64]` in the message body.
+- New: `app/llm/tools/vision.py` — `describe_image(path)` tool that
+  routes to a vision model.
+- Existing: web upload path already handles images for documents; would
+  need a new branch that doesn't chunk them.
+
+**Sketched approach.**
+- Frontend: drag-drop image into the chat composer → POST to
+  `/api/chat/image` → backend stores it briefly and includes a tool-call
+  hint in the next turn ("Jacob just shared an image — call
+  `describe_image` to see it").
+- Vision tool runs the configured vision model, returns the description
+  as the tool result; Aiko's spoken reply uses it naturally.
+- Image is NOT persisted to memory by default (privacy). Aiko could tag
+  `[[remember:Jacob shared a desk photo]]` if it's notable.
+
+**Open questions.**
+- Vision model size — default to a quantised 3-7 B model so it runs on
+  the same box as the chat model? Or always cloud-route image calls?
+- Fallback when no vision model is available: gracefully skip the tool
+  and let Aiko say "I can't actually see that yet, sorry".
+
+---
+
+## Other ideas considered
+
+- **Second TTS provider behind `TtsEngine`.** Pocket-TTS is the only
+  implemented backend. Adding e.g. Piper, Coqui, or an OpenAI-compatible
+  cloud voice would let users pick a different timbre / language without
+  swapping the whole pipeline. The `TtsEngine` protocol in
+  [`app/tts/base.py`](../app/tts/base.py) is the extension point.
+- **SSML prosody for emotional speech.** Pocket-TTS supports speed +
+  pitch but not full SSML; the prosody dispatcher in
+  [`app/core/cadence.py`](../app/core/cadence.py) does what it can with
+  per-sentence reaction overrides. A real SSML pass — emphasis on key
+  words, micro-pauses tied to commas, pitch contour for excitement —
+  would be a much bigger expression bump than a new voice file.
+- **Barge-in enabled by default for Live mode.** Currently
+  `audio.barge_in_enabled: false` in [`config/default.json`](../config/default.json).
+  The plumbing is there in [`app/core/live_session.py`](../app/core/live_session.py);
+  flip the flag and validate against the existing
+  `barge_in_min_speech_seconds` floor.
+- **User-facing memory editor in the web UI.** The MCP debug surface can
+  list / mutate memories, but there's no in-app way for Jacob to inspect
+  what Aiko remembers. A "Memory" tab listing top-salience memories
+  with edit / delete buttons (calling new
+  `/api/memories` endpoints over the existing `MemoryStore`) would
+  make her notebook explicit.
+- **"Shared moments" episodic memory kind.** Today
+  `event` / `callback` / `reflection` are loosely episodic but flat.
+  A new `shared_moment` kind with structured `(when, what, vibe)`
+  metadata, surfaced as "remember when …" anniversaries, would deepen
+  the relationship arc.
+- **A4 (split off from the depth pass).** Salience auto-decay tied to
+  recall cadence: memories the user genuinely cares about (high
+  cosine-similar follow-ups, `[[remember:self:...]]` self-tags) gain
+  salience over time; memories that retrieve but never lead anywhere
+  decay faster. Plumbing extension to
+  [`app/core/memory_store.py::decay`](../app/core/memory_store.py).
+
+---
+
+## How to pick one up
+
+1. Re-read the relevant section.
+2. Spin up a plan. Each item is small enough to fit in a single
+   `CreatePlan` invocation; nothing here needs to be split into phases.
+3. Validate the same way we did for A1/A2/A3:
+   focused suite -> full `pytest -q` -> spot-check the running app.
+4. Update the relevant doc (this file, `AGENTS.md`,
+   `docs/alexia-model-notes.md`) when the work lands.
