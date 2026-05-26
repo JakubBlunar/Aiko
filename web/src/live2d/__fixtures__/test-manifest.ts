@@ -25,9 +25,10 @@ export function buildManifest(overrides: Partial<AvatarManifest> = {}): AvatarMa
     capabilities: {},
     overlays: {},
     outfits: {},
+    expression_params: {},
     cat_tail_param_ids: [],
     cat_ear_param_ids: [],
-    settings: { scale_multiplier: 1, auto_outfit: "auto" },
+    settings: { scale_multiplier: 1, auto_outfit: "auto", expressiveness: 1 },
     loaded: true,
   };
   return { ...base, ...overrides };
@@ -53,6 +54,7 @@ export function buildStoreSnapshot(overrides: Record<string, unknown> = {}) {
     resolvedOutfit: "" as const,
     backchannelHint: "",
     circadianPeriod: "",
+    expressiveness: 1,
     ...overrides,
   };
 }

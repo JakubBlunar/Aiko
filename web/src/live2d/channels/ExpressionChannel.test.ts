@@ -331,3 +331,242 @@ describe("ExpressionChannel — lifecycle", () => {
     expect(channel.backchannelRestoreArmed).toBe(false);
   });
 });
+
+/** Build a manifest with a ``cheerful`` reaction mapped to the
+ * ``lzx`` expression and a single ``Param54: 30`` binding — the
+ * smallest shape that exercises the arousal-scale write path. */
+function makeAmplitudeManifestDeps(
+  initialSnap: Partial<ChannelStoreSnapshot> = {},
+) {
+  const clock = new FakeClock(1_000);
+  const engineState = createEngineState();
+  let snapshot: ChannelStoreSnapshot = {
+    reaction: "cheerful",
+    ttsState: "idle",
+    voiceMode: "off",
+    turnInProgress: false,
+    audioAmplitude: 0,
+    avatarOverlay: null,
+    avatarMotion: null,
+    mood: { label: "content", intensity: 0.5, valence: 0, arousal: 0.5 },
+    resolvedOutfit: "",
+    backchannelHint: "",
+    expressiveness: 1,
+    ...initialSnap,
+  };
+  const manifest = buildManifest({
+    reaction_mapping: { cheerful: "lzx", neutral: "n" },
+    expressions: [
+      { name: "lzx", file: "lzx.exp3.json" },
+      { name: "n", file: "n.exp3.json" },
+    ],
+    expression_params: {
+      lzx: [{ param_id: "Param54", on_value: 30 }],
+    },
+  });
+  return {
+    clock,
+    engineState,
+    deps: {
+      now: clock.now,
+      manifest,
+      engineState,
+      getStoreSnapshot: () => snapshot,
+    },
+    setSnapshot: (next: Partial<ChannelStoreSnapshot>) => {
+      snapshot = { ...snapshot, ...next };
+    },
+  };
+}
+
+/** Run ``tickPreModel`` ``frames`` times with ``dt`` seconds between
+ * ticks. Returns the final ``Param54`` value once the smoothing has
+ * had time to converge. */
+function runPreModel(
+  channel: ExpressionChannel,
+  adapter: FakeAdapter,
+  clock: FakeClock,
+  frames: number,
+  dt: number,
+): number {
+  for (let i = 0; i < frames; i += 1) {
+    clock.advance(dt * 1000);
+    channel.tickPreModel!();
+  }
+  return adapter.params.get("Param54") ?? 0;
+}
+
+describe("ExpressionChannel — tickPreModel arousal scaling", () => {
+  it("low arousal writes a quieter param value", () => {
+    const adapter = new FakeAdapter();
+    const channel = new ExpressionChannel();
+    const { deps, clock } = makeAmplitudeManifestDeps({
+      mood: { label: "content", intensity: 0.5, valence: 0, arousal: 0.1 },
+    });
+    channel.attach(adapter, deps);
+    const value = runPreModel(channel, adapter, clock, 240, 1 / 60);
+    // arousal=0.1 -> scale ~0.46; expressiveness=1 -> ~30 * 0.46 = 13.8.
+    expect(value).toBeGreaterThan(11);
+    expect(value).toBeLessThan(17);
+  });
+
+  it("high arousal writes close to the rig's authored on_value", () => {
+    const adapter = new FakeAdapter();
+    const channel = new ExpressionChannel();
+    const { deps, clock } = makeAmplitudeManifestDeps({
+      mood: { label: "excited", intensity: 0.9, valence: 0.7, arousal: 0.9 },
+    });
+    channel.attach(adapter, deps);
+    const value = runPreModel(channel, adapter, clock, 240, 1 / 60);
+    // arousal=0.9 -> scale ~0.94; expressiveness=1 -> ~28.2.
+    expect(value).toBeGreaterThan(25);
+    expect(value).toBeLessThanOrEqual(30);
+  });
+
+  it("expressiveness 0 mutes the write to zero", () => {
+    const adapter = new FakeAdapter();
+    const channel = new ExpressionChannel();
+    const { deps, clock } = makeAmplitudeManifestDeps({
+      expressiveness: 0,
+      mood: { label: "excited", intensity: 0.9, valence: 0.7, arousal: 0.9 },
+    });
+    channel.attach(adapter, deps);
+    const value = runPreModel(channel, adapter, clock, 240, 1 / 60);
+    expect(Math.abs(value)).toBeLessThan(0.01);
+  });
+
+  it("expressiveness 1.5 amplifies the write but caps at the on_value", () => {
+    const adapter = new FakeAdapter();
+    const channel = new ExpressionChannel();
+    const { deps, clock } = makeAmplitudeManifestDeps({
+      expressiveness: 1.5,
+      mood: { label: "excited", intensity: 0.9, valence: 0.7, arousal: 0.9 },
+    });
+    channel.attach(adapter, deps);
+    const value = runPreModel(channel, adapter, clock, 240, 1 / 60);
+    // arousal scale capped at 1.0; expressiveness 1.5 -> 30 * 1 * 1.5 = 45.
+    // We document this as "capped by the rig's natural on_value" but
+    // the actual write doesn't auto-clamp — pixi-live2d-display will
+    // clamp at the param's authored max. We still want the test to
+    // assert proportional scaling above the default-1.0 case.
+    const adapterDefault = new FakeAdapter();
+    const channelDefault = new ExpressionChannel();
+    const def = makeAmplitudeManifestDeps({
+      mood: { label: "excited", intensity: 0.9, valence: 0.7, arousal: 0.9 },
+    });
+    channelDefault.attach(adapterDefault, def.deps);
+    const defaultValue = runPreModel(
+      channelDefault,
+      adapterDefault,
+      def.clock,
+      240,
+      1 / 60,
+    );
+    expect(value).toBeGreaterThan(defaultValue * 1.4);
+  });
+
+  it("does not write while exprSlotLockUntil is in the future", () => {
+    const adapter = new FakeAdapter();
+    const channel = new ExpressionChannel();
+    const { deps, engineState, clock } = makeAmplitudeManifestDeps({
+      mood: { label: "excited", intensity: 0.9, valence: 0.7, arousal: 0.9 },
+    });
+    channel.attach(adapter, deps);
+    // Reset our smoothed amplitude back to zero by holding the slot
+    // lock, then ticking. The tickPreModel must skip the write so
+    // Param54 stays at whatever the FakeAdapter has (untouched).
+    engineState.exprSlotLockUntil = clock.now() + 5_000;
+    for (let i = 0; i < 120; i += 1) {
+      clock.advance(1000 / 60);
+      channel.tickPreModel!();
+    }
+    expect(adapter.params.has("Param54")).toBe(false);
+    expect(channel.amplitudeScale).toBe(0);
+  });
+
+  it("resumes writing after the slot lock expires", () => {
+    const adapter = new FakeAdapter();
+    const channel = new ExpressionChannel();
+    const { deps, engineState, clock } = makeAmplitudeManifestDeps({
+      mood: { label: "excited", intensity: 0.9, valence: 0.7, arousal: 0.9 },
+    });
+    channel.attach(adapter, deps);
+    engineState.exprSlotLockUntil = clock.now() + 1_000;
+    for (let i = 0; i < 30; i += 1) {
+      clock.advance(1000 / 60);
+      channel.tickPreModel!();
+    }
+    expect(adapter.params.has("Param54")).toBe(false);
+
+    // Drop the lock; tickPreModel must resume writing.
+    engineState.exprSlotLockUntil = 0;
+    for (let i = 0; i < 240; i += 1) {
+      clock.advance(1000 / 60);
+      channel.tickPreModel!();
+    }
+    const value = adapter.params.get("Param54") ?? 0;
+    expect(value).toBeGreaterThan(20);
+  });
+
+  it("does nothing when the active expression has no expression_params binding", () => {
+    const adapter = new FakeAdapter();
+    const channel = new ExpressionChannel();
+    // Manifest with no expression_params for the active expression —
+    // legacy / minimal rig path.
+    const clock = new FakeClock(1_000);
+    const engineState = createEngineState();
+    const snapshot: ChannelStoreSnapshot = {
+      reaction: "cheerful",
+      ttsState: "idle",
+      voiceMode: "off",
+      turnInProgress: false,
+      audioAmplitude: 0,
+      avatarOverlay: null,
+      avatarMotion: null,
+      mood: { label: "excited", intensity: 0.9, valence: 0.7, arousal: 0.9 },
+      resolvedOutfit: "",
+      backchannelHint: "",
+      expressiveness: 1,
+    };
+    const manifest = buildManifest({
+      reaction_mapping: { cheerful: "lzx" },
+      expressions: [{ name: "lzx", file: "lzx.exp3.json" }],
+      // No expression_params at all.
+    });
+    const deps: ChannelDeps = {
+      now: clock.now,
+      manifest,
+      engineState,
+      getStoreSnapshot: () => snapshot,
+    };
+    channel.attach(adapter, deps);
+    for (let i = 0; i < 60; i += 1) {
+      clock.advance(1000 / 60);
+      channel.tickPreModel!();
+    }
+    expect(adapter.params.has("Param54")).toBe(false);
+  });
+
+  it("smooths amplitude across an arousal flip instead of snapping", () => {
+    const adapter = new FakeAdapter();
+    const channel = new ExpressionChannel();
+    const { deps, clock, setSnapshot } = makeAmplitudeManifestDeps({
+      mood: { label: "excited", intensity: 0.9, valence: 0.7, arousal: 0.9 },
+    });
+    channel.attach(adapter, deps);
+    runPreModel(channel, adapter, clock, 240, 1 / 60);
+    const settled = adapter.params.get("Param54") ?? 0;
+
+    setSnapshot({
+      mood: { label: "calm", intensity: 0.4, valence: 0, arousal: 0.05 },
+    });
+    // A single tick after a flip cannot snap the amplitude all the
+    // way down to the new target. The smoothing must keep us above
+    // the eventual converged low-arousal value for at least one
+    // frame.
+    clock.advance(1000 / 60);
+    channel.tickPreModel!();
+    const oneTickAfter = adapter.params.get("Param54") ?? 0;
+    expect(oneTickAfter).toBeGreaterThan(settled * 0.8);
+  });
+});

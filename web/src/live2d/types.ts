@@ -152,6 +152,15 @@ export interface ChannelStoreSnapshot {
    * body lean during late-night low-arousal states. Optional
    * because the legacy snapshot shape pre-dates this field. */
   circadianPeriod?: string;
+  /** User-tuneable body-language intensity multiplier, mirroring
+   * the ``avatar.expressiveness`` slider in the Settings drawer.
+   * ``0`` mutes every mood-driven amplitude; ``1`` is the authored
+   * default; up to ``1.5`` exaggerates. Channels multiply their
+   * amplitude writes by this so the slider damps the whole renderer
+   * uniformly. Optional for backwards compatibility with snapshots
+   * that pre-date this field — channels default to ``1`` when
+   * absent. */
+  expressiveness?: number;
 }
 
 /** Base channel contract. Each method is optional — channels opt in

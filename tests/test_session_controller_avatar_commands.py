@@ -23,7 +23,10 @@ from app.core.avatar_profile import (
     OutfitBinding,
     OutfitParam,
 )
-from app.core.session_controller import SessionController
+from app.core.session_controller import (
+    SessionController,
+    _BackchannelMotionGate,
+)
 
 
 def _make_avatar(
@@ -81,6 +84,7 @@ def _make_controller(
     controller._avatar_settings_runtime = {
         "scale_multiplier": 1.0,
         "auto_outfit": auto_outfit,
+        "expressiveness": 1.0,
     }
     controller._avatar_settings_listeners = []
     controller._avatar_overlay_listeners = []
@@ -88,6 +92,12 @@ def _make_controller(
     controller._llm_outfit_override = ""
     controller._llm_outfit_override_period = ""
     controller._period_override = "morning"
+    # ``_emit_backchannel_motion`` needs these or it'll raise on attr
+    # access; tests that don't exercise that path pay no other cost.
+    controller._backchannel_motion_gate = _BackchannelMotionGate(
+        min_repeat_seconds=1.5,
+    )
+    controller._backchannel_thinking_index = 0
     # ``update_avatar_settings`` mirrors the patched value back onto the
     # AppSettings dataclass so a re-read via ``self._settings`` would
     # see the new value too. Provide just enough of that surface.
@@ -437,6 +447,151 @@ class MotionDispatchTests(unittest.TestCase):
         self.assertEqual(motion_captured[0]["name"], "nod")
 
 
+class BackchannelMotionDispatchTests(unittest.TestCase):
+    """Phase B2: backchannel hint -> low-priority motion broadcast.
+
+    These exercise ``_emit_backchannel_motion`` directly: the public
+    fan-out site (``add_backchannel_listener``) wires it through the
+    same listener list during ``__init__``, so unit-testing the
+    callback covers the contract end-to-end without spinning up a
+    real STT loop.
+    """
+
+    @staticmethod
+    def _make_avatar_with_backchannel_motions() -> AvatarProfile:
+        return _make_avatar(motions={
+            "Tap": [
+                MotionRef(name="nod", file="motions/nod.motion3.json"),
+                MotionRef(name="shake", file="motions/shake.motion3.json"),
+            ],
+            "Backchannel": [
+                MotionRef(name="tilt_left", file="motions/tilt_left.motion3.json"),
+                MotionRef(name="tilt_right", file="motions/tilt_right.motion3.json"),
+                MotionRef(name="microshake", file="motions/microshake.motion3.json"),
+            ],
+        })
+
+    def test_agreement_hint_emits_nod_at_idle_priority(self) -> None:
+        controller = _make_controller(self._make_avatar_with_backchannel_motions())
+        captured: list[dict[str, Any]] = []
+        controller._avatar_motion_listeners.append(
+            lambda payload: captured.append(dict(payload))
+        )
+        controller._emit_backchannel_motion("agreement", "yes!")
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0]["name"], "nod")
+        self.assertEqual(captured[0]["group"], "Tap")
+        self.assertEqual(captured[0]["priority"], "idle")
+
+    def test_disagreement_hint_emits_shake(self) -> None:
+        controller = _make_controller(self._make_avatar_with_backchannel_motions())
+        captured: list[dict[str, Any]] = []
+        controller._avatar_motion_listeners.append(
+            lambda payload: captured.append(dict(payload))
+        )
+        controller._emit_backchannel_motion("disagreement", "no")
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0]["name"], "shake")
+
+    def test_confused_hint_emits_microshake(self) -> None:
+        controller = _make_controller(self._make_avatar_with_backchannel_motions())
+        captured: list[dict[str, Any]] = []
+        controller._avatar_motion_listeners.append(
+            lambda payload: captured.append(dict(payload))
+        )
+        controller._emit_backchannel_motion("confused", "huh?")
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0]["name"], "microshake")
+        self.assertEqual(captured[0]["group"], "Backchannel")
+
+    def test_thinking_hint_alternates_tilt_left_then_right(self) -> None:
+        controller = _make_controller(self._make_avatar_with_backchannel_motions())
+        captured: list[dict[str, Any]] = []
+        controller._avatar_motion_listeners.append(
+            lambda payload: captured.append(dict(payload))
+        )
+        # Force the gate to allow back-to-back fires for the alternation
+        # check.
+        controller._backchannel_motion_gate = _BackchannelMotionGate(
+            min_repeat_seconds=0.0,
+        )
+        controller._emit_backchannel_motion("thinking", "uhhh")
+        controller._emit_backchannel_motion("thinking", "let me see")
+        controller._emit_backchannel_motion("thinking", "well")
+        self.assertEqual([c["name"] for c in captured],
+                         ["tilt_left", "tilt_right", "tilt_left"])
+
+    def test_rate_limit_drops_repeat_within_window(self) -> None:
+        controller = _make_controller(self._make_avatar_with_backchannel_motions())
+        captured: list[dict[str, Any]] = []
+        controller._avatar_motion_listeners.append(
+            lambda payload: captured.append(dict(payload))
+        )
+        controller._emit_backchannel_motion("agreement", "uh huh")
+        controller._emit_backchannel_motion("agreement", "yeah")
+        # Default 1.5s gate -> the second call (within the same
+        # synchronous tick) is dropped on the floor.
+        self.assertEqual(len(captured), 1)
+
+    def test_rate_limit_releases_after_min_repeat(self) -> None:
+        controller = _make_controller(self._make_avatar_with_backchannel_motions())
+        # Tighter gate so the test doesn't sit on a real sleep.
+        controller._backchannel_motion_gate = _BackchannelMotionGate(
+            min_repeat_seconds=0.1,
+        )
+        captured: list[dict[str, Any]] = []
+        controller._avatar_motion_listeners.append(
+            lambda payload: captured.append(dict(payload))
+        )
+        # Drive monotonic time via a stub so the test stays deterministic
+        # and never blocks on a real wait.
+        ticks = iter([1.0, 1.05, 1.5])
+        with mock.patch(
+            "app.core.session_controller.time.monotonic",
+            side_effect=lambda: next(ticks),
+        ):
+            controller._emit_backchannel_motion("agreement", "uh")
+            controller._emit_backchannel_motion("agreement", "uh")  # within window
+            controller._emit_backchannel_motion("agreement", "uh")  # past window
+        self.assertEqual(len(captured), 2)
+
+    def test_unmapped_hint_is_silently_dropped(self) -> None:
+        controller = _make_controller(self._make_avatar_with_backchannel_motions())
+        captured: list[dict[str, Any]] = []
+        controller._avatar_motion_listeners.append(
+            lambda payload: captured.append(dict(payload))
+        )
+        controller._emit_backchannel_motion("surprise", "wow!")
+        controller._emit_backchannel_motion("amusement", "haha")
+        controller._emit_backchannel_motion("concern", "oh no")
+        self.assertEqual(captured, [])
+
+    def test_motion_missing_on_rig_drops_silently(self) -> None:
+        """A minimal rig without the ``Backchannel`` group / motion
+        files shouldn't crash — just skip the broadcast."""
+        avatar = _make_avatar(motions={
+            "Tap": [MotionRef(name="nod", file="motions/nod.motion3.json")],
+        })
+        controller = _make_controller(avatar)
+        captured: list[dict[str, Any]] = []
+        controller._avatar_motion_listeners.append(
+            lambda payload: captured.append(dict(payload))
+        )
+        controller._emit_backchannel_motion("thinking", "uhhh")  # tilt_left missing
+        controller._emit_backchannel_motion("confused", "huh")    # microshake missing
+        self.assertEqual(captured, [])
+
+    def test_no_avatar_loaded_is_a_noop(self) -> None:
+        controller = _make_controller(self._make_avatar_with_backchannel_motions())
+        controller._avatar = None
+        captured: list[dict[str, Any]] = []
+        controller._avatar_motion_listeners.append(
+            lambda payload: captured.append(dict(payload))
+        )
+        controller._emit_backchannel_motion("agreement", "yes")
+        self.assertEqual(captured, [])
+
+
 class UpdateAvatarSettingsPersistenceTests(unittest.TestCase):
     """``update_avatar_settings`` must mirror the change to ``user.json``
     so closing the browser tab (or the whole app) does not reset the
@@ -474,6 +629,32 @@ class UpdateAvatarSettingsPersistenceTests(unittest.TestCase):
             body,
             {"avatar": {"scale_multiplier": 2.0, "auto_outfit": "day"}},
         )
+
+    def test_expressiveness_round_trip_and_clamp(self) -> None:
+        """The body-language slider value persists and is clamped on update.
+
+        Mirrors the ``avatar.expressiveness`` plumbing introduced for the
+        continuous-expressiveness pass: ``update_avatar_settings`` must
+        clamp into ``[0.0, 1.5]`` and write the value back to
+        ``user.json`` so the next launch starts where the user left off.
+        """
+        controller = _make_controller(_make_avatar())
+        captured: list[dict[str, Any]] = []
+        controller._avatar_settings_listeners.append(
+            lambda snap: captured.append(dict(snap))
+        )
+        snap = controller.update_avatar_settings(expressiveness=0.4)
+        self.assertEqual(snap["expressiveness"], 0.4)
+        self.assertEqual(controller._settings.avatar.expressiveness, 0.4)
+        body = json.loads(self.user_json.read_text(encoding="utf-8"))
+        self.assertEqual(body, {"avatar": {"expressiveness": 0.4}})
+        self.assertEqual(len(captured), 1)
+        # Out-of-range values clamp to the [0, 1.5] band rather than
+        # raising — matches the loader's tolerant clamp policy.
+        snap = controller.update_avatar_settings(expressiveness=5.0)
+        self.assertEqual(snap["expressiveness"], 1.5)
+        snap = controller.update_avatar_settings(expressiveness=-2.0)
+        self.assertEqual(snap["expressiveness"], 0.0)
 
     def test_noop_call_does_not_write_file(self) -> None:
         controller = _make_controller(_make_avatar())

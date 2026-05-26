@@ -110,6 +110,7 @@
     "root_dir": "live-2d-models/Alexia",
     "entry_filename": "Alexia.model3.json",
     "scale_multiplier": 1.0,
-    "auto_outfit": "auto"
+    "auto_outfit": "auto",
+    "expressiveness": 1.0
   }
 }

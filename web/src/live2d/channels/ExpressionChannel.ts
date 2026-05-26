@@ -32,8 +32,23 @@
  * ``adapter.resetExpression()`` instead of doing nothing. The
  * legacy bug was leaving the previous expression on the face when
  * a turn ended on a "neutral" reaction with an empty mapping.
+ *
+ * Continuous-expressiveness layer (B1):
+ *   - ``tickPreModel`` writes the current expression's params with
+ *     value = ``on_value * arousalScale * expressiveness`` directly
+ *     in ``beforeModelUpdate``. The rig's ``expressionManager`` is
+ *     still firing its Add-blend on the same params; our absolute
+ *     write happens last and dominates the final committed value.
+ *   - Skipped while ``engineState.exprSlotLockUntil`` is in the
+ *     future (overlay owns the slot) — the overlay channel writes
+ *     its own value and we must not stomp it.
+ *   - ``arousalScale = clamp(0.4 + 0.6 * arousal, 0.4, 1.0)``: a
+ *     ``cheerful`` reaction reads ~46% on a low-arousal day, ~94%
+ *     when Aiko is excited. ``expressiveness`` from the user
+ *     slider applies on top.
  */
-import type { BackchannelHint } from "../../types";
+import type { BackchannelHint, ExpressionParam } from "../../types";
+import { approach } from "../math";
 import type {
   AvatarChannel,
   AvatarManifest,
@@ -86,6 +101,17 @@ const _MODE_TO_REACTION: Record<"listening" | "thinking", string[]> = {
 };
 
 const BACKCHANNEL_RESTORE_MS = 1_800;
+/** Floor on the arousal scale so a ``cheerful`` at sub-zero arousal
+ * doesn't read as a flat-faced neutral. */
+const AROUSAL_SCALE_FLOOR = 0.4;
+/** Ceiling on the arousal scale — caps at the rig's authored
+ * ``on_value`` so ``expressiveness=1.5`` doesn't push us past
+ * the file's intended max. */
+const AROUSAL_SCALE_CEILING = 1.0;
+/** Time constant for the amplitude-scale smoothing — fast enough
+ * that a reaction transition doesn't feel laggy, slow enough that
+ * the smile doesn't pulse at the audio_amplitude rate. */
+const AMPLITUDE_TIME_CONSTANT_S = 0.4;
 
 export interface ExpressionChannelOptions {
   /** Optional schedule + cancel pair, defaulting to setTimeout /
@@ -110,6 +136,20 @@ export class ExpressionChannel implements AvatarChannel {
   /** Timestamp of the most recent backchannel hint dispatched, used
    * to detect "newer hint arrived before restore" race. */
   private _backchannelSeq = 0;
+  /** Name of the expression file we believe is currently active —
+   * used by ``tickPreModel`` to look up the right param bindings.
+   * Mirrors what ``adapter.expression(name)`` was last called with
+   * for non-overlay paths; overlay pulses bypass this so we don't
+   * trip our own slot-lock guard. */
+  private _activeExpressionName: string = "";
+  /** Critically-damped amplitude scale tracking ``arousal *
+   * expressiveness``. ``approach()`` smooths this every frame so a
+   * sudden arousal shift doesn't pop the expression's loudness. */
+  private _amplitudeScale = 0;
+  /** Monotonic timestamp of the last ``tickPreModel`` call. ``0``
+   * before the first tick; used to derive a frame ``dt`` since the
+   * engine's ``beforeModelUpdate`` doesn't pass one. */
+  private _lastPreModelAt = 0;
 
   private readonly _schedule: (cb: () => void, ms: number) => unknown;
   private readonly _cancel: (handle: unknown) => void;
@@ -142,6 +182,9 @@ export class ExpressionChannel implements AvatarChannel {
     this._deps = deps;
     this._currentReaction = deps.getStoreSnapshot().reaction || "";
     this._voiceMode = deps.getStoreSnapshot().voiceMode || "off";
+    this._activeExpressionName = "";
+    this._amplitudeScale = 0;
+    this._lastPreModelAt = 0;
     // Apply the initial reaction once at attach so a fresh model
     // doesn't pop in with the default expression while the engine
     // is still wiring channels.
@@ -153,6 +196,9 @@ export class ExpressionChannel implements AvatarChannel {
     this._deps = null;
     this._currentReaction = "";
     this._voiceMode = "off";
+    this._activeExpressionName = "";
+    this._amplitudeScale = 0;
+    this._lastPreModelAt = 0;
     this._cancelRestore();
     this._backchannelSeq = 0;
   }
@@ -231,6 +277,75 @@ export class ExpressionChannel implements AvatarChannel {
     this._applyTarget();
   }
 
+  /** Continuous-expressiveness arousal scaler.
+   *
+   * Runs every Pixi frame in ``beforeModelUpdate`` (the last
+   * writable point before ``model.update`` commits parameters) so
+   * our absolute writes win over the rig's
+   * ``expressionManager`` Add-blend on the same params. The trick
+   * is that we don't *replace* the manager — it's still doing the
+   * fade-in / fade-out / lifecycle. Our write just fixes the final
+   * committed amplitude per param.
+   *
+   * Skipped when:
+   *   - no adapter / deps yet (pre-attach);
+   *   - the overlay channel owns the slot
+   *     (``engineState.exprSlotLockUntil > now()``);
+   *   - we have no active expression name to look up (e.g. the
+   *     reaction unmapped to anything and we called
+   *     ``resetExpression``);
+   *   - the manifest doesn't carry ``expression_params`` for the
+   *     active expression (legacy / minimal rig — let the manager's
+   *     natural amplitude through).
+   */
+  tickPreModel(): void {
+    const adapter = this._adapter;
+    const deps = this._deps;
+    if (!adapter || !deps) {
+      return;
+    }
+    const now = deps.now();
+    const dt =
+      this._lastPreModelAt > 0
+        ? Math.max(0, Math.min(0.25, (now - this._lastPreModelAt) / 1000))
+        : 0;
+    this._lastPreModelAt = now;
+
+    if (this._isExprSlotLocked()) {
+      // Overlay owns the slot. Reset our amplitude smoothing so the
+      // next non-overlay frame ramps in cleanly instead of snapping
+      // back from the overlay's amplitude.
+      this._amplitudeScale = 0;
+      return;
+    }
+    const expressionName = this._activeExpressionName;
+    if (!expressionName) {
+      this._amplitudeScale = 0;
+      return;
+    }
+    const bindings = pickExpressionBindings(deps.manifest, expressionName);
+    if (!bindings || bindings.length === 0) {
+      this._amplitudeScale = 0;
+      return;
+    }
+
+    const snap = deps.getStoreSnapshot();
+    const arousal = clamp01(snap.mood?.arousal ?? 0.4);
+    const expressiveness = clampExpressiveness(snap.expressiveness);
+    const arousalScale = clamp(
+      AROUSAL_SCALE_FLOOR + (1 - AROUSAL_SCALE_FLOOR) * arousal,
+      AROUSAL_SCALE_FLOOR,
+      AROUSAL_SCALE_CEILING,
+    );
+    const targetScale = arousalScale * expressiveness;
+    const rate = dt > 0 ? dt / AMPLITUDE_TIME_CONSTANT_S : 0;
+    this._amplitudeScale = approach(this._amplitudeScale, targetScale, rate);
+
+    for (const binding of bindings) {
+      adapter.setParam(binding.param_id, binding.on_value * this._amplitudeScale);
+    }
+  }
+
   // ── internals ────────────────────────────────────────────────────
 
   private _isExprSlotLocked(): boolean {
@@ -279,9 +394,11 @@ export class ExpressionChannel implements AvatarChannel {
       // rig returns to its default. ``resetExpression`` runs the
       // ExpressionManager's empty default motion, releasing the slot.
       adapter.resetExpression();
+      this._activeExpressionName = "";
       return;
     }
     adapter.expression(expressionName);
+    this._activeExpressionName = expressionName;
   }
 
   private _applyExpressionByName(
@@ -292,6 +409,7 @@ export class ExpressionChannel implements AvatarChannel {
       return;
     }
     adapter.expression(expressionName);
+    this._activeExpressionName = expressionName;
   }
 
   private _pickBackchannelExpression(hint: string): string | undefined {
@@ -328,6 +446,19 @@ export class ExpressionChannel implements AvatarChannel {
   /** Whether a backchannel restore timer is currently armed. */
   get backchannelRestoreArmed(): boolean {
     return this._restoreHandle !== null;
+  }
+
+  /** Smoothed amplitude scale currently driving ``tickPreModel``
+   * writes. Tests assert this converges proportionally to arousal /
+   * expressiveness. */
+  get amplitudeScale(): number {
+    return this._amplitudeScale;
+  }
+
+  /** Name of the expression file we last asked the rig to apply.
+   * ``""`` when the active reaction unmapped to nothing. */
+  get activeExpressionName(): string {
+    return this._activeExpressionName;
   }
 }
 
@@ -369,4 +500,39 @@ function pickModeExpression(
     }
   }
   return undefined;
+}
+
+function pickExpressionBindings(
+  manifest: AvatarManifest,
+  expressionName: string,
+): ExpressionParam[] | undefined {
+  const map = manifest.expression_params;
+  if (!map) {
+    return undefined;
+  }
+  return map[expressionName];
+}
+
+function clamp(value: number, min: number, max: number): number {
+  if (value < min) return min;
+  if (value > max) return max;
+  return value;
+}
+
+function clamp01(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  if (value < 0) return 0;
+  if (value > 1) return 1;
+  return value;
+}
+
+/** Mirror of ``AmbientBodyChannel.clampExpressiveness`` — kept local
+ * to avoid a cross-channel utility module for a one-line clamp. */
+function clampExpressiveness(value: number | undefined): number {
+  if (value === undefined || value === null || !Number.isFinite(value)) {
+    return 1;
+  }
+  if (value < 0) return 0;
+  if (value > 1.5) return 1.5;
+  return value;
 }

@@ -98,6 +98,61 @@ class _MergeBuffer:
     awaiting_phrase_b: bool = False
 
 
+# ── Backchannel-driven motion mapping (Phase B2) ─────────────────────────
+# Maps each backchannel hint the classifier emits to one or more motion
+# *names* that the renderer should fire as a "listening micro-cue". Names
+# that resolve to a real motion file in the loaded rig's
+# ``motions`` map are dispatched via ``_emit_avatar_motion``-style
+# fan-out at ``priority="idle"`` so a regular reaction motion fired
+# during the same turn cleanly pre-empts them.
+#
+# Hints that aren't here are intentionally skipped:
+#   - ``surprise`` / ``amusement`` — already covered by the reaction
+#     overlay path (``_emit_avatar_overlay``).
+#   - ``concern`` — concern reads more naturally as the auto-sweat /
+#     concerned-mood path than as a body motion.
+#
+# The single-element tuples produce deterministic motions; the
+# multi-element tuple for ``thinking`` is alternated by
+# ``SessionController._backchannel_thinking_index``.
+_BACKCHANNEL_MOTION_MAP: dict[str, tuple[str, ...]] = {
+    "agreement":    ("nod",),
+    "disagreement": ("shake",),
+    "thinking":     ("tilt_left", "tilt_right"),
+    "confused":     ("microshake",),
+}
+
+
+class _BackchannelMotionGate:
+    """Per-instance rate-limiter for backchannel-driven motion fan-out.
+
+    Distinct from :class:`BackchannelGate` because:
+      - The overlay/expression gate works on the *partial text* (it
+        runs the regex classifier itself).
+      - This gate works on the already-classified *hint label*, so we
+        can independently rate-limit the motion path even when the
+        overlay path didn't suppress.
+
+    The 1.5s default mirrors ``BackchannelGate.min_repeat_seconds``
+    so a chatty listening window doesn't physically jolt the rig
+    every other partial.
+    """
+
+    def __init__(self, *, min_repeat_seconds: float = 1.5) -> None:
+        self._min_repeat = max(0.0, float(min_repeat_seconds))
+        self._last_at: float = 0.0
+
+    def consider(self, *, now: float) -> bool:
+        """Return True if a motion may fire now; False if rate-limited."""
+        if (now - self._last_at) < self._min_repeat:
+            return False
+        self._last_at = now
+        return True
+
+    def reset(self) -> None:
+        self._last_at = 0.0
+
+
 # ── Provider helpers (env-name fallback for OpenAI-compatible base URLs) ──
 
 _PROVIDER_ENV_HINTS: tuple[tuple[str, str], ...] = (
@@ -210,6 +265,7 @@ class SessionController:
         self._avatar_settings_runtime = {
             "scale_multiplier": float(settings.avatar.scale_multiplier),
             "auto_outfit": str(settings.avatar.auto_outfit),
+            "expressiveness": float(settings.avatar.expressiveness),
         }
         self._avatar_settings_listeners: list[Callable[[dict[str, Any]], None]] = []
         self._avatar_overlay_listeners: list[Callable[[dict[str, Any]], None]] = []
@@ -240,6 +296,17 @@ class SessionController:
         self._backchannel_listeners: list[
             Callable[[BackchannelHint, str], None]
         ] = []
+        # Phase B2 — backchannel-driven *motion* broadcast. Separate
+        # from the gate the *overlay/expression* path runs through
+        # because we want a slightly different rate (the overlay is a
+        # cheap visual fade, but a motion physically moves the rig
+        # and we want at most one every 1.5s).
+        self._backchannel_motion_gate = _BackchannelMotionGate(
+            min_repeat_seconds=1.5,
+        )
+        # Alternation counter for ``thinking`` -> tilt_left vs
+        # tilt_right. Even -> left, odd -> right.
+        self._backchannel_thinking_index = 0
         self._stt_partial_listeners: list[Callable[[str], None]] = []
         # Most recent partial we observed during the current live phrase,
         # keyed by session_key. ``process_live_capture`` reads it to fire
@@ -1010,6 +1077,13 @@ class SessionController:
         except Exception:
             log.debug("resume opener schedule failed", exc_info=True)
 
+        # Phase B2 — register the internal listener that turns
+        # backchannel hints into low-priority motion broadcasts. Done
+        # after every dependency is wired so the callback can use
+        # ``self._avatar`` / ``self._avatar_motion_listeners``
+        # (registered above).
+        self.add_backchannel_listener(self._emit_backchannel_motion)
+
     # ── State ─────────────────────────────────────────────────────────
 
     @property
@@ -1578,6 +1652,7 @@ class SessionController:
         *,
         scale_multiplier: float | None = None,
         auto_outfit: str | None = None,
+        expressiveness: float | None = None,
     ) -> dict[str, Any]:
         """Patch the user-tunable avatar knobs and notify listeners.
 
@@ -1605,6 +1680,16 @@ class SessionController:
                     self._settings.avatar.auto_outfit = normalized
                     persist_patch["auto_outfit"] = normalized
                     changed = True
+        if expressiveness is not None:
+            try:
+                value = max(0.0, min(1.5, float(expressiveness)))
+            except (TypeError, ValueError):
+                value = self._avatar_settings_runtime["expressiveness"]
+            if value != self._avatar_settings_runtime["expressiveness"]:
+                self._avatar_settings_runtime["expressiveness"] = value
+                self._settings.avatar.expressiveness = value
+                persist_patch["expressiveness"] = value
+                changed = True
         snapshot = dict(self._avatar_settings_runtime)
         if changed:
             if persist_patch:
@@ -1872,6 +1957,72 @@ class SessionController:
     ) -> None:
         if cb in self._avatar_motion_listeners:
             self._avatar_motion_listeners.remove(cb)
+
+    def _emit_backchannel_motion(self, hint: BackchannelHint, partial: str) -> None:
+        """Dispatch a low-priority motion in response to a backchannel hint.
+
+        Wired in ``__init__`` as a backchannel listener so every hint
+        the classifier emits goes through this filter. Unmapped hints
+        and hints that arrive within the rate-limit window are
+        silently dropped — the mapping table at
+        :data:`_BACKCHANNEL_MOTION_MAP` is the single source of truth
+        for which hints get a motion at all.
+
+        ``priority="idle"`` is added to the payload so the frontend's
+        ``MotionChannel`` queues at ``MotionPriority.IDLE``; a regular
+        ``[[motion:X]]`` reaction motion fired during the same turn
+        cleanly pre-empts the listening cue without explicit
+        cancellation logic.
+        """
+        del partial  # not used; kept for listener-signature compatibility
+        avatar = self._avatar
+        if avatar is None:
+            return
+        candidates = _BACKCHANNEL_MOTION_MAP.get(hint)
+        if not candidates:
+            return  # surprise / amusement / concern -> handled elsewhere
+        # Alternate ``thinking`` between tilt_left and tilt_right so a
+        # long pondering window doesn't read as "stuck on one side".
+        if len(candidates) > 1:
+            picked = candidates[self._backchannel_thinking_index % len(candidates)]
+            self._backchannel_thinking_index += 1
+        else:
+            picked = candidates[0]
+        # Resolve the motion file in the loaded rig. We don't pre-bind
+        # to specific groups so a re-grouping in the model3.json (e.g.
+        # moving ``microshake`` to a different bucket) doesn't require
+        # a code change here.
+        resolved: tuple[str, int] | None = None
+        for group, refs in (avatar.motions or {}).items():
+            for idx, ref in enumerate(refs):
+                if (ref.name or "").lower() == picked:
+                    resolved = (str(group), int(idx))
+                    break
+            if resolved is not None:
+                break
+        if resolved is None:
+            # Rig doesn't have the motion file (e.g. minimal model
+            # without the Backchannel bucket). Drop silently — the
+            # listening session still feels OK because the overlay
+            # path is unaffected.
+            return
+        if not self._backchannel_motion_gate.consider(now=time.monotonic()):
+            return
+        group, idx = resolved
+        payload = {
+            "name": picked,
+            "group": group,
+            "index": idx,
+            "priority": "idle",
+        }
+        for cb in list(self._avatar_motion_listeners):
+            try:
+                cb(dict(payload))
+            except Exception:
+                log.debug(
+                    "avatar motion listener (backchannel) failed",
+                    exc_info=True,
+                )
 
     # ── RAG / documents ─────────────────────────────────────────────
 

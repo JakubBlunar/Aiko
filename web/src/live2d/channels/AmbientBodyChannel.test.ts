@@ -275,3 +275,314 @@ describe("AmbientBodyChannel — lifecycle", () => {
     expect(adapter.params.get("ParamBodyAngleZ")).toBe(0);
   });
 });
+
+/** Count zero-crossings on a sampled scalar wave — the crude but
+ * test-friendly way to derive the dominant frequency without
+ * pulling in an FFT. We compare two arousal regimes; the higher
+ * arousal must produce strictly more crossings over the same
+ * sampling window. */
+function countZeroCrossings(samples: number[], baseline: number): number {
+  let crossings = 0;
+  for (let i = 1; i < samples.length; i += 1) {
+    const a = samples[i - 1] - baseline;
+    const b = samples[i] - baseline;
+    if ((a < 0 && b >= 0) || (a > 0 && b <= 0)) {
+      crossings += 1;
+    }
+  }
+  return crossings;
+}
+
+/** Step the channel's ``tickPreModel`` ``frames`` times, advancing
+ * the clock by ``dtSec`` seconds each tick. Returns the wave that
+ * was written to ``ParamBreath`` over the run. The valence-tilt
+ * test layers on the same fixture but reads ``ParamBodyAngleY``. */
+function samplePreModel(
+  channel: AmbientBodyChannel,
+  adapter: FakeAdapter,
+  clock: FakeClock,
+  paramId: string,
+  frames: number,
+  dtSec: number,
+): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < frames; i += 1) {
+    clock.advance(dtSec * 1000);
+    channel.tickPreModel!();
+    out.push(adapter.params.get(paramId) ?? 0);
+  }
+  return out;
+}
+
+describe("AmbientBodyChannel — tickPreModel: arousal-scaled breath", () => {
+  it("writes a sine to ParamBreath gated on has_breath capability", () => {
+    const adapter = new FakeAdapter();
+    const channel = new AmbientBodyChannel();
+    const { deps, clock } = makeDeps(
+      { has_breath: true },
+      { mood: { label: "content", intensity: 0.5, valence: 0, arousal: 0.5 } },
+    );
+    channel.attach(adapter, deps);
+    const wave = samplePreModel(channel, adapter, clock, "ParamBreath", 600, 1 / 60);
+    const min = Math.min(...wave);
+    const max = Math.max(...wave);
+    // Wave should oscillate around 0.5 with non-trivial amplitude.
+    expect(min).toBeLessThan(0.2);
+    expect(max).toBeGreaterThan(0.8);
+  });
+
+  it("higher arousal produces more zero-crossings (faster breath)", () => {
+    const adapter = new FakeAdapter();
+    const channelLow = new AmbientBodyChannel();
+    const lowDeps = makeDeps(
+      { has_breath: true },
+      { mood: { label: "content", intensity: 0.5, valence: 0, arousal: 0.1 } },
+    );
+    channelLow.attach(adapter, lowDeps.deps);
+    const lowWave = samplePreModel(
+      channelLow,
+      adapter,
+      lowDeps.clock,
+      "ParamBreath",
+      1800, // 30s @ 60fps
+      1 / 60,
+    );
+
+    const adapter2 = new FakeAdapter();
+    const channelHigh = new AmbientBodyChannel();
+    const highDeps = makeDeps(
+      { has_breath: true },
+      { mood: { label: "content", intensity: 0.5, valence: 0, arousal: 0.9 } },
+    );
+    channelHigh.attach(adapter2, highDeps.deps);
+    const highWave = samplePreModel(
+      channelHigh,
+      adapter2,
+      highDeps.clock,
+      "ParamBreath",
+      1800,
+      1 / 60,
+    );
+
+    const lowCrossings = countZeroCrossings(lowWave, 0.5);
+    const highCrossings = countZeroCrossings(highWave, 0.5);
+    expect(highCrossings).toBeGreaterThan(lowCrossings);
+    // Sanity: arousal-0.9 frequency is ~1.36x arousal-0.1 — assert at
+    // least 1.2x to absorb the discrete-sampling slop.
+    expect(highCrossings).toBeGreaterThan(lowCrossings * 1.2);
+  });
+
+  it("does not touch ParamBreath when has_breath is missing", () => {
+    const adapter = new FakeAdapter();
+    const channel = new AmbientBodyChannel();
+    const { deps, clock } = makeDeps(
+      {},
+      { mood: { label: "content", intensity: 0.5, valence: 0, arousal: 0.5 } },
+    );
+    channel.attach(adapter, deps);
+    samplePreModel(channel, adapter, clock, "ParamBreath", 100, 1 / 60);
+    expect(adapter.params.has("ParamBreath")).toBe(false);
+  });
+
+  it("expressiveness 0 collapses ParamBreath to a fixed mid-value", () => {
+    const adapter = new FakeAdapter();
+    const channel = new AmbientBodyChannel();
+    const { deps, clock } = makeDeps(
+      { has_breath: true },
+      {
+        expressiveness: 0,
+        mood: { label: "content", intensity: 0.5, valence: 0, arousal: 0.5 },
+      },
+    );
+    channel.attach(adapter, deps);
+    const wave = samplePreModel(channel, adapter, clock, "ParamBreath", 200, 1 / 60);
+    // A constant fallback so the rig still looks "alive enough" but
+    // the slider has visibly muted the rhythm.
+    expect(Math.min(...wave)).toBe(0.5);
+    expect(Math.max(...wave)).toBe(0.5);
+  });
+});
+
+describe("AmbientBodyChannel — tickPreModel: valence tilt", () => {
+  it("positive valence biases ParamBodyAngleY toward positive degrees", () => {
+    const adapter = new FakeAdapter();
+    const channel = new AmbientBodyChannel();
+    const { deps, clock } = makeDeps(
+      { has_body_angle_y: true },
+      { mood: { label: "happy", intensity: 0.7, valence: 0.8, arousal: 0.4 } },
+    );
+    channel.attach(adapter, deps);
+    // Run for long enough that approach() converges.
+    for (let i = 0; i < 600; i += 1) {
+      clock.advance(1000 / 60);
+      channel.tickPreModel!();
+    }
+    expect(channel.valenceTiltEnvelope).toBeGreaterThan(0.7);
+    expect(adapter.params.get("ParamBodyAngleY") ?? 0).toBeGreaterThan(1.5);
+  });
+
+  it("negative valence biases ParamBodyAngleY toward negative degrees", () => {
+    const adapter = new FakeAdapter();
+    const channel = new AmbientBodyChannel();
+    const { deps, clock } = makeDeps(
+      { has_body_angle_y: true },
+      { mood: { label: "sad", intensity: 0.7, valence: -0.8, arousal: 0.4 } },
+    );
+    channel.attach(adapter, deps);
+    for (let i = 0; i < 600; i += 1) {
+      clock.advance(1000 / 60);
+      channel.tickPreModel!();
+    }
+    expect(channel.valenceTiltEnvelope).toBeLessThan(-0.7);
+    expect(adapter.params.get("ParamBodyAngleY") ?? 0).toBeLessThan(-1.5);
+  });
+
+  it("smoothing means a single tick after a flip does not snap to the new tilt", () => {
+    const adapter = new FakeAdapter();
+    const channel = new AmbientBodyChannel();
+    const { deps, clock, setSnapshot } = makeDeps(
+      { has_body_angle_y: true },
+      { mood: { label: "happy", intensity: 0.7, valence: 0.8, arousal: 0.4 } },
+    );
+    channel.attach(adapter, deps);
+    for (let i = 0; i < 600; i += 1) {
+      clock.advance(1000 / 60);
+      channel.tickPreModel!();
+    }
+    const settled = channel.valenceTiltEnvelope;
+    expect(settled).toBeGreaterThan(0.7);
+
+    // Flip valence; the next tick must not snap straight to -0.8.
+    setSnapshot({
+      mood: { label: "sad", intensity: 0.7, valence: -0.8, arousal: 0.4 },
+    });
+    clock.advance(1000 / 60);
+    channel.tickPreModel!();
+    expect(channel.valenceTiltEnvelope).toBeGreaterThan(-0.5);
+    expect(channel.valenceTiltEnvelope).toBeLessThan(settled);
+  });
+
+  it("does not write ParamBodyAngleY when has_body_angle_y is absent", () => {
+    const adapter = new FakeAdapter();
+    const channel = new AmbientBodyChannel();
+    const { deps, clock } = makeDeps(
+      {},
+      { mood: { label: "happy", intensity: 0.7, valence: 0.8, arousal: 0.4 } },
+    );
+    channel.attach(adapter, deps);
+    for (let i = 0; i < 100; i += 1) {
+      clock.advance(1000 / 60);
+      channel.tickPreModel!();
+    }
+    expect(adapter.params.has("ParamBodyAngleY")).toBe(false);
+  });
+});
+
+describe("AmbientBodyChannel — expressiveness scaling", () => {
+  it("expressiveness 0 mutes lean-in body contribution", () => {
+    const adapter = new FakeAdapter();
+    const channel = new AmbientBodyChannel();
+    const { deps } = makeDeps(
+      { has_body_angle_y: true },
+      { voiceMode: "listening", expressiveness: 0 },
+    );
+    channel.attach(adapter, deps);
+    for (let i = 0; i < 50; i += 1) channel.tickTier3!(0, 0.05);
+    // Envelope still ramps, but its written contribution is gated to 0.
+    expect(channel.leanInEnvelope).toBeGreaterThan(0.9);
+    expect(Math.abs(adapter.params.get("ParamBodyAngleY") ?? 0)).toBeLessThan(0.001);
+  });
+
+  it("expressiveness 1.5 amplifies lean-in body contribution by 1.5x relative to default", () => {
+    // Default run.
+    const adapterDefault = new FakeAdapter();
+    const channelDefault = new AmbientBodyChannel();
+    const { deps: depsDefault } = makeDeps(
+      { has_body_angle_y: true },
+      { voiceMode: "listening" /* expressiveness defaults to 1 */ },
+    );
+    channelDefault.attach(adapterDefault, depsDefault);
+    for (let i = 0; i < 200; i += 1) channelDefault.tickTier3!(0, 0.05);
+    const defaultY = adapterDefault.params.get("ParamBodyAngleY") ?? 0;
+
+    // Amplified run.
+    const adapterAmp = new FakeAdapter();
+    const channelAmp = new AmbientBodyChannel();
+    const { deps: depsAmp } = makeDeps(
+      { has_body_angle_y: true },
+      { voiceMode: "listening", expressiveness: 1.5 },
+    );
+    channelAmp.attach(adapterAmp, depsAmp);
+    for (let i = 0; i < 200; i += 1) channelAmp.tickTier3!(0, 0.05);
+    const ampY = adapterAmp.params.get("ParamBodyAngleY") ?? 0;
+
+    expect(ampY).toBeGreaterThan(defaultY * 1.4);
+    expect(ampY).toBeLessThanOrEqual(defaultY * 1.6);
+  });
+
+  it("expressiveness scales the valence-tilt write proportionally", () => {
+    const adapterFull = new FakeAdapter();
+    const channelFull = new AmbientBodyChannel();
+    const { deps: depsFull, clock: clockFull } = makeDeps(
+      { has_body_angle_y: true },
+      { mood: { label: "happy", intensity: 0.7, valence: 1.0, arousal: 0.4 } },
+    );
+    channelFull.attach(adapterFull, depsFull);
+    for (let i = 0; i < 600; i += 1) {
+      clockFull.advance(1000 / 60);
+      channelFull.tickPreModel!();
+    }
+    const fullValueY = adapterFull.params.get("ParamBodyAngleY") ?? 0;
+
+    const adapterHalf = new FakeAdapter();
+    const channelHalf = new AmbientBodyChannel();
+    const { deps: depsHalf, clock: clockHalf } = makeDeps(
+      { has_body_angle_y: true },
+      {
+        mood: { label: "happy", intensity: 0.7, valence: 1.0, arousal: 0.4 },
+        expressiveness: 0.5,
+      },
+    );
+    channelHalf.attach(adapterHalf, depsHalf);
+    for (let i = 0; i < 600; i += 1) {
+      clockHalf.advance(1000 / 60);
+      channelHalf.tickPreModel!();
+    }
+    const halfValueY = adapterHalf.params.get("ParamBodyAngleY") ?? 0;
+
+    // halfValueY should be ~half of fullValueY (both share the same
+    // converged ``valenceTilt`` since the smoothing is independent
+    // of expressiveness).
+    expect(halfValueY).toBeGreaterThan(0);
+    expect(halfValueY).toBeLessThan(fullValueY);
+    // Allow generous tolerance — the bias is added to whatever the
+    // adapter reports for ``ParamBodyAngleY`` which itself starts
+    // at 0 here.
+    expect(halfValueY / fullValueY).toBeGreaterThan(0.4);
+    expect(halfValueY / fullValueY).toBeLessThan(0.6);
+  });
+
+  it("missing expressiveness in the snapshot defaults to 1.0", () => {
+    const adapter = new FakeAdapter();
+    const channel = new AmbientBodyChannel();
+    // Build a snapshot without expressiveness — channels must
+    // tolerate the legacy shape.
+    const { deps: baseDeps } = makeDeps(
+      { has_body_angle_y: true },
+      { voiceMode: "listening" },
+    );
+    const noExpressiveness: ChannelDeps = {
+      ...baseDeps,
+      getStoreSnapshot: () => {
+        const snap = baseDeps.getStoreSnapshot();
+        const cleaned = { ...snap } as ChannelStoreSnapshot;
+        delete cleaned.expressiveness;
+        return cleaned;
+      },
+    };
+    channel.attach(adapter, noExpressiveness);
+    for (let i = 0; i < 100; i += 1) channel.tickTier3!(0, 0.05);
+    // Default expressiveness 1 -> lean-in amplitude of 6 fully applied.
+    expect(adapter.params.get("ParamBodyAngleY") ?? 0).toBeGreaterThan(5);
+  });
+});

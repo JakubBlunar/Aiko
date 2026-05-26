@@ -172,3 +172,80 @@ describe("MotionChannel — talk-motion auto-start", () => {
     expect(adapter.motionCalls).toHaveLength(2);
   });
 });
+
+describe("MotionChannel — priority lane routing (Phase B2)", () => {
+  // Backchannel-driven motions ship with ``priority: "idle"`` so a
+  // regular reaction motion fired during the same listening window
+  // pre-empts them via pixi-live2d-display's MotionPriority.IDLE
+  // contract. The channel translates the optional string lane into
+  // the numeric priority the adapter consumes.
+  let adapter: FakeAdapter;
+  let channel: MotionChannel;
+
+  beforeEach(() => {
+    adapter = new FakeAdapter();
+    channel = new MotionChannel();
+  });
+
+  it("routes priority='idle' to MOTION_PRIORITY.IDLE", () => {
+    const manifest = buildManifest({
+      motions: {
+        Backchannel: [
+          { name: "tilt_left", file: "tilt_left.motion3.json" },
+        ],
+      },
+    });
+    channel.attach(adapter, makeDeps(manifest));
+    channel.onMotion!({
+      name: "tilt_left",
+      group: "Backchannel",
+      index: 0,
+      firedAt: 100,
+      priority: "idle",
+    });
+    expect(adapter.motionCalls).toEqual([
+      { group: "Backchannel", index: 0, priority: MOTION_PRIORITY.IDLE },
+    ]);
+  });
+
+  it("routes priority='force' to MOTION_PRIORITY.FORCE", () => {
+    const manifest = buildManifest({
+      motions: { Tap: [{ name: "nod", file: "nod.motion3.json" }] },
+    });
+    channel.attach(adapter, makeDeps(manifest));
+    channel.onMotion!({
+      name: "nod",
+      group: "Tap",
+      index: 0,
+      firedAt: 1,
+      priority: "force",
+    });
+    expect(adapter.motionCalls).toEqual([
+      { group: "Tap", index: 0, priority: MOTION_PRIORITY.FORCE },
+    ]);
+  });
+
+  it("treats priority='normal' identically to a missing field", () => {
+    const manifest = buildManifest({
+      motions: { Tap: [{ name: "nod", file: "nod.motion3.json" }] },
+    });
+    channel.attach(adapter, makeDeps(manifest));
+    channel.onMotion!({
+      name: "nod",
+      group: "Tap",
+      index: 0,
+      firedAt: 1,
+      priority: "normal",
+    });
+    channel.onMotion!({
+      name: "nod",
+      group: "Tap",
+      index: 0,
+      firedAt: 2,
+    });
+    expect(adapter.motionCalls).toEqual([
+      { group: "Tap", index: 0, priority: MOTION_PRIORITY.NORMAL },
+      { group: "Tap", index: 0, priority: MOTION_PRIORITY.NORMAL },
+    ]);
+  });
+});

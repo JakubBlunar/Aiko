@@ -13,70 +13,79 @@ history stays grep-able.
 
 ## B. Continuous expressiveness (renderer side)
 
-### B1. Body-language driven by the mood vector continuously
+### B1. Body-language driven by the mood vector continuously — DONE
 
-**Motivation.** Today the avatar's body is dynamic in two modes: idle
-(physics3 + breath + blink) and tag-pulses (~1.5 s overlays from
-`[[overlay:X]]`). The persistent affect vector (`valence`, `arousal`,
-`mood_label`) is published over WS but the renderer only consumes it for
-gating — not for continuous modulation. The same neutral reaction reads
-the same whether Aiko is tense or content.
+Shipped in the **continuous expressiveness B1 + B2** pass:
 
-**Key files.**
-- [`app/core/affect_state.py`](../app/core/affect_state.py) — already
-  produces the vector; `render_ambient_block` puts it in the prompt.
-- [`web/src/store.ts`](../web/src/store.ts) — `mood`, `affectVector`
-  store fields are already exposed.
-- [`web/src/components/Live2DAvatar.tsx`](../web/src/components/Live2DAvatar.tsx)
-  — tier-3 RAF loop is the place to wire continuous parameters.
+- `AmbientBodyChannel.tickPreModel` drives `ParamBreath` with an
+  arousal-scaled sine wave (~0.16-0.25 Hz around the default 0.21 Hz)
+  and adds a smoothed valence-tilt bias to `ParamBodyAngleY`. Both
+  paths gate on capability flags (`has_breath`, `has_body_angle_y`)
+  and are scaled by the new `avatar.expressiveness` slider.
+- `ExpressionChannel.tickPreModel` performs arousal-scaled writes to
+  the parameters declared in each expression file, so e.g. `cheerful`
+  reads quieter at low arousal and louder at high arousal. The
+  override skips while an overlay owns the expression slot
+  (`engineState.exprSlotLockUntil`).
+- New "Body language intensity" slider in the Settings drawer
+  (range 0.0-1.5, default 1.0) wires `avatar.expressiveness` through
+  the WS payload, the Zustand store, and the channel snapshot.
+  `0.0` = effective no-op for the new continuous overrides; `1.5` =
+  amplified but still capped by the rig's authored on-values.
 
-**Sketched approach.**
-- Read `affectVector` once per RAF tick.
-- Map `arousal` → `breath_freq_multiplier` (0.7–1.4) and
-  `blink_rate_multiplier` (0.6–1.5); map `valence` → `body_tilt_y_bias`
-  (a small persistent +/- on `ParamBodyAngleY` so a low-valence pose
-  slumps slightly).
-- Smooth via the same `approach()` ease the outfit envelopes use so
-  transitions don't snap on a mood update.
-- Gate on capability flags (`has_body_angle_y`, `has_breath`) so models
-  without those params get a quiet no-op.
-
-**Open questions.**
-- Where do we tune the mapping curves? A small constants block in the
-  renderer is fine for v1, but a settings drawer slider for "expressiveness"
-  would make this user-tweakable.
-- Should the persistent reaction expression also fade its intensity by
-  arousal (e.g. quieter `cheerful` when arousal is low)?
+**Follow-up.** Blink-rate modulation (originally listed in this
+section) was deferred to a new entry below — see B3.
 
 ---
 
-### B2. Listening micro-nods on backchannel hints
+### B2. Listening micro-nods on backchannel hints — DONE
 
-**Motivation.** The backchannel classifier already detects
-`agreement` / `disagreement` / `surprise` / `thinking` on STT partials and
-fires avatar overlays for emotional reactions. But the body doesn't move
-— a subtle nod / shake / tilt during listening is a huge presence cue.
+Shipped alongside B1:
 
-**Key files.**
-- [`app/core/backchannel_classifier.py`](../app/core/backchannel_classifier.py)
-  — already classifies hints, drives overlays.
-- [`app/core/session_controller.py`](../app/core/session_controller.py)
-  `on_stt_partial` — call site that fans hints out.
-- Motion files added recently: `nod.motion3.json`, `shake.motion3.json`
-  (see [`scripts/generate_alexia_motions.py`](../scripts/generate_alexia_motions.py)).
+- `_emit_backchannel_motion` in `app/core/session_controller.py` maps
+  `agreement` → `Tap/nod`, `disagreement` → `Tap/shake`,
+  `thinking` → alternating `Backchannel/tilt_left` /
+  `Backchannel/tilt_right`, `confused` → `Backchannel/microshake`.
+  `surprise` / `amusement` / `concern` are intentionally skipped
+  because they're already covered by the reaction-overlay path.
+- A separate `_BackchannelMotionGate` rate-limits at 1.5 s so a chatty
+  listening window can't spam the rig.
+- New motion files (`tilt_left`, `tilt_right`, `microshake`) live in a
+  new `Backchannel` motion group, added by
+  [`scripts/generate_alexia_motions.py`](../scripts/generate_alexia_motions.py).
+- The WS payload carries `priority: "idle"`, which the frontend's
+  `MotionChannel` translates into pixi-live2d-display's
+  `MotionPriority.IDLE`. A regular `[[motion:X]]` reaction motion
+  fired during the same listening window cleanly pre-empts the
+  micro-cue without explicit cancellation logic.
 
-**Sketched approach.**
-- Map `agreement` → `nod`, `disagreement` → `shake`, `thinking` → small
-  head-tilt motion. Reuse the existing motion-broadcast WS event.
-- Rate-limit at the same `BackchannelGate.min_repeat_seconds` (1.5 s) so
-  a chatty listen-window doesn't spam motions.
-- Lower priority than the STT-end full reaction — when a turn commits, an
-  in-flight listening motion should yield gracefully (use the
-  `pixi-live2d-display` motion priority lanes).
+---
+
+### B3. Blink-rate modulation by arousal (deferred follow-up to B1)
+
+**Why deferred.** B1's plan considered tying blink interval to the
+arousal axis (faster blinks under high arousal, slower under low),
+but pixi-live2d-display does not expose a public
+`setBlinkingInterval` setter — only the `beforeModelUpdate` event
+hook is documented. Overriding the auto-blink driver from
+`tickPreModel` every frame would conflict with the existing wink
+gesture and is brittle when the library upgrades. Held until we either
+swap blink drivers or upstream a setter.
+
+**Sketched approach (when we revisit).**
+- Replace the auto blink driver with a custom one that exposes a
+  setter; or fork `EyeBlink.update` and own the parameters via
+  `tickPreModel`.
+- Map arousal → blink-interval multiplier (e.g. 0.7-1.4 around the
+  rig's authored mean) plus a small jitter so the cadence doesn't
+  read as metronomic.
+- Reuse the `avatar.expressiveness` slider so the user can dampen the
+  blink modulation along with the rest of the body-language overlays.
 
 **Open questions.**
-- Need new lightweight micro-tilt motion files for `thinking` /
-  `confused`, or can we reuse a damped shake?
+- Is the cleanest path forking the `EyeBlink` controller or upstreaming
+  a setter PR? The fork is faster, but means we own that surface
+  forever.
 
 ---
 
