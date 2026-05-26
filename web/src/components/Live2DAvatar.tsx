@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import * as PIXI from "pixi.js";
 import { Live2DModel, MotionPriority } from "pixi-live2d-display";
-import { backendBase } from "../desktop/runtime";
+import { backendBase, isTauri } from "../desktop/runtime";
 import { useAssistantStore } from "../store";
 import type { AvatarProfile, VoiceMode } from "../types";
 import {
@@ -10,7 +10,7 @@ import {
   StoreBridge,
   createEngineState,
 } from "../live2d";
-import type { ChannelStoreSnapshot } from "../live2d";
+import type { ChannelStoreSnapshot, MouseSource } from "../live2d";
 import { AmbientBodyChannel } from "../live2d/channels/AmbientBodyChannel";
 import { ExpressionChannel } from "../live2d/channels/ExpressionChannel";
 import { GazeChannel } from "../live2d/channels/GazeChannel";
@@ -19,6 +19,7 @@ import { LipsyncChannel } from "../live2d/channels/LipsyncChannel";
 import { MotionChannel } from "../live2d/channels/MotionChannel";
 import { OutfitChannel } from "../live2d/channels/OutfitChannel";
 import { OverlayChannel } from "../live2d/channels/OverlayChannel";
+import { GlobalMouseSource } from "../live2d/GlobalMouseSource";
 import { WindowMouseSource } from "../live2d/WindowMouseSource";
 
 // Make pixi-live2d-display drive its own ticker via the standard PIXI ticker.
@@ -131,8 +132,16 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
         const engineState = createEngineState();
         const adapter = new PixiLive2DAdapter(model);
         const containerEl = containerRef.current;
-        const mouseSource = containerEl
-          ? new WindowMouseSource({ container: containerEl })
+        // Inside the Tauri shell we use a global cursor source so
+        // Aiko's gaze tracks the mouse even when it's outside this
+        // window — including across monitors. In a regular browser
+        // the OS cursor isn't reachable, so we keep the DOM
+        // pointermove path. ``GazeChannel`` consumes the same
+        // ``MouseSnapshot`` either way.
+        const mouseSource: MouseSource | undefined = containerEl
+          ? isTauri()
+            ? new GlobalMouseSource({ container: containerEl })
+            : new WindowMouseSource({ container: containerEl })
           : undefined;
         const engine = new AvatarEngine({
           manifest,

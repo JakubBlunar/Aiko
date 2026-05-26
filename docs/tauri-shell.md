@@ -172,6 +172,57 @@ The persona window's geometry survives an app restart:
   section with width / height sliders + always-on-top checkbox + an
   "Open persona window" button (disabled outside Tauri).
 
+## Global gaze (cross-monitor eye tracking)
+
+Inside the Tauri shell Aiko's eyes follow the OS cursor everywhere on
+the desktop, not just inside her own window. The browser build keeps
+its existing window-relative behaviour (DOM `pointermove`); the
+Tauri-only path swaps the mouse data source without touching
+`GazeChannel`.
+
+How the pieces fit:
+
+* [`web/src/desktop/cursor.ts`](../web/src/desktop/cursor.ts) — thin
+  dynamic-import wrappers around `@tauri-apps/api/window`'s
+  `cursorPosition()`, `Window.innerPosition()`, `Window.scaleFactor()`,
+  `Window.onMoved()` and `Window.onScaleChanged()`. Each call returns
+  `null` (or a no-op unsubscribe) outside Tauri.
+* [`web/src/live2d/GlobalMouseSource.ts`](../web/src/live2d/GlobalMouseSource.ts)
+  — implements `MouseSource` (same contract as `WindowMouseSource`).
+  Polls the global cursor via `requestAnimationFrame`, caches the
+  window's `innerPosition` + `scaleFactor`, and refreshes that cache
+  only when Tauri reports `tauri://move` or `tauri://scale-change`.
+  Per-frame work is one IPC for the cursor + one subtraction; the
+  geometry cache makes the hot path allocation-free.
+* [`web/src/components/Live2DAvatar.tsx`](../web/src/components/Live2DAvatar.tsx)
+  — branches on `isTauri()` to construct `GlobalMouseSource` vs
+  `WindowMouseSource`. Both feed `AvatarEngine` via the existing
+  `deps.mouseSource` plumbing, so `GazeChannel` is unchanged.
+
+Coordinate translation (per poll):
+
+```
+logical_x = cursor.x / scaleFactor - innerPosition.x / scaleFactor
+logical_y = cursor.y / scaleFactor - innerPosition.y / scaleFactor
+```
+
+`getBoundingClientRect()` returns CSS pixels, so dividing the
+physical-pixel cursor by the OS scale factor lands `mouse.x / mouse.y`
+in the same coord space the gaze channel already normalises against
+the container centre.
+
+Cross-monitor behaviour: every connected display lives in one
+continuous virtual desktop, so the cursor on a left-side secondary
+monitor produces a *negative* `logical_x`. `GazeChannel` clamps gaze
+deflection to `±0.7` X / `[-0.5, 0.7]` Y, which reads as "Aiko looks
+maximally in that direction" without needing a special cross-monitor
+code path.
+
+`lastMoveAt` only advances when the polled cursor position actually
+changes, so `GazeChannel`'s `IDLE_BREAK_MS` timer still fires when the
+user steps away from the mouse — even though the RAF loop is polling
+60Hz.
+
 ## Manual smoke test
 
 After making any change to the shell:
@@ -193,6 +244,13 @@ After making any change to the shell:
    **Show persona window** / **Quit Aiko**. Quit fully terminates the
    process; if the backend is still running you'll see the WS reconnect
    loop kick in next time you launch.
+8. Move the mouse around the desktop with the persona window visible.
+   Aiko's eyes should track the cursor. Drag the cursor onto a second
+   monitor (if you have one) — her gaze should saturate to maximum
+   deflection in that direction rather than snapping back to centre.
+   If you only see eye tracking when the cursor is over the window
+   itself, the `GlobalMouseSource` branch isn't running (check the
+   `isTauri()` detection and the cursor wrapper imports).
 
 ## Follow-up work (out of scope today)
 
