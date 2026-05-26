@@ -198,7 +198,7 @@ export function useAssistantSocket(): {
         break;
 
       case "memory_added": {
-        store.upsertMemory(evt.memory);
+        store.applyMemoryAdded(evt.memory);
         const text = (evt.memory.content || "").slice(0, 80);
         store.pushToast(
           "memory",
@@ -207,8 +207,12 @@ export function useAssistantSocket(): {
         break;
       }
 
+      case "memory_updated":
+        store.applyMemoryUpdated(evt.memory);
+        break;
+
       case "memory_deleted":
-        store.removeMemory(evt.id);
+        store.applyMemoryDeleted(evt.id);
         break;
 
       case "avatar_settings_changed":

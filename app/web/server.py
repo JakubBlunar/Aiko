@@ -599,14 +599,36 @@ def create_web_app(session: "SessionController") -> FastAPI:
 
     # ── REST: long-term memories ────────────────────────────────────
 
+    def _on_memory_updated(snapshot: dict[str, Any]) -> None:
+        hub.broadcast({"type": "memory_updated", "memory": snapshot})
+
+    try:
+        session.add_memory_updated_listener(_on_memory_updated)
+    except Exception:
+        log.debug("memory updated listener subscription failed", exc_info=True)
+
     @app.get("/api/memories")
-    def list_memories(limit: int = 50, order: str = "recent") -> JSONResponse:
-        clamped = max(1, min(int(limit), 200))
+    def list_memories(
+        limit: int = 50,
+        order: str = "recent",
+        offset: int = 0,
+        kind: str | None = None,
+    ) -> JSONResponse:
+        clamped_limit = max(1, min(int(limit), 200))
+        clamped_offset = max(0, int(offset))
         order_norm = "top" if str(order).strip().lower() == "top" else "recent"
-        items = session.list_memories(limit=clamped, order=order_norm)
+        kind_norm = (kind or "").strip().lower() or None
+        items = session.list_memories(
+            limit=clamped_limit,
+            order=order_norm,
+            offset=clamped_offset,
+            kind=kind_norm,
+        )
         return JSONResponse({
             "memories": items,
             "count": len(items),
+            "total": session.memory_count(kind=kind_norm),
+            "cap": session.memory_cap(),
             "enabled": session.memory_store is not None,
         })
 
@@ -617,6 +639,75 @@ def create_web_app(session: "SessionController") -> FastAPI:
             raise HTTPException(404, "memory not found")
         hub.broadcast({"type": "memory_deleted", "id": int(memory_id)})
         return JSONResponse({"deleted": int(memory_id)})
+
+    @app.patch("/api/memories/{memory_id}")
+    async def patch_memory(memory_id: int, payload: dict[str, Any]) -> JSONResponse:
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "expected JSON object body")
+        content = payload.get("content")
+        kind = payload.get("kind")
+        salience = payload.get("salience")
+        if content is None and kind is None and salience is None:
+            raise HTTPException(
+                400, "patch must include at least one of content, kind, salience",
+            )
+        # Type-checks before reaching into the store: clearer than letting the
+        # mutator silently coerce arbitrary input.
+        if content is not None and not isinstance(content, str):
+            raise HTTPException(400, "content must be a string")
+        if kind is not None and not isinstance(kind, str):
+            raise HTTPException(400, "kind must be a string")
+        if salience is not None and not isinstance(salience, (int, float)):
+            raise HTTPException(400, "salience must be a number")
+        try:
+            updated = session.update_memory(
+                int(memory_id),
+                content=content,
+                kind=kind,
+                salience=float(salience) if salience is not None else None,
+            )
+        except Exception as exc:
+            raise HTTPException(500, f"update failed: {exc}") from exc
+        if updated is None:
+            raise HTTPException(404, "memory not found")
+        return JSONResponse({"memory": updated})
+
+    @app.post("/api/memories")
+    async def create_memory(payload: dict[str, Any]) -> JSONResponse:
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "expected JSON object body")
+        content = payload.get("content")
+        kind = payload.get("kind", "fact")
+        salience = payload.get("salience", 0.6)
+        if not isinstance(content, str) or not content.strip():
+            raise HTTPException(400, "content must be a non-empty string")
+        if not isinstance(kind, str):
+            raise HTTPException(400, "kind must be a string")
+        if not isinstance(salience, (int, float)):
+            raise HTTPException(400, "salience must be a number")
+        result = session.add_memory(
+            content,
+            kind=kind,
+            salience=float(salience),
+        )
+        if result is None:
+            raise HTTPException(503, "memory store unavailable or content too short")
+        return JSONResponse(result)
+
+    @app.post("/api/memories/{memory_id}/pin")
+    async def pin_memory(memory_id: int, payload: dict[str, Any] | None = None) -> JSONResponse:
+        # ``pinned`` defaults to True (toggle-on); the editor sends an
+        # explicit ``{pinned: false}`` to un-pin.
+        target = True
+        if isinstance(payload, dict) and "pinned" in payload:
+            value = payload.get("pinned")
+            if not isinstance(value, bool):
+                raise HTTPException(400, "pinned must be a boolean")
+            target = value
+        updated = session.set_memory_pinned(int(memory_id), target)
+        if updated is None:
+            raise HTTPException(404, "memory not found")
+        return JSONResponse({"memory": updated})
 
     # ── REST: Live2D avatar (fixed Alexia bundle) ───────────────────
 

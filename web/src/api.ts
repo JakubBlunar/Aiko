@@ -8,7 +8,12 @@ import type {
   AvatarSettingsKnobs,
   ChatMessage,
   DesktopSettings,
+  Memory,
   MemoriesResponse,
+  MemoryCreatePayload,
+  MemoryCreateResponse,
+  MemoryOrder,
+  MemoryUpdatePatch,
   MetricsResponse,
   PersonaWindowSettings,
   RagDocument,
@@ -97,13 +102,46 @@ export const api = {
     jsonFetch<string[]>(`/api/models${refresh ? "?refresh=true" : ""}`),
   listVoices: () => jsonFetch<string[]>("/api/voices"),
   listAudioDevices: () => jsonFetch<AudioDevices>("/api/audio/devices"),
-  listMemories: (limit = 50, order: "recent" | "top" = "recent") =>
-    jsonFetch<MemoriesResponse>(
-      `/api/memories?limit=${limit}&order=${order}`,
-    ),
+  listMemories: (
+    options: {
+      limit?: number;
+      offset?: number;
+      order?: MemoryOrder;
+      kind?: string | null;
+    } = {},
+  ) => {
+    const limit = options.limit ?? 50;
+    const offset = options.offset ?? 0;
+    const order = options.order ?? "recent";
+    const params = new URLSearchParams({
+      limit: String(limit),
+      offset: String(offset),
+      order,
+    });
+    if (options.kind) params.set("kind", options.kind);
+    return jsonFetch<MemoriesResponse>(`/api/memories?${params.toString()}`);
+  },
   deleteMemory: (id: number) =>
     jsonFetch<{ deleted: number }>(`/api/memories/${id}`, {
       method: "DELETE",
+    }),
+  updateMemory: (id: number, patch: MemoryUpdatePatch) =>
+    jsonFetch<{ memory: Memory }>(`/api/memories/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    }),
+  createMemory: (payload: MemoryCreatePayload) =>
+    jsonFetch<MemoryCreateResponse>("/api/memories", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  pinMemory: (id: number, pinned: boolean) =>
+    jsonFetch<{ memory: Memory }>(`/api/memories/${id}/pin`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pinned }),
     }),
   getAvatar: () => jsonFetch<AvatarResponse>("/api/avatar"),
   patchAvatarSettings: async (

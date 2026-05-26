@@ -82,12 +82,51 @@ interface AssistantState {
   setLastTranscript: (text: string) => void;
   setCurrentPartial: (text: string) => void;
 
-  // Long-term memories
-  memories: Memory[];
+  // Long-term memories. The Memory tab in the SettingsDrawer uses
+  // ``memoryView`` (paginated + filtered slice the user is currently
+  // looking at). The ``memoriesEnabled`` flag mirrors the backend's
+  // ``memory.enabled`` config so the UI can grey out the tab when the
+  // memory subsystem is off.
+  memoryView: {
+    items: Memory[];
+    /** Total matching rows on the server (after applying ``kindFilter``).
+     * Pagination math uses this. */
+    total: number;
+    /** Configured ``memory.max_memories`` cap, surfaced in the UI hint. */
+    cap: number;
+    /** Zero-based page index. */
+    page: number;
+    pageSize: number;
+    kindFilter: string | null;
+    order: "recent" | "top";
+  };
   memoriesEnabled: boolean;
-  setMemories: (memories: Memory[], enabled?: boolean) => void;
-  upsertMemory: (memory: Memory) => void;
-  removeMemory: (id: number) => void;
+  setMemoryView: (view: {
+    items: Memory[];
+    total: number;
+    cap: number;
+    enabled: boolean;
+    page: number;
+    pageSize: number;
+    kindFilter: string | null;
+    order: "recent" | "top";
+  }) => void;
+  setMemoryPage: (page: number) => void;
+  setMemoryKindFilter: (kind: string | null) => void;
+  setMemoryOrder: (order: "recent" | "top") => void;
+  /** Reducer for the ``memory_added`` WS event. Only prepends to the
+   * current page when we're on page 0, the order is "recent", and the
+   * new memory matches the active kind filter. Otherwise the row stays
+   * out of view but ``total`` bumps so the pager updates. */
+  applyMemoryAdded: (memory: Memory) => void;
+  /** Reducer for the ``memory_updated`` WS event. Replaces the row in
+   * place if it's currently rendered; no-op otherwise. */
+  applyMemoryUpdated: (memory: Memory) => void;
+  /** Reducer for the ``memory_deleted`` WS event. Removes the row,
+   * decrements ``total``. The page-step-back when the current page
+   * empties is owned by the caller (a re-fetch hook in the Memory
+   * tab) so we don't spawn a refetch from the store. */
+  applyMemoryDeleted: (id: number) => void;
 
   // Live2D avatar (fixed Alexia bundle).
   avatar: AvatarProfile | null;
@@ -350,27 +389,90 @@ export const useAssistantStore = create<AssistantState>((set) => ({
   setLastTranscript: (text) => set({ lastTranscript: text }),
   setCurrentPartial: (text) => set({ currentPartial: text }),
 
-  memories: [],
+  memoryView: {
+    items: [],
+    total: 0,
+    cap: 5000,
+    page: 0,
+    pageSize: 50,
+    kindFilter: null,
+    order: "recent",
+  },
   memoriesEnabled: true,
-  setMemories: (memories, enabled) =>
-    set((state) => ({
-      memories,
-      memoriesEnabled: enabled ?? state.memoriesEnabled,
+  setMemoryView: ({
+    items,
+    total,
+    cap,
+    enabled,
+    page,
+    pageSize,
+    kindFilter,
+    order,
+  }) =>
+    set(() => ({
+      memoryView: { items, total, cap, page, pageSize, kindFilter, order },
+      memoriesEnabled: enabled,
     })),
-  upsertMemory: (memory) =>
+  setMemoryPage: (page) =>
+    set((state) => ({
+      memoryView: { ...state.memoryView, page: Math.max(0, page) },
+    })),
+  setMemoryKindFilter: (kind) =>
+    set((state) => ({
+      memoryView: { ...state.memoryView, kindFilter: kind, page: 0 },
+    })),
+  setMemoryOrder: (order) =>
+    set((state) => ({
+      memoryView: { ...state.memoryView, order, page: 0 },
+    })),
+  applyMemoryAdded: (memory) =>
     set((state) => {
-      const existing = state.memories.findIndex((m) => m.id === memory.id);
-      if (existing >= 0) {
-        const next = state.memories.slice();
-        next[existing] = memory;
-        return { memories: next };
+      const view = state.memoryView;
+      const filterMatches =
+        !view.kindFilter || view.kindFilter === memory.kind;
+      const onFirstPageRecent = view.page === 0 && view.order === "recent";
+      // Always bump total when the new row would belong in the
+      // current filter. Pagers across other tabs / windows then
+      // re-render with the right "X of Y" label even though the row
+      // itself isn't visible here.
+      const nextTotal = filterMatches ? view.total + 1 : view.total;
+      if (filterMatches && onFirstPageRecent) {
+        // Prepend; trim to pageSize so the visible page count matches
+        // the page-size contract.
+        const next = [memory, ...view.items.filter((m) => m.id !== memory.id)];
+        return {
+          memoryView: {
+            ...view,
+            items: next.slice(0, view.pageSize),
+            total: nextTotal,
+          },
+        };
       }
-      return { memories: [memory, ...state.memories] };
+      return {
+        memoryView: { ...view, total: nextTotal },
+      };
     }),
-  removeMemory: (id) =>
-    set((state) => ({
-      memories: state.memories.filter((m) => m.id !== id),
-    })),
+  applyMemoryUpdated: (memory) =>
+    set((state) => {
+      const view = state.memoryView;
+      const idx = view.items.findIndex((m) => m.id === memory.id);
+      if (idx < 0) return {};
+      const next = view.items.slice();
+      next[idx] = memory;
+      return { memoryView: { ...view, items: next } };
+    }),
+  applyMemoryDeleted: (id) =>
+    set((state) => {
+      const view = state.memoryView;
+      const wasOnPage = view.items.some((m) => m.id === id);
+      return {
+        memoryView: {
+          ...view,
+          items: view.items.filter((m) => m.id !== id),
+          total: wasOnPage ? Math.max(0, view.total - 1) : view.total,
+        },
+      };
+    }),
 
   avatar: null,
   audioAmplitude: 0,

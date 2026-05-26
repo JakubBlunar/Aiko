@@ -353,7 +353,7 @@ class MemorySettings:
     enabled: bool = True
     top_k: int = 6
     score_threshold: float = 0.4
-    max_memories: int = 500
+    max_memories: int = 5000
     dedupe_threshold: float = 0.92
     extractor_enabled: bool = True
     self_tagged_salience: float = 0.7
@@ -749,7 +749,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             enabled=bool(memory_raw.get("enabled", True)),
             top_k=max(0, int(memory_raw.get("top_k", 6))),
             score_threshold=max(0.0, min(1.0, float(memory_raw.get("score_threshold", 0.4)))),
-            max_memories=max(50, int(memory_raw.get("max_memories", 500))),
+            max_memories=max(50, int(memory_raw.get("max_memories", 5000))),
             dedupe_threshold=max(0.5, min(0.999, float(memory_raw.get("dedupe_threshold", 0.92)))),
             extractor_enabled=bool(memory_raw.get("extractor_enabled", True)),
             self_tagged_salience=max(0.0, min(1.0, float(memory_raw.get("self_tagged_salience", 0.7)))),

@@ -86,7 +86,7 @@
     "enabled": true,
     "top_k": 6,
     "score_threshold": 0.4,
-    "max_memories": 500,
+    "max_memories": 5000,
     "dedupe_threshold": 0.92,
     "extractor_enabled": true,
     "self_tagged_salience": 0.7
