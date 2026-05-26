@@ -6,6 +6,16 @@ import type { ChatMessage, SessionRow, WsClientCommand } from "../types";
 interface SessionSidebarProps {
   send: (cmd: WsClientCommand) => void;
   onOpenSettings: () => void;
+  /** Optional handler for toggling the detached persona window. Provided
+   * only when the bundle is running inside a Tauri shell; rendered as a
+   * second top-bar button next to "Settings". The label flips between
+   * "Persona" / "Hide" based on ``personaWindowVisible`` so the user
+   * always knows what the click will do. */
+  onTogglePersona?: () => void;
+  /** Whether the floating persona window is currently visible. Used to
+   * style + label the toggle button. ``false`` when not in a Tauri
+   * shell. */
+  personaWindowVisible?: boolean;
 }
 
 function formatRelative(iso: string | null): string {
@@ -30,7 +40,12 @@ function shortId(sessionId: string): string {
   return sessionId.includes(":") ? sessionId.split(":", 2)[1] : sessionId;
 }
 
-export function SessionSidebar({ send, onOpenSettings }: SessionSidebarProps) {
+export function SessionSidebar({
+  send,
+  onOpenSettings,
+  onTogglePersona,
+  personaWindowVisible = false,
+}: SessionSidebarProps) {
   const sessionKey = useAssistantStore((s) => s.sessionKey);
   const setMessages = useAssistantStore((s) => s.setMessages);
   const clearMessages = useAssistantStore((s) => s.clearMessages);
@@ -122,13 +137,34 @@ export function SessionSidebar({ send, onOpenSettings }: SessionSidebarProps) {
           <h1 className="text-base font-semibold tracking-tight text-ink-100">
             Aiko
           </h1>
-          <button
-            type="button"
-            onClick={onOpenSettings}
-            className="rounded-md border border-white/10 px-2 py-1 text-xs text-ink-100/70 hover:border-ink-400 hover:text-ink-100"
-          >
-            Settings
-          </button>
+          <div className="flex items-center gap-1">
+            {onTogglePersona ? (
+              <button
+                type="button"
+                onClick={onTogglePersona}
+                title={
+                  personaWindowVisible
+                    ? "Hide detached persona window"
+                    : "Open detached persona window"
+                }
+                aria-pressed={personaWindowVisible}
+                className={`rounded-md border px-2 py-1 text-xs transition ${
+                  personaWindowVisible
+                    ? "border-pink-400/70 bg-pink-500/15 text-pink-100 hover:bg-pink-500/25"
+                    : "border-white/10 text-ink-100/70 hover:border-pink-400 hover:text-pink-100"
+                }`}
+              >
+                {personaWindowVisible ? "Hide" : "Persona"}
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={onOpenSettings}
+              className="rounded-md border border-white/10 px-2 py-1 text-xs text-ink-100/70 hover:border-ink-400 hover:text-ink-100"
+            >
+              Settings
+            </button>
+          </div>
         </div>
         <p className="mt-1 text-xs text-ink-100/50">Your AI friend</p>
       </div>

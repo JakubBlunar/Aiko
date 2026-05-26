@@ -102,10 +102,23 @@ def create_web_app(session: "SessionController") -> FastAPI:
     """
     app = FastAPI(title="Aiko Web", version="0.2.0")
 
-    # Vite dev server runs on :5173; production bundle is served by us.
+    # Origins we accept cross-origin requests from:
+    # - Vite dev server on :5173
+    # - The Tauri 2 webview, which serves bundled assets from
+    #   ``tauri://localhost`` on Windows / Linux and
+    #   ``http://tauri.localhost`` on macOS. Both must be allowed for
+    #   the desktop shell to reach the FastAPI backend.
+    # In production (no Tauri, served by FastAPI), the React bundle is
+    # same-origin and CORS doesn't apply.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+        allow_origins=[
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "tauri://localhost",
+            "https://tauri.localhost",
+            "http://tauri.localhost",
+        ],
         allow_methods=["*"],
         allow_headers=["*"],
         allow_credentials=True,
@@ -267,6 +280,13 @@ def create_web_app(session: "SessionController") -> FastAPI:
     def _on_avatar_motion(payload: dict[str, Any]) -> None:
         hub.broadcast({"type": "avatar_motion", **payload})
 
+    def _on_desktop_settings(payload: dict[str, Any]) -> None:
+        # Persona-window geometry update. Both the main window and the
+        # persona window itself receive the broadcast; the persona one
+        # then re-issues the matching Tauri ``set_persona_geometry``
+        # command so the OS-level frame matches the persisted value.
+        hub.broadcast({"type": "desktop_settings_changed", **payload})
+
     try:
         session.add_avatar_settings_listener(_on_avatar_settings)
     except Exception:
@@ -279,6 +299,10 @@ def create_web_app(session: "SessionController") -> FastAPI:
         session.add_avatar_motion_listener(_on_avatar_motion)
     except Exception:
         log.debug("avatar motion listener subscription failed", exc_info=True)
+    try:
+        session.add_desktop_settings_listener(_on_desktop_settings)
+    except Exception:
+        log.debug("desktop settings listener subscription failed", exc_info=True)
 
     # ── Live (continuous voice) session ─────────────────────────────
     # One global instance per backend; SessionController already serializes
@@ -645,6 +669,40 @@ def create_web_app(session: "SessionController") -> FastAPI:
         })
         return JSONResponse({"avatar": session.avatar_payload()})
 
+    # ── REST: desktop / Tauri shell knobs ────────────────────────────
+
+    @app.get("/api/desktop")
+    def get_desktop() -> JSONResponse:
+        return JSONResponse(session.desktop_settings())
+
+    @app.patch("/api/desktop/persona-window")
+    async def patch_desktop_persona_window(payload: dict[str, Any]) -> JSONResponse:
+        # Validate up front so the clamp in
+        # ``update_desktop_settings`` only sees usable types. The endpoint
+        # accepts a partial patch — any subset of {width, height,
+        # always_on_top} — exactly like ``PATCH /api/avatar``.
+        width = payload.get("width")
+        height = payload.get("height")
+        always_on_top = payload.get("always_on_top")
+        if width is not None:
+            try:
+                width = int(width)
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(400, "width must be an integer") from exc
+        if height is not None:
+            try:
+                height = int(height)
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(400, "height must be an integer") from exc
+        if always_on_top is not None and not isinstance(always_on_top, bool):
+            raise HTTPException(400, "always_on_top must be a boolean")
+        snapshot = session.update_desktop_settings(
+            persona_window_width=width,
+            persona_window_height=height,
+            persona_window_always_on_top=always_on_top,
+        )
+        return JSONResponse(snapshot)
+
     # ── REST: documents (RAG corpus) ────────────────────────────────
 
     _MAX_DOCUMENT_UPLOAD_BYTES = 16 * 1024 * 1024  # 16 MB
@@ -776,6 +834,7 @@ def create_web_app(session: "SessionController") -> FastAPI:
                 "context_window": session.context_window_size,
                 "context_source": session.context_window_source,
                 "avatar": session.avatar_payload(),
+                "desktop": session.desktop_settings(),
             }, default=str))
         except Exception:
             pass

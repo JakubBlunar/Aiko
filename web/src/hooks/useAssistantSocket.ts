@@ -1,17 +1,19 @@
 import { useCallback, useEffect, useRef } from "react";
 import { api } from "../api";
+import { backendBase } from "../desktop/runtime";
 import { playDone, playThinking } from "../earcons";
 import { useAssistantStore } from "../store";
 import type { WsClientCommand, WsServerEvent } from "../types";
 
-const WS_URL = "/ws";
+const WS_PATH = "/ws";
 const RECONNECT_DELAY_MS = 1500;
 const PING_INTERVAL_MS = 25_000;
 
 function resolveWsUrl(): string {
-  // In dev, Vite proxies /ws -> backend. In prod we share an origin with FastAPI.
-  const proto = window.location.protocol === "https:" ? "wss" : "ws";
-  return `${proto}://${window.location.host}${WS_URL}`;
+  // In dev, Vite proxies /ws -> backend. In prod we share an origin with
+  // FastAPI. Inside a Tauri webview the origin is `tauri://localhost`, so
+  // we route through the configured backend host instead.
+  return `${backendBase().ws}${WS_PATH}`;
 }
 
 /**
@@ -54,6 +56,12 @@ export function useAssistantSocket(): {
             .catch(() => {
               /* avatar endpoint missing or backend offline -- ignore */
             });
+        }
+        // Desktop snapshot is optional too: a stale backend may not
+        // emit it. The browser layout doesn't care; the persona window
+        // re-fetches via /api/desktop if the field is missing.
+        if (evt.desktop) {
+          store.setDesktop(evt.desktop);
         }
         break;
 
@@ -214,6 +222,29 @@ export function useAssistantSocket(): {
             circadian_period: evt.circadian_period,
             resolved_outfit: evt.resolved_outfit,
           });
+        }
+        break;
+
+      case "desktop_settings_changed":
+        // Mirror the snapshot into the store first so any open window
+        // re-renders against the new geometry. Inside the Tauri shell
+        // we then issue the matching window-management commands so the
+        // OS-level frame matches; in the browser this is a no-op.
+        store.setPersonaWindow(evt.persona_window);
+        if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+          import("../desktop/commands")
+            .then(({ desktop }) => {
+              void desktop.setPersonaGeometry(
+                evt.persona_window.width,
+                evt.persona_window.height,
+              );
+              void desktop.setPersonaAlwaysOnTop(
+                evt.persona_window.always_on_top,
+              );
+            })
+            .catch(() => {
+              /* desktop helpers absent at runtime — ignore */
+            });
         }
         break;
 

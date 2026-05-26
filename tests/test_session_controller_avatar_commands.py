@@ -98,11 +98,23 @@ def _make_controller(
         min_repeat_seconds=1.5,
     )
     controller._backchannel_thinking_index = 0
+    # Desktop / Tauri shell knobs. Tests that don't touch
+    # ``update_desktop_settings`` ignore these; the ones that do can
+    # mutate the runtime cache directly.
+    controller._desktop_settings_runtime = {
+        "persona_window": {
+            "width": 320,
+            "height": 480,
+            "always_on_top": True,
+        }
+    }
+    controller._desktop_settings_listeners = []
     # ``update_avatar_settings`` mirrors the patched value back onto the
     # AppSettings dataclass so a re-read via ``self._settings`` would
     # see the new value too. Provide just enough of that surface.
     controller._settings = MagicMock()
     controller._settings.avatar = settings_mod.AvatarSettings(auto_outfit=auto_outfit)
+    controller._settings.desktop = settings_mod.DesktopSettings()
 
     def _period_stub(self: SessionController) -> str:
         return self._period_override
@@ -710,6 +722,97 @@ class UpdateAvatarSettingsPersistenceTests(unittest.TestCase):
         )
         self.assertEqual(len(captured), 1)
         self.assertEqual(captured[0]["scale_multiplier"], 1.4)
+
+
+class DesktopSettingsPersistenceTests(unittest.TestCase):
+    """``update_desktop_settings`` mirrors ``update_avatar_settings``:
+    clamps, persists to ``user.json``, and notifies the listener bus."""
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(settings_mod, "USER_CONFIG_PATH", self.user_json)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_width_change_writes_and_clamps(self) -> None:
+        controller = _make_controller(_make_avatar())
+        captured: list[dict[str, Any]] = []
+        controller._desktop_settings_listeners.append(
+            lambda snap: captured.append(dict(snap))
+        )
+        snap = controller.update_desktop_settings(persona_window_width=400)
+        self.assertEqual(snap["persona_window"]["width"], 400)
+        body = json.loads(self.user_json.read_text(encoding="utf-8"))
+        self.assertEqual(body, {"desktop": {"persona_window": {"width": 400}}})
+        self.assertEqual(len(captured), 1)
+        # Clamp upper bound.
+        snap = controller.update_desktop_settings(persona_window_width=99_999)
+        self.assertEqual(
+            snap["persona_window"]["width"],
+            settings_mod.PERSONA_WINDOW_MAX_WIDTH,
+        )
+        # Clamp lower bound.
+        snap = controller.update_desktop_settings(persona_window_width=10)
+        self.assertEqual(
+            snap["persona_window"]["width"],
+            settings_mod.PERSONA_WINDOW_MIN_WIDTH,
+        )
+
+    def test_height_and_always_on_top_round_trip(self) -> None:
+        controller = _make_controller(_make_avatar())
+        snap = controller.update_desktop_settings(
+            persona_window_height=600,
+            persona_window_always_on_top=False,
+        )
+        self.assertEqual(snap["persona_window"]["height"], 600)
+        self.assertFalse(snap["persona_window"]["always_on_top"])
+        body = json.loads(self.user_json.read_text(encoding="utf-8"))
+        self.assertEqual(
+            body,
+            {
+                "desktop": {
+                    "persona_window": {
+                        "height": 600,
+                        "always_on_top": False,
+                    }
+                }
+            },
+        )
+
+    def test_noop_call_does_not_write(self) -> None:
+        controller = _make_controller(_make_avatar())
+        snap = controller.update_desktop_settings(persona_window_width=320)
+        # 320 is the runtime default — no actual change.
+        self.assertEqual(snap["persona_window"]["width"], 320)
+        self.assertFalse(self.user_json.exists())
+
+    def test_existing_unrelated_keys_preserved(self) -> None:
+        self.user_json.write_text(
+            json.dumps({"avatar": {"scale_multiplier": 1.5}}),
+            encoding="utf-8",
+        )
+        controller = _make_controller(_make_avatar())
+        controller.update_desktop_settings(persona_window_width=400)
+        body = json.loads(self.user_json.read_text(encoding="utf-8"))
+        self.assertEqual(body["avatar"], {"scale_multiplier": 1.5})
+        self.assertEqual(
+            body["desktop"], {"persona_window": {"width": 400}},
+        )
+
+    def test_listener_fires_only_on_change(self) -> None:
+        controller = _make_controller(_make_avatar())
+        captured: list[dict[str, Any]] = []
+        controller._desktop_settings_listeners.append(
+            lambda snap: captured.append(dict(snap))
+        )
+        # Default value, no change -> no listener call.
+        controller.update_desktop_settings(persona_window_width=320)
+        self.assertEqual(captured, [])
+        # Real change -> listener fires once.
+        controller.update_desktop_settings(persona_window_width=480)
+        self.assertEqual(len(captured), 1)
 
 
 if __name__ == "__main__":

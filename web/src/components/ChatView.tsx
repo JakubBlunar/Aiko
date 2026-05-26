@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAssistantStore } from "../store";
-import type { ToolEvent, WsClientCommand } from "../types";
+import type { ToolEvent, VoiceMode, WsClientCommand } from "../types";
 import { ContextBadge } from "./ContextBadge";
+import { MicButton } from "./MicButton";
 
 interface ChatViewProps {
   send: (cmd: WsClientCommand) => void;
@@ -271,52 +272,8 @@ export function ChatView({ send }: ChatViewProps) {
   );
 }
 
-interface MicButtonProps {
-  voiceMode: "off" | "listening" | "transcribing" | "thinking" | "speaking";
-  audioLevel: number;
-  connected: boolean;
-  onClick: () => void;
-}
-
-function MicButton({
-  voiceMode,
-  audioLevel,
-  connected,
-  onClick,
-}: MicButtonProps) {
-  const isOn = voiceMode !== "off";
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={!connected}
-      title={isOn ? "Stop voice mode" : "Start voice mode"}
-      aria-label={isOn ? "Stop voice mode" : "Start voice mode"}
-      aria-pressed={isOn}
-      className={`relative flex h-12 w-12 shrink-0 items-center justify-center self-center rounded-xl border text-xl transition ${
-        isOn
-          ? "border-pink-400/60 bg-pink-500/20 text-pink-100 hover:bg-pink-500/30"
-          : "border-white/10 bg-black/30 text-ink-100/70 hover:border-ink-400 hover:text-ink-100"
-      } disabled:cursor-not-allowed disabled:opacity-40`}
-    >
-      {isOn && voiceMode === "listening" ? (
-        <span
-          aria-hidden="true"
-          className="absolute inset-0 rounded-xl border-2 border-pink-400/40"
-          style={{
-            transform: `scale(${1 + Math.min(audioLevel, 1) * 0.25})`,
-            transition: "transform 60ms linear",
-            opacity: 0.6,
-          }}
-        />
-      ) : null}
-      <span className="relative">{isOn ? "🎙️" : "🎤"}</span>
-    </button>
-  );
-}
-
 interface VoiceStripProps {
-  voiceMode: "off" | "listening" | "transcribing" | "thinking" | "speaking";
+  voiceMode: VoiceMode;
   audioLevel: number;
   lastTranscript: string;
   currentPartial: string;

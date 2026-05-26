@@ -1,17 +1,30 @@
 // Thin REST wrapper over the FastAPI endpoints.
 
+import { backendBase } from "./desktop/runtime";
 import type {
   AssistantSettings,
   AvatarProfile,
   AvatarResponse,
   AvatarSettingsKnobs,
   ChatMessage,
+  DesktopSettings,
   MemoriesResponse,
   MetricsResponse,
+  PersonaWindowSettings,
   RagDocument,
   SessionRow,
   UploadDocumentResponse,
 } from "./types";
+
+/** Build a fully-qualified URL for a backend ``/api`` (or other root-relative)
+ * path. In a normal browser context this just prefixes the same origin; in
+ * a Tauri webview this routes through the absolute backend URL configured
+ * in ``desktop/runtime.ts``. */
+function backendUrl(path: string): string {
+  const base = backendBase().http;
+  if (!base) return path;
+  return path.startsWith("/") ? `${base}${path}` : `${base}/${path}`;
+}
 
 interface SessionListResponse {
   active: string;
@@ -30,7 +43,11 @@ export interface AudioDevices {
 }
 
 async function jsonFetch<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
-  const response = await fetch(input, init);
+  const url =
+    typeof input === "string" && input.startsWith("/")
+      ? backendUrl(input)
+      : input;
+  const response = await fetch(url, init);
   if (!response.ok) {
     let body = "";
     try {
@@ -115,4 +132,11 @@ export const api = {
       { method: "DELETE" },
     ),
   getMetrics: () => jsonFetch<MetricsResponse>("/api/metrics"),
+  getDesktop: () => jsonFetch<DesktopSettings>("/api/desktop"),
+  patchPersonaWindow: (patch: Partial<PersonaWindowSettings>) =>
+    jsonFetch<DesktopSettings>("/api/desktop/persona-window", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    }),
 };

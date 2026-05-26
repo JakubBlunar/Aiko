@@ -7,9 +7,11 @@ import type {
   BackchannelHint,
   ChatMessage,
   CircadianPeriod,
+  DesktopSettings,
   Memory,
   MetricsSnapshot,
   MoodState,
+  PersonaWindowSettings,
   ResolvedOutfit,
   ToolEvent,
   VoiceMode,
@@ -118,6 +120,19 @@ interface AssistantState {
   // Phase 2b: persistent mood snapshot, updated post-turn.
   mood: MoodState;
   setMood: (mood: MoodState) => void;
+
+  /** Desktop / Tauri shell knobs. Only consumed by the persona window;
+   * browser tabs leave them alone. ``null`` until the WS ``hello`` lands. */
+  desktop: DesktopSettings | null;
+  setDesktop: (next: DesktopSettings | null) => void;
+  setPersonaWindow: (patch: Partial<PersonaWindowSettings>) => void;
+  /** Whether the detached persona window is currently visible. Driven
+   * by the ``persona-visibility`` Tauri event in ``App.tsx``. The main
+   * window uses this to hide the redundant inline avatar rail when
+   * Aiko has been popped out into the floating window. Always
+   * ``false`` in a regular browser. */
+  personaWindowVisible: boolean;
+  setPersonaWindowVisible: (visible: boolean) => void;
 
   // Phase 1a: transient backchannel hints from STT partials.
   /** ID of the latest backchannel; consumers compare to detect changes. */
@@ -395,6 +410,26 @@ export const useAssistantStore = create<AssistantState>((set) => ({
 
   mood: { label: "content", intensity: 0.5, valence: 0, arousal: 0.4 },
   setMood: (mood) => set({ mood }),
+
+  desktop: null,
+  setDesktop: (next) => set({ desktop: next }),
+  setPersonaWindow: (patch) =>
+    set((state) => {
+      const current =
+        state.desktop?.persona_window ?? {
+          width: 320,
+          height: 480,
+          always_on_top: true,
+        };
+      return {
+        desktop: {
+          persona_window: { ...current, ...patch },
+        },
+      };
+    }),
+  personaWindowVisible: false,
+  setPersonaWindowVisible: (visible) =>
+    set({ personaWindowVisible: Boolean(visible) }),
 
   backchannelHint: null,
   backchannelAt: 0,
