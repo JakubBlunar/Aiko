@@ -460,6 +460,12 @@ class PromptAssembler:
         # Aiko's room: compact ambient block describing her current
         # location + nearby items. See WorldStore.render_block.
         self._world_provider: Callable[[], str] | None = None
+        # Activity awareness (Phase 4c): the foreground app the user
+        # is in, surfaced as "Jacob is currently working in <App>."
+        # Always empty string when the feature is disabled or no app
+        # was captured. Desktop-only opt-in; browser users never set
+        # the underlying state. Dropped in aggressive mode.
+        self._activity_provider: Callable[[], str] | None = None
         # Per-turn dynamic blocks: not part of ``_StaticSlices`` because
         # they change every utterance. ``vocal_tone`` is set immediately
         # before the live turn dispatch by ``SessionController`` after
@@ -540,6 +546,7 @@ class PromptAssembler:
         pajama: Callable[[], str] | None = None,
         motion_names: Callable[[], list[str]] | None = None,
         world: Callable[[], str] | None = None,
+        activity: Callable[[], str] | None = None,
     ) -> None:
         """Register optional inner-life block providers.
 
@@ -579,6 +586,8 @@ class PromptAssembler:
             self._motion_names_provider = motion_names
         if world is not None:
             self._world_provider = world
+        if activity is not None:
+            self._activity_provider = activity
 
     def set_last_reaction(self, reaction: str | None) -> None:
         if not reaction:
@@ -918,6 +927,10 @@ class PromptAssembler:
         # changes from agent tools surface immediately in the next prompt.
         # Dropped in aggressive mode to free tokens for history.
         world_block = "" if aggressive else _safe_provider(self._world_provider)
+        # Activity awareness: read fresh so a user who alt-tabs to a
+        # different app between turns is reflected in the next prompt.
+        # Dropped in aggressive mode for the same reason as world.
+        activity_block = "" if aggressive else _safe_provider(self._activity_provider)
 
         # Alexia bundle: capability lookup is *not* a string provider —
         # it returns the raw flags so we can build the overlay /
@@ -989,6 +1002,11 @@ class PromptAssembler:
             system_parts.append(agenda_block)
         if world_block:
             system_parts.append(world_block)
+        # Activity block lands right after world so the two
+        # "ambient awareness" cues (where Aiko is, what Jacob is
+        # doing) sit next to each other in the system prompt.
+        if activity_block:
+            system_parts.append(activity_block)
         if catchphrase_block:
             system_parts.append(catchphrase_block)
         if vocal_tone_block:

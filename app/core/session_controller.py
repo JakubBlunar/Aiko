@@ -871,6 +871,7 @@ class SessionController:
             pajama=self._render_pajama_block,
             motion_names=self._avatar_motion_names,
             world=self._render_world_block,
+            activity=self._render_activity_block,
         )
         self._prompt_assembler.set_pinned_self_memories_provider(
             self._top_pinned_self_memories,
@@ -1033,6 +1034,10 @@ class SessionController:
             cooldown_seconds=float(
                 getattr(settings.agent, "proactive_cooldown_seconds", 120.0),
             ),
+            cooldown_seconds_typed=float(
+                getattr(settings.agent, "proactive_cooldown_seconds_typed", 600.0),
+            ),
+            is_typed_eligible=self._is_typed_proactive_eligible,
             context_window=self._context_window,
             notify_message=self._notify_message,
             prepared_nudge_store=self._prepared_nudge_store,
@@ -1051,6 +1056,33 @@ class SessionController:
         self._live_no_speech_streak = 0
         self._live_voice_session_active = False
         self._turn_in_progress = False
+
+        # ── Typed-mode proactive timer + presence gate ──────────────
+        # The typed-mode ``ProactiveDirector`` path fires opportunistic
+        # "pick up the thread" nudges after a long quiet period (4 min
+        # default). It's gated on user presence so we never poke
+        # someone who alt-tabbed away. Two complementary signals fold
+        # client-side into one boolean:
+        #   * Browser: ``document.visibilityState === "visible"``.
+        #   * Tauri:  ``tauri://focus`` / ``tauri://blur`` events.
+        # Default ``True`` so a freshly-loaded UI that hasn't sent a
+        # presence frame yet still works.
+        self._typed_silence_timer: threading.Timer | None = None
+        self._typed_silence_lock = threading.Lock()
+        self._user_present: bool = True
+        # Wall-clock (monotonic) when the timer was last armed AND the
+        # silence budget at that moment. Used to re-arm with a smaller
+        # remainder when presence flips ``False -> True`` mid-budget.
+        self._typed_silence_armed_at: float | None = None
+        self._typed_silence_armed_budget: float | None = None
+        # Activity awareness (Phase 4): the foreground app the user is
+        # currently in. ``None`` covers "couldn't determine", "user is
+        # in our own window", and "feature disabled". Browser users
+        # never set this. The setter is gated server-side on
+        # ``activity_awareness_enabled`` so a buggy client emitting
+        # events while the toggle is off can't leak the data.
+        self._user_active_app: str | None = None
+
         self._remember_history = settings.assistant.remember_history
         self._state = SessionState(
             mic_enabled=settings.audio.enable_microphone,
@@ -1621,8 +1653,191 @@ class SessionController:
         return None
 
     def set_live_voice_session_active(self, active: bool) -> None:
+        was_active = self._live_voice_session_active
         self._live_voice_session_active = bool(active)
         self._state.session_type = "live" if active else "chat"
+        # Voice mode dominates: drop any pending typed timer so a
+        # stale typed nudge can't fire while the user is on the mic.
+        # When voice mode ends we don't auto-arm — typing is required
+        # to get back into "we just had a typed turn" state.
+        if active and not was_active:
+            self._disarm_typed_silence_timer()
+
+    # ── Typed-mode proactive: presence gate + silence timer ─────────
+
+    def _is_typed_proactive_eligible(self) -> bool:
+        """Predicate handed to :class:`ProactiveDirector`.
+
+        Folds *all* gating concerns into one boolean so the director
+        never has to know about settings, live mode, or presence.
+        Voice mode dominance lives here: when the user is on the mic
+        the typed path is forcefully disabled regardless of presence
+        signals (which are typed-mode only — see ``set_user_present``).
+        """
+        agent = self._settings.agent
+        if not bool(getattr(agent, "proactive_typed_enabled", True)):
+            return False
+        if self._live_voice_session_active:
+            return False
+        if self._turn_in_progress:
+            return False
+        if not self._user_present:
+            return False
+        return True
+
+    def _arm_typed_silence_timer(self) -> None:
+        """Schedule a one-shot fire after ``proactive_silence_seconds_typed``.
+
+        Cancels any in-flight timer so we don't race two of them past
+        the cooldown gate inside ``ProactiveDirector``. Stores both the
+        wall-clock (monotonic) arm time and the budget so a presence
+        flip can re-arm with the remaining budget instead of starting
+        a fresh full window.
+        """
+        agent = self._settings.agent
+        if not bool(getattr(agent, "proactive_typed_enabled", True)):
+            return
+        budget = float(getattr(agent, "proactive_silence_seconds_typed", 240.0))
+        if budget <= 0.0:
+            return
+        with self._typed_silence_lock:
+            if self._typed_silence_timer is not None:
+                try:
+                    self._typed_silence_timer.cancel()
+                except Exception:
+                    log.debug("typed timer cancel raised", exc_info=True)
+            timer = threading.Timer(budget, self._on_typed_silence_fire)
+            timer.name = "typed-silence-timer"
+            timer.daemon = True
+            self._typed_silence_timer = timer
+            self._typed_silence_armed_at = time.monotonic()
+            self._typed_silence_armed_budget = budget
+            timer.start()
+
+    def _disarm_typed_silence_timer(self) -> None:
+        """Cancel + clear the current typed-silence timer (no fire)."""
+        with self._typed_silence_lock:
+            if self._typed_silence_timer is not None:
+                try:
+                    self._typed_silence_timer.cancel()
+                except Exception:
+                    log.debug("typed timer cancel raised", exc_info=True)
+            self._typed_silence_timer = None
+            self._typed_silence_armed_at = None
+            self._typed_silence_armed_budget = None
+
+    def _on_typed_silence_fire(self) -> None:
+        """Timer body: hand off to the director if we're still eligible.
+
+        Re-checked under ``_is_typed_proactive_eligible`` rather than
+        trusting the moment we armed. The director enforces its own
+        cooldown and inflight guards, so this is purely "should we
+        even ask?".
+        """
+        with self._typed_silence_lock:
+            self._typed_silence_timer = None
+            self._typed_silence_armed_at = None
+            self._typed_silence_armed_budget = None
+        try:
+            self._proactive.notify_typed_silence(self.session_key)
+        except Exception:
+            log.debug("notify_typed_silence raised", exc_info=True)
+
+    def set_user_present(self, present: bool) -> None:
+        """Public: client-side presence change (tab visibility / window focus).
+
+        Three-state semantics:
+        - True after False: re-arm with the remaining silence budget
+          if a typed turn is still "owed" a fire (i.e. we had armed a
+          timer that got cancelled by the False flip).
+        - False after True: cancel the pending timer; if it had been
+          running a while, remember the elapsed so the next True flip
+          re-arms with what's left.
+        - Same value as before: no-op (idempotent — a debounced UI
+          may legitimately resend the same value).
+
+        Voice mode does NOT call this path. The voice-mode
+        ``LiveSession._maybe_proactive`` continues to fire on its own
+        45 s threshold; users wearing the mic may legitimately be
+        away from the screen but still present in conversation.
+        """
+        new_value = bool(present)
+        with self._typed_silence_lock:
+            if self._user_present == new_value:
+                return
+            self._user_present = new_value
+            armed_at = self._typed_silence_armed_at
+            armed_budget = self._typed_silence_armed_budget
+            timer = self._typed_silence_timer
+        if not new_value:
+            if timer is not None:
+                # Snapshot how much budget had elapsed so the next
+                # True flip re-arms with the remainder rather than
+                # giving the user a fresh 4-min grace every alt-tab.
+                if armed_at is not None and armed_budget is not None:
+                    elapsed = time.monotonic() - armed_at
+                    remaining = max(0.0, armed_budget - elapsed)
+                else:
+                    remaining = 0.0
+                with self._typed_silence_lock:
+                    if self._typed_silence_timer is not None:
+                        try:
+                            self._typed_silence_timer.cancel()
+                        except Exception:
+                            log.debug("typed timer cancel raised", exc_info=True)
+                    self._typed_silence_timer = None
+                    self._typed_silence_armed_at = None
+                    # Stash the remaining budget under the same field
+                    # so a subsequent True flip can re-arm with it.
+                    self._typed_silence_armed_budget = remaining
+            return
+        # Flipped to present. If a timer is already running, leave it
+        # alone (it was armed before we ever went away). If we have a
+        # leftover ``_typed_silence_armed_budget`` from the away leg,
+        # re-arm with that budget so the user gets the same total
+        # quiet window they would have had if they hadn't alt-tabbed.
+        with self._typed_silence_lock:
+            if self._typed_silence_timer is not None:
+                return
+            remaining = self._typed_silence_armed_budget
+            self._typed_silence_armed_budget = None
+        if remaining is None or remaining <= 0.0:
+            return
+        agent = self._settings.agent
+        if not bool(getattr(agent, "proactive_typed_enabled", True)):
+            return
+        with self._typed_silence_lock:
+            timer = threading.Timer(
+                float(remaining), self._on_typed_silence_fire,
+            )
+            timer.name = "typed-silence-timer"
+            timer.daemon = True
+            self._typed_silence_timer = timer
+            self._typed_silence_armed_at = time.monotonic()
+            self._typed_silence_armed_budget = float(remaining)
+            timer.start()
+
+    def set_user_active_app(self, app: str | None) -> None:
+        """Public: update the foreground app the user is in.
+
+        Server-side privacy gate: when ``activity_awareness_enabled``
+        is ``False`` the value is silently dropped. This means a
+        buggy or rogue client emitting ``user_activity`` events while
+        the user has disabled the feature in settings cannot leak
+        which apps the user is in.
+
+        Empty string / blank coerces to ``None`` (no block in
+        prompt) so a client that wants to clear the cached value
+        without disabling the feature can send ``""``.
+        """
+        if not bool(getattr(self._settings.agent, "activity_awareness_enabled", False)):
+            self._user_active_app = None
+            return
+        if app is None:
+            self._user_active_app = None
+            return
+        cleaned = str(app).strip()
+        self._user_active_app = cleaned or None
 
     # ── Listeners ────────────────────────────────────────────────────
 
@@ -2973,6 +3188,10 @@ class SessionController:
             self._clear_merge_buffer(merge_key)
             with self._vocal_tone_lock:
                 self._last_vocal_tone = None
+            # The user is typing, so cancel any pending typed-silence
+            # timer (we no longer need to nudge them — they're back).
+            # Re-armed at the end of the turn if ``mode == "typed"``.
+            self._disarm_typed_silence_timer()
 
         self._turn_in_progress = True
         t0 = time.perf_counter()
@@ -3082,6 +3301,17 @@ class SessionController:
                 "compaction_triggered": tdict["compaction_triggered"],
             })
         self._set_last_metrics(metrics)
+
+        # Arm the typed-silence timer so a long quiet period after this
+        # turn can fire a typed proactive nudge. Only after typed turns —
+        # voice turns are handled by ``LiveSession._maybe_proactive`` on
+        # its own timing loop.
+        if mode == "typed":
+            try:
+                self._arm_typed_silence_timer()
+            except Exception:
+                log.debug("typed silence arm failed", exc_info=True)
+
         return result.text
 
     def _set_last_metrics(
@@ -3566,6 +3796,35 @@ class SessionController:
         except Exception:
             log.debug("world block render failed", exc_info=True)
             return ""
+
+    def _render_activity_block(self) -> str:
+        """Phase 4c: ambient "Jacob is in <App>" cue (desktop opt-in).
+
+        Triple-gated by design — toggle off, no app captured, or no
+        client connected (browser users never emit ``user_activity``)
+        all collapse to an empty string. The toggle gate is the
+        privacy-critical one: even if a buggy client forwarded
+        ``user_activity`` while the user had disabled the feature,
+        the setter would have rejected the value and ``_user_active_app``
+        would still be ``None``. The same check here is belt-and-
+        braces in case the toggle was flipped between the setter call
+        and this render.
+
+        The trailing reminder is the same shape as the world block —
+        Aiko knows but only mentions when natural — to keep the prompt
+        from turning ambient awareness into surveillance theatre.
+        """
+        if not bool(getattr(self._settings.agent, "activity_awareness_enabled", False)):
+            return ""
+        app = self._user_active_app
+        if not app:
+            return ""
+        return (
+            f"Jacob is currently working in {app}. "
+            "You're aware of this but only mention it when it's "
+            "genuinely relevant to the conversation — never just to "
+            "fill silence or to prove you noticed."
+        )
 
     def _render_arc_block(self) -> str:
         """Phase 4c: ambient line about the current conversation arc."""
@@ -5039,6 +5298,10 @@ class SessionController:
             self._clear_merge_buffer()
         except Exception:
             log.debug("merge buffer clear on shutdown failed", exc_info=True)
+        try:
+            self._disarm_typed_silence_timer()
+        except Exception:
+            log.debug("typed silence timer cancel on shutdown failed", exc_info=True)
         if self._mcp_server_runner is not None:
             try:
                 self._mcp_server_runner.stop()

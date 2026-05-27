@@ -433,6 +433,22 @@ def create_web_app(session: "SessionController") -> FastAPI:
             "proactive": {
                 "silence_seconds": float(getattr(s.agent, "proactive_silence_seconds", 45.0)),
                 "cooldown_seconds": float(getattr(s.agent, "proactive_cooldown_seconds", 120.0)),
+                "typed_enabled": bool(getattr(s.agent, "proactive_typed_enabled", True)),
+                "silence_seconds_typed": float(
+                    getattr(s.agent, "proactive_silence_seconds_typed", 240.0),
+                ),
+                "cooldown_seconds_typed": float(
+                    getattr(s.agent, "proactive_cooldown_seconds_typed", 600.0),
+                ),
+            },
+            "activity": {
+                # Surfaced as a top-level block (not under ``proactive``)
+                # because it's a distinct privacy-critical opt-in. The
+                # frontend watches this flag to start/stop the activity
+                # reporter polling loop.
+                "awareness_enabled": bool(
+                    getattr(s.agent, "activity_awareness_enabled", False),
+                ),
             },
             "endpointing": {
                 "enabled": bool(getattr(s.endpointing, "enabled", True)),
@@ -511,6 +527,44 @@ def create_web_app(session: "SessionController") -> FastAPI:
                 session._proactive.update_runtime(cooldown_seconds=value)
             except Exception:
                 log.debug("proactive update_runtime failed", exc_info=True)
+        if "typed_enabled" in proactive:
+            session._settings.agent.proactive_typed_enabled = bool(
+                proactive["typed_enabled"]
+            )
+        if "silence_seconds_typed" in proactive:
+            try:
+                value = max(60.0, float(proactive["silence_seconds_typed"]))
+            except (TypeError, ValueError):
+                value = 240.0
+            session._settings.agent.proactive_silence_seconds_typed = value
+        if "cooldown_seconds_typed" in proactive:
+            try:
+                value = max(120.0, float(proactive["cooldown_seconds_typed"]))
+            except (TypeError, ValueError):
+                value = 600.0
+            session._settings.agent.proactive_cooldown_seconds_typed = value
+            try:
+                session._proactive.update_runtime(cooldown_seconds_typed=value)
+            except Exception:
+                log.debug(
+                    "proactive update_runtime (typed) failed", exc_info=True,
+                )
+        activity = payload.get("activity") or {}
+        if "awareness_enabled" in activity:
+            new_value = bool(activity["awareness_enabled"])
+            session._settings.agent.activity_awareness_enabled = new_value
+            # Privacy hygiene: when the user disables the toggle, drop
+            # any cached active-app string so a next-prompt build won't
+            # surface a stale "Jacob is in <App>" line. ``set_user_active_app``
+            # already short-circuits on the disabled gate, but we also
+            # null the cached field directly for completeness.
+            if not new_value:
+                try:
+                    session.set_user_active_app(None)
+                except Exception:
+                    log.debug(
+                        "clearing user_active_app failed", exc_info=True,
+                    )
         tools = payload.get("tools") or {}
         if tools:
             tcfg = session._settings.tools
@@ -1208,6 +1262,35 @@ def create_web_app(session: "SessionController") -> FastAPI:
 
                 elif msg_type == "ping":
                     await ws.send_text(json.dumps({"type": "pong"}))
+
+                elif msg_type == "presence":
+                    # Tab visibility / window focus from the React client.
+                    # Folded into a single boolean client-side (browser
+                    # ``visibilitychange`` AND-gated with Tauri
+                    # ``tauri://focus``/``blur``); the backend just
+                    # toggles the typed-mode proactive timer's gate.
+                    visible = bool(msg.get("visible", True))
+                    try:
+                        session.set_user_present(visible)
+                    except Exception:
+                        log.debug("set_user_present failed", exc_info=True)
+
+                elif msg_type == "user_activity":
+                    # Foreground app the user is in (Tauri shell only;
+                    # browser shells never emit this). Server-side gate
+                    # in ``set_user_active_app`` drops the value when
+                    # the privacy toggle is off, so a buggy client
+                    # can't leak the data even if it kept emitting.
+                    raw_app = msg.get("app")
+                    app_name: str | None
+                    if raw_app is None:
+                        app_name = None
+                    else:
+                        app_name = str(raw_app)
+                    try:
+                        session.set_user_active_app(app_name)
+                    except Exception:
+                        log.debug("set_user_active_app failed", exc_info=True)
 
         except WebSocketDisconnect:
             pass

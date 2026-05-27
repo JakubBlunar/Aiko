@@ -141,6 +141,17 @@ def _make_controller(
     controller._rag_prefetcher = None
     controller._prebuild_in_flight = False
     controller._listening_window_executor = None
+    # Typed-mode proactive timer fields wired by the lean rewrite —
+    # the merge code path now disarms / arms the timer at turn
+    # boundaries, so these need real values even though the merge
+    # tests don't exercise them.
+    controller._typed_silence_timer = None
+    controller._typed_silence_lock = threading.Lock()
+    controller._user_present = True
+    controller._typed_silence_armed_at = None
+    controller._typed_silence_armed_budget = None
+    controller._user_active_app = None
+    controller._live_voice_session_active = False
     controller._scheduler = MagicMock()
     controller._backchannel_gate = MagicMock()
     controller._backchannel_gate.consider.return_value = None
@@ -150,7 +161,14 @@ def _make_controller(
     controller._realtime_stt = _FakeRealtimeSTT("")
     settings = MagicMock()
     settings.tts.enabled = False  # Skip prosody/tts wiring for these tests.
+    # Disable typed-mode proactive timer wiring for merge tests — they
+    # exercise the chat loop end-to-end and we don't want a real
+    # ``threading.Timer`` to outlive the test fixture.
+    settings.agent.proactive_typed_enabled = False
+    settings.agent.proactive_silence_seconds_typed = 0.0
+    settings.agent.activity_awareness_enabled = False
     controller._settings = settings
+    controller._proactive = MagicMock()
     # Stubs for collaborators called in the metrics tail of
     # ``chat_once_streaming``. These run after ``run()`` returns and
     # have nothing to do with the merge logic.

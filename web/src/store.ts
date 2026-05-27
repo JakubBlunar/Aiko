@@ -202,6 +202,22 @@ interface AssistantState {
   toolActivity: ToolEvent[];
   pushToolEvent: (event: ToolEvent) => void;
   clearToolActivity: () => void;
+
+  /** Activity awareness toggle (desktop opt-in). Mirrors the settings
+   * drawer's checkbox so the activity reporter hook can start/stop
+   * the polling loop without a reload. Default ``false`` so a user
+   * who never opened the drawer still gets the privacy-respecting
+   * default. Browser shells render the toggle but can never produce
+   * a non-null active app, so flipping it has no observable effect. */
+  activityAwarenessEnabled: boolean;
+  setActivityAwarenessEnabled: (enabled: boolean) => void;
+  /** Last foreground app reported by the activity reporter loop, used
+   * solely for the live "Currently sees: <App>" readout under the
+   * settings toggle. ``null`` covers "couldn't determine", "user is
+   * in our own window", or "feature disabled". Never used for any
+   * decision, only display. */
+  liveActiveApp: string | null;
+  setLiveActiveApp: (app: string | null) => void;
 }
 
 export type ToastKind = "memory" | "info" | "warning";
@@ -660,6 +676,12 @@ export const useAssistantStore = create<AssistantState>((set) => ({
       return { toolActivity: trimmed };
     }),
   clearToolActivity: () => set({ toolActivity: [] }),
+
+  activityAwarenessEnabled: false,
+  setActivityAwarenessEnabled: (enabled) =>
+    set({ activityAwarenessEnabled: Boolean(enabled) }),
+  liveActiveApp: null,
+  setLiveActiveApp: (app) => set({ liveActiveApp: app ?? null }),
 }));
 
 // Convenience getter without subscribing (used inside the WS hook).

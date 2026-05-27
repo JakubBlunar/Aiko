@@ -46,6 +46,22 @@ export interface AssistantSettings {
   proactive?: {
     silence_seconds: number;
     cooldown_seconds: number;
+    /** Typed-mode (non-voice) proactive nudge knobs. Aiko may speak first
+     * after a long quiet period in typed chat. Independent of the voice-
+     * mode knobs above so the two cadences can differ. Gated client-side
+     * by browser visibility / Tauri window focus so a backgrounded app
+     * never gets nudged. */
+    typed_enabled: boolean;
+    silence_seconds_typed: number;
+    cooldown_seconds_typed: number;
+  };
+  /** Activity awareness (desktop opt-in). When enabled and running in
+   * the Tauri shell, the foreground app name is forwarded to the
+   * backend so Aiko can naturally reference it. App name only —
+   * never window titles or URLs. Off by default; browser users see
+   * the toggle but it's a no-op there (no signal source). */
+  activity?: {
+    awareness_enabled: boolean;
   };
   endpointing?: {
     enabled: boolean;
@@ -683,4 +699,14 @@ export type WsClientCommand =
   | { type: "clear" }
   | { type: "voice_start" }
   | { type: "voice_stop" }
-  | { type: "ping" };
+  | { type: "ping" }
+  /** Single boolean carrying both browser tab visibility AND Tauri
+   * window focus; the client AND-folds them so the backend doesn't
+   * need to know which signal flipped. Gates the typed-mode
+   * proactive-silence timer so a backgrounded UI never gets nudged. */
+  | { type: "presence"; visible: boolean }
+  /** Foreground app the user is in. Desktop-only; browser shells
+   * never emit this. ``null`` covers "couldn't determine" / "user
+   * is in our own window". Backend silently drops these events when
+   * ``activity.awareness_enabled`` is false. */
+  | { type: "user_activity"; app: string | null };

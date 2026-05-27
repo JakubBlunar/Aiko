@@ -58,4 +58,11 @@ export const desktop = {
   /** Toggle whether the persona window stays above other apps. */
   setPersonaAlwaysOnTop: (onTop: boolean) =>
     tauriInvoke<void>("set_persona_always_on_top", { onTop }),
+  /** Foreground application name (no window titles, no URLs).
+   * Returns ``null`` outside of Tauri AND on platforms where the
+   * underlying ``active-win-pos-rs`` crate can't resolve a name
+   * (Wayland, locked screen, ...). The settings drawer + activity
+   * reporter consult the result; the backend never sees an
+   * unresolved value. */
+  getActiveApp: () => tauriInvoke<string | null>("get_active_app"),
 };

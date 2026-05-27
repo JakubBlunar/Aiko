@@ -18,6 +18,10 @@
   "agent": {
     "proactive_silence_seconds": 45,
     "proactive_cooldown_seconds": 120,
+    "proactive_typed_enabled": true,
+    "proactive_silence_seconds_typed": 240,
+    "proactive_cooldown_seconds_typed": 600,
+    "activity_awareness_enabled": false,
     "summary_idle_seconds": 15,
     "summary_min_unsummarized_messages": 6,
     "summary_target_tokens": 600,

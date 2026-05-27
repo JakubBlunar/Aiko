@@ -98,6 +98,39 @@ fn set_persona_always_on_top(app: AppHandle, on_top: bool) -> Result<(), String>
         .map_err(|err| err.to_string())
 }
 
+// ── Activity awareness ──────────────────────────────────────────────────
+
+/// Return the foreground application's *name only* (never the window
+/// title or URL). Polled from the React side every few seconds when the
+/// user has opted in to activity awareness.
+///
+/// Privacy posture is enforced at every layer; this command sits at the
+/// outermost boundary:
+///   - We deliberately read ``w.app_name`` and never ``w.title``. Adding
+///     titles would leak bank URLs / file names / chat partner names; the
+///     trade-off is documented in ``docs/presence-and-activity.md``.
+///   - On Wayland sessions and unsupported platforms ``active-win-pos-rs``
+///     returns ``Err``; we map that to ``Ok(None)`` so the React side can
+///     simply send ``null`` and the backend silently skips the inner-life
+///     block instead of producing "Jacob is in (unknown)".
+///   - Self-app filtering (so Aiko isn't told "Jacob is in Aiko") happens
+///     on the React side because the bundle name is what the frontend
+///     already knows.
+#[tauri::command]
+fn get_active_app() -> Result<Option<String>, String> {
+    match active_win_pos_rs::get_active_window() {
+        Ok(window) => {
+            let name = window.app_name.trim().to_string();
+            if name.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(name))
+            }
+        }
+        Err(_) => Ok(None),
+    }
+}
+
 // ── Setup ───────────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -110,6 +143,7 @@ pub fn run() {
             is_persona_visible,
             set_persona_geometry,
             set_persona_always_on_top,
+            get_active_app,
         ])
         .setup(|app| {
             install_tray(app.handle())?;

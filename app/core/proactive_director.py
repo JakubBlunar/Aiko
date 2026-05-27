@@ -61,6 +61,23 @@ _PROACTIVE_HINT = (
 )
 
 
+# Typed-mode hint. Crucially does NOT mention "Jacob has been quiet" — at
+# the much longer typed thresholds (4 min default), framing the silence as
+# "she noticed I was quiet" reads as abandonment-anxiety. Instead, frame
+# this as Aiko continuing the thread herself (her agency, not his absence)
+# and explicitly invite a room-moment as a valid topic since the world
+# inner-life block is already in scope when this prompt is built.
+_PROACTIVE_HINT_TYPED = (
+    "[Aiko speaks first to continue the thread. Pick ONE of: "
+    "a callback to something Jacob said recently, a small thought "
+    "you've been turning over, or a brief in-character moment from "
+    "your room (something you noticed, made, or fiddled with). ONE "
+    "OR TWO SENTENCES. Don't greet, don't restart the chat, don't "
+    "comment on Jacob being quiet — just continue naturally as if "
+    "you'd been there the whole time.]"
+)
+
+
 class ProactiveDirector:
     def __init__(
         self,
@@ -79,6 +96,15 @@ class ProactiveDirector:
         notify_message: NotifyMessageCallback | None = None,
         prepared_nudge_store: object | None = None,
         user_id: str = "default",
+        # Typed-mode (non-voice) parameters. ``is_typed_eligible`` returns
+        # True when the SessionController is willing to accept a typed
+        # proactive nudge right now — it folds enabled / presence / not-
+        # voice / not-busy into one predicate so this class doesn't have
+        # to know about settings or live-mode internals. Cooldown is
+        # tracked independently from voice so the two modes can have
+        # very different cadences (10 min typed vs 2 min voice default).
+        cooldown_seconds_typed: float = 600.0,
+        is_typed_eligible: BoolPredicate | None = None,
     ) -> None:
         self._ollama = ollama
         self._db = db
@@ -100,6 +126,16 @@ class ProactiveDirector:
         self._inflight = False
         self._prepared_consumed = 0
         self._llm_path_used = 0
+
+        # Typed-mode state. Lives behind the same lock as the voice
+        # state so we can never end up running both code paths in
+        # parallel against the same DB row.
+        self._cooldown_typed = float(cooldown_seconds_typed)
+        self._is_typed_eligible = is_typed_eligible
+        self._last_typed_run_monotonic = 0.0
+        self._typed_inflight = False
+        self._typed_prepared_consumed = 0
+        self._typed_llm_path_used = 0
 
     # ── public ────────────────────────────────────────────────────────
 
@@ -128,17 +164,60 @@ class ProactiveDirector:
             name="proactive-director",
         ).start()
 
+    def notify_typed_silence(self, session_key: str) -> None:
+        """Possibly speak a proactive line in TYPED mode.
+
+        Mirrors :meth:`notify_silence` but is gated by
+        ``is_typed_eligible`` (which the owner builds from
+        enabled-flag + presence + not-voice + not-busy + ...) instead
+        of ``is_live_mode``, and uses an independent cooldown clock so
+        a recent voice-mode ping doesn't muzzle the typed one and vice
+        versa. Voice mode dominance is the responsibility of the
+        eligibility predicate — this method does not consult
+        ``is_live_mode`` directly.
+        """
+        if not session_key:
+            return
+        eligible = self._is_typed_eligible
+        if eligible is None or not eligible():
+            return
+        if self._is_busy():
+            log.debug("proactive(typed) skip: chat in progress")
+            return
+        with self._lock:
+            since = time.monotonic() - self._last_typed_run_monotonic
+            if since < self._cooldown_typed:
+                log.debug(
+                    "proactive(typed) skip: cooldown %.1fs/%.1fs",
+                    since,
+                    self._cooldown_typed,
+                )
+                return
+            if self._typed_inflight:
+                log.debug("proactive(typed) skip: already running")
+                return
+            self._typed_inflight = True
+        threading.Thread(
+            target=self._run_typed_safe,
+            args=(session_key,),
+            daemon=True,
+            name="proactive-director-typed",
+        ).start()
+
     def update_runtime(
         self,
         *,
         model: str | None = None,
         cooldown_seconds: float | None = None,
+        cooldown_seconds_typed: float | None = None,
         context_window: int | None = None,
     ) -> None:
         if model is not None:
             self._model = model
         if cooldown_seconds is not None:
             self._cooldown = float(cooldown_seconds)
+        if cooldown_seconds_typed is not None:
+            self._cooldown_typed = float(cooldown_seconds_typed)
         if context_window is not None:
             self._context_window = int(context_window)
 
@@ -274,8 +353,133 @@ class ProactiveDirector:
         )
         return True
 
+    # ── typed-mode runners ───────────────────────────────────────────────
+
+    def _run_typed_safe(self, session_key: str) -> None:
+        try:
+            self._run_typed(session_key)
+        except Exception as exc:
+            log.warning("proactive(typed) run failed: %s", exc)
+        finally:
+            with self._lock:
+                self._typed_inflight = False
+                self._last_typed_run_monotonic = time.monotonic()
+
+    def _run_typed(self, session_key: str) -> None:
+        if self._db.get_message_count(session_key) <= 0:
+            log.debug("proactive(typed) skip: no history yet")
+            return
+
+        # Same prepared-nudge fast path as voice mode: prefer a fresh
+        # callback / open-question / promise / agenda woven by the
+        # NarrativeWeaver. Falls back to the LLM hint below when nothing
+        # is queued.
+        prepared = self._consume_prepared_nudge()
+        if prepared is not None and self._speak_prepared_typed(session_key, prepared):
+            return
+
+        messages = self._prompt.build(
+            session_key,
+            _PROACTIVE_HINT_TYPED,
+            context_window=self._context_window,
+            response_budget=self._max_tokens,
+        )
+
+        t0 = time.monotonic()
+        try:
+            content, usage = self._ollama.chat_json(
+                messages,
+                model=self._model,
+                timeout_seconds=self._timeout,
+                options={"temperature": 0.7, "num_predict": self._max_tokens},
+                format_json=False,
+            )
+        except Exception as exc:
+            log.info("proactive(typed) call failed: %s", exc)
+            return
+
+        # Re-check eligibility before speaking — the user may have
+        # started typing, alt-tabbed away, or flipped to voice mode
+        # while the LLM call was in flight.
+        eligible = self._is_typed_eligible
+        if self._is_busy() or eligible is None or not eligible():
+            log.debug("proactive(typed): discarding (state changed mid-call)")
+            return
+
+        _mood, body = parse_reaction_at_start(content or "")
+        body = strip_all_meta_tags(body)
+        cleaned = sanitize_assistant_text(body)
+        if not cleaned:
+            log.debug("proactive(typed): empty output")
+            return
+
+        self._db.add_message(
+            session_id=session_key,
+            role="assistant",
+            content=cleaned,
+            token_count=usage.completion_tokens,
+        )
+        if self._notify_message is not None:
+            try:
+                self._notify_message("Assistant (proactive)", cleaned)
+            except Exception:
+                log.debug("notify_message raised", exc_info=True)
+        # Typed mode is text-only by design: the assumption is the
+        # user is reading, not listening, so auto-speaking a 4-min-
+        # later "pick up the thread" line just to fill the room would
+        # surprise them. TTS toggle for typed proactive is on the
+        # backlog as a follow-up.
+        self._typed_llm_path_used += 1
+        log.info(
+            "proactive(typed) wrote %d chars (%d/%d tokens, %.0f ms)",
+            len(cleaned),
+            usage.prompt_tokens,
+            usage.completion_tokens,
+            (time.monotonic() - t0) * 1000.0,
+        )
+
+    def _speak_prepared_typed(self, session_key: str, nudge: object) -> bool:
+        """Persist a prepared nudge as a typed-mode proactive turn.
+
+        Mirrors :meth:`_speak_prepared` but skips the TTS enqueue —
+        typed proactive is text-only by design.
+        """
+        text = getattr(nudge, "text", "")
+        if not text:
+            return False
+        eligible = self._is_typed_eligible
+        if self._is_busy() or eligible is None or not eligible():
+            log.debug("proactive(typed) prepared: discarding (state changed)")
+            return False
+        cleaned = sanitize_assistant_text(text)
+        if not cleaned:
+            return False
+        try:
+            self._db.add_message(
+                session_id=session_key,
+                role="assistant",
+                content=cleaned,
+                token_count=0,
+            )
+        except Exception:
+            log.debug("prepared nudge persist failed", exc_info=True)
+        if self._notify_message is not None:
+            try:
+                self._notify_message("Assistant (proactive)", cleaned)
+            except Exception:
+                log.debug("notify_message raised", exc_info=True)
+        self._typed_prepared_consumed += 1
+        log.info(
+            "proactive(typed) wrote prepared nudge (kind=%s, %d chars)",
+            getattr(nudge, "source_kind", "?"),
+            len(cleaned),
+        )
+        return True
+
     def stats(self) -> dict[str, int]:
         return {
             "prepared_consumed": int(self._prepared_consumed),
             "llm_path_used": int(self._llm_path_used),
+            "typed_prepared_consumed": int(self._typed_prepared_consumed),
+            "typed_llm_path_used": int(self._typed_llm_path_used),
         }

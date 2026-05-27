@@ -8,7 +8,10 @@ import { Toasts } from "./components/Toasts";
 import { desktop } from "./desktop/commands";
 import { listenPersonaVisibility } from "./desktop/events";
 import { isTauri } from "./desktop/runtime";
+import { api } from "./api";
+import { useActivityReporter } from "./hooks/useActivityReporter";
 import { useAssistantSocket } from "./hooks/useAssistantSocket";
+import { usePresenceReporter } from "./hooks/usePresenceReporter";
 import { useAssistantStore } from "./store";
 
 /** Tiny hash-router. ``location.hash === "#/persona"`` -> the persona
@@ -84,6 +87,44 @@ export default function App() {
   // to know its own visibility (it can ask the OS / DOM directly) and
   // shouldn't double-subscribe to the event bus.
   usePersonaVisibilitySync();
+
+  // Forward browser tab visibility + Tauri window focus to the backend
+  // as a single boolean so the typed-mode proactive timer can pause
+  // while the user is heads-down in another app. Wired in the main
+  // window only — the persona-window route renders its own component
+  // tree and doesn't need to double-report.
+  usePresenceReporter({ send });
+
+  // Activity awareness (desktop opt-in, default off). Polls the Tauri
+  // shell for the foreground app name when the toggle is on; complete
+  // no-op on the browser AND when the toggle is off.
+  const activityEnabled = useAssistantStore(
+    (s) => s.activityAwarenessEnabled,
+  );
+  const setActivityAwarenessEnabled = useAssistantStore(
+    (s) => s.setActivityAwarenessEnabled,
+  );
+  // Seed the toggle from /api/settings on mount so the activity
+  // reporter picks up a previously-saved opt-in without waiting for
+  // the user to open the settings drawer. Failure is non-fatal:
+  // default ``false`` already gives the privacy-respecting behaviour.
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .getSettings()
+      .then((settings) => {
+        if (cancelled) return;
+        const flag = Boolean(settings.activity?.awareness_enabled);
+        setActivityAwarenessEnabled(flag);
+      })
+      .catch(() => {
+        /* offline or stale backend — leave toggle at default */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [setActivityAwarenessEnabled]);
+  useActivityReporter({ send, enabled: activityEnabled });
 
   if (route === "persona") {
     return <PersonaWindow send={send} />;
