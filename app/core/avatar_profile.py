@@ -159,6 +159,22 @@ class AvatarProfile:
     # bindings (missing or unparseable exp3) silently absent — the
     # renderer falls back to the manager's natural amplitude.
     expression_params: dict[str, list[ExpressionParam]] = field(default_factory=dict)
+    # Param IDs that draw a *stylised mouth shape* on top of the
+    # rig's actual mouth (``ParamMouthOpenY`` / lip-sync params).
+    # On Alexia this is ``["Param54"]`` (= 咧嘴笑 = "toothy grin"),
+    # which the ``lzx`` expression activates: it paints a fixed
+    # grin overlay independent of the lip-synced jaw motion. When
+    # the rig speaks while a grin-bearing expression is active,
+    # both mouths are visible at once — the static toothy grin and
+    # the flapping lip-sync mouth.
+    #
+    # The renderer's ``ExpressionChannel.tickPreModel`` reads this
+    # list and tapers any expression-param binding whose id lands
+    # here against the live audio amplitude, so the grin fades out
+    # while she's speaking and snaps back in when she stops. Empty
+    # on rigs without a stylised mouth overlay (the plain
+    # ``ParamMouthOpenY`` does not belong here).
+    mouth_overlay_param_ids: list[str] = field(default_factory=list)
     # All param IDs whose cdi3 ``Name`` matched a cat-tail synonym,
     # in declaration order. The renderer uses this to drive the
     # arousal-modulated tail wag without hardcoding segment counts.
@@ -266,6 +282,22 @@ _EAR_SEGMENT_SYNONYMS: tuple[str, ...] = (
     "left ear",
     "right ear",
     "ear segment",
+)
+
+
+# Synonyms for params that paint a *stylised mouth shape* on top of
+# the rig's real mouth — the toothy-grin overlay is the canonical
+# example. We intentionally do NOT include ``"smile"`` here: a soft
+# closed-mouth smile doesn't conflict with lip-sync (it doesn't draw
+# a competing mouth artwork). Only overlays that visibly add a
+# second mouth belong here. Substring match against the cdi3
+# ``Name`` field, case-insensitive, multi-language.
+_MOUTH_OVERLAY_SYNONYMS: tuple[str, ...] = (
+    "咧嘴笑",
+    "咧嘴",
+    "grin",
+    "smirk",
+    "toothy",
 )
 
 
@@ -468,6 +500,7 @@ def from_disk(root: Path | str, *, display_name: str = "") -> AvatarProfile:
         capabilities=capabilities,
     )
     expression_params = _build_expression_params(expressions, root_path)
+    mouth_overlay_param_ids = _detect_mouth_overlay_param_ids(parameters)
     idle_motion_group = _pick_motion_group(motions, ("idle", "tick", "loop"))
     talk_motion_group = _pick_motion_group(motions, ("tap", "talk", "anim", "story"))
 
@@ -488,6 +521,7 @@ def from_disk(root: Path | str, *, display_name: str = "") -> AvatarProfile:
         overlays=overlays,
         outfits=outfits,
         expression_params=expression_params,
+        mouth_overlay_param_ids=mouth_overlay_param_ids,
         cat_tail_param_ids=cat_tail_param_ids,
         cat_ear_param_ids=cat_ear_param_ids,
     )
@@ -794,6 +828,37 @@ def _detect_capabilities(
         cat_tail_param_ids,
         cat_ear_param_ids,
     )
+
+
+def _detect_mouth_overlay_param_ids(
+    parameters: list[dict[str, str]],
+) -> list[str]:
+    """Return param IDs that paint a stylised mouth shape on the rig.
+
+    Substring-matches the cdi3 ``Name`` field against
+    :data:`_MOUTH_OVERLAY_SYNONYMS`. The frontend
+    ``ExpressionChannel`` reads this list and tapers the relevant
+    expression-param writes against live audio amplitude so the
+    grin overlay fades while she's speaking — see the channel for
+    details. Empty list when no matching param exists, in which
+    case the renderer's lipsync layer runs unmodified.
+
+    Order is preserved (declaration order from the cdi3) for
+    determinism, and duplicates are filtered.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for param in parameters:
+        label = (param.get("name") or "").lower()
+        pid = param.get("id") or ""
+        if not pid or pid in seen:
+            continue
+        if not label:
+            continue
+        if any(syn.lower() in label for syn in _MOUTH_OVERLAY_SYNONYMS):
+            out.append(pid)
+            seen.add(pid)
+    return out
 
 
 def _build_expression_params(

@@ -284,6 +284,14 @@ export interface AvatarProfile {
    * quieter at low arousal. Optional for forward compatibility with
    * minimal rigs / older cached payloads. */
   expression_params?: Record<string, ExpressionParam[]>;
+  /** Param IDs that paint a stylised mouth-shape overlay on top of
+   * the rig's real lip-synced mouth (e.g. ``Param54`` "Grin" on
+   * Alexia). When non-empty, ``ExpressionChannel`` tapers any
+   * expression-param write whose id is in this list against the
+   * live audio amplitude — so the grin fades out while Aiko is
+   * speaking and snaps back in as soon as she falls silent.
+   * Optional for backwards compatibility with cached payloads. */
+  mouth_overlay_param_ids?: string[];
   /** All cat-tail param IDs in declaration order. Empty when the
    * loaded model isn't a cat-girl rig. */
   cat_tail_param_ids: string[];
