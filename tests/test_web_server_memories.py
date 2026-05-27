@@ -88,6 +88,7 @@ class _MemoryState:
         kind: str = "fact",
         salience: float = 0.6,
         tier: str = "long_term",
+        confidence: float | None = None,
     ) -> dict[str, Any] | None:
         cleaned = content.strip()
         if cleaned in self._dedupe_targets:
@@ -123,6 +124,7 @@ class _MemoryState:
         kind: str | None = None,
         salience: float | None = None,
         tier: str | None = None,
+        confidence: float | None = None,
     ) -> dict[str, Any] | None:
         row = self.rows.get(int(memory_id))
         if row is None:

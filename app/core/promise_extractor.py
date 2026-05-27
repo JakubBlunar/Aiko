@@ -398,6 +398,11 @@ class PromiseExtractor:
                 # commitments. Anchor them in long_term immediately so
                 # the promotion worker never has a chance to drop them.
                 tier="long_term",
+                # Schema v9: promises were extracted from a literal
+                # user/assistant statement of intent ("I'll do X"), so
+                # the confidence floor is meaningfully higher than the
+                # MemoryExtractor baseline of 0.7.
+                confidence=0.85,
             )
         except Exception:
             log.debug("promise insert failed", exc_info=True)

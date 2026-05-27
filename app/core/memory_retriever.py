@@ -86,7 +86,14 @@ class MemoryRetriever:
             if key in seen:
                 continue
             seen.add(key)
-            lines.append(f"- {content}")
+            # Schema v9: tag low-confidence memories with "(uncertain)"
+            # so the LLM hedges. Confidence lives on Memory itself; we
+            # have direct access here (unlike the LanceDB-backed path).
+            suffix = ""
+            confidence = getattr(hit.memory, "confidence", None)
+            if confidence is not None and float(confidence) < 0.5:
+                suffix = " (uncertain)"
+            lines.append(f"- {content}{suffix}")
         if len(lines) == 1:
             return ""
         return "\n".join(lines)

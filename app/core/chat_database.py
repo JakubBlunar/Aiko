@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_SCHEMA_VERSION = 8
+_SCHEMA_VERSION = 9
 
 _CREATE_TABLES = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -70,7 +70,14 @@ CREATE TABLE IF NOT EXISTS memories (
     -- >= memory_revival_min_word_overlap). The decay pass applies a
     -- small rebate proportional to revival_score so high-revival rows
     -- drift toward salience=1.0 and act like soft pins.
-    revival_score REAL NOT NULL DEFAULT 0.0
+    revival_score REAL NOT NULL DEFAULT 0.0,
+    -- Schema v9: confidence in [0, 1]. Default 0.7 = "MemoryExtractor
+    -- wrote this from chat". Self-tags clamp to 0.85, tool-result
+    -- writes 0.95, pinned rows clamp to >= 0.9. The F1 background
+    -- fact-checker mutates this column up on positive verification and
+    -- down on contradiction. RAG demotes low-confidence hits during
+    -- retrieval; the prompt assembler tags them "(uncertain)".
+    confidence REAL NOT NULL DEFAULT 0.7
 );
 CREATE INDEX IF NOT EXISTS idx_memories_kind ON memories(kind);
 CREATE INDEX IF NOT EXISTS idx_memories_salience ON memories(salience);
@@ -427,6 +434,23 @@ class ChatDatabase:
         try:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_memories_tier ON memories(tier)"
+            )
+        except sqlite3.OperationalError:
+            pass
+        # v8 -> v9: ``memories.confidence`` column for the F3 confidence
+        # tier work. Existing rows default to ``0.7`` (the
+        # MemoryExtractor baseline). Pinned rows backfill to ``0.9`` so
+        # the user-curated anchor never sits below the pin clamp.
+        try:
+            conn.execute(
+                "ALTER TABLE memories ADD COLUMN confidence REAL NOT NULL DEFAULT 0.7"
+            )
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute(
+                "UPDATE memories SET confidence = 0.9 "
+                "WHERE pinned = 1 AND confidence < 0.9"
             )
         except sqlite3.OperationalError:
             pass

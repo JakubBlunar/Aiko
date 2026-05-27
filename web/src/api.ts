@@ -161,6 +161,33 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ pinned }),
     }),
+  // ── Knowledge gaps (F2) ──────────────────────────────────────────
+  listKnowledgeGaps: (includeResolved: boolean = false) =>
+    jsonFetch<{ gaps: Memory[]; total: number }>(
+      `/api/knowledge-gaps?include_resolved=${includeResolved ? "true" : "false"}`,
+    ),
+  deleteKnowledgeGap: (id: number) =>
+    jsonFetch<{ deleted: number }>(`/api/knowledge-gaps/${id}`, {
+      method: "DELETE",
+    }),
+  resolveKnowledgeGap: (id: number, answer?: string) =>
+    jsonFetch<{ gap: Memory }>(`/api/knowledge-gaps/${id}/resolve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(answer !== undefined ? { answer } : {}),
+    }),
+  // ── Fact-checker status (F1) ─────────────────────────────────────
+  factCheckerStatus: () =>
+    jsonFetch<{
+      enabled: boolean;
+      pending: number;
+      queue_total: number;
+      last_verified_at: string | null;
+      hour_used: number;
+      hour_cap: number;
+      day_used: number;
+      day_cap: number;
+    }>("/api/fact-checker/status"),
   getAvatar: () => jsonFetch<AvatarResponse>("/api/avatar"),
   patchAvatarSettings: async (
     patch: Partial<AvatarSettingsKnobs>,

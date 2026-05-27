@@ -234,6 +234,13 @@ export interface Memory {
   /** Schema v8 revival score in [0, 1]; persistent positive revival
    * drifts ``salience`` up via the decay rebate. */
   revival_score?: number;
+  /** Schema v9 confidence in [0, 1]. Defaults to ``0.7`` for legacy
+   * rows after migration. Below ``0.5`` the RAG retriever demotes the
+   * memory and the prompt assembler tags it ``(uncertain)``. F1's
+   * background fact-checker pushes this up on positive verification
+   * and down on contradiction (and sets ``metadata.flags.conflict``).
+   */
+  confidence?: number;
 }
 
 /** Closed vibe vocabulary mirrored from ``shared_moment_extractor.VIBE_VOCABULARY``. */

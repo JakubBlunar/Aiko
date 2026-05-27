@@ -29,7 +29,12 @@ log = logging.getLogger("app.memory_decay_worker")
 
 
 class MemoryDecayWorker:
-    """IdleWorker wrapping :meth:`MemoryStore.decay`."""
+    """IdleWorker wrapping :meth:`MemoryStore.decay`.
+
+    Also piggy-backs the F2 knowledge-gap expiry pass (90-day TTL on
+    unresolved unpinned gaps) so we don't need a second worker just to
+    sweep stale journal rows.
+    """
 
     name = "memory_decay"
 
@@ -37,9 +42,16 @@ class MemoryDecayWorker:
         self,
         store: "MemoryStore",
         settings: "MemorySettings",
+        *,
+        knowledge_gap_store: "Any | None" = None,
     ) -> None:
         self._store = store
         self._settings = settings
+        # F2: optional handle to the knowledge-gap store. Wired by
+        # ``SessionController`` so the decay worker can also run the
+        # 90-day expiry pass on the journal. ``None`` keeps tests and
+        # lean deployments running without the extra hook.
+        self._knowledge_gap_store = knowledge_gap_store
 
     @property
     def interval_seconds(self) -> float:
@@ -76,7 +88,22 @@ class MemoryDecayWorker:
             log.warning("memory decay failed", exc_info=True)
             raise
         log.info("memory_decay sweep: %s", stats)
-        return dict(stats) if isinstance(stats, dict) else {}
+        # F2: piggyback gap expiry. Best-effort — if it fails, the
+        # decay sweep result still counts as a successful tick.
+        out: dict[str, Any] = dict(stats) if isinstance(stats, dict) else {}
+        gap_store = self._knowledge_gap_store
+        if gap_store is not None:
+            try:
+                pruned = gap_store.prune_expired()
+                if pruned:
+                    out["knowledge_gaps_expired"] = int(pruned)
+                    log.info(
+                        "memory_decay: expired %d stale knowledge gap(s)",
+                        pruned,
+                    )
+            except Exception:
+                log.debug("knowledge gap expiry failed", exc_info=True)
+        return out
 
 
 __all__ = ["MemoryDecayWorker"]

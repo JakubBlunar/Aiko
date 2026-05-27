@@ -76,6 +76,15 @@ VALID_KINDS = {
     # "Together" UI tab. Written by inline ``[[moment:vibe:text]]`` tags,
     # by the speaking-window LLM detector, or by an explicit user click.
     "shared_moment",
+    # F2 personality backlog — explicit "I'm not sure / I don't know"
+    # journal entry. Written by ``KnowledgeGapStore`` from inline
+    # ``[[gap:topic:question]]`` tags Aiko emits in raw output. Carries
+    # ``{topic, question, resolved_at, resolved_by_memory_id,
+    # source_turn_id}`` in the ``metadata`` JSON column. F1's idle
+    # fact-checker can resolve gaps by stamping ``resolved_at`` and
+    # writing the answer as a sibling memory. Confidence defaults to
+    # ``0.0`` (the row is a question, not a fact).
+    "knowledge_gap",
 }
 
 
@@ -119,6 +128,17 @@ class Memory:
     # high-revival rows drift toward salience=1.0 and act like soft
     # pins.
     revival_score: float = 0.0
+    # Schema v9 — confidence in [0, 1]. Default ``0.7`` matches what
+    # :class:`MemoryExtractor` writes from chat. Self-tagged
+    # ``[[remember:...]]`` rows clamp to ``0.85``, manual UI creates to
+    # ``1.0``, tool-result writes to ``0.95``. Pinning a row also clamps
+    # confidence to ``>= 0.9`` (see :meth:`MemoryStore.set_pinned`). F1's
+    # background fact-checker pushes confidence up on positive
+    # verification and down on contradiction. RAG demotes low-confidence
+    # hits during retrieval; the prompt assembler appends ``(uncertain)``
+    # to lines with ``confidence < 0.5``. Knowledge-gap rows default to
+    # ``0.0`` since they're open questions, not facts.
+    confidence: float = 0.7
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -135,6 +155,7 @@ class Memory:
             "metadata": dict(self.metadata) if self.metadata else {},
             "tier": str(self.tier),
             "revival_score": float(self.revival_score),
+            "confidence": float(self.confidence),
         }
 
 
@@ -295,35 +316,45 @@ class MemoryStore:
 
     def _reload_mirror(self) -> None:
         conn = self._get_conn()
-        # Try the v8 shape first (tier + revival_score). Fall back to v7
-        # (metadata only), then v6 (no metadata). Pre-v6 databases land
-        # in the bottom-most ``except`` and start with an empty mirror.
+        # Try the v9 shape first (tier + revival_score + confidence).
+        # Fall back to v8 (no confidence), v7 (no tier/revival), v6 (no
+        # metadata). Pre-v6 databases land in the bottom-most ``except``
+        # and start with an empty mirror.
         try:
             rows = conn.execute(
                 "SELECT id, content, kind, salience, embedding, source_session, "
                 "source_message_id, created_at, last_used_at, use_count, pinned, "
-                "metadata, tier, revival_score FROM memories"
+                "metadata, tier, revival_score, confidence FROM memories"
             ).fetchall()
         except sqlite3.OperationalError:
             try:
                 rows = conn.execute(
                     "SELECT id, content, kind, salience, embedding, source_session, "
                     "source_message_id, created_at, last_used_at, use_count, pinned, "
-                    "metadata FROM memories"
+                    "metadata, tier, revival_score FROM memories"
                 ).fetchall()
-                # Append default (tier, revival_score) for pre-v8 rows.
-                rows = [(*r, _DEFAULT_TIER, 0.0) for r in rows]
+                # Append default confidence=0.7 for pre-v9 rows.
+                rows = [(*r, 0.7) for r in rows]
             except sqlite3.OperationalError:
                 try:
                     rows = conn.execute(
                         "SELECT id, content, kind, salience, embedding, source_session, "
-                        "source_message_id, created_at, last_used_at, use_count, pinned "
-                        "FROM memories"
+                        "source_message_id, created_at, last_used_at, use_count, pinned, "
+                        "metadata FROM memories"
                     ).fetchall()
-                    rows = [(*r, None, _DEFAULT_TIER, 0.0) for r in rows]
+                    # Append default (tier, revival_score, confidence) for pre-v8 rows.
+                    rows = [(*r, _DEFAULT_TIER, 0.0, 0.7) for r in rows]
                 except sqlite3.OperationalError:
-                    self._mirror = {}
-                    return
+                    try:
+                        rows = conn.execute(
+                            "SELECT id, content, kind, salience, embedding, source_session, "
+                            "source_message_id, created_at, last_used_at, use_count, pinned "
+                            "FROM memories"
+                        ).fetchall()
+                        rows = [(*r, None, _DEFAULT_TIER, 0.0, 0.7) for r in rows]
+                    except sqlite3.OperationalError:
+                        self._mirror = {}
+                        return
         with self._lock:
             self._mirror = {
                 r[0]: Memory(
@@ -341,6 +372,7 @@ class MemoryStore:
                     metadata=_decode_metadata(r[11]),
                     tier=_normalize_tier(r[12], pinned=bool(r[10])),
                     revival_score=max(0.0, min(1.0, float(r[13] or 0.0))),
+                    confidence=max(0.0, min(1.0, float(r[14] if r[14] is not None else 0.7))),
                 )
                 for r in rows
             }
@@ -370,6 +402,7 @@ class MemoryStore:
         pinned: bool = False,
         skip_dedupe: bool = False,
         tier: str | None = None,
+        confidence: float | None = None,
     ) -> Memory | None:
         """Insert a memory, deduplicating against near-identical existing rows.
 
@@ -388,6 +421,11 @@ class MemoryStore:
         ``tier`` selects ``scratchpad`` / ``long_term`` / ``archive``.
         Defaults to ``long_term`` (safety default for callers that forget).
         Pinned rows are always coerced to ``long_term``.
+
+        ``confidence`` in [0, 1] is the F3 confidence-tier value. ``None``
+        means "use the kind-aware default" (``0.85`` for ``self_tagged``,
+        ``0.7`` for everything else; ``0.0`` for ``knowledge_gap`` which is
+        a question, not a fact). Pinned rows clamp confidence to ``>= 0.9``.
         """
         cleaned = (content or "").strip()
         if not cleaned or len(cleaned) < 4:
@@ -404,6 +442,18 @@ class MemoryStore:
         if norm > 0.0:
             emb = emb / norm
         tier_normalized = _normalize_tier(tier, pinned=pinned)
+        if confidence is None:
+            if kind == "knowledge_gap":
+                confidence_value = 0.0
+            elif kind in ("self_tagged", "self"):
+                confidence_value = 0.85
+            else:
+                confidence_value = 0.7
+        else:
+            confidence_value = float(confidence)
+        confidence_value = max(0.0, min(1.0, confidence_value))
+        if pinned and confidence_value < 0.9:
+            confidence_value = 0.9
 
         # Dedupe pass against in-memory mirror. Pinned writes bypass dedupe
         # so user-curated moments are never silently merged into a fuzzy
@@ -428,8 +478,8 @@ class MemoryStore:
             "INSERT INTO memories ("
             "  content, kind, salience, embedding, source_session, "
             "  source_message_id, created_at, last_used_at, use_count, pinned, "
-            "  metadata, tier, revival_score"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 0.0)",
+            "  metadata, tier, revival_score, confidence"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 0.0, ?)",
             (
                 cleaned,
                 kind,
@@ -442,6 +492,7 @@ class MemoryStore:
                 pinned_int,
                 meta_json,
                 tier_normalized,
+                confidence_value,
             ),
         )
         conn.commit()
@@ -461,6 +512,7 @@ class MemoryStore:
             metadata=dict(metadata) if metadata else {},
             tier=tier_normalized,
             revival_score=0.0,
+            confidence=confidence_value,
         )
         with self._lock:
             self._mirror[new_id] = memory
@@ -578,6 +630,7 @@ class MemoryStore:
         metadata_merge: bool = False,
         tier: str | None = None,
         revival_score: float | None = None,
+        confidence: float | None = None,
     ) -> Memory | None:
         """Patch one or more fields on an existing memory.
 
@@ -649,10 +702,16 @@ class MemoryStore:
         if revival_score is not None:
             new_revival = max(0.0, min(1.0, float(revival_score)))
 
+        new_confidence = mem.confidence
+        if confidence is not None:
+            new_confidence = max(0.0, min(1.0, float(confidence)))
+            if mem.pinned and new_confidence < 0.9:
+                new_confidence = 0.9
+
         conn = self._get_conn()
         conn.execute(
             "UPDATE memories SET content = ?, kind = ?, salience = ?, embedding = ?, "
-            "metadata = ?, tier = ?, revival_score = ? WHERE id = ?",
+            "metadata = ?, tier = ?, revival_score = ?, confidence = ? WHERE id = ?",
             (
                 new_content,
                 new_kind,
@@ -661,6 +720,7 @@ class MemoryStore:
                 _encode_metadata(new_metadata),
                 new_tier,
                 float(new_revival),
+                float(new_confidence),
                 int(memory_id),
             ),
         )
@@ -675,6 +735,7 @@ class MemoryStore:
                 mem.metadata = new_metadata
             mem.tier = new_tier
             mem.revival_score = new_revival
+            mem.confidence = new_confidence
             updated = mem
 
         if self._rag is not None:
@@ -712,19 +773,29 @@ class MemoryStore:
         new_pinned = 1 if pinned else 0
         new_salience = mem.salience
         new_tier = mem.tier
+        new_confidence = mem.confidence
         if pinned:
             new_salience = max(new_salience, 1.0)
             new_tier = "long_term"
+            new_confidence = max(new_confidence, 0.9)
         conn = self._get_conn()
         conn.execute(
-            "UPDATE memories SET pinned = ?, salience = ?, tier = ? WHERE id = ?",
-            (new_pinned, float(new_salience), new_tier, int(memory_id)),
+            "UPDATE memories SET pinned = ?, salience = ?, tier = ?, confidence = ? "
+            "WHERE id = ?",
+            (
+                new_pinned,
+                float(new_salience),
+                new_tier,
+                float(new_confidence),
+                int(memory_id),
+            ),
         )
         conn.commit()
         with self._lock:
             mem.pinned = bool(pinned)
             mem.salience = new_salience
             mem.tier = new_tier
+            mem.confidence = new_confidence
             updated = mem
         if self._rag is not None and pinned:
             # Mirror the salience bump so retrieval scoring matches what

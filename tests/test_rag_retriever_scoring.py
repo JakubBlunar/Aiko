@@ -146,6 +146,37 @@ class _RecordingMemoryStore:
         self.mark_used_calls.append([int(i) for i in ids])
 
 
+class _ConfidenceJoinMemoryStore:
+    """Memory store stub that returns canned confidence per id.
+
+    Mirrors the duck-typed surface ``RagRetriever`` calls during the
+    join: ``get(id)`` returning an object with ``pinned``, ``tier``,
+    ``metadata``, ``kind``, and ``confidence`` attributes, plus the
+    obligatory ``mark_used``.
+    """
+
+    def __init__(self, confidences: dict[int, float]) -> None:
+        self._confidences = {int(k): float(v) for k, v in confidences.items()}
+        self.mark_used_calls: list[list[int]] = []
+
+    def get(self, memory_id: int):  # type: ignore[no-untyped-def]
+        if int(memory_id) not in self._confidences:
+            return None
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            id=int(memory_id),
+            pinned=False,
+            tier="long_term",
+            metadata={},
+            kind="fact",
+            confidence=self._confidences[int(memory_id)],
+        )
+
+    def mark_used(self, ids):  # type: ignore[no-untyped-def]
+        self.mark_used_calls.append([int(i) for i in ids])
+
+
 class MemoryRecencyAdjustTests(unittest.TestCase):
     """Pure-function tests on the helper. No retriever involved."""
 
@@ -444,6 +475,118 @@ class RetrieverScoringTests(unittest.TestCase):
         hits = retriever.retrieve("anything")
         # Both surface; message wins on raw cosine after its own prior.
         self.assertEqual({h.source for h in hits}, {"message", "memory"})
+
+
+class ConfidencePenaltyTests(unittest.TestCase):
+    """Schema v9: low-confidence memories get demoted at merge time.
+
+    Joined from the SQLite mirror inside ``retrieve()`` — the LanceDB
+    record alone does not carry confidence. This stub exercises the
+    join + penalty arithmetic end-to-end.
+    """
+
+    def test_low_confidence_ranks_below_high_confidence_at_same_base(self) -> None:
+        high = _memory_hit(
+            record_id="700",
+            content="high confidence fact",
+            base_score=0.70,
+            last_used_at=None,
+        )
+        low = _memory_hit(
+            record_id="701",
+            content="low confidence fact",
+            base_score=0.70,
+            last_used_at=None,
+        )
+        memstore = _ConfidenceJoinMemoryStore({700: 0.95, 701: 0.1})
+        retriever = RagRetriever(
+            _StubStore(memories=[high, low]),  # type: ignore[arg-type]
+            _StubEmbedder(),  # type: ignore[arg-type]
+            top_k=5,
+            score_threshold=0.0,
+            include_messages=False,
+            include_documents=False,
+            memory_store=memstore,  # type: ignore[arg-type]
+        )
+        hits = retriever.retrieve("anything")
+        self.assertEqual(hits[0].record.content, "high confidence fact")
+        self.assertEqual(hits[1].record.content, "low confidence fact")
+        # Penalty for confidence=0.1: (0.5 - 0.1) / 0.5 * 0.15 = 0.12
+        self.assertAlmostEqual(
+            hits[1].score, hits[0].score - 0.12, places=4
+        )
+
+    def test_confidence_is_stamped_on_hit(self) -> None:
+        memory = _memory_hit(
+            record_id="800",
+            content="something",
+            base_score=0.70,
+            last_used_at=None,
+        )
+        memstore = _ConfidenceJoinMemoryStore({800: 0.4})
+        retriever = RagRetriever(
+            _StubStore(memories=[memory]),  # type: ignore[arg-type]
+            _StubEmbedder(),  # type: ignore[arg-type]
+            top_k=5,
+            score_threshold=0.0,
+            include_messages=False,
+            include_documents=False,
+            memory_store=memstore,  # type: ignore[arg-type]
+        )
+        hits = retriever.retrieve("anything")
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0].confidence, 0.4)
+
+
+class FormatBlockUncertaintySuffixTests(unittest.TestCase):
+    """``RagRetriever.format_block`` appends "(uncertain)" to lines whose
+    hit's ``confidence`` is below 0.5. Pure render-layer test.
+    """
+
+    def test_low_confidence_line_gets_suffix(self) -> None:
+        hit = RagHit(
+            source="memory",
+            score=0.6,
+            record=_memory_record(
+                record_id="9",
+                content="something Aiko isn't sure about",
+                last_used_at=None,
+            ),
+            confidence=0.3,
+        )
+        block = RagRetriever.format_block([hit], user_display_name="Friend")
+        self.assertIn("(uncertain)", block)
+
+    def test_high_confidence_line_unchanged(self) -> None:
+        hit = RagHit(
+            source="memory",
+            score=0.6,
+            record=_memory_record(
+                record_id="10",
+                content="solid known fact",
+                last_used_at=None,
+            ),
+            confidence=0.9,
+        )
+        block = RagRetriever.format_block([hit], user_display_name="Friend")
+        self.assertNotIn("(uncertain)", block)
+
+    def test_missing_confidence_treated_as_high(self) -> None:
+        # Defensive — non-memory hits or unresolved joins leave the
+        # confidence ``None``; format_block must not crash and must not
+        # append the suffix.
+        hit = RagHit(
+            source="memory",
+            score=0.6,
+            record=_memory_record(
+                record_id="11",
+                content="unjoined memory",
+                last_used_at=None,
+            ),
+            confidence=None,
+        )
+        block = RagRetriever.format_block([hit], user_display_name="Friend")
+        self.assertNotIn("(uncertain)", block)
 
 
 if __name__ == "__main__":

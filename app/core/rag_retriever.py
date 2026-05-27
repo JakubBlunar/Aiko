@@ -94,6 +94,34 @@ _MEMORY_TIER_OFFSET: dict[str, float] = {
     "archive": -0.03,
 }
 
+# Schema v9 — confidence-tier penalty for low-confidence memory hits.
+# Memories with ``confidence < 0.5`` get a proportional score penalty
+# capped at ``-0.15`` (when confidence == 0). Never hides — just demotes,
+# so a strong cosine match on an uncertain memory still surfaces but with
+# a small handicap against a high-confidence sibling. Per the F3 backlog
+# spec: "never hiding things from Aiko is the simpler invariant".
+_MEMORY_CONFIDENCE_PENALTY_THRESHOLD = 0.5
+_MEMORY_CONFIDENCE_PENALTY_MAX = 0.15
+
+
+def _confidence_penalty(confidence: float | None) -> float:
+    """Return a non-positive penalty for low-confidence memory hits.
+
+    ``confidence >= 0.5`` -> 0.0 (no nudge).
+    ``confidence == 0.0`` -> ``-_MEMORY_CONFIDENCE_PENALTY_MAX``.
+    Linear ramp in between.
+    """
+    if confidence is None:
+        return 0.0
+    try:
+        value = float(confidence)
+    except (TypeError, ValueError):
+        return 0.0
+    if value >= _MEMORY_CONFIDENCE_PENALTY_THRESHOLD:
+        return 0.0
+    gap = _MEMORY_CONFIDENCE_PENALTY_THRESHOLD - max(0.0, value)
+    return -(gap / _MEMORY_CONFIDENCE_PENALTY_THRESHOLD) * _MEMORY_CONFIDENCE_PENALTY_MAX
+
 
 def _is_anniversary_today(metadata: dict | None) -> bool:
     """True if ``metadata.when`` falls inside an anniversary window today.
@@ -248,6 +276,20 @@ class RagRetriever:
                                 # missing so callers stay safe.
                                 tier = getattr(mem, "tier", "long_term")
                                 h.score += _MEMORY_TIER_OFFSET.get(tier, 0.0)
+                                # Schema v9: confidence penalty. Same
+                                # join path as the tier offset above;
+                                # low-confidence hits are demoted (never
+                                # hidden) so they only surface when the
+                                # cosine match is strong enough to
+                                # overcome the handicap. The confidence
+                                # is also stamped on the hit so
+                                # ``format_block`` can append the
+                                # "(uncertain)" suffix without a second
+                                # SQLite roundtrip.
+                                mem_confidence = getattr(mem, "confidence", None)
+                                h.score += _confidence_penalty(mem_confidence)
+                                if mem_confidence is not None:
+                                    h.confidence = float(mem_confidence)
                     except Exception:
                         log.debug("pinned-bonus lookup failed", exc_info=True)
                 merged.append(h)
@@ -371,10 +413,18 @@ class RagRetriever:
                 continue
             if hit.source == "memory":
                 kind = (getattr(hit.record, "kind", "") or "").lower()
+                # Schema v9: append "(uncertain)" so the LLM hedges when
+                # the underlying memory has a low confidence score (the
+                # F1 fact-checker may have flagged it, or it never had
+                # a high-confidence source to begin with).
+                suffix = ""
+                confidence = getattr(hit, "confidence", None)
+                if confidence is not None and float(confidence) < 0.5:
+                    suffix = " (uncertain)"
                 if kind in ("self", "self_tagged"):
-                    self_lines.append(f"- {text}")
+                    self_lines.append(f"- {text}{suffix}")
                 else:
-                    user_lines.append(f"- {text}")
+                    user_lines.append(f"- {text}{suffix}")
             elif hit.source == "message":
                 role = (getattr(hit.record, "role", "") or "").lower()
                 speaker = (

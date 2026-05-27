@@ -2046,6 +2046,96 @@ interface MemoryDraft {
   salience: number;
 }
 
+// Schema v9 — confidence filter for the Memory tab. Pure client-side
+// filter applied to the rendered page; doesn't change the API query
+// (so per-tier totals in the header stay accurate). "Conflicted" is
+// derived from ``metadata.flags.conflict`` (set by F1's fact-checker
+// on contradiction).
+type ConfidenceBand = "all" | "high" | "medium" | "low" | "conflicted";
+
+const CONFIDENCE_BANDS: ReadonlyArray<{ id: ConfidenceBand; label: string }> = [
+  { id: "all", label: "all" },
+  { id: "high", label: "high (≥0.85)" },
+  { id: "medium", label: "medium (0.5–0.85)" },
+  { id: "low", label: "low (<0.5)" },
+  { id: "conflicted", label: "conflicted" },
+];
+
+function memoryIsConflicted(memory: Memory): boolean {
+  const flags = (memory.metadata as { flags?: { conflict?: unknown } } | undefined)?.flags;
+  return Boolean(flags?.conflict);
+}
+
+function memoryMatchesConfidenceBand(memory: Memory, band: ConfidenceBand): boolean {
+  if (band === "all") return true;
+  if (band === "conflicted") return memoryIsConflicted(memory);
+  const value = typeof memory.confidence === "number" ? memory.confidence : 0.7;
+  if (band === "high") return value >= 0.85;
+  if (band === "medium") return value >= 0.5 && value < 0.85;
+  if (band === "low") return value < 0.5;
+  return true;
+}
+
+interface ConfidencePipProps {
+  confidence: number | undefined;
+  conflicted: boolean;
+  verifiedAt?: string | null;
+}
+
+function memoryVerifiedAt(item: Memory): string | null {
+  const metadata = (item.metadata ?? {}) as Record<string, unknown>;
+  const value = metadata["last_verified_at"];
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function ConfidencePip({ confidence, conflicted, verifiedAt }: ConfidencePipProps) {
+  const value = typeof confidence === "number" ? confidence : 0.7;
+  const pct = Math.round(value * 100);
+  if (conflicted) {
+    return (
+      <span
+        className="rounded bg-rose-500/20 px-1.5 py-0.5 text-rose-200"
+        title={`Confidence ${pct}% · F1 fact-checker flagged a conflict (metadata.flags.conflict).`}
+      >
+        conflict · {pct}%
+      </span>
+    );
+  }
+  let cls = "rounded bg-emerald-500/15 px-1.5 py-0.5 text-emerald-200";
+  let label = "high";
+  if (value < 0.5) {
+    cls = "rounded bg-rose-500/15 px-1.5 py-0.5 text-rose-200";
+    label = "low";
+  } else if (value < 0.85) {
+    cls = "rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-200";
+    label = "med";
+  }
+  // Surface the F1 verified state next to high-confidence rows so the
+  // user can tell apart "Aiko just believes this" from "an outside
+  // source confirmed it within the last verify pass".
+  const verifiedBadge = verifiedAt && value >= 0.85 ? (
+    <span
+      className="ml-1 rounded bg-emerald-500/25 px-1 py-0.5 text-[10px] text-emerald-100"
+      title={`Verified by F1 fact-checker at ${verifiedAt}.`}
+    >
+      ✓
+    </span>
+  ) : null;
+  return (
+    <span
+      className={cls}
+      title={
+        `Confidence ${pct}%. ` +
+        "<0.5 demotes the memory in RAG and tags it (uncertain) in the prompt. " +
+        "F1's background fact-checker pushes this up on positive verification."
+      }
+    >
+      {label} · {pct}%
+      {verifiedBadge}
+    </span>
+  );
+}
+
 interface MemoryTabProps {
   view: {
     items: Memory[];
@@ -2109,6 +2199,14 @@ function MemoryTab({
   onDelete,
   onCreate,
 }: MemoryTabProps) {
+  // Schema v9 — confidence band filter. Pure client-side post-fetch
+  // filter so we don't need backend query support for it; per-tier
+  // totals stay accurate because the API call is unchanged.
+  const [confidenceBand, setConfidenceBand] = useState<ConfidenceBand>("all");
+  const visibleItems = useMemo(
+    () => view.items.filter((m) => memoryMatchesConfidenceBand(m, confidenceBand)),
+    [view.items, confidenceBand],
+  );
   if (!enabled) {
     return (
       <Section title="Memory">
@@ -2199,6 +2297,23 @@ function MemoryTab({
             <option value="top">top salience</option>
           </select>
         </label>
+        <label
+          className="flex items-center gap-1 text-[11px] text-ink-100/60"
+          title="Schema v9 confidence band. Pure client-side filter on the current page; doesn't change the per-tier counts above."
+        >
+          <span>Confidence:</span>
+          <select
+            value={confidenceBand}
+            onChange={(e) => setConfidenceBand(e.target.value as ConfidenceBand)}
+            className="rounded border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-ink-100/80 focus:border-ink-400 focus:outline-none"
+          >
+            {CONFIDENCE_BANDS.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.label}
+              </option>
+            ))}
+          </select>
+        </label>
         <button
           type="button"
           onClick={() => setNewOpen(!newOpen)}
@@ -2267,15 +2382,17 @@ function MemoryTab({
         </div>
       ) : null}
 
-      {view.items.length === 0 ? (
+      {visibleItems.length === 0 ? (
         <p className="rounded-md border border-white/5 bg-white/[0.02] px-3 py-2 text-xs text-ink-100/50">
-          {view.kindFilter
+          {confidenceBand !== "all" && view.items.length > 0
+            ? `No memories on this page match the "${confidenceBand}" confidence filter.`
+            : view.kindFilter
             ? `No memories with kind "${view.kindFilter}".`
             : "Nothing remembered yet. Memories are mined after a few turns of conversation, or whenever Aiko writes a private [[remember]] tag."}
         </p>
       ) : (
         <ul className="space-y-1.5">
-          {view.items.map((memory) => {
+          {visibleItems.map((memory) => {
             const isEditing = editingId === memory.id;
             return (
               <li
@@ -2379,6 +2496,11 @@ function MemoryTab({
                         <span>
                           salience {(memory.salience * 100).toFixed(0)}%
                         </span>
+                        <ConfidencePip
+                          confidence={memory.confidence}
+                          conflicted={memoryIsConflicted(memory)}
+                          verifiedAt={memoryVerifiedAt(memory)}
+                        />
                         {typeof memory.revival_score === "number" && memory.revival_score > 0.05 ? (
                           <span
                             className="text-fuchsia-300/80"
@@ -2457,7 +2579,267 @@ function MemoryTab({
           </button>
         </div>
       ) : null}
+
+      <KnowledgeGapsPanel />
+
+      <FactCheckerStatusFooter />
     </Section>
+  );
+}
+
+// ── F2: knowledge-gap "things I'm not sure about" panel ─────────────
+
+interface KnowledgeGapRow extends Memory {
+  metadata?: {
+    topic?: string;
+    question?: string;
+    resolved_at?: string | null;
+    resolved_by_memory_id?: number | null;
+    flags?: { conflict?: boolean };
+    [key: string]: unknown;
+  };
+}
+
+function KnowledgeGapsPanel() {
+  const [gaps, setGaps] = useState<KnowledgeGapRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [includeResolved, setIncludeResolved] = useState(false);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await api.listKnowledgeGaps(includeResolved);
+      setGaps((data.gaps as KnowledgeGapRow[]) || []);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, [includeResolved]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const onDismiss = useCallback(async (id: number) => {
+    try {
+      await api.deleteKnowledgeGap(id);
+      setGaps((rows) => rows.filter((r) => r.id !== id));
+    } catch (err) {
+      setError(String(err));
+    }
+  }, []);
+
+  const onResolve = useCallback(
+    async (id: number) => {
+      const answer = window.prompt(
+        "Quick answer (optional). Leave blank to just dismiss without writing a memory:",
+        "",
+      );
+      if (answer === null) return;
+      try {
+        await api.resolveKnowledgeGap(id, answer.trim() || undefined);
+        void refresh();
+      } catch (err) {
+        setError(String(err));
+      }
+    },
+    [refresh],
+  );
+
+  return (
+    <div className="mt-4 space-y-2 rounded-md border border-white/5 bg-white/[0.02] p-3">
+      <div className="flex items-center justify-between gap-2 text-[11px]">
+        <span
+          className="font-medium text-ink-100/70"
+          title="Open questions Aiko emitted via [[gap:topic:question]] tags. F1's background fact-checker may resolve them automatically; otherwise dismiss or answer manually."
+        >
+          Things I'm not sure about
+          <span className="ml-2 text-ink-100/40">({gaps.length})</span>
+        </span>
+        <div className="flex items-center gap-2 text-ink-100/50">
+          <label className="flex items-center gap-1">
+            <input
+              type="checkbox"
+              checked={includeResolved}
+              onChange={(e) => setIncludeResolved(e.target.checked)}
+            />
+            <span>show resolved</span>
+          </label>
+          <button
+            type="button"
+            onClick={refresh}
+            disabled={loading}
+            className="rounded border border-white/10 px-2 py-0.5 hover:border-ink-400 disabled:opacity-40"
+          >
+            {loading ? "..." : "refresh"}
+          </button>
+        </div>
+      </div>
+      {error ? (
+        <div className="rounded border border-rose-400/40 bg-rose-500/10 px-2 py-1 text-[11px] text-rose-200">
+          {error}
+        </div>
+      ) : null}
+      {gaps.length === 0 ? (
+        <p className="text-[11px] text-ink-100/40">
+          No open questions. Aiko will jot uncertainties here as
+          [[gap:topic:question]] tags from her replies.
+        </p>
+      ) : (
+        <ul className="space-y-1">
+          {gaps.map((gap) => {
+            const meta = gap.metadata || {};
+            const topic = typeof meta.topic === "string" ? meta.topic : "";
+            const question =
+              typeof meta.question === "string"
+                ? meta.question
+                : (gap.content || "").trim();
+            const resolved = Boolean(meta.resolved_at);
+            return (
+              <li
+                key={gap.id}
+                className={`flex items-start justify-between gap-2 rounded border px-2 py-1.5 text-[11px] ${
+                  resolved
+                    ? "border-emerald-400/30 bg-emerald-500/5 text-ink-100/60"
+                    : "border-white/5 bg-white/[0.03]"
+                }`}
+              >
+                <div className="min-w-0 flex-1">
+                  {topic ? (
+                    <span className="mr-1 inline-block rounded bg-white/10 px-1 text-ink-100/70 uppercase tracking-wide">
+                      {topic}
+                    </span>
+                  ) : null}
+                  <span className={resolved ? "line-through" : ""}>
+                    {question}
+                  </span>
+                  {resolved ? (
+                    <span className="ml-2 text-emerald-300/80">resolved</span>
+                  ) : null}
+                </div>
+                {!resolved ? (
+                  <div className="flex shrink-0 gap-1">
+                    <button
+                      type="button"
+                      onClick={() => onResolve(gap.id)}
+                      className="rounded border border-emerald-400/40 px-1.5 py-0.5 text-emerald-200 hover:bg-emerald-500/10"
+                      title="Mark this gap resolved. You can optionally provide a short answer that will be written as a memory."
+                    >
+                      answer
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onDismiss(gap.id)}
+                      className="rounded border border-white/10 px-1.5 py-0.5 text-ink-100/60 hover:border-rose-400/60 hover:text-rose-200"
+                    >
+                      dismiss
+                    </button>
+                  </div>
+                ) : null}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+// ── F1: background fact-checker status footer ──────────────────────
+
+interface FactCheckerSnapshot {
+  enabled: boolean;
+  pending: number;
+  queue_total: number;
+  last_verified_at: string | null;
+  hour_used: number;
+  hour_cap: number;
+  day_used: number;
+  day_cap: number;
+}
+
+function formatRelative(iso: string | null): string {
+  if (!iso) return "never";
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return "never";
+  const delta = Math.max(0, (Date.now() - t) / 1000);
+  if (delta < 60) return `${Math.round(delta)}s ago`;
+  if (delta < 3600) return `${Math.round(delta / 60)}m ago`;
+  if (delta < 86400) return `${Math.round(delta / 3600)}h ago`;
+  return `${Math.round(delta / 86400)}d ago`;
+}
+
+function FactCheckerStatusFooter() {
+  const [status, setStatus] = useState<FactCheckerSnapshot | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      const data = await api.factCheckerStatus();
+      setStatus(data);
+      setError(null);
+    } catch (err) {
+      setError(String(err));
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+    // Re-poll every 30 seconds while the drawer is open. Cheap (one
+    // GET) and gives a live view of the queue draining.
+    const t = window.setInterval(refresh, 30_000);
+    return () => window.clearInterval(t);
+  }, [refresh]);
+
+  if (status === null) {
+    return null;
+  }
+  return (
+    <div
+      className="mt-3 rounded-md border border-white/5 bg-white/[0.02] px-3 py-2 text-[11px] text-ink-100/60"
+      title={
+        "F1 background fact-checker: pops one claim per idle tick, " +
+        "calls web_search, then distils a JSON verdict via the main chat model. " +
+        "Cancels cleanly on the next user turn (the claim requeues at the front)."
+      }
+    >
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <span className={status.enabled ? "text-emerald-300/80" : "text-rose-300/80"}>
+          fact-checker {status.enabled ? "on" : "off"}
+        </span>
+        <span
+          className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-emerald-200/80"
+          title={
+            "Privacy gate is always on. Memories containing your name, " +
+            "first-person pronouns, emails, phone numbers, URLs, or " +
+            "street addresses never enter the fact-check queue. " +
+            "Claims with the user/assistant name embedded are redacted " +
+            "before the web query is sent. See app/core/fact_check_privacy.py."
+          }
+        >
+          private
+        </span>
+        <span>queue: {status.pending} pending</span>
+        <span>last verified: {formatRelative(status.last_verified_at)}</span>
+        <span>
+          {status.hour_used}/{status.hour_cap} this hour ·{" "}
+          {status.day_used}/{status.day_cap} today
+        </span>
+        <button
+          type="button"
+          onClick={refresh}
+          className="ml-auto rounded border border-white/10 px-2 py-0.5 text-ink-100/50 hover:border-ink-400"
+        >
+          refresh
+        </button>
+      </div>
+      {error ? (
+        <div className="mt-1 text-rose-200/70">{error}</div>
+      ) : null}
+    </div>
   );
 }
 

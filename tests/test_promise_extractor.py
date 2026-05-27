@@ -37,12 +37,14 @@ class _FakeMemoryStore:
         source_session=None,
         source_message_id=None,
         tier=None,
+        confidence=None,
     ):
         self.calls.append({
             "content": content,
             "kind": kind,
             "salience": salience,
             "tier": tier,
+            "confidence": confidence,
         })
         if self.fail:
             return None

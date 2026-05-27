@@ -497,6 +497,13 @@ class PromptAssembler:
         # axis exceeds the notability threshold (default 0.5). Dropped
         # in aggressive mode.
         self._axes_provider: Callable[[], str] | None = None
+        # F2 personality backlog: knowledge-gap "Things you've been
+        # wondering about with <user>" line. Unlike the other inner-life
+        # providers this one takes the current ``user_text`` so it can
+        # pick the most-relevant open gap by cosine similarity. Returns
+        # empty when no gap is sufficiently relevant. Dropped in
+        # aggressive mode.
+        self._knowledge_gaps_provider: Callable[[str], str] | None = None
         # Per-turn dynamic blocks: not part of ``_StaticSlices`` because
         # they change every utterance. ``vocal_tone`` is set immediately
         # before the live turn dispatch by ``SessionController`` after
@@ -608,6 +615,7 @@ class PromptAssembler:
         activity: Callable[[], str] | None = None,
         anniversary: Callable[[], str] | None = None,
         axes: Callable[[], str] | None = None,
+        knowledge_gaps: Callable[[str], str] | None = None,
     ) -> None:
         """Register optional inner-life block providers.
 
@@ -653,6 +661,8 @@ class PromptAssembler:
             self._anniversary_provider = anniversary
         if axes is not None:
             self._axes_provider = axes
+        if knowledge_gaps is not None:
+            self._knowledge_gaps_provider = knowledge_gaps
 
     def set_last_reaction(self, reaction: str | None) -> None:
         if not reaction:
@@ -1007,6 +1017,16 @@ class PromptAssembler:
         # aggressive mode.
         anniversary_block = "" if aggressive else _safe_provider(self._anniversary_provider)
         axes_block = "" if aggressive else _safe_provider(self._axes_provider)
+        # F2: knowledge-gap "wondering about" line. Query-aware (so the
+        # block picks the gap closest to what the user is talking about
+        # right now) which is why it's not a zero-arg provider.
+        knowledge_gaps_block = ""
+        if not aggressive and self._knowledge_gaps_provider is not None:
+            try:
+                knowledge_gaps_block = self._knowledge_gaps_provider(user_text) or ""
+            except Exception:
+                log.debug("knowledge gaps provider raised", exc_info=True)
+                knowledge_gaps_block = ""
 
         # Alexia bundle: capability lookup is *not* a string provider —
         # it returns the raw flags so we can build the overlay /
@@ -1085,6 +1105,11 @@ class PromptAssembler:
             system_parts.append(arc_block)
         if agenda_block:
             system_parts.append(agenda_block)
+        if knowledge_gaps_block:
+            # F2: surface one "wondering about" bullet right after
+            # agenda. Keeps the "things on Aiko's mind" cluster
+            # together in the system prompt.
+            system_parts.append(knowledge_gaps_block)
         if world_block:
             system_parts.append(world_block)
         # Activity block lands right after world so the two

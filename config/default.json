@@ -54,7 +54,10 @@
     "relationship_pulse_enabled": true,
     "relationship_pulse_min_hours": 168,
     "relationship_pulse_min_turns": 30,
-    "cadence_enabled": true
+    "cadence_enabled": true,
+    "fact_checker_enabled": true,
+    "fact_checker_per_hour_cap": 10,
+    "fact_checker_per_day_cap": 50
   },
   "audio": {
     "sample_rate": 16000,

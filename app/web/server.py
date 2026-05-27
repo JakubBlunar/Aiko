@@ -849,15 +849,18 @@ def create_web_app(session: "SessionController") -> FastAPI:
         kind = payload.get("kind")
         salience = payload.get("salience")
         tier = payload.get("tier")
+        confidence = payload.get("confidence")
         if (
             content is None
             and kind is None
             and salience is None
             and tier is None
+            and confidence is None
         ):
             raise HTTPException(
                 400,
-                "patch must include at least one of content, kind, salience, tier",
+                "patch must include at least one of content, kind, salience, "
+                "tier, confidence",
             )
         # Type-checks before reaching into the store: clearer than letting the
         # mutator silently coerce arbitrary input.
@@ -869,6 +872,8 @@ def create_web_app(session: "SessionController") -> FastAPI:
             raise HTTPException(400, "salience must be a number")
         if tier is not None and not isinstance(tier, str):
             raise HTTPException(400, "tier must be a string")
+        if confidence is not None and not isinstance(confidence, (int, float)):
+            raise HTTPException(400, "confidence must be a number")
         try:
             updated = session.update_memory(
                 int(memory_id),
@@ -876,6 +881,7 @@ def create_web_app(session: "SessionController") -> FastAPI:
                 kind=kind,
                 salience=float(salience) if salience is not None else None,
                 tier=tier,
+                confidence=float(confidence) if confidence is not None else None,
             )
         except Exception as exc:
             raise HTTPException(500, f"update failed: {exc}") from exc
@@ -891,6 +897,7 @@ def create_web_app(session: "SessionController") -> FastAPI:
         kind = payload.get("kind", "fact")
         salience = payload.get("salience", 0.6)
         tier = payload.get("tier", "long_term")
+        confidence = payload.get("confidence")
         if not isinstance(content, str) or not content.strip():
             raise HTTPException(400, "content must be a non-empty string")
         if not isinstance(kind, str):
@@ -899,15 +906,55 @@ def create_web_app(session: "SessionController") -> FastAPI:
             raise HTTPException(400, "salience must be a number")
         if not isinstance(tier, str):
             raise HTTPException(400, "tier must be a string")
+        if confidence is not None and not isinstance(confidence, (int, float)):
+            raise HTTPException(400, "confidence must be a number")
         result = session.add_memory(
             content,
             kind=kind,
             salience=float(salience),
             tier=tier,
+            confidence=float(confidence) if confidence is not None else None,
         )
         if result is None:
             raise HTTPException(503, "memory store unavailable or content too short")
         return JSONResponse(result)
+
+    # ── REST: knowledge gaps (F2) ────────────────────────────────────
+
+    @app.get("/api/knowledge-gaps")
+    def list_knowledge_gaps(include_resolved: bool = False) -> JSONResponse:
+        rows = session.list_knowledge_gaps(include_resolved=include_resolved)
+        return JSONResponse({"gaps": rows, "total": len(rows)})
+
+    @app.delete("/api/knowledge-gaps/{gap_id}")
+    def delete_knowledge_gap(gap_id: int) -> JSONResponse:
+        ok = session.delete_knowledge_gap(int(gap_id))
+        if not ok:
+            raise HTTPException(404, "knowledge gap not found")
+        return JSONResponse({"deleted": int(gap_id)})
+
+    @app.post("/api/knowledge-gaps/{gap_id}/resolve")
+    async def resolve_knowledge_gap(
+        gap_id: int, payload: dict[str, Any] | None = None,
+    ) -> JSONResponse:
+        answer: str | None = None
+        if isinstance(payload, dict):
+            raw_answer = payload.get("answer")
+            if raw_answer is not None and not isinstance(raw_answer, str):
+                raise HTTPException(400, "answer must be a string")
+            if isinstance(raw_answer, str):
+                answer = raw_answer
+        snapshot = session.resolve_knowledge_gap(int(gap_id), answer=answer)
+        if snapshot is None:
+            raise HTTPException(404, "knowledge gap not found")
+        return JSONResponse({"gap": snapshot})
+
+    # ── REST: fact-checker status (F1) ───────────────────────────────
+
+    @app.get("/api/fact-checker/status")
+    def fact_checker_status() -> JSONResponse:
+        snapshot = session.fact_checker_status()
+        return JSONResponse(snapshot)
 
     @app.post("/api/memories/{memory_id}/pin")
     async def pin_memory(memory_id: int, payload: dict[str, Any] | None = None) -> JSONResponse:
@@ -1156,6 +1203,17 @@ def create_web_app(session: "SessionController") -> FastAPI:
         session.add_relationship_axes_listener(_on_relationship_axes)
     except Exception:
         log.debug("axes listener subscribe failed", exc_info=True)
+
+    def _on_knowledge_gap(patch: dict[str, Any]) -> None:
+        try:
+            hub.broadcast({"type": "knowledge_gap_updated", "patch": dict(patch)})
+        except Exception:
+            log.debug("knowledge gap broadcast failed", exc_info=True)
+
+    try:
+        session.add_knowledge_gap_listener(_on_knowledge_gap)
+    except Exception:
+        log.debug("knowledge gap listener subscribe failed", exc_info=True)
 
     @app.get("/api/together")
     def get_together() -> JSONResponse:
