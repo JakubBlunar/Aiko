@@ -46,6 +46,7 @@ from app.core.memory_store import MemoryStore
 from app.core.avatar_profile import AvatarProfile, AvatarProfileError, from_disk as _avatar_from_disk
 from app.core.proactive_director import ProactiveDirector
 from app.core.prompt_assembler import PromptAssembler
+from app.core.world_store import WorldStore
 from app.core.session_text_utils import (
     infer_tts_reaction,
     prepare_tts_text,
@@ -458,6 +459,25 @@ class SessionController:
             self._rag_retriever = None
             self._document_ingestor = None
 
+        # ── Aiko's room (virtual world) ──────────────────────────────────
+        # Small persistent world model: locations, items, and a singleton
+        # row holding Aiko's current location/posture/activity. Drives the
+        # "world" inner-life prompt block and a handful of agent tools
+        # (look_around / move_to / consume / ...). Seeded with a rich
+        # default room on first boot so Aiko has a sense of place from
+        # turn one.
+        self._world_store: WorldStore | None = None
+        self._world_listeners: list[Callable[[dict[str, Any]], None]] = []
+        try:
+            self._world_store = WorldStore(storage_path)
+            try:
+                self._world_store.seed_default()
+            except Exception:
+                log.warning("world seed_default failed", exc_info=True)
+        except Exception:
+            log.warning("WorldStore failed to initialise", exc_info=True)
+            self._world_store = None
+
         # ── TTS engine + queue ───────────────────────────────────────────
         self._output_device = getattr(settings.audio, "output_device", None)
         self._tts_engine = self._build_tts_service(
@@ -850,6 +870,7 @@ class SessionController:
             avatar_capabilities=self._avatar_capabilities,
             pajama=self._render_pajama_block,
             motion_names=self._avatar_motion_names,
+            world=self._render_world_block,
         )
         self._prompt_assembler.set_pinned_self_memories_provider(
             self._top_pinned_self_memories,
@@ -2189,6 +2210,17 @@ class SessionController:
                     registry.register(WebSearchTool())
                 except Exception:
                     log.info("web_search tool unavailable (duckduckgo-search missing?)")
+            if (
+                getattr(tools_cfg, "world", True)
+                and getattr(self, "_world_store", None) is not None
+            ):
+                try:
+                    from app.llm.tools.world import build_world_tools
+
+                    for tool in build_world_tools(self):
+                        registry.register(tool)
+                except Exception:
+                    log.warning("world tools failed to register", exc_info=True)
         except Exception:
             log.warning("tool registry build failed", exc_info=True)
         self._tool_registry = registry
@@ -2382,6 +2414,266 @@ class SessionController:
                 listener(snapshot)
             except Exception:
                 log.debug("memory updated listener raised", exc_info=True)
+
+    # ── World (Aiko's room) ─────────────────────────────────────────
+
+    @property
+    def world_store(self) -> "WorldStore | None":
+        return self._world_store
+
+    def world_snapshot(self) -> dict[str, Any]:
+        """Return the full room state for the World tab."""
+        store = self._world_store
+        if store is None:
+            return {"state": {}, "locations": [], "items": [], "enabled": False}
+        snap = store.snapshot()
+        snap["enabled"] = True
+        return snap
+
+    def add_world_listener(
+        self, callback: Callable[[dict[str, Any]], None],
+    ) -> None:
+        """Register a ``callback(patch)`` invoked after every world write.
+
+        Patches are typed dicts with one of: ``state``, ``location``,
+        ``item``, ``deleted_location_id``, ``deleted_item_id``. Listener
+        runs synchronously on the writer thread; the WS hub broadcast
+        translates each patch into a ``world_updated`` event.
+        """
+        if callback and callback not in self._world_listeners:
+            self._world_listeners.append(callback)
+
+    def _notify_world(self, patch: dict[str, Any]) -> None:
+        for listener in list(self._world_listeners):
+            try:
+                listener(patch)
+            except Exception:
+                log.debug("world listener raised", exc_info=True)
+
+    def update_world_state(
+        self,
+        *,
+        location_id: int | None | object = ...,
+        posture: str | None = None,
+        activity: str | None = None,
+        mood_note: str | None = None,
+    ) -> dict[str, Any] | None:
+        store = self._world_store
+        if store is None:
+            return None
+        try:
+            state = store.set_state(
+                location_id=location_id,
+                posture=posture,
+                activity=activity,
+                mood_note=mood_note,
+            )
+        except Exception:
+            log.debug("world set_state failed", exc_info=True)
+            return None
+        snap = state.to_dict()
+        self._notify_world({"state": snap})
+        return snap
+
+    def add_world_location(
+        self,
+        *,
+        slug: str | None = None,
+        name: str,
+        description: str = "",
+        position: int | None = None,
+    ) -> dict[str, Any] | None:
+        store = self._world_store
+        if store is None:
+            return None
+        loc = store.add_location(
+            slug=slug, name=name, description=description, position=position,
+        )
+        if loc is None:
+            return None
+        snap = loc.to_dict()
+        self._notify_world({"location": snap})
+        return snap
+
+    def update_world_location(
+        self,
+        location_id: int,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        position: int | None = None,
+    ) -> dict[str, Any] | None:
+        store = self._world_store
+        if store is None:
+            return None
+        loc = store.update_location(
+            int(location_id),
+            name=name,
+            description=description,
+            position=position,
+        )
+        if loc is None:
+            return None
+        snap = loc.to_dict()
+        self._notify_world({"location": snap})
+        return snap
+
+    def delete_world_location(self, location_id: int) -> bool:
+        store = self._world_store
+        if store is None:
+            return False
+        ok = store.remove_location(int(location_id))
+        if ok:
+            self._notify_world({"deleted_location_id": int(location_id)})
+            # Refresh items-with-cleared-location and state in one batch so
+            # the UI reconciles in a single render pass.
+            self._notify_world({"snapshot": store.snapshot()})
+        return ok
+
+    def add_world_item(
+        self,
+        *,
+        name: str,
+        kind: str = "other",
+        slug: str | None = None,
+        description: str = "",
+        location_id: int | None = None,
+        consumable: bool = False,
+        quantity: int = 1,
+        state: dict[str, Any] | None = None,
+        given_by: str | None = None,
+    ) -> dict[str, Any] | None:
+        store = self._world_store
+        if store is None:
+            return None
+        result = store.add_item(
+            name=name,
+            kind=kind,
+            slug=slug,
+            description=description,
+            location_id=location_id,
+            consumable=consumable,
+            quantity=quantity,
+            state=state,
+            given_by=given_by,
+        )
+        if result is None:
+            return None
+        item, _created = result
+        snap = item.to_dict()
+        self._notify_world({"item": snap})
+        return snap
+
+    def update_world_item(
+        self,
+        item_id: int,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        kind: str | None = None,
+        location_id: int | None | object = ...,
+        quantity: int | None = None,
+        state: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        store = self._world_store
+        if store is None:
+            return None
+        item = store.update_item(
+            int(item_id),
+            name=name,
+            description=description,
+            kind=kind,
+            location_id=location_id,
+            quantity=quantity,
+            state=state,
+        )
+        if item is None:
+            return None
+        snap = item.to_dict()
+        self._notify_world({"item": snap})
+        return snap
+
+    def consume_world_item(
+        self, item_id: int, *, amount: int = 1,
+    ) -> dict[str, Any] | None:
+        store = self._world_store
+        if store is None:
+            return None
+        item, consumed = store.consume_item(int(item_id), amount=int(amount))
+        if consumed <= 0:
+            return None
+        if item is None:
+            self._notify_world({"deleted_item_id": int(item_id)})
+            return {"deleted_item_id": int(item_id), "consumed": consumed}
+        snap = item.to_dict()
+        self._notify_world({"item": snap})
+        return {"item": snap, "consumed": consumed}
+
+    def delete_world_item(self, item_id: int) -> bool:
+        store = self._world_store
+        if store is None:
+            return False
+        ok = store.remove_item(int(item_id))
+        if ok:
+            self._notify_world({"deleted_item_id": int(item_id)})
+        return ok
+
+    def give_item(
+        self,
+        name: str,
+        *,
+        kind: str = "food",
+        quantity: int = 1,
+        description: str = "",
+        location_slug: str | None = "kitchenette",
+        consumable: bool | None = None,
+        state: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Drop an item into Aiko's room, attributed to the user.
+
+        This is the "give cookie" surface the UI calls. Defaults to
+        consumable food in the kitchenette; the room's render block will
+        surface it next turn so Aiko notices naturally without us
+        injecting any system message.
+        """
+        store = self._world_store
+        if store is None:
+            return None
+        target_loc_id: int | None = None
+        if location_slug:
+            loc = store.get_location(location_slug)
+            if loc is None:
+                # Fall back to any existing location so the gift always
+                # lands somewhere.
+                locations = store.list_locations()
+                if locations:
+                    target_loc_id = locations[0].id
+            else:
+                target_loc_id = loc.id
+        is_consumable = (
+            bool(consumable) if consumable is not None
+            else (kind or "").strip().lower() == "food"
+        )
+        return self.add_world_item(
+            name=name,
+            kind=kind,
+            description=description,
+            location_id=target_loc_id,
+            consumable=is_consumable,
+            quantity=quantity,
+            state=state,
+            given_by="user",
+        )
+
+    def reseed_world(self, *, force: bool = True) -> dict[str, Any] | None:
+        """Wipe the room and re-seed the rich default. Debug-only path."""
+        store = self._world_store
+        if store is None:
+            return None
+        store.seed_default(force=force)
+        snap = store.snapshot()
+        self._notify_world({"snapshot": snap})
+        return snap
 
     def add_message_listener(self, callback: Callable[[str, str], None]) -> None:
         if callback and callback not in self._message_listeners:
@@ -3257,6 +3549,22 @@ class SessionController:
             return store.render_block(self._user_id)
         except Exception:
             log.debug("agenda block render failed", exc_info=True)
+            return ""
+
+    def _render_world_block(self) -> str:
+        """Aiko's room: a compact ambient block with location + items.
+
+        Cheap (mirror dict scan + a couple of f-strings) so it's safe on
+        the hot path. The block ends with a tonal nudge instructing Aiko
+        not to force-mention her room every turn.
+        """
+        store = getattr(self, "_world_store", None)
+        if store is None:
+            return ""
+        try:
+            return store.render_block()
+        except Exception:
+            log.debug("world block render failed", exc_info=True)
             return ""
 
     def _render_arc_block(self) -> str:

@@ -372,6 +372,9 @@ class ToolsSettings:
     get_time: bool = True
     recall: bool = True
     web_search: bool = True
+    # Aiko's room: small set of tools that let her look around / move /
+    # consume cookies. See :mod:`app.llm.tools.world`.
+    world: bool = True
 
 
 @dataclass(slots=True)

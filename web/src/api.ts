@@ -19,6 +19,12 @@ import type {
   RagDocument,
   SessionRow,
   UploadDocumentResponse,
+  WorldItem,
+  WorldItemPayload,
+  WorldLocation,
+  WorldLocationPayload,
+  WorldSnapshot,
+  WorldStatePatch,
 } from "./types";
 
 /** Build a fully-qualified URL for a backend ``/api`` (or other root-relative)
@@ -168,6 +174,78 @@ export const api = {
     jsonFetch<{ deleted: string; documents: RagDocument[] }>(
       `/api/documents/${encodeURIComponent(document_id)}`,
       { method: "DELETE" },
+    ),
+  // ── World (Aiko's room) ──────────────────────────────────────────
+  getWorld: () => jsonFetch<WorldSnapshot>("/api/world"),
+  patchWorldState: (patch: WorldStatePatch) =>
+    jsonFetch<{ state: WorldSnapshot["state"] }>("/api/world/state", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    }),
+  createWorldLocation: (payload: WorldLocationPayload) =>
+    jsonFetch<{ location: WorldLocation }>("/api/world/locations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  updateWorldLocation: (
+    id: number,
+    patch: { name?: string; description?: string; position?: number },
+  ) =>
+    jsonFetch<{ location: WorldLocation }>(`/api/world/locations/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    }),
+  deleteWorldLocation: (id: number) =>
+    jsonFetch<{ deleted_location_id: number }>(`/api/world/locations/${id}`, {
+      method: "DELETE",
+    }),
+  createWorldItem: (payload: WorldItemPayload) =>
+    jsonFetch<{ item: WorldItem }>("/api/world/items", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  updateWorldItem: (
+    id: number,
+    patch: Partial<WorldItemPayload> & { state?: Record<string, unknown> },
+  ) =>
+    jsonFetch<{ item: WorldItem }>(`/api/world/items/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    }),
+  deleteWorldItem: (id: number) =>
+    jsonFetch<{ deleted_item_id: number }>(`/api/world/items/${id}`, {
+      method: "DELETE",
+    }),
+  consumeWorldItem: (id: number, amount = 1) =>
+    jsonFetch<
+      | { item: WorldItem; consumed: number }
+      | { deleted_item_id: number; consumed: number }
+    >(`/api/world/items/${id}/consume`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ amount }),
+    }),
+  /** "Give Aiko a cookie" shortcut. Drops an item into the kitchenette
+   * (or the location matching ``location_id`` if you pass one) attributed
+   * to ``given_by="user"``. The give is silent — Aiko only notices on
+   * her next turn through the world prompt block. */
+  giveItem: (
+    payload: Omit<WorldItemPayload, "given_by"> & { name: string },
+  ) =>
+    jsonFetch<{ item: WorldItem }>("/api/world/items", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...payload, given_by: "user" }),
+    }),
+  reseedWorld: (force = false) =>
+    jsonFetch<WorldSnapshot>(
+      `/api/world/seed${force ? "?force=true" : ""}`,
+      { method: "POST" },
     ),
   getMetrics: () => jsonFetch<MetricsResponse>("/api/metrics"),
   getDesktop: () => jsonFetch<DesktopSettings>("/api/desktop"),

@@ -433,6 +433,148 @@ export interface DesktopSettings {
   persona_window: PersonaWindowSettings;
 }
 
+// ── Aiko's room (virtual world) ────────────────────────────────────
+
+export type WorldKind =
+  | "food"
+  | "book"
+  | "gadget"
+  | "furniture"
+  | "toy"
+  | "keepsake"
+  | "decor"
+  | "other";
+
+export const WORLD_KINDS: readonly WorldKind[] = [
+  "food",
+  "book",
+  "gadget",
+  "toy",
+  "keepsake",
+  "decor",
+  "furniture",
+  "other",
+];
+
+export type WorldPosture =
+  | "lying"
+  | "sitting"
+  | "standing"
+  | "curled_up"
+  | "leaning";
+
+export const WORLD_POSTURES: readonly WorldPosture[] = [
+  "sitting",
+  "lying",
+  "standing",
+  "curled_up",
+  "leaning",
+];
+
+export type WorldActivity =
+  | "idle"
+  | "reading"
+  | "tinkering"
+  | "napping"
+  | "watching_screens"
+  | "thinking"
+  | "snacking"
+  | "stretching"
+  | "looking_outside"
+  | "doodling";
+
+export const WORLD_ACTIVITIES: readonly WorldActivity[] = [
+  "idle",
+  "watching_screens",
+  "reading",
+  "tinkering",
+  "thinking",
+  "snacking",
+  "napping",
+  "stretching",
+  "looking_outside",
+  "doodling",
+];
+
+export interface WorldLocation {
+  id: number;
+  slug: string;
+  name: string;
+  description: string;
+  position: number;
+}
+
+export interface WorldItem {
+  id: number;
+  slug: string;
+  name: string;
+  description: string;
+  kind: WorldKind | string;
+  consumable: boolean;
+  quantity: number;
+  location_id: number | null;
+  state: Record<string, unknown>;
+  given_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorldState {
+  location_id: number | null;
+  posture: WorldPosture | string;
+  activity: WorldActivity | string;
+  mood_note: string;
+  updated_at: string;
+}
+
+export interface WorldSnapshot {
+  state: WorldState;
+  locations: WorldLocation[];
+  items: WorldItem[];
+  enabled: boolean;
+}
+
+/** Surgical patch broadcast over WS after every world write. The reducer
+ * applies whichever discriminator field is present. */
+export type WorldPatch =
+  | { state: WorldState }
+  | { location: WorldLocation }
+  | { item: WorldItem }
+  | { deleted_location_id: number }
+  | { deleted_item_id: number }
+  | {
+      snapshot: {
+        state: WorldState;
+        locations: WorldLocation[];
+        items: WorldItem[];
+      };
+    };
+
+export interface WorldStatePatch {
+  location_id?: number | null;
+  posture?: WorldPosture | string;
+  activity?: WorldActivity | string;
+  mood_note?: string;
+}
+
+export interface WorldLocationPayload {
+  name: string;
+  description?: string;
+  slug?: string;
+}
+
+export interface WorldItemPayload {
+  name: string;
+  kind?: WorldKind | string;
+  description?: string;
+  slug?: string;
+  location_id?: number | null;
+  consumable?: boolean;
+  quantity?: number;
+  state?: Record<string, unknown>;
+  given_by?: string;
+}
+
 export type WsServerEvent =
   | {
       type: "hello";
@@ -484,6 +626,7 @@ export type WsServerEvent =
   | { type: "memory_added"; memory: Memory }
   | { type: "memory_updated"; memory: Memory }
   | { type: "memory_deleted"; id: number }
+  | { type: "world_updated"; patch: WorldPatch }
   | {
       type: "avatar_settings_changed";
       settings: AvatarSettingsKnobs;
