@@ -306,6 +306,77 @@ class NarrativeBlockProviderTests(unittest.TestCase):
             )
 
 
+class ActivityBlockProviderTests(unittest.TestCase):
+    """The ``activity`` slot surfaces "Jacob is currently working in <App>"
+    as an opt-in inner-life cue. Verifies the standard provider hooks:
+    populates the prompt when wired, silent when empty, dropped under
+    ``aggressive=True``."""
+
+    def test_activity_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="sa1",
+                role="user",
+                content="hi",
+                token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                activity=lambda: "Jacob is currently working in Cursor.",
+            )
+            messages, _telem = assembler.assemble_with_budget(
+                "sa1",
+                "what's up?",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertIn(
+                "Jacob is currently working in Cursor.",
+                messages[0]["content"],
+            )
+
+    def test_activity_block_silent_when_provider_empty(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="sa2",
+                role="user",
+                content="hi",
+                token_count=2,
+            )
+            assembler.set_inner_life_providers(activity=lambda: "")
+            messages, _ = assembler.assemble_with_budget(
+                "sa2",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertNotIn("Jacob is currently working", messages[0]["content"])
+
+    def test_activity_block_dropped_under_aggressive(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="sa3",
+                role="user",
+                content="hi",
+                token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                activity=lambda: "Jacob is currently working in Cursor.",
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "sa3",
+                "x",
+                context_window=4096,
+                response_budget=256,
+                aggressive=True,
+            )
+            self.assertNotIn(
+                "Jacob is currently working", messages[0]["content"],
+            )
+
+
 class GrammarAddendumTests(unittest.TestCase):
     """Spot-checks on the new dynamic prompt addendum builders.
 

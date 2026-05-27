@@ -91,40 +91,54 @@ swap blink drivers or upstream a setter.
 
 ## C. Proactive outside Live voice
 
-### C1. Proactive ping in text-mode chat
+### C1. Proactive ping in text-mode chat — DONE
 
-**Motivation.** `ProactiveDirector` only fires from `live_session.py`
-when the user is in voice mode and silence exceeds a threshold. In typed
-chat Aiko is purely reactive — even if she has a fresh callback she
-wants to bring up, she waits forever for Jacob to type first.
+**Shipped:** typed-mode `ProactiveDirector` path with prepared-nudge
+fast path + LLM "pick up the thread" fallback, gated by a presence
+boolean (browser tab visibility AND Tauri window focus AND-folded
+client-side) so a backgrounded UI never gets nudged. Defaults: 4 min
+silence, 10 min cooldown, text-only (no TTS), settings toggle on top.
+Reframed prompt explicitly avoids "Jacob has been quiet" so a long
+absence doesn't read as abandonment-anxiety.
 
-**Key files.**
-- [`app/core/proactive_director.py`](../app/core/proactive_director.py) —
-  director already speaks via `PreparedNudge.consume`.
-- [`app/core/live_session.py`](../app/core/live_session.py) — current
-  silence-trigger call site.
-- [`app/core/session_controller.py`](../app/core/session_controller.py) —
-  would need a typed-mode silence timer.
+**Bonus shipped alongside:** desktop-only opt-in **activity awareness**
+— the Tauri shell forwards the foreground app *name* (never window
+titles or URLs) so Aiko can naturally reference what Jacob is doing.
+Off by default; live readout in settings so the user sees what's
+shared. See [`docs/presence-and-activity.md`](presence-and-activity.md)
+for the privacy posture.
 
-**Sketched approach.**
-- Add an optional silence timer to `SessionController` that arms when a
-  typed turn ends and disarms on the next user input.
-- Threshold: `agent.proactive_silence_seconds_typed` (separate config
-  knob, default ~3-5 minutes — much longer than voice's 45 s so it
-  doesn't feel spammy).
-- On fire: call `_consume_prepared_nudge` and dispatch an assistant
-  message via the same WS path as a normal turn (so the UI shows it as
-  "Aiko ·"). Treat it like a barge-in turn — don't run RAG or
-  expensive workers, just speak.
-- Cooldown: `agent.proactive_cooldown_seconds_typed` so we never fire
-  twice in a row even if the user keeps ignoring her.
+**Key files (shipped).**
+- [`app/core/proactive_director.py`](../app/core/proactive_director.py)
+  — `notify_typed_silence`, `_run_typed`, `_PROACTIVE_HINT_TYPED`,
+  independent typed cooldown clock.
+- [`app/core/session_controller.py`](../app/core/session_controller.py)
+  — `_arm_typed_silence_timer`, `_disarm_typed_silence_timer`,
+  `set_user_present`, `set_user_active_app`, `_render_activity_block`.
+- [`app/web/server.py`](../app/web/server.py) — `presence` /
+  `user_activity` WS commands; `proactive_typed_*` +
+  `activity.awareness_enabled` PATCH wiring.
+- [`web/src/hooks/usePresenceReporter.ts`](../web/src/hooks/usePresenceReporter.ts),
+  [`web/src/hooks/useActivityReporter.ts`](../web/src/hooks/useActivityReporter.ts)
+  — debounced presence + polled foreground-app reporter.
+- [`web/src-tauri/src/lib.rs`](../web/src-tauri/src/lib.rs) —
+  `get_active_app` Tauri command (app name only, no titles).
 
-**Open questions.**
-- Persist last-fired timestamp to disk (so a browser refresh doesn't
-  reset cooldown)? `config/user.json` like `last_active_id` is the
-  obvious place.
-- Distinct browser-tab-visibility behaviour? `document.visibilityState`
-  on the frontend could mute the ping when the tab is hidden.
+**Deferred follow-ups.**
+- *Window-title-aware activity.* App name only ships in v1; titles
+  would let Aiko reference docs / file names but leak bank URLs and
+  private chat targets. Picks up here would need an allowlist or
+  per-app opt-in to bring the privacy story up to par.
+- *Persisting last-fired typed cooldown to disk.* Today the cooldown
+  lives in process memory and resets on backend restart. Fine for
+  the 80% case but `config/user.json` (alongside `last_active_id`)
+  is the obvious upgrade path.
+- *TTS-on-typed-proactive toggle.* Text-only by default; an
+  optional "speak typed proactive nudges aloud" knob is cheap to
+  add when the use case appears.
+- *Per-tab presence aggregation across multiple windows.* Last-write-
+  wins on the WS connection is fine for one-user setups; multi-tab
+  presence would need a server-side OR-fold across active sockets.
 
 ---
 

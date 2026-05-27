@@ -222,6 +222,23 @@ class AgentSettings:
 
     proactive_silence_seconds: float = 45.0
     proactive_cooldown_seconds: float = 120.0
+    # ── Typed-mode proactive (Aiko speaks first in typed chat) ────────
+    # Independent timing knobs from the voice-mode ones above so the
+    # two cadences can differ. Defaults intentionally long (4 min
+    # silence, 10 min cooldown) so a heads-down typed session never
+    # gets nag-y. Gated client-side by browser visibility / Tauri
+    # window focus — see ``SessionController._user_present``.
+    proactive_typed_enabled: bool = True
+    proactive_silence_seconds_typed: float = 240.0  # 4 min
+    proactive_cooldown_seconds_typed: float = 600.0  # 10 min
+    # ── Activity awareness (desktop opt-in) ───────────────────────────
+    # When enabled and running inside the Tauri desktop shell, the
+    # foreground application name is forwarded over WebSocket so Aiko
+    # can naturally reference what the user is doing. App name only —
+    # never window titles or URLs (see ``docs/presence-and-activity``
+    # for the privacy posture). Off by default; browser shells render
+    # the toggle but can never produce a non-null active app.
+    activity_awareness_enabled: bool = False
     # Rolling summary background worker.
     summary_idle_seconds: float = 15.0  # quiet time before summarising
     summary_min_unsummarized_messages: int = 6  # minimum new msgs to trigger
@@ -672,6 +689,20 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
         agent=AgentSettings(
             proactive_silence_seconds=max(10.0, float(agent_raw.get("proactive_silence_seconds", 45.0))),
             proactive_cooldown_seconds=max(30.0, float(agent_raw.get("proactive_cooldown_seconds", 120.0))),
+            # Typed-mode floors: silence 60s (anything shorter reads as
+            # nag-y at typed speed) and cooldown 120s. The defaults are
+            # well above both floors; the clamps are belt-and-braces
+            # for hand-edited config files.
+            proactive_typed_enabled=bool(agent_raw.get("proactive_typed_enabled", True)),
+            proactive_silence_seconds_typed=max(
+                60.0, float(agent_raw.get("proactive_silence_seconds_typed", 240.0)),
+            ),
+            proactive_cooldown_seconds_typed=max(
+                120.0, float(agent_raw.get("proactive_cooldown_seconds_typed", 600.0)),
+            ),
+            activity_awareness_enabled=bool(
+                agent_raw.get("activity_awareness_enabled", False),
+            ),
             summary_idle_seconds=max(2.0, float(agent_raw.get("summary_idle_seconds", 15.0))),
             summary_min_unsummarized_messages=max(2, int(agent_raw.get("summary_min_unsummarized_messages", 6))),
             summary_target_tokens=max(120, int(agent_raw.get("summary_target_tokens", 600))),
@@ -763,6 +794,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             get_time=bool(tools_raw.get("get_time", True)),
             recall=bool(tools_raw.get("recall", True)),
             web_search=bool(tools_raw.get("web_search", True)),
+            world=bool(tools_raw.get("world", True)),
         ),
         endpointing=EndpointingSettings(
             enabled=bool(endpointing_raw.get("enabled", True)),

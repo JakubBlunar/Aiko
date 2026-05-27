@@ -103,6 +103,14 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
   const [personaError, setPersonaError] = useState<string | null>(null);
   const tauri = isTauri();
 
+  // Activity awareness store wiring. Mirrors the toggle into the
+  // global store so the activity reporter hook in App.tsx
+  // starts/stops its polling loop in lockstep with the checkbox.
+  const setActivityAwarenessEnabled = useAssistantStore(
+    (s) => s.setActivityAwarenessEnabled,
+  );
+  const liveActiveApp = useAssistantStore((s) => s.liveActiveApp);
+
   const [documents, setDocuments] = useState<RagDocument[]>([]);
   const [documentsBusy, setDocumentsBusy] = useState(false);
   const [documentsError, setDocumentsError] = useState<string | null>(null);
@@ -190,6 +198,13 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
         api.listAudioDevices().catch(() => ({ input: [], output: [] })),
       ]);
       setSettings(s);
+      // Keep the activity-awareness toggle in sync with the store so
+      // App.tsx's ``useActivityReporter`` reflects whatever the
+      // backend reports (handles the case where ``user.json`` has the
+      // toggle persisted from a previous session).
+      setActivityAwarenessEnabled(
+        Boolean(s.activity?.awareness_enabled),
+      );
       setModels(m);
       setVoices(v);
       setDevices(d);
@@ -198,7 +213,7 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [setActivityAwarenessEnabled]);
 
   const refreshMemories = useCallback(
     async (overrides?: {
@@ -676,6 +691,9 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
     try {
       const next = await api.patchSettings(patch);
       setSettings(next);
+      setActivityAwarenessEnabled(
+        Boolean(next.activity?.awareness_enabled),
+      );
     } catch (err) {
       setError(String(err));
     } finally {
@@ -865,10 +883,14 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                 </label>
               </Section>
 
-              <Section title="Proactive nudges (voice mode)">
+              <Section title="Proactive nudges">
                 <p className="text-[11px] text-ink-100/50">
-                  When voice mode is on and you've been quiet, Aiko can pick
-                  up a thread on her own. Tune how patient she is here.
+                  When you've been quiet, Aiko can pick up a thread on her
+                  own. Voice mode and typed chat are tuned independently
+                  because the right cadence is very different.
+                </p>
+                <p className="mt-3 text-[11px] font-semibold text-ink-100/70">
+                  In voice mode
                 </p>
                 <Row
                   label="Silence threshold (s)"
@@ -908,6 +930,114 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                     />
                   }
                 />
+                <p className="mt-4 text-[11px] font-semibold text-ink-100/70">
+                  In typed chat
+                </p>
+                <p className="text-[11px] text-ink-100/50">
+                  Aiko may speak first when you've been quiet a while. Only
+                  fires while the app window is in focus — backgrounded
+                  tabs and alt-tabbed windows pause the timer.
+                </p>
+                <label className="mt-2 flex items-center gap-2 text-xs text-ink-100/70">
+                  <input
+                    type="checkbox"
+                    checked={settings.proactive?.typed_enabled ?? true}
+                    onChange={(e) =>
+                      void apply({
+                        proactive: { typed_enabled: e.target.checked },
+                      })
+                    }
+                  />
+                  Let Aiko speak first in typed chat
+                </label>
+                <Row
+                  label="Silence threshold (s)"
+                  value={
+                    <input
+                      type="number"
+                      min={60}
+                      step={10}
+                      value={
+                        settings.proactive?.silence_seconds_typed ?? 240
+                      }
+                      onChange={(e) =>
+                        void apply({
+                          proactive: {
+                            silence_seconds_typed: Number(e.target.value),
+                          },
+                        })
+                      }
+                      disabled={
+                        !(settings.proactive?.typed_enabled ?? true)
+                      }
+                      className="w-24 rounded border border-white/10 bg-black/40 px-2 py-1 text-right text-xs text-ink-100 disabled:opacity-40"
+                    />
+                  }
+                />
+                <Row
+                  label="Cooldown (s)"
+                  value={
+                    <input
+                      type="number"
+                      min={120}
+                      step={30}
+                      value={
+                        settings.proactive?.cooldown_seconds_typed ?? 600
+                      }
+                      onChange={(e) =>
+                        void apply({
+                          proactive: {
+                            cooldown_seconds_typed: Number(e.target.value),
+                          },
+                        })
+                      }
+                      disabled={
+                        !(settings.proactive?.typed_enabled ?? true)
+                      }
+                      className="w-24 rounded border border-white/10 bg-black/40 px-2 py-1 text-right text-xs text-ink-100 disabled:opacity-40"
+                    />
+                  }
+                />
+              </Section>
+
+              <Section title="Activity awareness (desktop)">
+                <p className="text-[11px] text-ink-100/50">
+                  Desktop only. Aiko can see which app is in the foreground
+                  (just the app name — no window titles, no URLs) and may
+                  reference it when natural. Off by default. Browser tabs
+                  see the toggle but it's a no-op there.
+                </p>
+                <label className="mt-2 flex items-center gap-2 text-xs text-ink-100/70">
+                  <input
+                    type="checkbox"
+                    checked={
+                      settings.activity?.awareness_enabled ?? false
+                    }
+                    onChange={(e) =>
+                      void apply({
+                        activity: { awareness_enabled: e.target.checked },
+                      })
+                    }
+                  />
+                  Share the foreground app name with Aiko
+                </label>
+                {settings.activity?.awareness_enabled ? (
+                  <p className="mt-2 text-[11px] text-ink-100/60">
+                    {tauri ? (
+                      <>
+                        Currently sees:{" "}
+                        <span className="font-mono text-ink-100/80">
+                          {liveActiveApp ?? "—"}
+                        </span>
+                      </>
+                    ) : (
+                      <em>
+                        Browser shell — desktop app required to share
+                        foreground state.
+                      </em>
+                    )}
+                  </p>
+                ) : null}
               </Section>
 
               <Section title="Endpointing (when do I stop listening?)">
