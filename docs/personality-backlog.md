@@ -294,6 +294,44 @@ or auto-forgets, while long-stable memories drift into a low-touch
   `memory_updated`. New endpoints: `PATCH /api/memories/{id}`,
   `POST /api/memories`, `POST /api/memories/{id}/pin`. Schema v5
   migration in `chat_database.py` adds the `pinned` column.
+- **Aiko's room — virtual space with locations + items.** DONE —
+  shipped as the new [`WorldStore`](../app/core/world_store.py) and a
+  matching "World" tab in `SettingsDrawer.tsx`. The room is a small
+  persistent SQLite world (locations, items with consume semantics, a
+  singleton state row holding posture / activity / location). A
+  default rich room is seeded once on first boot (desk, bed,
+  bookshelf, kitchenette, window seat, beanbag, mirror corner) with
+  matching items (cookies, tea pot, plush blanket, photo of Jacob,
+  …). The room flows into the LLM via:
+    1. A new `world` inner-life prompt provider that renders a 3-5
+       line ambient block ("You are in your room. Right now: at the
+       desk, sitting, watching screens…") with an explicit
+       "acknowledge naturally — never force a room mention" tonal
+       nudge.
+    2. Five new agent tools in `app/llm/tools/world.py`:
+       `look_around`, `move_to`, `change_posture`, `inspect_item`,
+       `consume_item`. Each tool's description reminds the model to
+       call it only when natural, never every turn.
+    3. REST surface (`/api/world` + sub-paths) and a single
+       `world_updated` WS event carrying typed surgical patches
+       (state / location / item / deleted_*_id / snapshot). The
+       Zustand reducer applies them in place so the World tab stays
+       live without polling.
+    4. "Give Aiko a cookie" is intentionally silent — items appear in
+       her room and she notices them on her next turn, no proactive
+       message. The UI exposes quick-give buttons (cookie / tea /
+       plushy / flower) and a custom form. Schema v6 migration in
+       `chat_database.py` adds `world_locations`, `world_items`, and
+       the singleton `world_state` table.
+- **Multi-room / outdoor world (follow-up to Aiko's room).** Today
+  the world is exactly one room. A natural extension is a second
+  scene (a balcony, a coffee shop, a library) with travel
+  semantics: Aiko picks the scene appropriate to the conversation
+  ("let's go grab tea") and the prompt block flips. Would need a
+  `scene_id` column on `world_state`, a Tool to switch scenes, and
+  some thinking about whether items move with her or stay in their
+  scene. Out of scope for v1 because a single cozy room already
+  covers the cookie use case.
 - **"Shared moments" episodic memory kind.** Today
   `event` / `callback` / `reflection` are loosely episodic but flat.
   A new `shared_moment` kind with structured `(when, what, vibe)`

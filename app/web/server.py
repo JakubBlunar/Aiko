@@ -460,6 +460,7 @@ def create_web_app(session: "SessionController") -> FastAPI:
                 "get_time": bool(getattr(s.tools, "get_time", True)),
                 "recall": bool(getattr(s.tools, "recall", True)),
                 "web_search": bool(getattr(s.tools, "web_search", True)),
+                "world": bool(getattr(s.tools, "world", True)),
                 "available": list(session.available_tool_names()),
             },
             "voice_active": bool(live_session.is_active),
@@ -513,7 +514,7 @@ def create_web_app(session: "SessionController") -> FastAPI:
         tools = payload.get("tools") or {}
         if tools:
             tcfg = session._settings.tools
-            for key in ("enabled", "get_time", "recall", "web_search"):
+            for key in ("enabled", "get_time", "recall", "web_search", "world"):
                 if key in tools:
                     setattr(tcfg, key, bool(tools[key]))
             try:
@@ -708,6 +709,216 @@ def create_web_app(session: "SessionController") -> FastAPI:
         if updated is None:
             raise HTTPException(404, "memory not found")
         return JSONResponse({"memory": updated})
+
+    # ── REST: Aiko's room (virtual world) ───────────────────────────
+
+    def _on_world(patch: dict[str, Any]) -> None:
+        # Single typed event broadcast over WS. The frontend reducer
+        # surgically merges {state} / {location} / {item} /
+        # {deleted_*_id} / {snapshot} into its store slice.
+        try:
+            hub.broadcast({"type": "world_updated", "patch": dict(patch)})
+        except Exception:
+            log.debug("world updated broadcast failed", exc_info=True)
+
+    try:
+        session.add_world_listener(_on_world)
+    except Exception:
+        log.debug("world listener subscription failed", exc_info=True)
+
+    @app.get("/api/world")
+    def get_world() -> JSONResponse:
+        return JSONResponse(session.world_snapshot())
+
+    @app.patch("/api/world/state")
+    async def patch_world_state(payload: dict[str, Any]) -> JSONResponse:
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "expected JSON object body")
+        kwargs: dict[str, Any] = {}
+        if "location_id" in payload:
+            value = payload["location_id"]
+            if value is not None and not isinstance(value, int):
+                raise HTTPException(400, "location_id must be an integer or null")
+            kwargs["location_id"] = value
+        for field_name in ("posture", "activity", "mood_note"):
+            if field_name in payload:
+                value = payload[field_name]
+                if value is not None and not isinstance(value, str):
+                    raise HTTPException(400, f"{field_name} must be a string")
+                kwargs[field_name] = value
+        if not kwargs:
+            raise HTTPException(
+                400,
+                "patch must include at least one of location_id, posture, activity, mood_note",
+            )
+        result = session.update_world_state(**kwargs)
+        if result is None:
+            raise HTTPException(503, "world store unavailable")
+        return JSONResponse({"state": result})
+
+    @app.post("/api/world/locations")
+    async def create_world_location(payload: dict[str, Any]) -> JSONResponse:
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "expected JSON object body")
+        name = payload.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise HTTPException(400, "name must be a non-empty string")
+        slug = payload.get("slug")
+        if slug is not None and not isinstance(slug, str):
+            raise HTTPException(400, "slug must be a string")
+        description = payload.get("description", "") or ""
+        if not isinstance(description, str):
+            raise HTTPException(400, "description must be a string")
+        result = session.add_world_location(
+            slug=slug if isinstance(slug, str) and slug.strip() else None,
+            name=name,
+            description=description,
+        )
+        if result is None:
+            raise HTTPException(503, "world store unavailable")
+        return JSONResponse({"location": result})
+
+    @app.patch("/api/world/locations/{location_id}")
+    async def patch_world_location(
+        location_id: int, payload: dict[str, Any],
+    ) -> JSONResponse:
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "expected JSON object body")
+        kwargs: dict[str, Any] = {}
+        for field_name in ("name", "description"):
+            if field_name in payload:
+                value = payload[field_name]
+                if not isinstance(value, str):
+                    raise HTTPException(400, f"{field_name} must be a string")
+                kwargs[field_name] = value
+        if "position" in payload:
+            value = payload["position"]
+            if not isinstance(value, int):
+                raise HTTPException(400, "position must be an integer")
+            kwargs["position"] = value
+        if not kwargs:
+            raise HTTPException(400, "patch must include at least one field")
+        result = session.update_world_location(int(location_id), **kwargs)
+        if result is None:
+            raise HTTPException(404, "location not found")
+        return JSONResponse({"location": result})
+
+    @app.delete("/api/world/locations/{location_id}")
+    def delete_world_location(location_id: int) -> JSONResponse:
+        ok = session.delete_world_location(int(location_id))
+        if not ok:
+            raise HTTPException(404, "location not found")
+        return JSONResponse({"deleted_location_id": int(location_id)})
+
+    @app.post("/api/world/items")
+    async def create_world_item(payload: dict[str, Any]) -> JSONResponse:
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "expected JSON object body")
+        name = payload.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise HTTPException(400, "name must be a non-empty string")
+        kind = payload.get("kind", "other")
+        if not isinstance(kind, str):
+            raise HTTPException(400, "kind must be a string")
+        slug = payload.get("slug")
+        if slug is not None and not isinstance(slug, str):
+            raise HTTPException(400, "slug must be a string")
+        description = payload.get("description", "") or ""
+        if not isinstance(description, str):
+            raise HTTPException(400, "description must be a string")
+        location_id = payload.get("location_id")
+        if location_id is not None and not isinstance(location_id, int):
+            raise HTTPException(400, "location_id must be an integer or null")
+        consumable = payload.get("consumable", False)
+        if not isinstance(consumable, bool):
+            raise HTTPException(400, "consumable must be a boolean")
+        quantity = payload.get("quantity", 1)
+        if not isinstance(quantity, int) or quantity < 1:
+            raise HTTPException(400, "quantity must be a positive integer")
+        state = payload.get("state")
+        if state is not None and not isinstance(state, dict):
+            raise HTTPException(400, "state must be an object or null")
+        given_by = payload.get("given_by")
+        if given_by is not None and not isinstance(given_by, str):
+            raise HTTPException(400, "given_by must be a string")
+        result = session.add_world_item(
+            name=name,
+            kind=kind,
+            slug=slug if isinstance(slug, str) and slug.strip() else None,
+            description=description,
+            location_id=location_id,
+            consumable=consumable,
+            quantity=quantity,
+            state=state,
+            given_by=given_by,
+        )
+        if result is None:
+            raise HTTPException(503, "world store unavailable")
+        return JSONResponse({"item": result})
+
+    @app.patch("/api/world/items/{item_id}")
+    async def patch_world_item(
+        item_id: int, payload: dict[str, Any],
+    ) -> JSONResponse:
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "expected JSON object body")
+        kwargs: dict[str, Any] = {}
+        for field_name in ("name", "description", "kind"):
+            if field_name in payload:
+                value = payload[field_name]
+                if not isinstance(value, str):
+                    raise HTTPException(400, f"{field_name} must be a string")
+                kwargs[field_name] = value
+        if "location_id" in payload:
+            value = payload["location_id"]
+            if value is not None and not isinstance(value, int):
+                raise HTTPException(400, "location_id must be an integer or null")
+            kwargs["location_id"] = value
+        if "quantity" in payload:
+            value = payload["quantity"]
+            if not isinstance(value, int) or value < 0:
+                raise HTTPException(400, "quantity must be a non-negative integer")
+            kwargs["quantity"] = value
+        if "state" in payload:
+            value = payload["state"]
+            if not isinstance(value, dict):
+                raise HTTPException(400, "state must be an object")
+            kwargs["state"] = value
+        if not kwargs:
+            raise HTTPException(400, "patch must include at least one field")
+        result = session.update_world_item(int(item_id), **kwargs)
+        if result is None:
+            raise HTTPException(404, "item not found")
+        return JSONResponse({"item": result})
+
+    @app.delete("/api/world/items/{item_id}")
+    def delete_world_item(item_id: int) -> JSONResponse:
+        ok = session.delete_world_item(int(item_id))
+        if not ok:
+            raise HTTPException(404, "item not found")
+        return JSONResponse({"deleted_item_id": int(item_id)})
+
+    @app.post("/api/world/items/{item_id}/consume")
+    async def consume_world_item(
+        item_id: int, payload: dict[str, Any] | None = None,
+    ) -> JSONResponse:
+        amount = 1
+        if isinstance(payload, dict) and "amount" in payload:
+            value = payload["amount"]
+            if not isinstance(value, int) or value < 1:
+                raise HTTPException(400, "amount must be a positive integer")
+            amount = value
+        result = session.consume_world_item(int(item_id), amount=amount)
+        if result is None:
+            raise HTTPException(404, "item not found")
+        return JSONResponse(result)
+
+    @app.post("/api/world/seed")
+    async def seed_world(force: bool = False) -> JSONResponse:
+        result = session.reseed_world(force=bool(force))
+        if result is None:
+            raise HTTPException(503, "world store unavailable")
+        return JSONResponse(result)
 
     # ── REST: Live2D avatar (fixed Alexia bundle) ───────────────────
 

@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_SCHEMA_VERSION = 5
+_SCHEMA_VERSION = 6
 
 _CREATE_TABLES = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -138,6 +138,46 @@ CREATE TABLE IF NOT EXISTS consolidator_state (
     last_cluster_index INTEGER NOT NULL DEFAULT 0,
     last_run_at TEXT
 );
+
+-- Schema v6: Aiko's virtual room. Three small tables managed by
+-- :class:`app.core.world_store.WorldStore`. The world is a single shared
+-- model (no per-user partitioning) since there's one Aiko per assistant.
+-- ``world_state`` is a singleton row (id == 1) holding her current
+-- location/posture/activity. ``world_items`` rows with ``location_id IS
+-- NULL`` represent items Aiko is carrying.
+CREATE TABLE IF NOT EXISTS world_locations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    position INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS world_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'other',
+    consumable INTEGER NOT NULL DEFAULT 0,
+    quantity INTEGER NOT NULL DEFAULT 1,
+    location_id INTEGER REFERENCES world_locations(id) ON DELETE SET NULL,
+    state_json TEXT NOT NULL DEFAULT '{}',
+    given_by TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_world_items_location ON world_items(location_id);
+CREATE INDEX IF NOT EXISTS idx_world_items_slug ON world_items(slug);
+
+CREATE TABLE IF NOT EXISTS world_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    location_id INTEGER REFERENCES world_locations(id) ON DELETE SET NULL,
+    posture TEXT NOT NULL DEFAULT 'sitting',
+    activity TEXT NOT NULL DEFAULT 'idle',
+    mood_note TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL
+);
 """
 
 # Tables that existed in earlier schemas but are no longer used.
@@ -261,6 +301,10 @@ class ChatDatabase:
             conn.execute("ALTER TABLE memories ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
         except sqlite3.OperationalError:
             pass
+        # v5 -> v6: world tables (``world_locations``, ``world_items``,
+        # ``world_state``). The ``CREATE TABLE IF NOT EXISTS`` block above
+        # already creates them on upgrade — there's nothing to ALTER, but
+        # we log the bump explicitly for the migration trail.
         conn.execute("UPDATE schema_version SET version = ?", (_SCHEMA_VERSION,))
         conn.commit()
 

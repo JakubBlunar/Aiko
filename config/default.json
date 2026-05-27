@@ -95,7 +95,8 @@
     "enabled": true,
     "get_time": true,
     "recall": true,
-    "web_search": true
+    "web_search": true,
+    "world": true
   },
   "endpointing": {
     "enabled": true,

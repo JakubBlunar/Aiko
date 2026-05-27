@@ -332,6 +332,7 @@ class PromptTelemetry:
     arc_tokens: int = 0
     narrative_tokens: int = 0
     agenda_tokens: int = 0
+    world_tokens: int = 0
     self_image_tokens: int = 0
     prompt_tokens_estimate: int = 0
     history_messages_kept: int = 0
@@ -367,6 +368,7 @@ class PromptTelemetry:
             "arc_tokens": int(self.arc_tokens),
             "narrative_tokens": int(self.narrative_tokens),
             "agenda_tokens": int(self.agenda_tokens),
+            "world_tokens": int(self.world_tokens),
             "self_image_tokens": int(self.self_image_tokens),
             "prompt_tokens_estimate": int(self.prompt_tokens_estimate),
             "history_messages_kept": int(self.history_messages_kept),
@@ -455,6 +457,9 @@ class PromptAssembler:
         self._arc_provider: Callable[[], str] | None = None
         self._narrative_provider: Callable[[], str] | None = None
         self._agenda_provider: Callable[[], str] | None = None
+        # Aiko's room: compact ambient block describing her current
+        # location + nearby items. See WorldStore.render_block.
+        self._world_provider: Callable[[], str] | None = None
         # Per-turn dynamic blocks: not part of ``_StaticSlices`` because
         # they change every utterance. ``vocal_tone`` is set immediately
         # before the live turn dispatch by ``SessionController`` after
@@ -534,6 +539,7 @@ class PromptAssembler:
         avatar_capabilities: Callable[[], dict[str, bool] | None] | None = None,
         pajama: Callable[[], str] | None = None,
         motion_names: Callable[[], list[str]] | None = None,
+        world: Callable[[], str] | None = None,
     ) -> None:
         """Register optional inner-life block providers.
 
@@ -571,6 +577,8 @@ class PromptAssembler:
             self._pajama_provider = pajama
         if motion_names is not None:
             self._motion_names_provider = motion_names
+        if world is not None:
+            self._world_provider = world
 
     def set_last_reaction(self, reaction: str | None) -> None:
         if not reaction:
@@ -906,6 +914,10 @@ class PromptAssembler:
         ambient_noise_block = _safe_provider(self._ambient_noise_provider)
         pajama_block = _safe_provider(self._pajama_provider)
         narrative_block = _safe_provider(self._narrative_provider)
+        # Aiko's room: read fresh every turn so cookie consumption / state
+        # changes from agent tools surface immediately in the next prompt.
+        # Dropped in aggressive mode to free tokens for history.
+        world_block = "" if aggressive else _safe_provider(self._world_provider)
 
         # Alexia bundle: capability lookup is *not* a string provider —
         # it returns the raw flags so we can build the overlay /
@@ -975,6 +987,8 @@ class PromptAssembler:
             system_parts.append(arc_block)
         if agenda_block:
             system_parts.append(agenda_block)
+        if world_block:
+            system_parts.append(world_block)
         if catchphrase_block:
             system_parts.append(catchphrase_block)
         if vocal_tone_block:
@@ -1002,6 +1016,7 @@ class PromptAssembler:
         arc_tokens = estimate_tokens(arc_block) if arc_block else 0
         narrative_tokens = estimate_tokens(narrative_block) if narrative_block else 0
         agenda_tokens = estimate_tokens(agenda_block) if agenda_block else 0
+        world_tokens = estimate_tokens(world_block) if world_block else 0
         self_image_tokens = estimate_tokens(self_image_block) if self_image_block else 0
         system_tokens = estimate_tokens(system_prompt) + (_MESSAGE_OVERHEAD if system_prompt else 0)
 
@@ -1068,6 +1083,7 @@ class PromptAssembler:
             arc_tokens=arc_tokens,
             narrative_tokens=narrative_tokens,
             agenda_tokens=agenda_tokens,
+            world_tokens=world_tokens,
             self_image_tokens=self_image_tokens,
             prompt_tokens_estimate=prompt_tokens_estimate,
             history_messages_kept=kept_count,
@@ -1094,6 +1110,7 @@ class PromptAssembler:
                 telemetry.arc_tokens,
                 telemetry.narrative_tokens,
                 telemetry.agenda_tokens,
+                telemetry.world_tokens,
                 telemetry.self_image_tokens,
             )
             if n > 0

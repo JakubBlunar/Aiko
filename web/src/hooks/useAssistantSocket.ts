@@ -215,6 +215,10 @@ export function useAssistantSocket(): {
         store.applyMemoryDeleted(evt.id);
         break;
 
+      case "world_updated":
+        store.applyWorldPatch(evt.patch);
+        break;
+
       case "avatar_settings_changed":
         store.setAvatarSettings(evt.settings);
         // Server now inlines resolved_outfit + circadian_period so the

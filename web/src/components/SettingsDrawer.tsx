@@ -10,8 +10,19 @@ import type {
   MetricsResponse,
   PersonaWindowSettings,
   RagDocument,
+  WorldItem,
+  WorldKind,
+  WorldLocation,
+  WorldPosture,
+  WorldSnapshot,
+  WorldActivity,
 } from "../types";
-import { MEMORY_KINDS } from "../types";
+import {
+  MEMORY_KINDS,
+  WORLD_ACTIVITIES,
+  WORLD_KINDS,
+  WORLD_POSTURES,
+} from "../types";
 import { useAssistantStore } from "../store";
 
 interface SettingsDrawerProps {
@@ -25,6 +36,7 @@ type SettingsTabId =
   | "tools"
   | "avatar"
   | "memory"
+  | "world"
   | "knowledge";
 
 interface TabSpec {
@@ -39,6 +51,7 @@ const SETTINGS_TABS: ReadonlyArray<TabSpec> = [
   { id: "tools", label: "Tools", icon: "🛠️" },
   { id: "avatar", label: "Avatar", icon: "🌸" },
   { id: "memory", label: "Memory", icon: "📒" },
+  { id: "world", label: "World", icon: "🏠" },
   { id: "knowledge", label: "Knowledge", icon: "📚" },
 ];
 
@@ -94,6 +107,73 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
   const [documentsBusy, setDocumentsBusy] = useState(false);
   const [documentsError, setDocumentsError] = useState<string | null>(null);
   const [documentsLoaded, setDocumentsLoaded] = useState(false);
+
+  // ── World tab state ────────────────────────────────────────────────
+  // Keep the world snapshot in the global store so live ``world_updated``
+  // WS patches can land surgically without us refetching here.
+  const world = useAssistantStore((s) => s.world);
+  const setWorld = useAssistantStore((s) => s.setWorld);
+  const [worldBusy, setWorldBusy] = useState(false);
+  const [worldError, setWorldError] = useState<string | null>(null);
+  const [worldGiveOpen, setWorldGiveOpen] = useState(false);
+  const [worldGiveDraft, setWorldGiveDraft] = useState<{
+    name: string;
+    kind: WorldKind | string;
+    quantity: number;
+    description: string;
+    location_id: number | null;
+    consumable: boolean;
+  }>({
+    name: "",
+    kind: "food",
+    quantity: 1,
+    description: "",
+    location_id: null,
+    consumable: true,
+  });
+  const [worldLocationsOpen, setWorldLocationsOpen] = useState(false);
+  const [worldItemsOpen, setWorldItemsOpen] = useState(true);
+  const [worldNewLocationOpen, setWorldNewLocationOpen] = useState(false);
+  const [worldNewLocationDraft, setWorldNewLocationDraft] = useState<{
+    name: string;
+    description: string;
+  }>({ name: "", description: "" });
+  const [worldEditingItemId, setWorldEditingItemId] = useState<number | null>(
+    null,
+  );
+  const [worldItemDraft, setWorldItemDraft] = useState<{
+    name: string;
+    description: string;
+    kind: string;
+    location_id: number | null;
+    quantity: number;
+  }>({
+    name: "",
+    description: "",
+    kind: "other",
+    location_id: null,
+    quantity: 1,
+  });
+  const [worldEditingLocationId, setWorldEditingLocationId] = useState<
+    number | null
+  >(null);
+  const [worldLocationDraft, setWorldLocationDraft] = useState<{
+    name: string;
+    description: string;
+  }>({ name: "", description: "" });
+
+  const refreshWorld = useCallback(async () => {
+    setWorldBusy(true);
+    setWorldError(null);
+    try {
+      const snapshot = await api.getWorld();
+      setWorld(snapshot);
+    } catch (err) {
+      setWorldError(String(err));
+    } finally {
+      setWorldBusy(false);
+    }
+  }, [setWorld]);
   const documentFileRef = useRef<HTMLInputElement | null>(null);
 
   const [metrics, setMetricsResp] = useState<MetricsResponse | null>(null);
@@ -185,6 +265,14 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
     memoryView.kindFilter,
     memoryView.order,
   ]);
+
+  // Refresh the world snapshot whenever the World tab opens. After that,
+  // ``world_updated`` WS patches keep the store in sync so we don't need
+  // to poll.
+  useEffect(() => {
+    if (!open || activeTab !== "world") return;
+    void refreshWorld();
+  }, [open, activeTab, refreshWorld]);
 
   const onDeleteMemory = async (memory: Memory) => {
     setMemoryError(null);
@@ -300,6 +388,167 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
       setMemoryError(String(err));
     } finally {
       setMemoryBusy(false);
+    }
+  };
+
+  const onPatchWorldState = async (patch: {
+    location_id?: number | null;
+    posture?: string;
+    activity?: string;
+    mood_note?: string;
+  }) => {
+    setWorldError(null);
+    try {
+      await api.patchWorldState(patch);
+      // The WS broadcast will land via applyWorldPatch; no local mutation.
+    } catch (err) {
+      setWorldError(String(err));
+    }
+  };
+
+  const onGiveItem = async () => {
+    const trimmed = worldGiveDraft.name.trim();
+    if (!trimmed) {
+      setWorldError("Item name can't be empty.");
+      return;
+    }
+    setWorldBusy(true);
+    setWorldError(null);
+    try {
+      // Default location: first one matching slug "kitchenette" if no
+      // explicit choice was made.
+      let location_id = worldGiveDraft.location_id;
+      if (location_id === null && world?.locations) {
+        const kitchen = world.locations.find((l) => l.slug === "kitchenette");
+        location_id = kitchen?.id ?? null;
+      }
+      await api.giveItem({
+        name: trimmed,
+        kind: worldGiveDraft.kind,
+        description: worldGiveDraft.description.trim() || undefined,
+        quantity: worldGiveDraft.quantity,
+        consumable: worldGiveDraft.consumable,
+        location_id,
+      });
+      setWorldGiveDraft({
+        name: "",
+        kind: "food",
+        quantity: 1,
+        description: "",
+        location_id: null,
+        consumable: true,
+      });
+      setWorldGiveOpen(false);
+    } catch (err) {
+      setWorldError(String(err));
+    } finally {
+      setWorldBusy(false);
+    }
+  };
+
+  const onAddLocation = async () => {
+    const trimmed = worldNewLocationDraft.name.trim();
+    if (!trimmed) {
+      setWorldError("Location name can't be empty.");
+      return;
+    }
+    setWorldBusy(true);
+    setWorldError(null);
+    try {
+      await api.createWorldLocation({
+        name: trimmed,
+        description: worldNewLocationDraft.description.trim(),
+      });
+      setWorldNewLocationDraft({ name: "", description: "" });
+      setWorldNewLocationOpen(false);
+    } catch (err) {
+      setWorldError(String(err));
+    } finally {
+      setWorldBusy(false);
+    }
+  };
+
+  const onSaveLocationEdit = async (loc: WorldLocation) => {
+    setWorldBusy(true);
+    setWorldError(null);
+    try {
+      const trimmedName = worldLocationDraft.name.trim();
+      if (!trimmedName) throw new Error("name can't be empty");
+      await api.updateWorldLocation(loc.id, {
+        name: trimmedName,
+        description: worldLocationDraft.description.trim(),
+      });
+      setWorldEditingLocationId(null);
+    } catch (err) {
+      setWorldError(String(err));
+    } finally {
+      setWorldBusy(false);
+    }
+  };
+
+  const onDeleteLocation = async (loc: WorldLocation) => {
+    setWorldError(null);
+    try {
+      await api.deleteWorldLocation(loc.id);
+    } catch (err) {
+      setWorldError(String(err));
+    }
+  };
+
+  const onSaveItemEdit = async (item: WorldItem) => {
+    setWorldBusy(true);
+    setWorldError(null);
+    try {
+      await api.updateWorldItem(item.id, {
+        name: worldItemDraft.name.trim() || item.name,
+        description: worldItemDraft.description.trim(),
+        kind: worldItemDraft.kind,
+        location_id: worldItemDraft.location_id,
+        quantity: worldItemDraft.quantity,
+      });
+      setWorldEditingItemId(null);
+    } catch (err) {
+      setWorldError(String(err));
+    } finally {
+      setWorldBusy(false);
+    }
+  };
+
+  const onDeleteItem = async (item: WorldItem) => {
+    setWorldError(null);
+    try {
+      await api.deleteWorldItem(item.id);
+    } catch (err) {
+      setWorldError(String(err));
+    }
+  };
+
+  const onConsumeItem = async (item: WorldItem) => {
+    setWorldError(null);
+    try {
+      await api.consumeWorldItem(item.id, 1);
+    } catch (err) {
+      setWorldError(String(err));
+    }
+  };
+
+  const onReseedWorld = async () => {
+    if (
+      !window.confirm(
+        "Reset Aiko's room to the default layout? Everything currently in the room will be removed.",
+      )
+    ) {
+      return;
+    }
+    setWorldBusy(true);
+    setWorldError(null);
+    try {
+      const snapshot = await api.reseedWorld(true);
+      setWorld(snapshot);
+    } catch (err) {
+      setWorldError(String(err));
+    } finally {
+      setWorldBusy(false);
     }
   };
 
@@ -1247,6 +1496,64 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                   }}
                 />
               ) : null}
+
+              {activeTab === "world" ? (
+                <WorldTab
+                  world={world}
+                  busy={worldBusy}
+                  error={worldError}
+                  onRefresh={() => {
+                    void refreshWorld();
+                  }}
+                  onPatchState={(patch) => {
+                    void onPatchWorldState(patch);
+                  }}
+                  giveOpen={worldGiveOpen}
+                  setGiveOpen={setWorldGiveOpen}
+                  giveDraft={worldGiveDraft}
+                  setGiveDraft={setWorldGiveDraft}
+                  onGiveItem={() => {
+                    void onGiveItem();
+                  }}
+                  locationsOpen={worldLocationsOpen}
+                  setLocationsOpen={setWorldLocationsOpen}
+                  itemsOpen={worldItemsOpen}
+                  setItemsOpen={setWorldItemsOpen}
+                  newLocationOpen={worldNewLocationOpen}
+                  setNewLocationOpen={setWorldNewLocationOpen}
+                  newLocationDraft={worldNewLocationDraft}
+                  setNewLocationDraft={setWorldNewLocationDraft}
+                  onAddLocation={() => {
+                    void onAddLocation();
+                  }}
+                  editingItemId={worldEditingItemId}
+                  setEditingItemId={setWorldEditingItemId}
+                  itemDraft={worldItemDraft}
+                  setItemDraft={setWorldItemDraft}
+                  onSaveItemEdit={(item) => {
+                    void onSaveItemEdit(item);
+                  }}
+                  onDeleteItem={(item) => {
+                    void onDeleteItem(item);
+                  }}
+                  onConsumeItem={(item) => {
+                    void onConsumeItem(item);
+                  }}
+                  editingLocationId={worldEditingLocationId}
+                  setEditingLocationId={setWorldEditingLocationId}
+                  locationDraft={worldLocationDraft}
+                  setLocationDraft={setWorldLocationDraft}
+                  onSaveLocationEdit={(loc) => {
+                    void onSaveLocationEdit(loc);
+                  }}
+                  onDeleteLocation={(loc) => {
+                    void onDeleteLocation(loc);
+                  }}
+                  onReseedWorld={() => {
+                    void onReseedWorld();
+                  }}
+                />
+              ) : null}
             </>
           ) : null}
         </div>
@@ -1633,6 +1940,853 @@ function MemoryTab({
         </div>
       ) : null}
     </Section>
+  );
+}
+
+// ── World tab (Aiko's room) ─────────────────────────────────────────────
+
+interface GiveDraft {
+  name: string;
+  kind: WorldKind | string;
+  quantity: number;
+  description: string;
+  location_id: number | null;
+  consumable: boolean;
+}
+
+interface ItemDraft {
+  name: string;
+  description: string;
+  kind: string;
+  location_id: number | null;
+  quantity: number;
+}
+
+interface LocationDraft {
+  name: string;
+  description: string;
+}
+
+interface WorldTabProps {
+  world: WorldSnapshot | null;
+  busy: boolean;
+  error: string | null;
+  onRefresh: () => void;
+  onPatchState: (patch: {
+    location_id?: number | null;
+    posture?: string;
+    activity?: string;
+    mood_note?: string;
+  }) => void;
+  giveOpen: boolean;
+  setGiveOpen: (open: boolean) => void;
+  giveDraft: GiveDraft;
+  setGiveDraft: (draft: GiveDraft) => void;
+  onGiveItem: () => void;
+  locationsOpen: boolean;
+  setLocationsOpen: (open: boolean) => void;
+  itemsOpen: boolean;
+  setItemsOpen: (open: boolean) => void;
+  newLocationOpen: boolean;
+  setNewLocationOpen: (open: boolean) => void;
+  newLocationDraft: LocationDraft;
+  setNewLocationDraft: (draft: LocationDraft) => void;
+  onAddLocation: () => void;
+  editingItemId: number | null;
+  setEditingItemId: (id: number | null) => void;
+  itemDraft: ItemDraft;
+  setItemDraft: (draft: ItemDraft) => void;
+  onSaveItemEdit: (item: WorldItem) => void;
+  onDeleteItem: (item: WorldItem) => void;
+  onConsumeItem: (item: WorldItem) => void;
+  editingLocationId: number | null;
+  setEditingLocationId: (id: number | null) => void;
+  locationDraft: LocationDraft;
+  setLocationDraft: (draft: LocationDraft) => void;
+  onSaveLocationEdit: (loc: WorldLocation) => void;
+  onDeleteLocation: (loc: WorldLocation) => void;
+  onReseedWorld: () => void;
+}
+
+const QUICK_GIVE_PRESETS: ReadonlyArray<{
+  label: string;
+  draft: GiveDraft;
+}> = [
+  {
+    label: "🍪 Cookie",
+    draft: {
+      name: "cookies",
+      kind: "food",
+      quantity: 1,
+      description: "a fresh, warm chocolate-chip cookie",
+      location_id: null,
+      consumable: true,
+    },
+  },
+  {
+    label: "🍵 Tea",
+    draft: {
+      name: "tea",
+      kind: "food",
+      quantity: 1,
+      description: "a cup of jasmine tea",
+      location_id: null,
+      consumable: true,
+    },
+  },
+  {
+    label: "🧸 Plushy",
+    draft: {
+      name: "plushy",
+      kind: "toy",
+      quantity: 1,
+      description: "a small soft plush, a gift from Jacob",
+      location_id: null,
+      consumable: false,
+    },
+  },
+  {
+    label: "🌷 Flower",
+    draft: {
+      name: "flower",
+      kind: "decor",
+      quantity: 1,
+      description: "a single fresh flower",
+      location_id: null,
+      consumable: false,
+    },
+  },
+];
+
+function WorldTab({
+  world,
+  busy,
+  error,
+  onRefresh,
+  onPatchState,
+  giveOpen,
+  setGiveOpen,
+  giveDraft,
+  setGiveDraft,
+  onGiveItem,
+  locationsOpen,
+  setLocationsOpen,
+  itemsOpen,
+  setItemsOpen,
+  newLocationOpen,
+  setNewLocationOpen,
+  newLocationDraft,
+  setNewLocationDraft,
+  onAddLocation,
+  editingItemId,
+  setEditingItemId,
+  itemDraft,
+  setItemDraft,
+  onSaveItemEdit,
+  onDeleteItem,
+  onConsumeItem,
+  editingLocationId,
+  setEditingLocationId,
+  locationDraft,
+  setLocationDraft,
+  onSaveLocationEdit,
+  onDeleteLocation,
+  onReseedWorld,
+}: WorldTabProps) {
+  if (!world) {
+    return (
+      <Section title="World">
+        <p className="rounded-md border border-white/5 bg-white/[0.02] px-3 py-2 text-xs text-ink-100/50">
+          {busy ? "Loading Aiko's room..." : "World snapshot not available."}
+        </p>
+        {error ? (
+          <div className="rounded-md border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+            {error}
+          </div>
+        ) : null}
+      </Section>
+    );
+  }
+
+  const { state, locations, items } = world;
+  const currentLocation =
+    locations.find((l) => l.id === state.location_id) ?? null;
+  const itemsByLocation = new Map<number | null, WorldItem[]>();
+  for (const item of items) {
+    const arr = itemsByLocation.get(item.location_id) ?? [];
+    arr.push(item);
+    itemsByLocation.set(item.location_id, arr);
+  }
+  for (const arr of itemsByLocation.values()) {
+    arr.sort((a, b) => a.name.localeCompare(b.name));
+  }
+  const carriedItems = itemsByLocation.get(null) ?? [];
+
+  return (
+    <div className="space-y-4">
+      <Section title="Right now">
+        <p className="text-xs text-ink-100/70">
+          Aiko is{" "}
+          <span className="font-medium text-ink-100">
+            {currentLocation
+              ? `at ${currentLocation.name}`
+              : "somewhere in her room"}
+          </span>
+          ,{" "}
+          <span className="font-medium text-ink-100">
+            {(state.posture || "sitting").replace("_", " ")}
+          </span>
+          ,{" "}
+          <span className="font-medium text-ink-100">
+            {(state.activity || "idle").replace("_", " ")}
+          </span>
+          .
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-1 text-[11px] text-ink-100/60">
+            <span>Where:</span>
+            <select
+              value={state.location_id ?? ""}
+              onChange={(e) =>
+                onPatchState({
+                  location_id: e.target.value ? Number(e.target.value) : null,
+                })
+              }
+              className="rounded border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-ink-100/80"
+            >
+              <option value="">(nowhere)</option>
+              {locations.map((l) => (
+                <option key={l.id} value={l.id}>
+                  {l.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex items-center gap-1 text-[11px] text-ink-100/60">
+            <span>Posture:</span>
+            <select
+              value={state.posture}
+              onChange={(e) => onPatchState({ posture: e.target.value })}
+              className="rounded border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-ink-100/80"
+            >
+              {WORLD_POSTURES.map((p: WorldPosture) => (
+                <option key={p} value={p}>
+                  {p.replace("_", " ")}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex items-center gap-1 text-[11px] text-ink-100/60">
+            <span>Activity:</span>
+            <select
+              value={state.activity}
+              onChange={(e) => onPatchState({ activity: e.target.value })}
+              className="rounded border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-ink-100/80"
+            >
+              {WORLD_ACTIVITIES.map((a: WorldActivity) => (
+                <option key={a} value={a}>
+                  {a.replace("_", " ")}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            onClick={onRefresh}
+            disabled={busy}
+            className="ml-auto rounded border border-white/10 px-2 py-0.5 text-[11px] text-ink-100/60 hover:border-ink-400 hover:text-ink-100 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {busy ? "..." : "Refresh"}
+          </button>
+        </div>
+        {state.mood_note ? (
+          <p className="text-[11px] italic text-ink-100/50">
+            "{state.mood_note}"
+          </p>
+        ) : null}
+      </Section>
+
+      <Section title="Give Aiko something">
+        <p className="text-[11px] text-ink-100/50">
+          Drops an item into her room, attributed to you. Aiko notices on
+          her next reply — no proactive ping.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          {QUICK_GIVE_PRESETS.map((preset) => (
+            <button
+              key={preset.label}
+              type="button"
+              onClick={() => {
+                setGiveDraft(preset.draft);
+                setGiveOpen(true);
+              }}
+              disabled={busy}
+              className="rounded border border-emerald-400/30 bg-emerald-500/5 px-3 py-1 text-xs text-emerald-100 hover:border-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {preset.label}
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={() => setGiveOpen(!giveOpen)}
+            className="ml-auto rounded border border-white/10 px-3 py-1 text-xs text-ink-100/70 hover:border-emerald-400/60 hover:text-emerald-100"
+          >
+            {giveOpen ? "Cancel" : "Custom..."}
+          </button>
+        </div>
+        {giveOpen ? (
+          <div className="space-y-2 rounded-md border border-emerald-400/30 bg-emerald-500/5 p-3">
+            <label className="block text-[11px] text-ink-100/60">
+              <span>Name</span>
+              <input
+                value={giveDraft.name}
+                onChange={(e) =>
+                  setGiveDraft({ ...giveDraft, name: e.target.value })
+                }
+                placeholder="e.g. cookies"
+                className="mt-1 w-full rounded border border-white/10 bg-black/30 px-2 py-1 text-xs text-ink-100"
+              />
+            </label>
+            <label className="block text-[11px] text-ink-100/60">
+              <span>Description (optional)</span>
+              <input
+                value={giveDraft.description}
+                onChange={(e) =>
+                  setGiveDraft({
+                    ...giveDraft,
+                    description: e.target.value,
+                  })
+                }
+                placeholder="a fresh, warm chocolate-chip cookie"
+                className="mt-1 w-full rounded border border-white/10 bg-black/30 px-2 py-1 text-xs text-ink-100"
+              />
+            </label>
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="flex items-center gap-1 text-[11px] text-ink-100/60">
+                <span>Kind:</span>
+                <select
+                  value={giveDraft.kind}
+                  onChange={(e) =>
+                    setGiveDraft({ ...giveDraft, kind: e.target.value })
+                  }
+                  className="rounded border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-ink-100/80"
+                >
+                  {WORLD_KINDS.map((k) => (
+                    <option key={k} value={k}>
+                      {k}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex items-center gap-1 text-[11px] text-ink-100/60">
+                <span>Quantity:</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={20}
+                  value={giveDraft.quantity}
+                  onChange={(e) =>
+                    setGiveDraft({
+                      ...giveDraft,
+                      quantity: Math.max(1, Number(e.target.value) || 1),
+                    })
+                  }
+                  className="w-14 rounded border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-ink-100/80"
+                />
+              </label>
+              <label className="flex items-center gap-1 text-[11px] text-ink-100/60">
+                <input
+                  type="checkbox"
+                  checked={giveDraft.consumable}
+                  onChange={(e) =>
+                    setGiveDraft({
+                      ...giveDraft,
+                      consumable: e.target.checked,
+                    })
+                  }
+                />
+                <span>Consumable</span>
+              </label>
+              <label className="flex items-center gap-1 text-[11px] text-ink-100/60">
+                <span>Where:</span>
+                <select
+                  value={giveDraft.location_id ?? ""}
+                  onChange={(e) =>
+                    setGiveDraft({
+                      ...giveDraft,
+                      location_id: e.target.value
+                        ? Number(e.target.value)
+                        : null,
+                    })
+                  }
+                  className="rounded border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-ink-100/80"
+                >
+                  <option value="">kitchenette (default)</option>
+                  {locations.map((l) => (
+                    <option key={l.id} value={l.id}>
+                      {l.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={onGiveItem}
+                disabled={busy || !giveDraft.name.trim()}
+                className="rounded border border-emerald-400/40 bg-emerald-500/10 px-3 py-1 text-[11px] text-emerald-100 hover:border-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Give
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </Section>
+
+      {error ? (
+        <div className="rounded-md border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+          {error}
+        </div>
+      ) : null}
+
+      <Section title="Items">
+        <div className="flex items-center justify-between">
+          <button
+            type="button"
+            onClick={() => setItemsOpen(!itemsOpen)}
+            className="text-[11px] text-ink-100/60 hover:text-ink-100"
+          >
+            {itemsOpen ? "▾ collapse" : "▸ expand"}
+          </button>
+          <span className="text-[11px] text-ink-100/40">
+            {items.length} item{items.length === 1 ? "" : "s"}
+          </span>
+        </div>
+        {itemsOpen ? (
+          <div className="space-y-3">
+            {locations.map((loc) => {
+              const here = itemsByLocation.get(loc.id) ?? [];
+              if (here.length === 0) return null;
+              return (
+                <div key={loc.id} className="space-y-1">
+                  <div className="text-[10px] uppercase tracking-wide text-ink-100/40">
+                    {loc.name}
+                  </div>
+                  <ul className="space-y-1">
+                    {here.map((item) => (
+                      <ItemRow
+                        key={item.id}
+                        item={item}
+                        locations={locations}
+                        editing={editingItemId === item.id}
+                        draft={itemDraft}
+                        setDraft={setItemDraft}
+                        onStartEdit={() => {
+                          setEditingItemId(item.id);
+                          setItemDraft({
+                            name: item.name,
+                            description: item.description,
+                            kind: item.kind,
+                            location_id: item.location_id,
+                            quantity: item.quantity,
+                          });
+                        }}
+                        onCancelEdit={() => setEditingItemId(null)}
+                        onSave={() => onSaveItemEdit(item)}
+                        onDelete={() => onDeleteItem(item)}
+                        onConsume={() => onConsumeItem(item)}
+                        busy={busy}
+                      />
+                    ))}
+                  </ul>
+                </div>
+              );
+            })}
+            {carriedItems.length > 0 ? (
+              <div className="space-y-1">
+                <div className="text-[10px] uppercase tracking-wide text-ink-100/40">
+                  carrying
+                </div>
+                <ul className="space-y-1">
+                  {carriedItems.map((item) => (
+                    <ItemRow
+                      key={item.id}
+                      item={item}
+                      locations={locations}
+                      editing={editingItemId === item.id}
+                      draft={itemDraft}
+                      setDraft={setItemDraft}
+                      onStartEdit={() => {
+                        setEditingItemId(item.id);
+                        setItemDraft({
+                          name: item.name,
+                          description: item.description,
+                          kind: item.kind,
+                          location_id: item.location_id,
+                          quantity: item.quantity,
+                        });
+                      }}
+                      onCancelEdit={() => setEditingItemId(null)}
+                      onSave={() => onSaveItemEdit(item)}
+                      onDelete={() => onDeleteItem(item)}
+                      onConsume={() => onConsumeItem(item)}
+                      busy={busy}
+                    />
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            {items.length === 0 ? (
+              <p className="text-xs text-ink-100/50">
+                Nothing in the room yet.
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+      </Section>
+
+      <Section title="Locations">
+        <div className="flex items-center justify-between">
+          <button
+            type="button"
+            onClick={() => setLocationsOpen(!locationsOpen)}
+            className="text-[11px] text-ink-100/60 hover:text-ink-100"
+          >
+            {locationsOpen ? "▾ collapse" : "▸ expand"}
+          </button>
+          <button
+            type="button"
+            onClick={() => setNewLocationOpen(!newLocationOpen)}
+            className="rounded border border-white/10 px-2 py-0.5 text-[11px] text-ink-100/70 hover:border-emerald-400/60 hover:text-emerald-100"
+          >
+            {newLocationOpen ? "Cancel" : "+ Add"}
+          </button>
+        </div>
+        {newLocationOpen ? (
+          <div className="space-y-2 rounded-md border border-emerald-400/30 bg-emerald-500/5 p-3">
+            <input
+              value={newLocationDraft.name}
+              onChange={(e) =>
+                setNewLocationDraft({
+                  ...newLocationDraft,
+                  name: e.target.value,
+                })
+              }
+              placeholder="Location name (e.g. 'the balcony')"
+              className="w-full rounded border border-white/10 bg-black/30 px-2 py-1 text-xs text-ink-100"
+            />
+            <input
+              value={newLocationDraft.description}
+              onChange={(e) =>
+                setNewLocationDraft({
+                  ...newLocationDraft,
+                  description: e.target.value,
+                })
+              }
+              placeholder="Description (optional)"
+              className="w-full rounded border border-white/10 bg-black/30 px-2 py-1 text-xs text-ink-100"
+            />
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={onAddLocation}
+                disabled={busy || !newLocationDraft.name.trim()}
+                className="rounded border border-emerald-400/40 bg-emerald-500/10 px-3 py-1 text-[11px] text-emerald-100 hover:border-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Add
+              </button>
+            </div>
+          </div>
+        ) : null}
+        {locationsOpen ? (
+          <ul className="space-y-1.5">
+            {locations.map((loc) => (
+              <li
+                key={loc.id}
+                className="rounded-md border border-white/5 bg-white/[0.03] px-3 py-2 text-xs"
+              >
+                {editingLocationId === loc.id ? (
+                  <div className="space-y-2">
+                    <input
+                      value={locationDraft.name}
+                      onChange={(e) =>
+                        setLocationDraft({
+                          ...locationDraft,
+                          name: e.target.value,
+                        })
+                      }
+                      className="w-full rounded border border-white/10 bg-black/30 px-2 py-1 text-xs text-ink-100"
+                    />
+                    <input
+                      value={locationDraft.description}
+                      onChange={(e) =>
+                        setLocationDraft({
+                          ...locationDraft,
+                          description: e.target.value,
+                        })
+                      }
+                      className="w-full rounded border border-white/10 bg-black/30 px-2 py-1 text-xs text-ink-100"
+                    />
+                    <div className="flex justify-end gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setEditingLocationId(null)}
+                        className="rounded border border-white/10 px-2 py-0.5 text-[11px] text-ink-100/60 hover:border-white/30"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onSaveLocationEdit(loc)}
+                        disabled={busy || !locationDraft.name.trim()}
+                        className="rounded border border-ink-400/40 bg-ink-500/20 px-2 py-0.5 text-[11px] text-ink-100 hover:border-ink-400 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="font-medium text-ink-100/90">
+                        {loc.name}
+                      </div>
+                      {loc.description ? (
+                        <div className="text-[11px] text-ink-100/50">
+                          {loc.description}
+                        </div>
+                      ) : null}
+                    </div>
+                    <div className="flex shrink-0 gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingLocationId(loc.id);
+                          setLocationDraft({
+                            name: loc.name,
+                            description: loc.description,
+                          });
+                        }}
+                        className="rounded border border-white/10 px-2 py-0.5 text-[11px] text-ink-100/60 hover:border-ink-400 hover:text-ink-100"
+                      >
+                        edit
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onDeleteLocation(loc)}
+                        className="rounded border border-white/10 px-2 py-0.5 text-[11px] text-ink-100/60 hover:border-rose-400/60 hover:text-rose-200"
+                      >
+                        delete
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </li>
+            ))}
+            {locations.length === 0 ? (
+              <p className="text-xs text-ink-100/50">No locations yet.</p>
+            ) : null}
+          </ul>
+        ) : null}
+      </Section>
+
+      <Section title="Reset">
+        <button
+          type="button"
+          onClick={onReseedWorld}
+          disabled={busy}
+          className="rounded border border-rose-400/30 bg-rose-500/5 px-3 py-1 text-xs text-rose-200 hover:border-rose-400 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Reset to default room
+        </button>
+        <p className="text-[10px] text-ink-100/40">
+          Wipes the current room (all locations + items + state) and re-seeds
+          the cozy default. Aiko's memories are not affected.
+        </p>
+      </Section>
+    </div>
+  );
+}
+
+interface ItemRowProps {
+  item: WorldItem;
+  locations: WorldLocation[];
+  editing: boolean;
+  draft: ItemDraft;
+  setDraft: (draft: ItemDraft) => void;
+  onStartEdit: () => void;
+  onCancelEdit: () => void;
+  onSave: () => void;
+  onDelete: () => void;
+  onConsume: () => void;
+  busy: boolean;
+}
+
+function ItemRow({
+  item,
+  locations,
+  editing,
+  draft,
+  setDraft,
+  onStartEdit,
+  onCancelEdit,
+  onSave,
+  onDelete,
+  onConsume,
+  busy,
+}: ItemRowProps) {
+  return (
+    <li
+      className={`rounded-md border px-3 py-2 text-xs ${
+        item.given_by === "user"
+          ? "border-emerald-400/30 bg-emerald-500/5"
+          : "border-white/5 bg-white/[0.03]"
+      }`}
+    >
+      {editing ? (
+        <div className="space-y-2">
+          <input
+            value={draft.name}
+            onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+            className="w-full rounded border border-white/10 bg-black/30 px-2 py-1 text-xs text-ink-100"
+          />
+          <input
+            value={draft.description}
+            onChange={(e) =>
+              setDraft({ ...draft, description: e.target.value })
+            }
+            placeholder="description"
+            className="w-full rounded border border-white/10 bg-black/30 px-2 py-1 text-xs text-ink-100"
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="flex items-center gap-1 text-[11px] text-ink-100/60">
+              <span>kind:</span>
+              <select
+                value={draft.kind}
+                onChange={(e) => setDraft({ ...draft, kind: e.target.value })}
+                className="rounded border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-ink-100/80"
+              >
+                {WORLD_KINDS.map((k) => (
+                  <option key={k} value={k}>
+                    {k}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex items-center gap-1 text-[11px] text-ink-100/60">
+              <span>where:</span>
+              <select
+                value={draft.location_id ?? ""}
+                onChange={(e) =>
+                  setDraft({
+                    ...draft,
+                    location_id: e.target.value
+                      ? Number(e.target.value)
+                      : null,
+                  })
+                }
+                className="rounded border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-ink-100/80"
+              >
+                <option value="">carried</option>
+                {locations.map((l) => (
+                  <option key={l.id} value={l.id}>
+                    {l.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex items-center gap-1 text-[11px] text-ink-100/60">
+              <span>qty:</span>
+              <input
+                type="number"
+                min={0}
+                max={99}
+                value={draft.quantity}
+                onChange={(e) =>
+                  setDraft({
+                    ...draft,
+                    quantity: Math.max(0, Number(e.target.value) || 0),
+                  })
+                }
+                className="w-14 rounded border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-ink-100/80"
+              />
+            </label>
+            <div className="ml-auto flex gap-1">
+              <button
+                type="button"
+                onClick={onCancelEdit}
+                className="rounded border border-white/10 px-2 py-0.5 text-[11px] text-ink-100/60 hover:border-white/30"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={onSave}
+                disabled={busy || !draft.name.trim()}
+                className="rounded border border-ink-400/40 bg-ink-500/20 px-2 py-0.5 text-[11px] text-ink-100 hover:border-ink-400 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0 flex-1">
+            <div className="text-ink-100/90">
+              <span className="font-medium">{item.name}</span>
+              {item.consumable || item.quantity > 1 ? (
+                <span className="ml-1 text-[10px] uppercase tracking-wide text-ink-100/50">
+                  ×{item.quantity}
+                </span>
+              ) : null}
+              {item.given_by === "user" ? (
+                <span className="ml-1 rounded bg-emerald-500/20 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-emerald-200">
+                  gift
+                </span>
+              ) : null}
+            </div>
+            {item.description ? (
+              <div className="text-[11px] text-ink-100/50">
+                {item.description}
+              </div>
+            ) : null}
+            <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-wide text-ink-100/40">
+              <span className="rounded bg-white/5 px-1.5 py-0.5 text-ink-100/60">
+                {item.kind}
+              </span>
+              {item.consumable ? <span>consumable</span> : null}
+            </div>
+          </div>
+          <div className="flex shrink-0 flex-col gap-1">
+            {item.consumable && item.quantity > 0 ? (
+              <button
+                type="button"
+                onClick={onConsume}
+                className="rounded border border-amber-400/30 bg-amber-500/5 px-2 py-0.5 text-[11px] text-amber-200 hover:border-amber-400/60"
+              >
+                consume
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={onStartEdit}
+              className="rounded border border-white/10 px-2 py-0.5 text-[11px] text-ink-100/60 hover:border-ink-400 hover:text-ink-100"
+            >
+              edit
+            </button>
+            <button
+              type="button"
+              onClick={onDelete}
+              className="rounded border border-white/10 px-2 py-0.5 text-[11px] text-ink-100/60 hover:border-rose-400/60 hover:text-rose-200"
+            >
+              remove
+            </button>
+          </div>
+        </div>
+      )}
+    </li>
   );
 }
 
