@@ -103,20 +103,20 @@ Highlights of the parameter map relevant to the agent:
 
 | Param ID | Translated `Name` | Used by |
 |---|---|---|
-| `Param11` | Sunglasses | `_CAPABILITY_SYNONYMS["sunglasses"]` |
-| `Param64` | Eyeglasses | `_CAPABILITY_SYNONYMS["glasses"]` (matches `"eyeglasses"`, NOT bare `"glasses"`, to avoid stealing Sunglasses) |
-| `Param16` | Clothes | Outfit toggle (see §1) |
-| `Param17` | Clothes (with hood) | Hood-LIFT toggle (see §1) |
+| `Param11` | Sunglasses | `_CAPABILITY_SYNONYMS["head_sunglasses"]` — perched on the hair, NOT on the eyes |
+| `Param64` | Eyeglasses | `_CAPABILITY_SYNONYMS["eyeglasses"]` (matches `"eyeglasses"`, NOT bare `"glasses"`, to avoid stealing the Sunglasses entry) |
+| `Param16` | Clothes | Outfit toggle (see §1); zero-valued in `zs1` to force day_clothes (see §3c) |
+| `Param17` | Clothes (with hood) | Hood-LIFT toggle (see §1); zero-valued in `zs1` |
 | `Param43` | Question mark | `has_question` |
 | `Param44` | Sweat | `has_sweat` |
-| `Param54` | Grin | `has_grin` (`lzx` exp3) |
+| `Param54` | Grin | `has_grin` (`lzx` exp3) — mouth-overlay param, tapered against `audioAmplitude` during speech (see §3b) |
 | `Param55` | Star eyes | `has_stars` |
-| `Param56` | Dizzy | `has_dizzy` |
+| `Param56` | Dizzy | `has_dizzy` — owns the `confused` reaction (see §3) |
 | `Param57` | Angry | `has_angry_marks` |
 | `Param58` | Blush | `has_blush` |
-| `Param59` | Cry | `has_cry` |
-| `Param60` | bbt | `has_sticker` (generic overlay; **visually a pronounced cry-face overlay — used for the `cry` reaction; see §3a**) |
-| `Param61` | Pose 1 | `has_pose` (held to 0 by yf/yfmz exp3 to suppress pose during outfit fade) |
+| `Param59` | Cry | `has_cry` — tear streaks, used by `sad` and (via neighbour fallback) `cry` |
+| `Param60` | bbt | `has_lollipop` — **lollipop / candy prop drawn in the mouth**; accessory tier (see §3a) |
+| `Param61` | Pose 1 | `has_crossed_arms` — day-clothes-only crossed-arms pose (see §3c) |
 
 The standard Cubism head/body/breath/eye params (`ParamAngleX/Y/Z`,
 `ParamBodyAngleX/Y/Z`, `ParamEyeBallX/Y`, `ParamBreath`,
@@ -129,21 +129,29 @@ doesn't touch them.
 ## 3. Expression files (`.exp3.json`)
 
 Sit in the model root: `live-2d-models/Alexia/*.exp3.json`. The
-ones the agent uses:
+**authoritative visual identity audit** (third pass, anchored on
+the user's live observation in Cubism Viewer Standalone for SDK 5)
+lives in [`docs/Alexia-my-observation.md`](Alexia-my-observation.md).
+This table reflects that audit:
 
-| File | Pinyin → meaning | Maps to |
-|---|---|---|
-| `bbt.exp3.json` | bbt (opaque pinyin; visually a pronounced cry / distressed face overlay) | sticker overlay slot — owned by the `cry` reaction; see §3a |
-| `dyj.exp3.json` | 带眼镜 (with glasses) | `has_glasses` |
-| `lh.exp3.json`  | 脸红 (blush) | `has_blush` |
-| `lzx.exp3.json` | 咧嘴笑 (grin) | `has_grin` |
-| `mj.exp3.json`  | 墨镜 (sunglasses) | `has_sunglasses` |
-| `sq.exp3.json`  | 生气 (angry) | `has_angry_marks` |
-| `wh.exp3.json`  | 问号 (question) | `has_question` |
-| `xxy.exp3.json` | 星星眼 (star eyes) | `has_stars` |
-| `yf.exp3.json`  | 衣服 (clothes) | `pajamas_hooded` (see §1) |
-| `yfmz.exp3.json`| 衣服托帽子 (clothes with hood lifted) | `pajamas` (see §1) |
-| `yjys1.exp3.json` / `yjys2.exp3.json` | eye color | `has_eye_color_a/b` |
+| File | CDI3 name / pinyin | Visual on the rig | Capability / reaction |
+|---|---|---|---|
+| `bbt.exp3.json` | bbt (棒棒糖) | **lollipop / candy prop drawn inside the mouth** (0–30 additive) | `has_lollipop` — accessory tier, NOT an emotional reaction. See §3a. |
+| `dyj.exp3.json` | 带眼镜 (with glasses) | regular eyeglasses worn on the face (0–30) | `has_eyeglasses` |
+| `h.exp3.json`   | 汗 (sweat) | single nervous sweat-drop at the top of the left eye, over the hair (0–30) | `has_sweat` |
+| `k.exp3.json`   | (cry — Param59) | quiet tear streaks below the eyes, **mouth untouched** (0–30) | `cry` reaction falls back here via `sad` neighbour |
+| `lh.exp3.json`  | 脸红 (blush) | cheek blush (0–30) | `has_blush` |
+| `lzx.exp3.json` | 咧嘴笑 (grin) | toothy grin / closed teeth-joined smile (0–30) — **paints over the lip-sync mouth, see §3b** | `has_grin` — `cheerful` / `amused` |
+| `mj.exp3.json`  | 墨镜 (sunglasses) | sunglasses **perched on top of the hair** (not on the eyes) | `has_head_sunglasses` |
+| `sq.exp3.json`  | 生气 (angry) | shadow over the eyes, opacity-modulated | `has_angry_marks` |
+| `wh.exp3.json`  | 问号 (question) | floating question mark under the right ear | `has_question` |
+| `xxy.exp3.json` | 星星眼 (star eyes) | star-shaped retinas (0 / 30 only — intermediate values look broken) | `has_stars` |
+| `y.exp3.json`   | 晕 (dizzy / confused) | spiral retinas | `has_dizzy` — `confused` reaction (NOT `tired`; see regression notes below) |
+| `yf.exp3.json`  | (day-clothes baseline) | day clothes, hood off, arms by side (Param16=0, Param17=0, Param61=0) | `pajamas_hooded` outfit envelope (see §1) |
+| `yfmz.exp3.json`| (pajamas-with-hood) | hooded pajamas (Param16=30, Param17=0 → hood lifted) | `pajamas` outfit envelope (see §1) |
+| `yjys1.exp3.json` | (left eye purple) | left iris turns purple | `has_eye_color_a` |
+| `yjys2.exp3.json` | (right eye purple) | right iris turns purple | `has_eye_color_b` |
+| `zs1.exp3.json` | 姿势 1 (Pose 1) | **crossed arms** — exp3 zeroes Param16 / Param17 so it only renders against day_clothes; see §3c | `has_crossed_arms` — `playful` reaction in day clothes |
 
 Capability detection uses `_ALEXIA_EXPR_TO_CAPABILITY` for explicit
 overrides and falls back to `_CAPABILITY_SYNONYMS` substring matching
@@ -154,52 +162,138 @@ for `has_hood` once upon a time** — keep it explicit.
 `_parse_exp3_params` filters out zero-valued parameters before
 building the `OutfitBinding`, so `Param17: 0` in `yf.exp3.json` does
 NOT end up in the hooded binding. That's why the binding ends up as
-`{Param16: 30}` cleanly.
+`{Param16: 30}` cleanly. The **outfit-gate detector**
+(`_detect_outfit_gated_expressions`) goes the other way: it reads the
+zero-valued entries deliberately, because they're the rig's way of
+saying "I require these envelope params to be off" — see §3c.
 
-### 3a. ``bbt`` is the dramatic cry overlay (not a happy sticker)
+### 3a. ``bbt`` is a lollipop prop, not an emotion overlay
 
-The cdi3 / model3 label ``bbt`` (Param60) gives no clue about the
-overlay's actual visual content. Param60 also sits adjacent to
-``Param59 = Cry`` in the parameter list and inherits the same
-"symbol expression" part group, which led the initial mapping pass
-to treat it as a generic happy sticker slot for ``cheerful`` and
-``amused`` reactions.
+This is the third (and hopefully final) classification of ``bbt`` /
+Param60. The history is worth keeping because the same misread could
+happen again on a future rig with similarly opaque labels.
 
-Visual inspection on the live rig (set ``Param60=30`` in the
-SettingsDrawer) shows ``bbt`` actually renders as a **pronounced
-cry-face overlay** — distinct from but more intense than ``k`` /
-Param59 (the subtle "tear streaks" cry). Mapping a positive reaction
-to it produced a regression where ``[[reaction:cheerful]]`` visibly
-cried on screen.
+| Pass | Classification        | Mapped to                          | Bug we observed                        |
+|------|------------------------|-------------------------------------|----------------------------------------|
+| 1    | "happy sticker"        | `cheerful` / `amused` reactions     | A cheerful turn rendered with a candy prop in the mouth |
+| 2    | "dramatic cry overlay" | `cry` reaction                      | A cry turn shoved a lollipop into Aiko's mouth mid-sob |
+| 3    | **lollipop / candy prop** | accessory tier (no reaction maps to it) | none — visual matches the user's audit |
 
-Current authoritative mapping after the audit:
+The clincher was the user's live observation in Cubism Viewer
+Standalone (Alexia is MOC3 v5 / SDK 5.0, so the older Cubism 3 Viewer
+for Unity can't load it): with `Param60=30` you can clearly see a
+**lollipop / candy on a stick drawn inside her mouth**, distinct
+from both the toothy grin (`lzx` / Param54) and the tear streaks
+(`k` / Param59).
 
-| Reaction       | Expression  | Param         | Visual                      |
-|----------------|-------------|---------------|-----------------------------|
-| ``cheerful``   | ``lzx``     | Param54 = Grin | toothy grin / wide smile    |
-| ``amused``     | ``lzx``     | Param54 = Grin | (shared with cheerful)      |
-| ``sad``        | ``k``       | Param59 = Cry | quiet tear streaks          |
-| ``melancholy`` | ``k``       | Param59 = Cry | (shared with sad)           |
-| ``concerned``  | ``k``       | Param59 = Cry | (shared with sad)           |
-| ``cry``        | ``bbt``     | Param60 = bbt | dramatic / pronounced cry   |
+That puts `bbt` firmly in the *accessory* space alongside glasses
+and sunglasses — not the *emotion* space. Today the only consumer is
+the `has_lollipop` capability; Phase 4 of the expression-overhaul
+plan will surface it as a persistent toggle in the SettingsDrawer
+("give Aiko a lollipop"). Until then it's reachable as
+`[[overlay:lollipop]]` via the grammar.
 
-The ``cry`` reaction is the most distressed entry in the canonical
-reaction set (``app/core/reactions.py`` — see ``REACTIONS``), with
-the lowest TTS speed (0.92, right at the safe-range floor) and the
-most negative valence impulse (-0.18 vs sad's -0.15) in
-``app/core/affect_state.py``. The persona prompt explicitly tells the
-LLM to reserve it for genuinely moving / distressing moments.
+**Future rigs**: emotion reactions go on params that render an
+emotion. Accessory props (candy, glasses, food, toys) get their own
+capability and stay out of `_ALEXIA_REACTION_MAP`.
 
-The ``[[overlay:grin]]`` LLM grammar tag still pulses ``lzx`` as a
-transient overlay; OverlayChannel re-applies the persistent reaction
-on slot release, so a cheerful turn that also emits
-``[[overlay:grin]]`` simply sustains the existing grin without
-churning between expressions.
+### 3b. Lip-sync conflicts — the `lzx` mouth-closure trap
 
-**Future rigs**: when bringing in a new model with a softer-smile
-overlay (e.g. closed-eye smile, blush-cheek smile), prefer that for
-``cheerful`` and reserve ``lzx``-equivalents for ``amused`` /
-``playful``. Do not reintroduce ``bbt`` for any positive reaction.
+`lzx` (Param54 = 咧嘴笑 = toothy grin) is a closed-mouth expression:
+the rig draws her teeth meeting at the centre and the upper / lower
+lip locked together. While that overlay is active at full amplitude,
+the lip-synced jaw motion is **visually masked** — you can still
+hear the audio but the mouth doesn't appear to move with it.
+
+Detection chain:
+
+1. `_detect_mouth_overlay_param_ids` walks the CDI3 and matches
+   names against `_MOUTH_OVERLAY_SYNONYMS` (`咧嘴`, `grin`, `smirk`,
+   `toothy`). For Alexia this returns `["Param54"]`.
+2. `_detect_mouth_blocking_expressions` cross-references that param
+   list against `expression_params`. Any expression whose binding
+   touches a mouth-overlay param is flagged. For Alexia: `["lzx"]`.
+3. The frontend `ExpressionChannel.tickPreModel` reads
+   `mouth_overlay_param_ids` and per-frame multiplies any matching
+   binding's amplitude by `(1 - lipsyncSuppression)`. The suppression
+   factor itself is driven by `audioAmplitude * 6` clamped to `[0,1]`
+   with a 150 ms time constant.
+
+Net effect: `[[reaction:cheerful]]` keeps the persistent grin
+between turns (where lip-sync is silent) but the grin tapers down to
+zero whenever TTS is actually speaking, exposing the lip-synced
+mouth underneath. As soon as audio drops back to silence the grin
+recovers smoothly.
+
+`mouth_blocking_expressions` is mostly informational today —
+the per-param taper does the real work — but it's exposed on the
+manifest so the SettingsDrawer (and future tooling) can answer "is
+this expression safe to combine with active speech?" without
+re-walking `expression_params`. Tests pin both the param-id
+detection (`MouthOverlayParamDetectionTests`) and the
+expression-name detection (`MouthBlockingExpressionsTests`).
+
+**Future rigs**: any new model with a teeth-joined / mouth-closed
+smile param needs its CDI3 name to match
+`_MOUTH_OVERLAY_SYNONYMS`, or the synonyms list needs widening, or
+the param + the owning expressions need adding to a curated
+override. Without the gate the grin will visibly fight the lip-sync.
+
+### 3c. Outfit-gated expressions — the `zs1` day-clothes-only pose
+
+The crossed-arms pose (`zs1.exp3.json`, Param61 = 姿势 1) is
+authored against the day-clothes silhouette. The rig's pose mesh
+overlaps the pajamas / hooded-pajamas envelopes, so the exp3
+explicitly writes Param16 = 0 and Param17 = 0 to **force the outfit
+to baseline** while the pose is active. Firing `zs1` while pajamas
+are active produces no visible change — the additive blend lands the
+arms outside the visible silhouette, so it's a silent no-op.
+
+Detection chain:
+
+1. `_detect_outfit_gated_expressions` reads each `.exp3.json`
+   directly (including zero-valued params, which the standard
+   `_parse_exp3_params` would skip). Any expression whose Parameters
+   list contains a zero-valued entry for an outfit envelope param
+   gets stamped with `["day_clothes"]` — the only Alexia outfit
+   whose baseline binding has zero outfit-param contributions.
+2. The detection currently uses a "any zero-valued entry" heuristic.
+   Future rigs with multiple baselines (e.g. a sport-outfit envelope
+   that also zeroes the pajamas param) would extend the helper to
+   compare zeroed-id sets against each outfit's binding.
+3. `ExpressionChannel._applyTarget` queries the active outfit via
+   `_resolveActiveOutfitCapability` (`day → day_clothes`, pajamas
+   variants pass through) and calls `resolveReactionExpression`
+   with that capability. The resolver walks the
+   reaction-neighbour chain whenever the direct mapping fails the
+   gate, so for Alexia: `playful` resolves to `zs1` in day clothes
+   and falls through to `amused` → `lzx` in pajamas.
+4. `onOutfitChange` re-applies the resolved target so a manual
+   outfit toggle (or a circadian auto-outfit flip) immediately
+   updates the persistent expression.
+
+The fallback is intentionally permissive when the active outfit is
+unknown (empty string) — a freshly loaded rig that hasn't yet
+reported its outfit should still get *some* expression. `StoreBridge`
+pushes `resolved_outfit` shortly after attach, at which point the
+gate tightens normally.
+
+Tests pinning this:
+
+- `tests/test_avatar_profile.py::OutfitGatedExpressionsTests` —
+  the heuristic detects `zs1: ["day_clothes"]` from the mini
+  fixture's exp3 and leaves non-gated expressions out of the map.
+- `web/src/live2d/channels/ExpressionChannel.test.ts` "outfit
+  gate" describe — `playful` flips between `zs1` and `lzx` as the
+  active outfit toggles, including the `onOutfitChange` recovery
+  path and the legacy-payload (no `outfit_gated_expressions` field)
+  fallback.
+
+**Future rigs**: outfit-gated expressions are still rare in the
+wild; most rigs let any expression render against any outfit. The
+machinery only fires when the exp3 author deliberately zeroes
+outfit envelope params, which is a strong "I require baseline"
+signal.
 
 ---
 
@@ -428,10 +522,15 @@ mitigation in place:
 2. **Sequential outfit param writes in the renderer**. Two outfits
    reference Param16; sequential writes silently zero each other out.
    Locked in by `test_pajama_variants_share_param16_for_additive_renderer`.
-3. **Synonym pollution between `glasses` and `sunglasses`**. The bare
-   word `"glasses"` substring-matches `"Sunglasses"` too, and Sunglasses
-   is declared first in the CDI3, so it would steal the `has_glasses`
-   binding. The synonym is `"eyeglasses"` (unique to Param64).
+3. **Synonym pollution between `eyeglasses` and `head_sunglasses`**.
+   The bare word `"glasses"` substring-matches `"Sunglasses"` too, and
+   Sunglasses is declared first in the CDI3, so it would steal the
+   `has_eyeglasses` binding. The eyeglasses synonym is `"eyeglasses"`
+   (unique to Param64). The capabilities were also **renamed** during
+   the visual-audit pass — `has_glasses` → `has_eyeglasses` (Param64,
+   worn on the face) and `has_sunglasses` → `has_head_sunglasses`
+   (Param11, perched on top of the hair). Don't reintroduce the
+   old names; they conflated the artwork's location.
 4. **Adding a hood capability separately**. There is no standalone
    `has_hood` capability — the hood IS part of the alternate outfit.
    Adding one creates a phantom "Param17 alone" overlay that shows
@@ -481,6 +580,29 @@ mitigation in place:
     expression sits on the rig forever. See §5 for the restore
     pattern (`lastExprOverlayUntilRef` + unconditional `applyReaction`
     on expiry).
+12. **Mapping reactions to props instead of emotions**. `bbt` /
+    Param60 got classified twice as an emotion overlay (first
+    "happy sticker" for `cheerful` / `amused`, then "dramatic cry"
+    for `cry`) before the live-rig audit revealed it's a **lollipop
+    in the mouth**. Same trap awaits any opaque-pinyin param sitting
+    in the symbol-expression part group. The current rule: emotion
+    reactions go on params that render an emotion; props (candy,
+    glasses, hats, food) get an accessory-tier capability and stay
+    out of `_ALEXIA_REACTION_MAP`. See §3a for the regression
+    history.
+13. **Mistaking `y` (Param56 = Dizzy) for "tired"**. The pinyin is
+    opaque and the CDI3 name "Dizzy" translates ambiguously, so
+    `tired` was pointed at it for two refactors. Visual: it draws
+    **spiral retinas**, which read as confused / dazed, not weary.
+    `tired` now maps to `""` (the body-slump in
+    `AmbientBodyChannel` carries the weary visual instead) and the
+    new canonical reaction `confused` owns the spiral-eyes overlay.
+14. **Firing `zs1` without checking the outfit**. The crossed-arms
+    pose zeroes the pajamas envelope params (Param16 = 0,
+    Param17 = 0) in its exp3, which means it silently no-ops when
+    pajamas are active. Either gate the dispatch on the active
+    outfit (see §3c — `outfit_gated_expressions`) or accept that
+    `[[reaction:playful]]` produces no visible change in pajamas.
 
 ---
 

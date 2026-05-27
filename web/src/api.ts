@@ -2,6 +2,7 @@
 
 import { backendBase } from "./desktop/runtime";
 import type {
+  AccessoryCatalogue,
   AssistantSettings,
   AvatarProfile,
   AvatarResponse,
@@ -198,6 +199,22 @@ export const api = {
       body: JSON.stringify(patch),
     });
     return result.avatar;
+  },
+  // Phase 4 (expression overhaul): accessory catalogue + PATCH.
+  // ``getAvatarAccessories`` returns one row per known accessory
+  // with the current value, the rig's availability flag, and the
+  // outfit gate. ``patchAvatarAccessories`` accepts a partial merge
+  // (any subset of keys) and the backend persists + broadcasts.
+  getAvatarAccessories: () =>
+    jsonFetch<AccessoryCatalogue>("/api/avatar/accessories"),
+  patchAvatarAccessories: async (
+    patch: Record<string, string | boolean>,
+  ): Promise<AccessoryCatalogue> => {
+    return jsonFetch<AccessoryCatalogue>("/api/avatar/accessories", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    });
   },
   listDocuments: () =>
     jsonFetch<{ documents: RagDocument[] }>("/api/documents"),

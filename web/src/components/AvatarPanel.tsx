@@ -16,6 +16,18 @@ export function AvatarPanel() {
   const reaction = useAssistantStore((s) => s.reaction);
   const voiceMode = useAssistantStore((s) => s.voiceMode);
   const avatar = useAssistantStore((s) => s.avatar);
+  const connectionStatus = useAssistantStore((s) => s.connection.status);
+
+  // Until we've heard from the backend at least once we don't actually
+  // know whether the avatar bundle is missing — show a friendlier
+  // "waiting for backend" line instead of falsely accusing the user
+  // of missing files. ``avatar`` becomes non-null on the ``hello``
+  // frame; ``connected`` flips on the first WS open. The "missing"
+  // message is reserved for the truly bad case: WS is up but the
+  // backend reports ``loaded === false``.
+  const showAvatar = Boolean(avatar && avatar.loaded);
+  const stillBooting =
+    !avatar && connectionStatus !== "connected";
 
   return (
     <aside className="hidden h-full w-[440px] shrink-0 flex-col items-center border-l border-white/5 bg-gradient-to-b from-white/[0.04] to-transparent px-4 py-6 lg:flex">
@@ -24,11 +36,11 @@ export function AvatarPanel() {
       </div>
 
       <div className="relative my-4 flex w-full flex-1 items-center justify-center overflow-hidden">
-        {avatar && avatar.loaded ? (
+        {showAvatar && avatar ? (
           <Live2DAvatar manifest={avatar} />
         ) : (
           <div className="flex h-full w-full items-center justify-center text-center text-[11px] text-ink-100/40">
-            Avatar files missing.
+            {stillBooting ? "Waiting for backend…" : "Avatar files missing."}
           </div>
         )}
       </div>

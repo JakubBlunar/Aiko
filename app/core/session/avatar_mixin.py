@@ -176,6 +176,161 @@ class AvatarMixin:
                     log.debug("avatar settings listener failed", exc_info=True)
         return snapshot
 
+    # ── Avatar accessories (Phase 4 expression overhaul) ───────────────
+
+    def avatar_accessories_catalogue(self) -> dict[str, Any]:
+        """Return the accessory catalogue + current per-key state.
+
+        Each entry advertises:
+          - ``key``: the capability stem (``lollipop`` /
+            ``head_sunglasses`` / …);
+          - ``kind``: ``"toggle"`` or ``"enum"`` (eye_color is the
+            only enum today);
+          - ``available``: whether the loaded rig advertises
+            ``has_<key>``;
+          - ``allowed_outfits``: list of outfit capability names the
+            accessory renders under, or ``[]`` for unconstrained;
+          - ``value``: the current persisted value
+            (``False`` / ``"default"`` for missing keys);
+          - ``options``: the enum value list (only set when
+            ``kind == "enum"``).
+
+        Used by ``GET /api/avatar/accessories`` and the
+        SettingsDrawer Accessories sub-section. Stays empty when no
+        avatar is loaded so a minimal future model degrades cleanly.
+        """
+        from app.core.settings import ACCESSORY_KEYS, EYE_COLOR_STATES
+
+        avatar = self._avatar
+        catalogue: list[dict[str, Any]] = []
+        state = self._avatar_settings_runtime.get("accessory_state") or {}
+        outfit_gates: dict[str, list[str]] = {}
+        capabilities: dict[str, bool] = {}
+        # ``zs1`` is the only outfit-gated accessory today (crossed
+        # arms only render against day_clothes). We surface the gate
+        # as the accessory's ``allowed_outfits`` so the UI can disable
+        # the row when the active outfit doesn't match. Reuse the
+        # avatar_profile's pre-computed map instead of re-walking the
+        # exp3 files at every GET.
+        if avatar is not None:
+            outfit_gates = dict(getattr(avatar, "outfit_gated_expressions", {}) or {})
+            capabilities = dict(avatar.capabilities or {})
+        # Expression-name → capability lookup so we can translate the
+        # outfit gate's per-expression entry (``zs1``) into the
+        # accessory key (``crossed_arms``). Live2D rigs are stamped
+        # with the inverse map via ``_ALEXIA_EXPR_TO_CAPABILITY`` in
+        # ``avatar_profile.py``; we reproduce the inversion lazily
+        # here to avoid coupling the mixin to that module's privates.
+        cap_to_expr: dict[str, str] = {}
+        try:
+            from app.core.avatar_profile import _ALEXIA_EXPR_TO_CAPABILITY
+            for expr_name, cap_name in _ALEXIA_EXPR_TO_CAPABILITY.items():
+                cap_to_expr.setdefault(cap_name, expr_name)
+        except Exception:
+            log.debug("avatar_profile expr→cap import failed", exc_info=True)
+        for key, kind in ACCESSORY_KEYS.items():
+            cap_flag = f"has_{key}"
+            # ``eye_color`` doesn't have a direct ``has_eye_color``
+            # capability — it's two split capabilities (``has_eye_color_a``
+            # / ``has_eye_color_b``). Surface availability as the
+            # *intersection* so the UI only enables it when both
+            # halves of the rig are usable.
+            if key == "eye_color":
+                available = bool(
+                    capabilities.get("has_eye_color_a", False)
+                    and capabilities.get("has_eye_color_b", False)
+                )
+            else:
+                available = bool(capabilities.get(cap_flag, False))
+            # Look up the expression file backing this capability
+            # (e.g. ``crossed_arms`` → ``zs1``) and copy any outfit
+            # gate over to the accessory metadata.
+            backing_expr = cap_to_expr.get(key, "")
+            allowed_outfits = list(outfit_gates.get(backing_expr, []))
+            default_value: str | bool = "default" if kind == "enum" else False
+            value: str | bool = state.get(key, default_value)
+            if kind == "enum" and not isinstance(value, str):
+                value = "default"
+            if kind == "bool" and not isinstance(value, bool):
+                value = bool(value)
+            entry: dict[str, Any] = {
+                "key": key,
+                "kind": "toggle" if kind == "bool" else "enum",
+                "available": available,
+                "allowed_outfits": allowed_outfits,
+                "value": value,
+            }
+            if kind == "enum" and key == "eye_color":
+                entry["options"] = sorted(EYE_COLOR_STATES)
+                entry["default"] = "default"
+            catalogue.append(entry)
+        return {
+            "accessories": catalogue,
+            "active_outfit": self.resolve_auto_outfit(),
+        }
+
+    def update_avatar_accessories(
+        self, patch: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Apply a partial accessory-state update and broadcast it.
+
+        Validates each key against :data:`ACCESSORY_KEYS` (booleans /
+        enum allow-lists). Unknown keys raise ``ValueError`` so the
+        REST layer can return a 400. Otherwise it's a merge into the
+        persisted state with a settings-listener broadcast (the same
+        channel ``update_avatar_settings`` uses), so the renderer's
+        ``AccessoryChannel`` can re-sync on the next WS frame.
+        """
+        from app.core.settings import (
+            ACCESSORY_KEYS,
+            EYE_COLOR_STATES,
+            _load_accessory_state,
+        )
+
+        if not isinstance(patch, dict) or not patch:
+            return dict(self._avatar_settings_runtime)
+        unknown = sorted(set(patch.keys()) - set(ACCESSORY_KEYS.keys()))
+        if unknown:
+            raise ValueError(
+                f"unknown accessory key(s): {', '.join(unknown)}"
+            )
+        # Round-trip through the loader so each value is coerced /
+        # clamped identically to the load-time path. Then merge the
+        # result onto the existing cache so untouched keys keep
+        # whatever they were.
+        normalized = _load_accessory_state(patch)
+        # Enforce the enum allow-list explicitly here as well — the
+        # loader silently falls back to the canonical default on a
+        # bad enum value, but the PATCH endpoint should return a 400
+        # so the client knows their PATCH was lossy.
+        for key, value in patch.items():
+            if ACCESSORY_KEYS.get(key) == "enum":
+                token = str(value).strip().lower() if value is not None else ""
+                if key == "eye_color" and token not in EYE_COLOR_STATES:
+                    raise ValueError(
+                        f"invalid eye_color value: {value!r}",
+                    )
+        current = dict(self._avatar_settings_runtime.get("accessory_state") or {})
+        merged = {**current, **normalized}
+        if merged == current:
+            return dict(self._avatar_settings_runtime)
+        self._avatar_settings_runtime["accessory_state"] = merged
+        self._settings.avatar.accessory_state = dict(merged)
+        try:
+            persist_user_overrides({"avatar": {"accessory_state": dict(merged)}})
+        except Exception:
+            log.warning(
+                "failed to persist accessory_state to user.json",
+                exc_info=True,
+            )
+        snapshot = dict(self._avatar_settings_runtime)
+        for cb in list(self._avatar_settings_listeners):
+            try:
+                cb(dict(snapshot))
+            except Exception:
+                log.debug("avatar settings listener failed", exc_info=True)
+        return snapshot
+
     def add_avatar_settings_listener(
         self, cb: Callable[[dict[str, Any]], None]
     ) -> None:
@@ -388,17 +543,40 @@ class AvatarMixin:
         requested overlay (capability ``has_X`` is False) — keeps a
         minimal future model from spamming the WS with effects it
         can't render.
+
+        **Stack form** (``[[overlay:A+B]]`` from the Phase 3
+        expression-overhaul grammar): when ``name`` contains ``+``,
+        the helper splits on the delimiter and dispatches each
+        component as its own overlay pulse. The
+        renderer's ``OverlayChannel`` natively supports concurrent
+        pulses, so ``blush+grin`` paints both at once (blush is a
+        Param58 pulse, grin is an ``expr:lzx`` pulse — different
+        param-write channels, no fight). Per-component capability
+        checks still apply, so the unsupported half of a stack is
+        silently dropped without blocking the supported half.
         """
         if not name:
+            return
+        normalized = str(name).strip().lower()
+        if not normalized:
+            return
+        if "+" in normalized:
+            # Defer to :func:`split_reaction_stack` so the parser
+            # semantics (dedup, trim, lowercase) stay in lock-step
+            # with the reaction-stack side of the grammar.
+            from app.core.reactions import split_reaction_stack
+            components = split_reaction_stack(normalized)
+            for component in components:
+                self._emit_avatar_overlay(component, duration_ms=duration_ms)
             return
         avatar = self._avatar
         if avatar is None:
             return
-        cap_key = f"has_{name.strip().lower()}"
+        cap_key = f"has_{normalized}"
         if not avatar.capabilities.get(cap_key, False):
             return
         payload = {
-            "name": name.strip().lower(),
+            "name": normalized,
             "duration_ms": int(max(150, duration_ms)),
         }
         for cb in list(self._avatar_overlay_listeners):

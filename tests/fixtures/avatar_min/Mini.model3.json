@@ -11,7 +11,12 @@
       { "Name": "wh", "File": "expressions/wh.exp3.json" },
       { "Name": "lzx", "File": "expressions/lzx.exp3.json" },
       { "Name": "yf", "File": "expressions/yf.exp3.json" },
-      { "Name": "yfmz", "File": "expressions/yfmz.exp3.json" }
+      { "Name": "yfmz", "File": "expressions/yfmz.exp3.json" },
+      { "Name": "bbt", "File": "expressions/bbt.exp3.json" },
+      { "Name": "zs1", "File": "expressions/zs1.exp3.json" },
+      { "Name": "y",   "File": "expressions/y.exp3.json" },
+      { "Name": "mj",  "File": "expressions/mj.exp3.json" },
+      { "Name": "dyj", "File": "expressions/dyj.exp3.json" }
     ],
     "Motions": {
       "Idle": [

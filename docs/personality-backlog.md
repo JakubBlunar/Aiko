@@ -47,64 +47,128 @@ swap blink drivers or upstream a setter.
 
 ---
 
-### B4. Map remaining Alexia expressions
+### B4. Map remaining Alexia expressions — **visual audit resolved**
 
-**Motivation.** The Alexia rig ships 17 expression files but only a
-subset is wired today. The remaining slots are sitting on disk unused,
-so the rig's expressive range is artificially narrow — every reaction
-that's not in the mapped set falls back to `neutral`. Surfacing the
-remaining slots would noticeably expand expressive range without
-touching the underlying graphics.
+**Status.** The visual identity audit landed (see
+[`docs/Alexia-my-observation.md`](Alexia-my-observation.md) for the
+user's per-expression observations and
+[`docs/alexia-model-notes.md`](alexia-model-notes.md) §3 / §3a / §3b /
+§3c for the codified reading). Every expression in the rig has a
+confirmed visual identity now; the only remaining work is **using**
+the new vocabulary in the persona + LLM grammar (the bullet under
+"Follow-ups" below).
 
-**Current state.**
-- **Files on disk (17 total):** `bbt`, `dyj`, `h`, `k`, `lh`, `lzx`,
-  `mj`, `sq`, `wh`, `xxy`, `y`, `yf`, `yfmz`, `yjys1`, `yjys2`, `zs1`.
-- **Mapped today:** `bbt` (`cry` reaction, sticker overlay slot),
-  `dyj` (glasses outfit), `k` (`sad` / `melancholy` / `concerned`),
-  `lzx` (`cheerful` / `amused`, plus `[[overlay:grin]]`),
-  `sq` (`angry`), `yfmz` (pajamas outfit), `yjys1` + `yjys2` (eye-
-  color outfits), `y` (default reset). See
-  [`app/core/avatar_profile.py`](../app/core/avatar_profile.py).
-- **Unmapped:** `h`, `lh`, `mj`, `wh`, `xxy`, `yf`, `zs1`. The pinyin
-  filenames are opaque so the visual identity of each needs a manual
-  pass in the live model viewer before we wire them.
+**Final mapping after the audit.**
+
+- **Mapped to canonical reactions.** `lzx` (`cheerful` / `amused`,
+  with the lip-sync taper from §3b), `k` (`sad` / `melancholy` /
+  `concerned`, and the fallback for `cry`), `sq` (`angry` /
+  `frustrated`), `wh` (`surprised` / `curious`), `xxy` (`excited` /
+  `enthusiastic`), `lh` (`warm` / `tender` / `gentle`), `y` (the new
+  `confused` reaction — NOT `tired`, which now routes to body-slump
+  via `AmbientBodyChannel`), `zs1` (`playful` in day clothes; falls
+  through to `amused` → `lzx` in pajamas via the outfit gate, §3c).
+- **Accessory-tier (no reaction maps to them, available via
+  `[[overlay:X]]` and Phase 4's persistent toggles).** `bbt` →
+  `has_lollipop` (NOT a cry overlay — see §3a regression history),
+  `dyj` → `has_eyeglasses`, `mj` → `has_head_sunglasses` (perched on
+  the hair, hence the rename from the earlier `has_sunglasses`),
+  `yjys1` / `yjys2` → `has_eye_color_a` / `has_eye_color_b`.
+- **Outfit envelopes (driven by `OutfitChannel`, not reactions).**
+  `yf` / `yfmz` + the synthetic `day_clothes` baseline.
+- **Sweat / question / nervous overlays.** `h` (sweat) and `wh`
+  (question) are emotional overlays sitting on the standard
+  `has_sweat` / `has_question` capabilities; both are usable via
+  `[[overlay:sweat]]` / `[[overlay:question]]` today.
+
+**Follow-ups** (these become Phase 5 of the expression-overhaul
+plan):
+
+- Mint new canonical reactions to fill the remaining emotional
+  textures the rig can now reach: `embarrassed` → `lh` (blush),
+  `nervous` → `h` (sweat), `defiant` → `zs1` (outfit-gated). All
+  three flow through the same `REACTIONS` / `_REACTION_NEIGHBOURS`
+  pipeline that `confused` uses today so non-Alexia rigs still get
+  *something*.
+- Teach the persona the stacked-overlay idiom (`[[overlay:A+B]]`)
+  once Phase 3's compositor lands, so the LLM can express two
+  textures at once (`blush+grin`, `sweat+question`,
+  `stars+blush`).
 
 **Key files.**
 - [`app/core/avatar_profile.py`](../app/core/avatar_profile.py) —
-  `_FILENAME_TO_NAME`, `_REACTION_TO_EXPRESSION`, capability flags.
-- [`docs/alexia-model-notes.md`](alexia-model-notes.md) — expression
-  inventory section, parameter audit.
+  `_ALEXIA_REACTION_MAP`, `_ALEXIA_EXPR_TO_CAPABILITY`,
+  `_CAPABILITY_SYNONYMS`, `_detect_mouth_blocking_expressions`,
+  `_detect_outfit_gated_expressions`.
+- [`docs/alexia-model-notes.md`](alexia-model-notes.md) §3 — the
+  authoritative per-expression audit.
 - [`web/src/components/ChatView.tsx`](../web/src/components/ChatView.tsx)
-  `REACTION_EMOJI` — if we mint new canonical reactions, add their
-  emoji here.
+  `REACTION_EMOJI` — already has `confused`; add `embarrassed` /
+  `nervous` / `defiant` in Phase 5.
 - [`data/persona/aiko_companion.txt`](../data/persona/aiko_companion.txt)
-  reaction vocabulary line — same caveat.
+  reaction vocabulary line — already mentions `confused`; extend in
+  Phase 5.
 
-**Sketched approach.**
-- For each unmapped file, open it once in the live model viewer to
-  confirm what the rig actually does. The visual could be anything
-  from "smug" / "blush" to a duplicated emotion slot.
-- For each confirmed visual, pick one:
-  1. Map to an existing canonical reaction that currently falls back
-     to `neutral` (e.g. add a smirk variant for `amused`).
-  2. Add a new canonical reaction word (e.g. `smug`, `blush`,
-     `embarrassed`, `flirty`) + a persona update extending the
-     reaction vocabulary line. Keep the vocabulary growth disciplined
-     so the LLM can still pick reliably from the set.
-  3. Wire as a new overlay slot (like `lzx` for `[[overlay:grin]]`)
-     for visuals that compose with reactions instead of replacing
-     them.
-- Every new mapping gets a one-paragraph entry in
-  [`docs/alexia-model-notes.md`](alexia-model-notes.md) §3 (visual
-  identity audit) so the `bbt`-was-misclassified-as-happy regression
-  doesn't repeat for a future rig swap.
+---
 
-**Open questions.**
-- Do we add new canonical reactions to the vocabulary, or do we keep
-  the vocabulary fixed and use the new slots only as visual variety
-  for existing reactions (driven by arousal / valence)?
-- How do we keep the reaction vocabulary from ballooning past what
-  the LLM picks from reliably (current set is 12 words)?
+### B5. Auto-cascade safety — voice mode / backchannel must not pick "heavy" expressions
+
+**Status.** **Shipped.** Discovered live: a perfectly cheerful turn
+visibly rendered Alexia crying for the 2-4 s thinking window while
+she resolved tool calls (`recall` then `change_posture`). Root cause
+was the auto-cascade chain inside
+[`ExpressionChannel.ts`](../web/src/live2d/channels/ExpressionChannel.ts):
+
+- `_MODE_TO_REACTION.thinking = ["thoughtful", "concerned", ...]` —
+  Alexia's `thoughtful` is `""` (no direct expression, lean on
+  body-language), so the cascade fell through to `concerned`, which
+  maps to **`k` (Param59 = tear streaks)**.
+- `_BACKCHANNEL_TO_REACTION.concern = ["concerned", "sad", "gentle"]`
+  — same problem: any user message with `tired` / `stressed` /
+  `frustrated` / etc. fired a 1.8 s tear pulse on top of whatever the
+  current reaction was.
+- `_BACKCHANNEL_TO_REACTION.disagreement = ["serious", "concerned",
+  "thoughtful"]` — same problem on the disagreement branch.
+
+**Fix.** Auto-cascades now route to soft / neutral alternatives only;
+the explicit `[[reaction:concerned]]` from the LLM still resolves to
+the rig's mapping (intentional empathy beat). Three regression tests
+land in
+[`ExpressionChannel.test.ts`](../web/src/live2d/channels/ExpressionChannel.test.ts)
+under "ExpressionChannel — auto-cascade avoids heavy expressions":
+they build an Alexia-like manifest where `thoughtful` is empty and
+`concerned`/`sad` route to `ExprCry`, then assert that
+`thinking` mode, `concern` backchannel, and `disagreement`
+backchannel never pick `ExprCry`.
+
+**Design rule going forward.** When adding entries to
+`_MODE_TO_REACTION` or `_BACKCHANNEL_TO_REACTION`, every candidate
+must read as a *micro-expression* on any rig. Reactions that imply
+strong narrative emotion on at least one supported rig
+(`concerned`, `sad`, `melancholy`, `cry`, `angry`, `frustrated`,
+`defiant`) belong only in the *explicit* `[[reaction:X]]` path, never
+the auto-cascade fallback.
+
+**Follow-up — neighbour-chain crybug entrypoint.** The first fix
+closed the auto-cascade paths (voice mode / backchannel). A second
+trace surfaced a *second* path to the same `k` (cry) expression
+through the explicit `[[reaction:X]]` neighbour fallback in
+[`reactions.py`](../app/core/reactions.py) /
+[`ExpressionChannel.ts`](../web/src/live2d/channels/ExpressionChannel.ts)
+`_REACTION_NEIGHBOURS`: non-sad reactions (`thoughtful`, `serious`,
+`frustrated`, `angry`) chained *through* `concerned` as a fallback.
+A single `[[reaction:thoughtful]]` from the LLM (or the
+filler-injector's default "thoughtful" carry-over on a fresh-boot
+turn with no prior reaction) would silently land on `concerned` →
+`k` and paint tears with no narrative justification. Fix: dropped
+`concerned` (and any other sad-family entry) from non-sad chains;
+the sad family (`sad` / `melancholy` / `wistful` / `concerned` /
+`tired` / `cry`) still chains within itself so legitimate
+`[[reaction:sad]]` emits still paint the right tears. Both mirrors
+updated; backend lock-in lives in
+[`tests/test_reactions.py`](../tests/test_reactions.py)
+`CryCascadeGuardTests`, frontend lock-in in the existing
+`auto-cascade avoids heavy expressions` block.
 
 ---
 

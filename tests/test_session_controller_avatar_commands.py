@@ -26,6 +26,7 @@ from app.core.avatar_profile import (
 from app.core.session_controller import (
     SessionController,
     _BackchannelMotionGate,
+    _seed_avatar_root_if_empty,
 )
 
 
@@ -85,6 +86,7 @@ def _make_controller(
         "scale_multiplier": 1.0,
         "auto_outfit": auto_outfit,
         "expressiveness": 1.0,
+        "accessory_state": {},
     }
     controller._avatar_settings_listeners = []
     controller._avatar_overlay_listeners = []
@@ -432,6 +434,54 @@ class MotionDispatchTests(unittest.TestCase):
         controller._emit_avatar_motion("salsa")
         self.assertEqual(motion_captured, [])
         self.assertEqual(overlay_captured, [])
+
+    def test_stacked_overlay_splits_into_per_component_pulses(self) -> None:
+        """Phase 3 ``[[overlay:A+B]]`` grammar: a stacked name must
+        dispatch one overlay payload per component, in declaration
+        order, so the renderer's OverlayChannel can paint them as
+        concurrent pulses. Capability checks still apply per-component
+        — an unsupported half of a stack is silently dropped without
+        blocking the supported half."""
+        avatar = _make_avatar(motions={})
+        avatar.capabilities["has_blush"] = True
+        avatar.capabilities["has_grin"] = True
+        controller = _make_controller(avatar)
+        captured: list[dict[str, Any]] = []
+        controller._avatar_overlay_listeners.append(
+            lambda payload: captured.append(dict(payload))
+        )
+        controller._emit_avatar_overlay("blush+grin")
+        self.assertEqual([p["name"] for p in captured], ["blush", "grin"])
+        # Duration is propagated to every component.
+        self.assertTrue(all(p["duration_ms"] == 1500 for p in captured))
+
+    def test_stacked_overlay_skips_unsupported_components(self) -> None:
+        # ``has_blush`` exists, ``has_chocolate`` doesn't. Only blush
+        # fires; the chocolate half is silently dropped instead of
+        # poisoning the whole stack.
+        avatar = _make_avatar(motions={})
+        avatar.capabilities["has_blush"] = True
+        controller = _make_controller(avatar)
+        captured: list[dict[str, Any]] = []
+        controller._avatar_overlay_listeners.append(
+            lambda payload: captured.append(dict(payload))
+        )
+        controller._emit_avatar_overlay("blush+chocolate")
+        self.assertEqual([p["name"] for p in captured], ["blush"])
+
+    def test_stacked_overlay_dedupes_repeated_components(self) -> None:
+        # ``blush+blush+grin`` collapses ``blush`` to one pulse so the
+        # OverlayChannel doesn't fight itself.
+        avatar = _make_avatar(motions={})
+        avatar.capabilities["has_blush"] = True
+        avatar.capabilities["has_grin"] = True
+        controller = _make_controller(avatar)
+        captured: list[dict[str, Any]] = []
+        controller._avatar_overlay_listeners.append(
+            lambda payload: captured.append(dict(payload))
+        )
+        controller._emit_avatar_overlay("blush+blush+grin")
+        self.assertEqual([p["name"] for p in captured], ["blush", "grin"])
 
     def test_known_motion_takes_precedence_over_overlay_capability(self) -> None:
         """A name that IS a valid motion stem must still hit the motion
@@ -813,6 +863,227 @@ class DesktopSettingsPersistenceTests(unittest.TestCase):
         # Real change -> listener fires once.
         controller.update_desktop_settings(persona_window_width=480)
         self.assertEqual(len(captured), 1)
+
+
+class AvatarAccessoriesTests(unittest.TestCase):
+    """Phase 4 (expression overhaul): persistent accessory toggles.
+
+    Covers ``avatar_accessories_catalogue`` (rendering the catalogue
+    from rig capabilities + outfit gates) and
+    ``update_avatar_accessories`` (validation, merge, persistence,
+    listener fan-out)."""
+
+    def _make_avatar_with_accessories(self) -> AvatarProfile:
+        # Build a synthetic Alexia-ish profile that advertises the
+        # Phase 4 accessory capabilities so the catalogue surfaces
+        # all of them.
+        avatar = _make_avatar()
+        avatar.capabilities["has_lollipop"] = True
+        avatar.capabilities["has_eyeglasses"] = True
+        avatar.capabilities["has_head_sunglasses"] = True
+        avatar.capabilities["has_crossed_arms"] = True
+        avatar.capabilities["has_eye_color_a"] = True
+        avatar.capabilities["has_eye_color_b"] = True
+        # The outfit gate lives on the rig profile; mirrors the
+        # zs1 → day_clothes mapping baked in by avatar_profile.
+        avatar.outfit_gated_expressions = {"zs1": ["day_clothes"]}
+        return avatar
+
+    def test_catalogue_lists_every_known_accessory(self) -> None:
+        avatar = self._make_avatar_with_accessories()
+        controller = _make_controller(avatar, auto_outfit="day")
+        catalogue = controller.avatar_accessories_catalogue()
+        keys = [e["key"] for e in catalogue["accessories"]]
+        self.assertEqual(
+            keys,
+            [
+                "lollipop",
+                "eyeglasses",
+                "head_sunglasses",
+                "crossed_arms",
+                "eye_color",
+            ],
+        )
+
+    def test_catalogue_advertises_availability_per_rig(self) -> None:
+        # A rig that doesn't ship the right eye_color half flips
+        # ``available`` to False for that row even though the others
+        # remain usable.
+        avatar = self._make_avatar_with_accessories()
+        avatar.capabilities["has_eye_color_b"] = False
+        controller = _make_controller(avatar, auto_outfit="day")
+        catalogue = controller.avatar_accessories_catalogue()
+        eye_entry = next(e for e in catalogue["accessories"] if e["key"] == "eye_color")
+        self.assertFalse(eye_entry["available"])
+        lollipop_entry = next(
+            e for e in catalogue["accessories"] if e["key"] == "lollipop"
+        )
+        self.assertTrue(lollipop_entry["available"])
+
+    def test_catalogue_outfit_gate_for_crossed_arms(self) -> None:
+        # ``crossed_arms`` is gated to ``day_clothes`` via the
+        # ``zs1`` entry in ``outfit_gated_expressions``. The
+        # catalogue surfaces the gate verbatim so the UI can grey
+        # out the row in pajamas.
+        avatar = self._make_avatar_with_accessories()
+        controller = _make_controller(avatar, auto_outfit="day")
+        catalogue = controller.avatar_accessories_catalogue()
+        entry = next(e for e in catalogue["accessories"] if e["key"] == "crossed_arms")
+        self.assertEqual(entry["allowed_outfits"], ["day_clothes"])
+
+    def test_patch_round_trip_persists_and_broadcasts(self) -> None:
+        avatar = self._make_avatar_with_accessories()
+        controller = _make_controller(avatar, auto_outfit="day")
+        captured: list[dict[str, Any]] = []
+        controller._avatar_settings_listeners.append(
+            lambda snap: captured.append(dict(snap))
+        )
+        with mock.patch(
+            "app.core.session.avatar_mixin.persist_user_overrides",
+        ) as persist_mock:
+            controller.update_avatar_accessories({"lollipop": True})
+        self.assertEqual(
+            controller._avatar_settings_runtime["accessory_state"],
+            {"lollipop": True},
+        )
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0]["accessory_state"], {"lollipop": True})
+        persist_mock.assert_called_once()
+
+    def test_patch_unknown_key_raises_value_error(self) -> None:
+        # The REST layer relies on ``ValueError`` to translate into a
+        # 400; verify the contract holds.
+        avatar = self._make_avatar_with_accessories()
+        controller = _make_controller(avatar, auto_outfit="day")
+        with self.assertRaises(ValueError):
+            controller.update_avatar_accessories({"jetpack": True})
+
+    def test_patch_invalid_enum_value_raises_value_error(self) -> None:
+        avatar = self._make_avatar_with_accessories()
+        controller = _make_controller(avatar, auto_outfit="day")
+        with self.assertRaises(ValueError):
+            controller.update_avatar_accessories({"eye_color": "lime_green"})
+
+    def test_patch_no_op_does_not_fire_listener(self) -> None:
+        # Idempotency: a PATCH that doesn't actually change state must
+        # skip the persist + broadcast (matches ``update_avatar_settings``
+        # semantics, which the same store / WS hub assume).
+        avatar = self._make_avatar_with_accessories()
+        controller = _make_controller(avatar, auto_outfit="day")
+        controller._avatar_settings_runtime["accessory_state"] = {"lollipop": True}
+        captured: list[dict[str, Any]] = []
+        controller._avatar_settings_listeners.append(
+            lambda snap: captured.append(dict(snap))
+        )
+        with mock.patch(
+            "app.core.session.avatar_mixin.persist_user_overrides",
+        ) as persist_mock:
+            controller.update_avatar_accessories({"lollipop": True})
+        self.assertEqual(captured, [])
+        persist_mock.assert_not_called()
+
+
+class SeedAvatarRootTests(unittest.TestCase):
+    """Self-healing seed step that copies ``live-2d-models/<name>/`` into
+    the runtime avatar directory when the latter is empty.
+
+    Documents the contract for the Windows / Linux ``npm run desktop``
+    flow (no ``setup-macos.sh`` runs there) and for users who manually
+    nuke ``data/personas/`` to shrink the working tree.
+    """
+
+    def _make_layout(
+        self,
+        tmp: Path,
+        *,
+        with_source: bool,
+        with_target: bool,
+    ) -> tuple[Path, Path]:
+        repo = tmp / "repo"
+        target = repo / "data" / "personas" / "active" / "Alexia"
+        source = repo / "live-2d-models" / "Alexia"
+        if with_source:
+            source.mkdir(parents=True)
+            (source / "Alexia.model3.json").write_text("{}", encoding="utf-8")
+            (source / "Alexia.moc3").write_bytes(b"binary")
+            (source / "Alexia.8192").mkdir()
+            (source / "Alexia.8192" / "texture_00.png").write_bytes(b"png")
+        if with_target:
+            target.mkdir(parents=True)
+        return source, target
+
+    def _patch_repo_root(self, repo: Path):
+        # The helper resolves the repo root via ``Path(__file__).parents[2]``
+        # against ``app/core/session_controller.py``. Stub it to a fake
+        # ``app/core/session_controller.py`` under the temp tree so the
+        # sibling lookup of ``live-2d-models/`` works.
+        from app.core import session_controller as sc
+
+        fake = repo / "app" / "core" / "session_controller.py"
+        fake.parent.mkdir(parents=True, exist_ok=True)
+        fake.write_text("# stub", encoding="utf-8")
+        return mock.patch.object(sc, "__file__", str(fake))
+
+    def test_seeds_when_target_is_missing(self) -> None:
+        with TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            source, target = self._make_layout(
+                tmp, with_source=True, with_target=False,
+            )
+            with self._patch_repo_root(tmp / "repo"):
+                _seed_avatar_root_if_empty(target)
+            self.assertTrue((target / "Alexia.model3.json").is_file())
+            self.assertTrue((target / "Alexia.moc3").is_file())
+            self.assertTrue(
+                (target / "Alexia.8192" / "texture_00.png").is_file(),
+                "nested directories must be copied recursively",
+            )
+
+    def test_seeds_when_target_is_empty(self) -> None:
+        with TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            source, target = self._make_layout(
+                tmp, with_source=True, with_target=True,
+            )
+            self.assertEqual(list(target.iterdir()), [])
+            with self._patch_repo_root(tmp / "repo"):
+                _seed_avatar_root_if_empty(target)
+            self.assertTrue((target / "Alexia.model3.json").is_file())
+
+    def test_noop_when_target_is_populated(self) -> None:
+        # If the user already has a runtime bundle, we MUST NOT overwrite
+        # it — they might have customised it (translated cdi3, etc.).
+        with TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            source, target = self._make_layout(
+                tmp, with_source=True, with_target=True,
+            )
+            (target / "Alexia.model3.json").write_text(
+                '{"custom": true}', encoding="utf-8"
+            )
+            with self._patch_repo_root(tmp / "repo"):
+                _seed_avatar_root_if_empty(target)
+            self.assertEqual(
+                (target / "Alexia.model3.json").read_text(encoding="utf-8"),
+                '{"custom": true}',
+            )
+            self.assertFalse(
+                (target / "Alexia.moc3").exists(),
+                "populated target must short-circuit the copy",
+            )
+
+    def test_noop_when_source_is_missing(self) -> None:
+        # No source bundle in the working tree → leave the empty
+        # target alone and let the downstream ``_avatar_from_disk``
+        # surface "not loaded" to the frontend.
+        with TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            source, target = self._make_layout(
+                tmp, with_source=False, with_target=True,
+            )
+            with self._patch_repo_root(tmp / "repo"):
+                _seed_avatar_root_if_empty(target)
+            self.assertEqual(list(target.iterdir()), [])
 
 
 if __name__ == "__main__":

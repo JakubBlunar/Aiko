@@ -94,7 +94,9 @@ Set `LOG_LEVEL=DEBUG` (env var) or `logging.level` in config to control verbosit
 
 ## Tools
 
-The lean v1 tool registry exposes three tools to the chat model via Ollama's native function-calling:
+The tool registry exposes two categories of tool to the chat model via Ollama's native function-calling:
+
+**Fact tools** — for things she can't just know:
 
 | Tool | Returns |
 |---|---|
@@ -102,7 +104,17 @@ The lean v1 tool registry exposes three tools to the chat model via Ollama's nat
 | `recall` | Semantic search across memories, recent messages, and uploaded documents (LanceDB). |
 | `web_search` | DuckDuckGo lite results. |
 
-The agent runs a pre-stream `chat_with_tools` pass; if a tool call appears, it executes, appends the result, then runs the streaming reply pass. Toggle each tool from the web Settings drawer or in `config.tools`.
+**Room tools** — for actually inhabiting her room (`WorldStore`):
+
+| Tool | Returns |
+|---|---|
+| `look_around` | Fresh snapshot of her current spot, posture, and nearby items. |
+| `move_to` | Relocate her to a different spot (bed, desk, window seat, ...). |
+| `change_posture` | Update posture (sitting / curled_up / ...) + activity. |
+| `inspect_item` | Detailed read of one item (description, state, quantity). |
+| `consume_item` | Decrement a consumable (cookies, tea); refuses non-consumables. |
+
+The agent runs a pre-stream `chat_with_tools` pass; if a tool call appears, it executes, appends the result, then runs the streaming reply pass. Read-only room tools (`look_around`, `inspect_item`) are intentionally infrequent because the prompt already carries a passive room summary — the mutative tools (`move_to`, `change_posture`, `consume_item`) are the ones that actually change visible state. Toggle each category from the web Settings drawer or in `config.tools`.
 
 ## Memory and RAG
 

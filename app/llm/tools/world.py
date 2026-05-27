@@ -1,20 +1,30 @@
 """World tools: let Aiko look around her room and interact with it.
 
 The room is a structured persistent model owned by
-:class:`app.core.world_store.WorldStore`. These tools expose a tiny
-slice of it to the LLM so Aiko can:
+:class:`app.core.world_store.WorldStore`. These tools expose a slice
+of it to the LLM so Aiko can:
 
-- ``look_around`` to ground a reply in her surroundings.
+- ``look_around`` to ground a reply in her surroundings (read-only).
 - ``move_to`` a different location ("I'll curl up on the bed").
 - ``change_posture`` (sitting / lying / curled_up / ...).
-- ``inspect`` an item's full description and state.
-- ``consume`` a consumable like a cookie (decrements quantity).
+- ``inspect_item`` for an item's full description and state.
+- ``consume_item`` for a consumable like a cookie (decrements quantity).
 
-All tool descriptions explicitly tell Aiko to call them only when the
-moment is right -- they are *not* a status feed. Otherwise she'd
-``look_around`` every turn for fun and turn the conversation into a
-travelogue. The "world" inner-life prompt block already gives her
-ambient awareness without any tool calls.
+Two categories of tool with different usage profiles:
+
+**Read-only** (``look_around``, ``inspect_item``) — partially redundant
+with the ambient "world" prompt block that ``PromptAssembler`` injects
+every turn. Schemas tell Aiko to skip them unless the conversation puts
+a specific item in focus or the ambient summary doesn't carry the
+needed detail.
+
+**Mutative** (``move_to``, ``change_posture``, ``consume_item``) — the
+ONLY way Aiko can update visible state. Without these, narrating "I'll
+curl up on the bed" leaves her actually at the desk; nibbling a cookie
+leaves the count at 5 forever. Schemas lead with positive framing
+("call this whenever your reply describes...") because the prior
+"only when..." wording was over-correcting and the model rarely
+reached for them.
 
 Tools are registered in :func:`SessionController.rebuild_tool_registry`
 gated on ``settings.tools.world`` (defaults to True).
@@ -73,12 +83,14 @@ class LookAroundTool:
         return ToolSchema(
             name="look_around",
             description=(
-                "Briefly describe Aiko's current spot in her room: where she "
-                "is, her posture, and the items nearby. Call this only when "
-                "the user asks about your room/surroundings, when you genuinely "
-                "want to ground a metaphor, or when something in your space "
-                "is plot-relevant. Do NOT call it on every turn -- the prompt "
-                "already gives you ambient awareness."
+                "Returns a fresh snapshot of Aiko's current spot in her room: "
+                "where she is, her posture, and the items nearby. Call this "
+                "when the user asks 'what are you doing right now?' or about "
+                "your surroundings, or when you want to ground a reply in a "
+                "specific detail the ambient summary skipped. Skip it on "
+                "ordinary turns -- your context already includes a passive "
+                "room summary, so don't call look_around just to know where "
+                "you are."
             ),
             parameters={"type": "object", "properties": {}, "required": []},
         )
@@ -136,10 +148,14 @@ class MoveToTool:
         return ToolSchema(
             name="move_to",
             description=(
-                "Move Aiko to a different spot in her room (e.g. the bed, the "
-                "desk, the window seat). Use only when it makes sense narratively "
-                "(she's curling up, going for tea, plopping into the beanbag). "
-                "Do NOT teleport on every turn."
+                "Move Aiko to a different spot in her room (bed, desk, window "
+                "seat, beanbag, kitchen nook, ...). Call this whenever your "
+                "reply narratively shifts where you are -- going to curl up, "
+                "heading over for tea, plopping into the beanbag. This is the "
+                "ONLY way the user actually sees you in the new spot; "
+                "narrating the move without calling move_to leaves the room "
+                "state stuck at the old location. Don't teleport every turn "
+                "for fun -- only when the moment calls for it."
             ),
             parameters={
                 "type": "object",
@@ -192,8 +208,13 @@ class ChangePostureTool:
                 "Change how Aiko is positioned right now (sitting, lying, "
                 "standing, curled_up, leaning) and optionally what she's "
                 "doing (reading, tinkering, watching_screens, napping, "
-                "thinking, snacking, ...). Use sparingly -- only when a "
-                "reply specifically calls for a body-language shift."
+                "thinking, snacking, ...). Call this when your reply "
+                "describes a body-language or activity shift -- curling up "
+                "because you're tired, sitting up because something caught "
+                "your attention, picking up a book to read. Like move_to, "
+                "this is how the room state stays in sync with what you're "
+                "saying; without it the user sees the OLD posture. Don't "
+                "call it for every fidget -- only the ones worth a beat."
             ),
             parameters={
                 "type": "object",
@@ -249,8 +270,11 @@ class InspectItemTool:
             description=(
                 "Look at one item in Aiko's room in detail (name, "
                 "description, current state, quantity remaining). Call this "
-                "when something specific is being discussed, NOT as a "
-                "passive scan."
+                "when the user asks about a specific thing in your room "
+                "('what does that book say?', 'how many cookies are left?'), "
+                "or when you want to ground a reply in details the ambient "
+                "summary doesn't carry. Don't scan items at random -- only "
+                "when the conversation puts one in focus."
             ),
             parameters={
                 "type": "object",
@@ -295,11 +319,13 @@ class ConsumeItemTool:
         return ToolSchema(
             name="consume_item",
             description=(
-                "Eat or use a consumable item (cookies, tea). The quantity "
-                "decrements and the row disappears when it hits zero. Use "
-                "this when Aiko explicitly nibbles a cookie, sips tea, etc. "
-                "It will refuse for non-consumables (like the lamp or the "
-                "monitors)."
+                "Eat or use a consumable item (cookies, tea). Decrements "
+                "quantity; the row disappears when it hits zero. Call this "
+                "whenever your reply mentions you eating, drinking, or "
+                "finishing a consumable -- otherwise the count stays the "
+                "same forever and the user sees full cookies on the desk "
+                "after you said you nibbled one. Refuses non-consumables "
+                "(lamp, monitors) automatically, so it's safe to try."
             ),
             parameters={
                 "type": "object",

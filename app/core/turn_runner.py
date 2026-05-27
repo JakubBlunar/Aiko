@@ -31,6 +31,7 @@ from app.core.log_context import reset_turn_id, set_turn_id
 from app.core.prompt_assembler import PromptAssembler, PromptTelemetry
 from app.core.services.response_text_service import (
     parse_reaction_at_start,
+    parse_reaction_stack_at_start,
     safe_visible_prefix,
     split_text_with_stage_directions,
     strip_all_meta_tags,
@@ -463,11 +464,27 @@ class TurnRunner:
                 full = "".join(accumulator)
 
                 # Strip the leading [[reaction:X]] tag once (and only once),
-                # then operate on the body text afterwards.
+                # then operate on the body text afterwards. Phase 3
+                # stacked reactions ``[[reaction:A+B]]`` route the
+                # primary (A) into ``mood`` as before; companions (B,
+                # C, ...) fire as long-duration overlay pulses on top
+                # so the stacked emotional texture lands at the
+                # renderer.
                 if mood is None:
-                    parsed_mood, body_after_react = parse_reaction_at_start(full)
+                    parsed_mood, companions, body_after_react = (
+                        parse_reaction_stack_at_start(full)
+                    )
                     if parsed_mood is not None:
                         mood = parsed_mood
+                        if on_overlay is not None:
+                            for companion in companions:
+                                try:
+                                    on_overlay(companion)
+                                except Exception:
+                                    log.debug(
+                                        "on_overlay (reaction companion) raised",
+                                        exc_info=True,
+                                    )
                     body = body_after_react if parsed_mood is not None else full
                 else:
                     _m, body = parse_reaction_at_start(full)
@@ -512,9 +529,25 @@ class TurnRunner:
 
         full_raw = "".join(accumulator)
         if mood is None:
-            parsed_mood, full_raw = parse_reaction_at_start(full_raw)
+            # Phase 3 stack form: route the primary into ``mood`` and
+            # fire companions through ``on_overlay`` so the renderer
+            # still gets the stacked texture even when the streaming
+            # parser missed it (e.g. the tag arrived in a single
+            # final delta).
+            parsed_mood, companions, full_raw = parse_reaction_stack_at_start(
+                full_raw,
+            )
             if parsed_mood is not None:
                 mood = parsed_mood
+                if on_overlay is not None:
+                    for companion in companions:
+                        try:
+                            on_overlay(companion)
+                        except Exception:
+                            log.debug(
+                                "on_overlay (reaction companion) raised",
+                                exc_info=True,
+                            )
         # Visibility: log the raw output once per turn so we can finally
         # see whether the LLM is emitting structural tags or only prose.
         # ``%r`` keeps multi-line responses on a single log line. The

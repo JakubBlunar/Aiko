@@ -28,6 +28,12 @@ export function useAssistantSocket(): {
   const reconnectTimeoutRef = useRef<number | null>(null);
   const pingIntervalRef = useRef<number | null>(null);
   const closedByUser = useRef(false);
+  // Set true on the first successful ``open`` event. Until then we
+  // suppress the brief "disconnected" flash that the WS lifecycle
+  // would otherwise emit on every failed connect attempt while the
+  // backend is still booting — the user sees a stable "connecting"
+  // amber pill instead of a strobe between amber and red.
+  const hasEverConnected = useRef(false);
 
   const setConnection = useAssistantStore((s) => s.setConnection);
 
@@ -370,6 +376,7 @@ export function useAssistantSocket(): {
 
     ws.addEventListener("open", () => {
       if (!isCurrent()) return;
+      hasEverConnected.current = true;
       setConnection({ status: "connected", lastError: null });
       if (pingIntervalRef.current) {
         window.clearInterval(pingIntervalRef.current);
@@ -406,7 +413,16 @@ export function useAssistantSocket(): {
 
     ws.addEventListener("close", () => {
       if (!isCurrent()) return;
-      setConnection({ status: "disconnected", lastError: null });
+      // Suppress the "offline" flash during the initial boot window:
+      // until we've successfully opened a WS at least once, every
+      // failed attempt stays in "connecting" state so the user sees
+      // one stable indicator while Python is warming up. After the
+      // first real connection, dropouts ARE meaningful and we
+      // surface them as "disconnected" (red pill) so the user knows.
+      const nextStatus = hasEverConnected.current
+        ? "disconnected"
+        : "connecting";
+      setConnection({ status: nextStatus, lastError: null });
       if (pingIntervalRef.current) {
         window.clearInterval(pingIntervalRef.current);
         pingIntervalRef.current = null;
@@ -417,26 +433,51 @@ export function useAssistantSocket(): {
 
     ws.addEventListener("error", () => {
       if (!isCurrent()) return;
-      setConnection({ status: "disconnected", lastError: "websocket error" });
+      // Same flash-suppression rationale as the ``close`` handler:
+      // a pre-first-connection error stays "connecting" because we
+      // ARE about to retry; only show "disconnected" once the
+      // connection has been real at least once.
+      const nextStatus = hasEverConnected.current
+        ? "disconnected"
+        : "connecting";
+      setConnection({
+        status: nextStatus,
+        lastError: hasEverConnected.current ? "websocket error" : null,
+      });
     });
   }, [handleEvent, setConnection]);
 
   useEffect(() => {
     closedByUser.current = false;
+    hasEverConnected.current = false;
     let cancelled = false;
+    // Show "connecting" immediately so the UI doesn't briefly flash
+    // "offline" while the bootstrap gate is polling for the backend.
+    // This also keeps the placeholder text honest during the initial
+    // boot window (``npm run desktop`` starts the API and the UI in
+    // parallel, so the UI is up well before Python finishes
+    // importing the ML stack).
+    setConnection({ status: "connecting", lastError: null });
     // Inside a Tauri webview, gate the WS dial on the backend sidecar
     // being up. ``ensureBackendRunning`` resolves immediately in the
     // browser (where the user runs ``python -m app.web`` themselves)
     // and after a poll loop inside the desktop app where the Rust side
     // may need to spawn the venv first.
+    //
+    // Failure of the gate is **not** terminal: ``npm run desktop`` on
+    // Windows spawns the backend via ``concurrently`` (the Tauri
+    // sidecar is a no-op there), so the gate may time out even when
+    // the backend is on its way up in a sibling terminal. Fall
+    // through to ``connect()`` regardless; the WS close-event
+    // reconnect loop keeps retrying every RECONNECT_DELAY_MS until
+    // the backend answers.
     void desktop.ensureBackendRunning().then((result) => {
       if (cancelled) return;
       if (!result.ok) {
         setConnection({
-          status: "disconnected",
-          lastError: result.error || "Aiko backend failed to start.",
+          status: "connecting",
+          lastError: result.error || null,
         });
-        return;
       }
       connect();
     });

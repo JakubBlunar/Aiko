@@ -1353,6 +1353,40 @@ def create_web_app(session: "SessionController") -> FastAPI:
         })
         return JSONResponse({"avatar": session.avatar_payload()})
 
+    @app.get("/api/avatar/accessories")
+    def get_avatar_accessories() -> JSONResponse:
+        """Phase 4 (expression overhaul): per-accessory catalogue.
+
+        Returns ``{accessories: [...], active_outfit: "..."}`` where
+        each catalogue entry carries the current value, the rig's
+        availability flag, and the outfit gate (if any). The
+        SettingsDrawer renders one row per entry and disables rows
+        whose ``allowed_outfits`` doesn't include the current
+        ``active_outfit``.
+        """
+        return JSONResponse(session.avatar_accessories_catalogue())
+
+    @app.patch("/api/avatar/accessories")
+    async def patch_avatar_accessories(payload: dict[str, Any]) -> JSONResponse:
+        """Phase 4 (expression overhaul): merge accessory toggles.
+
+        Validates each key against the known accessory catalogue
+        (lollipop / eyeglasses / head_sunglasses / eye_color /
+        crossed_arms) and the enum allow-list. Unknown keys or bad
+        enum values return 400. Successful patches broadcast an
+        ``avatar_settings_changed`` event over the WS hub so the
+        renderer's accessory layer re-syncs on the next frame.
+        """
+        try:
+            snapshot = session.update_avatar_accessories(payload)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        hub.broadcast({
+            "type": "avatar_settings_changed",
+            "settings": dict(snapshot),
+        })
+        return JSONResponse(session.avatar_accessories_catalogue())
+
     # ── REST: desktop / Tauri shell knobs ────────────────────────────
 
     @app.get("/api/desktop")

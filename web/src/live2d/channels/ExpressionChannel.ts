@@ -62,7 +62,11 @@
  *     same expression) are unaffected, so the rest of the smile
  *     keeps reading while the toothy overlay tapers out.
  */
-import type { BackchannelHint, ExpressionParam } from "../../types";
+import type {
+  BackchannelHint,
+  ExpressionParam,
+  ResolvedOutfit,
+} from "../../types";
 import { approach } from "../math";
 import type {
   AvatarChannel,
@@ -75,6 +79,14 @@ import type {
  * map a reaction. The server-side ``avatar_profile`` is responsible
  * for pre-baking direct mappings; this just covers the case where
  * the LLM emits a fresh label that post-dates the model load. */
+// Design rule, same as the auto-cascade tables above: NON-sad reactions
+// must never fall back to ``concerned`` / ``sad`` / ``melancholy`` /
+// ``cry`` — on rigs where those resolve to tear-streak overlays (e.g.
+// Alexia's ``k`` = Param59), a single ``[[reaction:thoughtful]]`` emit
+// from the LLM (or the filler's default tone) would silently flip Aiko
+// to "visibly crying". The sad family (``sad``, ``melancholy``,
+// ``wistful``, ``concerned``, ``tired``, ``cry``) intentionally chains
+// among themselves — that's where the tear-streak overlay belongs.
 const _REACTION_NEIGHBOURS: Record<string, string[]> = {
   amused: ["cheerful", "playful", "friendly", "warm", "neutral"],
   playful: ["amused", "cheerful", "excited", "friendly", "warm"],
@@ -82,37 +94,61 @@ const _REACTION_NEIGHBOURS: Record<string, string[]> = {
   curious: ["thoughtful", "surprised", "friendly", "neutral"],
   tender: ["warm", "gentle", "friendly", "calm", "neutral"],
   warm: ["friendly", "gentle", "tender", "cheerful", "neutral"],
-  thoughtful: ["serious", "calm", "concerned", "neutral"],
+  // ``thoughtful`` is a contemplative beat; previously chained through
+  // ``concerned`` which on Alexia paints tears. Drop ``concerned``;
+  // body-language carries the thinking texture instead.
+  thoughtful: ["serious", "calm", "neutral"],
   wistful: ["sad", "melancholy", "thoughtful", "calm", "gentle"],
   concerned: ["serious", "sad", "thoughtful", "neutral"],
   melancholy: ["sad", "wistful", "tired", "calm", "neutral"],
   tired: ["calm", "melancholy", "neutral", "sad"],
-  frustrated: ["angry", "concerned", "serious", "neutral"],
+  // Frustration and anger are anger-leaning, not sadness-leaning.
+  // Chain them to each other + serious, never to ``concerned``.
+  frustrated: ["angry", "serious", "neutral"],
   gentle: ["warm", "calm", "friendly", "tender", "neutral"],
   friendly: ["warm", "cheerful", "neutral", "calm"],
   calm: ["neutral", "thoughtful", "gentle", "warm"],
-  serious: ["thoughtful", "concerned", "neutral"],
+  // ``serious`` was the second neighbour-chain crybug entrypoint.
+  // Same fix: drop ``concerned``.
+  serious: ["thoughtful", "neutral"],
   surprised: ["excited", "curious", "amused", "neutral"],
   cheerful: ["amused", "friendly", "warm", "playful", "neutral"],
   excited: ["enthusiastic", "cheerful", "playful", "surprised", "neutral"],
   sad: ["melancholy", "wistful", "concerned", "neutral"],
-  angry: ["frustrated", "serious", "concerned", "neutral"],
+  angry: ["frustrated", "serious", "neutral"],
   neutral: ["calm", "friendly", "warm"],
 };
 
+// IMPORTANT: these cascades MUST avoid ``concerned`` / ``sad`` /
+// ``melancholy`` / ``cry``. They look like a gentle "Aiko empathises"
+// or "Aiko is thinking" beat in the abstract, but on rigs where those
+// reactions paint dramatic visuals (Alexia's ``concerned``/``sad`` both
+// map to ``k`` — Param59 tear streaks below the eyes) the cascade
+// turns a routine backchannel or thinking-pause into Aiko visibly
+// crying. The LLM's explicit ``[[reaction:concerned]]`` still routes
+// to whatever the rig has mapped — this list only covers the auto
+// fallbacks. See ``docs/personality-backlog.md`` §B5.
 const _BACKCHANNEL_TO_REACTION: Record<BackchannelHint, string[]> = {
   agreement: ["cheerful", "friendly", "warm"],
-  disagreement: ["serious", "concerned", "thoughtful"],
+  // Disagreement reads as a serious / thoughtful face, not a sob.
+  disagreement: ["serious", "thoughtful", "neutral"],
   surprise: ["surprised", "excited", "amazed"],
   amusement: ["cheerful", "amused", "playful"],
-  concern: ["concerned", "sad", "gentle"],
+  // "concern" as a backchannel is Aiko's micro-expression of empathy
+  // for what the user just said — it should be a soft / warm beat,
+  // not a tear-streak overlay. The LLM still has ``[[reaction:concerned]]``
+  // when it wants the heavier visual.
+  concern: ["gentle", "tender", "warm", "thoughtful"],
   confused: ["confused", "thoughtful", "curious"],
   thinking: ["thoughtful", "calm", "neutral"],
 };
 
 const _MODE_TO_REACTION: Record<"listening" | "thinking", string[]> = {
   listening: ["thoughtful", "calm", "neutral", "friendly", "attentive"],
-  thinking: ["thoughtful", "concerned", "calm", "serious", "neutral"],
+  // ``concerned`` removed: thinking is a cognitive state, not a sad
+  // one, and on rigs where ``concerned`` paints tears this turned the
+  // 2-4s tool-call window into Aiko visibly crying while she worked.
+  thinking: ["thoughtful", "calm", "serious", "neutral"],
 };
 
 const BACKCHANNEL_RESTORE_MS = 1_800;
@@ -323,6 +359,21 @@ export class ExpressionChannel implements AvatarChannel {
     this._applyTarget();
   }
 
+  /** React to an outfit change (e.g. user toggled day_clothes ⇄
+   * pajamas, or the circadian auto-outfit ticked over). The channel
+   * itself doesn't paint outfit params — that's ``OutfitChannel`` —
+   * but the persistent reaction may resolve to a different expression
+   * once the gate flips. For Alexia: ``playful`` resolves to ``zs1``
+   * in day clothes and falls through to ``amused`` → ``lzx`` in
+   * pajamas. Without this hook the channel would keep the previous
+   * gate's pick frozen until the next reaction event. */
+  onOutfitChange(_outfit: ResolvedOutfit): void {
+    if (this._isExprSlotLocked()) {
+      return;
+    }
+    this._applyTarget();
+  }
+
   /** Continuous-expressiveness arousal scaler.
    *
    * Runs every Pixi frame in ``beforeModelUpdate`` (the last
@@ -460,9 +511,11 @@ export class ExpressionChannel implements AvatarChannel {
       return;
     }
     // No mode override — apply the persistent reaction.
+    const activeOutfit = this._resolveActiveOutfitCapability();
     const expressionName = resolveReactionExpression(
       deps.manifest,
       this._currentReaction,
+      activeOutfit,
     );
     if (!expressionName) {
       // Empty / unmapped reaction — clear any active overlay so the
@@ -485,6 +538,25 @@ export class ExpressionChannel implements AvatarChannel {
     }
     adapter.expression(expressionName);
     this._activeExpressionName = expressionName;
+  }
+
+  /** Translate the renderer's ``ResolvedOutfit`` (``"day"`` /
+   * ``"pajamas"`` / ``"pajamas_hooded"`` / ``""``) into the
+   * capability-name vocabulary used by
+   * ``manifest.outfit_gated_expressions``. The capability names are
+   * what the backend stamps into the gate's allow-list
+   * (``day_clothes``), so we map ``"day"`` → ``"day_clothes"`` and
+   * pass the pajamas variants through unchanged. Empty string means
+   * "outfit unknown yet" and is propagated as-is so the resolver can
+   * treat it as a permissive no-op (see ``resolveReactionExpression``).
+   */
+  private _resolveActiveOutfitCapability(): string {
+    const deps = this._deps;
+    if (!deps) return "";
+    const snap = deps.getStoreSnapshot();
+    const outfit = snap?.resolvedOutfit ?? "";
+    if (outfit === "day") return "day_clothes";
+    return outfit;
   }
 
   private _pickBackchannelExpression(hint: string): string | undefined {
@@ -540,18 +612,35 @@ export class ExpressionChannel implements AvatarChannel {
 function resolveReactionExpression(
   manifest: AvatarManifest,
   reaction: string,
+  activeOutfitCap?: string,
 ): string | undefined {
   if (!reaction) {
     return undefined;
   }
+  const gated = manifest.outfit_gated_expressions ?? {};
+  const passesGate = (expr: string | undefined): expr is string => {
+    if (!expr) return false;
+    const allow = gated[expr];
+    if (!allow || allow.length === 0) {
+      return true;
+    }
+    // Empty / unknown active outfit is treated as permissive so a
+    // freshly loaded rig that hasn't reported its outfit yet doesn't
+    // silently strand every gated expression. Once the StoreBridge
+    // pushes ``resolved_outfit``, the gate fires normally.
+    if (!activeOutfitCap) {
+      return true;
+    }
+    return allow.includes(activeOutfitCap);
+  };
   const direct = manifest.reaction_mapping[reaction];
-  if (direct) {
+  if (passesGate(direct)) {
     return direct;
   }
   const neighbours = _REACTION_NEIGHBOURS[reaction] || [];
   for (const fallback of neighbours) {
     const expr = manifest.reaction_mapping[fallback];
-    if (expr) {
+    if (passesGate(expr)) {
       return expr;
     }
   }

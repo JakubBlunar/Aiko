@@ -446,6 +446,52 @@ export interface AvatarSettingsKnobs {
    *  - ``pajamas_hooded`` -> always pajamas with sleeping cap
    */
   auto_outfit: "auto" | "day" | "pajamas" | "pajamas_hooded";
+  /**
+   * Phase 4 (expression overhaul) persistent accessory state. Keys
+   * are accessory capability stems from the loaded rig
+   * (``lollipop`` / ``eyeglasses`` / ``head_sunglasses`` /
+   * ``crossed_arms`` / ``eye_color``). Boolean values are toggles;
+   * ``eye_color`` is the only enum
+   * (``default | both_purple | left_purple | right_purple``).
+   * Optional in the wire payload so older backends keep working.
+   */
+  accessory_state?: Record<string, string | boolean>;
+}
+
+/** Phase 4 accessory states for the ``eye_color`` enum accessory.
+ * Mirrors :data:`app.core.settings.EYE_COLOR_STATES` — update both
+ * sides in lockstep. */
+export type EyeColorState =
+  | "default"
+  | "both_purple"
+  | "left_purple"
+  | "right_purple";
+
+/** A single accessory catalogue entry as returned by
+ * ``GET /api/avatar/accessories``. The SettingsDrawer renders one
+ * row per entry; ``available`` controls visibility and
+ * ``allowed_outfits`` controls the row's enabled / disabled state
+ * against the current outfit. */
+export interface AccessoryCatalogueEntry {
+  key: string;
+  kind: "toggle" | "enum";
+  available: boolean;
+  /** Outfit capability names this accessory renders under
+   * (``["day_clothes"]`` for crossed_arms). Empty list = no
+   * outfit constraint, the row is always enabled. */
+  allowed_outfits: string[];
+  value: string | boolean;
+  /** Present only for enum accessories (today: ``eye_color``). */
+  options?: string[];
+  default?: string;
+}
+
+export interface AccessoryCatalogue {
+  accessories: AccessoryCatalogueEntry[];
+  /** ``"day"`` / ``"pajamas"`` / ``"pajamas_hooded"`` / ``""`` —
+   * the renderer's current outfit, used to gate accessories whose
+   * ``allowed_outfits`` excludes it. */
+  active_outfit: ResolvedOutfit;
 }
 
 export interface AvatarProfile {
@@ -482,6 +528,21 @@ export interface AvatarProfile {
    * speaking and snaps back in as soon as she falls silent.
    * Optional for backwards compatibility with cached payloads. */
   mouth_overlay_param_ids?: string[];
+  /** Expression filenames whose param list intersects
+   * ``mouth_overlay_param_ids`` — i.e. firing them would paint a
+   * stylised mouth overlay competing with lip-sync. For Alexia this
+   * is ``["lzx"]``. Pre-computed on the backend so the channel
+   * doesn't re-walk ``expression_params`` every dispatch. Optional
+   * for backwards compatibility with cached payloads. */
+  mouth_blocking_expressions?: string[];
+  /** Expression filenames that only render correctly when the active
+   * outfit is in the listed capability set. For Alexia this is
+   * ``{"zs1": ["day_clothes"]}`` because the crossed-arms pose's
+   * exp3 explicitly zeroes the pajamas envelope params. The channel
+   * consults this in ``_applyTarget`` and falls back through the
+   * neighbour chain when the gate fails. Optional for backwards
+   * compatibility. */
+  outfit_gated_expressions?: Record<string, string[]>;
   /** All cat-tail param IDs in declaration order. Empty when the
    * loaded model isn't a cat-girl rig. */
   cat_tail_param_ids: string[];

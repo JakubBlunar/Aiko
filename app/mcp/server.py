@@ -79,8 +79,26 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
 
     @mcp.tool()
     def list_agent_tools() -> str:
-        """Return JSON list of agent tools (empty in v1, hooked in via TurnRunner later)."""
-        return json.dumps([], indent=2)
+        """Return JSON list of every tool currently registered on the agent.
+
+        Walks the live ``SessionController._tool_registry`` so the
+        result reflects the actual catalogue the LLM sees in
+        ``chat_with_tools`` -- including world tools (look_around /
+        move_to / change_posture / inspect_item / consume_item)
+        whenever ``settings.tools.world`` is enabled. Returns an
+        empty list only if the registry hasn't been built yet
+        (e.g. during the very first session boot).
+        """
+        registry = getattr(session, "_tool_registry", None)
+        if registry is None:
+            return json.dumps([], indent=2)
+        try:
+            return json.dumps(registry.describe(), indent=2)
+        except Exception as exc:
+            return json.dumps(
+                {"error": f"failed to introspect tool registry: {exc}"},
+                indent=2,
+            )
 
     @mcp.tool()
     def feed_stt_partial(partial_text: str) -> str:
