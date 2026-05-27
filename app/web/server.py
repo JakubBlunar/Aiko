@@ -409,6 +409,61 @@ def create_web_app(session: "SessionController") -> FastAPI:
             for r in rows
         ])
 
+    # ── REST: health (Tauri sidecar bootstrap probe) ────────────────
+
+    @app.get("/api/health")
+    def get_health() -> JSONResponse:
+        """Cheap liveness probe used by the Tauri shell.
+
+        Polled by the macOS Tauri sidecar before opening the webview to
+        know when the spawned Python backend has finished booting. Kept
+        intentionally trivial so it can answer before the heavier
+        services finish warming up.
+        """
+        return JSONResponse({"ok": True, "session_key": session.session_key})
+
+    # ── REST: identity (first-run onboarding) ───────────────────────
+
+    @app.get("/api/settings/identity")
+    def get_identity() -> JSONResponse:
+        """Return the configured display name + onboarding flag.
+
+        ``needs_onboarding`` is true exactly when ``user_display_name``
+        is empty/unset -- the React shell uses it to decide whether to
+        show the first-run name modal.
+        """
+        return JSONResponse({
+            "user_display_name": (
+                session._settings.assistant.user_display_name or ""
+            ),
+            "needs_onboarding": bool(session.needs_onboarding),
+        })
+
+    @app.put("/api/settings/identity")
+    def put_identity(payload: dict[str, Any]) -> JSONResponse:
+        """Persist a new user display name.
+
+        Validates 1-32 chars after strip. Broadcasts ``identity_changed``
+        so workers and other browser windows reconcile their cached
+        prompt strings.
+        """
+        raw_name = payload.get("user_display_name", "")
+        try:
+            stored = session.update_user_display_name(str(raw_name))
+        except ValueError as exc:
+            return JSONResponse(
+                {"error": str(exc)}, status_code=400,
+            )
+        hub.broadcast({
+            "type": "identity_changed",
+            "user_display_name": stored,
+            "needs_onboarding": False,
+        })
+        return JSONResponse({
+            "user_display_name": stored,
+            "needs_onboarding": False,
+        })
+
     # ── REST: settings / models / voices / devices ──────────────────
 
     @app.get("/api/settings")
@@ -584,7 +639,7 @@ def create_web_app(session: "SessionController") -> FastAPI:
             session._settings.agent.activity_awareness_enabled = new_value
             # Privacy hygiene: when the user disables the toggle, drop
             # any cached active-app string so a next-prompt build won't
-            # surface a stale "Jacob is in <App>" line. ``set_user_active_app``
+            # surface a stale "<user> is in <App>" line. ``set_user_active_app``
             # already short-circuits on the disabled gate, but we also
             # null the cached field directly for completeness.
             if not new_value:
@@ -1406,6 +1461,12 @@ def create_web_app(session: "SessionController") -> FastAPI:
                 "context_source": session.context_window_source,
                 "avatar": session.avatar_payload(),
                 "desktop": session.desktop_settings(),
+                "identity": {
+                    "user_display_name": (
+                        session._settings.assistant.user_display_name or ""
+                    ),
+                    "needs_onboarding": bool(session.needs_onboarding),
+                },
             }, default=str))
         except Exception:
             pass

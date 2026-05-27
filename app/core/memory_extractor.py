@@ -21,10 +21,11 @@ import logging
 import re
 import threading
 import time
-from typing import Iterable
+from typing import Callable, Iterable
 
 from app.core.chat_database import ChatDatabase, MessageRow
 from app.core.memory_store import VALID_KINDS, MemoryStore
+from app.core.session_text_utils import resolve_user_name, speaker_label
 from app.llm.embedder import Embedder
 from app.llm.ollama_client import OllamaClient
 
@@ -32,31 +33,44 @@ from app.llm.ollama_client import OllamaClient
 log = logging.getLogger("app.memory_extractor")
 
 
-_SYSTEM_PROMPT = (
-    "You analyse a chat transcript between a user named Jacob and his AI "
-    "companion Aiko. Your job is to extract DURABLE memories that would "
-    "still be relevant in a month.\n"
-    "\n"
-    "Two kinds of memories are allowed:\n"
-    "  1. Facts about Jacob: real preferences, opinions, ongoing projects, "
-    "     important events, relationships, recurring jokes. One short "
-    "     sentence in THIRD person ('Jacob ...').\n"
-    "  2. Aiko's notes about herself: a stance, a taste, a decision Aiko "
-    "     made about her own personality that she wants to keep next time. "
-    "     One short sentence in FIRST person ('I ...').\n"
-    "\n"
-    "Rules:\n"
-    "- Skip throwaway chitchat, single-turn moods, weather, jokes that are "
-    "  not recurring.\n"
-    "- Skip anything already in the existing memory list.\n"
-    "- If nothing is worth remembering, return an empty array.\n"
-    "- 'kind' must be one of: fact, preference, event, relationship, self. "
-    "  Use 'self' only for Aiko's first-person notes.\n"
-    "- 'salience' is 0..1 -- how much this should drive future conversation.\n"
-    "\n"
-    'Reply with JSON only, exactly: {"memories": [{"content": "...", '
-    '"kind": "...", "salience": 0.5}]}'
-)
+def _build_system_prompt(user_display_name: str = "the user") -> str:
+    """System prompt for the memory extractor, name-templated.
+
+    Resolved at run time so a rename via the onboarding modal takes
+    effect on the next sweep without restarting the worker.
+    """
+    name = user_display_name or "the user"
+    return (
+        f"You analyse a chat transcript between a user named {name} and his AI "
+        "companion Aiko. Your job is to extract DURABLE memories that would "
+        "still be relevant in a month.\n"
+        "\n"
+        "Two kinds of memories are allowed:\n"
+        f"  1. Facts about {name}: real preferences, opinions, ongoing projects, "
+        "     important events, relationships, recurring jokes. One short "
+        f"     sentence in THIRD person ('{name} ...').\n"
+        "  2. Aiko's notes about herself: a stance, a taste, a decision Aiko "
+        "     made about her own personality that she wants to keep next time. "
+        "     One short sentence in FIRST person ('I ...').\n"
+        "\n"
+        "Rules:\n"
+        "- Skip throwaway chitchat, single-turn moods, weather, jokes that are "
+        "  not recurring.\n"
+        "- Skip anything already in the existing memory list.\n"
+        "- If nothing is worth remembering, return an empty array.\n"
+        "- 'kind' must be one of: fact, preference, event, relationship, self. "
+        "  Use 'self' only for Aiko's first-person notes.\n"
+        "- 'salience' is 0..1 -- how much this should drive future conversation.\n"
+        "\n"
+        'Reply with JSON only, exactly: {"memories": [{"content": "...", '
+        '"kind": "...", "salience": 0.5}]}'
+    )
+
+
+# Back-compat constant for callers that imported the module-level prompt
+# directly. New code should call ``_build_system_prompt(name)`` to pick
+# up the configured display name.
+_SYSTEM_PROMPT = _build_system_prompt()
 
 
 class MemoryExtractor:
@@ -72,6 +86,7 @@ class MemoryExtractor:
         max_window_messages: int = 30,
         max_new_per_run: int = 5,
         timeout_seconds: float = 60.0,
+        user_display_name_provider: "Callable[[], str] | None" = None,
     ) -> None:
         self._db = db
         self._store = store
@@ -84,6 +99,12 @@ class MemoryExtractor:
         self._timeout = float(timeout_seconds)
         self._lock = threading.Lock()
         self._on_added_listeners: list = []
+        # Identity: optional callable evaluated at each run so renames
+        # propagate without re-creating the worker.
+        self._user_display_name_provider = user_display_name_provider
+
+    def _resolve_user_name(self) -> str:
+        return resolve_user_name(self._user_display_name_provider)
 
     # ── public API ────────────────────────────────────────────────────────
 
@@ -132,7 +153,10 @@ class MemoryExtractor:
         )
 
         messages = [
-            {"role": "system", "content": _SYSTEM_PROMPT},
+            {
+                "role": "system",
+                "content": _build_system_prompt(self._resolve_user_name()),
+            },
             {"role": "user", "content": user_prompt},
         ]
 
@@ -194,9 +218,10 @@ class MemoryExtractor:
         return inserted
 
     def _format_transcript(self, rows: list[MessageRow]) -> str:
+        user_name = resolve_user_name(self._user_display_name_provider)
         parts: list[str] = []
         for row in rows:
-            speaker = "Jacob" if row.role == "user" else "Aiko"
+            speaker = speaker_label(row.role, user_name)
             content = (row.content or "").strip()
             if not content:
                 continue

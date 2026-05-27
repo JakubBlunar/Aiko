@@ -75,6 +75,7 @@ class AssistantSettings:
     name: str
     remember_history: bool
     user_id: str = "default"  # Scopes memory per user
+    user_display_name: str = ""  # Empty signals first-run onboarding required
     tts_length_scale: float = 1.0  # TTS speed: 0.65–1.35, higher = slower
 
 
@@ -181,6 +182,35 @@ def clamp_persona_window_height(value: Any, *, fallback: int = 480) -> int:
     return max(PERSONA_WINDOW_MIN_HEIGHT, min(PERSONA_WINDOW_MAX_HEIGHT, coerced))
 
 
+# ── Identity (first-run onboarding) ─────────────────────────────────────
+
+# Sentinel used when no display name is configured yet. We intentionally
+# keep this generic so a stray render before onboarding completes never
+# leaks a developer-specific name. Onboarding gates the UI so users
+# normally never see it.
+USER_DISPLAY_NAME_FALLBACK = "friend"
+
+
+def resolve_user_display_name(settings: "AppSettings") -> str:
+    """Return the configured user display name, or a safe fallback.
+
+    Single source of truth for the human user's name. All renderers,
+    transcript formatters, and worker LLM prompts route through this so
+    a rename via onboarding / settings ripples everywhere without each
+    call site doing its own ``or "friend"`` dance.
+    """
+    name = (getattr(settings.assistant, "user_display_name", "") or "").strip()
+    return name or USER_DISPLAY_NAME_FALLBACK
+
+
+def is_onboarding_needed(settings: "AppSettings") -> bool:
+    """True when no user_display_name has been configured yet.
+
+    Drives the first-run modal in the frontend.
+    """
+    return not (getattr(settings.assistant, "user_display_name", "") or "").strip()
+
+
 @dataclass(slots=True)
 class AvatarSettings:
     """Single bundled Live2D avatar (Alexia) + user-tunable knobs.
@@ -190,7 +220,7 @@ class AvatarSettings:
     the fields the UI lets the user change at runtime.
     """
 
-    root_dir: str = "live-2d-models/Alexia"
+    root_dir: str = "data/personas/active/Alexia"
     entry_filename: str = "Alexia.model3.json"
     scale_multiplier: float = 1.0
     # See ``OUTFIT_MODES`` above for the accepted values.
@@ -358,7 +388,7 @@ class AgentSettings:
     # ── Catchphrase miner (Phase 2c) ──────────────────────────────────
     # Walks the recent history and promotes 3-7-word phrases that recur
     # ≥ N times across both user and assistant turns. Surfaced through
-    # the "Aiko's running jokes with Jacob:" inner-life block.
+    # the "Aiko's running jokes with <user>:" inner-life block.
     catchphrase_miner_enabled: bool = True
     catchphrase_miner_min_seconds_between: float = 600.0
     catchphrase_miner_min_new_user_turns: int = 6
@@ -725,6 +755,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             name=_required(assistant, "name"),
             remember_history=bool(_required(assistant, "remember_history")),
             user_id=str(assistant.get("user_id", "default") or "default").strip() or "default",
+            user_display_name=str(assistant.get("user_display_name", "") or "").strip()[:32],
             tts_length_scale=_normalize_tts_length_scale(assistant.get("tts_length_scale")),
         ),
         ollama=OllamaSettings(
@@ -981,7 +1012,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             ],
         ),
         avatar=AvatarSettings(
-            root_dir=str(avatar_raw.get("root_dir", "live-2d-models/Alexia") or "live-2d-models/Alexia").strip(),
+            root_dir=str(avatar_raw.get("root_dir", "data/personas/active/Alexia") or "data/personas/active/Alexia").strip(),
             entry_filename=str(avatar_raw.get("entry_filename", "Alexia.model3.json") or "Alexia.model3.json").strip(),
             scale_multiplier=max(0.1, min(8.0, float(avatar_raw.get("scale_multiplier", 1.0) or 1.0))),
             auto_outfit=(

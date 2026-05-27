@@ -593,7 +593,8 @@ class SpeechGrammarAddendumTests(unittest.TestCase):
     """The ``_SPEECH_GRAMMAR_ADDENDUM`` mirrors persona-side rules in a
     place that survives a user rewriting / deleting their persona file.
     Locks in the existing stage-direction + correction grammar plus the
-    new "match Jacob's register" cue from A2 (user-affect awareness).
+    name-templated "match <user>'s register" cue from A2 (user-affect
+    awareness).
     """
 
     def test_addendum_advertises_core_stage_directions(self) -> None:
@@ -603,11 +604,13 @@ class SpeechGrammarAddendumTests(unittest.TestCase):
 
     def test_addendum_instructs_aiko_to_match_user_register(self) -> None:
         """A2: when the prompt mentions ``User sounds: …`` or
-        ``Right now Jacob: …`` (vocal_tone / user_state blocks),
+        ``Right now <name>: …`` (vocal_tone / user_state blocks),
         Aiko should mirror the register instead of ignoring the cue.
         Without this nudge the LLM treats the cues as decoration.
         """
-        addendum = _SPEECH_GRAMMAR_ADDENDUM
+        from app.core.prompt_assembler import build_speech_grammar_addendum
+
+        addendum = build_speech_grammar_addendum("Jacob")
         self.assertIn("Match Jacob's register", addendum)
         # Anchor on the actual block names so a future rename of the
         # vocal_tone / user_state prompt prefixes catches this test

@@ -3,6 +3,50 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
+from typing import Callable
+
+
+# ── Identity helpers ────────────────────────────────────────────────────
+
+
+def resolve_user_name(
+    provider: Callable[[], str] | None,
+    *,
+    fallback: str = "the user",
+) -> str:
+    """Best-effort resolve a user display name from an optional callable.
+
+    Returns ``fallback`` whenever the provider is missing, raises, or
+    returns an empty/whitespace value. Workers that cache the resolved
+    name in a per-run system prompt route through this so a rename via
+    onboarding propagates without per-worker exception handling.
+    """
+    if provider is None:
+        return fallback
+    try:
+        name = (provider() or "").strip()
+    except Exception:
+        return fallback
+    return name or fallback
+
+
+def speaker_label(
+    role: str,
+    user_display_name: str,
+    *,
+    assistant_name: str = "Aiko",
+) -> str:
+    """Map a transcript role to a human-readable speaker label.
+
+    Mirrors the ``"Jacob" if role == "user" else "Aiko"`` pattern that
+    used to live inline in ~8 worker modules. ``role`` is matched
+    case-insensitively; any non-``"user"`` role (assistant, system, …)
+    collapses to ``assistant_name``.
+    """
+    name = (user_display_name or "the user").strip() or "the user"
+    if (role or "").strip().lower() == "user":
+        return name
+    return assistant_name
 
 
 def extract_json_object(raw_text: str) -> dict | None:

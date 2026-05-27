@@ -43,6 +43,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
+from app.core.session_text_utils import resolve_user_name, speaker_label
+
 if TYPE_CHECKING:
     from app.core.chat_database import ChatDatabase
     from app.llm.ollama_client import OllamaClient
@@ -119,12 +121,21 @@ class AgendaStore:
         )
         return [_row_to_item(r) for r in rows]
 
-    def render_block(self, user_id: str, *, max_items: int = 4) -> str:
+    def render_block(
+        self,
+        user_id: str,
+        *,
+        max_items: int = 4,
+        user_display_name: str = "the user",
+    ) -> str:
         items = self.list_open(user_id, limit=max_items)
         if not items:
             return ""
         lines = [f"- {item.goal}" for item in items]
-        return "Active goals you're tracking with Jacob:\n" + "\n".join(lines)
+        return (
+            f"Active goals you're tracking with {user_display_name}:\n"
+            + "\n".join(lines)
+        )
 
     # ── writes ─────────────────────────────────────────────────────────
 
@@ -379,6 +390,7 @@ class AgendaWorker:
         every_n_turns: int = 8,
         max_history_chars: int = 2500,
         max_tokens: int = 220,
+        user_display_name_provider: "Callable[[], str] | None" = None,
     ) -> None:
         self._ollama = ollama
         self._store = store
@@ -386,6 +398,7 @@ class AgendaWorker:
         self._every_n = max(1, int(every_n_turns))
         self._max_history_chars = max(500, int(max_history_chars))
         self._max_tokens = max(80, int(max_tokens))
+        self._user_display_name_provider = user_display_name_provider
         self._user_turns_seen = 0
         self._user_turns_at_last_groom = 0
         self._stats = {
@@ -439,7 +452,14 @@ class AgendaWorker:
             self._stats["skipped_no_history"] += 1
             return None
         items = self._store.list_open(user_id, limit=20)
-        block = _format_groom_block(items, history, max_chars=self._max_history_chars)
+        block = _format_groom_block(
+            items,
+            history,
+            max_chars=self._max_history_chars,
+            user_display_name=resolve_user_name(
+                self._user_display_name_provider,
+            ),
+        )
         if not block:
             self._stats["skipped_no_history"] += 1
             return None
@@ -488,6 +508,7 @@ def _format_groom_block(
     history: list[tuple[str, str]],
     *,
     max_chars: int,
+    user_display_name: str = "Jacob",
 ) -> str:
     if not history:
         return ""
@@ -505,7 +526,7 @@ def _format_groom_block(
         text = (content or "").strip()
         if not text:
             continue
-        speaker = "Jacob" if role == "user" else "Aiko"
+        speaker = speaker_label(role, user_display_name)
         line = f"{speaker}: {text}"
         if total + len(line) > max_chars and msg_lines:
             break

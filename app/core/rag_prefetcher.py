@@ -26,7 +26,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Iterable
+from typing import TYPE_CHECKING, Callable, Iterable
 
 if TYPE_CHECKING:
     from app.core.rag_retriever import RagRetriever
@@ -97,8 +97,13 @@ class RagPrefetcher:
         min_partial_chars: int = 8,
         similarity_threshold: float = 0.55,
         max_cached: int = 12,
+        user_display_name_provider: Callable[[], str] | None = None,
     ) -> None:
         self._retriever = retriever
+        # First-run identity: optional callable, evaluated per-fetch so a
+        # mid-session rename takes effect on the next pre-warm without a
+        # restart. None falls back to the formatter's generic placeholder.
+        self._user_display_name_provider = user_display_name_provider
         self._ttl = float(ttl_seconds)
         self._debounce_s = max(0.0, debounce_ms / 1000.0)
         self._min_partial_chars = max(1, int(min_partial_chars))
@@ -198,7 +203,16 @@ class RagPrefetcher:
                 recent_turns=list(recent_turns) if recent_turns else None,
                 exclude_session_id=exclude_session_id,
             )
-            block = self._retriever.format_block(hits)
+            name = "the user"
+            provider = self._user_display_name_provider
+            if provider is not None:
+                try:
+                    name = (provider() or "").strip() or "the user"
+                except Exception:
+                    name = "the user"
+            block = self._retriever.format_block(
+                hits, user_display_name=name,
+            )
         except Exception:
             log.debug("rag prefetch retrieval failed", exc_info=True)
             self._stats["failed"] += 1

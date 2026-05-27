@@ -30,6 +30,7 @@ from typing import Callable
 from app.core.chat_database import ChatDatabase
 from app.core.session_text_utils import (
     prepare_tts_text,
+    resolve_user_name,
     sanitize_assistant_text,
 )
 from app.core.services.response_text_service import (
@@ -53,29 +54,41 @@ transcript so the React UI / desktop log show what Aiko said unprompted."""
 BoolPredicate = Callable[[], bool]
 
 
-_PROACTIVE_HINT = (
-    "[Aiko speaks first, briefly, because Jacob has been quiet for a moment. "
-    "Pick up a thread from the recent conversation, or ask a casual short "
-    "question to keep the chat going. ONE OR TWO SENTENCES MAXIMUM. Don't "
-    "greet, don't restart the conversation. Continue naturally.]"
-)
+def _build_proactive_hint(user_display_name: str = "the user") -> str:
+    """Voice-mode proactive hint, templated on the user's display name."""
+    name = user_display_name or "the user"
+    return (
+        f"[Aiko speaks first, briefly, because {name} has been quiet for a "
+        "moment. Pick up a thread from the recent conversation, or ask a "
+        "casual short question to keep the chat going. ONE OR TWO SENTENCES "
+        "MAXIMUM. Don't greet, don't restart the conversation. Continue "
+        "naturally.]"
+    )
 
 
-# Typed-mode hint. Crucially does NOT mention "Jacob has been quiet" — at
-# the much longer typed thresholds (4 min default), framing the silence as
-# "she noticed I was quiet" reads as abandonment-anxiety. Instead, frame
-# this as Aiko continuing the thread herself (her agency, not his absence)
-# and explicitly invite a room-moment as a valid topic since the world
-# inner-life block is already in scope when this prompt is built.
-_PROACTIVE_HINT_TYPED = (
-    "[Aiko speaks first to continue the thread. Pick ONE of: "
-    "a callback to something Jacob said recently, a small thought "
-    "you've been turning over, or a brief in-character moment from "
-    "your room (something you noticed, made, or fiddled with). ONE "
-    "OR TWO SENTENCES. Don't greet, don't restart the chat, don't "
-    "comment on Jacob being quiet — just continue naturally as if "
-    "you'd been there the whole time.]"
-)
+def _build_proactive_hint_typed(user_display_name: str = "the user") -> str:
+    """Typed-mode proactive hint, templated on the user's display name.
+
+    Frames Aiko's continuation as her own agency rather than commenting on
+    the user being quiet — at typed thresholds the latter reads as
+    abandonment-anxiety.
+    """
+    name = user_display_name or "the user"
+    return (
+        "[Aiko speaks first to continue the thread. Pick ONE of: "
+        f"a callback to something {name} said recently, a small thought "
+        "you've been turning over, or a brief in-character moment from "
+        "your room (something you noticed, made, or fiddled with). ONE "
+        "OR TWO SENTENCES. Don't greet, don't restart the chat, don't "
+        f"comment on {name} being quiet — just continue naturally as if "
+        "you'd been there the whole time.]"
+    )
+
+
+# Back-compat constants for any existing import sites; new code should
+# call ``_build_proactive_hint(name)``.
+_PROACTIVE_HINT = _build_proactive_hint()
+_PROACTIVE_HINT_TYPED = _build_proactive_hint_typed()
 
 
 class ProactiveDirector:
@@ -105,6 +118,7 @@ class ProactiveDirector:
         # very different cadences (10 min typed vs 2 min voice default).
         cooldown_seconds_typed: float = 600.0,
         is_typed_eligible: BoolPredicate | None = None,
+        user_display_name_provider: Callable[[], str] | None = None,
     ) -> None:
         self._ollama = ollama
         self._db = db
@@ -120,6 +134,7 @@ class ProactiveDirector:
         self._notify_message = notify_message
         self._prepared_store = prepared_nudge_store
         self._user_id = user_id or "default"
+        self._user_display_name_provider = user_display_name_provider
 
         self._lock = threading.Lock()
         self._last_run_monotonic = 0.0
@@ -245,7 +260,9 @@ class ProactiveDirector:
 
         messages = self._prompt.build(
             session_key,
-            _PROACTIVE_HINT,
+            _build_proactive_hint(
+                resolve_user_name(self._user_display_name_provider),
+            ),
             context_window=self._context_window,
             response_budget=self._max_tokens,
         )
@@ -380,7 +397,9 @@ class ProactiveDirector:
 
         messages = self._prompt.build(
             session_key,
-            _PROACTIVE_HINT_TYPED,
+            _build_proactive_hint_typed(
+                resolve_user_name(self._user_display_name_provider),
+            ),
             context_window=self._context_window,
             response_budget=self._max_tokens,
         )

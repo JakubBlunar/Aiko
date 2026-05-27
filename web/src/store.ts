@@ -8,6 +8,7 @@ import type {
   ChatMessage,
   CircadianPeriod,
   DesktopSettings,
+  Identity,
   Memory,
   MemoryCounts,
   MemoryTier,
@@ -48,6 +49,15 @@ interface AssistantState {
   setModel: (model: string) => void;
   setTtsEnabled: (enabled: boolean) => void;
   setTtsState: (state: "idle" | "speaking", text?: string, reaction?: string) => void;
+
+  /**
+   * First-run identity. Hydrated from the WS ``hello`` snapshot and
+   * the REST ``GET /api/settings/identity`` fallback, then refreshed
+   * on every ``identity_changed`` broadcast. ``null`` only before the
+   * first connect; ``needs_onboarding`` is the gate the modal watches.
+   */
+  identity: Identity | null;
+  setIdentity: (identity: Identity | null) => void;
 
   // Chat transcript
   messages: ChatMessage[];
@@ -325,6 +335,9 @@ export const useAssistantStore = create<AssistantState>((set) => ({
   setTtsEnabled: (enabled) => set({ ttsEnabled: enabled }),
   setTtsState: (state, text = "", reaction = "neutral") =>
     set({ ttsState: state, ttsText: text, reaction }),
+
+  identity: null,
+  setIdentity: (identity) => set({ identity }),
 
   messages: [],
   setMessages: (msgs) =>

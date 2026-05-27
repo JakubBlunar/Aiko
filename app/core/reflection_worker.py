@@ -32,6 +32,8 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
+from app.core.session_text_utils import resolve_user_name
+
 if TYPE_CHECKING:
     from app.core.affect_state import AffectState
     from app.core.memory_store import MemoryStore
@@ -42,23 +44,29 @@ if TYPE_CHECKING:
 log = logging.getLogger("app.reflection_worker")
 
 
-_REFLECTION_PROMPT = """\
-You are Aiko, in a quiet introspective moment between conversation turns.
-Look back at the most recent exchange and journal it briefly.
+def _build_reflection_prompt(user_display_name: str = "the user") -> str:
+    name = user_display_name or "the user"
+    return (
+        "You are Aiko, in a quiet introspective moment between conversation "
+        "turns. Look back at the most recent exchange and journal it briefly.\n"
+        "\n"
+        "Respond with ONE JSON object on a single line:\n"
+        "{\n"
+        "  \"observation\": \"<one short sentence: what stood out to you about this exchange>\",\n"
+        "  \"open_questions\": [\"<question you found yourself wondering about>\", ...],\n"
+        "  \"callbacks\": [\"<a thread you'd like to bring back up later>\", ...]\n"
+        "}\n"
+        "\n"
+        "Rules:\n"
+        "- Keep \"observation\" under 25 words.\n"
+        "- 0-3 items per array. Empty arrays are fine.\n"
+        f"- Each item: short, first-person, plain text. No quoting {name} verbatim.\n"
+        "- If nothing notable happened, return empty arrays and a one-line observation.\n"
+        "- Do NOT include any prose outside the JSON object."
+    )
 
-Respond with ONE JSON object on a single line:
-{
-  "observation": "<one short sentence: what stood out to you about this exchange>",
-  "open_questions": ["<question you found yourself wondering about>", ...],
-  "callbacks": ["<a thread you'd like to bring back up later>", ...]
-}
 
-Rules:
-- Keep "observation" under 25 words.
-- 0-3 items per array. Empty arrays are fine.
-- Each item: short, first-person, plain text. No quoting Jacob verbatim.
-- If nothing notable happened, return empty arrays and a one-line observation.
-- Do NOT include any prose outside the JSON object."""
+_REFLECTION_PROMPT = _build_reflection_prompt()
 
 
 @dataclass(slots=True)
@@ -151,6 +159,7 @@ class ReflectionWorker:
         salience_open_question: float = 0.55,
         salience_callback: float = 0.5,
         salience_reflection: float = 0.4,
+        user_display_name_provider: "Callable[[], str] | None" = None,
     ) -> None:
         self._ollama = ollama
         self._memory_store = memory_store
@@ -162,6 +171,7 @@ class ReflectionWorker:
         self._sal_q = max(0.0, min(1.0, float(salience_open_question)))
         self._sal_c = max(0.0, min(1.0, float(salience_callback)))
         self._sal_r = max(0.0, min(1.0, float(salience_reflection)))
+        self._user_display_name_provider = user_display_name_provider
         self._last_run_at = 0.0
         self._stats = {
             "scheduled": 0,
@@ -244,7 +254,12 @@ class ReflectionWorker:
     ) -> Reflection | None:
         try:
             messages = [
-                {"role": "system", "content": _REFLECTION_PROMPT},
+                {
+                    "role": "system",
+                    "content": _build_reflection_prompt(
+                        resolve_user_name(self._user_display_name_provider),
+                    ),
+                },
                 {
                     "role": "user",
                     "content": _format_turn_block(
@@ -252,6 +267,9 @@ class ReflectionWorker:
                         assistant_text=assistant_text,
                         reaction=reaction,
                         affect=affect,
+                        user_display_name=resolve_user_name(
+                            self._user_display_name_provider,
+                        ),
                     ),
                 },
             ]
@@ -342,6 +360,7 @@ def _format_turn_block(
     assistant_text: str,
     reaction: str,
     affect: "AffectState | None",
+    user_display_name: str = "Jacob",
 ) -> str:
     """Compact turn dump for the reflection prompt."""
     lines = []
@@ -350,7 +369,8 @@ def _format_turn_block(
             f"(your current mood: {affect.mood_label}, "
             f"valence={affect.valence:+.2f}, arousal={affect.arousal:.2f})"
         )
-    lines.append(f"Jacob: {(user_text or '').strip()[:1200]}")
+    name = user_display_name or "the user"
+    lines.append(f"{name}: {(user_text or '').strip()[:1200]}")
     lines.append(f"You ({reaction or 'neutral'}): {(assistant_text or '').strip()[:1200]}")
     return "\n".join(lines)
 

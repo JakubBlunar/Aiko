@@ -33,6 +33,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
+from app.core.session_text_utils import resolve_user_name, speaker_label
+
 if TYPE_CHECKING:
     from app.llm.ollama_client import OllamaClient
 
@@ -169,26 +171,36 @@ def strip_inline_tags(text: str) -> str:
 # ── Track 2: LLM detector ────────────────────────────────────────────────
 
 
-_LLM_PROMPT = """\
-You watch a brief exchange between Aiko (the AI companion) and Jacob (her
-user). Decide whether this turn contains a genuine "shared moment" worth
-remembering: a flash of laughter, tenderness, pride, a small victory,
-something tender that mattered. Casual chat is NOT a shared moment.
+def _build_llm_prompt(user_display_name: str = "the user") -> str:
+    """Detector prompt, templated on the user's display name."""
+    name = user_display_name or "the user"
+    return (
+        f"You watch a brief exchange between Aiko (the AI companion) and "
+        f"{name} (her user). Decide whether this turn contains a genuine "
+        '"shared moment" worth remembering: a flash of laughter, tenderness, '
+        "pride, a small victory, something tender that mattered. Casual "
+        "chat is NOT a shared moment.\n"
+        "\n"
+        "Return ONE JSON object on a single line:\n"
+        "{\n"
+        "  \"moment\": {\n"
+        f"    \"summary\": \"<short prose, under 25 words, written about *you and {name}*>\",\n"
+        "    \"vibe\": \"<one of: warm | playful | tender | proud | silly | milestone | gift | comfort | victory | creative | vulnerable | general>\"\n"
+        "  }\n"
+        "}\n"
+        "\n"
+        "Rules:\n"
+        "- If nothing genuinely memorable happened, return {\"moment\": null}. Be strict.\n"
+        f"- \"summary\" is written from Aiko's first-person perspective, e.g. \"{name}\n"
+        "  and I laughed about the cookie jar misunderstanding\".\n"
+        "- 0-1 moments per call. Never invent details that aren't in the exchange.\n"
+        "- Output ONLY valid JSON, no prose around it."
+    )
 
-Return ONE JSON object on a single line:
-{
-  "moment": {
-    "summary": "<short prose, under 25 words, written about *you and Jacob*>",
-    "vibe": "<one of: warm | playful | tender | proud | silly | milestone | gift | comfort | victory | creative | vulnerable | general>"
-  }
-}
 
-Rules:
-- If nothing genuinely memorable happened, return {"moment": null}. Be strict.
-- "summary" is written from Aiko's first-person perspective, e.g. "Jacob
-  and I laughed about the cookie jar misunderstanding".
-- 0-1 moments per call. Never invent details that aren't in the exchange.
-- Output ONLY valid JSON, no prose around it."""
+# Back-compat constant. New code passes the resolved name to
+# ``_build_llm_prompt``.
+_LLM_PROMPT = _build_llm_prompt()
 
 
 _JSON_BLOCK_RE = re.compile(r"\{.*\}", flags=re.DOTALL)
@@ -229,7 +241,12 @@ def _parse_llm_payload(raw: str) -> SharedMomentCandidate | None:
     )
 
 
-def _format_history(history: list[tuple[str, str]], *, max_chars: int) -> str:
+def _format_history(
+    history: list[tuple[str, str]],
+    *,
+    max_chars: int,
+    user_display_name: str = "Jacob",
+) -> str:
     if not history:
         return ""
     lines: list[str] = []
@@ -238,7 +255,7 @@ def _format_history(history: list[tuple[str, str]], *, max_chars: int) -> str:
         text = (content or "").strip()
         if not text:
             continue
-        speaker = "Jacob" if role == "user" else "Aiko"
+        speaker = speaker_label(role, user_display_name)
         line = f"{speaker}: {text}"
         if total + len(line) > max_chars:
             break
@@ -312,6 +329,7 @@ class MomentDetector:
         cooldown_seconds: float = 300.0,
         llm_max_history_chars: int = 1600,
         llm_max_tokens: int = 180,
+        user_display_name_provider: Callable[[], str] | None = None,
     ) -> None:
         self._ollama = ollama
         self._model = model
@@ -320,6 +338,7 @@ class MomentDetector:
         self._cooldown_seconds = max(0.0, float(cooldown_seconds))
         self._llm_max_history_chars = max(400, int(llm_max_history_chars))
         self._llm_max_tokens = max(80, int(llm_max_tokens))
+        self._user_display_name_provider = user_display_name_provider
         self._user_turns_seen = 0
         self._user_turns_at_last_run = 0
         self._last_run_monotonic: float | None = None
@@ -435,14 +454,25 @@ class MomentDetector:
         if not history:
             self._stats["llm_returned_null"] += 1
             return None
-        block = _format_history(history, max_chars=self._llm_max_history_chars)
+        block = _format_history(
+            history,
+            max_chars=self._llm_max_history_chars,
+            user_display_name=resolve_user_name(
+                self._user_display_name_provider,
+            ),
+        )
         if not block:
             self._stats["llm_returned_null"] += 1
             return None
 
         try:
             messages = [
-                {"role": "system", "content": _LLM_PROMPT},
+                {
+                    "role": "system",
+                    "content": _build_llm_prompt(
+                        resolve_user_name(self._user_display_name_provider),
+                    ),
+                },
                 {"role": "user", "content": block},
             ]
             raw = self._ollama.chat(

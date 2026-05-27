@@ -853,7 +853,7 @@ class TurnRunner:
             kind_marker = (match.group("kind") or "").strip().lower()
             # ``[[remember:self:...]]`` -> Aiko's own notes about herself,
             # surfaced separately in the prompt block. Plain ``[[remember:...]]``
-            # remains a "self_tagged" Jacob fact (Aiko's explicit annotation).
+            # remains a "self_tagged" user fact (Aiko's explicit annotation).
             kind = "self" if kind_marker == "self" else "self_tagged"
             key = (kind, content.lower())
             if key in seen:

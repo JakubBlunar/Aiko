@@ -49,6 +49,18 @@
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.png"
-    ]
+    ],
+    "resources": {
+      "../../config/default.json": "config/default.json",
+      "../../data/persona/aiko_companion.txt": "data/persona/aiko_companion.txt",
+      "../../live-2d-models/Alexia": "data/personas/active/Alexia",
+      "../../scripts/setup-macos.sh": "scripts/setup-macos.sh",
+      "../../scripts/macos-start-backend.sh": "scripts/macos-start-backend.sh",
+      "../../pyproject.toml": "pyproject.toml",
+      "../../app": "app"
+    },
+    "macOS": {
+      "minimumSystemVersion": "12.0"
+    }
   }
 }

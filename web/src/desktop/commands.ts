@@ -65,4 +65,26 @@ export const desktop = {
    * reporter consult the result; the backend never sees an
    * unresolved value. */
   getActiveApp: () => tauriInvoke<string | null>("get_active_app"),
+  /** Boot the Python FastAPI backend if it isn't already responding,
+   * then wait until ``/api/health`` answers (timeout ~25s).
+   *
+   * Resolves with ``{ ok: true }`` once the backend is up, or
+   * ``{ ok: false, error }`` on failure. Resolves with ``{ ok: true }``
+   * unconditionally outside of Tauri because the dev workflow runs the
+   * backend separately. Surfacing the error string instead of throwing
+   * keeps the React side free to render a friendly "couldn't launch"
+   * banner without a try/catch.
+   */
+  ensureBackendRunning: async (): Promise<{ ok: boolean; error?: string }> => {
+    if (!isTauri()) return { ok: true };
+    const invoke = await loadInvoke();
+    if (!invoke) return { ok: true };
+    try {
+      await invoke<void>("ensure_backend_running");
+      return { ok: true };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { ok: false, error: message };
+    }
+  },
 };

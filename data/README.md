@@ -12,4 +12,4 @@ Runtime data lives here. Most paths are gitignored — they're created on first 
 
 ## Avatar bundle (gitignored)
 
-- **`../live-2d-models/Alexia/`** — bundled Live2D avatar files (model3.json, cdi3.json, expressions, motions, textures). Drop them in here on first checkout. The directory is gitignored so each developer ships their own copy. Loaded once at boot by `app/core/avatar_profile.py` and served as static files at `/avatar/`. Replaces the old upload-based persona pipeline.
+- **`personas/active/Alexia/`** — bundled Live2D avatar files (model3.json, cdi3.json, expressions, motions, textures). Drop them in here on first checkout. The directory is gitignored so each developer ships their own copy. Loaded once at boot by `app/core/avatar_profile.py` and served as static files at `/avatar/`. Replaces the old upload-based persona pipeline. (The historical `live-2d-models/Alexia/` location is still accepted if you override `avatar.root_dir` in `config/user.json`.)

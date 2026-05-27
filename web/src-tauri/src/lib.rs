@@ -11,6 +11,11 @@
 //! webviews connect to over WebSocket. See `docs/tauri-shell.md` for the
 //! full architecture rationale.
 
+#[cfg(target_os = "macos")]
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -19,6 +24,15 @@ use tauri::{
 
 const MAIN_LABEL: &str = "main";
 const PERSONA_LABEL: &str = "persona";
+
+/// Where the FastAPI backend listens. Mirrors ``config/default.json`` and
+/// the dev-mode Vite proxy targets.
+const BACKEND_HEALTH_URL: &str = "http://127.0.0.1:6275/api/health";
+
+/// Total time the sidecar waits for the backend to answer before
+/// surfacing a "couldn't start" error. Generous because cold-starting the
+/// venv + importing the ML stack on a busy laptop takes ~10-15 s.
+const BACKEND_BOOT_TIMEOUT: Duration = Duration::from_secs(25);
 
 /// Event name fired whenever the persona window's visibility changes.
 /// Payload is a single ``bool`` (``true`` = now visible). Listened to
@@ -131,6 +145,116 @@ fn get_active_app() -> Result<Option<String>, String> {
     }
 }
 
+// ── Backend sidecar ─────────────────────────────────────────────────────
+
+/// Poll the backend's health endpoint with a short HTTP HEAD-style GET.
+/// Returns ``true`` as soon as we get any 2xx response; treats every
+/// other outcome (connection refused, timeout, non-2xx) as "not ready".
+fn backend_is_up() -> bool {
+    // We avoid pulling in reqwest just for this — a one-shot
+    // ``curl --fail --max-time`` is plenty and is always present on
+    // macOS. ``--silent`` keeps the log clean.
+    Command::new("curl")
+        .args([
+            "--silent",
+            "--fail",
+            "--max-time",
+            "1",
+            BACKEND_HEALTH_URL,
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Resolve the macOS-style ``$HOME/Library/Application Support/Aiko`` path.
+///
+/// Only the macOS sidecar spawn path consumes this helper; gating it
+/// behind ``#[cfg(target_os = "macos")]`` keeps Windows / Linux builds
+/// from generating a dead-code warning.
+#[cfg(target_os = "macos")]
+fn aiko_support_dir() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    let mut p = PathBuf::from(home);
+    p.push("Library");
+    p.push("Application Support");
+    p.push("Aiko");
+    Some(p)
+}
+
+/// Spawn the Python backend as a detached child. Errors bubble up to
+/// ``ensure_backend_running`` which forwards them to the frontend so the
+/// React side can show a real "couldn't launch the backend" message
+/// instead of a silent WS-connect failure.
+#[cfg(target_os = "macos")]
+fn spawn_backend_sidecar() -> Result<(), String> {
+    let support = aiko_support_dir()
+        .ok_or_else(|| "could not resolve Application Support directory".to_string())?;
+
+    let script = support.join("scripts").join("macos-start-backend.sh");
+    let fallback_script = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|p| p.to_path_buf()))
+        .map(|p| p.join("scripts/macos-start-backend.sh"));
+
+    let chosen = if script.exists() {
+        script
+    } else if let Some(fb) = fallback_script.filter(|p| p.exists()) {
+        fb
+    } else {
+        return Err(format!(
+            "backend sidecar script not found at {:?}",
+            script
+        ));
+    };
+
+    Command::new("/bin/bash")
+        .arg(chosen)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|err| format!("failed to spawn backend sidecar: {err}"))?;
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn spawn_backend_sidecar() -> Result<(), String> {
+    // On other platforms the assumption is that the developer runs
+    // ``python -m app.web`` themselves (the historical workflow). We
+    // still expose the command so the JS bootstrap gate works
+    // identically, it just doesn't try to spawn anything.
+    Ok(())
+}
+
+/// Frontend-facing bootstrap gate. Returns ``Ok(())`` once the backend
+/// answers ``/api/health`` (whether it was already running or this call
+/// just started it), or ``Err`` with a clear message after the boot
+/// timeout. The React side calls this before connecting the WS.
+#[tauri::command]
+async fn ensure_backend_running() -> Result<(), String> {
+    if backend_is_up() {
+        return Ok(());
+    }
+    spawn_backend_sidecar()?;
+    let deadline = Instant::now() + BACKEND_BOOT_TIMEOUT;
+    loop {
+        if backend_is_up() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "Aiko backend did not answer {BACKEND_HEALTH_URL} within {}s. \
+                 Check ~/Library/Application Support/Aiko/logs/backend.log.",
+                BACKEND_BOOT_TIMEOUT.as_secs()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
 // ── Setup ───────────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -144,6 +268,7 @@ pub fn run() {
             set_persona_geometry,
             set_persona_always_on_top,
             get_active_app,
+            ensure_backend_running,
         ])
         .setup(|app| {
             install_tray(app.handle())?;

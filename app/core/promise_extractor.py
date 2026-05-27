@@ -38,6 +38,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
+from app.core.session_text_utils import resolve_user_name
+
 if TYPE_CHECKING:
     from app.core.chat_database import ChatDatabase
     from app.core.memory_store import Memory, MemoryStore
@@ -99,10 +101,15 @@ class Promise:
     source: str = "regex"  # "regex" | "llm"
     confidence: float = 0.5
 
-    def to_memory_content(self) -> str:
-        """Render to a natural-language memory string."""
-        actor = "Jacob" if self.who == "user" else "Aiko"
-        # Prefix with the actor so "Aiko" promises don't read as Jacob's.
+    def to_memory_content(self, user_display_name: str = "Jacob") -> str:
+        """Render to a natural-language memory string.
+
+        ``user_display_name`` defaults to "Jacob" for back-compat with
+        callers that don't pass a name; the SessionController caller
+        threads the configured name through.
+        """
+        actor = (user_display_name or "the user") if self.who == "user" else "Aiko"
+        # Prefix with the actor so "Aiko" promises don't read as the user's.
         return f"{actor} promised: {self.text.strip()}"
 
 
@@ -235,6 +242,7 @@ class PromiseExtractor:
         llm_min_user_turns: int = 4,
         llm_max_history_chars: int = 2000,
         llm_max_tokens: int = 220,
+        user_display_name_provider: "Callable[[], str] | None" = None,
     ) -> None:
         self._ollama = ollama
         self._memory_store = memory_store
@@ -245,6 +253,7 @@ class PromiseExtractor:
         self._llm_min_user_turns = max(1, int(llm_min_user_turns))
         self._llm_max_history_chars = max(500, int(llm_max_history_chars))
         self._llm_max_tokens = max(80, int(llm_max_tokens))
+        self._user_display_name_provider = user_display_name_provider
         self._user_turns_seen = 0
         self._user_turns_at_last_llm = 0
         self._stats = {
@@ -318,7 +327,13 @@ class PromiseExtractor:
             history = []
         if not history:
             return []
-        block = _format_history(history, max_chars=self._llm_max_history_chars)
+        block = _format_history(
+            history,
+            max_chars=self._llm_max_history_chars,
+            user_display_name=resolve_user_name(
+                self._user_display_name_provider,
+            ),
+        )
         if not block:
             return []
         try:
@@ -361,7 +376,11 @@ class PromiseExtractor:
         embedder = self._embedder
         if store is None or embedder is None:
             return False
-        content = promise.to_memory_content()
+        content = promise.to_memory_content(
+            user_display_name=resolve_user_name(
+                self._user_display_name_provider,
+            ),
+        )
         try:
             emb = embedder.embed(content)
         except Exception:
@@ -390,16 +409,18 @@ def _format_history(
     history: list[tuple[str, str]],
     *,
     max_chars: int,
+    user_display_name: str = "Jacob",
 ) -> str:
     if not history:
         return ""
     lines: list[str] = []
     total = 0
+    user_name = (user_display_name or "").strip() or "the user"
     for role, content in reversed(history):
         text = (content or "").strip()
         if not text:
             continue
-        speaker = "Jacob" if role == "user" else "Aiko"
+        speaker = user_name if role == "user" else "Aiko"
         line = f"{speaker}: {text}"
         if total + len(line) > max_chars and lines:
             break
