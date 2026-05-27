@@ -14,7 +14,7 @@
  *   - Empty reaction: ``adapter.resetExpression`` is called instead of
  *     leaving the previous expression on the rig (the regression-fix).
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { ExpressionChannel } from "./ExpressionChannel";
 import { FakeAdapter } from "../__fixtures__/fake-model";
@@ -995,3 +995,58 @@ describe("ExpressionChannel — outfit gate", () => {
   });
 });
 
+describe("ExpressionChannel — debug instrumentation", () => {
+  it("calls deps.debug with the chosen expression on reaction apply", () => {
+    const adapter = new FakeAdapter();
+    const channel = new ExpressionChannel();
+    const { deps } = makeDeps({ reaction: "neutral", resolvedOutfit: "day" });
+    const debug = vi.fn();
+    channel.attach(adapter, { ...deps, debug });
+
+    debug.mockClear();
+    channel.onReaction!("cheerful");
+
+    // ``debug`` is called via the central ``_applyTarget`` path. The
+    // payload is the cry-bug forensic tuple: reaction + outfit +
+    // chosen expression name. This is the contract the
+    // ``app.log`` consumer relies on when diagnosing the "she cried
+    // when I said cheerful" report.
+    const applyCall = debug.mock.calls.find(
+      (call) => call[1] === "applyReaction",
+    );
+    expect(applyCall).toBeDefined();
+    expect(applyCall![0]).toBe("channel.expression");
+    expect(applyCall![2]).toMatchObject({
+      reaction: "cheerful",
+      expression: "ExprCheerful",
+    });
+  });
+
+  it("calls deps.debug for voice-mode-driven expression swaps", () => {
+    const adapter = new FakeAdapter();
+    const channel = new ExpressionChannel();
+    const { deps, setSnapshot } = makeDeps({ reaction: "neutral" });
+    const debug = vi.fn();
+    channel.attach(adapter, { ...deps, debug });
+
+    debug.mockClear();
+    setSnapshot({ voiceMode: "thinking" });
+    channel.onVoiceMode!("thinking");
+
+    const modeCall = debug.mock.calls.find((call) => call[1] === "applyMode");
+    expect(modeCall).toBeDefined();
+    expect(modeCall![2]).toMatchObject({ mode: "thinking" });
+  });
+
+  it("works without a debug hook (no-op when undefined)", () => {
+    const adapter = new FakeAdapter();
+    const channel = new ExpressionChannel();
+    const { deps } = makeDeps({ reaction: "cheerful" });
+    // Explicitly omit ``debug`` — production attaches it but tests
+    // and older callers may not. The channel must not throw.
+    expect(() => {
+      channel.attach(adapter, deps);
+      channel.onReaction!("sad");
+    }).not.toThrow();
+  });
+});

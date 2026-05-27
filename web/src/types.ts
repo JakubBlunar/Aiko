@@ -103,9 +103,38 @@ export interface AssistantSettings {
     web_search: boolean;
     available: string[];
   };
+  /** Debug-log bridge knobs. When ``ui_log_enabled`` is on, the browser
+   * batches WS events, channel decisions, and settings changes to
+   * ``POST /api/logs/ui`` which interleaves them into ``data/app.log``
+   * with a ``[ui]`` prefix. Off by default; flip via the Settings drawer
+   * "Debug logging" toggle when reproducing a bug. ``ui_log_categories``
+   * is the backend allow-list; entries whose ``source`` falls outside
+   * are silently dropped server-side. ``ui_log_max_batch`` /
+   * ``ui_log_max_payload_bytes`` bound the per-request damage from a
+   * misbehaving client. */
+  logging?: {
+    ui_log_enabled: boolean;
+    ui_log_categories: string[];
+    ui_log_max_batch: number;
+    ui_log_max_payload_bytes: number;
+  };
   voice_active?: boolean;
   session_key: string;
 }
+
+export interface LoggingSettings {
+  ui_log_enabled: boolean;
+  ui_log_categories: string[];
+  ui_log_max_batch: number;
+  ui_log_max_payload_bytes: number;
+}
+
+export const DEFAULT_LOGGING_SETTINGS: LoggingSettings = {
+  ui_log_enabled: false,
+  ui_log_categories: ["ws", "channel", "settings", "voice"],
+  ui_log_max_batch: 50,
+  ui_log_max_payload_bytes: 2048,
+};
 
 export interface ToolEvent {
   /** Name of the tool, e.g. "get_time", "recall", "web_search". */
@@ -702,6 +731,8 @@ export type WorldKind =
   | "toy"
   | "keepsake"
   | "decor"
+  | "plant"
+  | "seed"
   | "other";
 
 export const WORLD_KINDS: readonly WorldKind[] = [
@@ -712,6 +743,8 @@ export const WORLD_KINDS: readonly WorldKind[] = [
   "keepsake",
   "decor",
   "furniture",
+  "plant",
+  "seed",
   "other",
 ];
 
@@ -952,6 +985,14 @@ export type WsServerEvent =
       resolved_outfit?: ResolvedOutfit;
     } & MoodState)
   | { type: "backchannel"; hint: BackchannelHint; partial: string }
+  | {
+      /** Broadcast by ``PATCH /api/settings`` when the
+       * ``logging.ui_log_enabled`` toggle (or one of the related
+       * bounds) changes. Lets every connected tab flip its debug-log
+       * bridge without a follow-up REST fetch. */
+      type: "logging_settings_changed";
+      logging: LoggingSettings;
+    }
   | { type: "pong" };
 
 export type WsClientCommand =

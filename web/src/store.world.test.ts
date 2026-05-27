@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { useAssistantStore } from "./store";
+import { WORLD_KINDS } from "./types";
 import type {
   WorldItem,
   WorldLocation,
@@ -218,5 +219,45 @@ describe("applyWorldPatch — full snapshot", () => {
     expect(world.locations[0].slug).toBe("treehouse");
     expect(world.items.length).toBe(0);
     expect(world.enabled).toBe(true);
+  });
+});
+
+describe("WORLD_KINDS — garden kinds", () => {
+  it("exposes plant and seed alongside the existing kinds", () => {
+    expect(WORLD_KINDS).toContain("plant");
+    expect(WORLD_KINDS).toContain("seed");
+  });
+
+  it("round-trips a plant kind through applyWorldPatch", () => {
+    useAssistantStore.getState().setWorld(makeSnapshot({ items: [] }));
+    const plant = makeItem({
+      id: 42,
+      slug: "basil_seedling",
+      name: "basil seedling",
+      kind: "plant",
+      state: { species: "basil", stage: "sprout" },
+    });
+    useAssistantStore.getState().applyWorldPatch({ item: plant });
+    const items = useAssistantStore.getState().world!.items;
+    expect(items.length).toBe(1);
+    expect(items[0].kind).toBe("plant");
+    expect((items[0].state as { stage?: string }).stage).toBe("sprout");
+  });
+
+  it("round-trips a seed kind through applyWorldPatch", () => {
+    useAssistantStore.getState().setWorld(makeSnapshot({ items: [] }));
+    const seed = makeItem({
+      id: 7,
+      slug: "seed_packet_sunflower",
+      name: "sunflower seed packet",
+      kind: "seed",
+      location_id: null,
+      state: { species: "sunflower" },
+    });
+    useAssistantStore.getState().applyWorldPatch({ item: seed });
+    const items = useAssistantStore.getState().world!.items;
+    expect(items.length).toBe(1);
+    expect(items[0].kind).toBe("seed");
+    expect(items[0].location_id).toBeNull();
   });
 });

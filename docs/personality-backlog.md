@@ -170,6 +170,75 @@ updated; backend lock-in lives in
 `CryCascadeGuardTests`, frontend lock-in in the existing
 `auto-cascade avoids heavy expressions` block.
 
+### B6. UI debug logging bridge
+
+**Status.** **Shipped.** Motivation: the cry-cascade investigation
+(B5) needed a single timeline that showed *both* what the backend
+emitted (mood / reaction tag / filler / tool dispatch / voice mode)
+and what the renderer actually did with it (which reaction the
+channel picked, which `.exp3.json` it landed on, when overlays
+expired, when the WS reconnected). Previously only the backend half
+existed in [`data/app.log`](../data/app.log); the UI half lived in
+DevTools and didn't survive a tab refresh. Sharing a single file
+when reporting a bug now reconstructs the whole flow.
+
+**How it works.**
+
+1. `logging.ui_log_enabled` (added to [`LoggingSettings`](../app/core/settings.py))
+   gates the feature; off by default. The "Debug logging" block in
+   **Settings drawer → Chat → Diagnostics** flips it via
+   `PATCH /api/settings`, the server broadcasts
+   `logging_settings_changed` over the WS, and every tab's
+   :func:`debugLog.setEnabled` mirrors the new value.
+
+2. When enabled, the browser captures structured events
+   (`{ ts, source, kind, payload }`) into a 2000-entry ring buffer
+   ([`web/src/log.ts`](../web/src/log.ts)) and batches them out
+   every ~500 ms to `POST /api/logs/ui`
+   ([`app/web/server.py`](../app/web/server.py)). The handler caps
+   the batch, allow-lists `source` by prefix, truncates oversized
+   payloads, and emits each entry on the `app.ui` logger as
+   `INFO [ui] {source} {kind} {payload_json}` so it interleaves into
+   `data/app.log` with the existing backend lines. The user shares
+   that one file.
+
+3. Sources instrumented today (kept tight to the cry-cascade /
+   lip-sync / reconnection forensic surface):
+
+   - `ws` — every inbound websocket event; payload dropped for the
+     noisy ones (`audio_level`, `audio_amplitude`, `stt_partial*`,
+     `token`).
+   - `voice` — voice-mode transitions (`from` → `to`).
+   - `channel.expression` — `applyReaction` (reaction + outfit +
+     chosen expression — the B5 forensic tuple), `applyMode`,
+     `resetExpression`, `backchannelPulse`.
+   - `channel.overlay` — `pulseStart` + `pulseExpired`.
+   - `channel.motion` — `trigger` + `talkStart`.
+   - `channel.outfit` — `outfitChanged`.
+   - `channel.accessory` — `accessoryStateChanged`.
+
+   Per-frame work (lip-sync amplitude, Pixi ticks) is intentionally
+   *not* logged.
+
+4. The "Download buffer" button in the same drawer block serialises
+   the in-memory ring to `alexia-ui-log-<iso>.json` for cases where
+   the backend isn't responding or the user wants the raw stream.
+
+**Disabling.** Flip the toggle off. The backend starts returning
+`403` on `/api/logs/ui`, the batcher drains, and `debugLog.log`
+becomes a free no-op. The ring buffer is preserved so a follow-up
+"Download" still works on whatever was captured before the flip.
+
+**Tests.** Backend round-trip + endpoint cap / truncate /
+allow-list in [`tests/test_web_server_ui_logs.py`](../tests/test_web_server_ui_logs.py)
+and [`tests/test_web_server_settings.py`](../tests/test_web_server_settings.py)
+(`LoggingSettingsRoundTripTests`). Frontend coverage in
+[`web/src/log.test.ts`](../web/src/log.test.ts) (ring + batcher
++ 403 backoff + setEnabled lifecycle),
+[`web/src/store.logging.test.ts`](../web/src/store.logging.test.ts)
+(slice round-trip), and a new "debug instrumentation" block at the
+end of [`web/src/live2d/channels/ExpressionChannel.test.ts`](../web/src/live2d/channels/ExpressionChannel.test.ts).
+
 ---
 
 ## C. Proactive + presence follow-ups
@@ -767,6 +836,30 @@ the linked doc, not here.
   cookie" is intentionally silent. Schema v6 added
   `world_locations` / `world_items` / `world_state`. See
   [`docs/aiko-room.md`](aiko-room.md).
+
+- **Aiko's living garden — outdoor plot + plant growth loop.**
+  Extends the world model with a `garden` location seeded
+  idempotently on every boot ([`WorldStore.ensure_garden_seed`](../app/core/world_store.py))
+  plus two new item kinds: `plant` (with `species` / `stage` /
+  `lifecycle` in `state`) and `seed`. Plants advance through
+  `sprout → sapling → growing → flowering → mature` over wall-clock
+  time via a `PlantGrowthWorker` (hourly, hooked into the existing
+  `IdleWorkerScheduler`). A `GardenVisitWorker` wanders her outside
+  during quiet daylight windows, waters every plant, and auto-
+  harvests any that are mature — produce lands in `kitchenette` as a
+  fresh `food` item, annuals drop a replacement seed in inventory,
+  perennials reset to `growing` so the cycle keeps going. Three new
+  agent tools (`water_plant`, `plant_seed`, `harvest_plant`) let her
+  interact on-demand; the persona prompt picks up garden + harvest
+  framing. `render_block` flips to an outdoor phrasing when she's
+  there (`"You are at home, currently outside in the garden…"`) and
+  surfaces stage cues including the loud `"(mature, ready to
+  harvest)"` hint. UI lights up automatically — `WORLD_KINDS` gained
+  `plant`/`seed`, and the World tab item row shows a stage badge.
+  No schema migration (rides on the existing `state_json` column).
+  Deferred: no wilting / death yet, no scene system; the garden is a
+  single location. See
+  [`docs/aiko-room.md`](aiko-room.md) under "Garden".
 
 - **Shared moments + relationship axes (schema v7).** Structured
   `shared_moment` memory kind with `(when, what, vibe,

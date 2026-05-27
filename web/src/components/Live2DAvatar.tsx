@@ -22,6 +22,7 @@ import { OutfitChannel } from "../live2d/channels/OutfitChannel";
 import { OverlayChannel } from "../live2d/channels/OverlayChannel";
 import { GlobalMouseSource } from "../live2d/GlobalMouseSource";
 import { WindowMouseSource } from "../live2d/WindowMouseSource";
+import { debugLog } from "../log";
 
 // Make pixi-live2d-display drive its own ticker via the standard PIXI ticker.
 // (The library expects this to be registered exactly once before any model is
@@ -148,6 +149,8 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
           manifest,
           engineState,
           mouseSource,
+          debug: (source, kind, payload) =>
+            debugLog.log({ source, kind, payload }),
           getStoreSnapshot: (): ChannelStoreSnapshot => {
             const s = useAssistantStore.getState();
             return {

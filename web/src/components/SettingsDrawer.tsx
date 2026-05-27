@@ -29,6 +29,7 @@ import {
   WORLD_KINDS,
   WORLD_POSTURES,
 } from "../types";
+import { debugLog } from "../log";
 import { useAssistantStore } from "../store";
 
 interface SettingsDrawerProps {
@@ -952,6 +953,8 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                   <DiagnosticsSection
                     metrics={metrics}
                     liveLastMetrics={liveMetrics}
+                    onApplyPatch={apply}
+                    busy={busy}
                   />
                 </>
               ) : null}
@@ -3847,6 +3850,26 @@ function ItemRow({
                 {item.kind}
               </span>
               {item.consumable ? <span>consumable</span> : null}
+              {item.kind === "plant" &&
+              typeof item.state?.stage === "string" ? (
+                <span
+                  className={`rounded px-1.5 py-0.5 ${
+                    item.state.stage === "mature"
+                      ? "bg-amber-500/20 text-amber-200"
+                      : "bg-emerald-500/15 text-emerald-200/80"
+                  }`}
+                >
+                  {item.state.stage === "mature"
+                    ? "ready to harvest"
+                    : String(item.state.stage)}
+                </span>
+              ) : null}
+              {item.kind === "seed" &&
+              typeof item.state?.species === "string" ? (
+                <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-emerald-200/80">
+                  {String(item.state.species)} seed
+                </span>
+              ) : null}
             </div>
           </div>
           <div className="flex shrink-0 flex-col gap-1">
@@ -3883,9 +3906,19 @@ function ItemRow({
 interface DiagnosticsProps {
   metrics: MetricsResponse | null;
   liveLastMetrics: import("../types").MetricsSnapshot;
+  /** Apply a partial settings patch (mirrors the outer drawer's
+   * ``apply`` helper). Used by the debug-logging toggle to PATCH
+   * ``logging.ui_log_enabled``. */
+  onApplyPatch: (patch: Record<string, unknown>) => Promise<void> | void;
+  busy: boolean;
 }
 
-function DiagnosticsSection({ metrics, liveLastMetrics }: DiagnosticsProps) {
+function DiagnosticsSection({
+  metrics,
+  liveLastMetrics,
+  onApplyPatch,
+  busy,
+}: DiagnosticsProps) {
   // Prefer the live store metrics (back-filled with tts_ms via WS) over the
   // /api/metrics snapshot for the "last turn" rows; fall back to /api/metrics
   // if the store is empty (e.g. drawer opened pre-first-turn).
@@ -4054,7 +4087,112 @@ function DiagnosticsSection({ metrics, liveLastMetrics }: DiagnosticsProps) {
           ) : null}
         </div>
       </div>
+
+      <DebugLoggingBlock onApplyPatch={onApplyPatch} busy={busy} />
     </Section>
+  );
+}
+
+interface DebugLoggingBlockProps {
+  onApplyPatch: (patch: Record<string, unknown>) => Promise<void> | void;
+  busy: boolean;
+}
+
+/**
+ * Debug-logging block inside ``Diagnostics``.
+ *
+ * The toggle PATCHes ``logging.ui_log_enabled`` so the change persists
+ * on the backend; the WS ``logging_settings_changed`` broadcast then
+ * flips :func:`debugLog.setEnabled` on every connected tab (this one
+ * included, via :file:`useAssistantSocket.ts`). The local "Download"
+ * + "Clear" buttons operate on the in-memory ring buffer so they work
+ * even when the backend is offline.
+ *
+ * We poll :func:`debugLog.size` once a second to drive the entry
+ * counter without subscribing every keystroke; the cost is one
+ * function call per render frame instead of a Zustand subscription
+ * that would re-render the whole drawer on every push.
+ */
+function DebugLoggingBlock({ onApplyPatch, busy }: DebugLoggingBlockProps) {
+  const loggingSettings = useAssistantStore((s) => s.loggingSettings);
+  const enabled = loggingSettings.ui_log_enabled;
+
+  // Counter ticks at ~1Hz when the toggle is on so the user sees the
+  // buffer grow as they reproduce. When off we still refresh once so
+  // the displayed count matches whatever the ring had at the moment
+  // of disabling.
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (!enabled) {
+      setTick((t) => t + 1);
+      return;
+    }
+    const handle = window.setInterval(() => setTick((t) => t + 1), 1000);
+    return () => window.clearInterval(handle);
+  }, [enabled]);
+  // `tick` is read implicitly via the snapshot below; the variable is
+  // referenced here so the linter doesn't warn it's unused.
+  void tick;
+
+  const size = debugLog.size();
+  const lastFlush = debugLog.lastFlushAt();
+  const lastFlushLabel = lastFlush
+    ? `${Math.max(0, Math.round((Date.now() - lastFlush) / 1000))}s ago`
+    : "—";
+
+  const handleToggle = (next: boolean) => {
+    void onApplyPatch({ logging: { ui_log_enabled: next } });
+  };
+
+  return (
+    <div className="rounded-md border border-white/5 bg-white/[0.02] px-3 py-3">
+      <div className="mb-2 flex items-baseline justify-between text-[11px] font-semibold uppercase tracking-wide text-ink-100/60">
+        <span>Debug logging</span>
+        <span className="text-[10px] font-normal normal-case text-ink-100/40">
+          UI → app.log
+        </span>
+      </div>
+      <p className="mb-3 text-[11px] leading-snug text-ink-100/55">
+        Captures WS events, avatar channel decisions, and settings
+        changes into <code className="font-mono text-ink-100/70">data/app.log</code> with a{" "}
+        <code className="font-mono text-ink-100/70">[ui]</code> prefix. Leave off in normal use;
+        flip on, reproduce a bug, then share the log file.
+      </p>
+      <label className="flex cursor-pointer items-center gap-2 text-[12px] text-ink-100/85">
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={(e) => handleToggle(e.target.checked)}
+          disabled={busy}
+          className="h-4 w-4 accent-violet-400"
+        />
+        Enable debug logging
+      </label>
+      <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px]">
+        <button
+          type="button"
+          onClick={() => debugLog.download()}
+          disabled={size === 0}
+          className="rounded border border-white/10 bg-white/5 px-2 py-1 text-ink-100/80 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Download buffer
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            debugLog.clear();
+            setTick((t) => t + 1);
+          }}
+          disabled={size === 0}
+          className="rounded border border-white/10 bg-white/5 px-2 py-1 text-ink-100/80 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Clear
+        </button>
+        <span className="ml-auto text-ink-100/50 tabular-nums">
+          {size.toLocaleString()} entries · last flush {lastFlushLabel}
+        </span>
+      </div>
+    </div>
   );
 }
 

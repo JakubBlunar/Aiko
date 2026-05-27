@@ -13,6 +13,7 @@ import { api } from "./api";
 import { useActivityReporter } from "./hooks/useActivityReporter";
 import { useAssistantSocket } from "./hooks/useAssistantSocket";
 import { usePresenceReporter } from "./hooks/usePresenceReporter";
+import { debugLog } from "./log";
 import { useAssistantStore } from "./store";
 
 /** Tiny hash-router. ``location.hash === "#/persona"`` -> the persona
@@ -105,10 +106,15 @@ export default function App() {
   const setActivityAwarenessEnabled = useAssistantStore(
     (s) => s.setActivityAwarenessEnabled,
   );
+  const setLoggingSettings = useAssistantStore((s) => s.setLoggingSettings);
   // Seed the toggle from /api/settings on mount so the activity
   // reporter picks up a previously-saved opt-in without waiting for
   // the user to open the settings drawer. Failure is non-fatal:
   // default ``false`` already gives the privacy-respecting behaviour.
+  // We also hydrate ``loggingSettings`` from the same payload so
+  // ``debugLog`` honours the persisted "Debug logging" toggle from
+  // boot — without this the batcher would start in the disabled state
+  // and only flip on once the user opens the drawer.
   useEffect(() => {
     let cancelled = false;
     void api
@@ -117,6 +123,18 @@ export default function App() {
         if (cancelled) return;
         const flag = Boolean(settings.activity?.awareness_enabled);
         setActivityAwarenessEnabled(flag);
+        if (settings.logging) {
+          setLoggingSettings({
+            ui_log_enabled: Boolean(settings.logging.ui_log_enabled),
+            ui_log_categories: Array.isArray(settings.logging.ui_log_categories)
+              ? settings.logging.ui_log_categories.map((token) => String(token))
+              : [],
+            ui_log_max_batch: Number(settings.logging.ui_log_max_batch) || 50,
+            ui_log_max_payload_bytes:
+              Number(settings.logging.ui_log_max_payload_bytes) || 2048,
+          });
+          debugLog.setEnabled(Boolean(settings.logging.ui_log_enabled));
+        }
       })
       .catch(() => {
         /* offline or stale backend — leave toggle at default */
@@ -124,7 +142,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [setActivityAwarenessEnabled]);
+  }, [setActivityAwarenessEnabled, setLoggingSettings]);
   useActivityReporter({ send, enabled: activityEnabled });
 
   if (route === "persona") {

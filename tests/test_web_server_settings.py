@@ -84,6 +84,16 @@ class _AudioBlock:
 
 
 @dataclass
+class _LoggingBlock:
+    ui_log_enabled: bool = False
+    ui_log_categories: list[str] = field(
+        default_factory=lambda: ["ws", "channel", "settings", "voice"],
+    )
+    ui_log_max_batch: int = 50
+    ui_log_max_payload_bytes: int = 2048
+
+
+@dataclass
 class _SettingsStub:
     agent: _AgentBlock = field(default_factory=_AgentBlock)
     tools: _ToolsBlock = field(default_factory=_ToolsBlock)
@@ -93,6 +103,7 @@ class _SettingsStub:
     stt: _SttBlock = field(default_factory=_SttBlock)
     tts: _TtsBlock = field(default_factory=_TtsBlock)
     audio: _AudioBlock = field(default_factory=_AudioBlock)
+    logging: _LoggingBlock = field(default_factory=_LoggingBlock)
 
 
 def _build_client() -> tuple[TestClient, MagicMock, _SettingsStub]:
@@ -205,6 +216,55 @@ class PatchSettingsTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertTrue(settings.agent.activity_awareness_enabled)
+
+
+class LoggingSettingsRoundTripTests(unittest.TestCase):
+    """``logging.ui_log_enabled`` round-trips through GET / PATCH.
+
+    The Settings drawer's "Debug logging" toggle drives this. Flipping
+    it must persist on the backend and surface back on the next GET so
+    a freshly-opened tab sees the same state.
+    """
+
+    def test_get_exposes_logging_block_with_defaults(self) -> None:
+        client, _session, _settings = _build_client()
+        body = client.get("/api/settings").json()
+        self.assertIn("logging", body)
+        self.assertFalse(body["logging"]["ui_log_enabled"])
+        self.assertEqual(
+            body["logging"]["ui_log_categories"],
+            ["ws", "channel", "settings", "voice"],
+        )
+        self.assertEqual(body["logging"]["ui_log_max_batch"], 50)
+        self.assertEqual(body["logging"]["ui_log_max_payload_bytes"], 2048)
+
+    def test_patch_flips_ui_log_enabled(self) -> None:
+        client, _session, settings = _build_client()
+        response = client.patch(
+            "/api/settings",
+            json={"logging": {"ui_log_enabled": True}},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(settings.logging.ui_log_enabled)
+        # And the response body should reflect it so the UI can sync
+        # without a follow-up GET.
+        self.assertTrue(response.json()["logging"]["ui_log_enabled"])
+
+    def test_patch_clamps_batch_and_payload(self) -> None:
+        client, _session, settings = _build_client()
+        client.patch(
+            "/api/settings",
+            json={
+                "logging": {
+                    "ui_log_max_batch": 9999,
+                    "ui_log_max_payload_bytes": 50,
+                },
+            },
+        )
+        # 500 ceiling on the batch, 256 floor on the payload — keep the
+        # rotating log from being smothered by a misbehaving client.
+        self.assertEqual(settings.logging.ui_log_max_batch, 500)
+        self.assertEqual(settings.logging.ui_log_max_payload_bytes, 256)
 
 
 if __name__ == "__main__":

@@ -85,7 +85,11 @@
     "file_enabled": true,
     "file_path": "data/app.log",
     "file_max_bytes": 5242880,
-    "file_backup_count": 5
+    "file_backup_count": 5,
+    "ui_log_enabled": false,
+    "ui_log_categories": ["ws", "channel", "settings", "voice"],
+    "ui_log_max_batch": 50,
+    "ui_log_max_payload_bytes": 2048
   },
   "mcp_server": {
     "enabled": true,

@@ -514,6 +514,13 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
                 )
             except Exception:
                 log.warning("world seed_default failed", exc_info=True)
+            # Additive migration: older worlds were seeded before the
+            # garden existed. ``ensure_garden_seed`` is idempotent so
+            # calling it on every boot is safe for both paths.
+            try:
+                self._world_store.ensure_garden_seed()
+            except Exception:
+                log.warning("world ensure_garden_seed failed", exc_info=True)
         except Exception:
             log.warning("WorldStore failed to initialise", exc_info=True)
             self._world_store = None
@@ -1244,6 +1251,40 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
                             "IdleFactChecker boot failed", exc_info=True
                         )
                         self._idle_fact_checker = None
+                # Aiko's living garden — plant stage promotion + visiting
+                # the garden during idle daylight windows. Both workers
+                # piggyback on the shared scheduler so they share the
+                # quiet-window gate; they're a no-op when the WorldStore
+                # never loaded. Failures here only drop garden cycling;
+                # the manual tools still work.
+                if getattr(self, "_world_store", None) is not None:
+                    try:
+                        from app.core.garden_visit_worker import (
+                            GardenVisitWorker,
+                        )
+                        from app.core.plant_growth_worker import (
+                            PlantGrowthWorker,
+                        )
+
+                        self._idle_scheduler.register(
+                            PlantGrowthWorker(
+                                self._world_store,
+                                notify=self._notify_world,
+                            )
+                        )
+                        self._idle_scheduler.register(
+                            GardenVisitWorker(
+                                self._world_store,
+                                notify=self._notify_world,
+                                kv_get=self._chat_db.kv_get,
+                                kv_set=self._chat_db.kv_set,
+                            )
+                        )
+                    except Exception:
+                        log.warning(
+                            "garden idle workers failed to register",
+                            exc_info=True,
+                        )
                 self._idle_scheduler.start()
             except Exception:
                 log.warning("idle worker scheduler boot failed", exc_info=True)

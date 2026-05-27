@@ -29,6 +29,7 @@ from fastapi.staticfiles import StaticFiles
 if TYPE_CHECKING:
     from app.core.session_controller import SessionController
 
+from app.core import crash_logging
 from app.core.live_session import LiveSession
 from app.core.settings import OUTFIT_MODES
 
@@ -563,6 +564,19 @@ def create_web_app(session: "SessionController") -> FastAPI:
                 "world": bool(getattr(s.tools, "world", True)),
                 "available": list(session.available_tool_names()),
             },
+            "logging": {
+                # Mirror of LoggingSettings.ui_log_enabled and friends so
+                # the Settings drawer's Debug-logging toggle has a single
+                # source of truth. Only the UI-bridge knobs are exposed —
+                # the file/level knobs stay backend-only because flipping
+                # them mid-session would require re-initialising handlers.
+                "ui_log_enabled": bool(getattr(s.logging, "ui_log_enabled", False)),
+                "ui_log_categories": list(getattr(s.logging, "ui_log_categories", [])),
+                "ui_log_max_batch": int(getattr(s.logging, "ui_log_max_batch", 50)),
+                "ui_log_max_payload_bytes": int(
+                    getattr(s.logging, "ui_log_max_payload_bytes", 2048),
+                ),
+            },
             "voice_active": bool(live_session.is_active),
             "session_key": session.session_key,
         })
@@ -745,6 +759,53 @@ def create_web_app(session: "SessionController") -> FastAPI:
                     )
                 except (TypeError, ValueError):
                     pass
+        logging_cfg = payload.get("logging") or {}
+        if logging_cfg:
+            # Only the UI-bridge knobs are mutable at runtime; the file
+            # path / level switches stay frozen because re-initialising
+            # the rotating handler mid-session is messy. Broadcast the
+            # change so any other connected tab flips its toggle too.
+            lcfg = session._settings.logging
+            changed = False
+            if "ui_log_enabled" in logging_cfg:
+                lcfg.ui_log_enabled = bool(logging_cfg["ui_log_enabled"])
+                changed = True
+            if "ui_log_categories" in logging_cfg:
+                raw_cats = logging_cfg.get("ui_log_categories") or []
+                if isinstance(raw_cats, (list, tuple)):
+                    lcfg.ui_log_categories = [
+                        str(token).strip().lower()
+                        for token in raw_cats
+                        if str(token).strip()
+                    ]
+                    changed = True
+            if "ui_log_max_batch" in logging_cfg:
+                try:
+                    lcfg.ui_log_max_batch = max(
+                        1, min(500, int(logging_cfg["ui_log_max_batch"])),
+                    )
+                    changed = True
+                except (TypeError, ValueError):
+                    pass
+            if "ui_log_max_payload_bytes" in logging_cfg:
+                try:
+                    lcfg.ui_log_max_payload_bytes = max(
+                        256,
+                        min(64 * 1024, int(logging_cfg["ui_log_max_payload_bytes"])),
+                    )
+                    changed = True
+                except (TypeError, ValueError):
+                    pass
+            if changed:
+                hub.broadcast({
+                    "type": "logging_settings_changed",
+                    "logging": {
+                        "ui_log_enabled": bool(lcfg.ui_log_enabled),
+                        "ui_log_categories": list(lcfg.ui_log_categories),
+                        "ui_log_max_batch": int(lcfg.ui_log_max_batch),
+                        "ui_log_max_payload_bytes": int(lcfg.ui_log_max_payload_bytes),
+                    },
+                })
         return get_settings()
 
     @app.get("/api/models")
@@ -760,6 +821,65 @@ def create_web_app(session: "SessionController") -> FastAPI:
         return JSONResponse({
             "input": [{"index": i, "name": n} for i, n in session.list_microphone_devices()],
             "output": [{"index": i, "name": n} for i, n in session.list_output_devices()],
+        })
+
+    @app.post("/api/logs/ui")
+    async def post_ui_logs(payload: dict[str, Any]) -> JSONResponse:
+        """Receive batched UI debug events and merge them into ``app.log``.
+
+        Body shape: ``{"entries": [{"ts": ..., "source": ..., "kind": ...,
+        "payload": ...}, ...]}``. Returns ``403`` when the feature flag
+        is off so a stale client can't keep writing without consent; the
+        frontend treats 403 as "stop trying until the toggle flips back".
+        Entries with a ``source`` outside ``ui_log_categories`` are
+        silently dropped; the batch is capped at ``ui_log_max_batch``.
+        """
+        lcfg = session._settings.logging
+        if not bool(getattr(lcfg, "ui_log_enabled", False)):
+            raise HTTPException(403, "ui debug logging disabled")
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "expected JSON object body")
+        raw_entries = payload.get("entries")
+        if not isinstance(raw_entries, list):
+            raise HTTPException(400, "entries must be a list")
+
+        allowed_sources = {
+            str(token).strip().lower()
+            for token in getattr(lcfg, "ui_log_categories", []) or []
+            if str(token).strip()
+        }
+        max_batch = max(1, int(getattr(lcfg, "ui_log_max_batch", 50)))
+        max_payload = max(256, int(getattr(lcfg, "ui_log_max_payload_bytes", 2048)))
+
+        accepted = 0
+        dropped = 0
+        for raw in raw_entries[:max_batch]:
+            if not isinstance(raw, dict):
+                dropped += 1
+                continue
+            source = str(raw.get("source") or "").strip().lower()
+            if not source:
+                dropped += 1
+                continue
+            # The allow-list matches by prefix (``channel.expression`` is
+            # accepted when ``channel`` is on the list) so callers can
+            # tag fine-grained sources without us maintaining the full
+            # vocabulary here.
+            if allowed_sources and not any(
+                source == token or source.startswith(token + ".")
+                for token in allowed_sources
+            ):
+                dropped += 1
+                continue
+            ok = crash_logging.log_ui_event(raw, max_payload_bytes=max_payload)
+            if ok:
+                accepted += 1
+            else:
+                dropped += 1
+        overflow = max(0, len(raw_entries) - max_batch)
+        return JSONResponse({
+            "accepted": accepted,
+            "dropped": dropped + overflow,
         })
 
     @app.get("/api/metrics")

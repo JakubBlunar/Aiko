@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { DEFAULT_LOGGING_SETTINGS } from "./types";
 import type {
   AvatarMotionState,
   AvatarOverlayState,
@@ -9,6 +10,7 @@ import type {
   CircadianPeriod,
   DesktopSettings,
   Identity,
+  LoggingSettings,
   Memory,
   MemoryCounts,
   MemoryTier,
@@ -241,6 +243,17 @@ interface AssistantState {
    * decision, only display. */
   liveActiveApp: string | null;
   setLiveActiveApp: (app: string | null) => void;
+
+  /** Debug-logging bridge knobs (mirrors ``LoggingSettings`` on the
+   * backend). The Settings drawer's "Debug logging" toggle PATCHes
+   * ``ui_log_enabled``; everything else is read-only metadata the
+   * backend uses to bound how much a misbehaving client can write.
+   * Synced on ``hello`` and on ``logging_settings_changed`` WS events;
+   * a side-effect subscriber flips ``debugLog.setEnabled`` whenever
+   * ``ui_log_enabled`` changes so the batcher stops/starts cleanly. */
+  loggingSettings: LoggingSettings;
+  setLoggingSettings: (settings: LoggingSettings) => void;
+  patchLoggingSettings: (patch: Partial<LoggingSettings>) => void;
 
   /** Schema v7: "Together" tab slice — phase/days/turns header,
    * milestones, relationship axes bars, anniversary card, and a
@@ -763,6 +776,14 @@ export const useAssistantStore = create<AssistantState>((set) => ({
     set({ activityAwarenessEnabled: Boolean(enabled) }),
   liveActiveApp: null,
   setLiveActiveApp: (app) => set({ liveActiveApp: app ?? null }),
+
+  loggingSettings: { ...DEFAULT_LOGGING_SETTINGS },
+  setLoggingSettings: (settings) =>
+    set({ loggingSettings: { ...DEFAULT_LOGGING_SETTINGS, ...settings } }),
+  patchLoggingSettings: (patch) =>
+    set((state) => ({
+      loggingSettings: { ...state.loggingSettings, ...patch },
+    })),
 
   togetherView: {
     summary: null,

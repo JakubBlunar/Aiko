@@ -3,8 +3,23 @@ import { api } from "../api";
 import { desktop } from "../desktop/commands";
 import { backendBase } from "../desktop/runtime";
 import { playDone, playThinking } from "../earcons";
+import { debugLog } from "../log";
 import { useAssistantStore } from "../store";
 import type { WsClientCommand, WsServerEvent } from "../types";
+
+/**
+ * High-frequency WS event types whose full payload would drown the
+ * debug log if captured verbatim. We still record that the event
+ * occurred (so the timeline is complete) but strip the payload to keep
+ * the line cheap.
+ */
+const NOISY_WS_EVENTS = new Set([
+  "audio_level",
+  "audio_amplitude",
+  "stt_partial",
+  "stt_partial_live",
+  "token",
+]);
 
 const WS_PATH = "/ws";
 const RECONNECT_DELAY_MS = 1500;
@@ -39,6 +54,18 @@ export function useAssistantSocket(): {
 
   const handleEvent = useCallback((evt: WsServerEvent) => {
     const store = useAssistantStore.getState();
+
+    // Tap every WS event into the debug log so the entire dispatch
+    // stream is recoverable from ``app.log``. ``debugLog.log`` is a
+    // no-op when the toggle is off, so this is essentially free in
+    // the normal case. We strip the payload for noisy event types
+    // (audio amplitude, partials, streamed tokens) to keep the log
+    // bounded — only the ``kind`` is interesting for those.
+    if (NOISY_WS_EVENTS.has(evt.type)) {
+      debugLog.log({ source: "ws", kind: evt.type });
+    } else {
+      debugLog.log({ source: "ws", kind: evt.type, payload: evt });
+    }
 
     switch (evt.type) {
       case "hello":
@@ -189,6 +216,19 @@ export function useAssistantSocket(): {
         store.setVoiceMode(evt.state);
         if (evt.state === "off") {
           store.setAudioLevel(0);
+        }
+        // Voice mode transitions are the entry point for several
+        // avatar cascades (the cry-bug came from "thinking" mapping
+        // to "concerned"). Log the from/to pair explicitly so the
+        // backend ``app.log`` shows the transition next to whatever
+        // backend event drove it (filler injection, tool dispatch,
+        // STT final, etc.).
+        if (previous !== evt.state) {
+          debugLog.log({
+            source: "voice",
+            kind: "modeChanged",
+            payload: { from: previous, to: evt.state },
+          });
         }
         // Earcon when Aiko transitions into the thinking state from a
         // user-driven listening or transcribing state. Skip if voice mode
@@ -348,6 +388,22 @@ export function useAssistantSocket(): {
 
       case "backchannel":
         store.pushBackchannel(evt.hint);
+        break;
+
+      case "logging_settings_changed":
+        // Another tab (or the user via this one) flipped the
+        // ``ui_log_enabled`` toggle. Mirror into the store + flip the
+        // batcher so this tab's debug bridge matches the backend.
+        store.setLoggingSettings({
+          ui_log_enabled: Boolean(evt.logging.ui_log_enabled),
+          ui_log_categories: Array.isArray(evt.logging.ui_log_categories)
+            ? evt.logging.ui_log_categories.map((token) => String(token))
+            : [],
+          ui_log_max_batch: Number(evt.logging.ui_log_max_batch) || 50,
+          ui_log_max_payload_bytes:
+            Number(evt.logging.ui_log_max_payload_bytes) || 2048,
+        });
+        debugLog.setEnabled(Boolean(evt.logging.ui_log_enabled));
         break;
 
       case "pong":

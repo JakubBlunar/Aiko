@@ -103,6 +103,22 @@ class LoggingSettings:
     file_path: str = "data/app.log"
     file_max_bytes: int = 5 * 1024 * 1024
     file_backup_count: int = 5
+    # UI debug log bridge — when ``ui_log_enabled`` is true the browser
+    # POSTs structured events (WS dispatch, avatar channel decisions,
+    # settings changes) to ``/api/logs/ui`` which interleaves them into
+    # ``data/app.log`` with a ``[ui]`` prefix. Off by default; flip via
+    # the Settings drawer "Debug logging" toggle when reproducing a bug.
+    # ``ui_log_categories`` is the allow-list the endpoint enforces on
+    # incoming ``source`` values so a misbehaving client can't spam
+    # arbitrary lines; ``ui_log_max_batch`` caps the entries per request;
+    # ``ui_log_max_payload_bytes`` truncates oversized payloads before
+    # they hit the rotating log.
+    ui_log_enabled: bool = False
+    ui_log_categories: list[str] = field(
+        default_factory=lambda: ["ws", "channel", "settings", "voice"],
+    )
+    ui_log_max_batch: int = 50
+    ui_log_max_payload_bytes: int = 2048
 
 
 @dataclass(slots=True)
@@ -998,6 +1014,19 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             file_path=str(logging_raw.get("file_path", "data/app.log") or "data/app.log"),
             file_max_bytes=max(64 * 1024, int(logging_raw.get("file_max_bytes", 5 * 1024 * 1024))),
             file_backup_count=max(0, int(logging_raw.get("file_backup_count", 5))),
+            ui_log_enabled=bool(logging_raw.get("ui_log_enabled", False)),
+            ui_log_categories=[
+                str(token).strip().lower()
+                for token in (
+                    logging_raw.get("ui_log_categories")
+                    or ["ws", "channel", "settings", "voice"]
+                )
+                if str(token).strip()
+            ],
+            ui_log_max_batch=max(1, min(500, int(logging_raw.get("ui_log_max_batch", 50)))),
+            ui_log_max_payload_bytes=max(
+                256, min(64 * 1024, int(logging_raw.get("ui_log_max_payload_bytes", 2048))),
+            ),
         ),
         mcp_server=McpServerSettings(
             enabled=bool(mcp_server_raw.get("enabled", True)),

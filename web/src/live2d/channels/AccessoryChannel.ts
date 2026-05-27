@@ -102,6 +102,10 @@ export class AccessoryChannel implements AvatarChannel {
   private _deps: ChannelDeps | null = null;
   private _envelope: AccessoryEnvelopes = makeEnvelopes();
   private _hasAnyAccessory = false;
+  // JSON-serialised snapshot of the last observed accessory_state so
+  // we can diff cheaply on every tick and emit a debug entry only when
+  // the user-visible state actually changes.
+  private _lastAccessorySig: string | null = null;
 
   attach(adapter: Live2DModelAdapter, deps: ChannelDeps): void {
     this._adapter = adapter;
@@ -115,6 +119,7 @@ export class AccessoryChannel implements AvatarChannel {
       !!caps.has_crossed_arms ||
       !!caps.has_eye_color_a ||
       !!caps.has_eye_color_b;
+    this._lastAccessorySig = null;
   }
 
   detach(): void {
@@ -122,6 +127,7 @@ export class AccessoryChannel implements AvatarChannel {
     this._deps = null;
     this._envelope = makeEnvelopes();
     this._hasAnyAccessory = false;
+    this._lastAccessorySig = null;
   }
 
   /** Per-frame envelope ease + additive write. Mirrors
@@ -138,6 +144,19 @@ export class AccessoryChannel implements AvatarChannel {
     const accessoryState = readAccessoryState(manifest);
     const activeOutfitCap = resolveActiveOutfitCapability(deps);
     const gateMap = manifest.outfit_gated_expressions ?? {};
+
+    // Diff against the previous tick: a single debug line whenever
+    // the user-visible accessory configuration changes (toggle, outfit
+    // gate flip, eye-color swap). Cheaper than instrumenting each
+    // toggle setter and catches the gate-driven changes too.
+    const sig = JSON.stringify(accessoryState);
+    if (sig !== this._lastAccessorySig) {
+      deps.debug?.("channel.accessory", "accessoryStateChanged", {
+        state: accessoryState,
+        outfit: activeOutfitCap,
+      });
+      this._lastAccessorySig = sig;
+    }
 
     const rate = dt > 0 ? dt / CROSSFADE_SECONDS : 0;
     const target = computeTargets(
