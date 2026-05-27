@@ -216,6 +216,11 @@ class SharedMomentsStore:
             # detector still goes through normal dedupe because it can fire
             # multiple times in a single warm conversation.
             skip_dedupe=source in {"manual", "tag"},
+            # Schema v8: shared moments are deliberate relational
+            # anchors (manual / inline tag / LLM-detector). Anchor in
+            # long_term so anniversaries can fire years later. Pinned
+            # moments are already coerced to long_term by ``add()``.
+            tier="long_term",
         )
         if mem is None:
             return None

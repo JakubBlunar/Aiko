@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_SCHEMA_VERSION = 7
+_SCHEMA_VERSION = 8
 
 _CREATE_TABLES = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -57,10 +57,27 @@ CREATE TABLE IF NOT EXISTS memories (
     -- intentionally generic so future structured kinds can ride the
     -- same column. NULL on existing kinds. v6 databases get the column
     -- added via ALTER in ``_init_schema``.
-    metadata TEXT
+    metadata TEXT,
+    -- Schema v8: memory tiers. ``scratchpad`` rows decay fast and get
+    -- pruned/promoted by ``MemoryPromotionWorker``; ``long_term`` is the
+    -- default home for verified anchors; ``archive`` decays at zero so
+    -- cold history sticks around without crowding retrieval. Pinned
+    -- rows are always forced to ``long_term``. v7 databases get the
+    -- column added via ALTER in ``_init_schema``.
+    tier TEXT NOT NULL DEFAULT 'long_term',
+    -- Schema v8: revival_score in [0, 1] tracks how often a retrieval
+    -- was followed by Aiko actually citing the memory (keyword overlap
+    -- >= memory_revival_min_word_overlap). The decay pass applies a
+    -- small rebate proportional to revival_score so high-revival rows
+    -- drift toward salience=1.0 and act like soft pins.
+    revival_score REAL NOT NULL DEFAULT 0.0
 );
 CREATE INDEX IF NOT EXISTS idx_memories_kind ON memories(kind);
 CREATE INDEX IF NOT EXISTS idx_memories_salience ON memories(salience);
+-- Note: idx_memories_tier is created in ``_init_schema`` after the
+-- v7→v8 ALTER guarantees the ``tier`` column exists. Including it
+-- here would crash the executescript on legacy v6/v7 databases
+-- where ``tier`` hasn't been added yet.
 
 -- Phase 2b: persistent emotional state per user.
 CREATE TABLE IF NOT EXISTS affect_state (
@@ -198,6 +215,17 @@ CREATE TABLE IF NOT EXISTS world_state (
     mood_note TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL
 );
+
+-- Schema v8: tiny key/value store for cross-process bookkeeping that
+-- doesn't deserve its own table. Used by ``MemoryStore.decay()`` to
+-- persist ``last_decay_run_at`` (so wall-clock catch-up works across
+-- restarts) and by the ``IdleWorkerScheduler`` to remember each
+-- worker's last_run_at + last_error.
+CREATE TABLE IF NOT EXISTS kv_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 # Tables that existed in earlier schemas but are no longer used.
@@ -293,14 +321,58 @@ class ChatDatabase:
         conn.commit()
         return int(cursor.lastrowid or 0)
 
+    # ── kv_meta helpers (schema v8) ─────────────────────────────────────
+    # Tiny string-value store for cross-process bookkeeping. Reserved
+    # key namespaces:
+    #   ``memory.last_decay_run_at`` -- wall-clock anchor for
+    #       :meth:`MemoryStore.decay`.
+    #   ``idle_worker.<name>.last_run_at`` / ``.last_error`` /
+    #       ``.run_count`` -- :class:`IdleWorkerScheduler` records.
+    # Values are always strings (callers JSON-encode when needed).
+
+    def kv_get(self, key: str) -> str | None:
+        row = self.execute_fetchone(
+            "SELECT value FROM kv_meta WHERE key = ?", (str(key),),
+        )
+        return str(row[0]) if row is not None else None
+
+    def kv_set(self, key: str, value: str) -> None:
+        self.execute_commit(
+            "INSERT INTO kv_meta (key, value, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value, "
+            "updated_at = excluded.updated_at",
+            (str(key), str(value), _now_iso()),
+        )
+
+    def kv_delete(self, key: str) -> None:
+        self.execute_commit("DELETE FROM kv_meta WHERE key = ?", (str(key),))
+
     def _init_schema(self, conn: sqlite3.Connection) -> None:
         conn.executescript(_CREATE_TABLES)
         row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
         if row is None:
+            # Fresh database: CREATE TABLE memories above already
+            # includes the ``tier`` column, so the dependent index can
+            # be created here.
+            try:
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_memories_tier ON memories(tier)"
+                )
+            except sqlite3.OperationalError:
+                pass
             conn.execute("INSERT INTO schema_version (version) VALUES (?)", (_SCHEMA_VERSION,))
             conn.commit()
             return
         if row[0] >= _SCHEMA_VERSION:
+            # Already on current schema -- make sure the tier index
+            # exists in case a prior partial migration skipped it.
+            try:
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_memories_tier ON memories(tier)"
+                )
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass
             return
         # On upgrade: drop tables that are no longer used so they stop wasting
         # space and confusing later readers. ``messages`` and
@@ -331,6 +403,31 @@ class ChatDatabase:
         # only the ALTER needs guarding so re-runs are a no-op.
         try:
             conn.execute("ALTER TABLE memories ADD COLUMN metadata TEXT")
+        except sqlite3.OperationalError:
+            pass
+        # v7 -> v8: memory tiers + revival score. Existing rows default
+        # to ``tier='long_term'`` (the safe baseline -- doesn't change
+        # decay behavior vs v7) and ``revival_score=0.0``. The
+        # ``kv_meta`` table CREATE above is idempotent. The tier index
+        # is added explicitly here since ``CREATE INDEX IF NOT EXISTS``
+        # in ``executescript`` runs before the column exists on
+        # upgraded databases.
+        try:
+            conn.execute(
+                "ALTER TABLE memories ADD COLUMN tier TEXT NOT NULL DEFAULT 'long_term'"
+            )
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute(
+                "ALTER TABLE memories ADD COLUMN revival_score REAL NOT NULL DEFAULT 0.0"
+            )
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memories_tier ON memories(tier)"
+            )
         except sqlite3.OperationalError:
             pass
         conn.execute("UPDATE schema_version SET version = ?", (_SCHEMA_VERSION,))

@@ -10,6 +10,7 @@ import type {
   DesktopSettings,
   Memory,
   MemoriesResponse,
+  MemoryCounts,
   MemoryCreatePayload,
   MemoryCreateResponse,
   MemoryOrder,
@@ -118,6 +119,8 @@ export const api = {
       offset?: number;
       order?: MemoryOrder;
       kind?: string | null;
+      /** Schema v8 tier filter (scratchpad / long_term / archive). */
+      tier?: string | null;
     } = {},
   ) => {
     const limit = options.limit ?? 50;
@@ -129,8 +132,12 @@ export const api = {
       order,
     });
     if (options.kind) params.set("kind", options.kind);
+    if (options.tier) params.set("tier", options.tier);
     return jsonFetch<MemoriesResponse>(`/api/memories?${params.toString()}`);
   },
+  /** Schema v8: per-tier memory totals for the Memory tab header. */
+  getMemoryCounts: () =>
+    jsonFetch<MemoryCounts>("/api/memories/counts"),
   deleteMemory: (id: number) =>
     jsonFetch<{ deleted: number }>(`/api/memories/${id}`, {
       method: "DELETE",

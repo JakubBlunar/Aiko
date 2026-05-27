@@ -27,11 +27,22 @@ class _FakeMemoryStore:
         self.fail = False
         self.return_none = False
 
-    def add(self, *, content, kind, embedding, salience, source_session=None, source_message_id=None):
+    def add(
+        self,
+        *,
+        content,
+        kind,
+        embedding,
+        salience,
+        source_session=None,
+        source_message_id=None,
+        tier=None,
+    ):
         self.calls.append({
             "content": content,
             "kind": kind,
             "salience": salience,
+            "tier": tier,
         })
         if self.fail:
             return None

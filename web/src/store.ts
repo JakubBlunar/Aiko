@@ -9,6 +9,8 @@ import type {
   CircadianPeriod,
   DesktopSettings,
   Memory,
+  MemoryCounts,
+  MemoryTier,
   MetricsSnapshot,
   MoodState,
   PersonaWindowSettings,
@@ -97,8 +99,8 @@ interface AssistantState {
   // memory subsystem is off.
   memoryView: {
     items: Memory[];
-    /** Total matching rows on the server (after applying ``kindFilter``).
-     * Pagination math uses this. */
+    /** Total matching rows on the server (after applying ``kindFilter``
+     * and ``tierFilter``). Pagination math uses this. */
     total: number;
     /** Configured ``memory.max_memories`` cap, surfaced in the UI hint. */
     cap: number;
@@ -106,7 +108,12 @@ interface AssistantState {
     page: number;
     pageSize: number;
     kindFilter: string | null;
+    /** Schema v8: optional tier filter. ``null`` means "all tiers". */
+    tierFilter: MemoryTier | null;
     order: "recent" | "top";
+    /** Schema v8: per-tier counts (drives the header line). Filled
+     * from ``/api/memories/counts``. ``null`` before the first fetch. */
+    counts: MemoryCounts | null;
   };
   memoriesEnabled: boolean;
   setMemoryView: (view: {
@@ -117,11 +124,14 @@ interface AssistantState {
     page: number;
     pageSize: number;
     kindFilter: string | null;
+    tierFilter?: MemoryTier | null;
     order: "recent" | "top";
   }) => void;
   setMemoryPage: (page: number) => void;
   setMemoryKindFilter: (kind: string | null) => void;
+  setMemoryTierFilter: (tier: MemoryTier | null) => void;
   setMemoryOrder: (order: "recent" | "top") => void;
+  setMemoryCounts: (counts: MemoryCounts | null) => void;
   /** Reducer for the ``memory_added`` WS event. Only prepends to the
    * current page when we're on page 0, the order is "recent", and the
    * new memory matches the active kind filter. Otherwise the row stays
@@ -460,7 +470,9 @@ export const useAssistantStore = create<AssistantState>((set) => ({
     page: 0,
     pageSize: 50,
     kindFilter: null,
+    tierFilter: null,
     order: "recent",
+    counts: null,
   },
   memoriesEnabled: true,
   setMemoryView: ({
@@ -471,10 +483,21 @@ export const useAssistantStore = create<AssistantState>((set) => ({
     page,
     pageSize,
     kindFilter,
+    tierFilter,
     order,
   }) =>
-    set(() => ({
-      memoryView: { items, total, cap, page, pageSize, kindFilter, order },
+    set((state) => ({
+      memoryView: {
+        items,
+        total,
+        cap,
+        page,
+        pageSize,
+        kindFilter,
+        tierFilter: tierFilter ?? state.memoryView.tierFilter,
+        order,
+        counts: state.memoryView.counts,
+      },
       memoriesEnabled: enabled,
     })),
   setMemoryPage: (page) =>
@@ -485,15 +508,26 @@ export const useAssistantStore = create<AssistantState>((set) => ({
     set((state) => ({
       memoryView: { ...state.memoryView, kindFilter: kind, page: 0 },
     })),
+  setMemoryTierFilter: (tier) =>
+    set((state) => ({
+      memoryView: { ...state.memoryView, tierFilter: tier, page: 0 },
+    })),
   setMemoryOrder: (order) =>
     set((state) => ({
       memoryView: { ...state.memoryView, order, page: 0 },
     })),
+  setMemoryCounts: (counts) =>
+    set((state) => ({
+      memoryView: { ...state.memoryView, counts },
+    })),
   applyMemoryAdded: (memory) =>
     set((state) => {
       const view = state.memoryView;
-      const filterMatches =
+      const kindMatches =
         !view.kindFilter || view.kindFilter === memory.kind;
+      const tierMatches =
+        !view.tierFilter || view.tierFilter === memory.tier;
+      const filterMatches = kindMatches && tierMatches;
       const onFirstPageRecent = view.page === 0 && view.order === "recent";
       // Always bump total when the new row would belong in the
       // current filter. Pagers across other tabs / windows then

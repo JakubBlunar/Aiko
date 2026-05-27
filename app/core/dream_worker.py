@@ -203,6 +203,10 @@ class DreamWorker:
                 salience=self._salience,
                 source_session=session_key,
                 source_message_id=None,
+                # Schema v8: dream reflections are speculative
+                # LLM-journal output. Scratchpad so they decay fast
+                # unless they earn promotion.
+                tier="scratchpad",
             )
         except Exception:
             log.debug("dream memory insert failed", exc_info=True)

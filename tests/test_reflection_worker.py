@@ -60,12 +60,14 @@ class _FakeMemoryStore:
         salience: float,
         source_session=None,
         source_message_id=None,
+        tier: str | None = None,
     ):
         self.calls.append({
             "content": content,
             "kind": kind,
             "salience": salience,
             "source_session": source_session,
+            "tier": tier,
         })
         if self.fail_kind == kind:
             return None

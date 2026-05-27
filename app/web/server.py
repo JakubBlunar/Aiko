@@ -742,24 +742,41 @@ def create_web_app(session: "SessionController") -> FastAPI:
         order: str = "recent",
         offset: int = 0,
         kind: str | None = None,
+        tier: str | None = None,
     ) -> JSONResponse:
         clamped_limit = max(1, min(int(limit), 200))
         clamped_offset = max(0, int(offset))
         order_norm = "top" if str(order).strip().lower() == "top" else "recent"
         kind_norm = (kind or "").strip().lower() or None
+        tier_norm = (tier or "").strip().lower() or None
         items = session.list_memories(
             limit=clamped_limit,
             order=order_norm,
             offset=clamped_offset,
             kind=kind_norm,
+            tier=tier_norm,
         )
         return JSONResponse({
             "memories": items,
             "count": len(items),
-            "total": session.memory_count(kind=kind_norm),
+            "total": session.memory_count(kind=kind_norm, tier=tier_norm),
             "cap": session.memory_cap(),
             "enabled": session.memory_store is not None,
         })
+
+    @app.get("/api/memories/counts")
+    def memory_counts() -> JSONResponse:
+        """Per-tier memory totals (schema v8). Drives the Memory tab header."""
+        store = session.memory_store
+        if store is None:
+            return JSONResponse(
+                {"scratchpad": 0, "long_term": 0, "archive": 0, "total": 0},
+            )
+        try:
+            counts = store.count_by_tier()
+        except Exception:
+            counts = {"scratchpad": 0, "long_term": 0, "archive": 0, "total": 0}
+        return JSONResponse(counts)
 
     @app.delete("/api/memories/{memory_id}")
     def delete_memory(memory_id: int) -> JSONResponse:
@@ -776,9 +793,16 @@ def create_web_app(session: "SessionController") -> FastAPI:
         content = payload.get("content")
         kind = payload.get("kind")
         salience = payload.get("salience")
-        if content is None and kind is None and salience is None:
+        tier = payload.get("tier")
+        if (
+            content is None
+            and kind is None
+            and salience is None
+            and tier is None
+        ):
             raise HTTPException(
-                400, "patch must include at least one of content, kind, salience",
+                400,
+                "patch must include at least one of content, kind, salience, tier",
             )
         # Type-checks before reaching into the store: clearer than letting the
         # mutator silently coerce arbitrary input.
@@ -788,12 +812,15 @@ def create_web_app(session: "SessionController") -> FastAPI:
             raise HTTPException(400, "kind must be a string")
         if salience is not None and not isinstance(salience, (int, float)):
             raise HTTPException(400, "salience must be a number")
+        if tier is not None and not isinstance(tier, str):
+            raise HTTPException(400, "tier must be a string")
         try:
             updated = session.update_memory(
                 int(memory_id),
                 content=content,
                 kind=kind,
                 salience=float(salience) if salience is not None else None,
+                tier=tier,
             )
         except Exception as exc:
             raise HTTPException(500, f"update failed: {exc}") from exc
@@ -808,16 +835,20 @@ def create_web_app(session: "SessionController") -> FastAPI:
         content = payload.get("content")
         kind = payload.get("kind", "fact")
         salience = payload.get("salience", 0.6)
+        tier = payload.get("tier", "long_term")
         if not isinstance(content, str) or not content.strip():
             raise HTTPException(400, "content must be a non-empty string")
         if not isinstance(kind, str):
             raise HTTPException(400, "kind must be a string")
         if not isinstance(salience, (int, float)):
             raise HTTPException(400, "salience must be a number")
+        if not isinstance(tier, str):
+            raise HTTPException(400, "tier must be a string")
         result = session.add_memory(
             content,
             kind=kind,
             salience=float(salience),
+            tier=tier,
         )
         if result is None:
             raise HTTPException(503, "memory store unavailable or content too short")

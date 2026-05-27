@@ -392,15 +392,69 @@ class MemorySettings:
 
     Populated by background extraction after each summary, plus any
     ``[[remember:...]]`` tags Aiko emits inline.
+
+    Schema v8 added tiered memory: ``scratchpad`` (fast decay, gets
+    promoted to ``long_term`` when used or revived; deleted if never
+    used), ``long_term`` (the default home), ``archive`` (decay ~ 0).
+    The ``MemoryPromotionWorker`` shuffles rows between tiers on a
+    configurable cadence; the ``MemoryDecayWorker`` applies
+    wall-clock-driven decay so an intermittently-running desktop app
+    still applies the right amount of decay on resume.
     """
 
     enabled: bool = True
     top_k: int = 6
     score_threshold: float = 0.4
-    max_memories: int = 5000
+    max_memories: int = 5000  # long_term cap
     dedupe_threshold: float = 0.92
     extractor_enabled: bool = True
     self_tagged_salience: float = 0.7
+
+    # ── Schema v8: tier + decay + revival ────────────────────────────
+    tiers_enabled: bool = True
+    # Per-tier salience decay per day (applied proportionally to
+    # elapsed wall-clock time -- running every hour applies 1/24 per
+    # call). ``archive`` defaults to 0 so cold history doesn't fade.
+    decay_rate_scratchpad: float = 0.05
+    decay_rate_long_term: float = 0.02
+    decay_rate_archive: float = 0.0
+    # Revival mechanic. When Aiko's reply mentions enough keywords from
+    # a surfaced memory, ``revival_score`` is bumped by
+    # ``revival_per_hit``. Each decay tick applies a small rebate
+    # proportional to revival_score (``revival_coefficient * elapsed``)
+    # and then walks revival_score itself back down by
+    # ``revival_decay_per_day * elapsed``. ``min_word_overlap`` controls
+    # how strict the citation detection is.
+    revival_coefficient: float = 0.05
+    revival_per_hit: float = 0.15
+    revival_decay_per_day: float = 0.02
+    revival_min_word_overlap: int = 3
+    # Promotion / demotion / cleanup gates used by
+    # :class:`MemoryPromotionWorker`.
+    scratchpad_ttl_days: int = 14
+    scratchpad_promote_min_age_days: int = 7
+    scratchpad_promote_min_use_count: int = 3
+    scratchpad_promote_min_revival: float = 0.3
+    archive_demote_idle_days: int = 180
+    # Per-tier caps (long_term cap reuses ``max_memories`` above).
+    scratchpad_cap: int = 1000
+    archive_cap: int = 10000
+    # Safety clamp on wall-clock catch-up: even if the app was offline
+    # for months, decay won't try to apply more than this many days'
+    # worth at once. Keeps the per-call magnitude bounded.
+    decay_max_catchup_days: float = 30.0
+    # ── Background workers (schema v8) ───────────────────────────────
+    # Worker intervals in seconds. Both workers are idempotent: running
+    # more often is safe but wastes a little CPU. Drop to ~60 for
+    # active testing.
+    promotion_worker_interval_seconds: int = 3600
+    decay_worker_interval_seconds: int = 3600
+    # IdleWorkerScheduler tick + quiet gate. Lowering ``wake_seconds``
+    # makes workers fire sooner after a quiet period starts but
+    # increases idle CPU; ``quiet_threshold`` is how long since the
+    # last user activity before the scheduler considers itself idle.
+    idle_worker_wake_seconds: float = 60.0
+    idle_worker_quiet_threshold_seconds: int = 30
 
 
 @dataclass(slots=True)
@@ -833,6 +887,63 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             dedupe_threshold=max(0.5, min(0.999, float(memory_raw.get("dedupe_threshold", 0.92)))),
             extractor_enabled=bool(memory_raw.get("extractor_enabled", True)),
             self_tagged_salience=max(0.0, min(1.0, float(memory_raw.get("self_tagged_salience", 0.7)))),
+            tiers_enabled=bool(memory_raw.get("tiers_enabled", True)),
+            decay_rate_scratchpad=max(
+                0.0, min(1.0, float(memory_raw.get("decay_rate_scratchpad", 0.05)))
+            ),
+            decay_rate_long_term=max(
+                0.0, min(1.0, float(memory_raw.get("decay_rate_long_term", 0.02)))
+            ),
+            decay_rate_archive=max(
+                0.0, min(1.0, float(memory_raw.get("decay_rate_archive", 0.0)))
+            ),
+            revival_coefficient=max(
+                0.0, min(1.0, float(memory_raw.get("revival_coefficient", 0.05)))
+            ),
+            revival_per_hit=max(
+                0.0, min(1.0, float(memory_raw.get("revival_per_hit", 0.15)))
+            ),
+            revival_decay_per_day=max(
+                0.0, min(1.0, float(memory_raw.get("revival_decay_per_day", 0.02)))
+            ),
+            revival_min_word_overlap=max(
+                1, int(memory_raw.get("revival_min_word_overlap", 3))
+            ),
+            scratchpad_ttl_days=max(
+                1, int(memory_raw.get("scratchpad_ttl_days", 14))
+            ),
+            scratchpad_promote_min_age_days=max(
+                0, int(memory_raw.get("scratchpad_promote_min_age_days", 7))
+            ),
+            scratchpad_promote_min_use_count=max(
+                0, int(memory_raw.get("scratchpad_promote_min_use_count", 3))
+            ),
+            scratchpad_promote_min_revival=max(
+                0.0,
+                min(1.0, float(memory_raw.get("scratchpad_promote_min_revival", 0.3))),
+            ),
+            archive_demote_idle_days=max(
+                1, int(memory_raw.get("archive_demote_idle_days", 180))
+            ),
+            scratchpad_cap=max(50, int(memory_raw.get("scratchpad_cap", 1000))),
+            archive_cap=max(50, int(memory_raw.get("archive_cap", 10000))),
+            decay_max_catchup_days=max(
+                1.0, float(memory_raw.get("decay_max_catchup_days", 30.0))
+            ),
+            promotion_worker_interval_seconds=max(
+                10,
+                int(memory_raw.get("promotion_worker_interval_seconds", 3600)),
+            ),
+            decay_worker_interval_seconds=max(
+                10, int(memory_raw.get("decay_worker_interval_seconds", 3600))
+            ),
+            idle_worker_wake_seconds=max(
+                1.0, float(memory_raw.get("idle_worker_wake_seconds", 60.0))
+            ),
+            idle_worker_quiet_threshold_seconds=max(
+                0,
+                int(memory_raw.get("idle_worker_quiet_threshold_seconds", 30)),
+            ),
         ),
         chat_llm=_parse_chat_llm(chat_llm_raw),
         tools=ToolsSettings(

@@ -180,11 +180,24 @@ class MemoryConsolidator:
             return None
         result = ConsolidationResult()
         result.chunks_scanned = 1
-        clusters = _cluster_memories(
-            memories,
-            similarity=self._sim,
-            min_size=self._min_cluster,
-        )
+        # Schema v8: cluster within tier only. Merging a scratchpad
+        # rumor into a verified long_term anchor would silently
+        # overwrite the anchor's salience + content with speculative
+        # text; merging a stale archive row into long_term would
+        # resurrect cold history without earning it. Group first, then
+        # cluster each bucket.
+        by_tier: dict[str, list["Memory"]] = {}
+        for mem in memories:
+            by_tier.setdefault(getattr(mem, "tier", "long_term"), []).append(mem)
+        clusters: list[list["Memory"]] = []
+        for tier_rows in by_tier.values():
+            clusters.extend(
+                _cluster_memories(
+                    tier_rows,
+                    similarity=self._sim,
+                    min_size=self._min_cluster,
+                )
+            )
         result.clusters_found = len(clusters)
         for cluster in clusters:
             if stop_flag is not None and stop_flag.is_set():
@@ -280,24 +293,44 @@ class MemoryConsolidator:
         boost = 0.05 + 0.03 * len(victims)
         peak = max(m.salience for m in [survivor, *victims])
         new_salience = min(1.0, max(survivor.salience, peak) + boost)
-        # Update SQLite directly (avoids re-embedding when content
-        # didn't actually change). We do bump last_used_at + salience.
-        conn = self._mem._get_conn()  # noqa: SLF001 — internal access by design
-        now = datetime.now(timezone.utc).isoformat()
+        # Schema v8: keep the cluster's best revival_score so a
+        # frequently-cited victim's earned trust transfers to the
+        # consolidated row. Tier is constant within a cluster (we
+        # group by tier upstream) but we pass it explicitly so the
+        # MemoryStore.update path runs the tier normalization /
+        # pinned coercion logic for free.
+        new_revival = max(float(m.revival_score) for m in [survivor, *victims])
         cleaned_text = (merged_content or survivor.content).strip()[:4000]
-        conn.execute(
-            "UPDATE memories SET content = ?, salience = ?, last_used_at = ?, "
-            "use_count = use_count + 1 WHERE id = ?",
-            (cleaned_text, new_salience, now, int(survivor.id)),
-        )
-        conn.commit()
-        with self._mem._lock:  # noqa: SLF001
-            mem = self._mem._mirror.get(int(survivor.id))  # noqa: SLF001
-            if mem is not None:
-                mem.content = cleaned_text
-                mem.salience = new_salience
-                mem.last_used_at = now
-                mem.use_count += 1
+        try:
+            self._mem.update(
+                int(survivor.id),
+                content=cleaned_text,
+                salience=new_salience,
+                revival_score=new_revival,
+                tier=getattr(survivor, "tier", "long_term"),
+            )
+        except Exception:
+            log.debug("survivor update failed", exc_info=True)
+            return
+        # Bump use_count + last_used_at directly (MemoryStore.update
+        # doesn't expose either field; the consolidator counts as a
+        # use signal). The SQL UPDATE here is intentionally narrow.
+        try:
+            conn = self._mem._get_conn()  # noqa: SLF001 — internal access by design
+            now = datetime.now(timezone.utc).isoformat()
+            conn.execute(
+                "UPDATE memories SET last_used_at = ?, use_count = use_count + 1 "
+                "WHERE id = ?",
+                (now, int(survivor.id)),
+            )
+            conn.commit()
+            with self._mem._lock:  # noqa: SLF001
+                mem = self._mem._mirror.get(int(survivor.id))  # noqa: SLF001
+                if mem is not None:
+                    mem.last_used_at = now
+                    mem.use_count += 1
+        except Exception:
+            log.debug("consolidator use_count bump failed", exc_info=True)
         # Delete the victims (which also detaches them from the RAG mirror).
         for victim in victims:
             try:

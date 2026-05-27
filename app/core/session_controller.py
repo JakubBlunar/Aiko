@@ -46,6 +46,7 @@ from app.core.memory_store import MemoryStore
 from app.core.avatar_profile import AvatarProfile, AvatarProfileError, from_disk as _avatar_from_disk
 from app.core.proactive_director import ProactiveDirector
 from app.core.prompt_assembler import PromptAssembler
+from app.core.session import AvatarMixin, MemoryFacadeMixin, WorldMixin
 from app.core.world_store import WorldStore
 from app.core.session_text_utils import (
     infer_tts_reaction,
@@ -54,7 +55,6 @@ from app.core.session_text_utils import (
 )
 from app.core.settings import (
     AppSettings,
-    OUTFIT_MODES,
     persist_user_overrides,
     read_user_overrides,
 )
@@ -97,31 +97,6 @@ class _MergeBuffer:
     user_message_id: int
     tts_started: bool = False
     awaiting_phrase_b: bool = False
-
-
-# ── Backchannel-driven motion mapping (Phase B2) ─────────────────────────
-# Maps each backchannel hint the classifier emits to one or more motion
-# *names* that the renderer should fire as a "listening micro-cue". Names
-# that resolve to a real motion file in the loaded rig's
-# ``motions`` map are dispatched via ``_emit_avatar_motion``-style
-# fan-out at ``priority="idle"`` so a regular reaction motion fired
-# during the same turn cleanly pre-empts them.
-#
-# Hints that aren't here are intentionally skipped:
-#   - ``surprise`` / ``amusement`` — already covered by the reaction
-#     overlay path (``_emit_avatar_overlay``).
-#   - ``concern`` — concern reads more naturally as the auto-sweat /
-#     concerned-mood path than as a body motion.
-#
-# The single-element tuples produce deterministic motions; the
-# multi-element tuple for ``thinking`` is alternated by
-# ``SessionController._backchannel_thinking_index``.
-_BACKCHANNEL_MOTION_MAP: dict[str, tuple[str, ...]] = {
-    "agreement":    ("nod",),
-    "disagreement": ("shake",),
-    "thinking":     ("tilt_left", "tilt_right"),
-    "confused":     ("microshake",),
-}
 
 
 class _BackchannelMotionGate:
@@ -178,7 +153,7 @@ def _resolve_env_var_name(*, base_url: str, explicit: str = "") -> str:
 # ── Controller ─────────────────────────────────────────────────────────
 
 
-class SessionController:
+class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
     def __init__(self, settings: AppSettings) -> None:
         self._settings = settings
         self._user_id = (settings.assistant.user_id or "default").strip() or "default"
@@ -367,6 +342,8 @@ class SessionController:
                 self._memory_store = MemoryStore(
                     storage_path,
                     max_memories=self._memory_settings.max_memories,
+                    scratchpad_cap=self._memory_settings.scratchpad_cap,
+                    archive_cap=self._memory_settings.archive_cap,
                     dedupe_threshold=self._memory_settings.dedupe_threshold,
                 )
                 # Boot RAG store (best-effort -- if probe / Lance fail, we
@@ -1025,17 +1002,38 @@ class SessionController:
             memory_extractor=self._memory_extractor,
         )
         self._summary_worker.start()
-        # Slow background decay so unused memories drift down over weeks. We
-        # also opportunistically prune so the store doesn't unbounded-grow.
-        self._memory_decay_stop = threading.Event()
-        self._memory_decay_thread: threading.Thread | None = None
-        if self._memory_store is not None:
-            self._memory_decay_thread = threading.Thread(
-                target=self._memory_decay_loop,
-                name="MemoryDecay",
-                daemon=True,
-            )
-            self._memory_decay_thread.start()
+        # Schema v8 — background workers run through a single shared
+        # :class:`IdleWorkerScheduler` instead of a dedicated decay
+        # thread. The scheduler skips during Live mode + within the
+        # configured quiet threshold of any user activity (see
+        # :meth:`_is_user_idle`). New workers (memory promotion,
+        # wall-clock decay, future F1/G2/G3) register here.
+        self._last_user_activity_at: float = time.monotonic()
+        self._idle_scheduler: "IdleWorkerScheduler | None" = None
+        if self._memory_store is not None and self._memory_settings.tiers_enabled:
+            try:
+                from app.core.idle_worker_scheduler import IdleWorkerScheduler
+                from app.core.memory_decay_worker import MemoryDecayWorker
+                from app.core.memory_promotion_worker import (
+                    MemoryPromotionWorker,
+                )
+
+                self._idle_scheduler = IdleWorkerScheduler(
+                    wake_seconds=self._memory_settings.idle_worker_wake_seconds,
+                    is_quiet_callback=self._is_user_idle,
+                    kv_get=self._chat_db.kv_get,
+                    kv_set=self._chat_db.kv_set,
+                )
+                self._idle_scheduler.register(
+                    MemoryPromotionWorker(self._memory_store, self._memory_settings)
+                )
+                self._idle_scheduler.register(
+                    MemoryDecayWorker(self._memory_store, self._memory_settings)
+                )
+                self._idle_scheduler.start()
+            except Exception:
+                log.warning("idle worker scheduler boot failed", exc_info=True)
+                self._idle_scheduler = None
         self._turn_runner = TurnRunner(
             self._ollama,
             self._chat_db,
@@ -1954,514 +1952,8 @@ class SessionController:
         except Exception:
             log.debug("scheduler.on_user_speech failed", exc_info=True)
 
-    # ── Avatar (fixed Alexia bundle) ─────────────────────────────────
-
-    @property
-    def avatar(self) -> AvatarProfile | None:
-        """The loaded :class:`AvatarProfile`, or ``None`` if files are missing."""
-        return self._avatar
-
-    @property
-    def avatar_root(self) -> Path:
-        return self._avatar_root
-
-    def avatar_payload(self) -> dict[str, Any]:
-        """Wire-format payload combining the immutable profile + runtime knobs."""
-        base = self._avatar.to_dict() if self._avatar is not None else {
-            "display_name": "",
-            "entry_filename": "",
-            "cubism_version": 3,
-            "expressions": [],
-            "motions": {},
-            "reaction_mapping": {},
-            "lip_sync_ids": [],
-            "eye_blink_ids": [],
-            "parameters": [],
-            "parts": [],
-            "capabilities": {},
-            "overlays": {},
-            "outfits": {},
-        }
-        base["settings"] = dict(self._avatar_settings_runtime)
-        base["loaded"] = self._avatar is not None
-        # Snapshot the world state the renderer needs for Tier-3 effects:
-        # the circadian period drives auto-outfit; the resolved outfit
-        # tells the renderer the *current* answer (which it can then
-        # cross-fade into without recomputing the rule).
-        base["circadian_period"] = self.current_circadian_period()
-        base["resolved_outfit"] = self.resolve_auto_outfit()
-        return base
-
-    def update_avatar_settings(
-        self,
-        *,
-        scale_multiplier: float | None = None,
-        auto_outfit: str | None = None,
-        expressiveness: float | None = None,
-    ) -> dict[str, Any]:
-        """Patch the user-tunable avatar knobs and notify listeners.
-
-        Changes are written back to ``config/user.json`` so the next
-        app launch starts with the user's preferred scale / outfit
-        instead of resetting to the defaults baked into the dataclass.
-        """
-        changed = False
-        persist_patch: dict[str, Any] = {}
-        if scale_multiplier is not None:
-            try:
-                value = max(0.1, min(8.0, float(scale_multiplier)))
-            except (TypeError, ValueError):
-                value = self._avatar_settings_runtime["scale_multiplier"]
-            if value != self._avatar_settings_runtime["scale_multiplier"]:
-                self._avatar_settings_runtime["scale_multiplier"] = value
-                self._settings.avatar.scale_multiplier = value
-                persist_patch["scale_multiplier"] = value
-                changed = True
-        if auto_outfit is not None:
-            normalized = str(auto_outfit).strip().lower()
-            if normalized in OUTFIT_MODES:
-                if normalized != self._avatar_settings_runtime["auto_outfit"]:
-                    self._avatar_settings_runtime["auto_outfit"] = normalized
-                    self._settings.avatar.auto_outfit = normalized
-                    persist_patch["auto_outfit"] = normalized
-                    changed = True
-        if expressiveness is not None:
-            try:
-                value = max(0.0, min(1.5, float(expressiveness)))
-            except (TypeError, ValueError):
-                value = self._avatar_settings_runtime["expressiveness"]
-            if value != self._avatar_settings_runtime["expressiveness"]:
-                self._avatar_settings_runtime["expressiveness"] = value
-                self._settings.avatar.expressiveness = value
-                persist_patch["expressiveness"] = value
-                changed = True
-        snapshot = dict(self._avatar_settings_runtime)
-        if changed:
-            if persist_patch:
-                # Best-effort: a write failure (e.g. read-only volume)
-                # must not break the in-memory update or the WS push.
-                try:
-                    persist_user_overrides({"avatar": persist_patch})
-                except Exception:
-                    log.warning(
-                        "failed to persist avatar settings to user.json",
-                        exc_info=True,
-                    )
-            for cb in list(self._avatar_settings_listeners):
-                try:
-                    cb(dict(snapshot))
-                except Exception:
-                    log.debug("avatar settings listener failed", exc_info=True)
-        return snapshot
-
-    def add_avatar_settings_listener(
-        self, cb: Callable[[dict[str, Any]], None]
-    ) -> None:
-        if cb not in self._avatar_settings_listeners:
-            self._avatar_settings_listeners.append(cb)
-
-    def remove_avatar_settings_listener(
-        self, cb: Callable[[dict[str, Any]], None]
-    ) -> None:
-        if cb in self._avatar_settings_listeners:
-            self._avatar_settings_listeners.remove(cb)
-
-    # ── Desktop / Tauri shell knobs ──────────────────────────────────────
-
-    def desktop_settings(self) -> dict[str, Any]:
-        """Return a deep copy of the desktop runtime cache.
-
-        The web layer hands this off as part of the WS ``hello`` snapshot
-        so a freshly-connected window (main or persona) immediately knows
-        the configured persona-window geometry.
-        """
-        persona = self._desktop_settings_runtime["persona_window"]
-        return {
-            "persona_window": dict(persona),
-        }
-
-    def update_desktop_settings(
-        self,
-        *,
-        persona_window_width: int | None = None,
-        persona_window_height: int | None = None,
-        persona_window_always_on_top: bool | None = None,
-    ) -> dict[str, Any]:
-        """Patch persona-window geometry and notify listeners.
-
-        Mirrors :meth:`update_avatar_settings`: clamps via the helpers in
-        ``app.core.settings``, persists the change to ``config/user.json``
-        (so an app restart picks the new value up), and broadcasts a
-        ``desktop_settings_changed`` event to every connected client.
-        """
-        from app.core.settings import (
-            clamp_persona_window_width,
-            clamp_persona_window_height,
-        )
-
-        persona = self._desktop_settings_runtime["persona_window"]
-        changed = False
-        persist_patch: dict[str, Any] = {}
-
-        if persona_window_width is not None:
-            value = clamp_persona_window_width(
-                persona_window_width, fallback=int(persona["width"])
-            )
-            if value != int(persona["width"]):
-                persona["width"] = value
-                self._settings.desktop.persona_window.width = value
-                persist_patch["width"] = value
-                changed = True
-        if persona_window_height is not None:
-            value = clamp_persona_window_height(
-                persona_window_height, fallback=int(persona["height"])
-            )
-            if value != int(persona["height"]):
-                persona["height"] = value
-                self._settings.desktop.persona_window.height = value
-                persist_patch["height"] = value
-                changed = True
-        if persona_window_always_on_top is not None:
-            value = bool(persona_window_always_on_top)
-            if value != bool(persona["always_on_top"]):
-                persona["always_on_top"] = value
-                self._settings.desktop.persona_window.always_on_top = value
-                persist_patch["always_on_top"] = value
-                changed = True
-
-        snapshot = self.desktop_settings()
-        if changed:
-            if persist_patch:
-                try:
-                    persist_user_overrides(
-                        {"desktop": {"persona_window": persist_patch}}
-                    )
-                except Exception:
-                    log.warning(
-                        "failed to persist desktop settings to user.json",
-                        exc_info=True,
-                    )
-            for cb in list(self._desktop_settings_listeners):
-                try:
-                    cb(dict(snapshot))
-                except Exception:
-                    log.debug("desktop settings listener failed", exc_info=True)
-        return snapshot
-
-    def add_desktop_settings_listener(
-        self, cb: Callable[[dict[str, Any]], None]
-    ) -> None:
-        if cb not in self._desktop_settings_listeners:
-            self._desktop_settings_listeners.append(cb)
-
-    def remove_desktop_settings_listener(
-        self, cb: Callable[[dict[str, Any]], None]
-    ) -> None:
-        if cb in self._desktop_settings_listeners:
-            self._desktop_settings_listeners.remove(cb)
-
-    def add_avatar_overlay_listener(
-        self, cb: Callable[[dict[str, Any]], None]
-    ) -> None:
-        if cb not in self._avatar_overlay_listeners:
-            self._avatar_overlay_listeners.append(cb)
-
-    def remove_avatar_overlay_listener(
-        self, cb: Callable[[dict[str, Any]], None]
-    ) -> None:
-        if cb in self._avatar_overlay_listeners:
-            self._avatar_overlay_listeners.remove(cb)
-
-    def current_circadian_period(self) -> str:
-        """Return the current period name (``morning``, ``night``, ...)."""
-        try:
-            return str(_circadian.compute().period)
-        except Exception:
-            return ""
-
-    def resolve_auto_outfit(self) -> str:
-        """Resolve the active outfit according to priority rules.
-
-        Returns ``"pajamas"``, ``"pajamas_hooded"``, ``"day"``, or ``""``
-        (no preference / model doesn't support outfits at all).
-
-        Priority (highest → lowest):
-          1. User-forced ``auto_outfit`` (set via ``/api/avatar``).
-             Always wins; clears any LLM override as a side-effect.
-          2. LLM-driven ``[[outfit:X]]`` override. Sticky until the next
-             circadian period boundary, then auto-expired.
-          3. Circadian default (``night``/``late_night`` → pajamas
-             variant; falls back to the hooded variant when the bare
-             one isn't supported).
-        """
-        avatar = self._avatar
-        if avatar is None:
-            return ""
-        mode = self._avatar_settings_runtime.get("auto_outfit", "auto")
-        caps = avatar.capabilities
-        has_pajamas = bool(caps.get("has_pajamas", False))
-        has_pajamas_hooded = bool(caps.get("has_pajamas_hooded", False))
-        has_day = bool(caps.get("has_day_clothes", False))
-        # User-forced modes (priority 1). Each falls back through the
-        # other pajama variant before giving up to ``day`` / ``""`` so a
-        # rig that only ships one of the two still respects the user's
-        # intent ("they wanted pajamas, give them whichever exists").
-        if mode == "pajamas":
-            self._llm_outfit_override = ""
-            self._llm_outfit_override_period = ""
-            if has_pajamas:
-                return "pajamas"
-            if has_pajamas_hooded:
-                return "pajamas_hooded"
-            return "day" if has_day else ""
-        if mode == "pajamas_hooded":
-            self._llm_outfit_override = ""
-            self._llm_outfit_override_period = ""
-            if has_pajamas_hooded:
-                return "pajamas_hooded"
-            if has_pajamas:
-                return "pajamas"
-            return "day" if has_day else ""
-        if mode == "day":
-            self._llm_outfit_override = ""
-            self._llm_outfit_override_period = ""
-            return "day" if has_day else ""
-        period = self.current_circadian_period()
-        # LLM override applies in "auto" mode only, and only inside the
-        # circadian period it was set in. Crossing the period boundary
-        # auto-expires it so morning naturally flips back to day clothes.
-        if self._llm_outfit_override:
-            if (
-                self._llm_outfit_override_period
-                and period
-                and period != self._llm_outfit_override_period
-            ):
-                self._llm_outfit_override = ""
-                self._llm_outfit_override_period = ""
-            else:
-                override = self._llm_outfit_override
-                if override == "pajamas" and has_pajamas:
-                    return "pajamas"
-                if override == "pajamas_hooded" and has_pajamas_hooded:
-                    return "pajamas_hooded"
-                if override == "day" and has_day:
-                    return "day"
-                # Override no longer realisable (capability vanished on
-                # avatar swap); clear and fall through.
-                self._llm_outfit_override = ""
-                self._llm_outfit_override_period = ""
-        # Auto: night/late_night → pajamas (preferred bare variant when
-        # supported, else hooded), otherwise day clothes.
-        if period in {"night", "late_night"}:
-            if has_pajamas:
-                return "pajamas"
-            if has_pajamas_hooded:
-                return "pajamas_hooded"
-        return "day" if has_day else ""
-
-    def _emit_avatar_overlay(self, name: str, *, duration_ms: int = 1500) -> None:
-        """Forward an LLM-driven ``[[overlay:X]]`` to the renderer.
-
-        Skipped silently if the loaded avatar doesn't support the
-        requested overlay (capability ``has_X`` is False) — keeps a
-        minimal future model from spamming the WS with effects it
-        can't render.
-        """
-        if not name:
-            return
-        avatar = self._avatar
-        if avatar is None:
-            return
-        cap_key = f"has_{name.strip().lower()}"
-        if not avatar.capabilities.get(cap_key, False):
-            return
-        payload = {
-            "name": name.strip().lower(),
-            "duration_ms": int(max(150, duration_ms)),
-        }
-        for cb in list(self._avatar_overlay_listeners):
-            try:
-                cb(dict(payload))
-            except Exception:
-                log.debug("avatar overlay listener failed", exc_info=True)
-
-    def _emit_avatar_outfit(self, name: str) -> None:
-        """Apply an LLM-driven ``[[outfit:X]]`` directive.
-
-        Sticky until the circadian period rolls over (handled lazily
-        in :meth:`resolve_auto_outfit`). Ignored entirely when the
-        user has manually forced an outfit via the settings panel —
-        we don't want a stale narrative line ("…and slip into
-        pajamas…") fighting an explicit user choice.
-        """
-        if not name:
-            return
-        normalized = str(name).strip().lower()
-        if normalized not in {"pajamas", "pajamas_hooded", "day"}:
-            return
-        avatar = self._avatar
-        if avatar is None:
-            return
-        mode = self._avatar_settings_runtime.get("auto_outfit", "auto")
-        if mode != "auto":
-            return  # User override wins; silently drop the LLM directive.
-        caps = avatar.capabilities
-        if normalized == "pajamas" and not caps.get("has_pajamas", False):
-            return
-        if normalized == "pajamas_hooded" and not caps.get(
-            "has_pajamas_hooded", False,
-        ):
-            return
-        if normalized == "day" and not caps.get("has_day_clothes", False):
-            return
-        period = self.current_circadian_period()
-        prev_resolved = self.resolve_auto_outfit()
-        self._llm_outfit_override = normalized
-        self._llm_outfit_override_period = period
-        new_resolved = self.resolve_auto_outfit()
-        if new_resolved == prev_resolved:
-            # No-op (already in this outfit). Don't spam listeners.
-            return
-        snapshot = dict(self._avatar_settings_runtime)
-        for cb in list(self._avatar_settings_listeners):
-            try:
-                cb(dict(snapshot))
-            except Exception:
-                log.debug("avatar settings listener failed", exc_info=True)
-
-    def _emit_avatar_motion(self, name: str) -> None:
-        """Forward an LLM-driven ``[[motion:X]]`` to the renderer.
-
-        Looks up the motion file in the loaded rig's ``motions`` map
-        and emits an ``avatar_motion`` event with the resolved
-        ``group`` + ``index`` so ``pixi-live2d-display`` can call
-        ``model.motion(group, index)`` directly.
-
-        Safety net: when ``name`` is NOT a motion file stem but IS a
-        known overlay/gesture capability on the loaded rig (e.g. the
-        LLM emitted ``[[motion:tail_wag]]`` instead of the correct
-        ``[[overlay:tail_wag]]``), re-route to ``_emit_avatar_overlay``
-        so the action still plays. Logged at INFO so the misroute is
-        visible alongside the ``llm tags:`` line — the prompt grammar
-        should still steer the model to the right channel, but
-        forgiving the mistake is much better than silently dropping.
-
-        Unknown names that match neither a motion nor an overlay are
-        still silently dropped (LLM hallucinated).
-        """
-        if not name:
-            return
-        avatar = self._avatar
-        if avatar is None:
-            return
-        normalized = str(name).strip().lower()
-        if not normalized:
-            return
-        for group, refs in (avatar.motions or {}).items():
-            for idx, ref in enumerate(refs):
-                if (ref.name or "").lower() == normalized:
-                    payload = {
-                        "name": ref.name,
-                        "group": str(group),
-                        "index": int(idx),
-                    }
-                    for cb in list(self._avatar_motion_listeners):
-                        try:
-                            cb(dict(payload))
-                        except Exception:
-                            log.debug(
-                                "avatar motion listener failed",
-                                exc_info=True,
-                            )
-                    return
-        # Misroute safety net: the LLM emitted ``[[motion:foo]]`` but
-        # ``foo`` is an overlay capability on this rig. Forward to the
-        # overlay path so the visual effect actually plays.
-        if avatar.capabilities.get(f"has_{normalized}", False):
-            log.info(
-                "avatar motion '%s' has no motion file but matches "
-                "an overlay capability; routing as overlay",
-                normalized,
-            )
-            self._emit_avatar_overlay(normalized)
-
-    def add_avatar_motion_listener(
-        self, cb: Callable[[dict[str, Any]], None]
-    ) -> None:
-        if cb not in self._avatar_motion_listeners:
-            self._avatar_motion_listeners.append(cb)
-
-    def remove_avatar_motion_listener(
-        self, cb: Callable[[dict[str, Any]], None]
-    ) -> None:
-        if cb in self._avatar_motion_listeners:
-            self._avatar_motion_listeners.remove(cb)
-
-    def _emit_backchannel_motion(self, hint: BackchannelHint, partial: str) -> None:
-        """Dispatch a low-priority motion in response to a backchannel hint.
-
-        Wired in ``__init__`` as a backchannel listener so every hint
-        the classifier emits goes through this filter. Unmapped hints
-        and hints that arrive within the rate-limit window are
-        silently dropped — the mapping table at
-        :data:`_BACKCHANNEL_MOTION_MAP` is the single source of truth
-        for which hints get a motion at all.
-
-        ``priority="idle"`` is added to the payload so the frontend's
-        ``MotionChannel`` queues at ``MotionPriority.IDLE``; a regular
-        ``[[motion:X]]`` reaction motion fired during the same turn
-        cleanly pre-empts the listening cue without explicit
-        cancellation logic.
-        """
-        del partial  # not used; kept for listener-signature compatibility
-        avatar = self._avatar
-        if avatar is None:
-            return
-        candidates = _BACKCHANNEL_MOTION_MAP.get(hint)
-        if not candidates:
-            return  # surprise / amusement / concern -> handled elsewhere
-        # Alternate ``thinking`` between tilt_left and tilt_right so a
-        # long pondering window doesn't read as "stuck on one side".
-        if len(candidates) > 1:
-            picked = candidates[self._backchannel_thinking_index % len(candidates)]
-            self._backchannel_thinking_index += 1
-        else:
-            picked = candidates[0]
-        # Resolve the motion file in the loaded rig. We don't pre-bind
-        # to specific groups so a re-grouping in the model3.json (e.g.
-        # moving ``microshake`` to a different bucket) doesn't require
-        # a code change here.
-        resolved: tuple[str, int] | None = None
-        for group, refs in (avatar.motions or {}).items():
-            for idx, ref in enumerate(refs):
-                if (ref.name or "").lower() == picked:
-                    resolved = (str(group), int(idx))
-                    break
-            if resolved is not None:
-                break
-        if resolved is None:
-            # Rig doesn't have the motion file (e.g. minimal model
-            # without the Backchannel bucket). Drop silently — the
-            # listening session still feels OK because the overlay
-            # path is unaffected.
-            return
-        if not self._backchannel_motion_gate.consider(now=time.monotonic()):
-            return
-        group, idx = resolved
-        payload = {
-            "name": picked,
-            "group": group,
-            "index": idx,
-            "priority": "idle",
-        }
-        for cb in list(self._avatar_motion_listeners):
-            try:
-                cb(dict(payload))
-            except Exception:
-                log.debug(
-                    "avatar motion listener (backchannel) failed",
-                    exc_info=True,
-                )
+    # ── Avatar, desktop, circadian, overlay/outfit/motion emits ─────
+    # Methods now live in app/core/session/avatar_mixin.py.
 
     # ── RAG / documents ─────────────────────────────────────────────
 
@@ -2540,796 +2032,10 @@ class SessionController:
         log.info("tool registry rebuilt: %s", registry.names())
 
     # ── Memory accessors ────────────────────────────────────────────
+    # Methods now live in app/core/session/memory_facade_mixin.py.
 
-    @property
-    def memory_store(self) -> "MemoryStore | None":
-        return self._memory_store
-
-    @property
-    def memory_extractor(self) -> "MemoryExtractor | None":
-        return self._memory_extractor
-
-    def list_memories(
-        self,
-        *,
-        limit: int = 50,
-        order: str = "recent",
-        offset: int = 0,
-        kind: str | None = None,
-    ) -> list[dict[str, Any]]:
-        store = self._memory_store
-        if store is None:
-            return []
-        if order == "top":
-            mems = store.list_top(limit=limit, offset=offset, kind=kind)
-        else:
-            mems = store.list_recent(limit=limit, offset=offset, kind=kind)
-        return [m.to_dict() for m in mems]
-
-    def memory_count(self, kind: str | None = None) -> int:
-        store = self._memory_store
-        if store is None:
-            return 0
-        return store.count_memories(kind=kind)
-
-    def memory_cap(self) -> int:
-        """Return the current ``memory.max_memories`` cap (UI hint)."""
-        return int(getattr(self._settings.memory, "max_memories", 500))
-
-    def delete_memory(self, memory_id: int) -> bool:
-        if self._memory_store is None:
-            return False
-        return self._memory_store.delete(int(memory_id))
-
-    def update_memory(
-        self,
-        memory_id: int,
-        *,
-        content: str | None = None,
-        kind: str | None = None,
-        salience: float | None = None,
-    ) -> dict[str, Any] | None:
-        """Patch fields on a memory and notify listeners.
-
-        Re-embeds the row when ``content`` is provided so retrieval picks up
-        the edit on the next turn. Returns the new ``to_dict()`` snapshot,
-        or ``None`` when the row doesn't exist or the embedder is offline
-        and content was changed.
-        """
-        store = self._memory_store
-        if store is None:
-            return None
-        new_embedding = None
-        if content is not None and self._embedder is not None:
-            try:
-                new_embedding = self._embedder.embed(str(content))
-            except Exception:
-                log.warning(
-                    "memory update: re-embedding failed for id=%s",
-                    memory_id,
-                    exc_info=True,
-                )
-                # Refuse to silently keep the stale embedding -- the editor
-                # surfaces a real error and the user can retry.
-                return None
-        updated = store.update(
-            int(memory_id),
-            content=content,
-            kind=kind,
-            salience=salience,
-            embedding=new_embedding,
-        )
-        if updated is None:
-            return None
-        snapshot = updated.to_dict()
-        self._notify_memory_updated(snapshot)
-        return snapshot
-
-    def add_memory(
-        self,
-        content: str,
-        *,
-        kind: str = "fact",
-        salience: float = 0.6,
-    ) -> dict[str, Any] | None:
-        """Manually insert a memory through the editor surface.
-
-        Mirrors the dedupe semantics of :meth:`MemoryStore.add` -- if the new
-        row collapses into an existing near-duplicate, the existing memory's
-        salience is bumped and we return its snapshot under the
-        ``"deduped_into"`` key so the UI can toast "merged into memory #N".
-        Returns ``None`` when the embedder is offline or content is empty.
-        """
-        store = self._memory_store
-        if store is None or self._embedder is None:
-            return None
-        cleaned = (content or "").strip()
-        if len(cleaned) < 4:
-            return None
-        try:
-            embedding = self._embedder.embed(cleaned)
-        except Exception:
-            log.warning("memory add: embed failed", exc_info=True)
-            return None
-        before_ids = set()
-        try:
-            before_ids = {m.id for m in store.list_recent(limit=store.count() or 1)}
-        except Exception:
-            before_ids = set()
-        memory = store.add(
-            cleaned,
-            kind,
-            embedding,
-            salience=salience,
-        )
-        if memory is None:
-            # Dedupe path: find which existing row absorbed this one. We
-            # search by content equality because cosine dedupe doesn't
-            # surface the matched id directly.
-            existing = next(
-                (m for m in store.list_recent(limit=store.count() or 1)
-                 if m.content == cleaned),
-                None,
-            )
-            if existing is None:
-                return None
-            return {"deduped_into": existing.to_dict()}
-        snapshot = memory.to_dict()
-        # Reuse the existing memory_added pipeline so other listeners (the
-        # WS hub, in particular) emit the same shape they already do for
-        # extractor-driven inserts.
-        if memory.id not in before_ids:
-            self._notify_memory_added(memory)
-        return {"memory": snapshot}
-
-    def set_memory_pinned(
-        self,
-        memory_id: int,
-        pinned: bool,
-    ) -> dict[str, Any] | None:
-        store = self._memory_store
-        if store is None:
-            return None
-        updated = store.set_pinned(int(memory_id), bool(pinned))
-        if updated is None:
-            return None
-        snapshot = updated.to_dict()
-        self._notify_memory_updated(snapshot)
-        return snapshot
-
-    def add_memory_listener(self, callback: Callable[[Any], None]) -> None:
-        if callback and callback not in self._memory_listeners:
-            self._memory_listeners.append(callback)
-
-    def add_memory_updated_listener(
-        self, callback: Callable[[dict[str, Any]], None],
-    ) -> None:
-        listeners = getattr(self, "_memory_updated_listeners", None)
-        if listeners is None:
-            listeners = []
-            self._memory_updated_listeners = listeners
-        if callback and callback not in listeners:
-            listeners.append(callback)
-
-    def _notify_memory_added(self, memory: Any) -> None:
-        for listener in list(self._memory_listeners):
-            try:
-                listener(memory)
-            except Exception:
-                log.debug("memory listener raised", exc_info=True)
-
-    def _notify_memory_updated(self, snapshot: dict[str, Any]) -> None:
-        listeners = getattr(self, "_memory_updated_listeners", None) or []
-        for listener in list(listeners):
-            try:
-                listener(snapshot)
-            except Exception:
-                log.debug("memory updated listener raised", exc_info=True)
-
-    # ── World (Aiko's room) ─────────────────────────────────────────
-
-    @property
-    def world_store(self) -> "WorldStore | None":
-        return self._world_store
-
-    def world_snapshot(self) -> dict[str, Any]:
-        """Return the full room state for the World tab."""
-        store = self._world_store
-        if store is None:
-            return {"state": {}, "locations": [], "items": [], "enabled": False}
-        snap = store.snapshot()
-        snap["enabled"] = True
-        return snap
-
-    def add_world_listener(
-        self, callback: Callable[[dict[str, Any]], None],
-    ) -> None:
-        """Register a ``callback(patch)`` invoked after every world write.
-
-        Patches are typed dicts with one of: ``state``, ``location``,
-        ``item``, ``deleted_location_id``, ``deleted_item_id``. Listener
-        runs synchronously on the writer thread; the WS hub broadcast
-        translates each patch into a ``world_updated`` event.
-        """
-        if callback and callback not in self._world_listeners:
-            self._world_listeners.append(callback)
-
-    def _notify_world(self, patch: dict[str, Any]) -> None:
-        for listener in list(self._world_listeners):
-            try:
-                listener(patch)
-            except Exception:
-                log.debug("world listener raised", exc_info=True)
-
-    # ── Shared moments + axes listeners (schema v7) ──────────────────
-
-    def add_shared_moment_listener(
-        self, callback: Callable[[dict[str, Any]], None],
-    ) -> None:
-        """Register a ``callback(patch)`` for shared-moment CRUD events.
-
-        Patches carry one of ``moment`` (created/updated row dict) or
-        ``deleted_moment_id`` (int). WS hub forwards as
-        ``shared_moment_updated``.
-        """
-        if callback and callback not in self._shared_moment_listeners:
-            self._shared_moment_listeners.append(callback)
-
-    def _notify_shared_moment_added(self, row: Any) -> None:
-        payload = row.to_dict() if hasattr(row, "to_dict") else {"id": row}
-        self._notify_shared_moment({"moment": payload})
-
-    def _notify_shared_moment(self, patch: dict[str, Any]) -> None:
-        for listener in list(self._shared_moment_listeners):
-            try:
-                listener(patch)
-            except Exception:
-                log.debug("shared-moment listener raised", exc_info=True)
-
-    def add_relationship_axes_listener(
-        self, callback: Callable[[dict[str, Any]], None],
-    ) -> None:
-        """Register a ``callback(state)`` for debounced axes updates.
-
-        Fires only when at least one axis has drifted ≥ 0.05 from the
-        last broadcast value, so a noisy chat doesn't flood the WS.
-        """
-        if callback and callback not in self._relationship_axes_listeners:
-            self._relationship_axes_listeners.append(callback)
-
-    def _maybe_notify_axes(self, state: Any) -> None:
-        """Broadcast axes state when any axis crossed a 0.05 step."""
-        try:
-            current = {
-                "closeness": float(state.closeness),
-                "humor": float(state.humor),
-                "trust": float(state.trust),
-                "comfort": float(state.comfort),
-            }
-        except Exception:
-            return
-        last = self._axes_last_broadcast
-        changed = any(
-            abs(current[k] - float(last.get(k, 0.0))) >= 0.05 for k in current
-        )
-        if not changed and self._axes_last_broadcast.get("_initialised"):
-            return
-        self._axes_last_broadcast = dict(current)
-        self._axes_last_broadcast["_initialised"] = 1.0
-        payload = {
-            "user_id": getattr(state, "user_id", self._user_id),
-            **current,
-            "updated_at": getattr(state, "updated_at", ""),
-        }
-        for listener in list(self._relationship_axes_listeners):
-            try:
-                listener(payload)
-            except Exception:
-                log.debug("axes listener raised", exc_info=True)
-
-    # ── Shared moments public API (consumed by REST layer) ──────────
-
-    def list_shared_moments(
-        self,
-        *,
-        offset: int = 0,
-        limit: int = 20,
-        vibe: str | None = None,
-    ) -> dict[str, Any]:
-        store = getattr(self, "_shared_moments_store", None)
-        if store is None:
-            return {"items": [], "total": 0, "offset": int(offset), "limit": int(limit)}
-        rows, total = store.list(offset=offset, limit=limit, vibe=vibe)
-        return {
-            "items": [r.to_dict() for r in rows],
-            "total": int(total),
-            "offset": int(offset),
-            "limit": int(limit),
-        }
-
-    def add_shared_moment(
-        self,
-        *,
-        summary: str,
-        vibe: str,
-        when: str | None = None,
-        source: str = "manual",
-        source_message_id: int | None = None,
-    ) -> dict[str, Any] | None:
-        store = getattr(self, "_shared_moments_store", None)
-        if store is None:
-            return None
-        row = store.add(
-            summary=summary,
-            vibe=vibe,
-            when=when,
-            source=source,
-            source_session=self.session_key,
-            source_message_id=source_message_id,
-        )
-        if row is None:
-            return None
-        self._notify_shared_moment_added(row)
-        return row.to_dict()
-
-    def update_shared_moment(
-        self,
-        moment_id: int,
-        *,
-        summary: str | None = None,
-        vibe: str | None = None,
-        when: str | None = None,
-        pinned: bool | None = None,
-    ) -> dict[str, Any] | None:
-        store = getattr(self, "_shared_moments_store", None)
-        if store is None:
-            return None
-        row = store.update(
-            int(moment_id),
-            summary=summary,
-            vibe=vibe,
-            when=when,
-            pinned=pinned,
-        )
-        if row is None:
-            return None
-        payload = row.to_dict()
-        self._notify_shared_moment({"moment": payload})
-        return payload
-
-    def delete_shared_moment(self, moment_id: int) -> bool:
-        store = getattr(self, "_shared_moments_store", None)
-        if store is None:
-            return False
-        ok = store.delete(int(moment_id))
-        if ok:
-            self._notify_shared_moment({"deleted_moment_id": int(moment_id)})
-        return ok
-
-    def mark_message_as_moment(
-        self,
-        message_id: int,
-        *,
-        vibe: str = "general",
-    ) -> dict[str, Any] | None:
-        """Promote an existing chat message to a shared_moment.
-
-        Looks up the message by id, builds a "Jacob and I…" summary from
-        its content (capped at 200 chars), and writes a pinned moment.
-        """
-        store = getattr(self, "_shared_moments_store", None)
-        if store is None:
-            return None
-        try:
-            rows = self._chat_db.execute_fetchone(
-                "SELECT session_id, role, content, created_at "
-                "FROM messages WHERE id = ?",
-                (int(message_id),),
-            )
-        except Exception:
-            log.debug("mark_message_as_moment fetch failed", exc_info=True)
-            return None
-        if rows is None:
-            return None
-        _session_id, role, content, created_at = rows
-        text = str(content or "").strip()
-        if len(text) < 4:
-            return None
-        # Build a third-person summary depending on who said it. The user
-        # can always edit the summary afterwards in the Together tab.
-        if str(role) == "user":
-            summary = f"Jacob said: {text[:160]}".strip()
-        elif str(role) == "assistant":
-            summary = f"I said to Jacob: {text[:160]}".strip()
-        else:
-            summary = text[:200]
-        row = store.add(
-            summary=summary,
-            vibe=vibe,
-            when=str(created_at) if created_at else None,
-            source="manual",
-            confidence=1.0,
-            source_message_ids=[int(message_id)],
-            source_session=self.session_key,
-            source_message_id=int(message_id),
-            pinned=True,
-        )
-        if row is None:
-            return None
-        self._notify_shared_moment_added(row)
-        return row.to_dict()
-
-    def get_relationship_axes(self) -> dict[str, Any]:
-        store = getattr(self, "_relationship_axes_store", None)
-        if store is None:
-            return {
-                "user_id": self._user_id,
-                "closeness": 0.0,
-                "humor": 0.0,
-                "trust": 0.0,
-                "comfort": 0.0,
-                "updated_at": "",
-                "enabled": False,
-            }
-        try:
-            state = store.get(self._user_id)
-        except Exception:
-            log.debug("axes get failed", exc_info=True)
-            return {
-                "user_id": self._user_id,
-                "closeness": 0.0,
-                "humor": 0.0,
-                "trust": 0.0,
-                "comfort": 0.0,
-                "updated_at": "",
-                "enabled": True,
-            }
-        payload = state.to_payload()
-        payload["enabled"] = bool(
-            getattr(self._settings.agent, "relationship_axes_enabled", True),
-        )
-        return payload
-
-    def get_together_summary(self) -> dict[str, Any]:
-        """Combined snapshot for the Together UI tab."""
-        # Relationship phase + counts.
-        tracker = getattr(self, "_relationship_tracker", None)
-        rel_state: Any = None
-        if tracker is not None:
-            try:
-                rel_state = tracker.store.get(self._user_id)  # type: ignore[attr-defined]
-            except Exception:
-                rel_state = None
-        try:
-            from app.core.relationship import _MILESTONES, phase_for
-        except Exception:
-            _MILESTONES = ()  # type: ignore[assignment]
-            def phase_for(*_a: Any, **_kw: Any) -> str:  # type: ignore[no-redef]
-                return "new"
-
-        phase = "new"
-        if rel_state is not None:
-            try:
-                phase = phase_for(rel_state)
-            except Exception:
-                phase = "new"
-
-        # Anniversary check.
-        anniversary_payload: dict[str, Any] | None = None
-        store = getattr(self, "_shared_moments_store", None)
-        if (
-            store is not None
-            and bool(getattr(self._settings.agent, "anniversary_surfacing_enabled", True))
-        ):
-            try:
-                from datetime import datetime, timezone
-
-                from app.core.anniversary import pick_anniversary
-
-                match = pick_anniversary(
-                    store.iter_all(), now=datetime.now(timezone.utc),
-                )
-                if match is not None:
-                    anniversary_payload = {
-                        "moment_id": match.moment_id,
-                        "summary": match.summary,
-                        "vibe": match.vibe,
-                        "days_ago": match.days_ago,
-                        "window_label": match.window_label,
-                    }
-            except Exception:
-                log.debug("together anniversary failed", exc_info=True)
-
-        # Milestones list with crossed-off dates (when known).
-        milestones: list[dict[str, Any]] = []
-        last_milestone_label = None
-        last_milestone_at = None
-        if rel_state is not None:
-            last_milestone_label = getattr(rel_state, "milestone_label", None)
-            last_milestone_at = getattr(rel_state, "last_milestone_at", None)
-        for label, _turns, _days in _MILESTONES:
-            milestones.append({
-                "label": label,
-                "human": label.replace("_", " "),
-                "crossed": label == last_milestone_label,
-                "crossed_at": last_milestone_at if label == last_milestone_label else None,
-            })
-
-        # Days known / counts.
-        first_seen = getattr(rel_state, "first_seen_at", None) if rel_state else None
-        days_known = 0
-        if first_seen:
-            try:
-                from datetime import datetime, timezone
-
-                dt = datetime.fromisoformat(str(first_seen).replace("Z", "+00:00"))
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
-                days_known = int(
-                    (datetime.now(timezone.utc) - dt).total_seconds() // 86400
-                )
-            except Exception:
-                days_known = 0
-
-        return {
-            "phase": phase,
-            "days_known": int(days_known),
-            "total_turns": int(getattr(rel_state, "total_turns", 0) or 0)
-            if rel_state else 0,
-            "total_sessions": int(getattr(rel_state, "total_sessions", 0) or 0)
-            if rel_state else 0,
-            "first_seen_at": first_seen,
-            "milestones": milestones,
-            "axes": self.get_relationship_axes(),
-            "anniversary_today": anniversary_payload,
-            "recent_moments_count": (
-                store.count() if store is not None else 0
-            ),
-        }
-
-    def note_gift_received(self) -> None:
-        """Hook: world layer calls this when Jacob just gave Aiko an item.
-
-        Sets a single-turn flag consumed by the next ``_post_turn_inner_life``
-        so the axes updater and moment detector see the signal.
-        """
-        self._last_turn_gift_received = True
-
-    def note_promise_kept(self) -> None:
-        """Hook: future ``promise → done`` transition will call this."""
-        self._last_turn_promise_kept = True
-
-    def update_world_state(
-        self,
-        *,
-        location_id: int | None | object = ...,
-        posture: str | None = None,
-        activity: str | None = None,
-        mood_note: str | None = None,
-    ) -> dict[str, Any] | None:
-        store = self._world_store
-        if store is None:
-            return None
-        try:
-            state = store.set_state(
-                location_id=location_id,
-                posture=posture,
-                activity=activity,
-                mood_note=mood_note,
-            )
-        except Exception:
-            log.debug("world set_state failed", exc_info=True)
-            return None
-        snap = state.to_dict()
-        self._notify_world({"state": snap})
-        return snap
-
-    def add_world_location(
-        self,
-        *,
-        slug: str | None = None,
-        name: str,
-        description: str = "",
-        position: int | None = None,
-    ) -> dict[str, Any] | None:
-        store = self._world_store
-        if store is None:
-            return None
-        loc = store.add_location(
-            slug=slug, name=name, description=description, position=position,
-        )
-        if loc is None:
-            return None
-        snap = loc.to_dict()
-        self._notify_world({"location": snap})
-        return snap
-
-    def update_world_location(
-        self,
-        location_id: int,
-        *,
-        name: str | None = None,
-        description: str | None = None,
-        position: int | None = None,
-    ) -> dict[str, Any] | None:
-        store = self._world_store
-        if store is None:
-            return None
-        loc = store.update_location(
-            int(location_id),
-            name=name,
-            description=description,
-            position=position,
-        )
-        if loc is None:
-            return None
-        snap = loc.to_dict()
-        self._notify_world({"location": snap})
-        return snap
-
-    def delete_world_location(self, location_id: int) -> bool:
-        store = self._world_store
-        if store is None:
-            return False
-        ok = store.remove_location(int(location_id))
-        if ok:
-            self._notify_world({"deleted_location_id": int(location_id)})
-            # Refresh items-with-cleared-location and state in one batch so
-            # the UI reconciles in a single render pass.
-            self._notify_world({"snapshot": store.snapshot()})
-        return ok
-
-    def add_world_item(
-        self,
-        *,
-        name: str,
-        kind: str = "other",
-        slug: str | None = None,
-        description: str = "",
-        location_id: int | None = None,
-        consumable: bool = False,
-        quantity: int = 1,
-        state: dict[str, Any] | None = None,
-        given_by: str | None = None,
-    ) -> dict[str, Any] | None:
-        store = self._world_store
-        if store is None:
-            return None
-        result = store.add_item(
-            name=name,
-            kind=kind,
-            slug=slug,
-            description=description,
-            location_id=location_id,
-            consumable=consumable,
-            quantity=quantity,
-            state=state,
-            given_by=given_by,
-        )
-        if result is None:
-            return None
-        item, _created = result
-        snap = item.to_dict()
-        self._notify_world({"item": snap})
-        return snap
-
-    def update_world_item(
-        self,
-        item_id: int,
-        *,
-        name: str | None = None,
-        description: str | None = None,
-        kind: str | None = None,
-        location_id: int | None | object = ...,
-        quantity: int | None = None,
-        state: dict[str, Any] | None = None,
-    ) -> dict[str, Any] | None:
-        store = self._world_store
-        if store is None:
-            return None
-        item = store.update_item(
-            int(item_id),
-            name=name,
-            description=description,
-            kind=kind,
-            location_id=location_id,
-            quantity=quantity,
-            state=state,
-        )
-        if item is None:
-            return None
-        snap = item.to_dict()
-        self._notify_world({"item": snap})
-        return snap
-
-    def consume_world_item(
-        self, item_id: int, *, amount: int = 1,
-    ) -> dict[str, Any] | None:
-        store = self._world_store
-        if store is None:
-            return None
-        item, consumed = store.consume_item(int(item_id), amount=int(amount))
-        if consumed <= 0:
-            return None
-        if item is None:
-            self._notify_world({"deleted_item_id": int(item_id)})
-            return {"deleted_item_id": int(item_id), "consumed": consumed}
-        snap = item.to_dict()
-        self._notify_world({"item": snap})
-        return {"item": snap, "consumed": consumed}
-
-    def delete_world_item(self, item_id: int) -> bool:
-        store = self._world_store
-        if store is None:
-            return False
-        ok = store.remove_item(int(item_id))
-        if ok:
-            self._notify_world({"deleted_item_id": int(item_id)})
-        return ok
-
-    def give_item(
-        self,
-        name: str,
-        *,
-        kind: str = "food",
-        quantity: int = 1,
-        description: str = "",
-        location_slug: str | None = "kitchenette",
-        consumable: bool | None = None,
-        state: dict[str, Any] | None = None,
-    ) -> dict[str, Any] | None:
-        """Drop an item into Aiko's room, attributed to the user.
-
-        This is the "give cookie" surface the UI calls. Defaults to
-        consumable food in the kitchenette; the room's render block will
-        surface it next turn so Aiko notices naturally without us
-        injecting any system message.
-        """
-        store = self._world_store
-        if store is None:
-            return None
-        target_loc_id: int | None = None
-        if location_slug:
-            loc = store.get_location(location_slug)
-            if loc is None:
-                # Fall back to any existing location so the gift always
-                # lands somewhere.
-                locations = store.list_locations()
-                if locations:
-                    target_loc_id = locations[0].id
-            else:
-                target_loc_id = loc.id
-        is_consumable = (
-            bool(consumable) if consumable is not None
-            else (kind or "").strip().lower() == "food"
-        )
-        added = self.add_world_item(
-            name=name,
-            kind=kind,
-            description=description,
-            location_id=target_loc_id,
-            consumable=is_consumable,
-            quantity=quantity,
-            state=state,
-            given_by="user",
-        )
-        # Schema v7: nudge the next turn's relationship-axes update + the
-        # moment-detector gate. The flag is consumed exactly once.
-        try:
-            self.note_gift_received()
-        except Exception:
-            pass
-        return added
-
-    def reseed_world(self, *, force: bool = True) -> dict[str, Any] | None:
-        """Wipe the room and re-seed the rich default. Debug-only path."""
-        store = self._world_store
-        if store is None:
-            return None
-        store.seed_default(force=force)
-        snap = store.snapshot()
-        self._notify_world({"snapshot": snap})
-        return snap
+    # ── World, shared moments, axes, get_together_summary ──────────
+    # Methods now live in app/core/session/world_mixin.py.
 
     def add_message_listener(self, callback: Callable[[str, str], None]) -> None:
         if callback and callback not in self._message_listeners:
@@ -3577,6 +2283,11 @@ class SessionController:
         cleaned = sanitize_user_text(user_text or "")
         if not cleaned:
             return ""
+        # Schema v8: refresh the activity timestamp so the idle worker
+        # scheduler defers background sweeps while the user is actively
+        # chatting (typed turns also count; voice paths touch the gate
+        # through the Live-mode short-circuit in :meth:`_is_user_idle`).
+        self._touch_user_activity()
 
         if on_generation_status:
             on_generation_status("AI is generating response...")
@@ -4384,6 +3095,10 @@ class SessionController:
                 embedding=emb,
                 salience=0.6,
                 source_session=self.session_key,
+                # Schema v8: relationship milestones are real,
+                # confirmed events. Long_term so they survive the
+                # scratchpad TTL even if RAG never re-surfaces them.
+                tier="long_term",
             )
         except Exception:
             log.debug("milestone memory insert failed", exc_info=True)
@@ -5117,6 +3832,95 @@ class SessionController:
             except Exception:
                 log.debug("mood state listener raised", exc_info=True)
 
+    # ── Schema v8 revival detection (E2) ────────────────────────────
+
+    # Tiny stopword list scoped to the revival overlap check. We only
+    # need to suppress the most common "free" matches so a memory and
+    # an assistant reply don't pass the >=3-word threshold purely on
+    # filler. Not a full NLP pipeline -- the threshold itself does the
+    # heavy lifting.
+    _REVIVAL_STOPWORDS: frozenset[str] = frozenset({
+        "the", "a", "an", "and", "or", "but", "if", "then", "so", "of",
+        "in", "on", "at", "to", "for", "with", "by", "as", "is", "are",
+        "was", "were", "be", "been", "being", "do", "does", "did", "have",
+        "has", "had", "you", "your", "i", "me", "my", "we", "our", "us",
+        "he", "she", "they", "them", "this", "that", "these", "those",
+        "it", "its", "from", "about", "into", "than", "what", "when",
+        "where", "who", "how", "why", "not", "no", "yes", "ok", "okay",
+        "just", "really", "very", "much", "like", "would", "could",
+        "should", "will", "can", "may", "might", "also", "too", "any",
+        "all", "some", "more", "most", "less", "such", "there", "here",
+        "now", "again", "still", "even", "only", "yet",
+    })
+
+    @classmethod
+    def _revival_tokens(cls, text: str) -> set[str]:
+        """Lowercase content-word set used by the keyword overlap check.
+
+        Tokens shorter than 4 chars and items in :attr:`_REVIVAL_STOPWORDS`
+        are dropped -- short / common words light up too many incidental
+        overlaps to be useful as a revival signal.
+        """
+        if not text:
+            return set()
+        import re
+
+        raw = re.findall(r"[A-Za-z][A-Za-z0-9'_-]+", str(text).lower())
+        out: set[str] = set()
+        for token in raw:
+            token = token.strip("'-_")
+            if len(token) < 4:
+                continue
+            if token in cls._REVIVAL_STOPWORDS:
+                continue
+            out.add(token)
+        return out
+
+    def _mark_revived_memories(self, *, assistant_text: str) -> None:
+        """Reward memories Aiko actually cited in her reply with revival.
+
+        Reads the most recent surfaced-IDs snapshot from the RAG
+        retriever, runs the keyword-overlap check between the reply
+        text and each surfaced memory's content, and calls
+        :meth:`MemoryStore.mark_revived` on the qualifying ids. Skipped
+        entirely when tiers are disabled or no memories surfaced.
+        """
+        if not assistant_text or not self._memory_settings.tiers_enabled:
+            return
+        store = self._memory_store
+        if store is None:
+            return
+        retriever = getattr(self, "_rag_retriever", None)
+        if retriever is None:
+            return
+        ids = getattr(retriever, "last_surfaced_memory_ids", None)
+        if not ids:
+            return
+        threshold = max(1, int(self._memory_settings.revival_min_word_overlap))
+        reply_tokens = self._revival_tokens(assistant_text)
+        if len(reply_tokens) < threshold:
+            return
+        delta = float(self._memory_settings.revival_per_hit)
+        if delta <= 0:
+            return
+        revived: list[int] = []
+        for mem_id in ids:
+            mem = store.get(int(mem_id))
+            if mem is None:
+                continue
+            mem_tokens = self._revival_tokens(mem.content)
+            if len(reply_tokens & mem_tokens) >= threshold:
+                revived.append(int(mem_id))
+        if revived:
+            try:
+                store.mark_revived(revived, delta=delta)
+                log.info(
+                    "revival: bumped %d memory revival_scores (delta=%.2f)",
+                    len(revived), delta,
+                )
+            except Exception:
+                log.debug("mark_revived failed", exc_info=True)
+
     def _post_turn_inner_life(
         self,
         *,
@@ -5161,6 +3965,15 @@ class SessionController:
             "circadian_period": self.current_circadian_period(),
             "resolved_outfit": self.resolve_auto_outfit(),
         })
+
+        # Schema v8: bump revival_score on memories Aiko actually cited.
+        # The RAG retriever stashed the surfaced IDs after its mark_used
+        # pass; we compare the assistant reply's keyword set against each
+        # memory's content and reward overlap above the configured floor.
+        try:
+            self._mark_revived_memories(assistant_text=assistant_text)
+        except Exception:
+            log.debug("memory revival mark failed", exc_info=True)
 
         # Phase 2c: schedule a reflection during TTS playback.
         worker = getattr(self, "_reflection_worker", None)
@@ -5919,36 +4732,44 @@ class SessionController:
         from app.tts.pocket_tts_service import PocketTtsService
         return PocketTtsService(settings.tts, output_device=output_device)
 
-    # ── Memory decay daemon ─────────────────────────────────────────
+    # ── IdleWorkerScheduler activity gate (schema v8 / G1) ──────────
 
-    def _memory_decay_loop(self) -> None:
-        """Tick once a day to gently decay salience and prune the store.
+    def _touch_user_activity(self) -> None:
+        """Mark "the user just did something". Resets the idle gate.
 
-        Wakes every 60s so shutdown can interrupt promptly. The actual decay
-        only fires once 24h have elapsed since the last tick.
+        Called from the turn lifecycle and from incoming WS / REST
+        traffic. The :class:`IdleWorkerScheduler` consults
+        :meth:`_is_user_idle` before running a worker; a recent touch
+        defers background work so it doesn't compete with the active
+        conversation.
         """
-        store = self._memory_store
-        if store is None:
-            return
-        interval_seconds = 24 * 60 * 60
-        last_tick = time.monotonic()
-        while not self._memory_decay_stop.wait(60.0):
-            now = time.monotonic()
-            if now - last_tick < interval_seconds:
-                continue
-            last_tick = now
-            try:
-                # Small daily decrement; matches the 0.02/day default in
-                # MemoryStore.decay's signature.
-                store.decay(by=0.02)
-            except Exception:
-                log.debug("memory decay failed", exc_info=True)
-            try:
-                pruned = store.prune()
-                if pruned:
-                    log.info("memory decay: pruned %d low-salience memories", pruned)
-            except Exception:
-                log.debug("memory prune failed", exc_info=True)
+        self._last_user_activity_at = time.monotonic()
+
+    def _is_user_idle(self) -> bool:
+        """Return True when it's safe to run a background worker.
+
+        Three rules:
+          * Live mode (voice) is **always** considered busy. The
+            speaking window already runs the speaking-window scheduler;
+            stacking idle workers on top would compete for CPU.
+          * A turn currently in progress -> not idle.
+          * Less than ``idle_worker_quiet_threshold_seconds`` since the
+            last user activity -> not idle.
+        """
+        try:
+            if getattr(self, "_live_mode_enabled", False):
+                return False
+            if getattr(self, "_turn_in_progress", False):
+                return False
+        except Exception:
+            return True
+        threshold = float(
+            self._memory_settings.idle_worker_quiet_threshold_seconds
+        )
+        elapsed = time.monotonic() - float(
+            getattr(self, "_last_user_activity_at", 0.0) or 0.0
+        )
+        return elapsed >= threshold
 
     # ── Shutdown ────────────────────────────────────────────────────
 
@@ -5989,12 +4810,11 @@ class SessionController:
             self._tts.stop()
         except Exception:
             pass
-        try:
-            self._memory_decay_stop.set()
-            if self._memory_decay_thread is not None:
-                self._memory_decay_thread.join(timeout=1.5)
-        except Exception:
-            log.debug("memory decay stop failed", exc_info=True)
+        if getattr(self, "_idle_scheduler", None) is not None:
+            try:
+                self._idle_scheduler.stop(timeout=1.5)
+            except Exception:
+                log.debug("idle worker scheduler stop failed", exc_info=True)
         if getattr(self, "_message_indexer", None) is not None:
             try:
                 self._message_indexer.stop()
