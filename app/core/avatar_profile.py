@@ -175,6 +175,29 @@ class AvatarProfile:
     # on rigs without a stylised mouth overlay (the plain
     # ``ParamMouthOpenY`` does not belong here).
     mouth_overlay_param_ids: list[str] = field(default_factory=list)
+    # Expression filenames whose param list intersects
+    # ``mouth_overlay_param_ids``. Derived purely from the other two
+    # fields, but exposed explicitly so:
+    #   - tests can assert "is ``lzx`` recognised as a mouth blocker?";
+    #   - any future channel can quickly answer "would firing this
+    #     expression visually compete with lip-sync?" without re-walking
+    #     ``expression_params`` for every check.
+    # For Alexia this is ``["lzx"]`` (Param54 = 咧嘴笑 = toothy grin).
+    mouth_blocking_expressions: list[str] = field(default_factory=list)
+    # Expression filenames that only render correctly when the active
+    # outfit is one of the listed capability names. Each key is the
+    # expression name (without the ``.exp3.json`` suffix); each value
+    # is the allow-list of outfit capability names. Empty list = no
+    # gate. The renderer's expression dispatcher consults this before
+    # firing ``adapter.expression(name)`` and falls back to the
+    # neighbour chain when the gate fails.
+    #
+    # For Alexia: ``{"zs1": ["day_clothes"]}`` because the crossed-arms
+    # pose explicitly zeroes the alternate-outfit envelope (Param16=0,
+    # Param17=0) in its exp3, meaning the rig only draws the pose
+    # when the body is in day clothes. Firing ``zs1`` while pajamas
+    # are active produces no visible change (silent no-op).
+    outfit_gated_expressions: dict[str, list[str]] = field(default_factory=dict)
     # All param IDs whose cdi3 ``Name`` matched a cat-tail synonym,
     # in declaration order. The renderer uses this to drive the
     # arousal-modulated tail wag without hardcoding segment counts.
@@ -230,17 +253,32 @@ _CAPABILITY_SYNONYMS: dict[str, tuple[str, ...]] = {
     "cry":         ("哭", "cry", "tear"),
     "angry_marks": ("生气", "angry", "sq", "shengqi"),
     "grin":        ("咧嘴笑", "grin", "smirk"),
-    "sticker":     ("bbt",),  # generic sticker overlay slot
-    # Accessories. ``glasses`` deliberately does NOT include the bare
-    # word ``glasses`` — that would substring-match "Sunglasses" too,
-    # and on Alexia (after translation) the sunglasses param is
-    # declared before the eyeglasses param so it would silently steal
-    # the binding. ``eyeglasses`` is unique to the regular pair.
-    "glasses":     ("带眼镜", "eyeglasses", "dyj"),
-    "sunglasses":  ("墨镜", "sunglasses", "mojing", "mj"),
+    # ── Accessories ────────────────────────────────────────────────
+    # ``lollipop`` — ``bbt`` (Param60) draws a candy/lollipop INSIDE
+    # her mouth (additive 0-30). Previously misidentified as a generic
+    # "sticker overlay slot" and then as a dramatic cry overlay; the
+    # rig's actual artwork is a prop, so it belongs in the accessory
+    # space alongside glasses, not the emotion / reaction space. See
+    # ``docs/alexia-model-notes.md`` §3a.
+    "lollipop":    ("bbt",),
+    # ``eyeglasses`` (proper pair worn on the face, Param64) is
+    # deliberately separate from ``head_sunglasses`` (Param11, sits
+    # on top of her head like a hair accessory). The substring list
+    # avoids the bare word "glasses" so "Sunglasses" doesn't get
+    # cross-matched.
+    "eyeglasses":  ("带眼镜", "eyeglasses", "dyj"),
+    # ``head_sunglasses`` — ``mj`` (Param11). The rig draws the
+    # sunglasses ON TOP of the hair, not on the eyes; this is a
+    # styling accessory, not an obstruction. Renamed from the
+    # earlier ``sunglasses`` capability so the catalogue is honest
+    # about where the artwork actually lives.
+    "head_sunglasses": ("墨镜", "sunglasses", "mojing", "mj"),
     "eye_color_a": ("眼睛颜色", "eye color", "yjys1", "yjys"),
     "eye_color_b": ("眼睛颜色2", "eye color 2", "yjys2"),
-    "pose":        ("姿势", "pose", "zs"),
+    # ``crossed_arms`` — ``zs1`` (Param61). Only renders when the
+    # active outfit is day_clothes; the exp3 explicitly zeroes
+    # Param16/17 to enforce the gate.
+    "crossed_arms": ("姿势", "pose", "zs", "crossed", "arms"),
     # Cat-girl bits
     "cat_tail":    ("猫尾", "cat_tail", "tail"),
     "cat_ears":    ("耳朵", "cat ear", "neko"),
@@ -307,12 +345,21 @@ _MOUTH_OVERLAY_SYNONYMS: tuple[str, ...] = (
 # model uses different filenames the binding still works because the
 # linking is by **capability**, not by literal filename.
 _ALEXIA_EXPR_TO_CAPABILITY: dict[str, str] = {
-    "bbt":   "sticker",
-    "dyj":   "glasses",
+    # ``bbt`` was misclassified twice before (happy sticker, then cry
+    # overlay). Visual audit against the live rig (Cubism Viewer
+    # Standalone for SDK 5) confirmed it draws a lollipop / candy
+    # prop in the mouth. It lives in the accessory tier now, NOT
+    # the emotion tier — firing it for the ``cry`` reaction shoved a
+    # lollipop into Aiko's mouth mid-sob. See
+    # ``docs/alexia-model-notes.md`` §3a.
+    "bbt":   "lollipop",
+    "dyj":   "eyeglasses",
     "h":     "sweat",
     "k":     "cry",
     "lh":    "blush",
-    "mj":    "sunglasses",
+    # ``mj`` sits ON the head (hair-perched), not on the eyes. The
+    # capability is renamed to make that explicit.
+    "mj":    "head_sunglasses",
     "sq":    "angry_marks",
     "wh":    "question",
     "xxy":   "stars",
@@ -352,7 +399,7 @@ _ALEXIA_EXPR_TO_CAPABILITY: dict[str, str] = {
     "yfmz":  "pajamas",
     "yjys1": "eye_color_a",
     "yjys2": "eye_color_b",
-    "zs1":   "pose",
+    "zs1":   "crossed_arms",
 }
 
 
@@ -361,17 +408,29 @@ _ALEXIA_EXPR_TO_CAPABILITY: dict[str, str] = {
 # (without the ``.exp3.json`` suffix). Empty string = "no overlay,
 # rely on eye-smile / mouth-form for the look".
 #
-# NOTE on ``bbt`` (Param60): originally mis-mapped as a generic
-# "happy sticker" overlay for cheerful / amused. Visual inspection on
-# the live rig revealed the overlay actually renders as a more
-# pronounced / dramatic cry face decoration (the pinyin ``bbt`` is
-# opaque, and Param60 sits next to ``Param59 = Cry`` which was the
-# clue we missed). After the audit:
+# Visual identity audit (third and hopefully final pass, anchored on
+# the user's live ``Cubism Viewer Standalone`` observation):
 #
-#   - ``amused`` / ``cheerful`` moved to ``lzx`` (Param54 = 咧嘴笑
-#     = toothy grin) — the only positive overlay the rig ships.
-#   - ``bbt`` is now the visual for the new canonical ``cry`` reaction
-#     (more intense than ``sad`` → ``k`` / Param59).
+#   - ``bbt`` (Param60) is a **lollipop in the mouth**, not a cry
+#     decoration. It moved out of the emotion map entirely (no
+#     reaction maps to it) and is now an accessory under the
+#     ``lollipop`` capability. Previous mappings to ``cry`` shoved a
+#     lollipop into Aiko's mouth mid-sob.
+#   - ``lzx`` (Param54 = 咧嘴笑) is a closed-mouth toothy grin that
+#     visually competes with lip-sync. The frontend
+#     ``ExpressionChannel`` tapers Param54 against live audio
+#     amplitude (``mouth_overlay_param_ids``), so a cheerful turn
+#     reads as a soft smile during speech and snaps back to the full
+#     grin during silence. Keep ``cheerful`` / ``amused`` on ``lzx``;
+#     the per-param taper handles the rig's mouth-closure quirk.
+#   - ``y`` (Param56 = Dizzy) draws spiral / dizzy eyes — it's
+#     **confused**, not tired. ``tired`` no longer maps to it; the
+#     new canonical reaction ``confused`` does.
+#   - ``zs1`` (Param61 = Pose 1, crossed arms) only renders with day
+#     clothes — the exp3 explicitly zeroes Param16/17. ``playful``
+#     still points at it, but ``outfit_gated_expressions`` makes the
+#     dispatcher fall through to the neighbour chain when the active
+#     outfit is pajamas.
 #
 # ``[[overlay:grin]]`` still pulses ``lzx`` transiently on demand —
 # the OverlayChannel re-applies the persistent reaction afterwards,
@@ -396,16 +455,39 @@ _ALEXIA_REACTION_MAP: dict[str, str] = {
     "concerned":    "k",
     "sad":          "k",
     "melancholy":   "k",
-    # ``cry`` is the more dramatic / pronounced cry overlay (Param60 =
-    # bbt). Different param from ``sad``/``k`` (Param59 = "Cry" /
-    # tear streaks) so we get a visibly distinct distressed face for
-    # the most intense distress reaction. See §3a in
-    # ``docs/alexia-model-notes.md`` for the bbt visual audit.
-    "cry":          "bbt",
-    "tired":        "y",
+    # ``cry`` falls back to ``sad`` via ``_REACTION_NEIGHBOURS`` and
+    # resolves to ``k`` (Param59 = subtle tear streaks). The dramatic
+    # cry-decoration slot we thought existed turned out to be a
+    # lollipop prop (see ``bbt`` notes above). Mapping ``cry`` to
+    # an empty string preserves the semantic difference at the LLM
+    # layer (Aiko still emits ``[[reaction:cry]]`` for intense
+    # distress) while routing it to the visually correct overlay.
+    "cry":          "",
+    # ``tired`` no longer points at ``y`` (which is dizzy/confused).
+    # Empty string lets the neighbour chain fall through to ``calm``
+    # → ``melancholy`` → ``neutral``, while ``AmbientBodyChannel``'s
+    # arousal-driven body slump carries the weary visual.
+    "tired":        "",
+    # ``confused`` is the new canonical reaction for ``y``'s
+    # spiral-eye dizzy look.
+    "confused":     "y",
     "neutral":      "",
     "angry":        "sq",
     "frustrated":   "sq",
+    # Phase 5 (expression overhaul): the three new shades the visual
+    # audit surfaced. ``embarrassed`` → ``lh`` (the shy / inward-
+    # tilted smile) is the closest direct hit; the persona expects
+    # the LLM to stack ``[[reaction:embarrassed+blush]]`` for the
+    # full blush+smile beat, where the ``+blush`` component fires a
+    # Param58 overlay pulse on top. ``nervous`` → ``yfmz``
+    # (sweat-meets-mouth-anxiety) is the closest single-expression
+    # match; ``[[reaction:nervous+sweat]]`` adds the Param44 sweat
+    # drop. ``defiant`` → ``mj`` (head_sunglasses also drives a
+    # stubborn-pout shape on this rig); the LLM is encouraged to
+    # stack with ``+pout`` overlays for the full hmph beat.
+    "embarrassed": "lh",
+    "nervous":     "yfmz",
+    "defiant":     "mj",
 }
 
 
@@ -501,6 +583,12 @@ def from_disk(root: Path | str, *, display_name: str = "") -> AvatarProfile:
     )
     expression_params = _build_expression_params(expressions, root_path)
     mouth_overlay_param_ids = _detect_mouth_overlay_param_ids(parameters)
+    mouth_blocking_expressions = _detect_mouth_blocking_expressions(
+        expression_params, mouth_overlay_param_ids,
+    )
+    outfit_gated_expressions = _detect_outfit_gated_expressions(
+        expressions, root_path,
+    )
     idle_motion_group = _pick_motion_group(motions, ("idle", "tick", "loop"))
     talk_motion_group = _pick_motion_group(motions, ("tap", "talk", "anim", "story"))
 
@@ -522,6 +610,8 @@ def from_disk(root: Path | str, *, display_name: str = "") -> AvatarProfile:
         outfits=outfits,
         expression_params=expression_params,
         mouth_overlay_param_ids=mouth_overlay_param_ids,
+        mouth_blocking_expressions=mouth_blocking_expressions,
+        outfit_gated_expressions=outfit_gated_expressions,
         cat_tail_param_ids=cat_tail_param_ids,
         cat_ear_param_ids=cat_ear_param_ids,
     )
@@ -858,6 +948,103 @@ def _detect_mouth_overlay_param_ids(
         if any(syn.lower() in label for syn in _MOUTH_OVERLAY_SYNONYMS):
             out.append(pid)
             seen.add(pid)
+    return out
+
+
+def _detect_mouth_blocking_expressions(
+    expression_params: dict[str, list[ExpressionParam]],
+    mouth_overlay_param_ids: list[str],
+) -> list[str]:
+    """Return expression names whose params touch a mouth-overlay id.
+
+    Derived from :func:`_detect_mouth_overlay_param_ids` — any
+    expression whose ``(param_id, value)`` bindings include one of the
+    mouth-overlay params is recorded here so callers can answer "does
+    firing this expression visually compete with lip-sync?" without
+    re-walking the expression-param map.
+
+    Empty list when the rig has no mouth-overlay params at all (in
+    which case lip-sync gating is moot). Order matches expression
+    declaration order so the result is deterministic.
+    """
+    if not mouth_overlay_param_ids:
+        return []
+    overlay_set = set(mouth_overlay_param_ids)
+    out: list[str] = []
+    for name, params in expression_params.items():
+        if any(p.param_id in overlay_set for p in params):
+            out.append(name)
+    return out
+
+
+def _detect_outfit_gated_expressions(
+    expressions: list[ExpressionRef],
+    root: Path,
+) -> dict[str, list[str]]:
+    """Return ``{expression_name: [allowed_outfit_capability, ...]}``.
+
+    An expression is "outfit-gated" when its exp3 file explicitly
+    **zeroes** one or more outfit params. Zero-value entries in
+    Live2D's additive expression model are not the same as "absent"
+    — they're authored as "I require this param to be off". On
+    Alexia, ``zs1.exp3.json`` zeroes ``Param16`` and ``Param17``,
+    which means the crossed-arms pose is only meant to render when
+    the body is in day_clothes (the outfit whose binding has neither
+    param active).
+
+    Detection logic:
+
+    1. For each expression, parse the raw exp3 and collect the set
+       of param_ids whose ``Value`` is exactly ``0``.
+    2. Cross-reference those zeroed ids against the known outfit
+       capabilities' bindings (built later in the loader). Since this
+       function runs *before* outfits are built, we encode the check
+       loosely here: an expression that zeroes ANY outfit-shaped
+       param (``Param16`` / ``Param17`` for Alexia-style rigs, plus
+       the generic "Clothes" / "睡衣" / "pajama" pattern) gets a
+       day_clothes-only gate.
+
+    The detection deliberately stays simple — generic enough to
+    survive future rigs but not so clever that it produces phantom
+    gates. Expressions without zero-valued entries return no gate
+    (empty dict entry).
+    """
+    out: dict[str, list[str]] = {}
+    for expr in expressions:
+        path = root / expr.file
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            log.debug("failed to parse exp3 at %s", path, exc_info=True)
+            continue
+        raw = data.get("Parameters") or []
+        if not isinstance(raw, list):
+            continue
+        zeroed: list[str] = []
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            pid = str(entry.get("Id") or "").strip()
+            if not pid:
+                continue
+            try:
+                value = float(entry.get("Value", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if value == 0.0:
+                zeroed.append(pid)
+        if not zeroed:
+            continue
+        # Heuristic: any expression that zeroes an outfit-shape param
+        # (the canonical Alexia pair is Param16/Param17) is signalling
+        # "render me with the baseline outfit only". We hard-code the
+        # day_clothes target because that's the only outfit whose
+        # binding has zero param contributions (it's the rig's
+        # baseline). Future rigs with multiple baselines would extend
+        # this map.
+        out[expr.name] = ["day_clothes"]
     return out
 
 

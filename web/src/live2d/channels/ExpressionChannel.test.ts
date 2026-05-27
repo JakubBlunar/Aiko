@@ -294,6 +294,146 @@ describe("ExpressionChannel — backchannel hints", () => {
   });
 });
 
+describe("ExpressionChannel — auto-cascade avoids heavy expressions", () => {
+  // Regression guard for the "cheerful turn, Aiko visibly cried" bug.
+  //
+  // The thinking / backchannel cascades walk a list of candidate
+  // reactions until one is mapped on the rig. Alexia's
+  // ``reaction_mapping["thoughtful"] = ""`` (empty), so the cascade
+  // used to fall through to ``concerned`` — which on Alexia maps to
+  // ``k`` (Param59 tear streaks). The 2-4s tool-call window with
+  // voice mode = ``thinking`` then painted tears on a perfectly
+  // cheerful turn. Same for the ``concern`` backchannel.
+  //
+  // Fix: drop ``concerned`` / ``sad`` from the auto-cascade candidate
+  // lists. Explicit ``[[reaction:concerned]]`` from the LLM still
+  // resolves to the rig's mapping (intentional empathy beat).
+  function makeAlexiaLikeDeps(
+    initialSnap: Partial<ChannelStoreSnapshot> = {},
+  ): DepsBundle {
+    const clock = new FakeClock(1_000);
+    const engineState = createEngineState();
+    let snapshot: ChannelStoreSnapshot = {
+      reaction: "cheerful",
+      ttsState: "idle",
+      voiceMode: "off",
+      turnInProgress: false,
+      audioAmplitude: 0,
+      avatarOverlay: null,
+      avatarMotion: null,
+      mood: { label: "content", intensity: 0.5, valence: 0, arousal: 0.4 },
+      resolvedOutfit: "",
+      backchannelHint: "",
+      ...initialSnap,
+    };
+    // Mirror Alexia's reaction_mapping shape: ``concerned`` /
+    // ``sad`` route to ExprCry, ``thoughtful`` is unmapped, so the
+    // pre-fix cascade would cry; the post-fix cascade must not.
+    const manifest = buildManifest({
+      reaction_mapping: {
+        cheerful: "ExprGrin",
+        concerned: "ExprCry",
+        sad: "ExprCry",
+        calm: "",
+        thoughtful: "",
+        gentle: "ExprBlush",
+        warm: "ExprBlush",
+        tender: "ExprBlush",
+        serious: "",
+        neutral: "",
+      },
+      expressions: [
+        { name: "ExprGrin", file: "g.exp3.json" },
+        { name: "ExprCry", file: "k.exp3.json" },
+        { name: "ExprBlush", file: "lh.exp3.json" },
+      ],
+    });
+    return {
+      deps: {
+        now: clock.now,
+        manifest,
+        engineState,
+        getStoreSnapshot: () => snapshot,
+      },
+      clock,
+      engineState,
+      setSnapshot: (next) => {
+        snapshot = { ...snapshot, ...next };
+      },
+    };
+  }
+
+  it("thinking voice mode never falls through to a cry-mapped reaction", () => {
+    const adapter = new FakeAdapter();
+    const channel = new ExpressionChannel();
+    const { deps } = makeAlexiaLikeDeps();
+    channel.attach(adapter, deps);
+    adapter.expressionCalls.length = 0;
+
+    channel.onVoiceMode!("thinking");
+    // The cascade walked through ``thoughtful`` (empty), then must
+    // skip ``concerned`` (the bug), and either land on a soft option
+    // or no-op. The post-fix candidate list
+    // ``["thoughtful", "calm", "serious", "neutral"]`` has nothing
+    // mapped on this rig — expected: no expression write at all.
+    // Crucially, ``ExprCry`` MUST NOT appear.
+    expect(adapter.expressionCalls).not.toContain("ExprCry");
+  });
+
+  it("concern backchannel routes to soft warmth, not tears", () => {
+    const adapter = new FakeAdapter();
+    const timer = makeManualTimer();
+    const channel = new ExpressionChannel({
+      schedule: timer.schedule,
+      cancel: timer.cancel,
+    });
+    const { deps } = makeAlexiaLikeDeps();
+    channel.attach(adapter, deps);
+    adapter.expressionCalls.length = 0;
+
+    channel.onBackchannel!("concern");
+    // Post-fix candidate list is ``["gentle", "tender", "warm",
+    // "thoughtful"]`` — first hit on this rig is ``gentle`` →
+    // ``ExprBlush``. The cry expression MUST NOT appear.
+    expect(adapter.expressionCalls).toEqual(["ExprBlush"]);
+    expect(adapter.expressionCalls).not.toContain("ExprCry");
+  });
+
+  it("disagreement backchannel never falls through to a cry-mapped reaction", () => {
+    const adapter = new FakeAdapter();
+    const timer = makeManualTimer();
+    const channel = new ExpressionChannel({
+      schedule: timer.schedule,
+      cancel: timer.cancel,
+    });
+    const { deps } = makeAlexiaLikeDeps();
+    channel.attach(adapter, deps);
+    adapter.expressionCalls.length = 0;
+
+    channel.onBackchannel!("disagreement");
+    // Post-fix candidates ``["serious", "thoughtful", "neutral"]`` —
+    // none mapped on this rig, expected no write. Importantly, no
+    // ``ExprCry`` write.
+    expect(adapter.expressionCalls).not.toContain("ExprCry");
+  });
+
+  it("explicit [[reaction:concerned]] still resolves to the rig's mapping", () => {
+    // The fix MUST NOT block the LLM's intentional concerned beat.
+    // When a turn explicitly emits ``[[reaction:concerned]]`` the
+    // channel still applies ``manifest.reaction_mapping["concerned"]``
+    // (Alexia's ``k`` cry). That's a deliberate narrative choice and
+    // stays untouched — only the AUTO-cascades are filtered.
+    const adapter = new FakeAdapter();
+    const channel = new ExpressionChannel();
+    const { deps } = makeAlexiaLikeDeps();
+    channel.attach(adapter, deps);
+    adapter.expressionCalls.length = 0;
+
+    channel.onReaction!("concerned");
+    expect(adapter.expressionCalls).toEqual(["ExprCry"]);
+  });
+});
+
 describe("ExpressionChannel — onExpressionSlotReleased", () => {
   it("re-applies whatever the current target is (regression: stuck grin)", () => {
     const adapter = new FakeAdapter();
@@ -707,6 +847,151 @@ describe("ExpressionChannel — mouth-overlay lip-sync suppression", () => {
     // value is the high-arousal full-amplitude write.
     expect(grin).toBeGreaterThan(25);
     expect(grin).toBeLessThanOrEqual(30);
+  });
+});
+
+/** Build a manifest where the ``playful`` reaction maps to a
+ * day-clothes-only expression (``zs1`` for Alexia) and ``amused``
+ * sits next on the neighbour chain. The combination lets us prove
+ * the gate flips the resolved expression when the active outfit
+ * changes. */
+function makeOutfitGateDeps(initialSnap: Partial<ChannelStoreSnapshot> = {}) {
+  const clock = new FakeClock(1_000);
+  const engineState = createEngineState();
+  let snapshot: ChannelStoreSnapshot = {
+    reaction: "playful",
+    ttsState: "idle",
+    voiceMode: "off",
+    turnInProgress: false,
+    audioAmplitude: 0,
+    avatarOverlay: null,
+    avatarMotion: null,
+    mood: { label: "content", intensity: 0.5, valence: 0, arousal: 0.5 },
+    resolvedOutfit: "day",
+    backchannelHint: "",
+    expressiveness: 1,
+    ...initialSnap,
+  };
+  const manifest = buildManifest({
+    reaction_mapping: {
+      playful: "zs1",
+      amused: "lzx",
+      cheerful: "lzx",
+      neutral: "n",
+    },
+    expressions: [
+      { name: "zs1", file: "zs1.exp3.json" },
+      { name: "lzx", file: "lzx.exp3.json" },
+      { name: "n", file: "n.exp3.json" },
+    ],
+    outfit_gated_expressions: {
+      zs1: ["day_clothes"],
+    },
+  });
+  return {
+    clock,
+    engineState,
+    deps: {
+      now: clock.now,
+      manifest,
+      engineState,
+      getStoreSnapshot: () => snapshot,
+    },
+    setSnapshot: (next: Partial<ChannelStoreSnapshot>) => {
+      snapshot = { ...snapshot, ...next };
+    },
+  };
+}
+
+describe("ExpressionChannel — outfit gate", () => {
+  it("applies the gated expression when the active outfit matches", () => {
+    const adapter = new FakeAdapter();
+    const channel = new ExpressionChannel();
+    const { deps } = makeOutfitGateDeps({ resolvedOutfit: "day" });
+    channel.attach(adapter, deps);
+    // day -> day_clothes capability matches the gate -> ``zs1`` fires.
+    expect(adapter.expressionCalls).toEqual(["zs1"]);
+  });
+
+  it("falls through to the neighbour chain when the gate fails", () => {
+    const adapter = new FakeAdapter();
+    const channel = new ExpressionChannel();
+    const { deps } = makeOutfitGateDeps({ resolvedOutfit: "pajamas" });
+    channel.attach(adapter, deps);
+    // pajamas is NOT in the gate -> resolver walks
+    // ``playful`` -> ``amused`` (which maps to ``lzx``) per the
+    // reaction-neighbour chain.
+    expect(adapter.expressionCalls).toEqual(["lzx"]);
+  });
+
+  it("re-applies the resolved expression on outfit change", () => {
+    const adapter = new FakeAdapter();
+    const channel = new ExpressionChannel();
+    const { deps, setSnapshot } = makeOutfitGateDeps({
+      resolvedOutfit: "day",
+    });
+    channel.attach(adapter, deps);
+    expect(adapter.expressionCalls).toEqual(["zs1"]);
+
+    // Toggle to pajamas — the snapshot updates first (as StoreBridge
+    // does), then the channel receives the hook callback.
+    setSnapshot({ resolvedOutfit: "pajamas" });
+    channel.onOutfitChange!("pajamas");
+    // Gate now fails for zs1 -> resolver falls through to lzx.
+    expect(adapter.expressionCalls).toEqual(["zs1", "lzx"]);
+  });
+
+  it("treats unknown / empty outfit as permissive", () => {
+    // Freshly loaded rig that hasn't reported its outfit yet must
+    // not strand every gated reaction — we let the gated expression
+    // through and let StoreBridge's later resolved_outfit push
+    // tighten the gate.
+    const adapter = new FakeAdapter();
+    const channel = new ExpressionChannel();
+    const { deps } = makeOutfitGateDeps({ resolvedOutfit: "" });
+    channel.attach(adapter, deps);
+    expect(adapter.expressionCalls).toEqual(["zs1"]);
+  });
+
+  it("ignores the gate when outfit_gated_expressions is undefined", () => {
+    // Cached profile payload from a pre-feature backend doesn't
+    // include the new field. The resolver must treat absent gate as
+    // "no constraint" so old payloads keep working.
+    const adapter = new FakeAdapter();
+    const channel = new ExpressionChannel();
+    const clock = new FakeClock(1_000);
+    const engineState = createEngineState();
+    const snapshot: ChannelStoreSnapshot = {
+      reaction: "playful",
+      ttsState: "idle",
+      voiceMode: "off",
+      turnInProgress: false,
+      audioAmplitude: 0,
+      avatarOverlay: null,
+      avatarMotion: null,
+      mood: { label: "content", intensity: 0.5, valence: 0, arousal: 0.5 },
+      resolvedOutfit: "pajamas",
+      backchannelHint: "",
+      expressiveness: 1,
+    };
+    const manifest = buildManifest({
+      reaction_mapping: { playful: "zs1", amused: "lzx" },
+      expressions: [
+        { name: "zs1", file: "zs1.exp3.json" },
+        { name: "lzx", file: "lzx.exp3.json" },
+      ],
+      // outfit_gated_expressions intentionally omitted.
+    });
+    const deps: ChannelDeps = {
+      now: clock.now,
+      manifest,
+      engineState,
+      getStoreSnapshot: () => snapshot,
+    };
+    channel.attach(adapter, deps);
+    // No gate metadata -> ``zs1`` fires even though we're in
+    // pajamas, mirroring legacy behaviour.
+    expect(adapter.expressionCalls).toEqual(["zs1"]);
   });
 });
 

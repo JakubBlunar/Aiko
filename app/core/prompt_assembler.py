@@ -102,9 +102,15 @@ _OVERLAY_EMOTIONAL_DESCRIPTIONS: dict[str, str] = {
     "cry": "[[overlay:cry]] — small tears (sadness, gentle hurt)",
     "angry_marks": "[[overlay:angry_marks]] — anger-marks (frustration)",
     "grin": "[[overlay:grin]] — a wide grin overlay (mischief)",
-    "sticker": "[[overlay:sticker]] — a sticker decoration (playful aside)",
-    "glasses": "[[overlay:glasses]] — slipping on regular glasses (focus mode)",
-    "sunglasses": "[[overlay:sunglasses]] — slipping on sunglasses (cool moment)",
+    # Accessory-tier overlays. Renamed alongside the capability
+    # rename in ``avatar_profile.py``: ``sticker`` → ``lollipop``
+    # (the rig's actual artwork is a candy prop in the mouth, not a
+    # generic decoration), ``glasses`` → ``eyeglasses`` (worn on the
+    # face), ``sunglasses`` → ``head_sunglasses`` (perched on top of
+    # the hair).
+    "lollipop": "[[overlay:lollipop]] — a lollipop appears in her mouth (snacking, playful aside)",
+    "eyeglasses": "[[overlay:eyeglasses]] — slipping on regular glasses (focus mode)",
+    "head_sunglasses": "[[overlay:head_sunglasses]] — sunglasses on top of her head (cool / fashion moment)",
 }
 
 # Direct-action gestures — the user explicitly asked for a body

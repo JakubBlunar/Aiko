@@ -74,7 +74,10 @@ class CapabilityDetectionTests(unittest.TestCase):
         self.assertTrue(profile.capabilities.get("has_sweat", False))
         self.assertTrue(profile.capabilities.get("has_pajamas", False))
         self.assertTrue(profile.capabilities.get("has_day_clothes", False))
-        self.assertTrue(profile.capabilities.get("has_glasses", False))
+        self.assertTrue(profile.capabilities.get("has_eyeglasses", False))
+        self.assertTrue(profile.capabilities.get("has_lollipop", False))
+        self.assertTrue(profile.capabilities.get("has_head_sunglasses", False))
+        self.assertTrue(profile.capabilities.get("has_crossed_arms", False))
         self.assertTrue(profile.capabilities.get("has_cat_tail", False))
 
     def test_overlay_bindings_resolve_to_real_param_ids(self) -> None:
@@ -309,8 +312,9 @@ class CapabilityDetectionTests(unittest.TestCase):
     def test_glasses_synonym_does_not_steal_sunglasses_param(self) -> None:
         # On the translated Alexia rig "Sunglasses" is declared before
         # "Eyeglasses". A bare ``glasses`` substring synonym would have
-        # the sunglasses param claim ``has_glasses`` first; we use
-        # ``eyeglasses`` instead so the two rigs stay distinct.
+        # the sunglasses param claim ``has_eyeglasses`` first; we use
+        # the explicit ``eyeglasses`` / ``head_sunglasses`` capability
+        # names instead so the two rigs stay distinct.
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "Mini.model3.json").write_text(json.dumps({
@@ -329,11 +333,11 @@ class CapabilityDetectionTests(unittest.TestCase):
                 "Parts": [],
             }), encoding="utf-8")
             profile = from_disk(root)
-        self.assertTrue(profile.capabilities.get("has_glasses", False))
-        self.assertTrue(profile.capabilities.get("has_sunglasses", False))
+        self.assertTrue(profile.capabilities.get("has_eyeglasses", False))
+        self.assertTrue(profile.capabilities.get("has_head_sunglasses", False))
         # Each binding must point at its own param, not the other one.
-        glasses = profile.overlays.get("glasses")
-        sunglasses = profile.overlays.get("sunglasses")
+        glasses = profile.overlays.get("eyeglasses")
+        sunglasses = profile.overlays.get("head_sunglasses")
         assert glasses is not None and sunglasses is not None
         self.assertEqual(glasses.param_id, "ParamReg")
         self.assertEqual(sunglasses.param_id, "ParamSun")
@@ -346,8 +350,9 @@ class CapabilityDetectionTests(unittest.TestCase):
         for cap_name in (
             "has_pajamas", "has_day_clothes", "has_blush", "has_sweat",
             "has_dizzy", "has_stars", "has_question", "has_cry",
-            "has_angry_marks", "has_grin", "has_glasses",
-            "has_sunglasses", "has_cat_tail", "has_cat_ears",
+            "has_angry_marks", "has_grin", "has_eyeglasses",
+            "has_head_sunglasses", "has_lollipop", "has_crossed_arms",
+            "has_cat_tail", "has_cat_ears",
             "has_body_angle_y", "has_body_angle_z",
             "has_wink", "has_tail_wag", "has_ear_wiggle",
         ):
@@ -401,15 +406,44 @@ class ExpressionParamBindingTests(unittest.TestCase):
                 )
 
     def test_missing_exp3_files_are_skipped(self) -> None:
-        # The Mini model3.json references ``lh`` / ``h`` / ``wh`` /
-        # ``lzx`` files that don't exist on disk in the fixture. The
-        # parser must silently skip those rather than crash; the
-        # renderer falls back to the manager's natural amplitude when
-        # a binding is absent.
-        profile = from_disk(_MIN)
-        # Only ``yf`` and ``yfmz`` actually have exp3 files in the
-        # mini fixture, so those are the only entries we expect.
-        self.assertEqual(set(profile.expression_params.keys()), {"yf", "yfmz"})
+        # If the model3.json references an expression file that
+        # doesn't exist on disk, the parser must silently skip it
+        # rather than crash; the renderer falls back to the manager's
+        # natural amplitude when a binding is absent. We build a
+        # throw-away fixture inline so this test stays valid as the
+        # shared ``avatar_min`` fixture grows real exp3 files.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Mini.model3.json").write_text(json.dumps({
+                "Version": 3,
+                "FileReferences": {
+                    "Moc": "Mini.moc3",
+                    "DisplayInfo": "Mini.cdi3.json",
+                    "Expressions": [
+                        {"Name": "ghost", "File": "expressions/ghost.exp3.json"},
+                        {"Name": "real", "File": "expressions/real.exp3.json"},
+                    ],
+                },
+            }), encoding="utf-8")
+            (root / "Mini.cdi3.json").write_text(json.dumps({
+                "Version": 3,
+                "Parameters": [
+                    {"Id": "ParamReal", "GroupId": "", "Name": "real"},
+                ],
+                "Parts": [],
+            }), encoding="utf-8")
+            (root / "expressions").mkdir()
+            (root / "expressions" / "real.exp3.json").write_text(json.dumps({
+                "Type": "Live2D Expression",
+                "Parameters": [
+                    {"Id": "ParamReal", "Value": 30, "Blend": "Add"},
+                ],
+            }), encoding="utf-8")
+            profile = from_disk(root)
+        # Only the ``real`` expression should produce a binding;
+        # ``ghost`` was referenced but never written and must be
+        # silently absent.
+        self.assertEqual(set(profile.expression_params.keys()), {"real"})
 
     def test_expression_params_round_trip_through_to_dict(self) -> None:
         # The WS payload serialises ``AvatarProfile.to_dict()`` so the
@@ -502,6 +536,108 @@ class ReactionMappingTests(unittest.TestCase):
         encoded = json.dumps(as_dict)
         self.assertIn("capabilities", encoded)
         self.assertIn("overlays", encoded)
+
+
+class AlexiaReactionMapRegressionTests(unittest.TestCase):
+    """Pin the post-visual-audit mapping so future refactors can't
+    silently regress the three concrete bugs we just fixed:
+
+      - ``cry`` must NOT map to ``bbt`` (which is a lollipop prop,
+        not a cry overlay) — see ``docs/alexia-model-notes.md`` §3a.
+      - ``tired`` must NOT map to ``y`` (which is dizzy / spiral eyes,
+        not a weary look). The body-slump in ``AmbientBodyChannel``
+        carries weary now.
+      - ``confused`` is the new home for ``y``'s dizzy visual.
+    """
+
+    def test_cry_does_not_resolve_to_bbt(self) -> None:
+        profile = from_disk(_MIN)
+        self.assertNotEqual(profile.reaction_mapping.get("cry"), "bbt")
+
+    def test_tired_does_not_resolve_to_y(self) -> None:
+        profile = from_disk(_MIN)
+        self.assertNotEqual(profile.reaction_mapping.get("tired"), "y")
+
+    def test_confused_resolves_to_y_on_alexia(self) -> None:
+        profile = from_disk(_MIN)
+        # ``y`` (Param56 = Dizzy) is the spiral-eye overlay — the
+        # natural home for the ``confused`` reaction.
+        self.assertEqual(profile.reaction_mapping.get("confused"), "y")
+
+    def test_bbt_is_lollipop_capability_not_emotional_reaction(self) -> None:
+        # ``bbt`` must surface as a ``has_lollipop`` capability, NOT
+        # as the target of any emotional reaction. The third
+        # classification finally lands in the accessory tier.
+        profile = from_disk(_MIN)
+        self.assertTrue(profile.capabilities.get("has_lollipop", False))
+        for reaction, expr in profile.reaction_mapping.items():
+            self.assertNotEqual(
+                expr, "bbt",
+                f"reaction {reaction!r} regressed to bbt (lollipop)",
+            )
+
+
+class MouthBlockingExpressionsTests(unittest.TestCase):
+    """Verify the cross-reference between ``mouth_overlay_param_ids``
+    and ``expression_params`` that flags expressions whose firing
+    would paint a stylised mouth shape competing with lip-sync."""
+
+    def test_alexia_lzx_is_flagged_as_mouth_blocker(self) -> None:
+        # The mini fixture ships ``lzx.exp3.json`` writing Param54
+        # (= 咧嘴笑 = toothy grin). That param is in
+        # ``mouth_overlay_param_ids`` so ``lzx`` must surface here.
+        profile = from_disk(_MIN)
+        self.assertIn("lzx", profile.mouth_blocking_expressions)
+
+    def test_non_mouth_expressions_are_not_flagged(self) -> None:
+        # ``lh`` (blush, Param58), ``h`` (sweat, Param44), and ``wh``
+        # (question, ParamAngleX) touch no mouth-overlay param and
+        # must stay out of the blocker list.
+        profile = from_disk(_MIN)
+        for name in ("lh", "h", "wh"):
+            self.assertNotIn(name, profile.mouth_blocking_expressions)
+
+    def test_empty_when_rig_has_no_mouth_overlay_params(self) -> None:
+        # Rigs without a mouth-overlay param at all have no possible
+        # blockers, so the list collapses to empty regardless of how
+        # many expressions are loaded.
+        profile = from_disk(_BARE)
+        self.assertEqual(profile.mouth_blocking_expressions, [])
+
+
+class OutfitGatedExpressionsTests(unittest.TestCase):
+    """Verify the exp3 heuristic that marks expressions as
+    outfit-gated when they explicitly zero outfit-envelope params
+    (Param16 / Param17 on Alexia-style rigs)."""
+
+    def test_alexia_zs1_is_day_clothes_only(self) -> None:
+        # ``zs1.exp3.json`` zeroes Param16 + Param17 (the outfit
+        # envelope params), signalling the crossed-arms pose only
+        # renders against the day_clothes baseline.
+        profile = from_disk(_MIN)
+        self.assertEqual(
+            profile.outfit_gated_expressions.get("zs1"),
+            ["day_clothes"],
+        )
+
+    def test_non_gated_expressions_have_no_entry(self) -> None:
+        # ``bbt`` / ``y`` / ``lh`` etc. don't zero any outfit param,
+        # so they're absent from the gate dict (the renderer treats
+        # absent = permissive).
+        profile = from_disk(_MIN)
+        for name in ("bbt", "y", "lh", "h", "wh"):
+            self.assertNotIn(name, profile.outfit_gated_expressions)
+
+    def test_outfit_gate_round_trips_through_to_dict(self) -> None:
+        # The WS payload uses asdict() so the new field must survive
+        # the JSON encode round-trip.
+        profile = from_disk(_MIN)
+        encoded = profile.to_dict()
+        self.assertEqual(
+            encoded["outfit_gated_expressions"].get("zs1"),
+            ["day_clothes"],
+        )
+        json.dumps(encoded)
 
 
 if __name__ == "__main__":

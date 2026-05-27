@@ -243,6 +243,31 @@ class ToolRegistryTests(unittest.TestCase):
         )
         self.assertIn("recall", registry.names())
 
+    def test_describe_returns_name_description_pairs(self) -> None:
+        # Backs the MCP ``list_agent_tools`` debug surface. Each entry
+        # must carry ``name`` + ``description`` so a connected client
+        # (Cursor, VSCode) can show the live catalogue without
+        # reaching into private state.
+        registry = ToolRegistry()
+        registry.register(GetTimeTool())
+        registry.register(RecallTool(_FakeRagRetriever()))
+        described = registry.describe()
+        self.assertEqual(len(described), 2)
+        names = [d["name"] for d in described]
+        self.assertEqual(names, sorted(names), "describe() must be sorted")
+        self.assertIn("get_time", names)
+        self.assertIn("recall", names)
+        for entry in described:
+            self.assertIn("description", entry)
+            self.assertGreater(
+                len(entry["description"]), 0,
+                f"{entry['name']!r} has empty description",
+            )
+
+    def test_describe_empty_registry(self) -> None:
+        # Brand-new registry has no tools; describe() must not crash.
+        self.assertEqual(ToolRegistry().describe(), [])
+
 
 # ── TurnRunner two-pass ───────────────────────────────────────────────────
 

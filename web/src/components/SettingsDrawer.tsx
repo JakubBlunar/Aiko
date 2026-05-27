@@ -3,6 +3,7 @@ import { api, type AudioDevices } from "../api";
 import { desktop as desktopCommands } from "../desktop/commands";
 import { isTauri } from "../desktop/runtime";
 import type {
+  AccessoryCatalogue,
   AssistantSettings,
   AvatarSettingsKnobs,
   Memory,
@@ -1564,6 +1565,7 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                         gitignored so each developer drops their own copy in.
                       </p>
                     )}
+                    <AccessoriesSubSection avatarLoaded={!!avatar?.loaded} />
                   </Section>
 
                   <Section title="Persona window (desktop)">
@@ -1910,6 +1912,187 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       <div className="space-y-2">{children}</div>
     </section>
   );
+}
+
+/**
+ * Phase 4 (expression overhaul): persistent accessory toggles.
+ *
+ * Fetches ``GET /api/avatar/accessories`` on mount and re-fetches
+ * whenever the WS pushes an ``avatar_settings_changed`` event (so a
+ * PATCH from another window propagates here). Each catalogue entry
+ * becomes either a toggle (lollipop / eyeglasses / head_sunglasses /
+ * crossed_arms) or a radio group (``eye_color``).
+ *
+ * Outfit gating: rows whose ``allowed_outfits`` doesn't include the
+ * current ``active_outfit`` render as disabled with a hint string,
+ * so the user sees *why* crossed-arms is greyed out in pajamas
+ * instead of just toggling it on and seeing nothing happen.
+ *
+ * The component is intentionally lightweight — no error toast, no
+ * busy spinner. A failed PATCH refreshes the catalogue so the UI
+ * snaps back to the server's authoritative state.
+ */
+function AccessoriesSubSection({ avatarLoaded }: { avatarLoaded: boolean }) {
+  const [catalogue, setCatalogue] = useState<AccessoryCatalogue | null>(null);
+  const [busy, setBusy] = useState(false);
+  const refresh = useCallback(async () => {
+    if (!avatarLoaded) {
+      setCatalogue(null);
+      return;
+    }
+    try {
+      const next = await api.getAvatarAccessories();
+      setCatalogue(next);
+    } catch {
+      setCatalogue(null);
+    }
+  }, [avatarLoaded]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  // WS bridge: re-fetch on any avatar_settings_changed broadcast so
+  // a PATCH from another tab / window stays in sync.
+  const lastAvatarSettings = useAssistantStore((s) => s.avatar?.settings);
+  useEffect(() => {
+    void refresh();
+  }, [lastAvatarSettings, refresh]);
+
+  const onPatch = async (patch: Record<string, string | boolean>) => {
+    setBusy(true);
+    try {
+      const next = await api.patchAvatarAccessories(patch);
+      setCatalogue(next);
+    } catch {
+      void refresh();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!avatarLoaded || !catalogue) {
+    return null;
+  }
+  const entries = catalogue.accessories.filter((e) => e.available);
+  if (entries.length === 0) {
+    return null;
+  }
+  return (
+    <div className="space-y-1.5 rounded-md border border-white/5 bg-white/[0.02] px-3 py-2">
+      <p className="text-[11px] uppercase tracking-wide text-ink-100/50">
+        Accessories
+      </p>
+      <div className="space-y-1.5">
+        {entries.map((entry) => {
+          const gated =
+            entry.allowed_outfits.length > 0 &&
+            !!catalogue.active_outfit &&
+            !entry.allowed_outfits.includes(
+              catalogue.active_outfit === "day" ? "day_clothes" : catalogue.active_outfit,
+            );
+          const disabled = busy || gated;
+          if (entry.kind === "toggle") {
+            return (
+              <label
+                key={entry.key}
+                className={`flex items-center gap-2 text-xs ${
+                  disabled ? "text-ink-100/30" : "text-ink-100/80"
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  checked={entry.value === true}
+                  disabled={disabled}
+                  onChange={(ev) =>
+                    void onPatch({ [entry.key]: ev.currentTarget.checked })
+                  }
+                  className="accent-ink-400"
+                />
+                <span>{prettyAccessoryLabel(entry.key)}</span>
+                {gated ? (
+                  <span className="text-[11px] text-ink-100/40">
+                    · {gateHint(entry.allowed_outfits)}
+                  </span>
+                ) : null}
+              </label>
+            );
+          }
+          // ``eye_color`` enum — render as a labelled radio group.
+          return (
+            <div key={entry.key} className="space-y-1">
+              <p className="text-xs text-ink-100/80">
+                {prettyAccessoryLabel(entry.key)}
+              </p>
+              <div className="flex flex-wrap gap-x-3 gap-y-1">
+                {(entry.options ?? []).map((opt) => (
+                  <label
+                    key={opt}
+                    className={`flex items-center gap-1.5 text-[11px] ${
+                      disabled ? "text-ink-100/30" : "text-ink-100/70"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name={`accessory-${entry.key}`}
+                      value={opt}
+                      checked={entry.value === opt}
+                      disabled={disabled}
+                      onChange={() =>
+                        void onPatch({ [entry.key]: opt })
+                      }
+                      className="accent-ink-400"
+                    />
+                    <span>{prettyEnumLabel(opt)}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function prettyAccessoryLabel(key: string): string {
+  switch (key) {
+    case "lollipop":
+      return "Lollipop";
+    case "eyeglasses":
+      return "Eyeglasses (face)";
+    case "head_sunglasses":
+      return "Sunglasses (on head)";
+    case "crossed_arms":
+      return "Crossed-arms pose";
+    case "eye_color":
+      return "Eye color";
+    default:
+      return key.replace(/_/g, " ");
+  }
+}
+
+function prettyEnumLabel(value: string): string {
+  switch (value) {
+    case "default":
+      return "Default";
+    case "both_purple":
+      return "Both purple";
+    case "left_purple":
+      return "Left purple";
+    case "right_purple":
+      return "Right purple";
+    default:
+      return value.replace(/_/g, " ");
+  }
+}
+
+function gateHint(allowedOutfits: string[]): string {
+  if (allowedOutfits.length === 0) return "";
+  const pretty = allowedOutfits
+    .map((o) => (o === "day_clothes" ? "day clothes" : o.replace(/_/g, " ")))
+    .join(" / ");
+  return `only with ${pretty}`;
 }
 
 /**

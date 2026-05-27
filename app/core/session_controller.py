@@ -150,6 +150,49 @@ def _resolve_env_var_name(*, base_url: str, explicit: str = "") -> str:
     return ""
 
 
+def _seed_avatar_root_if_empty(avatar_root: Path) -> None:
+    """Copy the Live2D bundle from the source tree into the runtime path.
+
+    Mirrors ``scripts/setup-macos.sh``: when the configured avatar
+    directory is missing or empty, look for a matching bundle under
+    ``<repo>/live-2d-models/<name>/`` and copy its contents in.
+
+    This makes the Windows / Linux ``npm run desktop`` flow self-healing
+    (no setup-macos.sh equivalent) and recovers from a user manually
+    cleaning out ``data/personas/`` to shrink the working tree. Silent
+    no-op if either the target is already populated or no source bundle
+    exists — the regular ``_avatar_from_disk`` call downstream will then
+    surface the "not loaded" payload to the frontend.
+    """
+    try:
+        if avatar_root.exists() and any(avatar_root.iterdir()):
+            return
+    except OSError:
+        return
+
+    repo_root = Path(__file__).resolve().parents[2]
+    source = repo_root / "live-2d-models" / avatar_root.name
+    if not source.is_dir():
+        return
+
+    import shutil
+
+    avatar_root.mkdir(parents=True, exist_ok=True)
+    for child in source.iterdir():
+        target = avatar_root / child.name
+        if target.exists():
+            continue
+        if child.is_dir():
+            shutil.copytree(child, target)
+        else:
+            shutil.copy2(child, target)
+    log.info(
+        "Seeded Live2D bundle into %s from %s",
+        avatar_root,
+        source,
+    )
+
+
 # ── Controller ─────────────────────────────────────────────────────────
 
 
@@ -230,6 +273,15 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
         if not avatar_root.is_absolute():
             avatar_root = Path(__file__).resolve().parents[2] / avatar_root
         self._avatar_root: Path = avatar_root
+        # If the runtime path is missing/empty (common on Windows where
+        # there's no setup-macos.sh seeding step, or after a manual
+        # cleanup of ``data/personas/``), seed from the source bundle at
+        # ``live-2d-models/<name>/`` automatically. Mirrors the macOS
+        # setup script so all platforms self-heal on boot.
+        try:
+            _seed_avatar_root_if_empty(avatar_root)
+        except Exception as exc:  # noqa: BLE001 - never block boot on seeding
+            log.warning("Avatar auto-seed failed (%s); continuing", exc)
         try:
             self._avatar: AvatarProfile | None = _avatar_from_disk(
                 avatar_root, display_name=Path(settings.avatar.entry_filename).stem,
@@ -238,10 +290,16 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
             log.warning("Avatar load failed (%s); rendering will be disabled", exc)
             self._avatar = None
         # User-tunable knobs that layer on top of the immutable profile.
+        # ``accessory_state`` is the Phase 4 (expression overhaul)
+        # persistent-accessory cache — keys are validated against the
+        # current rig's capabilities by ``update_avatar_accessories``
+        # so a saved ``lollipop: true`` on a model without
+        # ``has_lollipop`` doesn't silently render nothing.
         self._avatar_settings_runtime = {
             "scale_multiplier": float(settings.avatar.scale_multiplier),
             "auto_outfit": str(settings.avatar.auto_outfit),
             "expressiveness": float(settings.avatar.expressiveness),
+            "accessory_state": dict(settings.avatar.accessory_state or {}),
         }
         self._avatar_settings_listeners: list[Callable[[dict[str, Any]], None]] = []
         # ── Tauri shell knobs (Phase B / desktop) ────────────────────────

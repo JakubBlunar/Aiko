@@ -64,6 +64,21 @@ class ExtractOverlaysTests(unittest.TestCase):
         # Streaming case: tag is incomplete, must not fire.
         self.assertEqual(extract_overlays("hi [[overlay:swe"), [])
 
+    def test_stacked_overlay_returns_full_stack_expression(self) -> None:
+        # Phase 3: ``[[overlay:A+B]]`` captures ``a+b`` as the name so
+        # downstream dispatch can split on ``+`` and fire each
+        # component as its own pulse via ``_emit_avatar_overlay``.
+        result = extract_overlays("oh [[overlay:sweat+question]] dear")
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0][0], "sweat+question")
+
+    def test_three_way_stacked_overlay(self) -> None:
+        # The regex allows arbitrarily long stacks; the persona
+        # discourages going beyond two but the parser must accept
+        # whatever the LLM emits without crashing.
+        result = extract_overlays("[[overlay:stars+blush+grin]]")
+        self.assertEqual(result[0][0], "stars+blush+grin")
+
 
 class StripOverlaysTests(unittest.TestCase):
     def test_strip_removes_completed_overlay_tags(self) -> None:

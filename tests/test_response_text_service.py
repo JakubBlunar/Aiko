@@ -3,6 +3,8 @@ from __future__ import annotations
 import unittest
 
 from app.core.services.response_text_service import (
+    parse_reaction_at_start,
+    parse_reaction_stack_at_start,
     safe_visible_prefix,
     strip_action_meta_for_tts,
     strip_all_meta_tags,
@@ -55,6 +57,66 @@ class StripAllMetaTagsTests(unittest.TestCase):
     def test_reaction_tag_is_dropped(self) -> None:
         out = strip_all_meta_tags("[[reaction:cheerful]] hello").strip()
         self.assertEqual(out, "hello")
+
+    def test_stacked_reaction_tag_is_dropped(self) -> None:
+        # Phase 3 grammar: ``[[reaction:A+B]]`` is a stacked reaction
+        # and must still strip cleanly from the visible text.
+        out = strip_all_meta_tags("[[reaction:cheerful+blush]] hello").strip()
+        self.assertEqual(out, "hello")
+
+    def test_stacked_overlay_tag_is_dropped(self) -> None:
+        # Same for ``[[overlay:A+B]]`` — the LLM emits the stacked
+        # form inline and the visible transcript / TTS must not see
+        # it.
+        out = strip_all_meta_tags(
+            "before [[overlay:sweat+question]] after",
+        ).strip()
+        self.assertEqual(out, "before  after".strip())
+
+
+class ParseReactionAtStartStackTests(unittest.TestCase):
+    """Phase 3 stacked-reaction grammar: ``[[reaction:A+B]]`` must
+    surface ``A`` as the primary mood (preserving the existing
+    one-token signature for legacy callers) while exposing the full
+    stack via :func:`parse_reaction_stack_at_start`."""
+
+    def test_plain_reaction_returns_single_token_primary(self) -> None:
+        primary, rest = parse_reaction_at_start("[[reaction:cheerful]] hi")
+        self.assertEqual(primary, "cheerful")
+        self.assertEqual(rest, "hi")
+
+    def test_stacked_reaction_legacy_parse_returns_primary_only(self) -> None:
+        # Existing callers (affect updater, TTS reaction filler) keep
+        # working against a single-token string. The companion
+        # overlays are dispatched via the stack variant below.
+        primary, rest = parse_reaction_at_start(
+            "[[reaction:cheerful+blush]] hi",
+        )
+        self.assertEqual(primary, "cheerful")
+        self.assertEqual(rest, "hi")
+
+    def test_stacked_reaction_stack_parse_returns_components(self) -> None:
+        primary, companions, rest = parse_reaction_stack_at_start(
+            "[[reaction:cheerful+blush+grin]] hi",
+        )
+        self.assertEqual(primary, "cheerful")
+        self.assertEqual(companions, ["blush", "grin"])
+        self.assertEqual(rest, "hi")
+
+    def test_stack_parse_deduplicates_repeats(self) -> None:
+        # Defensive: a model that emits ``cheerful+cheerful`` collapses
+        # to a single component so we don't double-fire any companion.
+        primary, companions, _ = parse_reaction_stack_at_start(
+            "[[reaction:cheerful+cheerful]]",
+        )
+        self.assertEqual(primary, "cheerful")
+        self.assertEqual(companions, [])
+
+    def test_no_tag_returns_none_primary(self) -> None:
+        primary, companions, rest = parse_reaction_stack_at_start("hi there")
+        self.assertIsNone(primary)
+        self.assertEqual(companions, [])
+        self.assertEqual(rest, "hi there")
 
 
 class SafeVisiblePrefixTests(unittest.TestCase):

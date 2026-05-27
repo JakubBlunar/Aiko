@@ -3,12 +3,21 @@ from __future__ import annotations
 import re
 
 
+# Reaction grammar: ``[[reaction:NAME]]`` for a single reaction, or
+# ``[[reaction:A+B]]`` for a *stack* — the renderer takes the first
+# token as the primary persistent reaction and treats subsequent
+# tokens as sustained companion overlays (blush + grin, etc.). The
+# character class allows the standard word chars plus ``+`` so the
+# parser still rejects ``[[reaction:hello world]]`` and other
+# garbage tokens. Stacks longer than two entries are accepted by the
+# regex but the persona discourages them — see
+# ``data/persona/aiko_companion.txt`` for the idiom.
 _REACTION_TAG_PATTERN = re.compile(
-    r"\[\[reaction:(\w+)\]\]",
+    r"\[\[reaction:([\w+]+)\]\]",
     flags=re.IGNORECASE,
 )
 _REACTION_AT_START_PATTERN = re.compile(
-    r"^\s*\[\[reaction:(\w+)\]\]\s*\n*",
+    r"^\s*\[\[reaction:([\w+]+)\]\]\s*\n*",
     flags=re.IGNORECASE | re.MULTILINE,
 )
 _ACTION_META_LINE_PATTERN = re.compile(
@@ -23,14 +32,51 @@ _INLINE_ACTION_META_PATTERN = re.compile(
 
 def parse_reaction_at_start(text: str) -> tuple[str | None, str]:
     """If text starts with [[reaction:X]], return (X, rest). Otherwise (None, text).
-    Use for streaming: call with accumulated buffer; when tag is complete, strip it and use rest for TTS."""
+    Use for streaming: call with accumulated buffer; when tag is complete, strip it and use rest for TTS.
+
+    Stack form ``[[reaction:A+B]]``: only the **primary** (first)
+    component is returned as the reaction name so every existing
+    consumer (TTS, affect updater, mood broadcast) keeps working
+    against a single-token mood string. Callers that care about the
+    full stack (e.g. to fire companion overlays) should use
+    :func:`parse_reaction_stack_at_start` instead — it returns the
+    same primary plus the list of stacked companions.
+    """
+    primary, _companions, rest = parse_reaction_stack_at_start(text)
+    return primary, rest
+
+
+def parse_reaction_stack_at_start(
+    text: str,
+) -> tuple[str | None, list[str], str]:
+    """Variant of :func:`parse_reaction_at_start` that surfaces the full stack.
+
+    Returns ``(primary, companions, rest)`` where:
+      - ``primary`` is the first component (or ``None`` when no tag),
+      - ``companions`` is the ordered, deduped list of remaining
+        components (empty for a plain ``[[reaction:X]]``),
+      - ``rest`` is the input text with the leading tag stripped
+        (identical to the second element of
+        :func:`parse_reaction_at_start`).
+
+    The dispatch boundary in :mod:`app.core.turn_runner` uses
+    ``companions`` to fire long-duration overlay pulses on top of the
+    persistent reaction — see the Phase 3 entry in
+    ``docs/alexia-model-notes.md`` §3 / persona stack idiom.
+    """
     source = str(text or "")
     match = _REACTION_AT_START_PATTERN.match(source)
     if not match:
-        return None, source
-    reaction = match.group(1).strip().lower()
+        return None, [], source
+    # Local import avoids a circular dep between
+    # ``response_text_service`` and ``reactions`` at module load.
+    from app.core.reactions import split_reaction_stack
+    components = split_reaction_stack(match.group(1))
     rest = source[match.end() :].lstrip("\n")
-    return reaction, rest
+    if not components:
+        return None, [], rest
+    primary, *companions = components
+    return primary, companions, rest
 
 
 def extract_tts_reaction_tag(text: str) -> tuple[str | None, str]:
@@ -260,8 +306,17 @@ _GAP_OPEN_TAIL_PATTERN = re.compile(
 # inline and the renderer pulses the corresponding parameter for
 # ~1.5s. Stripped from chat text and TTS; surfaced to the avatar via
 # the ``avatar_overlay`` WS event by :class:`TurnRunner`.
+#
+# Stacked form ``[[overlay:A+B]]`` (Phase 3 expression overhaul):
+# the body matches ``X+Y[+Z…]`` and the dispatch path
+# (``turn_runner._emit_overlay_stack``) splits on ``+`` so each
+# component fires a separate overlay pulse. ``OverlayChannel``
+# already supports concurrent param pulses, so ``blush+grin`` runs
+# them additively (blush is a Param58 pulse; grin is an
+# ``expr:lzx`` pulse and locks the expression slot for its
+# lifetime, the others paint their own params alongside it).
 _OVERLAY_TAG_PATTERN = re.compile(
-    r"\[\[overlay:([A-Za-z_][A-Za-z0-9_]*)\]\]",
+    r"\[\[overlay:([A-Za-z_][A-Za-z0-9_+]*)\]\]",
     flags=re.IGNORECASE,
 )
 _OVERLAY_OPEN_TAIL_PATTERN = re.compile(

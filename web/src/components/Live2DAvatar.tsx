@@ -12,6 +12,7 @@ import {
 } from "../live2d";
 import type { ChannelStoreSnapshot, MouseSource } from "../live2d";
 import { AmbientBodyChannel } from "../live2d/channels/AmbientBodyChannel";
+import { AccessoryChannel } from "../live2d/channels/AccessoryChannel";
 import { ExpressionChannel } from "../live2d/channels/ExpressionChannel";
 import { GazeChannel } from "../live2d/channels/GazeChannel";
 import { GestureChannel } from "../live2d/channels/GestureChannel";
@@ -168,6 +169,7 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
         engine.register(
           new MotionChannel(),
           new OutfitChannel(),
+          new AccessoryChannel(),
           new OverlayChannel(),
           new LipsyncChannel(),
           new ExpressionChannel(),

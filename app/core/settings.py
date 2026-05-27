@@ -145,6 +145,69 @@ OUTFIT_MODES: frozenset[str] = frozenset({
 })
 
 
+# Phase 4 (expression overhaul): allowed values for the
+# ``eye_color`` accessory enum. Toggle-style accessories (lollipop,
+# eyeglasses, head_sunglasses, crossed_arms) accept plain booleans;
+# ``eye_color`` is the one accessory with multiple discrete states
+# so it gets a dedicated allow-list. Keep this in lock-step with the
+# matching TS type literal in ``web/src/types.ts``
+# (``EyeColorState``).
+EYE_COLOR_STATES: frozenset[str] = frozenset({
+    "default",
+    "both_purple",
+    "left_purple",
+    "right_purple",
+})
+
+
+# Known accessory keys we accept in ``AvatarSettings.accessory_state``.
+# Each entry is ``(key, value_kind)`` where ``value_kind`` is
+# ``"bool"`` for on/off toggles or ``"enum"`` for fixed-vocabulary
+# strings. Unknown keys are silently dropped at load time so a
+# downgrade doesn't accidentally promote stale junk into the
+# accessory namespace; new accessories land here first.
+ACCESSORY_KEYS: dict[str, str] = {
+    "lollipop": "bool",
+    "eyeglasses": "bool",
+    "head_sunglasses": "bool",
+    "crossed_arms": "bool",
+    "eye_color": "enum",
+}
+
+
+def _load_accessory_state(raw: Any) -> dict[str, str | bool]:
+    """Validate and normalise the ``accessory_state`` payload.
+
+    Boolean accessories accept any truthy / falsy value (``true`` /
+    ``false`` / ``1`` / ``0`` / ``"on"`` / ``"off"`` etc.). Enum
+    accessories are checked against :data:`EYE_COLOR_STATES`; an
+    unrecognised value falls back to the enum's canonical default
+    (``"default"`` for ``eye_color``). Unknown keys are dropped.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str | bool] = {}
+    for key, kind in ACCESSORY_KEYS.items():
+        if key not in raw:
+            continue
+        value = raw[key]
+        if kind == "bool":
+            if isinstance(value, bool):
+                out[key] = value
+            elif isinstance(value, (int, float)):
+                out[key] = bool(value)
+            elif isinstance(value, str):
+                lowered = value.strip().lower()
+                out[key] = lowered in {"1", "true", "yes", "on"}
+            else:
+                continue
+        elif kind == "enum":
+            if key == "eye_color":
+                token = str(value).strip().lower() if value is not None else ""
+                out[key] = token if token in EYE_COLOR_STATES else "default"
+    return out
+
+
 # Persona-window geometry clamps. The lower bounds are picked so the
 # avatar still has at least a thumbnail's worth of pixels to render
 # into; the upper bounds prevent absurd values (e.g. someone hand-edits
@@ -235,6 +298,16 @@ class AvatarSettings:
     # strength, sass burst, …); ``1.0`` is the authored default;
     # ``1.5`` exaggerates within safe rig limits. Clamped on load.
     expressiveness: float = 1.0
+    # Phase 4 (expression overhaul): persistent accessory toggles.
+    # Each key is an accessory capability name from the loaded rig
+    # (``lollipop`` / ``eyeglasses`` / ``head_sunglasses`` /
+    # ``eye_color`` / ``crossed_arms`` for Alexia). Boolean values
+    # are toggles; string values pick from a fixed enum
+    # (``eye_color``: ``default`` / ``both_purple`` / ``left_purple``
+    # / ``right_purple``). Missing keys default to off — additive in
+    # the schema so a rollback to a pre-Phase-4 build silently drops
+    # the field without breaking persisted configs.
+    accessory_state: dict[str, str | bool] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -1050,6 +1123,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                 else "auto"
             ),
             expressiveness=max(0.0, min(1.5, float(avatar_raw.get("expressiveness", 1.0) or 1.0))),
+            accessory_state=_load_accessory_state(avatar_raw.get("accessory_state")),
         ),
         desktop=DesktopSettings(
             persona_window=PersonaWindowSettings(

@@ -86,6 +86,23 @@ class ToolRegistry:
     def names(self) -> list[str]:
         return sorted(self._tools.keys())
 
+    def describe(self) -> list[dict[str, str]]:
+        """Return ``[{name, description}, ...]`` for every registered tool.
+
+        Used by the MCP debug surface (``list_agent_tools``) and any
+        introspection consumer that wants a lightweight summary
+        without the full Ollama schema. Sorted by name for
+        deterministic output.
+        """
+        out: list[dict[str, str]] = []
+        for name in sorted(self._tools.keys()):
+            schema = self._tools[name].schema()
+            out.append({
+                "name": schema.name,
+                "description": schema.description,
+            })
+        return out
+
     def to_ollama_tools(self) -> list[dict[str, Any]]:
         return [self._tools[n].schema().to_ollama() for n in sorted(self._tools.keys())]
 
