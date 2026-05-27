@@ -89,6 +89,7 @@ class MemoryFacadeMixin:
         kind: str | None = None,
         salience: float | None = None,
         tier: str | None = None,
+        confidence: float | None = None,
     ) -> dict[str, Any] | None:
         """Patch fields on a memory and notify listeners.
 
@@ -120,6 +121,7 @@ class MemoryFacadeMixin:
             salience=salience,
             embedding=new_embedding,
             tier=tier,
+            confidence=confidence,
         )
         if updated is None:
             return None
@@ -134,6 +136,7 @@ class MemoryFacadeMixin:
         kind: str = "fact",
         salience: float = 0.6,
         tier: str = "long_term",
+        confidence: float | None = None,
     ) -> dict[str, Any] | None:
         """Manually insert a memory through the editor surface.
 
@@ -146,6 +149,10 @@ class MemoryFacadeMixin:
         ``tier`` defaults to ``long_term`` (manual additions are
         user-confirmed). Pass ``"scratchpad"`` from the UI to test the
         probationary lane manually.
+
+        ``confidence`` defaults to ``1.0`` for manual creates (the user
+        explicitly anchored the row in the editor — strongest signal
+        we have). Pass an explicit value to override.
         """
         store = self._memory_store
         if store is None or self._embedder is None:
@@ -169,6 +176,7 @@ class MemoryFacadeMixin:
             embedding,
             salience=salience,
             tier=tier,
+            confidence=1.0 if confidence is None else float(confidence),
         )
         if memory is None:
             # Dedupe path: find which existing row absorbed this one. We
@@ -225,6 +233,148 @@ class MemoryFacadeMixin:
                 listener(memory)
             except Exception:
                 log.debug("memory listener raised", exc_info=True)
+        # F1: opportunistic fact-check enqueue. Cheap (regex over a
+        # short content string) and absorbing failure here keeps the
+        # ordinary memory-write path safe.
+        queue = getattr(self, "_fact_check_queue", None)
+        if queue is None:
+            return
+        try:
+            self._maybe_enqueue_claims(memory)
+        except Exception:
+            log.debug("fact-check enqueue failed", exc_info=True)
+
+    def _maybe_enqueue_claims(self, memory: Any) -> None:
+        """Pull claims out of ``memory.content`` (or its gap question)
+        and append to the fact-check queue.
+
+        The privacy gate (:mod:`app.core.fact_check_privacy`) runs
+        before anything is queued so personal memories never leak to
+        the outbound search path. Knowledge-gap questions still go
+        through the gate too — most gap questions are public-facing,
+        but a question like "what's Jacob's birthday" should not be
+        sent to DuckDuckGo.
+        """
+        queue = getattr(self, "_fact_check_queue", None)
+        if queue is None or memory is None:
+            return
+        memory_id = getattr(memory, "id", None)
+        if memory_id is None:
+            return
+
+        from app.core.fact_check_privacy import (
+            classify_memory_for_fact_check,
+            scrub_claim_for_search,
+        )
+
+        user_names = self._fact_check_user_names()
+        assistant_name = self._fact_check_assistant_name()
+        kind = (getattr(memory, "kind", "") or "").lower()
+        if kind == "knowledge_gap":
+            meta = getattr(memory, "metadata", None) or {}
+            question = (
+                str(meta.get("question") or "").strip()
+                if isinstance(meta, dict)
+                else ""
+            )
+            if not question:
+                question = (getattr(memory, "content", "") or "").strip()
+            if not question:
+                return
+            # Knowledge gaps run through the *claim* scrubber (not the
+            # memory classifier) because the kind itself isn't
+            # personal — the question is. If the scrubbed version
+            # would lose meaning the gap simply doesn't get a queue
+            # entry; the user can still resolve it manually.
+            safe = scrub_claim_for_search(
+                question,
+                user_names=user_names,
+                assistant_name=assistant_name,
+            )
+            if safe is None:
+                log.debug("fact-check: skipping personal gap question")
+                return
+            queue.enqueue(
+                memory_id=int(memory_id),
+                claim_text=question,
+                claim_kind="knowledge_gap",
+            )
+            return
+
+        content = (getattr(memory, "content", "") or "").strip()
+        if not content:
+            return
+
+        decision = classify_memory_for_fact_check(
+            kind=kind,
+            content=content,
+            user_names=user_names,
+            assistant_name=assistant_name,
+        )
+        if decision.personal:
+            log.debug(
+                "fact-check: skipping personal memory (%s)", decision.reason,
+            )
+            return
+
+        from app.core.claim_extractor import find_claims
+
+        for claim in find_claims(content):
+            # Belt-and-braces: even after the memory cleared the
+            # classifier, individual claim spans (especially
+            # proper_noun) can still be personal. Scrub once more and
+            # drop the ones that come back ``None``.
+            safe = scrub_claim_for_search(
+                claim.text,
+                user_names=user_names,
+                assistant_name=assistant_name,
+            )
+            if safe is None:
+                continue
+            queue.enqueue(
+                memory_id=int(memory_id),
+                claim_text=claim.text,
+                claim_kind=claim.kind,
+            )
+
+    def _fact_check_user_names(self) -> list[str]:
+        """User name + any user-aware aliases the worker should scrub."""
+        out: list[str] = []
+        try:
+            name = self.user_display_name  # property on SessionController
+            if isinstance(name, str) and name.strip():
+                out.append(name.strip())
+        except Exception:
+            pass
+        # Fall back to ``settings.assistant.user_display_name`` so the
+        # mixin still works in tests that don't expose the property.
+        try:
+            settings_obj = getattr(self, "_settings", None)
+            assistant_cfg = getattr(settings_obj, "assistant", None)
+            cfg_name = getattr(assistant_cfg, "user_display_name", "") or ""
+            if isinstance(cfg_name, str) and cfg_name.strip():
+                out.append(cfg_name.strip())
+        except Exception:
+            pass
+        # Dedupe while preserving order.
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for n in out:
+            key = n.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(n)
+        return deduped
+
+    def _fact_check_assistant_name(self) -> str | None:
+        try:
+            settings_obj = getattr(self, "_settings", None)
+            assistant_cfg = getattr(settings_obj, "assistant", None)
+            name = getattr(assistant_cfg, "name", "") or ""
+            return name.strip() or None
+        except Exception:
+            return None
 
     def _notify_memory_updated(self, snapshot: dict[str, Any]) -> None:
         listeners = getattr(self, "_memory_updated_listeners", None) or []
@@ -233,3 +383,167 @@ class MemoryFacadeMixin:
                 listener(snapshot)
             except Exception:
                 log.debug("memory updated listener raised", exc_info=True)
+
+    # ── Knowledge gaps (F2 personality backlog) ──────────────────────
+
+    def list_knowledge_gaps(
+        self,
+        *,
+        include_resolved: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Return ``knowledge_gap`` rows for the Memory tab panel."""
+        store = getattr(self, "_knowledge_gap_store", None)
+        if store is None:
+            return []
+        try:
+            rows = store.list_all(include_resolved=include_resolved)
+        except Exception:
+            log.debug("knowledge gap list failed", exc_info=True)
+            return []
+        return [m.to_dict() for m in rows]
+
+    def delete_knowledge_gap(self, gap_id: int) -> bool:
+        store = getattr(self, "_knowledge_gap_store", None)
+        if store is None:
+            return False
+        ok = store.delete(int(gap_id))
+        if ok:
+            self._notify_knowledge_gap({"deleted_gap_id": int(gap_id)})
+        return ok
+
+    def resolve_knowledge_gap(
+        self,
+        gap_id: int,
+        *,
+        answer: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Mark a gap resolved.
+
+        If ``answer`` is provided, also writes a sibling ``fact`` memory
+        with the answer text (so the answer ends up in retrieval) and
+        backlinks the gap via ``resolved_by_memory_id``. Returns the
+        updated gap snapshot, or ``None`` on failure.
+        """
+        store = getattr(self, "_knowledge_gap_store", None)
+        memory_store = getattr(self, "_memory_store", None)
+        embedder = getattr(self, "_embedder", None)
+        if store is None or memory_store is None:
+            return None
+        answer_memory_id: int | None = None
+        if answer is not None and embedder is not None:
+            cleaned = answer.strip()
+            if cleaned:
+                try:
+                    emb = embedder.embed(cleaned)
+                    mem = memory_store.add(
+                        content=cleaned,
+                        kind="fact",
+                        embedding=emb,
+                        salience=0.7,
+                        confidence=0.85,
+                        tier="long_term",
+                    )
+                    if mem is not None:
+                        answer_memory_id = int(mem.id)
+                        self._notify_memory_added(mem)
+                except Exception:
+                    log.warning("gap resolve answer write failed", exc_info=True)
+        ok = store.mark_resolved(int(gap_id), answer_memory_id=answer_memory_id)
+        if not ok:
+            return None
+        # Re-fetch the resolved gap snapshot for the response payload.
+        try:
+            gap = memory_store.get(int(gap_id))
+        except Exception:
+            gap = None
+        snapshot = gap.to_dict() if gap is not None else None
+        if snapshot is not None:
+            self._notify_knowledge_gap({"gap": snapshot})
+        return snapshot
+
+    # ── Fact-checker status (F1 personality backlog) ─────────────────
+
+    def fact_checker_status(self) -> dict[str, Any]:
+        """Return a snapshot for the Memory tab footer.
+
+        Shape::
+
+            {
+              "enabled": bool,
+              "pending": int,            # claims awaiting verification
+              "queue_total": int,        # alias for ``pending``
+              "last_verified_at": str|None,
+              "hour_used": int,
+              "hour_cap": int,
+              "day_used": int,
+              "day_cap": int
+            }
+
+        Pulls counters from the persisted :class:`FactCheckRateLimiter`
+        and the claim queue. When the worker is disabled (or the
+        web-search tool isn't available) the counts still render so
+        the user can see what *would* be processed.
+        """
+        agent_settings = getattr(self, "_settings", None)
+        agent = getattr(agent_settings, "agent", None) if agent_settings else None
+        enabled = bool(getattr(agent, "fact_checker_enabled", False)) if agent else False
+        queue = getattr(self, "_fact_check_queue", None)
+        pending = 0
+        if queue is not None:
+            try:
+                pending = len(queue.peek_all())
+            except Exception:
+                pending = 0
+        limiter = getattr(self, "_fact_check_rate_limiter", None)
+        if limiter is not None:
+            try:
+                buckets = limiter.snapshot()
+            except Exception:
+                buckets = {
+                    "hour_used": 0,
+                    "hour_cap": int(getattr(agent, "fact_checker_per_hour_cap", 10)),
+                    "day_used": 0,
+                    "day_cap": int(getattr(agent, "fact_checker_per_day_cap", 50)),
+                }
+        else:
+            buckets = {
+                "hour_used": 0,
+                "hour_cap": int(getattr(agent, "fact_checker_per_hour_cap", 10)),
+                "day_used": 0,
+                "day_cap": int(getattr(agent, "fact_checker_per_day_cap", 50)),
+            }
+        last_verified_at: str | None = None
+        memory_store = getattr(self, "_memory_store", None)
+        if memory_store is not None:
+            try:
+                last_verified_at = self._last_verified_at_from_store(memory_store)
+            except Exception:
+                last_verified_at = None
+        return {
+            "enabled": enabled,
+            "pending": int(pending),
+            "queue_total": int(pending),
+            "last_verified_at": last_verified_at,
+            **buckets,
+        }
+
+    @staticmethod
+    def _last_verified_at_from_store(memory_store: Any) -> str | None:
+        """Return the most recent ``metadata.last_verified_at`` ISO string.
+
+        Walks the mirror once (cheap; in-memory) and picks the max
+        timestamp. Returns ``None`` when no memory has been verified
+        yet (typical right after F1 ships).
+        """
+        latest: str | None = None
+        try:
+            mirror = getattr(memory_store, "_mirror", None) or {}
+            items = list(mirror.values()) if hasattr(mirror, "values") else list(mirror)
+        except Exception:
+            items = []
+        for mem in items:
+            metadata = getattr(mem, "metadata", None) or {}
+            stamp = metadata.get("last_verified_at") if isinstance(metadata, dict) else None
+            if isinstance(stamp, str) and (latest is None or stamp > latest):
+                latest = stamp
+        return latest

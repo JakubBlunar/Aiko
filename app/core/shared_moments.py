@@ -221,6 +221,11 @@ class SharedMomentsStore:
             # long_term so anniversaries can fire years later. Pinned
             # moments are already coerced to long_term by ``add()``.
             tier="long_term",
+            # Schema v9: mirror the per-row metadata confidence into the
+            # canonical confidence column so RAG demotion + the
+            # "(uncertain)" suffix work consistently across kinds.
+            # Manual moments still clamp to >= 0.9 via the pin path.
+            confidence=float(confidence),
         )
         if mem is None:
             return None

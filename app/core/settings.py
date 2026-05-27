@@ -296,6 +296,17 @@ class AgentSettings:
     # (one SQL upsert). The prompt block is terse and only renders
     # when an axis exceeds the notable threshold (default 0.5).
     relationship_axes_enabled: bool = True
+    # ── F1 personality backlog: background fact-checker ───────────────
+    # Master switch. When off, the queue still persists but the
+    # IdleFactChecker worker never runs (so any pending claims simply
+    # sit there harmlessly until the flag is flipped back on or the
+    # underlying memory is deleted).
+    fact_checker_enabled: bool = True
+    # Hourly + daily rate caps. Token-bucket persisted to ``kv_meta``.
+    # The defaults give the worker a generous budget while still
+    # keeping a chatty session from burning unbounded web queries.
+    fact_checker_per_hour_cap: int = 10
+    fact_checker_per_day_cap: int = 50
     # Rolling summary background worker.
     summary_idle_seconds: float = 15.0  # quiet time before summarising
     summary_min_unsummarized_messages: int = 6  # minimum new msgs to trigger
@@ -479,6 +490,11 @@ class MemorySettings:
     # active testing.
     promotion_worker_interval_seconds: int = 3600
     decay_worker_interval_seconds: int = 3600
+    # F1 personality backlog: how often the IdleFactChecker drains the
+    # claim queue. Defaults to 5 minutes so a steady drip of newly
+    # written memories gets verified over a session. The worker still
+    # respects the per-hour/per-day rate caps in :class:`AgentSettings`.
+    fact_checker_interval_seconds: int = 300
     # IdleWorkerScheduler tick + quiet gate. Lowering ``wake_seconds``
     # makes workers fire sooner after a quiet period starts but
     # increases idle CPU; ``quiet_threshold`` is how long since the
@@ -815,6 +831,15 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             activity_awareness_enabled=bool(
                 agent_raw.get("activity_awareness_enabled", False),
             ),
+            fact_checker_enabled=bool(
+                agent_raw.get("fact_checker_enabled", True),
+            ),
+            fact_checker_per_hour_cap=max(
+                0, int(agent_raw.get("fact_checker_per_hour_cap", 10))
+            ),
+            fact_checker_per_day_cap=max(
+                0, int(agent_raw.get("fact_checker_per_day_cap", 50))
+            ),
             shared_moments_enabled=bool(
                 agent_raw.get("shared_moments_enabled", True),
             ),
@@ -967,6 +992,10 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             ),
             decay_worker_interval_seconds=max(
                 10, int(memory_raw.get("decay_worker_interval_seconds", 3600))
+            ),
+            fact_checker_interval_seconds=max(
+                30,
+                int(memory_raw.get("fact_checker_interval_seconds", 300)),
             ),
             idle_worker_wake_seconds=max(
                 1.0, float(memory_raw.get("idle_worker_wake_seconds", 60.0))

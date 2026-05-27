@@ -92,6 +92,34 @@ class WorldMixin:
             except Exception:
                 log.debug("shared-moment listener raised", exc_info=True)
 
+    # ── Knowledge gap listeners (F2 personality backlog) ─────────────
+
+    def add_knowledge_gap_listener(
+        self, callback: Callable[[dict[str, Any]], None],
+    ) -> None:
+        """Register a ``callback(patch)`` for knowledge-gap CRUD events.
+
+        Patches carry one of ``gap`` (created/updated row dict) or
+        ``deleted_gap_id`` (int). WS hub forwards as
+        ``knowledge_gap_updated``.
+        """
+        if callback and callback not in self._knowledge_gap_listeners:
+            self._knowledge_gap_listeners.append(callback)
+
+    def _notify_knowledge_gap_added(self, memory: Any) -> None:
+        try:
+            payload = memory.to_dict() if hasattr(memory, "to_dict") else {"id": memory}
+        except Exception:
+            payload = {"id": getattr(memory, "id", None)}
+        self._notify_knowledge_gap({"gap": payload})
+
+    def _notify_knowledge_gap(self, patch: dict[str, Any]) -> None:
+        for listener in list(self._knowledge_gap_listeners):
+            try:
+                listener(patch)
+            except Exception:
+                log.debug("knowledge-gap listener raised", exc_info=True)
+
     def add_relationship_axes_listener(
         self, callback: Callable[[dict[str, Any]], None],
     ) -> None:

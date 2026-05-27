@@ -140,6 +140,11 @@ class RagHit:
     source: str  # "memory" | "message" | "document"
     score: float  # higher is better; cosine in [0, 1]
     record: MemoryRecord | MessageRecord | DocumentChunk
+    # Schema v9 — confidence in [0, 1] for memory hits. Stamped by
+    # :class:`RagRetriever` during retrieve() via a join against the
+    # SQLite mirror (LanceDB's MemoryRecord does not carry confidence).
+    # ``None`` for non-memory hits or when the join could not resolve.
+    confidence: float | None = None
 
     @property
     def text(self) -> str:

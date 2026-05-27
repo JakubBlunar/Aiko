@@ -874,35 +874,79 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
             except Exception:
                 log.warning("SharedMomentsStore init failed", exc_info=True)
                 self._shared_moments_store = None
-            if (
-                self._shared_moments_store is not None
-                and settings.agent.shared_moments_llm_enabled
-            ):
-                try:
-                    from app.core.shared_moment_extractor import MomentDetector
 
-                    def _persist_moment_candidate(candidate: Any) -> None:
-                        store = self._shared_moments_store
-                        if store is None:
-                            return
-                        row = store.add_from_candidate(
-                            candidate,
-                            source_session=self.session_key,
-                        )
-                        if row is not None:
-                            self._notify_shared_moment_added(row)
+        # F2 personality backlog: knowledge-gap journal. Cheap — pure
+        # regex + a dedicated MemoryStore wrapper, no LLM. Wired
+        # whenever long-term memory is available so the [[gap:...]]
+        # extraction path always has somewhere to write.
+        self._knowledge_gap_store = None
+        if (
+            self._memory_store is not None
+            and self._embedder is not None
+        ):
+            try:
+                from app.core.knowledge_gap_extractor import KnowledgeGapStore
 
-                    self._moment_detector = MomentDetector(
-                        ollama=self._ollama,
-                        model=self._effective_chat_model,
-                        persist_callback=_persist_moment_candidate,
-                        min_turn_gap=settings.agent.shared_moments_min_turn_gap,
-                        cooldown_seconds=settings.agent.shared_moments_cooldown_seconds,
-                        user_display_name_provider=lambda: self.user_display_name,
+                self._knowledge_gap_store = KnowledgeGapStore(
+                    memory_store=self._memory_store,
+                    embedder=self._embedder,
+                )
+            except Exception:
+                log.warning("KnowledgeGapStore init failed", exc_info=True)
+                self._knowledge_gap_store = None
+
+        # F1 personality backlog: persistent claim queue + cancellation
+        # event. The queue is enqueued from the ``_notify_memory_added``
+        # path so every memory write site automatically feeds it. The
+        # IdleFactChecker worker (registered below alongside decay /
+        # promotion) drains it on the idle scheduler.
+        self._fact_check_queue = None
+        self._fact_check_cancel: threading.Event | None = None
+        if (
+            self._memory_store is not None
+            and bool(getattr(settings.agent, "fact_checker_enabled", True))
+        ):
+            try:
+                from app.core.fact_check_queue import FactCheckQueue
+
+                self._fact_check_queue = FactCheckQueue(self._chat_db)
+            except Exception:
+                log.warning("FactCheckQueue init failed", exc_info=True)
+                self._fact_check_queue = None
+            try:
+                self._fact_check_cancel = threading.Event()
+            except Exception:
+                self._fact_check_cancel = None
+
+        if (
+            self._shared_moments_store is not None
+            and settings.agent.shared_moments_llm_enabled
+        ):
+            try:
+                from app.core.shared_moment_extractor import MomentDetector
+
+                def _persist_moment_candidate(candidate: Any) -> None:
+                    store = self._shared_moments_store
+                    if store is None:
+                        return
+                    row = store.add_from_candidate(
+                        candidate,
+                        source_session=self.session_key,
                     )
-                except Exception:
-                    log.warning("MomentDetector init failed", exc_info=True)
-                    self._moment_detector = None
+                    if row is not None:
+                        self._notify_shared_moment_added(row)
+
+                self._moment_detector = MomentDetector(
+                    ollama=self._ollama,
+                    model=self._effective_chat_model,
+                    persist_callback=_persist_moment_candidate,
+                    min_turn_gap=settings.agent.shared_moments_min_turn_gap,
+                    cooldown_seconds=settings.agent.shared_moments_cooldown_seconds,
+                    user_display_name_provider=lambda: self.user_display_name,
+                )
+            except Exception:
+                log.warning("MomentDetector init failed", exc_info=True)
+                self._moment_detector = None
 
         self._relationship_axes_store = None
         self._relationship_axes_updater = None
@@ -930,6 +974,13 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
             Callable[[dict[str, Any]], None]
         ] = []
         self._relationship_axes_listeners: list[
+            Callable[[dict[str, Any]], None]
+        ] = []
+        # F2 personality backlog: knowledge-gap listeners fire on create,
+        # on resolve, and on delete. Patches carry ``gap`` (full row dict)
+        # or ``deleted_gap_id``. WS hub broadcasts as
+        # ``knowledge_gap_updated``.
+        self._knowledge_gap_listeners: list[
             Callable[[dict[str, Any]], None]
         ] = []
         self._axes_last_broadcast: dict[str, float] = {
@@ -970,6 +1021,7 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
             activity=self._render_activity_block,
             anniversary=self._render_anniversary_block,
             axes=self._render_axes_block,
+            knowledge_gaps=self._render_knowledge_gaps_block,
         )
         self._prompt_assembler.set_pinned_self_memories_provider(
             self._top_pinned_self_memories,
@@ -1054,8 +1106,86 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
                     MemoryPromotionWorker(self._memory_store, self._memory_settings)
                 )
                 self._idle_scheduler.register(
-                    MemoryDecayWorker(self._memory_store, self._memory_settings)
+                    MemoryDecayWorker(
+                        self._memory_store,
+                        self._memory_settings,
+                        knowledge_gap_store=getattr(
+                            self, "_knowledge_gap_store", None
+                        ),
+                    )
                 )
+                # F1 — background fact-checker. Registered last because
+                # it depends on the knowledge-gap store (created above)
+                # and the (lazy) web-search helper. Failures here only
+                # drop fact-checking; the rest of the scheduler stays.
+                self._idle_fact_checker = None
+                self._fact_check_rate_limiter = None
+                if (
+                    self._fact_check_queue is not None
+                    and self._fact_check_cancel is not None
+                    and bool(getattr(settings.agent, "fact_checker_enabled", True))
+                ):
+                    try:
+                        from app.core.fact_check_rate_limiter import (
+                            FactCheckRateLimiter,
+                        )
+                        from app.core.idle_fact_checker import IdleFactChecker
+                        from app.llm.tools.builtins import WebSearchTool
+
+                        try:
+                            web_search_tool = WebSearchTool()
+                        except Exception:
+                            log.info(
+                                "fact-checker disabled: web_search tool "
+                                "unavailable (duckduckgo-search missing?)"
+                            )
+                            web_search_tool = None
+                        if web_search_tool is not None:
+                            self._fact_check_rate_limiter = FactCheckRateLimiter(
+                                self._chat_db,
+                                per_hour_cap=int(
+                                    getattr(
+                                        settings.agent,
+                                        "fact_checker_per_hour_cap",
+                                        10,
+                                    )
+                                ),
+                                per_day_cap=int(
+                                    getattr(
+                                        settings.agent,
+                                        "fact_checker_per_day_cap",
+                                        50,
+                                    )
+                                ),
+                            )
+                            self._idle_fact_checker = IdleFactChecker(
+                                queue=self._fact_check_queue,
+                                memory_store=self._memory_store,
+                                agent_settings=settings.agent,
+                                memory_settings=self._memory_settings,
+                                ollama=self._ollama,
+                                chat_model=self._effective_chat_model,
+                                web_search_tool=web_search_tool,
+                                rate_limiter=self._fact_check_rate_limiter,
+                                cancel_event=self._fact_check_cancel,
+                                knowledge_gap_store=getattr(
+                                    self, "_knowledge_gap_store", None
+                                ),
+                                embedder=self._embedder,
+                                notify_memory_updated=self._notify_memory_updated,
+                                # Privacy gate inputs — late-bound so a
+                                # mid-session rename of the user (or
+                                # the assistant) is picked up on the
+                                # next tick.
+                                user_names_provider=self._fact_check_user_names,
+                                assistant_name_provider=self._fact_check_assistant_name,
+                            )
+                            self._idle_scheduler.register(self._idle_fact_checker)
+                    except Exception:
+                        log.warning(
+                            "IdleFactChecker boot failed", exc_info=True
+                        )
+                        self._idle_fact_checker = None
                 self._idle_scheduler.start()
             except Exception:
                 log.warning("idle worker scheduler boot failed", exc_info=True)
@@ -2432,6 +2562,17 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
             self._disarm_typed_silence_timer()
 
         self._turn_in_progress = True
+        # F1.6 — abort any in-flight background fact-check distil call.
+        # The IdleFactChecker passes this event into ``chat_stream`` so
+        # the worker yields the model back to the user immediately and
+        # the queued claim goes back to the head of the queue (see
+        # :class:`IdleFactChecker`).
+        fact_check_cancel = getattr(self, "_fact_check_cancel", None)
+        if fact_check_cancel is not None:
+            try:
+                fact_check_cancel.set()
+            except Exception:
+                pass
         t0 = time.perf_counter()
         try:
             tts_chunk_cb = None
@@ -2466,6 +2607,13 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
             )
         finally:
             self._turn_in_progress = False
+            # F1.6 — release the fact-check cancel signal so the next
+            # idle-scheduler tick can resume distilling claims.
+            if fact_check_cancel is not None:
+                try:
+                    fact_check_cancel.clear()
+                except Exception:
+                    pass
             # The merge window is meaningful only while this turn is the
             # in-flight one. When the turn returns we drop the buffer so a
             # late partial can't fire ``request_stop()`` on a runner that's
@@ -3039,6 +3187,42 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
         except Exception:
             log.debug("agenda block render failed", exc_info=True)
             return ""
+
+    def _render_knowledge_gaps_block(self, user_text: str) -> str:
+        """F2: surface the open knowledge gap most relevant to ``user_text``.
+
+        Returns at most one bullet. Empty string when there are no open
+        gaps or the best similarity match is below the threshold (so we
+        don't surface a totally unrelated wondering on every turn). The
+        block ends without a trailing newline so the assembler can stitch
+        it next to its siblings.
+        """
+        store = getattr(self, "_knowledge_gap_store", None)
+        if store is None:
+            return ""
+        try:
+            gap = store.pick_relevant(user_text)
+        except Exception:
+            log.debug("knowledge gap pick_relevant failed", exc_info=True)
+            return ""
+        if gap is None:
+            return ""
+        meta = getattr(gap, "metadata", None) or {}
+        if not isinstance(meta, dict):
+            meta = {}
+        topic = str(meta.get("topic") or "").strip()
+        question = str(meta.get("question") or "").strip()
+        if not question:
+            # Defensive: a gap row without question metadata is still
+            # worth surfacing via its raw content.
+            question = (gap.content or "").strip()
+        if not question:
+            return ""
+        bullet = f"- {topic}: {question}" if topic else f"- {question}"
+        return (
+            f"Things you've been wondering about with {self.user_display_name}:\n"
+            + bullet
+        )
 
     def _render_world_block(self) -> str:
         """Aiko's room: a compact ambient block with location + items.
@@ -4285,6 +4469,27 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
             except Exception:
                 log.debug("shared-moment inline extraction failed", exc_info=True)
         self._last_turn_moment_vibes = moment_vibes_this_turn
+
+        # F2: inline [[gap:topic:question]] tags. Same shape as the
+        # moments extraction above — pure regex over the raw assistant
+        # text, ``prune_overflow`` keeps the cap honoured.
+        gap_store = getattr(self, "_knowledge_gap_store", None)
+        if gap_store is not None and raw_assistant_text:
+            try:
+                from app.core.knowledge_gap_extractor import (
+                    extract_inline_tags as _extract_gaps,
+                )
+
+                for candidate in _extract_gaps(raw_assistant_text):
+                    gap = gap_store.add_gap(
+                        topic=candidate.topic,
+                        question=candidate.question,
+                        source_session=self.session_key,
+                    )
+                    if gap is not None:
+                        self._notify_knowledge_gap_added(gap)
+            except Exception:
+                log.debug("knowledge gap inline extraction failed", exc_info=True)
 
         # Apply per-turn drift to the relationship axes. Cheap (no LLM).
         axes_updater = getattr(self, "_relationship_axes_updater", None)
