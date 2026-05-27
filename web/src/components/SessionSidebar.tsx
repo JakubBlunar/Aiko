@@ -83,6 +83,7 @@ export function SessionSidebar({
         if (cancelled) return;
         const mapped: ChatMessage[] = rows.map((row, idx) => ({
           id: `hist_${idx}_${row.created_at}`,
+          backendId: typeof row.id === "number" ? row.id : undefined,
           role: row.role === "user" ? "user" : row.role === "assistant" ? "assistant" : "system",
           content: row.content,
           createdAt: row.created_at,

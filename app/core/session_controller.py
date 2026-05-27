@@ -852,6 +852,100 @@ class SessionController:
             except Exception:
                 log.warning("RelationshipPulseWorker init failed", exc_info=True)
                 self._relationship_pulse = None
+
+        # Schema v7: shared moments + relationship axes. Both are cheap;
+        # the LLM detector is the only place we'd burn an extra call and
+        # it's gated tightly (see ``_maybe_schedule_moment_llm_job``).
+        self._shared_moments_store = None
+        self._moment_detector = None
+        if (
+            settings.agent.shared_moments_enabled
+            and self._memory_store is not None
+            and self._embedder is not None
+        ):
+            try:
+                from app.core.shared_moments import SharedMomentsStore
+
+                self._shared_moments_store = SharedMomentsStore(
+                    memory_store=self._memory_store,
+                    embedder=self._embedder,
+                )
+            except Exception:
+                log.warning("SharedMomentsStore init failed", exc_info=True)
+                self._shared_moments_store = None
+            if (
+                self._shared_moments_store is not None
+                and settings.agent.shared_moments_llm_enabled
+            ):
+                try:
+                    from app.core.shared_moment_extractor import MomentDetector
+
+                    def _persist_moment_candidate(candidate: Any) -> None:
+                        store = self._shared_moments_store
+                        if store is None:
+                            return
+                        row = store.add_from_candidate(
+                            candidate,
+                            source_session=self.session_key,
+                        )
+                        if row is not None:
+                            self._notify_shared_moment_added(row)
+
+                    self._moment_detector = MomentDetector(
+                        ollama=self._ollama,
+                        model=self._effective_chat_model,
+                        persist_callback=_persist_moment_candidate,
+                        min_turn_gap=settings.agent.shared_moments_min_turn_gap,
+                        cooldown_seconds=settings.agent.shared_moments_cooldown_seconds,
+                    )
+                except Exception:
+                    log.warning("MomentDetector init failed", exc_info=True)
+                    self._moment_detector = None
+
+        self._relationship_axes_store = None
+        self._relationship_axes_updater = None
+        if settings.agent.relationship_axes_enabled:
+            try:
+                from app.core.relationship_axes import (
+                    RelationshipAxesStore,
+                    RelationshipAxesUpdater,
+                )
+
+                self._relationship_axes_store = RelationshipAxesStore(self._chat_db)
+                self._relationship_axes_updater = RelationshipAxesUpdater(
+                    self._relationship_axes_store,
+                )
+            except Exception:
+                log.warning("RelationshipAxes init failed", exc_info=True)
+                self._relationship_axes_store = None
+                self._relationship_axes_updater = None
+
+        # Listeners for the REST/WS layer. Shared moments fire on create
+        # and on every edit/delete; axes fire only when an axis crosses a
+        # 0.05 step (debounced server-side — see ``set_user_present`` /
+        # the axes update path).
+        self._shared_moment_listeners: list[
+            Callable[[dict[str, Any]], None]
+        ] = []
+        self._relationship_axes_listeners: list[
+            Callable[[dict[str, Any]], None]
+        ] = []
+        self._axes_last_broadcast: dict[str, float] = {
+            "closeness": 0.0,
+            "humor": 0.0,
+            "trust": 0.0,
+            "comfort": 0.0,
+        }
+
+        # Per-turn cache: was a moment created on the most recent turn?
+        # Used to feed the axes updater the moment-vibes list without
+        # re-querying the store, and to decide whether to render the
+        # anniversary block on the *next* turn (a moment created right
+        # now isn't an anniversary today).
+        self._last_turn_moment_vibes: list[str] = []
+        self._last_turn_milestone: str | None = None
+        self._last_turn_promise_kept: bool = False
+        self._last_turn_gift_received: bool = False
         # Wire all hot-path providers (each cheap: SQL/mirror reads or
         # pure functions). Token accounting runs through PromptTelemetry.
         self._prompt_assembler.set_inner_life_providers(
@@ -872,6 +966,8 @@ class SessionController:
             motion_names=self._avatar_motion_names,
             world=self._render_world_block,
             activity=self._render_activity_block,
+            anniversary=self._render_anniversary_block,
+            axes=self._render_axes_block,
         )
         self._prompt_assembler.set_pinned_self_memories_provider(
             self._top_pinned_self_memories,
@@ -2665,6 +2761,344 @@ class SessionController:
             except Exception:
                 log.debug("world listener raised", exc_info=True)
 
+    # ── Shared moments + axes listeners (schema v7) ──────────────────
+
+    def add_shared_moment_listener(
+        self, callback: Callable[[dict[str, Any]], None],
+    ) -> None:
+        """Register a ``callback(patch)`` for shared-moment CRUD events.
+
+        Patches carry one of ``moment`` (created/updated row dict) or
+        ``deleted_moment_id`` (int). WS hub forwards as
+        ``shared_moment_updated``.
+        """
+        if callback and callback not in self._shared_moment_listeners:
+            self._shared_moment_listeners.append(callback)
+
+    def _notify_shared_moment_added(self, row: Any) -> None:
+        payload = row.to_dict() if hasattr(row, "to_dict") else {"id": row}
+        self._notify_shared_moment({"moment": payload})
+
+    def _notify_shared_moment(self, patch: dict[str, Any]) -> None:
+        for listener in list(self._shared_moment_listeners):
+            try:
+                listener(patch)
+            except Exception:
+                log.debug("shared-moment listener raised", exc_info=True)
+
+    def add_relationship_axes_listener(
+        self, callback: Callable[[dict[str, Any]], None],
+    ) -> None:
+        """Register a ``callback(state)`` for debounced axes updates.
+
+        Fires only when at least one axis has drifted ≥ 0.05 from the
+        last broadcast value, so a noisy chat doesn't flood the WS.
+        """
+        if callback and callback not in self._relationship_axes_listeners:
+            self._relationship_axes_listeners.append(callback)
+
+    def _maybe_notify_axes(self, state: Any) -> None:
+        """Broadcast axes state when any axis crossed a 0.05 step."""
+        try:
+            current = {
+                "closeness": float(state.closeness),
+                "humor": float(state.humor),
+                "trust": float(state.trust),
+                "comfort": float(state.comfort),
+            }
+        except Exception:
+            return
+        last = self._axes_last_broadcast
+        changed = any(
+            abs(current[k] - float(last.get(k, 0.0))) >= 0.05 for k in current
+        )
+        if not changed and self._axes_last_broadcast.get("_initialised"):
+            return
+        self._axes_last_broadcast = dict(current)
+        self._axes_last_broadcast["_initialised"] = 1.0
+        payload = {
+            "user_id": getattr(state, "user_id", self._user_id),
+            **current,
+            "updated_at": getattr(state, "updated_at", ""),
+        }
+        for listener in list(self._relationship_axes_listeners):
+            try:
+                listener(payload)
+            except Exception:
+                log.debug("axes listener raised", exc_info=True)
+
+    # ── Shared moments public API (consumed by REST layer) ──────────
+
+    def list_shared_moments(
+        self,
+        *,
+        offset: int = 0,
+        limit: int = 20,
+        vibe: str | None = None,
+    ) -> dict[str, Any]:
+        store = getattr(self, "_shared_moments_store", None)
+        if store is None:
+            return {"items": [], "total": 0, "offset": int(offset), "limit": int(limit)}
+        rows, total = store.list(offset=offset, limit=limit, vibe=vibe)
+        return {
+            "items": [r.to_dict() for r in rows],
+            "total": int(total),
+            "offset": int(offset),
+            "limit": int(limit),
+        }
+
+    def add_shared_moment(
+        self,
+        *,
+        summary: str,
+        vibe: str,
+        when: str | None = None,
+        source: str = "manual",
+        source_message_id: int | None = None,
+    ) -> dict[str, Any] | None:
+        store = getattr(self, "_shared_moments_store", None)
+        if store is None:
+            return None
+        row = store.add(
+            summary=summary,
+            vibe=vibe,
+            when=when,
+            source=source,
+            source_session=self.session_key,
+            source_message_id=source_message_id,
+        )
+        if row is None:
+            return None
+        self._notify_shared_moment_added(row)
+        return row.to_dict()
+
+    def update_shared_moment(
+        self,
+        moment_id: int,
+        *,
+        summary: str | None = None,
+        vibe: str | None = None,
+        when: str | None = None,
+        pinned: bool | None = None,
+    ) -> dict[str, Any] | None:
+        store = getattr(self, "_shared_moments_store", None)
+        if store is None:
+            return None
+        row = store.update(
+            int(moment_id),
+            summary=summary,
+            vibe=vibe,
+            when=when,
+            pinned=pinned,
+        )
+        if row is None:
+            return None
+        payload = row.to_dict()
+        self._notify_shared_moment({"moment": payload})
+        return payload
+
+    def delete_shared_moment(self, moment_id: int) -> bool:
+        store = getattr(self, "_shared_moments_store", None)
+        if store is None:
+            return False
+        ok = store.delete(int(moment_id))
+        if ok:
+            self._notify_shared_moment({"deleted_moment_id": int(moment_id)})
+        return ok
+
+    def mark_message_as_moment(
+        self,
+        message_id: int,
+        *,
+        vibe: str = "general",
+    ) -> dict[str, Any] | None:
+        """Promote an existing chat message to a shared_moment.
+
+        Looks up the message by id, builds a "Jacob and I…" summary from
+        its content (capped at 200 chars), and writes a pinned moment.
+        """
+        store = getattr(self, "_shared_moments_store", None)
+        if store is None:
+            return None
+        try:
+            rows = self._chat_db.execute_fetchone(
+                "SELECT session_id, role, content, created_at "
+                "FROM messages WHERE id = ?",
+                (int(message_id),),
+            )
+        except Exception:
+            log.debug("mark_message_as_moment fetch failed", exc_info=True)
+            return None
+        if rows is None:
+            return None
+        _session_id, role, content, created_at = rows
+        text = str(content or "").strip()
+        if len(text) < 4:
+            return None
+        # Build a third-person summary depending on who said it. The user
+        # can always edit the summary afterwards in the Together tab.
+        if str(role) == "user":
+            summary = f"Jacob said: {text[:160]}".strip()
+        elif str(role) == "assistant":
+            summary = f"I said to Jacob: {text[:160]}".strip()
+        else:
+            summary = text[:200]
+        row = store.add(
+            summary=summary,
+            vibe=vibe,
+            when=str(created_at) if created_at else None,
+            source="manual",
+            confidence=1.0,
+            source_message_ids=[int(message_id)],
+            source_session=self.session_key,
+            source_message_id=int(message_id),
+            pinned=True,
+        )
+        if row is None:
+            return None
+        self._notify_shared_moment_added(row)
+        return row.to_dict()
+
+    def get_relationship_axes(self) -> dict[str, Any]:
+        store = getattr(self, "_relationship_axes_store", None)
+        if store is None:
+            return {
+                "user_id": self._user_id,
+                "closeness": 0.0,
+                "humor": 0.0,
+                "trust": 0.0,
+                "comfort": 0.0,
+                "updated_at": "",
+                "enabled": False,
+            }
+        try:
+            state = store.get(self._user_id)
+        except Exception:
+            log.debug("axes get failed", exc_info=True)
+            return {
+                "user_id": self._user_id,
+                "closeness": 0.0,
+                "humor": 0.0,
+                "trust": 0.0,
+                "comfort": 0.0,
+                "updated_at": "",
+                "enabled": True,
+            }
+        payload = state.to_payload()
+        payload["enabled"] = bool(
+            getattr(self._settings.agent, "relationship_axes_enabled", True),
+        )
+        return payload
+
+    def get_together_summary(self) -> dict[str, Any]:
+        """Combined snapshot for the Together UI tab."""
+        # Relationship phase + counts.
+        tracker = getattr(self, "_relationship_tracker", None)
+        rel_state: Any = None
+        if tracker is not None:
+            try:
+                rel_state = tracker.store.get(self._user_id)  # type: ignore[attr-defined]
+            except Exception:
+                rel_state = None
+        try:
+            from app.core.relationship import _MILESTONES, phase_for
+        except Exception:
+            _MILESTONES = ()  # type: ignore[assignment]
+            def phase_for(*_a: Any, **_kw: Any) -> str:  # type: ignore[no-redef]
+                return "new"
+
+        phase = "new"
+        if rel_state is not None:
+            try:
+                phase = phase_for(rel_state)
+            except Exception:
+                phase = "new"
+
+        # Anniversary check.
+        anniversary_payload: dict[str, Any] | None = None
+        store = getattr(self, "_shared_moments_store", None)
+        if (
+            store is not None
+            and bool(getattr(self._settings.agent, "anniversary_surfacing_enabled", True))
+        ):
+            try:
+                from datetime import datetime, timezone
+
+                from app.core.anniversary import pick_anniversary
+
+                match = pick_anniversary(
+                    store.iter_all(), now=datetime.now(timezone.utc),
+                )
+                if match is not None:
+                    anniversary_payload = {
+                        "moment_id": match.moment_id,
+                        "summary": match.summary,
+                        "vibe": match.vibe,
+                        "days_ago": match.days_ago,
+                        "window_label": match.window_label,
+                    }
+            except Exception:
+                log.debug("together anniversary failed", exc_info=True)
+
+        # Milestones list with crossed-off dates (when known).
+        milestones: list[dict[str, Any]] = []
+        last_milestone_label = None
+        last_milestone_at = None
+        if rel_state is not None:
+            last_milestone_label = getattr(rel_state, "milestone_label", None)
+            last_milestone_at = getattr(rel_state, "last_milestone_at", None)
+        for label, _turns, _days in _MILESTONES:
+            milestones.append({
+                "label": label,
+                "human": label.replace("_", " "),
+                "crossed": label == last_milestone_label,
+                "crossed_at": last_milestone_at if label == last_milestone_label else None,
+            })
+
+        # Days known / counts.
+        first_seen = getattr(rel_state, "first_seen_at", None) if rel_state else None
+        days_known = 0
+        if first_seen:
+            try:
+                from datetime import datetime, timezone
+
+                dt = datetime.fromisoformat(str(first_seen).replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                days_known = int(
+                    (datetime.now(timezone.utc) - dt).total_seconds() // 86400
+                )
+            except Exception:
+                days_known = 0
+
+        return {
+            "phase": phase,
+            "days_known": int(days_known),
+            "total_turns": int(getattr(rel_state, "total_turns", 0) or 0)
+            if rel_state else 0,
+            "total_sessions": int(getattr(rel_state, "total_sessions", 0) or 0)
+            if rel_state else 0,
+            "first_seen_at": first_seen,
+            "milestones": milestones,
+            "axes": self.get_relationship_axes(),
+            "anniversary_today": anniversary_payload,
+            "recent_moments_count": (
+                store.count() if store is not None else 0
+            ),
+        }
+
+    def note_gift_received(self) -> None:
+        """Hook: world layer calls this when Jacob just gave Aiko an item.
+
+        Sets a single-turn flag consumed by the next ``_post_turn_inner_life``
+        so the axes updater and moment detector see the signal.
+        """
+        self._last_turn_gift_received = True
+
+    def note_promise_kept(self) -> None:
+        """Hook: future ``promise → done`` transition will call this."""
+        self._last_turn_promise_kept = True
+
     def update_world_state(
         self,
         *,
@@ -2869,7 +3303,7 @@ class SessionController:
             bool(consumable) if consumable is not None
             else (kind or "").strip().lower() == "food"
         )
-        return self.add_world_item(
+        added = self.add_world_item(
             name=name,
             kind=kind,
             description=description,
@@ -2879,6 +3313,13 @@ class SessionController:
             state=state,
             given_by="user",
         )
+        # Schema v7: nudge the next turn's relationship-axes update + the
+        # moment-detector gate. The flag is consumed exactly once.
+        try:
+            self.note_gift_received()
+        except Exception:
+            pass
+        return added
 
     def reseed_world(self, *, force: bool = True) -> dict[str, Any] | None:
         """Wipe the room and re-seed the rich default. Debug-only path."""
@@ -3826,6 +4267,57 @@ class SessionController:
             "fill silence or to prove you noticed."
         )
 
+    def _render_anniversary_block(self) -> str:
+        """Schema v7: surface a single 'remember when' anniversary line.
+
+        Walks the ``shared_moment`` rows and picks the longest-window
+        match for today (1mo/3mo/6mo/1yr/Nyr) within a ±1 day tolerance,
+        rate-limited per moment to once every 6h. Stamps the chosen row
+        so it won't fire again on the next turn.
+        """
+        if not bool(getattr(self._settings.agent, "anniversary_surfacing_enabled", True)):
+            return ""
+        store = getattr(self, "_shared_moments_store", None)
+        if store is None:
+            return ""
+        try:
+            from datetime import datetime, timezone
+
+            from app.core.anniversary import pick_anniversary, render_anniversary_block
+
+            moments = store.iter_all()
+            match = pick_anniversary(moments, now=datetime.now(timezone.utc))
+            if match is None:
+                return ""
+            # Stamp the row so we don't surface it again on the very next
+            # turn. The rate-limit is centralised inside ``pick_anniversary``
+            # but this also helps when the same conversation spans many
+            # turns inside the 6h window.
+            try:
+                store.stamp_anniversary(match.moment_id)
+            except Exception:
+                log.debug("anniversary stamp failed", exc_info=True)
+            return render_anniversary_block(match)
+        except Exception:
+            log.debug("anniversary render failed", exc_info=True)
+            return ""
+
+    def _render_axes_block(self) -> str:
+        """Schema v7: terse relationship-axes line (only when notable)."""
+        if not bool(getattr(self._settings.agent, "relationship_axes_enabled", True)):
+            return ""
+        store = getattr(self, "_relationship_axes_store", None)
+        if store is None:
+            return ""
+        try:
+            from app.core.relationship_axes import render_axes_block
+
+            state = store.get(self._user_id)
+            return render_axes_block(state)
+        except Exception:
+            log.debug("axes block render failed", exc_info=True)
+            return ""
+
     def _render_arc_block(self) -> str:
         """Phase 4c: ambient line about the current conversation arc."""
         store = getattr(self, "_arc_store", None)
@@ -4002,6 +4494,94 @@ class SessionController:
             ))
         except Exception:
             log.debug("promise llm submit failed", exc_info=True)
+
+    def _maybe_schedule_moment_llm_job(
+        self,
+        *,
+        user_text: str,
+        assistant_text: str,
+        raw_assistant_text: str,
+        milestone: str | None,
+    ) -> None:
+        """Schema v7: enqueue the LLM moment detector when signals warrant.
+
+        Gating is a two-step process: a cheap signal check here (so we
+        only spend cycles on candidate turns), and a cadence/cooldown
+        check inside :class:`MomentDetector.should_run_llm`. Skipping
+        either short-circuits the job.
+        """
+        detector = getattr(self, "_moment_detector", None)
+        if detector is None:
+            return
+
+        try:
+            from app.core.shared_moment_extractor import detect_moment_reaction_tags
+
+            reaction_signal = bool(
+                detect_moment_reaction_tags(raw_assistant_text or "")
+            )
+        except Exception:
+            reaction_signal = False
+
+        gift_signal = bool(self._last_turn_gift_received)
+        promise_kept_signal = bool(self._last_turn_promise_kept)
+        milestone_signal = bool(milestone)
+        now_monotonic = time.monotonic()
+        try:
+            should = detector.should_run_llm(
+                reaction_signal=reaction_signal,
+                milestone_signal=milestone_signal,
+                gift_signal=gift_signal,
+                promise_kept_signal=promise_kept_signal,
+                now_monotonic=now_monotonic,
+            )
+        except Exception:
+            log.debug("moment detector should_run failed", exc_info=True)
+            return
+        if not should:
+            return
+
+        session_key = self.session_key
+        history_window = 10
+
+        def _history_provider() -> list[tuple[str, str]]:
+            try:
+                rows = self._chat_db.get_messages(session_key, limit=history_window)
+            except Exception:
+                return []
+            return [
+                (str(r.role or ""), str(r.content or ""))
+                for r in rows
+                if r.role in ("user", "assistant")
+            ]
+
+        def _job(_stop_flag: Any) -> None:
+            if _stop_flag is not None and _stop_flag.is_set():
+                return
+            try:
+                detector.maybe_run_llm(
+                    history_provider=_history_provider,
+                    now_monotonic=time.monotonic(),
+                    reaction_signal=reaction_signal,
+                    milestone_signal=milestone_signal,
+                    gift_signal=gift_signal,
+                    promise_kept_signal=promise_kept_signal,
+                )
+            except Exception:
+                log.debug("moment llm job raised", exc_info=True)
+
+        try:
+            from app.core.speaking_window_scheduler import ScheduledJob
+
+            self._scheduler.submit(ScheduledJob(
+                name="moment_llm",
+                priority=75,
+                estimated_seconds=3.5,
+                callable=_job,
+                dedupe_key="moment_llm",
+            ))
+        except Exception:
+            log.debug("moment llm submit failed", exc_info=True)
 
     def _maybe_schedule_user_profile_job(self) -> None:
         """Phase 3a: enqueue UserProfileWorker via the speaking window."""
@@ -4644,6 +5224,7 @@ class SessionController:
 
         # Phase 3b: bump turn counter + maybe surface a milestone callback.
         tracker = getattr(self, "_relationship_tracker", None)
+        milestone: str | None = None
         if tracker is not None:
             try:
                 _new_state, milestone = tracker.record_turn(self._user_id)
@@ -4652,6 +5233,7 @@ class SessionController:
                 milestone = None
             if milestone:
                 self._record_milestone_memory(milestone)
+        self._last_turn_milestone = milestone
 
         # Phase 3c: post-turn promise regex (cheap) + maybe schedule LLM pass.
         extractor = getattr(self, "_promise_extractor", None)
@@ -4744,6 +5326,86 @@ class SessionController:
             )
         except Exception:
             log.debug("curiosity worker schedule failed", exc_info=True)
+
+        # Schema v7: shared moments + relationship axes. Order matters —
+        # extract inline tags first so the axes updater sees their vibes.
+        moment_vibes_this_turn: list[str] = []
+        moments_store = getattr(self, "_shared_moments_store", None)
+        if (
+            moments_store is not None
+            and raw_assistant_text
+            and bool(getattr(self._settings.agent, "shared_moments_enabled", True))
+        ):
+            try:
+                from app.core.shared_moment_extractor import extract_inline_tags
+
+                for candidate in extract_inline_tags(raw_assistant_text):
+                    row = moments_store.add_from_candidate(
+                        candidate,
+                        source_session=self.session_key,
+                    )
+                    if row is not None:
+                        moment_vibes_this_turn.append(row.vibe)
+                        detector = getattr(self, "_moment_detector", None)
+                        if detector is not None:
+                            try:
+                                detector.note_tag_persisted()
+                            except Exception:
+                                pass
+                        self._notify_shared_moment_added(row)
+            except Exception:
+                log.debug("shared-moment inline extraction failed", exc_info=True)
+        self._last_turn_moment_vibes = moment_vibes_this_turn
+
+        # Apply per-turn drift to the relationship axes. Cheap (no LLM).
+        axes_updater = getattr(self, "_relationship_axes_updater", None)
+        if (
+            axes_updater is not None
+            and bool(getattr(self._settings.agent, "relationship_axes_enabled", True))
+        ):
+            try:
+                from app.core.shared_moment_extractor import (
+                    detect_moment_reaction_tags,
+                )
+
+                reaction_tag_set = detect_moment_reaction_tags(raw_assistant_text or "")
+                if reaction:
+                    reaction_tag_set.add(str(reaction).lower())
+                axes_state = axes_updater.apply_turn(
+                    self._user_id,
+                    reaction_tags=reaction_tag_set,
+                    moment_vibes=moment_vibes_this_turn,
+                    milestone=milestone,
+                    gift_received=bool(self._last_turn_gift_received),
+                    promise_kept=bool(self._last_turn_promise_kept),
+                    user_text=user_text,
+                )
+                # Reset per-turn flags now that they've been consumed.
+                self._last_turn_gift_received = False
+                self._last_turn_promise_kept = False
+                self._maybe_notify_axes(axes_state)
+            except Exception:
+                log.debug("relationship axes update failed", exc_info=True)
+
+        # Schedule the LLM moment detector when a moment-worthy signal
+        # fired AND cadence allows. Detector internally throttles further.
+        detector = getattr(self, "_moment_detector", None)
+        if (
+            detector is not None
+            and moments_store is not None
+            and bool(getattr(self._settings.agent, "shared_moments_enabled", True))
+            and bool(getattr(self._settings.agent, "shared_moments_llm_enabled", True))
+        ):
+            try:
+                detector.notify_user_turn()
+                self._maybe_schedule_moment_llm_job(
+                    user_text=user_text,
+                    assistant_text=assistant_text,
+                    raw_assistant_text=raw_assistant_text,
+                    milestone=milestone,
+                )
+            except Exception:
+                log.debug("moment detector schedule failed", exc_info=True)
 
     # ── Voice capture ────────────────────────────────────────────────
 

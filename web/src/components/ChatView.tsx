@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { api } from "../api";
 import { useAssistantStore } from "../store";
 import type { ToolEvent, VoiceMode, WsClientCommand } from "../types";
+import { SHARED_MOMENT_VIBES } from "../types";
 import { ContextBadge } from "./ContextBadge";
 import { MicButton } from "./MicButton";
 
@@ -448,6 +450,8 @@ interface BubbleProps {
   streaming?: boolean;
   reaction?: string;
   kind?: "proactive";
+  /** Backend message id (when known) — gates the "Mark as moment" action. */
+  backendId?: number;
 }
 
 // Phase 3c: parse `[[correct]]old[[/correct]]new` into renderable
@@ -508,7 +512,31 @@ function MessageBubble({
   streaming,
   reaction,
   kind,
+  backendId,
 }: BubbleProps) {
+  const [markOpen, setMarkOpen] = useState(false);
+  const [marking, setMarking] = useState(false);
+  const [marked, setMarked] = useState(false);
+  const pushToast = useAssistantStore((s) => s.pushToast);
+
+  const onMark = useCallback(
+    async (vibe: string) => {
+      if (backendId == null) return;
+      setMarking(true);
+      try {
+        await api.markMessageAsMoment(backendId, vibe);
+        setMarked(true);
+        pushToast("memory", "Saved as a shared moment");
+      } catch (err) {
+        pushToast("warning", `Couldn't save moment: ${String(err)}`);
+      } finally {
+        setMarking(false);
+        setMarkOpen(false);
+      }
+    },
+    [backendId, pushToast],
+  );
+
   if (role === "system") {
     return (
       <li className="mx-auto max-w-md text-center text-xs italic text-ink-100/40">
@@ -519,12 +547,18 @@ function MessageBubble({
 
   const isUser = role === "user";
   const isProactive = !isUser && kind === "proactive";
+  // Mark-as-moment is available on any persisted user/assistant row
+  // (system messages excluded above). Streaming rows don't have a
+  // backendId yet so the button stays hidden until the turn lands.
+  const canMark = !streaming && backendId != null;
   return (
     <li
-      className={`flex flex-col gap-1 ${isUser ? "items-end" : "items-start"}`}
+      className={`group flex flex-col gap-1 ${
+        isUser ? "items-end" : "items-start"
+      }`}
     >
       <div
-        className={`whitespace-pre-wrap rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-md ${
+        className={`relative whitespace-pre-wrap rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-md ${
           isUser
             ? "max-w-xl bg-ink-600/80 text-white"
             : isProactive
@@ -539,6 +573,53 @@ function MessageBubble({
           : streaming
             ? ""
             : "(empty)"}
+
+        {canMark ? (
+          <div className="absolute -top-2 right-2 opacity-0 transition-opacity group-hover:opacity-100">
+            {marked ? (
+              <span
+                className="rounded-md bg-pink-500/30 px-2 py-0.5 text-[10px] text-pink-50"
+                title="Saved to Together → Shared moments"
+              >
+                ★ saved
+              </span>
+            ) : markOpen ? (
+              <div className="flex items-center gap-1 rounded-md border border-white/15 bg-black/70 px-2 py-1 shadow-lg">
+                <span className="text-[10px] text-ink-100/55">vibe:</span>
+                {SHARED_MOMENT_VIBES.map((v) => (
+                  <button
+                    key={v}
+                    type="button"
+                    disabled={marking}
+                    onClick={() => {
+                      void onMark(v);
+                    }}
+                    className="rounded px-1 text-[10px] text-ink-100/80 hover:bg-white/10 disabled:opacity-40"
+                    title={v}
+                  >
+                    {v}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => setMarkOpen(false)}
+                  className="ml-1 rounded px-1 text-[10px] text-ink-100/40 hover:bg-white/10"
+                >
+                  ✕
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setMarkOpen(true)}
+                className="rounded-md border border-white/10 bg-black/40 px-2 py-0.5 text-[10px] text-ink-100/70 hover:bg-white/10"
+                title="Save this exchange as a shared moment"
+              >
+                ★ mark as moment
+              </button>
+            )}
+          </div>
+        ) : null}
       </div>
       <div className="text-[10px] text-ink-100/40">
         {isUser ? "you" : isProactive ? "aiko · proactive" : "aiko"} ·{" "}

@@ -174,6 +174,89 @@ class TestSummaries(unittest.TestCase):
             self.assertEqual(row.summary, "new")
 
 
+class TestSchemaV7Migration(unittest.TestCase):
+    """Schema v6 → v7 upgrade adds the ``memories.metadata`` column and
+    the ``relationship_axes`` table without losing existing rows."""
+
+    def test_v6_database_upgrades_to_v7(self):
+        import sqlite3 as _sqlite3
+        from app.core.chat_database import _SCHEMA_VERSION
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "legacy.db"
+            # Hand-write a v6-shaped database -- old memories schema (no
+            # ``metadata`` column), no ``relationship_axes`` table.
+            conn = _sqlite3.connect(str(path))
+            conn.executescript(
+                """
+                CREATE TABLE schema_version (version INTEGER NOT NULL);
+                INSERT INTO schema_version (version) VALUES (6);
+                CREATE TABLE messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    token_count INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE memories (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    content TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    salience REAL NOT NULL DEFAULT 0.5,
+                    embedding BLOB NOT NULL,
+                    source_session TEXT,
+                    source_message_id INTEGER,
+                    created_at TEXT NOT NULL,
+                    last_used_at TEXT,
+                    use_count INTEGER NOT NULL DEFAULT 0,
+                    pinned INTEGER NOT NULL DEFAULT 0
+                );
+                """
+            )
+            conn.execute(
+                "INSERT INTO memories (content, kind, embedding, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                ("legacy preserved", "user_fact", b"\x00" * 8, "2025-01-01T00:00:00Z"),
+            )
+            conn.commit()
+            conn.close()
+
+            # Opening the DB triggers ``_init_schema`` which runs the v6→v7
+            # ALTER + table create.
+            db = ChatDatabase(path)
+            try:
+                conn = db._get_conn()
+                version = conn.execute(
+                    "SELECT version FROM schema_version LIMIT 1"
+                ).fetchone()[0]
+                self.assertEqual(version, _SCHEMA_VERSION)
+
+                cols = {r[1] for r in conn.execute("PRAGMA table_info(memories)").fetchall()}
+                self.assertIn("metadata", cols)
+
+                tables = {
+                    r[0]
+                    for r in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    ).fetchall()
+                }
+                self.assertIn("relationship_axes", tables)
+
+                # Existing rows survive the migration intact.
+                row = conn.execute(
+                    "SELECT content, metadata FROM memories WHERE content = 'legacy preserved'"
+                ).fetchone()
+                self.assertIsNotNone(row)
+                self.assertEqual(row[0], "legacy preserved")
+                self.assertIsNone(row[1])
+            finally:
+                conn = getattr(db._local, "conn", None)
+                if conn is not None:
+                    conn.close()
+                    db._local.conn = None
+
+
 class TestThreadSafety(unittest.TestCase):
     def test_concurrent_inserts(self):
         with _TempDB() as db:

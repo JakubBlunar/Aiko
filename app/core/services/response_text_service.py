@@ -224,6 +224,21 @@ _AGENDA_OPEN_TAIL_PATTERN = re.compile(
     flags=re.IGNORECASE,
 )
 
+# Schema v7: [[moment:vibe:short summary]] — Aiko-curated shared moment
+# (see :mod:`app.core.shared_moment_extractor`). Stripped from chat text
+# and TTS; persisted to a ``shared_moment`` memory row by
+# SessionController. The grammar matches the [[remember:…]] family so
+# the streaming hold logic in :func:`safe_visible_prefix` already covers
+# the in-progress tail.
+_MOMENT_TAG_PATTERN = re.compile(
+    r"\[\[moment:[^\]]*?\]\]",
+    flags=re.IGNORECASE,
+)
+_MOMENT_OPEN_TAIL_PATTERN = re.compile(
+    r"\[\[moment:[^\]]*\Z",
+    flags=re.IGNORECASE,
+)
+
 # Alexia bundle: [[overlay:NAME]] fires a transient overlay pulse on
 # the avatar (sweat / blush / dizzy / question / ...). The grammar
 # is identical in shape to ``[[reaction:X]]`` — the LLM emits one
@@ -341,6 +356,9 @@ def strip_all_meta_tags(text: str) -> str:
     # Phase 4a: same treatment for [[agenda:...]].
     s = _AGENDA_TAG_PATTERN.sub("", s)
     s = _AGENDA_OPEN_TAIL_PATTERN.sub("", s)
+    # Schema v7: same treatment for [[moment:vibe:summary]].
+    s = _MOMENT_TAG_PATTERN.sub("", s)
+    s = _MOMENT_OPEN_TAIL_PATTERN.sub("", s)
     # Alexia bundle: drop fully-formed overlay / outfit / motion tags
     # + their unclosed openers at end-of-stream. Side-channel
     # (TurnRunner) extracted them earlier; stripping here guarantees
@@ -427,6 +445,7 @@ _META_OPENERS = (
     "[[overlay:",
     "[[outfit:",
     "[[motion:",
+    "[[moment:",
 )
 
 
@@ -452,6 +471,8 @@ def _looks_like_partial_opener(suffix: str) -> bool:
     if lowered.startswith("[[remember:") and "]]" not in lowered:
         return True
     if lowered.startswith("[[overlay:") and "]]" not in lowered:
+        return True
+    if lowered.startswith("[[moment:") and "]]" not in lowered:
         return True
     # Mid-tag like ``[[d`` / ``[[de`` / ``[[s`` etc.
     if lowered.startswith("[["):

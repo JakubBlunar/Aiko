@@ -219,6 +219,22 @@ export function useAssistantSocket(): {
         store.applyWorldPatch(evt.patch);
         break;
 
+      case "shared_moment_updated": {
+        // Patch is exactly one of {moment} (create/update) or
+        // {deleted_moment_id} (delete). Both keep the Together tab
+        // timeline + total in sync without a refetch.
+        if (evt.patch.moment) {
+          store.upsertSharedMoment(evt.patch.moment);
+        } else if (typeof evt.patch.deleted_moment_id === "number") {
+          store.removeSharedMoment(evt.patch.deleted_moment_id);
+        }
+        break;
+      }
+
+      case "relationship_axes_updated":
+        store.setRelationshipAxes(evt.axes);
+        break;
+
       case "avatar_settings_changed":
         store.setAvatarSettings(evt.settings);
         // Server now inlines resolved_outfit + circadian_period so the

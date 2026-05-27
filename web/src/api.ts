@@ -18,6 +18,9 @@ import type {
   PersonaWindowSettings,
   RagDocument,
   SessionRow,
+  SharedMoment,
+  SharedMomentsResponse,
+  TogetherSummary,
   UploadDocumentResponse,
   WorldItem,
   WorldItemPayload,
@@ -43,6 +46,7 @@ interface SessionListResponse {
 }
 
 interface RawMessage {
+  id?: number;
   role: ChatMessage["role"];
   content: string;
   created_at: string;
@@ -246,6 +250,59 @@ export const api = {
     jsonFetch<WorldSnapshot>(
       `/api/world/seed${force ? "?force=true" : ""}`,
       { method: "POST" },
+    ),
+  // ── Shared moments + Together tab (schema v7) ─────────────────────
+  getTogether: () => jsonFetch<TogetherSummary>("/api/together"),
+  listSharedMoments: (
+    offset = 0,
+    limit = 20,
+    vibe?: string | null,
+  ) => {
+    const params = new URLSearchParams({
+      offset: String(offset),
+      limit: String(limit),
+    });
+    if (vibe) params.set("vibe", vibe);
+    return jsonFetch<SharedMomentsResponse>(
+      `/api/shared-moments?${params.toString()}`,
+    );
+  },
+  createSharedMoment: (payload: {
+    summary: string;
+    vibe?: string;
+    when?: string | null;
+  }) =>
+    jsonFetch<{ moment: SharedMoment }>("/api/shared-moments", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  updateSharedMoment: (
+    id: number,
+    patch: {
+      summary?: string;
+      vibe?: string;
+      when?: string;
+      pinned?: boolean;
+    },
+  ) =>
+    jsonFetch<{ moment: SharedMoment }>(`/api/shared-moments/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    }),
+  deleteSharedMoment: (id: number) =>
+    jsonFetch<{ deleted_moment_id: number }>(`/api/shared-moments/${id}`, {
+      method: "DELETE",
+    }),
+  markMessageAsMoment: (messageId: number, vibe = "general") =>
+    jsonFetch<{ moment: SharedMoment }>(
+      `/api/chat/messages/${messageId}/mark-moment`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ vibe }),
+      },
     ),
   getMetrics: () => jsonFetch<MetricsResponse>("/api/metrics"),
   getDesktop: () => jsonFetch<DesktopSettings>("/api/desktop"),

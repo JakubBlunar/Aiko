@@ -377,6 +377,106 @@ class ActivityBlockProviderTests(unittest.TestCase):
             )
 
 
+class AnniversaryBlockProviderTests(unittest.TestCase):
+    """The anniversary inner-life provider lands in the system prompt
+    after the relationship block, and is dropped under ``aggressive``."""
+
+    def test_anniversary_block_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(session_id="ann1", role="user", content="hi", token_count=2)
+            assembler.set_inner_life_providers(
+                anniversary=lambda: (
+                    "On your mind today — a month ago today: "
+                    "we debugged the proactive bug together."
+                ),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "ann1",
+                "yo",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertIn("a month ago today", messages[0]["content"])
+
+    def test_anniversary_block_silent_when_empty(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(session_id="ann2", role="user", content="hi", token_count=2)
+            assembler.set_inner_life_providers(anniversary=lambda: "")
+            messages, _ = assembler.assemble_with_budget(
+                "ann2",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertNotIn("On your mind today", messages[0]["content"])
+
+    def test_anniversary_block_dropped_under_aggressive(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(session_id="ann3", role="user", content="hi", token_count=2)
+            assembler.set_inner_life_providers(
+                anniversary=lambda: "On your mind today — a month ago: X.",
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "ann3",
+                "x",
+                context_window=4096,
+                response_budget=256,
+                aggressive=True,
+            )
+            self.assertNotIn("a month ago", messages[0]["content"])
+
+
+class AxesBlockProviderTests(unittest.TestCase):
+    """The relationship-axes inner-life provider feeds the system prompt."""
+
+    def test_axes_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(session_id="ax1", role="user", content="hi", token_count=2)
+            assembler.set_inner_life_providers(
+                axes=lambda: "How the relationship feels: you feel close to Jacob right now.",
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "ax1",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertIn("How the relationship feels", messages[0]["content"])
+
+    def test_axes_block_silent_when_empty(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(session_id="ax2", role="user", content="hi", token_count=2)
+            assembler.set_inner_life_providers(axes=lambda: "")
+            messages, _ = assembler.assemble_with_budget(
+                "ax2",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertNotIn("How the relationship feels", messages[0]["content"])
+
+    def test_axes_block_dropped_under_aggressive(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(session_id="ax3", role="user", content="hi", token_count=2)
+            assembler.set_inner_life_providers(
+                axes=lambda: "How the relationship feels: close.",
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "ax3",
+                "x",
+                context_window=4096,
+                response_budget=256,
+                aggressive=True,
+            )
+            self.assertNotIn("How the relationship feels", messages[0]["content"])
+
+
 class GrammarAddendumTests(unittest.TestCase):
     """Spot-checks on the new dynamic prompt addendum builders.
 

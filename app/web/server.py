@@ -397,8 +397,15 @@ def create_web_app(session: "SessionController") -> FastAPI:
     @app.get("/api/sessions/{session_id}/messages")
     def session_messages(session_id: str, limit: int = 200) -> JSONResponse:
         rows = session._chat_db.get_messages(session_id, limit=max(1, min(limit, 1000)))
+        # ``id`` is included for the schema-v7 "mark as moment" action;
+        # callers that don't need it can ignore the field.
         return JSONResponse([
-            {"role": r.role, "content": r.content, "created_at": r.created_at}
+            {
+                "id": int(r.id),
+                "role": r.role,
+                "content": r.content,
+                "created_at": r.created_at,
+            }
             for r in rows
         ])
 
@@ -448,6 +455,28 @@ def create_web_app(session: "SessionController") -> FastAPI:
                 # reporter polling loop.
                 "awareness_enabled": bool(
                     getattr(s.agent, "activity_awareness_enabled", False),
+                ),
+            },
+            "shared_moments": {
+                "enabled": bool(getattr(s.agent, "shared_moments_enabled", True)),
+                "llm_enabled": bool(
+                    getattr(s.agent, "shared_moments_llm_enabled", True),
+                ),
+                "min_turn_gap": int(
+                    getattr(s.agent, "shared_moments_min_turn_gap", 5),
+                ),
+                "cooldown_seconds": float(
+                    getattr(s.agent, "shared_moments_cooldown_seconds", 300.0),
+                ),
+            },
+            "anniversary": {
+                "surfacing_enabled": bool(
+                    getattr(s.agent, "anniversary_surfacing_enabled", True),
+                ),
+            },
+            "relationship_axes": {
+                "enabled": bool(
+                    getattr(s.agent, "relationship_axes_enabled", True),
                 ),
             },
             "endpointing": {
@@ -565,6 +594,51 @@ def create_web_app(session: "SessionController") -> FastAPI:
                     log.debug(
                         "clearing user_active_app failed", exc_info=True,
                     )
+        shared_moments_cfg = payload.get("shared_moments") or {}
+        if "enabled" in shared_moments_cfg:
+            session._settings.agent.shared_moments_enabled = bool(
+                shared_moments_cfg["enabled"]
+            )
+        if "llm_enabled" in shared_moments_cfg:
+            session._settings.agent.shared_moments_llm_enabled = bool(
+                shared_moments_cfg["llm_enabled"]
+            )
+        if "min_turn_gap" in shared_moments_cfg:
+            try:
+                value = max(1, int(shared_moments_cfg["min_turn_gap"]))
+            except (TypeError, ValueError):
+                value = 5
+            session._settings.agent.shared_moments_min_turn_gap = value
+            try:
+                if session._moment_detector is not None:
+                    session._moment_detector.update_runtime(min_turn_gap=value)
+            except Exception:
+                log.debug("moment detector update_runtime failed", exc_info=True)
+        if "cooldown_seconds" in shared_moments_cfg:
+            try:
+                value = max(
+                    30.0, float(shared_moments_cfg["cooldown_seconds"]),
+                )
+            except (TypeError, ValueError):
+                value = 300.0
+            session._settings.agent.shared_moments_cooldown_seconds = value
+            try:
+                if session._moment_detector is not None:
+                    session._moment_detector.update_runtime(
+                        cooldown_seconds=value,
+                    )
+            except Exception:
+                log.debug("moment detector cooldown update failed", exc_info=True)
+        anniversary_cfg = payload.get("anniversary") or {}
+        if "surfacing_enabled" in anniversary_cfg:
+            session._settings.agent.anniversary_surfacing_enabled = bool(
+                anniversary_cfg["surfacing_enabled"]
+            )
+        axes_cfg = payload.get("relationship_axes") or {}
+        if "enabled" in axes_cfg:
+            session._settings.agent.relationship_axes_enabled = bool(
+                axes_cfg["enabled"]
+            )
         tools = payload.get("tools") or {}
         if tools:
             tcfg = session._settings.tools
@@ -973,6 +1047,116 @@ def create_web_app(session: "SessionController") -> FastAPI:
         if result is None:
             raise HTTPException(503, "world store unavailable")
         return JSONResponse(result)
+
+    # ── REST: Shared moments + Together (schema v7) ─────────────────
+
+    def _on_shared_moment(patch: dict[str, Any]) -> None:
+        try:
+            hub.broadcast({"type": "shared_moment_updated", "patch": dict(patch)})
+        except Exception:
+            log.debug("shared moment broadcast failed", exc_info=True)
+
+    def _on_relationship_axes(state: dict[str, Any]) -> None:
+        try:
+            hub.broadcast({"type": "relationship_axes_updated", "axes": dict(state)})
+        except Exception:
+            log.debug("axes broadcast failed", exc_info=True)
+
+    try:
+        session.add_shared_moment_listener(_on_shared_moment)
+    except Exception:
+        log.debug("shared moment listener subscribe failed", exc_info=True)
+    try:
+        session.add_relationship_axes_listener(_on_relationship_axes)
+    except Exception:
+        log.debug("axes listener subscribe failed", exc_info=True)
+
+    @app.get("/api/together")
+    def get_together() -> JSONResponse:
+        return JSONResponse(session.get_together_summary())
+
+    @app.get("/api/shared-moments")
+    def list_shared_moments(
+        offset: int = 0,
+        limit: int = 20,
+        vibe: str | None = None,
+    ) -> JSONResponse:
+        result = session.list_shared_moments(
+            offset=max(0, int(offset)),
+            limit=max(1, min(int(limit), 100)),
+            vibe=vibe,
+        )
+        return JSONResponse(result)
+
+    @app.post("/api/shared-moments")
+    async def create_shared_moment(payload: dict[str, Any]) -> JSONResponse:
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "expected JSON object body")
+        summary = payload.get("summary")
+        if not isinstance(summary, str) or not summary.strip():
+            raise HTTPException(400, "summary must be a non-empty string")
+        vibe = payload.get("vibe", "general")
+        if not isinstance(vibe, str):
+            raise HTTPException(400, "vibe must be a string")
+        when = payload.get("when")
+        if when is not None and not isinstance(when, str):
+            raise HTTPException(400, "when must be an ISO8601 string or null")
+        result = session.add_shared_moment(
+            summary=summary,
+            vibe=vibe,
+            when=when,
+        )
+        if result is None:
+            raise HTTPException(503, "shared moments unavailable")
+        return JSONResponse({"moment": result})
+
+    @app.patch("/api/shared-moments/{moment_id}")
+    async def patch_shared_moment(
+        moment_id: int, payload: dict[str, Any],
+    ) -> JSONResponse:
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "expected JSON object body")
+        kwargs: dict[str, Any] = {}
+        for field_name in ("summary", "vibe", "when"):
+            if field_name in payload:
+                value = payload[field_name]
+                if value is not None and not isinstance(value, str):
+                    raise HTTPException(400, f"{field_name} must be a string")
+                kwargs[field_name] = value
+        if "pinned" in payload:
+            value = payload["pinned"]
+            if not isinstance(value, bool):
+                raise HTTPException(400, "pinned must be a boolean")
+            kwargs["pinned"] = value
+        if not kwargs:
+            raise HTTPException(400, "patch must include at least one field")
+        result = session.update_shared_moment(int(moment_id), **kwargs)
+        if result is None:
+            raise HTTPException(404, "shared moment not found")
+        return JSONResponse({"moment": result})
+
+    @app.delete("/api/shared-moments/{moment_id}")
+    def delete_shared_moment(moment_id: int) -> JSONResponse:
+        ok = session.delete_shared_moment(int(moment_id))
+        if not ok:
+            raise HTTPException(404, "shared moment not found")
+        return JSONResponse({"deleted_moment_id": int(moment_id)})
+
+    @app.post("/api/chat/messages/{message_id}/mark-moment")
+    async def mark_message_as_moment(
+        message_id: int, payload: dict[str, Any] | None = None,
+    ) -> JSONResponse:
+        vibe = "general"
+        if isinstance(payload, dict) and "vibe" in payload:
+            value = payload["vibe"]
+            if value is not None and not isinstance(value, str):
+                raise HTTPException(400, "vibe must be a string")
+            if isinstance(value, str) and value.strip():
+                vibe = value
+        result = session.mark_message_as_moment(int(message_id), vibe=vibe)
+        if result is None:
+            raise HTTPException(404, "message not found")
+        return JSONResponse({"moment": result})
 
     # ── REST: Live2D avatar (fixed Alexia bundle) ───────────────────
 

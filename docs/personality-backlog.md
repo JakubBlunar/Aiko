@@ -346,11 +346,29 @@ or auto-forgets, while long-stable memories drift into a low-touch
   some thinking about whether items move with her or stay in their
   scene. Out of scope for v1 because a single cozy room already
   covers the cookie use case.
-- **"Shared moments" episodic memory kind.** Today
-  `event` / `callback` / `reflection` are loosely episodic but flat.
-  A new `shared_moment` kind with structured `(when, what, vibe)`
-  metadata, surfaced as "remember when …" anniversaries, would deepen
-  the relationship arc.
+- **"Shared moments" episodic memory kind. — DONE (schema v7).** Now
+  shipped as a structured `shared_moment` memory kind with
+  `(when, what, vibe, source_message_ids, last_anniversaried_at)`
+  metadata on the new `memories.metadata` JSON column. Three detection
+  tracks (inline `[[moment:vibe:text]]` tag, a Track-2 LLM detector
+  gated on affect/reaction/milestone/gift signals, and a manual
+  "Mark as moment" chat action) feed a `SharedMomentsStore`, an
+  anniversary inner-life block (1mo / 3mo / 6mo / 1yr ± 1 day, with a
+  6h per-moment rate-limit), and a new "Together" UI tab.
+  Bonus shipped alongside:
+  * `relationship_axes` table — four floats in [-1, 1]
+    (closeness, humor, trust, comfort) with ~30-day decay and a terse
+    prompt block that only renders when an axis crosses ±0.5.
+  * A small RAG retriever bonus for shared-moment rows whose
+    `metadata.when` is hitting an anniversary today.
+  * Persona update: a "shared moments / anniversaries" paragraph in
+    `data/persona/aiko_companion.txt`.
+  Follow-ups for the dimension roadmap (still open):
+  * Multi-user moments / participant attribution beyond Jacob.
+  * Exportable timeline (Markdown / PDF) of moments.
+  * Axes-aware proactive nudges (e.g. "comfort is low — maybe ask how
+    Jacob's actually doing"). The axes are read-only into the prompt
+    today; consuming them in `ProactiveDirector` is a clean follow-up.
 - **A4 (split off from the depth pass).** Salience auto-decay tied to
   recall cadence: memories the user genuinely cares about (high
   cosine-similar follow-ups, `[[remember:self:...]]` self-tags) gain

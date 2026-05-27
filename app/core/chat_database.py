@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_SCHEMA_VERSION = 6
+_SCHEMA_VERSION = 7
 
 _CREATE_TABLES = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -50,7 +50,14 @@ CREATE TABLE IF NOT EXISTS memories (
     -- "always keep this" flag wired through MemoryStore.set_pinned(). Old
     -- databases get this column added via the v4->v5 ALTER in
     -- ``_init_schema`` below; new databases get it from this CREATE.
-    pinned INTEGER NOT NULL DEFAULT 0
+    pinned INTEGER NOT NULL DEFAULT 0,
+    -- Schema v7: optional JSON metadata blob. Used today by the
+    -- ``shared_moment`` kind to carry ``{when, what, vibe,
+    -- participants, source_message_ids, last_anniversaried_at}``, but
+    -- intentionally generic so future structured kinds can ride the
+    -- same column. NULL on existing kinds. v6 databases get the column
+    -- added via ALTER in ``_init_schema``.
+    metadata TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_memories_kind ON memories(kind);
 CREATE INDEX IF NOT EXISTS idx_memories_salience ON memories(salience);
@@ -97,6 +104,19 @@ CREATE TABLE IF NOT EXISTS user_relationship (
     total_sessions INTEGER NOT NULL DEFAULT 0,
     last_milestone_at TEXT,
     milestone_label TEXT
+);
+
+-- Schema v7: relationship "axes" — four floats in [-1, 1] tracking
+-- closeness, humor, trust, comfort. Drift per-turn from reactions,
+-- moments, milestones (see ``app.core.relationship_axes``). Slowly
+-- decay toward 0 over a ~30-day half-life when there's no signal.
+CREATE TABLE IF NOT EXISTS relationship_axes (
+    user_id TEXT PRIMARY KEY,
+    closeness REAL NOT NULL DEFAULT 0.0,
+    humor REAL NOT NULL DEFAULT 0.0,
+    trust REAL NOT NULL DEFAULT 0.0,
+    comfort REAL NOT NULL DEFAULT 0.0,
+    updated_at TEXT NOT NULL
 );
 
 -- Phase 4a: agenda items extracted from [[agenda:...]] tags or auto-promoted.
@@ -305,6 +325,14 @@ class ChatDatabase:
         # ``world_state``). The ``CREATE TABLE IF NOT EXISTS`` block above
         # already creates them on upgrade — there's nothing to ALTER, but
         # we log the bump explicitly for the migration trail.
+        # v6 -> v7: add ``memories.metadata`` JSON column (used by the
+        # ``shared_moment`` kind, but generic) and the new
+        # ``relationship_axes`` table. The table CREATE above is idempotent;
+        # only the ALTER needs guarding so re-runs are a no-op.
+        try:
+            conn.execute("ALTER TABLE memories ADD COLUMN metadata TEXT")
+        except sqlite3.OperationalError:
+            pass
         conn.execute("UPDATE schema_version SET version = ?", (_SCHEMA_VERSION,))
         conn.commit()
 
