@@ -2,6 +2,11 @@
 
 export interface ChatMessage {
   id: string;
+  /** Backend SQLite ``messages.id`` when the row was loaded from history.
+   * Absent for messages composed locally before the round-trip lands
+   * (the UI's optimistic insertion). Required by the "mark as moment"
+   * action so the API can re-fetch the canonical content + timestamp. */
+  backendId?: number;
   role: "user" | "assistant" | "system";
   content: string;
   /** ISO timestamp; created when the message lands in the store. */
@@ -63,6 +68,25 @@ export interface AssistantSettings {
   activity?: {
     awareness_enabled: boolean;
   };
+  /** Schema v7: shared moments + relationship depth. Master switch for
+   * the subsystem; ``llm_enabled`` toggles only the speaking-window
+   * detector. Cadence knobs cap how often the LLM runs. */
+  shared_moments?: {
+    enabled: boolean;
+    llm_enabled: boolean;
+    min_turn_gap: number;
+    cooldown_seconds: number;
+  };
+  /** Schema v7: anniversary surfacing in the system prompt. Independent
+   * of ``shared_moments.enabled`` so a historical archive can stay
+   * read-only while new moments are paused, or vice versa. */
+  anniversary?: {
+    surfacing_enabled: boolean;
+  };
+  /** Schema v7: relationship axes (closeness/humor/trust/comfort). */
+  relationship_axes?: {
+    enabled: boolean;
+  };
   endpointing?: {
     enabled: boolean;
     use_partial_transcript: boolean;
@@ -114,7 +138,8 @@ export type MemoryKind =
   | "callback"
   | "reflection"
   | "promise"
-  | "catchphrase";
+  | "catchphrase"
+  | "shared_moment";
 
 export const MEMORY_KINDS: readonly MemoryKind[] = [
   "fact",
@@ -128,6 +153,7 @@ export const MEMORY_KINDS: readonly MemoryKind[] = [
   "reflection",
   "open_question",
   "catchphrase",
+  "shared_moment",
 ];
 
 export type MemoryOrder = "recent" | "top";
@@ -160,6 +186,95 @@ export interface Memory {
   last_used_at: string | null;
   use_count: number;
   pinned: boolean;
+  metadata?: Record<string, unknown>;
+}
+
+/** Closed vibe vocabulary mirrored from ``shared_moment_extractor.VIBE_VOCABULARY``. */
+export type SharedMomentVibe =
+  | "warm"
+  | "playful"
+  | "tender"
+  | "proud"
+  | "silly"
+  | "milestone"
+  | "gift"
+  | "comfort"
+  | "victory"
+  | "creative"
+  | "vulnerable"
+  | "general";
+
+export const SHARED_MOMENT_VIBES: readonly SharedMomentVibe[] = [
+  "warm",
+  "playful",
+  "tender",
+  "proud",
+  "silly",
+  "milestone",
+  "gift",
+  "comfort",
+  "victory",
+  "creative",
+  "vulnerable",
+  "general",
+];
+
+export interface SharedMoment {
+  id: number;
+  summary: string;
+  vibe: SharedMomentVibe | string;
+  when: string;
+  created_at: string;
+  salience: number;
+  pinned: boolean;
+  source: "tag" | "llm" | "manual" | string;
+  confidence: number;
+  source_message_ids: number[];
+  last_anniversaried_at: string | null;
+}
+
+export interface SharedMomentsResponse {
+  items: SharedMoment[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
+export interface RelationshipAxes {
+  user_id: string;
+  closeness: number;
+  humor: number;
+  trust: number;
+  comfort: number;
+  updated_at: string;
+  enabled?: boolean;
+}
+
+export interface MilestoneEntry {
+  label: string;
+  human: string;
+  crossed: boolean;
+  crossed_at: string | null;
+}
+
+export interface AnniversaryTodayPayload {
+  moment_id: number;
+  summary: string;
+  vibe: SharedMomentVibe | string;
+  days_ago: number;
+  window_label: string;
+}
+
+export interface TogetherSummary {
+  phase: string;
+  days_known: number;
+  total_turns: number;
+  total_sessions: number;
+  first_seen_at: string | null;
+  milestones: MilestoneEntry[];
+  axes: RelationshipAxes;
+  anniversary_today: AnniversaryTodayPayload | null;
+  recent_moments_count: number;
 }
 
 export interface MemoriesResponse {
@@ -651,6 +766,22 @@ export type WsServerEvent =
   | { type: "memory_updated"; memory: Memory }
   | { type: "memory_deleted"; id: number }
   | { type: "world_updated"; patch: WorldPatch }
+  | {
+      /** Schema v7. ``patch.moment`` is the typed row dict for a create
+       * or update; ``patch.deleted_moment_id`` is the numeric id on
+       * delete. Exactly one of the two keys is populated. */
+      type: "shared_moment_updated";
+      patch: {
+        moment?: SharedMoment;
+        deleted_moment_id?: number;
+      };
+    }
+  | {
+      /** Schema v7. Server-side debounced — only fires when at least
+       * one axis crossed a 0.05 step from the last broadcast. */
+      type: "relationship_axes_updated";
+      axes: RelationshipAxes;
+    }
   | {
       type: "avatar_settings_changed";
       settings: AvatarSettingsKnobs;

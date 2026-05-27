@@ -466,6 +466,16 @@ class PromptAssembler:
         # was captured. Desktop-only opt-in; browser users never set
         # the underlying state. Dropped in aggressive mode.
         self._activity_provider: Callable[[], str] | None = None
+        # Schema v7: "On your mind today — a year ago today, …" line that
+        # surfaces a single shared_moment matching one of the calendar
+        # anniversary windows. Always empty when no match for today;
+        # rate-limited per moment by the provider itself. Dropped in
+        # aggressive mode.
+        self._anniversary_provider: Callable[[], str] | None = None
+        # Schema v7: terse relationship-axes line. Only renders when an
+        # axis exceeds the notability threshold (default 0.5). Dropped
+        # in aggressive mode.
+        self._axes_provider: Callable[[], str] | None = None
         # Per-turn dynamic blocks: not part of ``_StaticSlices`` because
         # they change every utterance. ``vocal_tone`` is set immediately
         # before the live turn dispatch by ``SessionController`` after
@@ -547,6 +557,8 @@ class PromptAssembler:
         motion_names: Callable[[], list[str]] | None = None,
         world: Callable[[], str] | None = None,
         activity: Callable[[], str] | None = None,
+        anniversary: Callable[[], str] | None = None,
+        axes: Callable[[], str] | None = None,
     ) -> None:
         """Register optional inner-life block providers.
 
@@ -588,6 +600,10 @@ class PromptAssembler:
             self._world_provider = world
         if activity is not None:
             self._activity_provider = activity
+        if anniversary is not None:
+            self._anniversary_provider = anniversary
+        if axes is not None:
+            self._axes_provider = axes
 
     def set_last_reaction(self, reaction: str | None) -> None:
         if not reaction:
@@ -931,6 +947,13 @@ class PromptAssembler:
         # different app between turns is reflected in the next prompt.
         # Dropped in aggressive mode for the same reason as world.
         activity_block = "" if aggressive else _safe_provider(self._activity_provider)
+        # Schema v7: shared-moment anniversary line + relationship-axes
+        # summary. Both empty strings most turns; the anniversary
+        # provider also stamps the chosen moment so it won't fire
+        # repeatedly inside the rate-limit window. Dropped in
+        # aggressive mode.
+        anniversary_block = "" if aggressive else _safe_provider(self._anniversary_provider)
+        axes_block = "" if aggressive else _safe_provider(self._axes_provider)
 
         # Alexia bundle: capability lookup is *not* a string provider —
         # it returns the raw flags so we can build the overlay /
@@ -990,6 +1013,13 @@ class PromptAssembler:
             system_parts.append(mood_hint)
         if relationship_block:
             system_parts.append(relationship_block)
+        # Anniversary + axes sit right after the relationship block so
+        # the three "how do we know each other" pieces cluster together
+        # in the system prompt.
+        if anniversary_block:
+            system_parts.append(anniversary_block)
+        if axes_block:
+            system_parts.append(axes_block)
         if petname_block:
             system_parts.append(petname_block)
         if profile_block:

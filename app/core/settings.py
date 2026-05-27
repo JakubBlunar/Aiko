@@ -239,6 +239,33 @@ class AgentSettings:
     # for the privacy posture). Off by default; browser shells render
     # the toggle but can never produce a non-null active app.
     activity_awareness_enabled: bool = False
+    # ── Shared moments + relationship depth (schema v7) ───────────────
+    # ``shared_moments_enabled`` is the master switch for the entire
+    # subsystem (inline tag extraction, LLM detector, Together tab,
+    # anniversary block). With it off, ``[[moment:]]`` tags still get
+    # stripped from chat (the strip pattern lives upstream) but they're
+    # not persisted.
+    # ``shared_moments_llm_enabled`` toggles only the LLM Track 2
+    # detector — turning it off keeps Aiko-curated tags and manual UI
+    # button working.
+    # The LLM detector is gated by ``shared_moments_min_turn_gap``
+    # (cadence) AND ``shared_moments_cooldown_seconds`` (wall-clock) so
+    # back-to-back warm exchanges produce at most one moment per window.
+    shared_moments_enabled: bool = True
+    shared_moments_llm_enabled: bool = True
+    shared_moments_min_turn_gap: int = 5
+    shared_moments_cooldown_seconds: float = 300.0
+    # Anniversary surfacing renders a single "On your mind today — a
+    # year ago today, …" line in the system prompt when a shared moment
+    # matches one of the 1mo/3mo/6mo/1yr/Nyr windows. Independent of
+    # ``shared_moments_enabled`` so you can keep moments off but
+    # surface anniversaries from a historical archive (or vice versa).
+    anniversary_surfacing_enabled: bool = True
+    # Relationship axes: 4 floats (closeness, humor, trust, comfort)
+    # that drift per turn from reactions, moments, milestones. Cheap
+    # (one SQL upsert). The prompt block is terse and only renders
+    # when an axis exceeds the notable threshold (default 0.5).
+    relationship_axes_enabled: bool = True
     # Rolling summary background worker.
     summary_idle_seconds: float = 15.0  # quiet time before summarising
     summary_min_unsummarized_messages: int = 6  # minimum new msgs to trigger
@@ -702,6 +729,25 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             ),
             activity_awareness_enabled=bool(
                 agent_raw.get("activity_awareness_enabled", False),
+            ),
+            shared_moments_enabled=bool(
+                agent_raw.get("shared_moments_enabled", True),
+            ),
+            shared_moments_llm_enabled=bool(
+                agent_raw.get("shared_moments_llm_enabled", True),
+            ),
+            shared_moments_min_turn_gap=max(
+                1, int(agent_raw.get("shared_moments_min_turn_gap", 5)),
+            ),
+            shared_moments_cooldown_seconds=max(
+                30.0,
+                float(agent_raw.get("shared_moments_cooldown_seconds", 300.0)),
+            ),
+            anniversary_surfacing_enabled=bool(
+                agent_raw.get("anniversary_surfacing_enabled", True),
+            ),
+            relationship_axes_enabled=bool(
+                agent_raw.get("relationship_axes_enabled", True),
             ),
             summary_idle_seconds=max(2.0, float(agent_raw.get("summary_idle_seconds", 15.0))),
             summary_min_unsummarized_messages=max(2, int(agent_raw.get("summary_min_unsummarized_messages", 6))),

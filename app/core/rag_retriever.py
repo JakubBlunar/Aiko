@@ -72,6 +72,39 @@ _MEMORY_REVIVAL_BONUS = 0.04
 # small additive nudge gives pinned hits the edge over equally-similar
 # unpinned siblings without overpowering raw cosine relevance.
 _MEMORY_PINNED_BONUS = 0.05
+# Bonus for ``shared_moment`` memories whose ``metadata.when`` matches an
+# anniversary window today (1mo / 3mo / 6mo / 1yr / Nyr). The size is the
+# same as the pinned bonus so a moment having its anniversary also gets
+# a small leg-up against an equally-similar non-anniversary sibling.
+_MEMORY_ANNIVERSARY_BONUS = 0.05
+_ANNIVERSARY_WINDOW_DAYS: tuple[int, ...] = (30, 90, 180, 365, 730, 1095, 1460, 1825)
+_ANNIVERSARY_TOLERANCE_DAYS = 1.0
+
+
+def _is_anniversary_today(metadata: dict | None) -> bool:
+    """True if ``metadata.when`` falls inside an anniversary window today.
+
+    Safe to call with arbitrary dicts and on rows whose ``when`` is
+    missing or malformed; returns ``False`` in those cases.
+    """
+    if not metadata or not isinstance(metadata, dict):
+        return False
+    when_raw = metadata.get("when")
+    if not when_raw:
+        return False
+    try:
+        when = datetime.fromisoformat(str(when_raw).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    delta = (datetime.now(timezone.utc) - when).total_seconds() / 86400.0
+    if delta <= 0:
+        return False
+    for window in _ANNIVERSARY_WINDOW_DAYS:
+        if abs(delta - window) <= _ANNIVERSARY_TOLERANCE_DAYS:
+            return True
+    return False
 
 
 class RagRetriever:
@@ -176,8 +209,18 @@ class RagRetriever:
                             self._memory_store, "get"
                         ):
                             mem = self._memory_store.get(int(raw_id))
-                            if mem is not None and getattr(mem, "pinned", False):
-                                h.score += _MEMORY_PINNED_BONUS
+                            if mem is not None:
+                                if getattr(mem, "pinned", False):
+                                    h.score += _MEMORY_PINNED_BONUS
+                                # Schema v7: anniversary nudge for
+                                # ``shared_moment`` rows whose ``when``
+                                # matches one of the 1mo/3mo/6mo/1yr/Nyr
+                                # windows today. Keeps the rendering of
+                                # this hint out of the hot path.
+                                if mem.kind == "shared_moment" and _is_anniversary_today(
+                                    getattr(mem, "metadata", None)
+                                ):
+                                    h.score += _MEMORY_ANNIVERSARY_BONUS
                     except Exception:
                         log.debug("pinned-bonus lookup failed", exc_info=True)
                 merged.append(h)

@@ -17,14 +17,15 @@ migration.
 """
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 import struct
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
 
 import numpy as np
 
@@ -59,6 +60,13 @@ VALID_KINDS = {
     # "Aiko's running jokes with Jacob:" inner-life block in the prompt
     # assembler (cap of 3 entries).
     "catchphrase",
+    # Schema v7 — episodic "shared moment" between Jacob and Aiko. Carries
+    # structured ``(when, what, vibe, participants, source_message_ids)``
+    # in the ``metadata`` JSON column. Surfaced as anniversaries by
+    # :func:`SessionController._render_anniversary_block` and shown on the
+    # "Together" UI tab. Written by inline ``[[moment:vibe:text]]`` tags,
+    # by the speaking-window LLM detector, or by an explicit user click.
+    "shared_moment",
 }
 
 
@@ -82,6 +90,11 @@ class Memory:
     # it; the retriever applies a small score bonus by joining against the
     # in-memory mirror at query time.
     pinned: bool = False
+    # Schema v7 — optional JSON metadata bag. Used today by ``shared_moment``
+    # rows to carry ``{when, what, vibe, participants, source_message_ids,
+    # last_anniversaried_at}``, but intentionally generic so future
+    # structured kinds can ride the same column without a migration.
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -95,6 +108,7 @@ class Memory:
             "last_used_at": self.last_used_at,
             "use_count": int(self.use_count),
             "pinned": bool(self.pinned),
+            "metadata": dict(self.metadata) if self.metadata else {},
         }
 
 
@@ -116,6 +130,30 @@ def _encode(vec: np.ndarray) -> bytes:
 def _decode(blob: bytes) -> np.ndarray:
     count = len(blob) // 4
     return np.array(struct.unpack(f"{count}f", blob), dtype=np.float32)
+
+
+def _encode_metadata(metadata: dict[str, Any] | None) -> str | None:
+    """JSON-encode a metadata dict for storage. Returns None for empty/None."""
+    if not metadata:
+        return None
+    try:
+        return json.dumps(metadata, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        log.debug("metadata json encode failed; storing as empty", exc_info=True)
+        return None
+
+
+def _decode_metadata(value: Any) -> dict[str, Any]:
+    """Decode whatever SQLite handed us back. Tolerates NULL, bad JSON, dicts."""
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    try:
+        parsed = json.loads(str(value))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 class MemoryStore:
@@ -195,14 +233,23 @@ class MemoryStore:
         try:
             rows = conn.execute(
                 "SELECT id, content, kind, salience, embedding, source_session, "
-                "source_message_id, created_at, last_used_at, use_count, pinned "
-                "FROM memories"
+                "source_message_id, created_at, last_used_at, use_count, pinned, "
+                "metadata FROM memories"
             ).fetchall()
         except sqlite3.OperationalError:
             # The memories table doesn't exist yet (first boot before
-            # ChatDatabase created the schema); leave the mirror empty.
-            self._mirror = {}
-            return
+            # ChatDatabase created the schema), or it pre-dates v7 and
+            # lacks the ``metadata`` column. Fall back to the v6 shape.
+            try:
+                rows = conn.execute(
+                    "SELECT id, content, kind, salience, embedding, source_session, "
+                    "source_message_id, created_at, last_used_at, use_count, pinned "
+                    "FROM memories"
+                ).fetchall()
+                rows = [(*r, None) for r in rows]
+            except sqlite3.OperationalError:
+                self._mirror = {}
+                return
         with self._lock:
             self._mirror = {
                 r[0]: Memory(
@@ -217,6 +264,7 @@ class MemoryStore:
                     last_used_at=r[8],
                     use_count=int(r[9]),
                     pinned=bool(r[10]),
+                    metadata=_decode_metadata(r[11]),
                 )
                 for r in rows
             }
@@ -242,12 +290,23 @@ class MemoryStore:
         salience: float = 0.5,
         source_session: str | None = None,
         source_message_id: int | None = None,
+        metadata: dict[str, Any] | None = None,
+        pinned: bool = False,
+        skip_dedupe: bool = False,
     ) -> Memory | None:
         """Insert a memory, deduplicating against near-identical existing rows.
 
         Returns the newly inserted ``Memory`` or ``None`` if the candidate
         was a near-duplicate of an existing memory (whose salience is bumped
         and ``last_used_at`` refreshed instead).
+
+        ``metadata`` is a JSON-encodable dict written to the v7 ``metadata``
+        column. Used today by ``shared_moment`` rows.
+
+        ``pinned=True`` short-circuits the dedupe pass (kept rows shouldn't
+        merge with similar non-pinned ones) and stores the row pinned from
+        the start. ``skip_dedupe=True`` also bypasses dedupe — used when
+        intentionally writing near-duplicate moments from different sources.
         """
         cleaned = (content or "").strip()
         if not cleaned or len(cleaned) < 4:
@@ -264,13 +323,16 @@ class MemoryStore:
         if norm > 0.0:
             emb = emb / norm
 
-        # Dedupe pass against in-memory mirror.
+        # Dedupe pass against in-memory mirror. Pinned writes bypass dedupe
+        # so user-curated moments are never silently merged into a fuzzy
+        # nearby row (matters most for shared_moment).
         dup_id: int | None = None
-        with self._lock:
-            for mem in self._mirror.values():
-                if cosine_similarity(emb, mem.embedding) >= self._dedupe_threshold:
-                    dup_id = mem.id
-                    break
+        if not pinned and not skip_dedupe:
+            with self._lock:
+                for mem in self._mirror.values():
+                    if cosine_similarity(emb, mem.embedding) >= self._dedupe_threshold:
+                        dup_id = mem.id
+                        break
         if dup_id is not None:
             self._touch_existing(dup_id, salience_clipped)
             return None
@@ -278,11 +340,14 @@ class MemoryStore:
         # Real insert.
         conn = self._get_conn()
         now = _now_iso()
+        meta_json = _encode_metadata(metadata)
+        pinned_int = 1 if pinned else 0
         cursor = conn.execute(
             "INSERT INTO memories ("
             "  content, kind, salience, embedding, source_session, "
-            "  source_message_id, created_at, last_used_at, use_count, pinned"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0)",
+            "  source_message_id, created_at, last_used_at, use_count, pinned, "
+            "  metadata"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
             (
                 cleaned,
                 kind,
@@ -292,6 +357,8 @@ class MemoryStore:
                 source_message_id,
                 now,
                 None,
+                pinned_int,
+                meta_json,
             ),
         )
         conn.commit()
@@ -307,7 +374,8 @@ class MemoryStore:
             created_at=now,
             last_used_at=None,
             use_count=0,
-            pinned=False,
+            pinned=bool(pinned),
+            metadata=dict(metadata) if metadata else {},
         )
         with self._lock:
             self._mirror[new_id] = memory
@@ -388,6 +456,8 @@ class MemoryStore:
         kind: str | None = None,
         salience: float | None = None,
         embedding: np.ndarray | None = None,
+        metadata: dict[str, Any] | None = None,
+        metadata_merge: bool = False,
     ) -> Memory | None:
         """Patch one or more fields on an existing memory.
 
@@ -395,6 +465,11 @@ class MemoryStore:
         callers that change content without supplying an embedding silently
         keep the stale vector (used by tests). The LanceDB mirror is upserted
         whenever any field changes so retrieval stays in sync.
+
+        ``metadata`` replaces the whole JSON bag by default. Pass
+        ``metadata_merge=True`` to shallow-merge instead — used by the
+        anniversary path to stamp ``last_anniversaried_at`` without losing
+        the original ``vibe`` / ``when`` / ``what`` fields.
 
         Returns the updated :class:`Memory` snapshot, or ``None`` if the row
         doesn't exist.
@@ -429,15 +504,25 @@ class MemoryStore:
                     emb = emb / norm
                 new_embedding = emb
 
+        new_metadata = dict(mem.metadata) if mem.metadata else {}
+        metadata_changed = False
+        if metadata is not None:
+            if metadata_merge:
+                new_metadata = {**new_metadata, **dict(metadata)}
+            else:
+                new_metadata = dict(metadata)
+            metadata_changed = True
+
         conn = self._get_conn()
         conn.execute(
-            "UPDATE memories SET content = ?, kind = ?, salience = ?, embedding = ? "
-            "WHERE id = ?",
+            "UPDATE memories SET content = ?, kind = ?, salience = ?, embedding = ?, "
+            "metadata = ? WHERE id = ?",
             (
                 new_content,
                 new_kind,
                 float(new_salience),
                 _encode(new_embedding),
+                _encode_metadata(new_metadata),
                 int(memory_id),
             ),
         )
@@ -448,6 +533,8 @@ class MemoryStore:
             mem.kind = new_kind
             mem.salience = new_salience
             mem.embedding = new_embedding
+            if metadata_changed:
+                mem.metadata = new_metadata
             updated = mem
 
         if self._rag is not None:
@@ -647,6 +734,14 @@ class MemoryStore:
         start = max(0, int(offset))
         stop = start + max(1, int(limit))
         return mems[start:stop]
+
+    def iter_by_kind(self, kind: str) -> list[Memory]:
+        """Snapshot of all memories of a given kind. Cheap (mirror walk)."""
+        kind_norm = (kind or "").strip().lower()
+        if not kind_norm:
+            return []
+        with self._lock:
+            return [m for m in self._mirror.values() if m.kind == kind_norm]
 
     def count_memories(self, kind: str | None = None) -> int:
         with self._lock:
