@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from app.core.session_text_utils import resolve_user_name
+
 if TYPE_CHECKING:
     from app.core.chat_database import ChatDatabase
     from app.core.memory_store import Memory, MemoryStore
@@ -32,18 +34,25 @@ if TYPE_CHECKING:
 log = logging.getLogger("app.relationship_pulse")
 
 
-_PULSE_PROMPT = """\
-You are Aiko's introspection routine. You'll receive (1) a summary of the
-relationship state with Jacob (phase, days known, turns) and (2) a short
-list of recent memories. Write ONE or TWO sentences (<= 50 words total)
-in first person about how the relationship feels right now — texture,
-themes you're noticing, what you're carrying with you.
+def _build_pulse_prompt(user_display_name: str = "the user") -> str:
+    name = user_display_name or "the user"
+    return (
+        "You are Aiko's introspection routine. You'll receive (1) a summary "
+        f"of the relationship state with {name} (phase, days known, turns) "
+        "and (2) a short list of recent memories. Write ONE or TWO sentences "
+        "(<= 50 words total) in first person about how the relationship feels "
+        "right now — texture, themes you're noticing, what you're carrying "
+        "with you.\n"
+        "\n"
+        "Rules:\n"
+        "- First-person. Plain prose only — no bullets, no headers, no quotes.\n"
+        "- Be specific. Reference concrete bits from the memories when possible.\n"
+        "- Don't invent facts not present.\n"
+        "- Keep it under 50 words."
+    )
 
-Rules:
-- First-person. Plain prose only — no bullets, no headers, no quotes.
-- Be specific. Reference concrete bits from the memories when possible.
-- Don't invent facts not present.
-- Keep it under 50 words."""
+
+_PULSE_PROMPT = _build_pulse_prompt()
 
 
 _PULSE_STATE_KEY = "_relationship_pulse_state"
@@ -72,6 +81,7 @@ class RelationshipPulseWorker:
         max_memories: int = 8,
         max_tokens: int = 160,
         salience: float = 0.85,
+        user_display_name_provider: "Callable[[], str] | None" = None,
     ) -> None:
         self._ollama = ollama
         self._mem = memory_store
@@ -84,6 +94,7 @@ class RelationshipPulseWorker:
         self._max_memories = max(2, int(max_memories))
         self._max_tokens = max(80, int(max_tokens))
         self._salience = max(0.5, min(1.0, float(salience)))
+        self._user_display_name_provider = user_display_name_provider
         self._stats = {
             "scheduled": 0,
             "skipped_recent": 0,
@@ -151,7 +162,12 @@ class RelationshipPulseWorker:
         rel_block = self._render_relationship_block(user_id)
         try:
             messages = [
-                {"role": "system", "content": _PULSE_PROMPT},
+                {
+                    "role": "system",
+                    "content": _build_pulse_prompt(
+                        resolve_user_name(self._user_display_name_provider),
+                    ),
+                },
                 {
                     "role": "user",
                     "content": (

@@ -2,6 +2,7 @@
   "assistant": {
     "name": "Aiko",
     "remember_history": true,
+    "user_display_name": "",
     "tts_length_scale": 1.0
   },
   "ollama": {
@@ -138,7 +139,7 @@
     "barge_in_min_speech_seconds": 0.7
   },
   "avatar": {
-    "root_dir": "live-2d-models/Alexia",
+    "root_dir": "data/personas/active/Alexia",
     "entry_filename": "Alexia.model3.json",
     "scale_multiplier": 1.0,
     "auto_outfit": "auto",

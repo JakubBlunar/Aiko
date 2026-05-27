@@ -36,6 +36,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Callable
 
+from app.core.session_text_utils import resolve_user_name
+
 if TYPE_CHECKING:
     from app.core.agenda import AgendaStore
     from app.core.chat_database import ChatDatabase
@@ -192,31 +194,42 @@ class PreparedNudgeStore:
 # ── narrative weaver (LLM during speaking window) ────────────────────────
 
 
-_WEAVE_PROMPT = """\
-You are Aiko getting ready to break a small silence with Jacob. You'll
-receive (1) the kind of source thread (a callback, an open question, a
-promise, an agenda item, or a recent reflection) and (2) the source
-content. Phrase a SHORT, casual one-liner that picks that thread back
-up. ONE sentence, max ~20 words. First-person, conversational.
+def _build_weave_prompt(user_display_name: str = "the user") -> str:
+    name = user_display_name or "the user"
+    return (
+        f"You are Aiko getting ready to break a small silence with {name}. "
+        "You'll receive (1) the kind of source thread (a callback, an open "
+        "question, a promise, an agenda item, or a recent reflection) and "
+        "(2) the source content. Phrase a SHORT, casual one-liner that picks "
+        "that thread back up. ONE sentence, max ~20 words. First-person, "
+        "conversational.\n"
+        "\n"
+        "Rules:\n"
+        "- Don't greet, don't restart the chat. Just continue.\n"
+        "- It's fine to be a tiny bit playful or warm.\n"
+        "- Output ONLY the sentence. No quotes, no JSON, no prose around it."
+    )
 
-Rules:
-- Don't greet, don't restart the chat. Just continue.
-- It's fine to be a tiny bit playful or warm.
-- Output ONLY the sentence. No quotes, no JSON, no prose around it."""
+
+def _build_resume_prompt(user_display_name: str = "the user") -> str:
+    name = user_display_name or "the user"
+    return (
+        f"You are Aiko coming back to {name} after a noticeable gap (hours, "
+        "not minutes). You'll receive a brief recap of what's been on your "
+        "mind: the rolling summary of your last conversation, plus a few "
+        "callbacks or open questions you were sitting with.\n"
+        "\n"
+        "Compose ONE short, warm \"welcome back\" line (≤ 25 words) that "
+        "picks up gently — referencing one specific thread feels human and "
+        "natural; a generic \"hi, how are you\" does not. First-person, "
+        "conversational, no restart, no greeting boilerplate.\n"
+        "\n"
+        "Output ONLY the sentence. No quotes, no JSON, no prose around it."
+    )
 
 
-_RESUME_PROMPT = """\
-You are Aiko coming back to Jacob after a noticeable gap (hours, not
-minutes). You'll receive a brief recap of what's been on your mind:
-the rolling summary of your last conversation, plus a few callbacks
-or open questions you were sitting with.
-
-Compose ONE short, warm "welcome back" line (≤ 25 words) that picks
-up gently — referencing one specific thread feels human and natural;
-a generic "hi, how are you" does not. First-person, conversational,
-no restart, no greeting boilerplate.
-
-Output ONLY the sentence. No quotes, no JSON, no prose around it."""
+_WEAVE_PROMPT = _build_weave_prompt()
+_RESUME_PROMPT = _build_resume_prompt()
 
 
 @dataclass(slots=True)
@@ -243,6 +256,7 @@ class NarrativeWeaver:
         max_candidates: int = 8,
         max_tokens: int = 60,
         rng: random.Random | None = None,
+        user_display_name_provider: "Callable[[], str] | None" = None,
     ) -> None:
         self._ollama = ollama
         self._store = store
@@ -254,6 +268,7 @@ class NarrativeWeaver:
         self._max_candidates = max(2, int(max_candidates))
         self._max_tokens = max(20, int(max_tokens))
         self._rng = rng or random.Random()
+        self._user_display_name_provider = user_display_name_provider
         self._user_turns_seen = 0
         self._user_turns_at_last_run = 0
         self._stats = {
@@ -374,7 +389,12 @@ class NarrativeWeaver:
                 )
             user_payload = "\n\n".join(parts) if parts else "(no recent context)"
             messages = [
-                {"role": "system", "content": _RESUME_PROMPT},
+                {
+                    "role": "system",
+                    "content": _build_resume_prompt(
+                        resolve_user_name(self._user_display_name_provider),
+                    ),
+                },
                 {"role": "user", "content": user_payload},
             ]
             raw = self._ollama.chat(
@@ -500,7 +520,12 @@ class NarrativeWeaver:
                 f"Source content: {candidate.text}"
             )
             messages = [
-                {"role": "system", "content": _WEAVE_PROMPT},
+                {
+                    "role": "system",
+                    "content": _build_weave_prompt(
+                        resolve_user_name(self._user_display_name_provider),
+                    ),
+                },
                 {"role": "user", "content": user_payload},
             ]
             raw = self._ollama.chat(

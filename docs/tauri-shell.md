@@ -153,6 +153,16 @@ Existing call-sites that thread through `backendBase()`:
 If you add a new backend URL, route it through `backendBase()` too.
 Otherwise the desktop shell silently fails to load that resource.
 
+## Avatar bundle location
+
+Drop the Live2D model files (`*.model3.json`, `*.cdi3.json`, expressions,
+motions, textures) under `data/personas/active/Alexia/`. The folder is
+gitignored — each developer copies their own avatar in. The FastAPI
+backend serves the contents from `/avatar/...` based on
+`avatar.root_dir` in `config/default.json` (overridable via
+`config/user.json`). The legacy `live-2d-models/Alexia/` path is still
+honoured if you override the setting, so existing checkouts keep working.
+
 ## Persona window settings persistence
 
 The persona window's geometry survives an app restart:
@@ -252,12 +262,47 @@ After making any change to the shell:
    itself, the `GlobalMouseSource` branch isn't running (check the
    `isTauri()` detection and the cursor wrapper imports).
 
+## macOS packaging (hybrid installer)
+
+The macOS distribution is a hybrid:
+
+* `Aiko.app` (Tauri shell + bundled React UI), built via
+  `npm run tauri:build:macos` in `web/`. That npm script runs
+  `python ../scripts/check-clean-build.py` first to fail the build on
+  any developer artefact (dev `chat_sessions.db`, stale "Jacob"
+  references in the persona, missing Live2D bundle, non-blank default
+  `user_display_name`), then builds the React bundle and finally
+  produces both a `.app` and a `.dmg`.
+* `Aiko Setup.command` (a Terminal shim that calls
+  `scripts/setup-macos.sh`) lays down a dedicated Python venv at
+  `~/Library/Application Support/Aiko/venv`, installs the Homebrew
+  toolchain (`python@3.11`, `ffmpeg`, `portaudio`, `ollama`), pulls the
+  default chat model, and seeds `~/Library/Application Support/Aiko/`
+  with `config/default.json`, `data/persona/`, and the Live2D avatar
+  bundle.
+* On every launch, the Tauri shell's new `ensure_backend_running` Rust
+  command checks `http://127.0.0.1:6275/api/health` and — if the
+  backend isn't already up — spawns
+  `scripts/macos-start-backend.sh`, which `exec`s the venv Python's
+  `app.web` module. The React `useAssistantSocket` hook awaits this
+  before dialling the WebSocket, so the user never sees a cold
+  "couldn't connect" flash.
+
+The bundle layout for resources is configured in
+[`web/src-tauri/tauri.conf.json`](../web/src-tauri/tauri.conf.json)
+`bundle.resources`. Minimum supported macOS is **12.0** (Monterey);
+signing + notarization are deferred — friends use right-click → Open
+the first time. End-user walkthrough lives at
+[`docs/install-macos.md`](install-macos.md).
+
 ## Follow-up work (out of scope today)
 
-* **Python sidecar / bundled Python**. Right now the user has to launch
-  `python -m app.web` themselves. Bundling Python via Tauri's sidecar
-  mechanism (or a packaged virtualenv) is a separate ticket — the
-  desktop shell architecture deliberately doesn't depend on it.
+* **Windows / Linux installers**. The hybrid pattern (Tauri .exe / AppImage
+  beside a setup script that bootstraps a venv into the user's local
+  app-data folder) maps cleanly across platforms; today only macOS is
+  wired up. The Rust `ensure_backend_running` command is already
+  feature-gated with `#[cfg(target_os = "macos")]` for the spawn path
+  so the other platforms can plug in their own sidecar invocation.
 * **Mobile + voice over WebSocket**. The backend already exposes the
   primitives; what's missing is a mic-capture layer that streams audio
   frames over WS instead of using the host-side STT pipeline. The

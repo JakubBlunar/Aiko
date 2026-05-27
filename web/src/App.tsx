@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { AvatarPanel } from "./components/AvatarPanel";
 import { ChatView } from "./components/ChatView";
+import { FirstRunOnboarding } from "./components/FirstRunOnboarding";
 import { PersonaWindow } from "./components/PersonaWindow";
 import { SessionSidebar } from "./components/SessionSidebar";
 import { SettingsDrawer } from "./components/SettingsDrawer";
@@ -155,6 +156,7 @@ export default function App() {
       {personaVisible ? null : <AvatarPanel />}
       <SettingsDrawer open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <Toasts />
+      <FirstRunOnboarding />
     </div>
   );
 }

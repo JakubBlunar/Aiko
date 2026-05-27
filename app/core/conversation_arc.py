@@ -37,6 +37,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Callable
 
+from app.core.session_text_utils import resolve_user_name, speaker_label
+
 if TYPE_CHECKING:
     from app.core.chat_database import ChatDatabase
     from app.llm.ollama_client import OllamaClient
@@ -145,26 +147,44 @@ class ArcStore:
             updated_at=now,
         )
 
-    def render_block(self, user_id: str, *, current_turn: int = 0) -> str:
+    def render_block(
+        self,
+        user_id: str,
+        *,
+        current_turn: int = 0,
+        user_display_name: str = "the user",
+    ) -> str:
         state = self.get(user_id)
         if state is None or state.arc == "casual_check_in" and state.confidence < 0.55:
             return ""
         elapsed = max(0, int(current_turn) - int(state.since_turn))
-        descriptor = _ARC_DESCRIPTORS.get(state.arc, state.arc.replace("_", " "))
+        descriptor = arc_descriptor(state.arc, user_display_name)
         if elapsed > 0:
             return f"Conversation arc: {descriptor} (last ~{elapsed} turns)."
         return f"Conversation arc: {descriptor}."
 
 
+# Arc descriptors with a ``{name}`` placeholder filled when the
+# descriptor is read; only the support arc references the user by name
+# in its surface line. ``arc_descriptor()`` does the substitution so
+# callers don't have to.
 _ARC_DESCRIPTORS: dict[str, str] = {
     "casual_check_in": "casual check-in",
     "deep_dive": "deep dive",
-    "support": "Jacob is venting / needs support — listen more, fix less",
+    "support": "{name} is venting / needs support — listen more, fix less",
     "planning": "we're planning something concrete",
     "reflection": "reflective / introspective stretch",
     "playful": "playful banter",
     "debug": "debugging / problem-solving stretch",
 }
+
+
+def arc_descriptor(arc: str, user_display_name: str = "the user") -> str:
+    """Return the descriptor for ``arc`` with the user's name folded in."""
+    template = _ARC_DESCRIPTORS.get(arc, "casual check-in")
+    if "{name}" in template:
+        return template.format(name=user_display_name or "the user")
+    return template
 
 
 # ── hot-path estimator ──────────────────────────────────────────────────
@@ -297,20 +317,27 @@ class ArcEstimator:
 # ── cold-path smoother ──────────────────────────────────────────────────
 
 
-_SMOOTH_PROMPT = """\
-You are Aiko's quiet smoothing routine. You will receive (1) the current
-arc tag we have on file and (2) a slice of recent conversation. Confirm
-or change the arc and emit a single JSON object:
+def _build_smooth_prompt(user_display_name: str = "the user") -> str:
+    name = user_display_name or "the user"
+    return (
+        "You are Aiko's quiet smoothing routine. You will receive (1) the "
+        "current arc tag we have on file and (2) a slice of recent "
+        "conversation. Confirm or change the arc and emit a single JSON "
+        "object:\n"
+        "\n"
+        "{\"arc\": \"<one of: casual_check_in | deep_dive | support | planning | "
+        "reflection | playful | debug>\", \"confidence\": <0..1>}\n"
+        "\n"
+        "Rules:\n"
+        "- Pick the arc that best describes the *current vibe*, not the topic.\n"
+        f"- \"support\" wins when {name} is venting / asking for empathy.\n"
+        "- \"planning\" wins when we're concretely organising next steps.\n"
+        "- \"casual_check_in\" is the default. Use it freely if nothing else fits.\n"
+        "- Output ONLY the JSON object. No prose."
+    )
 
-{"arc": "<one of: casual_check_in | deep_dive | support | planning | "
-        "reflection | playful | debug>", "confidence": <0..1>}
 
-Rules:
-- Pick the arc that best describes the *current vibe*, not the topic.
-- "support" wins when Jacob is venting / asking for empathy.
-- "planning" wins when we're concretely organising next steps.
-- "casual_check_in" is the default. Use it freely if nothing else fits.
-- Output ONLY the JSON object. No prose."""
+_SMOOTH_PROMPT = _build_smooth_prompt()
 
 
 class ArcSmootherWorker:
@@ -325,6 +352,7 @@ class ArcSmootherWorker:
         every_n_turns: int = 6,
         max_history_chars: int = 2000,
         max_tokens: int = 80,
+        user_display_name_provider: "Callable[[], str] | None" = None,
     ) -> None:
         self._ollama = ollama
         self._store = store
@@ -332,6 +360,7 @@ class ArcSmootherWorker:
         self._every_n = max(1, int(every_n_turns))
         self._max_history_chars = max(400, int(max_history_chars))
         self._max_tokens = max(40, int(max_tokens))
+        self._user_display_name_provider = user_display_name_provider
         self._user_turns_seen = 0
         self._user_turns_at_last_smooth = 0
         self._stats = {
@@ -380,10 +409,22 @@ class ArcSmootherWorker:
             self._stats["skipped_no_history"] += 1
             return None
         prior = self._store.get_or_default(user_id)
-        block = _format_smooth_block(prior, history, max_chars=self._max_history_chars)
+        block = _format_smooth_block(
+            prior,
+            history,
+            max_chars=self._max_history_chars,
+            user_display_name=resolve_user_name(
+                self._user_display_name_provider,
+            ),
+        )
         try:
             messages = [
-                {"role": "system", "content": _SMOOTH_PROMPT},
+                {
+                    "role": "system",
+                    "content": _build_smooth_prompt(
+                        resolve_user_name(self._user_display_name_provider),
+                    ),
+                },
                 {"role": "user", "content": block},
             ]
             raw = self._ollama.chat(
@@ -457,6 +498,7 @@ def _format_smooth_block(
     history: list[tuple[str, str]],
     *,
     max_chars: int,
+    user_display_name: str = "Jacob",
 ) -> str:
     msg_lines: list[str] = []
     total = 0
@@ -464,7 +506,7 @@ def _format_smooth_block(
         text = (content or "").strip()
         if not text:
             continue
-        speaker = "Jacob" if role == "user" else "Aiko"
+        speaker = speaker_label(role, user_display_name)
         line = f"{speaker}: {text}"
         if total + len(line) > max_chars and msg_lines:
             break

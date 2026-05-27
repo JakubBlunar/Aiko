@@ -30,6 +30,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
+from app.core.session_text_utils import resolve_user_name, speaker_label
+
 if TYPE_CHECKING:
     from app.core.chat_database import ChatDatabase
     from app.llm.ollama_client import OllamaClient
@@ -52,34 +54,41 @@ PROFILE_FIELDS: tuple[str, ...] = (
     "goals",
 )
 
-_PROMPT = """\
-You are Aiko, journaling between turns. Look at the recent conversation
-with Jacob and update your mental notes about him.
+def _build_prompt(user_display_name: str = "the user") -> str:
+    """User-profile worker prompt templated on the user's display name."""
+    name = user_display_name or "the user"
+    return (
+        "You are Aiko, journaling between turns. Look at the recent "
+        f"conversation with {name} and update your mental notes about them.\n"
+        "\n"
+        "Respond with ONE JSON object on a single line:\n"
+        "{\n"
+        "  \"fields\": {\n"
+        "    \"<field>\": {\"value\": \"<short text, <=80 chars>\", \"confidence\": <0..1>}\n"
+        "    ...\n"
+        "  }\n"
+        "}\n"
+        "\n"
+        "Allowed fields (omit any you can't infer):\n"
+        "  - name              (their name or what they go by)\n"
+        "  - occupation        (what they do for work / school)\n"
+        "  - location          (city / region / context only — NOT exact address)\n"
+        "  - hobbies           (1-3 hobbies, comma-separated)\n"
+        "  - communication_style  (e.g. \"concise\", \"playful\", \"asks follow-ups\")\n"
+        "  - current_focus     (what they've been focused on lately)\n"
+        "  - values            (1-3 things they seem to care about)\n"
+        "  - goals             (an active goal they mentioned)\n"
+        "\n"
+        "Rules:\n"
+        "- Output ONLY valid JSON. No prose around it.\n"
+        "- A field is OMITTED if you have no evidence — do NOT guess.\n"
+        "- \"value\" must be a short phrase, NOT a full sentence with quotes.\n"
+        "- \"confidence\" reflects how sure you are (0.0..1.0).\n"
+        "- It's fine to return {\"fields\": {}} when nothing new is observable."
+    )
 
-Respond with ONE JSON object on a single line:
-{
-  "fields": {
-    "<field>": {"value": "<short text, <=80 chars>", "confidence": <0..1>}
-    ...
-  }
-}
 
-Allowed fields (omit any you can't infer):
-  - name              (his name or what he goes by)
-  - occupation        (what he does for work / school)
-  - location          (city / region / context only — NOT exact address)
-  - hobbies           (1-3 hobbies, comma-separated)
-  - communication_style  (e.g. "concise", "playful", "asks follow-ups")
-  - current_focus     (what he's been focused on lately)
-  - values            (1-3 things he seems to care about)
-  - goals             (an active goal he mentioned)
-
-Rules:
-- Output ONLY valid JSON. No prose around it.
-- A field is OMITTED if you have no evidence — do NOT guess.
-- "value" must be a short phrase, NOT a full sentence with quotes.
-- "confidence" reflects how sure you are (0.0..1.0).
-- It's fine to return {"fields": {}} when nothing new is observable."""
+_PROMPT = _build_prompt()
 
 
 @dataclass(slots=True)
@@ -135,7 +144,13 @@ class UserProfileStore:
     def as_dict(self, user_id: str) -> dict[str, dict[str, object]]:
         return {f: e.to_dict() for f, e in self.fields(user_id).items()}
 
-    def render_block(self, user_id: str, *, min_confidence: float = 0.4) -> str:
+    def render_block(
+        self,
+        user_id: str,
+        *,
+        min_confidence: float = 0.4,
+        user_display_name: str = "the user",
+    ) -> str:
         entries = self.fields(user_id)
         if not entries:
             return ""
@@ -149,7 +164,10 @@ class UserProfileStore:
             lines.append(f"- {_humanize_field(entry.field)}: {value}")
         if not lines:
             return ""
-        return "What you know about Jacob (profile):\n" + "\n".join(lines)
+        return (
+            f"What you know about {user_display_name} (profile):\n"
+            + "\n".join(lines)
+        )
 
     # ── writes ──────────────────────────────────────────────────────────
 
@@ -271,6 +289,7 @@ class UserProfileWorker:
         min_user_turns: int = 6,
         max_history_chars: int = 3500,
         max_tokens: int = 320,
+        user_display_name_provider: "Callable[[], str] | None" = None,
     ) -> None:
         self._ollama = ollama
         self._db = db
@@ -279,6 +298,7 @@ class UserProfileWorker:
         self._min_user_turns = max(1, int(min_user_turns))
         self._max_history_chars = max(500, int(max_history_chars))
         self._max_tokens = max(120, int(max_tokens))
+        self._user_display_name_provider = user_display_name_provider
         self._user_turns_seen = 0
         self._user_turns_at_last_run = 0
         self._stats = {
@@ -334,13 +354,24 @@ class UserProfileWorker:
         except Exception:
             log.debug("history_provider raised", exc_info=True)
             history = []
-        block = _format_history_block(history, max_chars=self._max_history_chars)
+        block = _format_history_block(
+            history,
+            max_chars=self._max_history_chars,
+            user_display_name=resolve_user_name(
+                self._user_display_name_provider,
+            ),
+        )
         if not block:
             self._stats["skipped_no_input"] += 1
             return None
         try:
             messages = [
-                {"role": "system", "content": _PROMPT},
+                {
+                    "role": "system",
+                    "content": _build_prompt(
+                        resolve_user_name(self._user_display_name_provider),
+                    ),
+                },
                 {"role": "user", "content": block},
             ]
             raw = self._ollama.chat(
@@ -375,6 +406,7 @@ def _format_history_block(
     history: list[tuple[str, str]],
     *,
     max_chars: int,
+    user_display_name: str = "Jacob",
 ) -> str:
     """Render recent (role, content) pairs into a tidy block, newest last."""
     if not history:
@@ -385,7 +417,7 @@ def _format_history_block(
         text = (content or "").strip()
         if not text:
             continue
-        speaker = "Jacob" if role == "user" else "You"
+        speaker = speaker_label(role, user_display_name, assistant_name="You")
         line = f"{speaker}: {text}"
         if total + len(line) > max_chars and lines:
             break

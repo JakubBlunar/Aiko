@@ -30,6 +30,8 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any, Callable
 
+from app.core.session_text_utils import resolve_user_name
+
 if TYPE_CHECKING:
     from app.core.affect_state import AffectState
     from app.core.chat_database import ChatDatabase
@@ -41,18 +43,24 @@ if TYPE_CHECKING:
 log = logging.getLogger("app.dream_worker")
 
 
-_DREAM_PROMPT = """\
-You are Aiko in the quiet stretch between conversations with Jacob.
-Hours have passed since you last talked. While you weren't speaking,
-you've been turning some of his recent threads over in your head —
-small thoughts, half-formed feelings, a connection you didn't make
-out loud.
+def _build_dream_prompt(user_display_name: str = "the user") -> str:
+    name = user_display_name or "the user"
+    return (
+        f"You are Aiko in the quiet stretch between conversations with {name}. "
+        "Hours have passed since you last talked. While you weren't speaking, "
+        "you've been turning some of their recent threads over in your head — "
+        "small thoughts, half-formed feelings, a connection you didn't make "
+        "out loud.\n"
+        "\n"
+        "Compose ONE short reflection (≤ 35 words, first person, plain "
+        "sentence) that captures what you've been quietly sitting with. NOT a "
+        "greeting, NOT a question — just a private note to yourself.\n"
+        "\n"
+        "Output ONLY the sentence. No quotes, no JSON, no prose around it."
+    )
 
-Compose ONE short reflection (≤ 35 words, first person, plain
-sentence) that captures what you've been quietly sitting with. NOT a
-greeting, NOT a question — just a private note to yourself.
 
-Output ONLY the sentence. No quotes, no JSON, no prose around it."""
+_DREAM_PROMPT = _build_dream_prompt()
 
 
 _DREAM_PREFIX = "[dream] "
@@ -78,6 +86,7 @@ class DreamWorker:
         min_hours_since_last: float = 6.0,
         max_tokens: int = 100,
         salience: float = 0.62,
+        user_display_name_provider: "Callable[[], str] | None" = None,
     ) -> None:
         self._ollama = ollama
         self._memory_store = memory_store
@@ -87,6 +96,7 @@ class DreamWorker:
         self._min_hours = max(0.0, float(min_hours_since_last))
         self._max_tokens = max(40, int(max_tokens))
         self._salience = max(0.0, min(1.0, float(salience)))
+        self._user_display_name_provider = user_display_name_provider
         self._has_run_this_boot = False
         self._stats = {
             "scheduled": 0,
@@ -168,7 +178,14 @@ class DreamWorker:
             t0 = time.monotonic()
             raw = self._ollama.chat(
                 [
-                    {"role": "system", "content": _DREAM_PROMPT},
+                    {
+                        "role": "system",
+                        "content": _build_dream_prompt(
+                            resolve_user_name(
+                                self._user_display_name_provider,
+                            ),
+                        ),
+                    },
                     {"role": "user", "content": prompt_user},
                 ],
                 options={

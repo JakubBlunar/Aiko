@@ -97,6 +97,7 @@ def _make(
         min_turns_between=min_turns_between,
         min_seconds_between=min_seconds_between,
         max_user_word_count=max_user_word_count,
+        user_display_name_provider=lambda: "Jacob",
     )
     return worker, ollama, memory
 

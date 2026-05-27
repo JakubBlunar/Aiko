@@ -30,6 +30,8 @@ import re
 import time
 from typing import TYPE_CHECKING, Any, Callable
 
+from app.core.session_text_utils import resolve_user_name
+
 if TYPE_CHECKING:
     from app.core.memory_store import Memory, MemoryStore
     from app.llm.embedder import Embedder
@@ -39,22 +41,36 @@ if TYPE_CHECKING:
 log = logging.getLogger("app.curiosity_worker")
 
 
-_CURIOSITY_PROMPT = """\
-You are Aiko in a quiet beat between turns. Jacob just said something
-short and casual. You're noticing you'd like to ask him a small
-follow-up next time you speak — not now, but next turn.
+def _build_curiosity_prompt(user_display_name: str = "the user") -> str:
+    """Curiosity-worker prompt, templated on the user's display name.
 
-Compose ONE short instruction to your future self (<= 22 words, third
-person, plain sentence). It must:
-  - start with "Maybe ask Jacob"
-  - reference a concrete word or phrase he used
-  - end on a soft open question, not a yes/no or factual quiz
+    The required ``"Maybe ask <name>"`` prefix is asserted by
+    :func:`_clean_curiosity_output`, which accepts whatever name is
+    threaded in here -- so renaming the user mid-session takes effect
+    on the next sweep without invalidating the produced text.
+    """
+    name = user_display_name or "the user"
+    return (
+        f"You are Aiko in a quiet beat between turns. {name} just said "
+        "something short and casual. You're noticing you'd like to ask "
+        "them a small follow-up next time you speak — not now, but next "
+        "turn.\n"
+        "\n"
+        "Compose ONE short instruction to your future self (<= 22 words, "
+        "third person, plain sentence). It must:\n"
+        f"  - start with \"Maybe ask {name}\"\n"
+        "  - reference a concrete word or phrase they used\n"
+        "  - end on a soft open question, not a yes/no or factual quiz\n"
+        "\n"
+        "Examples (do NOT copy verbatim):\n"
+        f"  - \"Maybe ask {name} what they meant by 'weird week' — sounds layered.\"\n"
+        f"  - \"Maybe ask {name} how the chess game ended; they sounded mid-thought.\"\n"
+        "\n"
+        "Output ONLY the sentence. No quotes, no JSON, no preamble."
+    )
 
-Examples (do NOT copy verbatim):
-  - "Maybe ask Jacob what he meant by 'weird week' — sounds layered."
-  - "Maybe ask Jacob how the chess game ended; he sounded mid-thought."
 
-Output ONLY the sentence. No quotes, no JSON, no preamble."""
+_CURIOSITY_PROMPT = _build_curiosity_prompt()
 
 
 _QUESTION_RE = re.compile(r"\?")
@@ -101,6 +117,7 @@ class CuriosityWorker:
         max_user_word_count: int = 8,
         max_tokens: int = 80,
         salience: float = 0.55,
+        user_display_name_provider: "Callable[[], str] | None" = None,
     ) -> None:
         self._ollama = ollama
         self._memory_store = memory_store
@@ -111,6 +128,7 @@ class CuriosityWorker:
         self._max_words = max(1, int(max_user_word_count))
         self._max_tokens = max(40, int(max_tokens))
         self._salience = max(0.0, min(1.0, float(salience)))
+        self._user_display_name_provider = user_display_name_provider
         self._last_run_turn = -10**9
         self._last_run_at = 0.0
         self._turn_counter = 0
@@ -207,11 +225,15 @@ class CuriosityWorker:
             assistant_text=assistant_text,
             arc_label=arc,
         )
+        user_name = resolve_user_name(self._user_display_name_provider)
         try:
             t0 = time.monotonic()
             raw = self._ollama.chat(
                 [
-                    {"role": "system", "content": _CURIOSITY_PROMPT},
+                    {
+                        "role": "system",
+                        "content": _build_curiosity_prompt(user_name),
+                    },
                     {"role": "user", "content": prompt_user},
                 ],
                 options={
@@ -226,7 +248,7 @@ class CuriosityWorker:
             self._stats["failed"] += 1
             return None
 
-        cleaned = _clean_curiosity_output(raw)
+        cleaned = _clean_curiosity_output(raw, user_display_name=user_name)
         if not cleaned:
             self._stats["skipped_no_topic"] += 1
             return None
@@ -274,17 +296,26 @@ class CuriosityWorker:
         assistant_text: str,
         arc_label: str,
     ) -> str:
+        user_name = resolve_user_name(self._user_display_name_provider)
         return (
             f"Conversation arc: {arc_label}\n"
-            f"Jacob just said: \"{(user_text or '').strip()[:400]}\"\n"
+            f"{user_name} just said: \"{(user_text or '').strip()[:400]}\"\n"
             f"You replied: \"{(assistant_text or '').strip()[:400]}\""
         )
 
 
-def _clean_curiosity_output(raw: str) -> str:
+def _clean_curiosity_output(
+    raw: str,
+    *,
+    user_display_name: str = "Jacob",
+) -> str:
     """Tidy up the LLM's one-liner: strip quotes, collapse whitespace,
     enforce the required prefix. Returns ``""`` when the output doesn't
     look like a usable instruction.
+
+    The required prefix is ``"Maybe ask <user_display_name>"`` (case
+    insensitive). When the LLM emits a slightly different prefix
+    (``"Ask <name>..."``) we salvage it by prepending ``"Maybe "``.
     """
     text = (raw or "").strip()
     if not text:
@@ -300,10 +331,12 @@ def _clean_curiosity_output(raw: str) -> str:
         text = text.split("\n", 1)[0].strip()
     if not text:
         return ""
-    if not text.lower().startswith("maybe ask jacob"):
-        # Try to salvage a slightly off-prefix output.
-        if "ask jacob" in text.lower():
-            idx = text.lower().find("ask jacob")
+    name = (user_display_name or "the user").strip().lower() or "the user"
+    expected_prefix = f"maybe ask {name}"
+    ask_phrase = f"ask {name}"
+    if not text.lower().startswith(expected_prefix):
+        if ask_phrase in text.lower():
+            idx = text.lower().find(ask_phrase)
             text = "Maybe " + text[idx:]
         else:
             return ""

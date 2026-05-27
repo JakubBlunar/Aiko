@@ -132,7 +132,12 @@ class UserStateStore:
             ),
         )
 
-    def render_block(self, user_id: str) -> str:
+    def render_block(
+        self,
+        user_id: str,
+        *,
+        user_display_name: str = "the user",
+    ) -> str:
         s = self.get(user_id)
         bits: list[str] = []
         if s.perceived_mood and s.perceived_mood != "unknown":
@@ -144,12 +149,16 @@ class UserStateStore:
         topic = (s.last_topic or "").strip()
         if not bits and not topic:
             return ""
-        line = "Right now Jacob: " + ", ".join(bits) if bits else ""
+        line = (
+            f"Right now {user_display_name}: " + ", ".join(bits)
+            if bits
+            else ""
+        )
         if topic:
             if line:
                 line += f" — last topic: {topic}"
             else:
-                line = f"Last topic from Jacob: {topic}"
+                line = f"Last topic from {user_display_name}: {topic}"
         return line
 
 

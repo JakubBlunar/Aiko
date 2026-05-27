@@ -333,6 +333,9 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
         self._memory_retriever: MemoryRetriever | None = None
         self._memory_extractor: MemoryExtractor | None = None
         self._memory_listeners: list[Callable[[Any], None]] = []
+        # Identity-rename listeners (workers cache the display name in
+        # pre-built prompt strings and re-render on this event).
+        self._identity_listeners: list[Callable[[str], None]] = []
         # RAG: LanceDB-backed retrieval substrate. Owned by SessionController
         # so it can be shared with MessageIndexer and DocumentIngestor.
         self._rag_store = None  # type: ignore[var-annotated]
@@ -448,7 +451,9 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
         try:
             self._world_store = WorldStore(storage_path)
             try:
-                self._world_store.seed_default()
+                self._world_store.seed_default(
+                    user_display_name=self.user_display_name,
+                )
             except Exception:
                 log.warning("world seed_default failed", exc_info=True)
         except Exception:
@@ -524,6 +529,7 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
                     debounce_ms=400,
                     min_partial_chars=12,
                     similarity_threshold=0.55,
+                    user_display_name_provider=lambda: self.user_display_name,
                 )
                 self._prompt_assembler.set_rag_prefetch_lookup(
                     self._lookup_prefetched_rag_block,
@@ -531,6 +537,16 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
             except Exception:
                 log.warning("RagPrefetcher init failed", exc_info=True)
                 self._rag_prefetcher = None
+
+        # Wire the display-name resolver lazily so RAG block headers
+        # (``What you know about <name>``) reflect onboarding edits on
+        # the very next turn without a re-init.
+        try:
+            self._prompt_assembler.set_user_display_name_provider(
+                lambda: self.user_display_name,
+            )
+        except Exception:
+            log.debug("set_user_display_name_provider failed", exc_info=True)
 
         # Phase 3 of listening_window_prefetch: small 1-worker executor for
         # cheap RAM/SQLite pre-warm tasks (static prompt slice rebuilds)
@@ -565,6 +581,7 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
                 model=self._effective_chat_model,
                 min_seconds_between=settings.agent.reflection_min_seconds_between,
                 emotional_delta_threshold=settings.agent.reflection_emotional_delta_threshold,
+                user_display_name_provider=lambda: self.user_display_name,
             )
         except Exception:
             log.warning("ReflectionWorker init failed", exc_info=True)
@@ -592,6 +609,7 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
                             "dream_worker_min_hours_since_last", 6.0,
                         ),
                     ),
+                    user_display_name_provider=lambda: self.user_display_name,
                 )
             except Exception:
                 log.warning("DreamWorker init failed", exc_info=True)
@@ -667,6 +685,7 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
                     max_user_word_count=int(
                         getattr(settings.agent, "curiosity_worker_max_user_word_count", 8),
                     ),
+                    user_display_name_provider=lambda: self.user_display_name,
                 )
             except Exception:
                 log.warning("CuriosityWorker init failed", exc_info=True)
@@ -706,6 +725,7 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
                 store=self._agenda_store,
                 model=self._effective_chat_model,
                 every_n_turns=settings.agent.agenda_groom_every_n_turns,
+                user_display_name_provider=lambda: self.user_display_name,
             )
         except Exception:
             log.warning("AgendaStore/AgendaWorker init failed", exc_info=True)
@@ -724,6 +744,7 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
                 memory_store=self._memory_store,
                 embedder=self._embedder,
                 model=self._effective_chat_model,
+                user_display_name_provider=lambda: self.user_display_name,
             )
         except Exception:
             log.warning("PromiseExtractor init failed", exc_info=True)
@@ -752,6 +773,7 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
                 store=self._user_profile_store,
                 model=self._effective_chat_model,
                 min_user_turns=settings.agent.user_profile_min_turns,
+                user_display_name_provider=lambda: self.user_display_name,
             )
         except Exception:
             log.warning("user-profile / user-state init failed", exc_info=True)
@@ -801,6 +823,7 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
                     min_cluster_size=settings.agent.consolidator_min_cluster_size,
                     min_hours_between=settings.agent.consolidator_min_hours_between,
                     use_llm_merge=settings.agent.consolidator_use_llm_merge,
+                    user_display_name_provider=lambda: self.user_display_name,
                 )
             except Exception:
                 log.warning("MemoryConsolidator init failed", exc_info=True)
@@ -825,6 +848,7 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
                     model=self._effective_chat_model,
                     min_hours=settings.agent.relationship_pulse_min_hours,
                     min_turns=settings.agent.relationship_pulse_min_turns,
+                    user_display_name_provider=lambda: self.user_display_name,
                 )
             except Exception:
                 log.warning("RelationshipPulseWorker init failed", exc_info=True)
@@ -874,6 +898,7 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
                         persist_callback=_persist_moment_candidate,
                         min_turn_gap=settings.agent.shared_moments_min_turn_gap,
                         cooldown_seconds=settings.agent.shared_moments_cooldown_seconds,
+                        user_display_name_provider=lambda: self.user_display_name,
                     )
                 except Exception:
                     log.warning("MomentDetector init failed", exc_info=True)
@@ -971,6 +996,7 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
                     self._embedder,
                     self._ollama,
                     model=self._effective_chat_model,
+                    user_display_name_provider=lambda: self.user_display_name,
                 )
                 self._memory_extractor.add_listener(self._notify_memory_added)
             except Exception:
@@ -1086,6 +1112,7 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
                 every_n_turns=max(
                     1, int(settings.agent.arc_update_every_n_turns) * 6
                 ),
+                user_display_name_provider=lambda: self.user_display_name,
             )
         except Exception:
             log.warning("ArcStore/ArcEstimator init failed", exc_info=True)
@@ -1111,6 +1138,7 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
                 model=self._effective_chat_model,
                 every_n_turns=4,
                 ttl_seconds=settings.agent.prepared_nudge_ttl_seconds,
+                user_display_name_provider=lambda: self.user_display_name,
             )
         except Exception:
             log.warning("PreparedNudgeStore/NarrativeWeaver init failed", exc_info=True)
@@ -1136,6 +1164,7 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
             notify_message=self._notify_message,
             prepared_nudge_store=self._prepared_nudge_store,
             user_id=self._user_id,
+            user_display_name_provider=lambda: self.user_display_name,
         )
 
         # ── Runtime state ────────────────────────────────────────────────
@@ -1256,6 +1285,63 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
     @property
     def session_key(self) -> str:
         return f"{self._user_id}:{self._session_id}" if self._user_id else self._session_id
+
+    @property
+    def user_display_name(self) -> str:
+        """Configured user display name (or ``"friend"`` fallback).
+
+        Single read site for every renderer, transcript formatter, and
+        worker LLM prompt. Refreshes implicitly on next read after the
+        identity is updated via ``update_user_display_name``.
+        """
+        from app.core.settings import resolve_user_display_name
+        return resolve_user_display_name(self._settings)
+
+    @property
+    def needs_onboarding(self) -> bool:
+        """True when no display name has been configured yet."""
+        from app.core.settings import is_onboarding_needed
+        return is_onboarding_needed(self._settings)
+
+    def update_user_display_name(self, name: str) -> str:
+        """Persist the user display name to ``config/user.json``.
+
+        Validated to 1-32 chars after strip. Empty input is rejected
+        (the caller -- REST handler -- returns 400). Returns the
+        normalized stored value. Broadcasts ``identity_changed`` so the
+        UI and any registered listeners see the new name without a
+        reload.
+        """
+        cleaned = (name or "").strip()[:32]
+        if not cleaned:
+            raise ValueError("user_display_name must be non-empty after trim")
+        self._settings.assistant.user_display_name = cleaned
+        try:
+            persist_user_overrides({"assistant": {"user_display_name": cleaned}})
+        except Exception:
+            log.warning(
+                "failed to persist user_display_name to user.json",
+                exc_info=True,
+            )
+        for listener in list(getattr(self, "_identity_listeners", []) or []):
+            try:
+                listener(cleaned)
+            except Exception:
+                log.debug("identity listener raised", exc_info=True)
+        return cleaned
+
+    def add_identity_listener(self, callback: Callable[[str], None]) -> None:
+        """Register a callback fired after ``update_user_display_name``.
+
+        Workers / renderers that cache the name in pre-built prompt
+        strings subscribe here to invalidate or rebuild on rename.
+        """
+        listeners = getattr(self, "_identity_listeners", None)
+        if listeners is None:
+            listeners = []
+            self._identity_listeners = listeners
+        if callback and callback not in listeners:
+            listeners.append(callback)
 
     def switch_session(self, session_id: str) -> None:
         # Drop any pending voice merge buffer; the new session starts
@@ -2505,11 +2591,12 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
             return ""
 
     # Per-source-kind framing for the narrative inner-monologue block.
-    # The framing nudges the LLM to surface the line in a kind-appropriate
-    # tone without dictating exact wording. Source kinds come from
-    # ``app/core/prepared_nudge.py::VALID_SOURCE_KINDS``.
+    # The ``open_question`` slot carries a ``{name}`` placeholder filled
+    # in :func:`_render_narrative_block` so the cue reads with whatever
+    # name the user typed into the onboarding modal; the rest are
+    # name-agnostic.
     _NARRATIVE_LABELS: dict[str, str] = {
-        "open_question": "Something you've been wanting to ask Jacob",
+        "open_question": "Something you've been wanting to ask {name}",
         "callback": "A loose thread to circle back to",
         "promise": "Something you said you'd do",
         "reflection": "On your mind",
@@ -2554,10 +2641,12 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
             (nudge.source_kind or "").strip().lower(),
             "On your mind",
         )
+        if "{name}" in label:
+            label = label.format(name=self.user_display_name)
         return f"{label}: {text}"
 
     def _render_catchphrase_block(self) -> str:
-        """Phase 2c: "Aiko's running jokes with Jacob" inner-life block.
+        """Phase 2c: "Aiko's running jokes with <name>" inner-life block.
 
         Hot-path mirror read; no LLM. Surfaces up to 3 catchphrase
         memories sorted by salience so the LLM keeps using the top
@@ -2583,7 +2672,9 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
         if not phrases:
             return ""
         bullets = "\n".join(f"- {p}" for p in phrases)
-        return "Aiko's running jokes with Jacob:\n" + bullets
+        return (
+            f"Aiko's running jokes with {self.user_display_name}:\n" + bullets
+        )
 
     # ── Phase 2a + 2b: bootstrap-time inner-life ────────────────────────
 
@@ -2851,29 +2942,38 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
         if store is None:
             return ""
         try:
-            return store.render_block(self._user_id)
+            return store.render_block(
+                self._user_id,
+                user_display_name=self.user_display_name,
+            )
         except Exception:
             log.debug("user profile block render failed", exc_info=True)
             return ""
 
     def _render_user_state_block(self) -> str:
-        """Phase 3a: tiny per-turn 'Right now Jacob...' line."""
+        """Phase 3a: tiny per-turn 'Right now <name>...' line."""
         store = getattr(self, "_user_state_store", None)
         if store is None:
             return ""
         try:
-            return store.render_block(self._user_id)
+            return store.render_block(
+                self._user_id,
+                user_display_name=self.user_display_name,
+            )
         except Exception:
             log.debug("user state block render failed", exc_info=True)
             return ""
 
     def _render_relationship_block(self) -> str:
-        """Phase 3b: short ambient block about how long we've known Jacob."""
+        """Phase 3b: short ambient block about how long we've known the user."""
         tracker = getattr(self, "_relationship_tracker", None)
         if tracker is None:
             return ""
         try:
-            return tracker.ambient_line(self._user_id)
+            return tracker.ambient_line(
+                self._user_id,
+                user_display_name=self.user_display_name,
+            )
         except Exception:
             log.debug("relationship block render failed", exc_info=True)
             return ""
@@ -2917,7 +3017,11 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
             from app.core.relationship import render_petname_block
 
             state = tracker.get(self._user_id)
-            return render_petname_block(state, now=datetime.now(timezone.utc))
+            return render_petname_block(
+                state,
+                now=datetime.now(timezone.utc),
+                user_display_name=self.user_display_name,
+            )
         except Exception:
             log.debug("petname block render failed", exc_info=True)
             return ""
@@ -2928,7 +3032,10 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
         if store is None:
             return ""
         try:
-            return store.render_block(self._user_id)
+            return store.render_block(
+                self._user_id,
+                user_display_name=self.user_display_name,
+            )
         except Exception:
             log.debug("agenda block render failed", exc_info=True)
             return ""
@@ -2944,13 +3051,15 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
         if store is None:
             return ""
         try:
-            return store.render_block()
+            return store.render_block(
+                user_display_name=self.user_display_name,
+            )
         except Exception:
             log.debug("world block render failed", exc_info=True)
             return ""
 
     def _render_activity_block(self) -> str:
-        """Phase 4c: ambient "Jacob is in <App>" cue (desktop opt-in).
+        """Phase 4c: ambient "<name> is in <App>" cue (desktop opt-in).
 
         Triple-gated by design — toggle off, no app captured, or no
         client connected (browser users never emit ``user_activity``)
@@ -2972,7 +3081,7 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
         if not app:
             return ""
         return (
-            f"Jacob is currently working in {app}. "
+            f"{self.user_display_name} is currently working in {app}. "
             "You're aware of this but only mention it when it's "
             "genuinely relevant to the conversation — never just to "
             "fill silence or to prove you noticed."
@@ -3024,7 +3133,10 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
             from app.core.relationship_axes import render_axes_block
 
             state = store.get(self._user_id)
-            return render_axes_block(state)
+            return render_axes_block(
+                state,
+                user_display_name=self.user_display_name,
+            )
         except Exception:
             log.debug("axes block render failed", exc_info=True)
             return ""
@@ -3039,7 +3151,11 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
         except Exception:
             current_turn = 0
         try:
-            return store.render_block(self._user_id, current_turn=current_turn)
+            return store.render_block(
+                self._user_id,
+                current_turn=current_turn,
+                user_display_name=self.user_display_name,
+            )
         except Exception:
             log.debug("arc block render failed", exc_info=True)
             return ""
@@ -3080,7 +3196,7 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
             return
         humanized = label.replace("_", " ")
         content = (
-            f"Aiko reached a milestone with Jacob: {humanized}. "
+            f"Aiko reached a milestone with {self.user_display_name}: {humanized}. "
             "She might naturally bring this up in conversation."
         )
         try:

@@ -344,11 +344,15 @@ class RagRetriever:
     # ── formatting ──────────────────────────────────────────────────────
 
     @staticmethod
-    def format_block(hits: list[RagHit]) -> str:
+    def format_block(
+        hits: list[RagHit],
+        *,
+        user_display_name: str = "the user",
+    ) -> str:
         """Render hits into a system-prompt-ready block.
 
         Three sections, in this order, each only emitted when non-empty:
-          - "What you know about Jacob (long-term memory):" -- memories with
+          - "What you know about <user> (long-term memory):" -- memories with
             ``kind`` in {fact, preference, event, relationship}.
           - "Things you've shared / decided about yourself:" -- memories with
             ``kind == "self"``.
@@ -357,7 +361,7 @@ class RagRetriever:
         """
         if not hits:
             return ""
-        jacob_lines: list[str] = []
+        user_lines: list[str] = []
         self_lines: list[str] = []
         message_lines: list[str] = []
         document_lines: list[str] = []
@@ -370,20 +374,22 @@ class RagRetriever:
                 if kind in ("self", "self_tagged"):
                     self_lines.append(f"- {text}")
                 else:
-                    jacob_lines.append(f"- {text}")
+                    user_lines.append(f"- {text}")
             elif hit.source == "message":
                 role = (getattr(hit.record, "role", "") or "").lower()
-                speaker = "Jacob said" if role == "user" else "You said"
+                speaker = (
+                    f"{user_display_name} said" if role == "user" else "You said"
+                )
                 message_lines.append(f'- {speaker}: "{_truncate(text, 200)}"')
             elif hit.source == "document":
                 title = getattr(hit.record, "title", "")
                 head = f"({title}) " if title else ""
                 document_lines.append(f"- {head}{_truncate(text, 240)}")
         sections: list[str] = []
-        if jacob_lines:
+        if user_lines:
             sections.append(
-                "What you know about Jacob (long-term memory):\n"
-                + "\n".join(jacob_lines)
+                f"What you know about {user_display_name} (long-term memory):\n"
+                + "\n".join(user_lines)
             )
         if self_lines:
             sections.append(
@@ -405,13 +411,14 @@ class RagRetriever:
         *,
         recent_turns: Iterable[str] | None = None,
         exclude_session_id: str | None = None,
+        user_display_name: str = "the user",
     ) -> str:
         hits = self.retrieve(
             query_text,
             recent_turns=recent_turns,
             exclude_session_id=exclude_session_id,
         )
-        return self.format_block(hits)
+        return self.format_block(hits, user_display_name=user_display_name)
 
     # ── internals ───────────────────────────────────────────────────────
 

@@ -81,7 +81,7 @@ class RecallTool:
                 "Search Aiko's long-term notebook for things she should "
                 "remember. Use this when the user asks 'do you remember...', "
                 "'what did I say about...', or you need to ground a reply "
-                "in something specific Jacob shared earlier."
+                "in something specific the user shared earlier."
             ),
             parameters={
                 "type": "object",

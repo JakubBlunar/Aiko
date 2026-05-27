@@ -52,16 +52,28 @@ class _StubStore:
         return nudge
 
 
+@dataclass
+class _AssistantStub:
+    user_display_name: str = "Jacob"
+
+
+@dataclass
+class _SettingsStub:
+    assistant: _AssistantStub
+
+
 def _make_controller(
     *,
     store: _StubStore | None,
     user_id: str = "jacob",
 ) -> SessionController:
     """Bypass ``__init__`` and wire only the slice the narrative path
-    actually touches (the nudge store + user_id)."""
+    actually touches (the nudge store + user_id + settings stub for the
+    ``user_display_name`` property)."""
     controller = SessionController.__new__(SessionController)
     controller._prepared_nudge_store = store  # type: ignore[attr-defined]
     controller._user_id = user_id  # type: ignore[attr-defined]
+    controller._settings = _SettingsStub(assistant=_AssistantStub())  # type: ignore[attr-defined]
     return controller
 
 

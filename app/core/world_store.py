@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 import threading
 from dataclasses import dataclass, field
@@ -286,8 +287,8 @@ _DEFAULT_ITEMS: tuple[_SeedItem, ...] = (
         location_slug="bookshelf",
     ),
     _SeedItem(
-        slug="photo_of_jacob",
-        name="photo of Jacob",
+        slug="photo_of_user",
+        name="photo of {user_name}",
         description="a small framed photo Aiko keeps by her favourite books",
         kind="keepsake",
         location_slug="bookshelf",
@@ -914,7 +915,12 @@ class WorldStore:
             "items": [i.to_dict() for i in self.list_items()],
         }
 
-    def render_block(self, *, max_nearby: int = 4) -> str:
+    def render_block(
+        self,
+        *,
+        max_nearby: int = 4,
+        user_display_name: str = "Jacob",
+    ) -> str:
         """Compact prompt block describing Aiko's surroundings.
 
         Designed to land alongside the agenda block in the system prompt:
@@ -960,8 +966,9 @@ class WorldStore:
             qualifier = (
                 f" in {gift_loc.name}" if gift_loc is not None else ""
             )
+            giver = (user_display_name or "").strip() or "the user"
             lines.append(
-                f"Jacob gave you {_render_item_label(top, with_qty=True)}{qualifier}."
+                f"{giver} gave you {_render_item_label(top, with_qty=True)}{qualifier}."
             )
         # Mood note (optional, last).
         if state.mood_note.strip():
@@ -979,11 +986,18 @@ class WorldStore:
         with self._lock:
             return not self._locations and not self._items
 
-    def seed_default(self, *, force: bool = False) -> bool:
+    def seed_default(
+        self,
+        *,
+        force: bool = False,
+        user_display_name: str = "",
+    ) -> bool:
         """Populate a rich default room. No-op if the world is non-empty.
 
         ``force=True`` wipes everything first, then re-seeds. Returns True
-        if a seed actually ran.
+        if a seed actually ran. ``user_display_name`` (Phase 4e) is woven
+        into the seed strings so the keepsake photo is named after the
+        configured user instead of the legacy ``"Jacob"`` literal.
         """
         if not force and not self.is_empty():
             return False
@@ -1009,11 +1023,20 @@ class WorldStore:
             if loc is not None:
                 slug_to_id[seed.slug] = loc.id
         # Items.
+        name_for_slug = (user_display_name or "").strip()
+        templated_name = name_for_slug or "you"
+        slug_for_name = _slug_from_user_name(name_for_slug)
         for seed in _DEFAULT_ITEMS:
             loc_id = slug_to_id.get(seed.location_slug or "")
+            seed_slug = seed.slug
+            seed_name = seed.name
+            if "{user_name}" in seed_name:
+                seed_name = seed_name.format(user_name=templated_name)
+                if seed_slug == "photo_of_user":
+                    seed_slug = slug_for_name
             self.add_item(
-                slug=seed.slug,
-                name=seed.name,
+                slug=seed_slug,
+                name=seed_name,
                 description=seed.description,
                 kind=seed.kind,
                 location_id=loc_id,
@@ -1035,6 +1058,22 @@ class WorldStore:
             len(self._items),
         )
         return True
+
+
+_SLUG_NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _slug_from_user_name(name: str) -> str:
+    """Derive a stable item slug from a user display name.
+
+    Falls back to ``photo_of_you`` when the name is empty or strips to
+    nothing alphanumeric (e.g. emoji-only inputs).
+    """
+    base = (name or "").strip().lower()
+    base = _SLUG_NON_ALNUM_RE.sub("_", base).strip("_")
+    if not base:
+        return "photo_of_you"
+    return f"photo_of_{base}"
 
 
 _PLURAL_HINT_SUFFIXES = ("s", "es", "ies")

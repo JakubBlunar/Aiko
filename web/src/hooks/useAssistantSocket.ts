@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
 import { api } from "../api";
+import { desktop } from "../desktop/commands";
 import { backendBase } from "../desktop/runtime";
 import { playDone, playThinking } from "../earcons";
 import { useAssistantStore } from "../store";
@@ -62,6 +63,18 @@ export function useAssistantSocket(): {
         // re-fetches via /api/desktop if the field is missing.
         if (evt.desktop) {
           store.setDesktop(evt.desktop);
+        }
+        // Identity (first-run onboarding gate). Stale backends omit
+        // it; in that case fall back to GET /api/settings/identity so
+        // we never miss the onboarding modal trigger.
+        if (evt.identity) {
+          store.setIdentity(evt.identity);
+        } else {
+          api.getIdentity()
+            .then((next) => store.setIdentity(next))
+            .catch(() => {
+              /* identity endpoint missing -- treat as already configured */
+            });
         }
         break;
 
@@ -249,6 +262,15 @@ export function useAssistantSocket(): {
         }
         break;
 
+      case "identity_changed":
+        // First-run onboarding success or a later "Change name" submit.
+        // Pushed by ``PUT /api/settings/identity`` server-side.
+        store.setIdentity({
+          user_display_name: evt.user_display_name,
+          needs_onboarding: Boolean(evt.needs_onboarding),
+        });
+        break;
+
       case "desktop_settings_changed":
         // Mirror the snapshot into the store first so any open window
         // re-renders against the new geometry. Inside the Tauri shell
@@ -401,8 +423,25 @@ export function useAssistantSocket(): {
 
   useEffect(() => {
     closedByUser.current = false;
-    connect();
+    let cancelled = false;
+    // Inside a Tauri webview, gate the WS dial on the backend sidecar
+    // being up. ``ensureBackendRunning`` resolves immediately in the
+    // browser (where the user runs ``python -m app.web`` themselves)
+    // and after a poll loop inside the desktop app where the Rust side
+    // may need to spawn the venv first.
+    void desktop.ensureBackendRunning().then((result) => {
+      if (cancelled) return;
+      if (!result.ok) {
+        setConnection({
+          status: "disconnected",
+          lastError: result.error || "Aiko backend failed to start.",
+        });
+        return;
+      }
+      connect();
+    });
     return () => {
+      cancelled = true;
       closedByUser.current = true;
       if (reconnectTimeoutRef.current !== null) {
         window.clearTimeout(reconnectTimeoutRef.current);
@@ -415,7 +454,7 @@ export function useAssistantSocket(): {
       socketRef.current?.close();
       socketRef.current = null;
     };
-  }, [connect]);
+  }, [connect, setConnection]);
 
   const send = useCallback((cmd: WsClientCommand) => {
     const ws = socketRef.current;

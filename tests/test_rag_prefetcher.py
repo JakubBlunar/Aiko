@@ -52,7 +52,7 @@ class _FakeRetriever:
         return [f"hit-for:{query_text}"]
 
     @staticmethod
-    def format_block(hits) -> str:
+    def format_block(hits, *, user_display_name: str = "the user") -> str:
         if not hits:
             return ""
         return "BLOCK:" + "|".join(str(h) for h in hits)

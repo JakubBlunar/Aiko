@@ -220,7 +220,7 @@ class WorldMixin:
     ) -> dict[str, Any] | None:
         """Promote an existing chat message to a shared_moment.
 
-        Looks up the message by id, builds a "Jacob and I…" summary from
+        Looks up the message by id, builds a "<user> and I…" summary from
         its content (capped at 200 chars), and writes a pinned moment.
         """
         store = getattr(self, "_shared_moments_store", None)
@@ -243,10 +243,11 @@ class WorldMixin:
             return None
         # Build a third-person summary depending on who said it. The user
         # can always edit the summary afterwards in the Together tab.
+        user_name = self.user_display_name
         if str(role) == "user":
-            summary = f"Jacob said: {text[:160]}".strip()
+            summary = f"{user_name} said: {text[:160]}".strip()
         elif str(role) == "assistant":
-            summary = f"I said to Jacob: {text[:160]}".strip()
+            summary = f"I said to {user_name}: {text[:160]}".strip()
         else:
             summary = text[:200]
         row = store.add(
@@ -394,7 +395,7 @@ class WorldMixin:
         }
 
     def note_gift_received(self) -> None:
-        """Hook: world layer calls this when Jacob just gave Aiko an item.
+        """Hook: world layer calls this when the user just gave Aiko an item.
 
         Sets a single-turn flag consumed by the next ``_post_turn_inner_life``
         so the axes updater and moment detector see the signal.
@@ -632,7 +633,10 @@ class WorldMixin:
         store = self._world_store
         if store is None:
             return None
-        store.seed_default(force=force)
+        store.seed_default(
+            force=force,
+            user_display_name=self.user_display_name,
+        )
         snap = store.snapshot()
         self._notify_world({"snapshot": snap})
         return snap

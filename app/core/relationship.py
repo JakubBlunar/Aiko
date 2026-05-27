@@ -174,9 +174,19 @@ class RelationshipTracker:
         state = self.get(user_id)
         return phase_for(state, now=now or datetime.now(timezone.utc))
 
-    def ambient_line(self, user_id: str, *, now: datetime | None = None) -> str:
+    def ambient_line(
+        self,
+        user_id: str,
+        *,
+        now: datetime | None = None,
+        user_display_name: str = "the user",
+    ) -> str:
         state = self.get(user_id)
-        return render_ambient(state, now=now or datetime.now(timezone.utc))
+        return render_ambient(
+            state,
+            now=now or datetime.now(timezone.utc),
+            user_display_name=user_display_name,
+        )
 
     # ── writes ─────────────────────────────────────────────────────────
 
@@ -274,36 +284,53 @@ def _next_milestone(
     return None
 
 
-_PHASE_AMBIENT_LINES: dict[str, str] = {
-    "new": "You and Jacob have only just met — keep introductions warm and curious.",
-    "warming_up": "You and Jacob are still warming up to each other; small "
+# Phase-keyed ambient relationship lines. Templated on the user's
+# display name so the line reads naturally with whatever the user typed
+# into the onboarding modal -- ``{name}`` is filled by
+# :func:`phase_ambient_line` and never reaches the LLM verbatim.
+_PHASE_AMBIENT_TEMPLATES: dict[str, str] = {
+    "new": "You and {name} have only just met — keep introductions warm and curious.",
+    "warming_up": "You and {name} are still warming up to each other; small "
                   "callbacks to earlier in the chat help.",
-    "familiar": "You and Jacob have known each other a while now; speak with "
+    "familiar": "You and {name} have known each other a while now; speak with "
                 "familiarity but don't take continuity for granted.",
-    "regular": "You and Jacob have a regular rhythm together; you can be "
+    "regular": "You and {name} have a regular rhythm together; you can be "
                "playfully assumptive about each other's habits.",
-    "close": "You and Jacob have been talking for months; speak as close "
+    "close": "You and {name} have been talking for months; speak as close "
              "friends do — short, present, occasionally tender.",
 }
 
 
+def phase_ambient_line(phase: str, user_display_name: str = "the user") -> str:
+    """Return the ambient line for ``phase``, with the name substituted in.
+
+    Falls back to the ``"new"`` template when an unknown phase is passed
+    (e.g. from a future schema). The substitution always succeeds
+    because the templates only carry a single ``{name}`` placeholder.
+    """
+    template = _PHASE_AMBIENT_TEMPLATES.get(
+        phase, _PHASE_AMBIENT_TEMPLATES["new"],
+    )
+    return template.format(name=user_display_name)
+
+
 # Phase 2d: address-style cues per relationship phase. The block is a
 # single short hint at where on the formal-to-affectionate spectrum
-# Aiko should sit when she names / addresses Jacob. The LLM combines
-# this with persona + arc to land on a natural address style for the
-# turn (no name, "Jacob", a softening word, or a casual nickname).
-_PHASE_PETNAME_LINES: dict[str, str] = {
+# Aiko should sit when she addresses the user. The LLM combines this
+# with persona + arc to land on a natural address style for the turn
+# (no name, the user's name, a softening word, or a casual nickname).
+_PHASE_PETNAME_TEMPLATES: dict[str, str] = {
     "new": (
-        "Address style: use 'Jacob' or no name; stay light and unassuming. "
-        "Avoid nicknames or pet names — you barely know him."
+        "Address style: use '{name}' or no name; stay light and unassuming. "
+        "Avoid nicknames or pet names — you barely know them."
     ),
     "warming_up": (
-        "Address style: 'Jacob' is the default; an occasional softening "
+        "Address style: '{name}' is the default; an occasional softening "
         "word ('hey you', 'yeah you') is fine when the moment fits."
     ),
     "familiar": (
         "Address style: feel free to drop the name most turns. Casual "
-        "nicknames ('coder boy', 'troublemaker') work when playful."
+        "nicknames work when playful."
     ),
     "regular": (
         "Address style: free to be playful with names and small "
@@ -316,8 +343,13 @@ _PHASE_PETNAME_LINES: dict[str, str] = {
 }
 
 
-def render_petname_block(state: RelationshipState, *, now: datetime) -> str:
-    """Phase 2d: short cue describing how Aiko should address Jacob
+def render_petname_block(
+    state: RelationshipState,
+    *,
+    now: datetime,
+    user_display_name: str = "the user",
+) -> str:
+    """Phase 2d: short cue describing how Aiko should address the user
     given the current relationship phase. Empty for the "new" phase
     so we don't burn tokens telling the LLM something obvious on day
     one — the persona already covers it.
@@ -325,12 +357,20 @@ def render_petname_block(state: RelationshipState, *, now: datetime) -> str:
     phase = phase_for(state, now=now)
     if phase == "new":
         return ""
-    return _PHASE_PETNAME_LINES.get(phase, "")
+    template = _PHASE_PETNAME_TEMPLATES.get(phase, "")
+    if not template:
+        return ""
+    return template.format(name=user_display_name)
 
 
-def render_ambient(state: RelationshipState, *, now: datetime) -> str:
+def render_ambient(
+    state: RelationshipState,
+    *,
+    now: datetime,
+    user_display_name: str = "the user",
+) -> str:
     phase = phase_for(state, now=now)
-    base = _PHASE_AMBIENT_LINES.get(phase, _PHASE_AMBIENT_LINES["new"])
+    base = phase_ambient_line(phase, user_display_name)
     age_days = _days_since(state, now=now)
     if state.milestone_label:
         # Append a single milestone hint so the LLM knows what to honor.
@@ -346,6 +386,7 @@ __all__ = [
     "RelationshipState",
     "RelationshipStore",
     "RelationshipTracker",
+    "phase_ambient_line",
     "phase_for",
     "render_ambient",
     "render_petname_block",

@@ -15,9 +15,21 @@ import unittest
 from pathlib import Path
 from typing import Any
 
+from dataclasses import dataclass
+
 from app.core.chat_database import ChatDatabase
 from app.core.session_controller import SessionController
 from app.core.world_store import WorldStore
+
+
+@dataclass
+class _AssistantStub:
+    user_display_name: str = "Jacob"
+
+
+@dataclass
+class _SettingsStub:
+    assistant: _AssistantStub
 
 
 def _make_controller(*, seed: bool = True) -> tuple[SessionController, Path, tempfile.TemporaryDirectory]:
@@ -30,6 +42,9 @@ def _make_controller(*, seed: bool = True) -> tuple[SessionController, Path, tem
     controller = SessionController.__new__(SessionController)
     controller._world_store = store
     controller._world_listeners = []
+    # ``user_display_name`` (and therefore ``reseed_world`` /
+    # ``_render_world_block``) reads ``self._settings.assistant``.
+    controller._settings = _SettingsStub(assistant=_AssistantStub())  # type: ignore[attr-defined]
     return controller, db_path, tmp
 
 

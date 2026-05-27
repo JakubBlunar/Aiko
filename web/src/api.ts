@@ -8,6 +8,7 @@ import type {
   AvatarSettingsKnobs,
   ChatMessage,
   DesktopSettings,
+  Identity,
   Memory,
   MemoriesResponse,
   MemoryCounts,
@@ -312,6 +313,16 @@ export const api = {
       },
     ),
   getMetrics: () => jsonFetch<MetricsResponse>("/api/metrics"),
+  // Identity (first-run onboarding). The frontend reads ``needs_onboarding``
+  // from the WS hello on connect; this REST pair is used by the modal
+  // submit handler and any "change name" surface in Settings.
+  getIdentity: () => jsonFetch<Identity>("/api/settings/identity"),
+  setIdentity: (user_display_name: string) =>
+    jsonFetch<Identity>("/api/settings/identity", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_display_name }),
+    }),
   getDesktop: () => jsonFetch<DesktopSettings>("/api/desktop"),
   patchPersonaWindow: (patch: Partial<PersonaWindowSettings>) =>
     jsonFetch<DesktopSettings>("/api/desktop/persona-window", {

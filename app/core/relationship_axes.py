@@ -312,15 +312,19 @@ class RelationshipAxesUpdater:
 # ── rendering ───────────────────────────────────────────────────────────
 
 
+# Axis phrases templated on the user's display name. The placeholder
+# ``{name}`` (and ``{them}`` for the pronoun-y variants) is filled by
+# :func:`render_axes_block`; templates with no placeholder render
+# verbatim so we don't pay the format() cost for free-text lines.
 _AXIS_PHRASES_POS: dict[str, tuple[str, str]] = {
     # axis -> (mid phrase, high phrase)
     "closeness": (
-        "you feel close to Jacob right now",
-        "you feel especially close with Jacob right now",
+        "you feel close to {name} right now",
+        "you feel especially close with {name} right now",
     ),
     "humor": (
-        "the humor's been easy with him lately",
-        "you and Jacob have been playful with each other lately",
+        "the humor's been easy with {them} lately",
+        "you and {name} have been playful with each other lately",
     ),
     "trust": (
         "trust runs steady between you",
@@ -328,13 +332,13 @@ _AXIS_PHRASES_POS: dict[str, tuple[str, str]] = {
     ),
     "comfort": (
         "things feel comfortable between you",
-        "you feel calm and at home around him",
+        "you feel calm and at home around {them}",
     ),
 }
 _AXIS_PHRASES_NEG: dict[str, tuple[str, str]] = {
     "closeness": (
         "things have felt a little distant",
-        "you've felt distant from Jacob lately",
+        "you've felt distant from {name} lately",
     ),
     "humor": (
         "things have been less playful lately",
@@ -346,7 +350,7 @@ _AXIS_PHRASES_NEG: dict[str, tuple[str, str]] = {
     ),
     "comfort": (
         "things have felt a little uneasy",
-        "you've felt a bit on-edge around him",
+        "you've felt a bit on-edge around {them}",
     ),
 }
 
@@ -355,6 +359,7 @@ def render_axes_block(
     state: RelationshipAxesState,
     *,
     threshold: float = _NOTABLE_THRESHOLD,
+    user_display_name: str = "the user",
 ) -> str:
     """Return a terse 1-line block, or '' if nothing crosses ``threshold``.
 
@@ -374,6 +379,11 @@ def render_axes_block(
     notable.sort(key=lambda pair: abs(pair[1]), reverse=True)
     notable = notable[:2]
 
+    # ``them`` is the third-person pronoun stand-in for the user. We
+    # use a generic "them" rather than guessing gender from the typed
+    # name; tone-wise it reads as warmer than "<name>" repeated.
+    name = user_display_name or "the user"
+    them = "them"
     parts: list[str] = []
     for axis, value in notable:
         intensity = "high" if abs(value) >= 0.75 else "mid"
@@ -383,7 +393,9 @@ def render_axes_block(
         else:
             phrase = _AXIS_PHRASES_NEG.get(axis, ("", ""))[idx]
         if phrase:
-            parts.append(phrase)
+            # Templates may or may not carry {name} / {them}; .format
+            # is safe either way and cheap enough on the hot path.
+            parts.append(phrase.format(name=name, them=them))
     if not parts:
         return ""
     joined = parts[0] if len(parts) == 1 else f"{parts[0]} — {parts[1]}"

@@ -23,14 +23,21 @@ class _AgentStub:
 
 
 @dataclass
+class _AssistantStub:
+    user_display_name: str = "Jacob"
+
+
+@dataclass
 class _SettingsStub:
     agent: _AgentStub
+    assistant: _AssistantStub
 
 
 def _make_controller(*, enabled: bool = False) -> SessionController:
     controller = SessionController.__new__(SessionController)
     controller._settings = _SettingsStub(  # type: ignore[attr-defined]
         agent=_AgentStub(activity_awareness_enabled=enabled),
+        assistant=_AssistantStub(),
     )
     controller._user_active_app = None  # type: ignore[attr-defined]
     controller._typed_silence_lock = threading.Lock()  # type: ignore[attr-defined]

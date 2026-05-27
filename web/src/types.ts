@@ -187,6 +187,18 @@ export interface MemoryCounts {
   total: number;
 }
 
+/**
+ * First-run identity surface. ``needs_onboarding`` is true exactly when
+ * ``user_display_name`` has not been configured yet, gating the name
+ * modal that runs before the rest of the UI. Mirrors
+ * ``GET /api/settings/identity`` and the ``identity`` key on the WS
+ * ``hello`` snapshot.
+ */
+export interface Identity {
+  user_display_name: string;
+  needs_onboarding: boolean;
+}
+
 export interface RagDocument {
   document_id: string;
   title: string;
@@ -768,6 +780,9 @@ export type WsServerEvent =
        * client so a freshly-opened window already knows its target
        * geometry without an extra REST round-trip. */
       desktop?: DesktopSettings;
+      /** First-run identity. Optional only for backwards compatibility
+       * with older backends; missing falls back to a REST fetch. */
+      identity?: Identity;
     }
   | { type: "token"; chunk: string }
   | { type: "turn_done"; metrics: MetricsSnapshot }
@@ -831,6 +846,15 @@ export type WsServerEvent =
   | {
       type: "desktop_settings_changed";
       persona_window: PersonaWindowSettings;
+    }
+  | {
+      /** Pushed by ``PUT /api/settings/identity``. The frontend uses
+       * this to dismiss the first-run modal (when ``needs_onboarding``
+       * flips to false) or surface a "Aiko will use your new name"
+       * toast for a later rename. */
+      type: "identity_changed";
+      user_display_name: string;
+      needs_onboarding: boolean;
     }
   | { type: "avatar_overlay"; name: string; duration_ms: number }
   | {

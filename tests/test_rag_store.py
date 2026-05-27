@@ -221,7 +221,9 @@ class RagRetrieverMergeTests(_TmpRagBase):
         retriever = RagRetriever(self.store, self.embedder, top_k=5, score_threshold=-1.0)
         # Query verbatim against the fact so FakeEmbedder produces a real
         # similarity (it hashes per-string).
-        block = retriever.block_for("Jacob lives in Krakow")
+        block = retriever.block_for(
+            "Jacob lives in Krakow", user_display_name="Jacob",
+        )
         # The "Jacob" header is required when any non-self memory is hit.
         self.assertIn("What you know about Jacob", block)
 

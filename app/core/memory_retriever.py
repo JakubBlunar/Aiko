@@ -66,11 +66,17 @@ class MemoryRetriever:
         return hits
 
     @staticmethod
-    def format_block(hits: list[SearchHit]) -> str:
+    def format_block(
+        hits: list[SearchHit],
+        *,
+        user_display_name: str = "the user",
+    ) -> str:
         """Format the retrieved memories into a system-prompt-ready block."""
         if not hits:
             return ""
-        lines = ["What you know about Jacob (long-term memory):"]
+        lines = [
+            f"What you know about {user_display_name} (long-term memory):"
+        ]
         seen: set[str] = set()
         for hit in hits:
             content = (hit.memory.content or "").strip()
@@ -85,10 +91,15 @@ class MemoryRetriever:
             return ""
         return "\n".join(lines)
 
-    def block_for(self, query_text: str) -> str:
+    def block_for(
+        self,
+        query_text: str,
+        *,
+        user_display_name: str = "the user",
+    ) -> str:
         """Convenience: retrieve and format in one call."""
         hits = self.top_memories(query_text)
-        return self.format_block(hits)
+        return self.format_block(hits, user_display_name=user_display_name)
 
     @staticmethod
     def memory_to_dict(memory: Memory) -> dict[str, object]:

@@ -39,8 +39,11 @@ DEFAULT_SELF_IMAGE_PATH = Path("data/persona/self_image.txt")
 
 # Phase 1c: stage-direction grammar. Folded into the system prompt
 # right after the persona so the model knows about it without us having
-# to mutate the user-customisable persona file.
-_SPEECH_GRAMMAR_ADDENDUM = (
+# to mutate the user-customisable persona file. The trailing
+# "Match <name>'s register" cue is name-aware and rendered through the
+# :func:`build_speech_grammar_addendum` factory below; the module-level
+# constant kept here for back-compat is the ``"the user"`` default.
+_SPEECH_GRAMMAR_PREAMBLE = (
     "Stage-direction grammar (use sparingly, once or twice a turn at most, "
     "only at clause boundaries):\n"
     "- [[laugh]] — a short audible laugh\n"
@@ -56,13 +59,31 @@ _SPEECH_GRAMMAR_ADDENDUM = (
     "Use sparingly — once or twice a session at most, never as a stylistic "
     "tic.\n"
     "\n"
-    "Match Jacob's register: when the prompt mentions \"User sounds: …\" "
-    "or \"Right now Jacob: …\", treat those as real cues — if he sounds "
-    "tired or his mood reads low, soften and shorten your reply; if he's "
-    "pumped, ride the energy. Acknowledge a clear shift once, naturally "
-    "(\"you sound wiped\"), never mechanically — and never quote the "
-    "system line back at him."
 )
+
+
+def build_speech_grammar_addendum(user_display_name: str = "the user") -> str:
+    """Speech grammar addendum customised with the user's display name.
+
+    Keeps the ``Match <name>'s register`` cue in the speaker's voice so
+    the LLM has a tight referent. ``"the user"`` is the safe default
+    used by tests / fixtures.
+    """
+    name = user_display_name or "the user"
+    return _SPEECH_GRAMMAR_PREAMBLE + (
+        f"Match {name}'s register: when the prompt mentions \"User sounds: …\" "
+        f"or \"Right now {name}: …\", treat those as real cues — if they sound "
+        "tired or their mood reads low, soften and shorten your reply; if "
+        "they're pumped, ride the energy. Acknowledge a clear shift once, "
+        "naturally (\"you sound wiped\"), never mechanically — and never "
+        "quote the system line back at them."
+    )
+
+
+# Module-level constant retained for tests and external callers that
+# imported the old name. New code should call
+# ``build_speech_grammar_addendum`` with the runtime user name.
+_SPEECH_GRAMMAR_ADDENDUM = build_speech_grammar_addendum()
 
 
 # Alexia bundle: short English label table for overlay capabilities.
@@ -461,7 +482,7 @@ class PromptAssembler:
         # location + nearby items. See WorldStore.render_block.
         self._world_provider: Callable[[], str] | None = None
         # Activity awareness (Phase 4c): the foreground app the user
-        # is in, surfaced as "Jacob is currently working in <App>."
+        # is in, surfaced as "<user> is currently working in <App>."
         # Always empty string when the feature is disabled or no app
         # was captured. Desktop-only opt-in; browser users never set
         # the underlying state. Dropped in aggressive mode.
@@ -511,6 +532,12 @@ class PromptAssembler:
         self._pinned_self_memories_provider: (
             Callable[[], list[str]] | None
         ) = None
+        # First-run identity: callable returning the user's display name.
+        # Threaded down to the RAG block formatters so the "What you know
+        # about <name>" header reflects whatever the user typed into the
+        # onboarding modal. Defaults to a generic placeholder when the
+        # caller didn't wire it, which is fine for tests / fixtures.
+        self._user_display_name_provider: Callable[[], str] | None = None
 
     def set_memory_retriever(self, retriever: "MemoryRetriever | None") -> None:
         self._memory_retriever = retriever
@@ -525,6 +552,28 @@ class PromptAssembler:
         """Optional Phase-1b cache: if it returns a non-empty block, we'll
         skip the live retrieval and reuse the speculative pre-fetch."""
         self._rag_prefetch_lookup = lookup
+
+    def set_user_display_name_provider(
+        self,
+        provider: Callable[[], str] | None,
+    ) -> None:
+        """Wire the user-display-name resolver.
+
+        Called lazily by the assembler each time a prompt block needs the
+        name so a rename via ``identity_changed`` takes effect on the
+        very next turn without a re-init.
+        """
+        self._user_display_name_provider = provider
+
+    def _resolve_user_display_name(self) -> str:
+        provider = self._user_display_name_provider
+        if provider is None:
+            return "the user"
+        try:
+            name = (provider() or "").strip()
+        except Exception:
+            return "the user"
+        return name or "the user"
 
     def set_pinned_self_memories_provider(
         self,
@@ -911,13 +960,17 @@ class PromptAssembler:
                         user_text,
                         recent_turns=recent_turns,
                         exclude_session_id=session_key,
+                        user_display_name=self._resolve_user_display_name(),
                     )
                 except Exception:
                     log.debug("rag retrieval failed", exc_info=True)
                     memory_block = ""
             if not memory_block and self._memory_retriever is not None:
                 try:
-                    memory_block = self._memory_retriever.block_for(user_text)
+                    memory_block = self._memory_retriever.block_for(
+                        user_text,
+                        user_display_name=self._resolve_user_display_name(),
+                    )
                 except Exception:
                     log.debug("memory retrieval failed", exc_info=True)
                     memory_block = ""
@@ -985,7 +1038,9 @@ class PromptAssembler:
             # [[gasp]] / [[hum]] grammar without us editing the
             # user-customisable persona file. Constant cost; under 60
             # tokens.
-            system_parts.append(_SPEECH_GRAMMAR_ADDENDUM)
+            system_parts.append(
+                build_speech_grammar_addendum(self._resolve_user_display_name()),
+            )
             if overlay_grammar_block:
                 system_parts.append(overlay_grammar_block)
             if outfit_grammar_block:
@@ -1033,7 +1088,7 @@ class PromptAssembler:
         if world_block:
             system_parts.append(world_block)
         # Activity block lands right after world so the two
-        # "ambient awareness" cues (where Aiko is, what Jacob is
+        # "ambient awareness" cues (where Aiko is, what the user is
         # doing) sit next to each other in the system prompt.
         if activity_block:
             system_parts.append(activity_block)
@@ -1240,14 +1295,28 @@ class PromptAssembler:
         except OSError:
             return ""
         if self._persona_cache is not None and self._persona_cache[0] == mtime:
-            return self._persona_cache[1]
+            raw = self._persona_cache[1]
+        else:
+            try:
+                raw = path.read_text(encoding="utf-8").strip()
+            except OSError as exc:
+                log.warning("persona file %s unreadable: %s", path, exc)
+                raw = ""
+            self._persona_cache = (mtime, raw)
+        if not raw:
+            return ""
+        # Phase 4d: render the {user_name} placeholder per-call so a rename
+        # via onboarding takes effect without invalidating the mtime cache.
+        # If the persona file has stray ``{`` braces (e.g. literal JSON) the
+        # ``.format()`` call would raise -- fall back to the raw text.
         try:
-            text = path.read_text(encoding="utf-8").strip()
-        except OSError as exc:
-            log.warning("persona file %s unreadable: %s", path, exc)
-            text = ""
-        self._persona_cache = (mtime, text)
-        return text
+            return raw.format(user_name=self._resolve_user_display_name())
+        except Exception:
+            log.debug(
+                "persona templating failed; falling back to raw text",
+                exc_info=True,
+            )
+            return raw
 
     def _load_self_image(self) -> str:
         """Compose the self-image block (Phase 2d).

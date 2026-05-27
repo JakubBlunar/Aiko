@@ -39,9 +39,11 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Iterable
+from typing import TYPE_CHECKING, Any, Callable, Iterable
 
 import numpy as np
+
+from app.core.session_text_utils import resolve_user_name
 
 if TYPE_CHECKING:
     from app.core.chat_database import ChatDatabase
@@ -64,16 +66,25 @@ class ConsolidationResult:
     elapsed_seconds: float = 0.0
 
 
-_MERGE_PROMPT = """\
-You are Aiko's memory librarian. You'll receive 2-6 short notes about
-Jacob that say overlapping things. Write ONE consolidated note (<= 30
-words) that preserves the strongest specifics and drops the redundant
-phrasing. Keep first-person facts in third-person about Jacob.
+def _build_merge_prompt(user_display_name: str = "the user") -> str:
+    """Merge-prompt factory templated on the user's display name."""
+    name = user_display_name or "the user"
+    return (
+        "You are Aiko's memory librarian. You'll receive 2-6 short notes "
+        f"about {name} that say overlapping things. Write ONE consolidated "
+        "note (<= 30 words) that preserves the strongest specifics and "
+        f"drops the redundant phrasing. Keep first-person facts in "
+        f"third-person about {name}.\n"
+        "\n"
+        "Rules:\n"
+        "- Output only the consolidated note. No prose, no bullets, no quotes.\n"
+        "- Stay concrete. Don't invent facts not present in the inputs.\n"
+        "- If the inputs disagree, take the most recent / specific one."
+    )
 
-Rules:
-- Output only the consolidated note. No prose, no bullets, no quotes.
-- Stay concrete. Don't invent facts not present in the inputs.
-- If the inputs disagree, take the most recent / specific one."""
+
+# Back-compat constant. New code should call ``_build_merge_prompt(name)``.
+_MERGE_PROMPT = _build_merge_prompt()
 
 
 class MemoryConsolidator:
@@ -92,11 +103,13 @@ class MemoryConsolidator:
         min_hours_between: float = 18.0,
         use_llm_merge: bool = True,
         max_llm_tokens: int = 80,
+        user_display_name_provider: "Callable[[], str] | None" = None,
     ) -> None:
         self._ollama = ollama
         self._mem = memory_store
         self._db = chat_db
         self._model = model
+        self._user_display_name_provider = user_display_name_provider
         self._chunk_size = max(8, int(chunk_size))
         self._sim = max(0.5, min(0.99, float(similarity_threshold)))
         self._min_cluster = max(2, int(min_cluster_size))
@@ -114,6 +127,9 @@ class MemoryConsolidator:
             "llm_calls": 0,
             "failed_llm": 0,
         }
+
+    def _resolve_user_name(self) -> str:
+        return resolve_user_name(self._user_display_name_provider)
 
     # ── public ──────────────────────────────────────────────────────────
 
@@ -258,7 +274,10 @@ class MemoryConsolidator:
             return survivor.content
         try:
             messages = [
-                {"role": "system", "content": _MERGE_PROMPT},
+                {
+                    "role": "system",
+                    "content": _build_merge_prompt(self._resolve_user_name()),
+                },
                 {"role": "user", "content": "\n".join(bullets)},
             ]
             self._stats["llm_calls"] += 1

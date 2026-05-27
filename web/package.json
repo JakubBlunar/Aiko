@@ -11,7 +11,8 @@
     "test:watch": "vitest",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "tauri:build:macos": "python ../scripts/check-clean-build.py && npm run build && tauri build --bundles dmg,app"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.1.1",
