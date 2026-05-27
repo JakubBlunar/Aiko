@@ -428,6 +428,48 @@ class ExpressionParamBindingTests(unittest.TestCase):
         json.dumps(encoded)
 
 
+class MouthOverlayParamDetectionTests(unittest.TestCase):
+    """Verify the cdi3 walk that flags params drawing a stylised
+    mouth overlay (Alexia ``Param54`` "Grin") so the frontend
+    ``ExpressionChannel`` can taper them against live audio
+    amplitude — fixing the "two mouths at once" regression where a
+    grin reaction painted a static toothy mouth on top of the
+    flapping lip-sync mouth."""
+
+    def test_mini_fixture_detects_param54_as_mouth_overlay(self) -> None:
+        # The mini fixture's cdi3 names Param54 = "咧嘴笑" which the
+        # synonym table maps to the grin overlay.
+        profile = from_disk(_MIN)
+        self.assertIn("Param54", profile.mouth_overlay_param_ids)
+
+    def test_bare_fixture_has_no_mouth_overlay(self) -> None:
+        # The bare rig only has ParamMouthOpenY (the actual lip-sync
+        # mouth), no grin / smirk overlay. The list must be empty so
+        # the channel skips its suppression branch entirely.
+        profile = from_disk(_BARE)
+        self.assertEqual(profile.mouth_overlay_param_ids, [])
+
+    def test_mouth_overlay_excludes_plain_mouth_open(self) -> None:
+        # Critical: ParamMouthOpenY is the LIP-SYNC param, not a
+        # mouth overlay. If we ever accidentally matched it, the
+        # channel would suppress the very thing it's trying to
+        # protect. Both fixtures expose ParamMouthOpenY.
+        for fixture in (_MIN, _BARE):
+            profile = from_disk(fixture)
+            self.assertNotIn(
+                "ParamMouthOpenY", profile.mouth_overlay_param_ids,
+                f"{fixture.name} fixture leaked the lip-sync param "
+                f"into the mouth-overlay set",
+            )
+
+    def test_round_trips_through_to_dict(self) -> None:
+        profile = from_disk(_MIN)
+        encoded = profile.to_dict()
+        self.assertIn("mouth_overlay_param_ids", encoded)
+        self.assertEqual(encoded["mouth_overlay_param_ids"], ["Param54"])
+        json.dumps(encoded)
+
+
 class ReactionMappingTests(unittest.TestCase):
     def test_alexia_explicit_mapping_wins_when_expression_present(self) -> None:
         profile = from_disk(_MIN)

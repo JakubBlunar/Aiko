@@ -46,6 +46,21 @@
  *     ``cheerful`` reaction reads ~46% on a low-arousal day, ~94%
  *     when Aiko is excited. ``expressiveness`` from the user
  *     slider applies on top.
+ *
+ * Mouth-overlay lip-sync suppression:
+ *   - Some rigs ship a stylised "mouth shape" overlay that lives
+ *     on its own param (Alexia's ``Param54`` "Grin", activated by
+ *     the ``lzx`` expression). When the rig speaks while a grin-
+ *     bearing expression is active, the toothy grin overlay sits on
+ *     top of the lip-synced ``ParamMouthOpenY`` and you visibly see
+ *     two mouths at once.
+ *   - The avatar profile exposes ``mouth_overlay_param_ids`` for
+ *     these. Per frame, we drive a smoothed lip-sync suppression
+ *     factor off ``audioAmplitude`` (gain × clamp01) and multiply
+ *     ``(1 - factor)`` into any binding whose id is in that set.
+ *     Non-mouth bindings (cheek tilts, eye squint params on the
+ *     same expression) are unaffected, so the rest of the smile
+ *     keeps reading while the toothy overlay tapers out.
  */
 import type { BackchannelHint, ExpressionParam } from "../../types";
 import { approach } from "../math";
@@ -112,6 +127,21 @@ const AROUSAL_SCALE_CEILING = 1.0;
  * that a reaction transition doesn't feel laggy, slow enough that
  * the smile doesn't pulse at the audio_amplitude rate. */
 const AMPLITUDE_TIME_CONSTANT_S = 0.4;
+/** Gain applied to ``audioAmplitude`` before clamping into a
+ * ``[0, 1]`` "lip-sync activity" factor. The raw amplitude bounces
+ * between roughly 0.0 and 0.4 during normal speech (chunked TTS
+ * with peaks well below 1.0), so a gain of ~6 means ordinary mid-
+ * sentence amplitude saturates the suppression — the toothy grin
+ * overlay drops away as soon as the mouth is actually moving, not
+ * only at TTS peaks. Tweak in tandem with the lipsync smoothing
+ * factor in ``LipsyncChannel``. */
+const LIPSYNC_SUPPRESSION_GAIN = 6;
+/** Time constant for the lip-sync-suppression factor itself. A
+ * touch faster than the amplitude-scale TC so the grin cleanly
+ * disappears within ~150 ms of speech onset (perceptually
+ * synchronous with the mouth flapping) and re-emerges at a similar
+ * rate once she falls silent. */
+const LIPSYNC_SUPPRESSION_TIME_CONSTANT_S = 0.15;
 
 export interface ExpressionChannelOptions {
   /** Optional schedule + cancel pair, defaulting to setTimeout /
@@ -146,6 +176,18 @@ export class ExpressionChannel implements AvatarChannel {
    * expressiveness``. ``approach()`` smooths this every frame so a
    * sudden arousal shift doesn't pop the expression's loudness. */
   private _amplitudeScale = 0;
+  /** Critically-damped "lip-sync suppression" factor in ``[0, 1]``.
+   * Driven by ``audioAmplitude * LIPSYNC_SUPPRESSION_GAIN`` clamped
+   * to ``[0, 1]``; multiplied into mouth-overlay bindings (e.g.
+   * Alexia's ``Param54`` Grin) as ``(1 - lipsyncSuppression)`` so
+   * the toothy grin fades while she's actually speaking and snaps
+   * back when she falls silent. Non-mouth bindings ignore it. */
+  private _lipsyncSuppression = 0;
+  /** Cached set of param IDs that paint a stylised mouth-shape
+   * overlay (Alexia: ``["Param54"]``). Populated once at attach
+   * time from ``manifest.mouth_overlay_param_ids`` so the per-frame
+   * write loop avoids re-allocating the Set. */
+  private _mouthOverlayIds: Set<string> = new Set();
   /** Monotonic timestamp of the last ``tickPreModel`` call. ``0``
    * before the first tick; used to derive a frame ``dt`` since the
    * engine's ``beforeModelUpdate`` doesn't pass one. */
@@ -184,7 +226,9 @@ export class ExpressionChannel implements AvatarChannel {
     this._voiceMode = deps.getStoreSnapshot().voiceMode || "off";
     this._activeExpressionName = "";
     this._amplitudeScale = 0;
+    this._lipsyncSuppression = 0;
     this._lastPreModelAt = 0;
+    this._mouthOverlayIds = new Set(deps.manifest.mouth_overlay_param_ids ?? []);
     // Apply the initial reaction once at attach so a fresh model
     // doesn't pop in with the default expression while the engine
     // is still wiring channels.
@@ -198,7 +242,9 @@ export class ExpressionChannel implements AvatarChannel {
     this._voiceMode = "off";
     this._activeExpressionName = "";
     this._amplitudeScale = 0;
+    this._lipsyncSuppression = 0;
     this._lastPreModelAt = 0;
+    this._mouthOverlayIds = new Set();
     this._cancelRestore();
     this._backchannelSeq = 0;
   }
@@ -316,16 +362,19 @@ export class ExpressionChannel implements AvatarChannel {
       // next non-overlay frame ramps in cleanly instead of snapping
       // back from the overlay's amplitude.
       this._amplitudeScale = 0;
+      this._lipsyncSuppression = 0;
       return;
     }
     const expressionName = this._activeExpressionName;
     if (!expressionName) {
       this._amplitudeScale = 0;
+      this._lipsyncSuppression = 0;
       return;
     }
     const bindings = pickExpressionBindings(deps.manifest, expressionName);
     if (!bindings || bindings.length === 0) {
       this._amplitudeScale = 0;
+      this._lipsyncSuppression = 0;
       return;
     }
 
@@ -341,8 +390,34 @@ export class ExpressionChannel implements AvatarChannel {
     const rate = dt > 0 ? dt / AMPLITUDE_TIME_CONSTANT_S : 0;
     this._amplitudeScale = approach(this._amplitudeScale, targetScale, rate);
 
+    // Lip-sync suppression: drive a separate smoothed factor off the
+    // raw audio amplitude so any "draws-a-mouth-shape" expression
+    // param (Alexia's Param54 Grin) tapers out while she's speaking.
+    // Computed even when there are no overlay bindings so the value
+    // stays warm — switching to a grin reaction mid-speech ramps
+    // smoothly instead of snapping in fully visible.
+    const lipsyncTarget = clamp(
+      (snap.audioAmplitude || 0) * LIPSYNC_SUPPRESSION_GAIN,
+      0,
+      1,
+    );
+    const lipsyncRate =
+      dt > 0 ? dt / LIPSYNC_SUPPRESSION_TIME_CONSTANT_S : 0;
+    this._lipsyncSuppression = approach(
+      this._lipsyncSuppression,
+      lipsyncTarget,
+      lipsyncRate,
+    );
+    const mouthScale =
+      this._mouthOverlayIds.size > 0 ? 1 - this._lipsyncSuppression : 1;
+
     for (const binding of bindings) {
-      adapter.setParam(binding.param_id, binding.on_value * this._amplitudeScale);
+      const isMouthOverlay = this._mouthOverlayIds.has(binding.param_id);
+      const value =
+        binding.on_value *
+        this._amplitudeScale *
+        (isMouthOverlay ? mouthScale : 1);
+      adapter.setParam(binding.param_id, value);
     }
   }
 

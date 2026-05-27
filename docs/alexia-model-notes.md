@@ -347,6 +347,53 @@ The fix in place lives in three coordinated channels:
   or `resetExpression()` for empty mappings). This is the **only**
   path that handles same-value reaction sequences.
 
+### Mouth-overlay vs lip-sync — the "two mouths" trap
+
+`Param54` (Grin) is a **stylised mouth shape** the rig paints on top
+of the regular mouth artwork. The `lzx` expression Add-blends it to
+30, which makes it visible whenever the rig is rendering with `lzx`
+active (the persistent mapping for `cheerful` / `amused`, plus
+the `[[overlay:grin]]` pulse). Crucially, **`Param54` is NOT a
+lip-sync param** — `Groups.LipSync` only lists `ParamMouthOpenY`. So
+when Aiko speaks while a grin reaction is on, both mouths render
+simultaneously: the static toothy grin overlay and the flapping
+lip-synced jaw underneath.
+
+The fix lives in `app/core/avatar_profile.py` and
+`web/src/live2d/channels/ExpressionChannel.ts`:
+
+- `_detect_mouth_overlay_param_ids` walks the cdi3 `Parameters`
+  and returns every param whose `Name` substring-matches one of
+  `_MOUTH_OVERLAY_SYNONYMS` (`咧嘴笑` / `咧嘴` / `grin` / `smirk` /
+  `toothy`). On Alexia this resolves to `["Param54"]`. On rigs
+  without a mouth overlay (the bare fixture, plain Cubism rigs)
+  the list is empty and the renderer's lip-sync path runs
+  unmodified.
+- The list ships on the manifest as
+  `mouth_overlay_param_ids: string[]`, alongside the existing
+  `lip_sync_ids` / `eye_blink_ids`.
+- `ExpressionChannel.tickPreModel` smooths a separate
+  "lip-sync suppression" factor off `audioAmplitude` (gain ≈ 6,
+  time constant ≈ 150 ms) and multiplies `(1 - factor)` into any
+  expression-param binding whose id lands in the cached overlay
+  set. Non-mouth bindings on the same expression (cheek squint,
+  eye crinkle, …) are unaffected — only the overlay mouth fades.
+- `_MOUTH_OVERLAY_SYNONYMS` deliberately omits the word `"smile"`.
+  A soft closed-mouth smile expression doesn't paint a competing
+  mouth; only overlays that visibly add a second mouth belong here.
+  `"smile"` would falsely flag friendly / warm reactions and mute
+  legitimate cheek params.
+- `ParamMouthOpenY` itself must NEVER end up in this list —
+  suppressing the lip-sync param IS the bug. The
+  `test_mouth_overlay_excludes_plain_mouth_open` regression test
+  in `tests/test_avatar_profile.py` locks that in.
+
+When adding a future rig with its own grin / smirk overlay, just
+ensure the cdi3 `Name` field carries one of the listed synonyms;
+the detection picks it up automatically. New rigs with novel
+naming conventions can extend `_MOUTH_OVERLAY_SYNONYMS` (and the
+matching test) — keep the list narrow.
+
 ### Wall-clock vs monotonic clock — pulse deadlines
 
 `overlay.expiresAt` arrives from the WS handler as `Date.now() +

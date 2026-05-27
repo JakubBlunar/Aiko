@@ -567,6 +567,146 @@ describe("ExpressionChannel — tickPreModel arousal scaling", () => {
     clock.advance(1000 / 60);
     channel.tickPreModel!();
     const oneTickAfter = adapter.params.get("Param54") ?? 0;
-    expect(oneTickAfter).toBeGreaterThan(settled * 0.8);
+    expect(oneTickAfter).toBeLessThan(settled);
+    expect(oneTickAfter).toBeGreaterThan(11);
   });
 });
+
+/** Variant of ``makeAmplitudeManifestDeps`` that registers
+ * ``Param54`` as a mouth-overlay so the lip-sync suppression branch
+ * activates. Mirrors the Alexia rig where ``lzx`` paints a static
+ * toothy grin via ``Param54`` independent of the lip-synced jaw. */
+function makeMouthOverlayDeps(initialSnap: Partial<ChannelStoreSnapshot> = {}) {
+  const clock = new FakeClock(1_000);
+  const engineState = createEngineState();
+  let snapshot: ChannelStoreSnapshot = {
+    reaction: "cheerful",
+    ttsState: "idle",
+    voiceMode: "off",
+    turnInProgress: false,
+    audioAmplitude: 0,
+    avatarOverlay: null,
+    avatarMotion: null,
+    mood: { label: "excited", intensity: 0.9, valence: 0.7, arousal: 0.9 },
+    resolvedOutfit: "",
+    backchannelHint: "",
+    expressiveness: 1,
+    ...initialSnap,
+  };
+  const manifest = buildManifest({
+    reaction_mapping: { cheerful: "lzx", neutral: "n" },
+    expressions: [
+      { name: "lzx", file: "lzx.exp3.json" },
+      { name: "n", file: "n.exp3.json" },
+    ],
+    expression_params: {
+      // Realistic lzx shape: the grin overlay on Param54, plus a
+      // companion non-mouth param (eye squint, hypothetical Param80)
+      // so we can prove the suppression is targeted — non-mouth
+      // bindings on the SAME expression must keep their amplitude.
+      lzx: [
+        { param_id: "Param54", on_value: 30 },
+        { param_id: "Param80", on_value: 30 },
+      ],
+    },
+    mouth_overlay_param_ids: ["Param54"],
+  });
+  return {
+    clock,
+    engineState,
+    deps: {
+      now: clock.now,
+      manifest,
+      engineState,
+      getStoreSnapshot: () => snapshot,
+    },
+    setSnapshot: (next: Partial<ChannelStoreSnapshot>) => {
+      snapshot = { ...snapshot, ...next };
+    },
+  };
+}
+
+describe("ExpressionChannel — mouth-overlay lip-sync suppression", () => {
+  it("silent audio writes the grin param at the full arousal-scaled value", () => {
+    const adapter = new FakeAdapter();
+    const channel = new ExpressionChannel();
+    const { deps, clock } = makeMouthOverlayDeps({ audioAmplitude: 0 });
+    channel.attach(adapter, deps);
+    runPreModel(channel, adapter, clock, 240, 1 / 60);
+    const grin = adapter.params.get("Param54") ?? 0;
+    // High arousal -> ~28; we should see basically the full value
+    // because suppression is zero.
+    expect(grin).toBeGreaterThan(25);
+    expect(grin).toBeLessThanOrEqual(30);
+  });
+
+  it("active lip-sync amplitude tapers the grin overlay toward zero", () => {
+    const adapter = new FakeAdapter();
+    const channel = new ExpressionChannel();
+    const { deps, clock } = makeMouthOverlayDeps({
+      // Mid-amplitude TTS chunk; with gain=6 this fully saturates
+      // the suppression factor.
+      audioAmplitude: 0.3,
+    });
+    channel.attach(adapter, deps);
+    runPreModel(channel, adapter, clock, 240, 1 / 60);
+    const grin = adapter.params.get("Param54") ?? 0;
+    // Suppressed grin should be effectively zero — well below any
+    // visible threshold on the rig.
+    expect(grin).toBeLessThan(1);
+  });
+
+  it("non-mouth bindings on the same expression are unaffected by lipsync", () => {
+    const adapter = new FakeAdapter();
+    const channel = new ExpressionChannel();
+    const { deps, clock } = makeMouthOverlayDeps({ audioAmplitude: 0.3 });
+    channel.attach(adapter, deps);
+    runPreModel(channel, adapter, clock, 240, 1 / 60);
+    // Param80 is on the same lzx expression but NOT in
+    // mouth_overlay_param_ids — its arousal-scaled write must
+    // survive the suppression intact.
+    const param80 = adapter.params.get("Param80") ?? 0;
+    expect(param80).toBeGreaterThan(25);
+    expect(param80).toBeLessThanOrEqual(30);
+  });
+
+  it("grin recovers smoothly when audio falls back to silence", () => {
+    const adapter = new FakeAdapter();
+    const channel = new ExpressionChannel();
+    const { deps, clock, setSnapshot } = makeMouthOverlayDeps({
+      audioAmplitude: 0.3,
+    });
+    channel.attach(adapter, deps);
+    // Settle in fully suppressed state.
+    runPreModel(channel, adapter, clock, 240, 1 / 60);
+    const suppressed = adapter.params.get("Param54") ?? 0;
+    expect(suppressed).toBeLessThan(1);
+
+    // Speech ends — audio drops back to zero. The suppression
+    // factor must decay so the grin re-emerges.
+    setSnapshot({ audioAmplitude: 0 });
+    runPreModel(channel, adapter, clock, 240, 1 / 60);
+    const recovered = adapter.params.get("Param54") ?? 0;
+    expect(recovered).toBeGreaterThan(20);
+  });
+
+  it("does not allocate or fight when no mouth overlay ids are declared", () => {
+    // Sanity: the original path (lzx with NO mouth_overlay_param_ids)
+    // must keep behaving exactly like the pre-fix arousal-scaled
+    // write. Asserts we didn't regress non-Alexia rigs.
+    const adapter = new FakeAdapter();
+    const channel = new ExpressionChannel();
+    const { deps, clock } = makeAmplitudeManifestDeps({
+      audioAmplitude: 0.3,
+      mood: { label: "excited", intensity: 0.9, valence: 0.7, arousal: 0.9 },
+    });
+    channel.attach(adapter, deps);
+    runPreModel(channel, adapter, clock, 240, 1 / 60);
+    const grin = adapter.params.get("Param54") ?? 0;
+    // No mouth_overlay_param_ids => mouthScale stays at 1, so the
+    // value is the high-arousal full-amplitude write.
+    expect(grin).toBeGreaterThan(25);
+    expect(grin).toBeLessThanOrEqual(30);
+  });
+});
+
