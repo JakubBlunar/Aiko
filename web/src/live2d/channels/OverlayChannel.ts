@@ -128,6 +128,12 @@ export class OverlayChannel implements AvatarChannel {
       exprName,
       exprFired: false,
     });
+    this._deps.debug?.("channel.overlay", "pulseStart", {
+      name: event.name,
+      until: event.until,
+      bindingKind: isExpr ? "expression" : "param",
+      target: isExpr ? exprName : binding.param_id,
+    });
   }
 
   tickTier3(now: number, _dt: number): void {
@@ -166,6 +172,7 @@ export class OverlayChannel implements AvatarChannel {
     }
     for (const name of expired) {
       this._pulses.delete(name);
+      this._deps?.debug?.("channel.overlay", "pulseExpired", { name });
     }
   }
 

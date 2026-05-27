@@ -36,7 +36,7 @@ import re
 import sqlite3
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -51,15 +51,103 @@ log = logging.getLogger("app.world_store")
 # typos into her own world.
 
 VALID_KINDS = (
-    "food",      # cookies, tea, snacks
+    "food",      # cookies, tea, snacks; harvested produce lives here too
     "book",      # paperbacks, notebook
-    "gadget",    # monitors, keyboard, tea pot
+    "gadget",    # monitors, keyboard, tea pot, watering can
     "furniture", # bed, desk frame (rare — usually a location, not an item)
     "toy",       # plush, cat pillow
     "keepsake",  # photo, gift
     "decor",     # lamp, fairy lights, blanket
+    "plant",     # living plants in the garden (stage in state)
+    "seed",      # seed packets in inventory waiting to be planted
     "other",
 )
+
+
+# ── Plant lifecycle ──────────────────────────────────────────────────────
+# Plants grow slowly through these stages. The `_promote_stage` helper
+# advances one step per call when the stage's `min_age_hours` has elapsed
+# AND the plant has been watered within `dry_tolerance_hours`. `mature`
+# is the terminal stage (ready to harvest); promotion stops there.
+
+VALID_PLANT_STAGES: tuple[str, ...] = (
+    "sprout",
+    "sapling",
+    "growing",
+    "flowering",
+    "mature",
+)
+
+
+_STAGE_MIN_AGE_HOURS: dict[str, float] = {
+    "sprout": 24.0,     # → sapling after a day
+    "sapling": 48.0,    # → growing after two days
+    "growing": 72.0,    # → flowering after three days
+    "flowering": 48.0,  # → mature after two more days (ready to harvest)
+}
+
+_DRY_TOLERANCE_HOURS = 96.0  # four days without water = stage promotion stalls
+
+
+_OUTDOOR_SLUGS: frozenset[str] = frozenset({"garden"})
+
+
+# Per-species facts driving plant_seed defaults + harvest payout.
+# Each entry: (display_name, lifecycle, produce_species, produce_name,
+# produce_quantity_range). Annual plants are deleted after harvest and a
+# fresh seed drops in inventory; perennials reset to ``growing`` and bear
+# another crop after the next grow cycle.
+_SPECIES_CATALOG: dict[str, dict[str, Any]] = {
+    "basil": {
+        "display_name": "basil",
+        "lifecycle": "perennial",
+        "produce_species": "basil_leaves",
+        "produce_name": "fresh basil",
+        "produce_quantity_range": (2, 4),
+    },
+    "tomato": {
+        "display_name": "tomato",
+        "lifecycle": "annual",
+        "produce_species": "tomatoes",
+        "produce_name": "ripe tomatoes",
+        "produce_quantity_range": (2, 5),
+    },
+    "lavender": {
+        "display_name": "lavender",
+        "lifecycle": "perennial",
+        "produce_species": "lavender_sprigs",
+        "produce_name": "lavender sprigs",
+        "produce_quantity_range": (1, 3),
+    },
+    "sunflower": {
+        "display_name": "sunflower",
+        "lifecycle": "annual",
+        "produce_species": "sunflower_seeds",
+        "produce_name": "sunflower seeds",
+        "produce_quantity_range": (3, 6),
+    },
+}
+
+# Fallback for unknown user-gifted species so the loop still closes.
+_DEFAULT_SPECIES_FACT: dict[str, Any] = {
+    "display_name": "plant",
+    "lifecycle": "perennial",
+    "produce_species": "harvest",
+    "produce_name": "trimmings",
+    "produce_quantity_range": (1, 1),
+}
+
+
+def species_fact(species: str | None) -> dict[str, Any]:
+    """Return the catalog row for ``species``, falling back to a default.
+
+    Always returns a dict with the same keys; the default keeps the
+    harvest loop closing for seeds the user invented on the spot.
+    """
+    key = (species or "").strip().lower()
+    if not key:
+        return dict(_DEFAULT_SPECIES_FACT)
+    return dict(_SPECIES_CATALOG.get(key, _DEFAULT_SPECIES_FACT))
 
 VALID_POSTURES = (
     "lying",
@@ -196,6 +284,75 @@ def _encode_state(state: dict[str, Any] | None) -> str:
         return "{}"
 
 
+def _parse_iso(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        ts = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts
+
+
+def promote_stage(
+    item: "Item",
+    *,
+    now: datetime | None = None,
+) -> str | None:
+    """Advance a plant's stage if it's due. Returns the new stage or None.
+
+    Pure function over ``item.state``: caller must persist the result
+    afterwards. Promotion rule: advance one step when the stage's
+    ``min_age_hours`` has elapsed since the last promotion (or
+    ``planted_at`` if no promotion has happened yet) AND the plant has
+    been watered within ``_DRY_TOLERANCE_HOURS``. ``mature`` is the
+    terminal stage; this function returns None there.
+
+    Mutates ``item.state`` in place when it advances (sets ``stage`` and
+    ``last_promotion_at``). The caller is responsible for writing the
+    row back via ``WorldStore.update_item``.
+    """
+    if item.kind != "plant":
+        return None
+    state = item.state or {}
+    current = str(state.get("stage", "sprout")).lower()
+    if current not in VALID_PLANT_STAGES:
+        current = "sprout"
+    if current == "mature":
+        return None
+    try:
+        idx = VALID_PLANT_STAGES.index(current)
+    except ValueError:
+        return None
+    min_age = float(_STAGE_MIN_AGE_HOURS.get(current, 24.0))
+    now_dt = now or datetime.now(timezone.utc)
+    last_promotion = _parse_iso(state.get("last_promotion_at")) or _parse_iso(
+        state.get("planted_at")
+    ) or _parse_iso(item.created_at)
+    if last_promotion is None:
+        return None
+    age_hours = (now_dt - last_promotion).total_seconds() / 3600.0
+    if age_hours < min_age:
+        return None
+    last_water = _parse_iso(state.get("last_watered_at"))
+    if last_water is not None:
+        dry_hours = (now_dt - last_water).total_seconds() / 3600.0
+        if dry_hours > _DRY_TOLERANCE_HOURS:
+            # Bump days_dry so callers / UI can show drought stress, but
+            # don't advance the stage.
+            state["days_dry"] = round(dry_hours / 24.0, 1)
+            item.state = state
+            return None
+    next_stage = VALID_PLANT_STAGES[idx + 1]
+    state["stage"] = next_stage
+    state["last_promotion_at"] = now_dt.isoformat()
+    state["days_dry"] = 0
+    item.state = state
+    return next_stage
+
+
 # ── Default seed ────────────────────────────────────────────────────────
 
 
@@ -253,6 +410,60 @@ _DEFAULT_LOCATIONS: tuple[_SeedLocation, ...] = (
         slug="mirror_corner",
         name="the mirror corner",
         description="a full-length mirror leaning against the wall",
+    ),
+    _SeedLocation(
+        slug="garden",
+        name="the garden",
+        description=(
+            "A small outdoor garden plot just outside her apartment — "
+            "raised beds, a coiled hose, sun-warmed pavers. Quiet."
+        ),
+    ),
+)
+
+
+# Items seeded specifically for the garden. Kept separate from
+# ``_DEFAULT_ITEMS`` so ``_ensure_garden_seed`` can drop them in on an
+# existing world without disturbing user tweaks elsewhere.
+_GARDEN_SEED_ITEMS: tuple[_SeedItem, ...] = (
+    _SeedItem(
+        slug="watering_can",
+        name="watering can",
+        description="a small green watering can with a long copper spout",
+        kind="gadget",
+        location_slug="garden",
+    ),
+    _SeedItem(
+        slug="lavender_pot",
+        name="lavender pot",
+        description="a clay pot of lavender, just starting to bud",
+        kind="plant",
+        location_slug="garden",
+        state={"species": "lavender", "stage": "growing"},
+    ),
+    _SeedItem(
+        slug="basil_seedling",
+        name="basil seedling",
+        description="a tiny basil plant with two pairs of leaves",
+        kind="plant",
+        location_slug="garden",
+        state={"species": "basil", "stage": "sprout"},
+    ),
+    _SeedItem(
+        slug="tomato_seedling",
+        name="tomato seedling",
+        description="a thin tomato seedling staked to a bamboo cane",
+        kind="plant",
+        location_slug="garden",
+        state={"species": "tomato", "stage": "sprout"},
+    ),
+    _SeedItem(
+        slug="seed_packet_sunflower",
+        name="sunflower seed packet",
+        description="a paper packet of sunflower seeds, half full",
+        kind="seed",
+        location_slug=None,  # carried in inventory
+        state={"species": "sunflower"},
     ),
 )
 
@@ -940,19 +1151,31 @@ class WorldStore:
             return ""
         loc = locations.get(state.location_id) if state.location_id is not None else None
         lines: list[str] = []
-        # Line 1: where + posture + activity.
+        # Line 1: where + posture + activity. Outdoor locations flip the
+        # framing so "you are in your room" doesn't contradict reality
+        # when she's standing in the garden.
         where = loc.name if loc is not None else "your room"
         posture = (state.posture or "sitting").replace("_", " ")
         activity = (state.activity or "idle").replace("_", " ")
-        lines.append(
-            f"You are in your room. Right now: at {where}, {posture}, {activity}."
-        )
-        # Line 2: items at the current location (if any).
+        if loc is not None and loc.slug in _OUTDOOR_SLUGS:
+            lines.append(
+                f"You are at home, currently outside in {where}. "
+                f"{posture}, {activity}."
+            )
+        else:
+            lines.append(
+                f"You are in your room. Right now: at {where}, {posture}, {activity}."
+            )
+        # Line 2: items at the current location (if any). Plants get a
+        # stage suffix so Aiko can see "(mature, ready to harvest)" and
+        # know to reach for harvest_plant.
         if loc is not None:
             here = [i for i in items if i.location_id == loc.id]
             if here:
                 here.sort(key=lambda i: i.name.lower())
-                rendered = ", ".join(_render_item_label(i) for i in here[:max_nearby])
+                rendered = ", ".join(
+                    _render_item_label(i) for i in here[:max_nearby]
+                )
                 lines.append(f"Nearby at {loc.name}: {rendered}.")
         # Line 3: the most recent gift / consumable highlight.
         gifts = [
@@ -1044,6 +1267,13 @@ class WorldStore:
                 quantity=seed.quantity,
                 state=dict(seed.state),
             )
+        # Drop the garden's starter plants + seed packet using the same
+        # idempotent helper so a fresh seed and a migrating-empty world
+        # both land in the same shape.
+        try:
+            self.ensure_garden_seed()
+        except Exception:
+            log.debug("ensure_garden_seed during seed_default failed", exc_info=True)
         # Initial state.
         starting_loc = slug_to_id.get(_DEFAULT_INITIAL_STATE["location_slug"])
         self.set_state(
@@ -1058,6 +1288,213 @@ class WorldStore:
             len(self._items),
         )
         return True
+
+    # ── garden seed (additive migration) ────────────────────────────
+
+    def ensure_garden_seed(self) -> bool:
+        """Idempotently add the garden location + starter plants.
+
+        Older worlds were seeded before the garden existed. Calling this
+        on every boot is safe: it only does work when the garden hasn't
+        been populated yet. Existing tweaks elsewhere in the room are
+        preserved. Returns True only when at least one item was inserted.
+        """
+        loc = self.get_location("garden")
+        if loc is None:
+            garden_seed = next(
+                (s for s in _DEFAULT_LOCATIONS if s.slug == "garden"), None,
+            )
+            if garden_seed is None:
+                return False
+            loc = self.add_location(
+                slug=garden_seed.slug,
+                name=garden_seed.name,
+                description=garden_seed.description,
+            )
+            if loc is None:
+                return False
+        # If the garden already contains a plant, treat the seed as done.
+        garden_items = self.list_items(location_id=loc.id)
+        if any(i.kind == "plant" for i in garden_items):
+            return False
+        now = _now_iso()
+        for seed in _GARDEN_SEED_ITEMS:
+            loc_id: int | None = None
+            if seed.location_slug is not None:
+                target = self.get_location(seed.location_slug)
+                loc_id = target.id if target is not None else None
+            seed_state = dict(seed.state)
+            if seed.kind == "plant":
+                seed_state.setdefault("planted_at", now)
+                seed_state.setdefault("last_watered_at", now)
+                seed_state.setdefault("last_promotion_at", now)
+                seed_state.setdefault("days_dry", 0)
+                species = str(seed_state.get("species", "")).lower()
+                fact = species_fact(species)
+                seed_state.setdefault("lifecycle", fact["lifecycle"])
+                seed_state.setdefault("produce_species", fact["produce_species"])
+            elif seed.kind == "seed":
+                seed_state.setdefault("gift_at", now)
+            self.add_item(
+                slug=seed.slug,
+                name=seed.name,
+                description=seed.description,
+                kind=seed.kind,
+                location_id=loc_id,
+                consumable=seed.consumable,
+                quantity=seed.quantity,
+                state=seed_state,
+            )
+        log.info("world store: garden seed installed (%d items)", len(_GARDEN_SEED_ITEMS))
+        return True
+
+    # ── plant operations (shared by tools + idle worker) ────────────
+
+    def water_plant(self, item_id: int, *, now: datetime | None = None) -> Item | None:
+        """Refresh the plant's ``last_watered_at`` + clear drought stress.
+
+        Returns the updated item or None when the row is missing / wrong
+        kind. Caller is responsible for broadcasting the world patch.
+        """
+        item = self.get_item(int(item_id))
+        if item is None or item.kind != "plant":
+            return None
+        now_dt = now or datetime.now(timezone.utc)
+        new_state = dict(item.state or {})
+        new_state["last_watered_at"] = now_dt.isoformat()
+        new_state["days_dry"] = 0
+        return self.update_item(int(item_id), state=new_state)
+
+    def harvest_plant(
+        self,
+        item_id: int,
+        *,
+        now: datetime | None = None,
+        produce_location_slug: str = "kitchenette",
+        inventory_fallback: bool = True,
+    ) -> dict[str, Any] | None:
+        """Harvest a mature plant. Returns a summary dict or None.
+
+        - Refuses any plant whose stage isn't ``"mature"``.
+        - Spawns a ``food`` item at ``produce_location_slug`` (or the
+          first location if that slug is gone, or carried inventory when
+          ``inventory_fallback`` is True and no location exists at all).
+        - Annual plants are deleted and a fresh ``seed`` of the same
+          species drops into Aiko's inventory so the cycle continues.
+        - Perennial plants reset to ``stage="growing"`` so the next
+          grow cycle bears another crop.
+
+        The returned dict is intentionally flat so callers (tool,
+        worker) can broadcast its parts with minimal massaging::
+
+            {
+                "plant": {"id": …, "lifecycle": …, "species": …,
+                          "deleted": bool, "reset": bool, "name": …},
+                "produce": {"item": {…}, "quantity": int, "name": str},
+                "seed":    {"item": {…}}  # only when annual
+            }
+        """
+        item = self.get_item(int(item_id))
+        if item is None or item.kind != "plant":
+            return None
+        state = dict(item.state or {})
+        if str(state.get("stage", "")).lower() != "mature":
+            return None
+        species = str(state.get("species") or "").lower()
+        fact = species_fact(species)
+        lifecycle = str(state.get("lifecycle") or fact["lifecycle"]).lower()
+        produce_species = str(
+            state.get("produce_species") or fact["produce_species"]
+        )
+        produce_name = str(fact["produce_name"])
+        qty_low, qty_high = fact["produce_quantity_range"]
+        # Deterministic mid-point on the range so repeated harvests don't
+        # spam wildly different yields; species facts already vary it.
+        quantity = max(1, int(round((int(qty_low) + int(qty_high)) / 2)))
+        # Find the produce destination.
+        target_loc = self.get_location(produce_location_slug)
+        target_loc_id: int | None = None
+        if target_loc is not None:
+            target_loc_id = target_loc.id
+        elif not inventory_fallback:
+            locations = self.list_locations()
+            if locations:
+                target_loc_id = locations[0].id
+        produce = self.add_item(
+            slug=produce_species,
+            name=produce_name,
+            description=f"freshly harvested from {item.name}",
+            kind="food",
+            location_id=target_loc_id,
+            consumable=True,
+            quantity=quantity,
+            state={
+                "harvested_at": (now or datetime.now(timezone.utc)).isoformat(),
+                "from_plant": item.name,
+                "species": produce_species,
+            },
+            given_by="aiko",
+        )
+        produce_payload: dict[str, Any] | None = None
+        if produce is not None:
+            produce_item, _ = produce
+            produce_payload = produce_item.to_dict()
+        result: dict[str, Any] = {
+            "plant": {
+                "id": int(item.id),
+                "name": item.name,
+                "species": species,
+                "lifecycle": lifecycle,
+                "deleted": False,
+                "reset": False,
+            },
+            "produce": {
+                "item": produce_payload,
+                "quantity": quantity,
+                "name": produce_name,
+            },
+        }
+        if lifecycle == "annual":
+            self.remove_item(item.id)
+            result["plant"]["deleted"] = True
+            seed_state = {
+                "species": species or fact["display_name"],
+                "from_harvest_of": item.name,
+                "gift_at": (now or datetime.now(timezone.utc)).isoformat(),
+            }
+            seed_pair = self.add_item(
+                slug=f"seed_packet_{species or 'harvest'}",
+                name=f"{fact['display_name']} seed packet",
+                description=(
+                    f"a small packet of seeds saved from the {item.name}"
+                ),
+                kind="seed",
+                location_id=None,
+                quantity=1,
+                state=seed_state,
+                given_by="aiko",
+            )
+            if seed_pair is not None:
+                seed_item, _ = seed_pair
+                result["seed"] = {"item": seed_item.to_dict()}
+        else:
+            # Perennial: reset the plant to ``growing`` and clear dryness
+            # so it starts the next grow cycle from a known-good state.
+            reset_state = dict(state)
+            reset_state["stage"] = "growing"
+            reset_state["last_promotion_at"] = (
+                now or datetime.now(timezone.utc)
+            ).isoformat()
+            reset_state["last_watered_at"] = (
+                now or datetime.now(timezone.utc)
+            ).isoformat()
+            reset_state["days_dry"] = 0
+            reset_state["last_harvested_at"] = (
+                now or datetime.now(timezone.utc)
+            ).isoformat()
+            self.update_item(item.id, state=reset_state)
+            result["plant"]["reset"] = True
+        return result
 
 
 _SLUG_NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
@@ -1102,20 +1539,33 @@ def _render_item_label(item: Item, *, with_qty: bool = False) -> str:
       ``"3 fresh chocolate chip cookies"`` (consumable, with_qty)
       ``"a warm lamp"`` (single non-consumable, prepends article)
       ``"dual monitors"`` (plural-named non-consumable, no article)
+      ``"the basil seedling (mature, ready to harvest)"`` (plant + stage)
     """
     name = item.name
     qty = max(0, int(item.quantity))
+    # Plant/seed suffixes — applied to the base label below.
+    stage_suffix = ""
+    if item.kind == "plant":
+        stage = str((item.state or {}).get("stage") or "").lower()
+        if stage == "mature":
+            stage_suffix = " (mature, ready to harvest)"
+        elif stage in VALID_PLANT_STAGES:
+            stage_suffix = f" ({stage})"
+    elif item.kind == "seed":
+        stage_suffix = " (seed)"
     if item.consumable:
         if qty <= 0:
-            return f"no more {name}"
+            return f"no more {name}{stage_suffix}"
         if qty == 1 and not name.startswith(("a ", "an ")):
-            return f"1 {name}"
-        return f"{qty} {name}"
+            return f"1 {name}{stage_suffix}"
+        return f"{qty} {name}{stage_suffix}"
     if with_qty and qty != 1:
-        return f"{qty}x {name}"
+        return f"{qty}x {name}{stage_suffix}"
     if name.startswith(("the ", "a ", "an ", "your ", "her ")):
-        return name
+        return f"{name}{stage_suffix}"
     if _looks_plural(name):
-        return name
+        return f"{name}{stage_suffix}"
     article = "an" if name[:1].lower() in "aeiou" else "a"
-    return f"{article} {name}" if qty <= 1 else f"{qty}x {name}"
+    if qty <= 1:
+        return f"{article} {name}{stage_suffix}"
+    return f"{qty}x {name}{stage_suffix}"

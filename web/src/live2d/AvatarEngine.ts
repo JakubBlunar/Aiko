@@ -60,6 +60,11 @@ export interface EngineDependencies {
    * ``cancelAnimationFrame``; tests pass a manual one. */
   scheduleFrame?: (cb: FrameRequestCallback) => number;
   cancelFrame?: (handle: number) => void;
+  /** UI-debug-log sink. Production passes
+   * ``(source, kind, payload) => debugLog.log({source, kind, payload})``;
+   * tests pass a spy or omit it for a silent run. Forwarded as
+   * ``ChannelDeps.debug`` so every channel sees the same hook. */
+  debug?: (source: string, kind: string, payload?: unknown) => void;
 }
 
 /** Window-event abstraction used by the gaze channel. The engine
@@ -159,6 +164,7 @@ export class AvatarEngine {
       manifest: this._deps.manifest,
       engineState: this._deps.engineState,
       getStoreSnapshot: this._deps.getStoreSnapshot,
+      debug: this._deps.debug,
     };
     for (const channel of this._channels) {
       try {

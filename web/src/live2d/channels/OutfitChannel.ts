@@ -61,6 +61,11 @@ export class OutfitChannel implements AvatarChannel {
   private _deps: ChannelDeps | null = null;
   private _envelope: Envelope = { pajamas: 0, pajamas_hooded: 0, day: 0 };
   private _hasAnyOutfit = false;
+  // Tracked across ticks so the debug log only fires once per outfit
+  // change, not every frame. ``null`` (initial) maps to "first frame
+  // after attach" — we log that too so debugging captures the boot
+  // outfit alongside transitions.
+  private _lastObservedOutfit: ResolvedOutfit | null = null;
 
   attach(adapter: Live2DModelAdapter, deps: ChannelDeps): void {
     this._adapter = adapter;
@@ -69,6 +74,7 @@ export class OutfitChannel implements AvatarChannel {
     const caps = deps.manifest.capabilities ?? {};
     this._hasAnyOutfit =
       !!caps.has_pajamas || !!caps.has_pajamas_hooded || !!caps.has_day_clothes;
+    this._lastObservedOutfit = null;
   }
 
   detach(): void {
@@ -76,6 +82,7 @@ export class OutfitChannel implements AvatarChannel {
     this._deps = null;
     this._envelope = { pajamas: 0, pajamas_hooded: 0, day: 0 };
     this._hasAnyOutfit = false;
+    this._lastObservedOutfit = null;
   }
 
   /** Per-frame outfit-envelope ease + additive write. */
@@ -91,6 +98,14 @@ export class OutfitChannel implements AvatarChannel {
 
     const resolvedOutfit: ResolvedOutfit =
       (deps.getStoreSnapshot().resolvedOutfit as ResolvedOutfit) || "";
+
+    if (resolvedOutfit !== this._lastObservedOutfit) {
+      deps.debug?.("channel.outfit", "outfitChanged", {
+        from: this._lastObservedOutfit,
+        to: resolvedOutfit,
+      });
+      this._lastObservedOutfit = resolvedOutfit;
+    }
 
     const rate = dt / CROSSFADE_SECONDS;
     this._envelope.pajamas = approach(

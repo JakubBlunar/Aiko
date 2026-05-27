@@ -91,6 +91,12 @@ export class MotionChannel implements AvatarChannel {
       return;
     }
     adapter.motion(event.group, event.index, motionPriority(event.priority));
+    this._deps?.debug?.("channel.motion", "trigger", {
+      name: event.name,
+      group: event.group,
+      index: event.index,
+      priority: event.priority ?? "normal",
+    });
   }
 
   onTtsState(next: "idle" | "speaking"): void {
@@ -112,6 +118,7 @@ export class MotionChannel implements AvatarChannel {
     // ``undefined`` lets pixi-live2d-display pick a random index in
     // the group — exactly what the legacy useEffect did.
     adapter.motion(group, undefined, MOTION_PRIORITY.NORMAL);
+    this._deps?.debug?.("channel.motion", "talkStart", { group });
   }
 }
 

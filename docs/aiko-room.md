@@ -252,16 +252,128 @@ event fires and the UI stays live without a refetch.
 
 ### Multi-room support (future)
 
-Currently the world is exactly one room. To grow into multiple
-scenes (a balcony, a coffee shop, a library) we'd need:
+Currently the world has the apartment plus a single outdoor garden
+plot (see "Garden" below). To grow into more scenes (a balcony, a
+coffee shop, a library) we'd need:
 
 - A `scene_id` column on `world_state` and on each location.
 - A `change_scene` agent tool.
 - A bigger render block describing the current scene + maybe one
   hint about which other scenes are reachable.
 
+The current `_OUTDOOR_SLUGS` switch in `render_block` is a tiny
+foreshadowing of that — extending it would let outdoor scenes share
+phrasing instead of being hardcoded.
+
 Marked as a follow-up in
 [`docs/personality-backlog.md`](personality-backlog.md).
+
+---
+
+## Garden (living plants outside the apartment)
+
+Aiko has a small outdoor garden plot — a sibling location to the
+apartment's seven indoor spots, with `slug="garden"`. Plants grow over
+wall-clock time, can be watered and harvested, and a background
+worker wanders her out there during quiet daylight windows so the
+world feels alive even without user prompting.
+
+### Data model
+
+- New item kinds in [`VALID_KINDS`](../app/core/world_store.py):
+  `"plant"` and `"seed"`. (`food` already existed and is reused for
+  harvest output — fresh basil, tomatoes, lavender sprigs land in
+  the kitchenette as ordinary consumable food items.)
+- `kind == "plant"` items carry `state = {species, stage, planted_at,
+  last_watered_at, last_promotion_at, days_dry, lifecycle,
+  produce_species}`.
+- `kind == "seed"` items carry `state = {species, gift_at}`. Seeds
+  with `location_id IS NULL` live in Aiko's inventory.
+- Stage enum (in promotion order): `sprout → sapling → growing →
+  flowering → mature`. `mature` is the terminal "ready to harvest"
+  stage; the growth worker no-ops there.
+- `_SPECIES_CATALOG` maps species → `(display_name, lifecycle,
+  produce_species, produce_name, produce_quantity_range)`. Unknown
+  user-gifted seeds fall back to a generic perennial that yields
+  "trimmings" so the loop still closes.
+
+### Auto-seed
+
+`WorldStore.ensure_garden_seed()` is idempotent and called from
+`SessionController.__init__` after the regular `seed_default`. Older
+worlds picked up the garden automatically next boot:
+
+- The `garden` location row.
+- A `watering_can` gadget.
+- Three plants: `lavender_pot` (perennial, growing),
+  `basil_seedling` (perennial, sprout), `tomato_seedling`
+  (annual, sprout).
+- A `seed_packet_sunflower` (annual) in Aiko's inventory.
+
+### Render block
+
+When Aiko is in an `_OUTDOOR_SLUGS` location the world block flips
+from `"You are in your room..."` to `"You are at home, currently
+outside in the garden..."`. Plant items get a stage suffix in the
+nearby line — `"(sprout)"`, `"(flowering)"`, or the loud
+`"(mature, ready to harvest)"` cue that tells the LLM to reach for
+`harvest_plant`. Seeds in inventory get `"(seed)"`.
+
+### Background workers
+
+Both workers piggyback on the existing
+[`IdleWorkerScheduler`](../app/core/idle_worker_scheduler.py) so they
+share its quiet-window gate (no Live mode, no recent user activity).
+
+| Worker | Interval | Behaviour |
+|---|---|---|
+| [`PlantGrowthWorker`](../app/core/plant_growth_worker.py) | hourly | Walks every `kind == "plant"` item, calls `promote_stage(item)` which advances one step when the stage's `min_age_hours` elapsed and the plant was watered within `_DRY_TOLERANCE_HOURS` (96h). Promotes are broadcast as `world_updated` patches so the UI updates live. |
+| [`GardenVisitWorker`](../app/core/garden_visit_worker.py) | 30 min check, 1.5-3.5h randomised cooldown between visits | Two-phase, single worker. **Outbound**: during daylight (`morning / midday / afternoon / early_morning`), moves her to the garden, waters every plant, auto-harvests any that are mature, stamps a `return_at` timestamp 6 min ahead in `kv_meta`. **Inbound**: when the timestamp elapses, moves her back to `desk`. Silent — no chat message, no proactive nudge. |
+
+### Tools
+
+Three new agent tools alongside the original five in
+[`app/llm/tools/world.py`](../app/llm/tools/world.py):
+
+| Tool | What it does |
+|---|---|
+| `water_plant` | Refreshes `state.last_watered_at` + clears `days_dry`. Requires Aiko to be in the same location as the target plant (so she can't water her basil from the bookshelf). Refuses non-plant items politely. |
+| `plant_seed` | Consumes a `kind == "seed"` from inventory and creates a fresh `kind == "plant"` row at the chosen location (default `garden`), `stage="sprout"`, with `lifecycle` / `produce_species` pulled from `_SPECIES_CATALOG`. |
+| `harvest_plant` | Refuses unless `stage == "mature"`. Delegates to `WorldStore.harvest_plant(item.id)`: spawns a `kind == "food"` item with the species' produce name + a quantity from the species' range, location = `kitchenette` (or any other location / inventory as fallback). **Annual** plants are deleted and a fresh seed of the same species drops into inventory. **Perennial** plants reset to `stage="growing"` so the same plant bears another crop. |
+
+`GardenVisitWorker` auto-harvests mature plants by calling the same
+`WorldStore.harvest_plant(item.id)` helper, so the loop keeps moving
+even without the LLM ever touching the tool.
+
+### Editing scope (UI)
+
+The existing item editor (`name`, `description`, `kind`,
+`location_id`) plus add/delete via `WORLD_KINDS` covers the user-
+facing CRUD for plants and seeds — no dedicated plant-state editor.
+The World tab adds a small stage badge next to plant items so the
+user can see "ready to harvest" at a glance, plus a species badge
+next to seeds. Stage / species / `last_watered_at` advance via the
+growth worker, the agent tools, or by deleting and re-adding the
+plant.
+
+### Acceptance shape
+
+- Fresh boot: garden appears in the World tab with the default plants
+  + watering can; LLM prompt block references it correctly when Aiko
+  is there.
+- After the user gifts a seed (kind `seed` via "Give Aiko something"),
+  `plant_seed("sunflower seed packet")` from a chat turn creates a
+  new sprout in the garden visible in the UI within one WS tick.
+- After enough time, a plant promotes to `mature`, `look_around`
+  shows `(mature, ready to harvest)`, `harvest_plant` succeeds and a
+  new `food` item appears in `kitchenette`. Annuals produce a seed
+  back in inventory; perennials flip to `growing` and start climbing
+  the stage ladder again.
+- Without any user interaction, after sitting idle through a daylight
+  window with at least one mature plant, the World tab eventually
+  shows her in the garden, the mature plant is consumed/reset, fresh
+  produce shows up in the kitchen, and she returns to her room
+  later. Nothing speaks; she just moves.
 
 ---
 
@@ -269,12 +381,15 @@ Marked as a follow-up in
 
 | Suite | What it covers |
 |---|---|
-| [`tests/test_world_store.py`](../tests/test_world_store.py) | Schema migration, seed idempotency, CRUD, stacking on consumables, consume-to-zero, location-cascade, render-block shape, vocabulary clamping. |
+| [`tests/test_world_store.py`](../tests/test_world_store.py) | Schema migration, seed idempotency, CRUD, stacking on consumables, consume-to-zero, location-cascade, render-block shape, vocabulary clamping, garden seed + plant promotion + watering, harvest perennial/annual branches, outdoor render phrasing. |
 | [`tests/test_session_controller_world.py`](../tests/test_session_controller_world.py) | Listener fan-out, `give_item` defaults, render fallback when the store is missing, reseed snapshot. |
 | [`tests/test_web_server_world.py`](../tests/test_web_server_world.py) | REST surface — status codes, payload shapes, error branches. |
-| [`tests/test_world_tools.py`](../tests/test_world_tools.py) | Each agent tool's happy + sad paths. |
-| [`web/src/store.world.test.ts`](../web/src/store.world.test.ts) | `applyWorldPatch` reducer per discriminator. |
+| [`tests/test_world_tools.py`](../tests/test_world_tools.py) | Each agent tool's happy + sad paths, including `water_plant` / `plant_seed` / `harvest_plant`. |
+| [`tests/test_plant_growth_worker.py`](../tests/test_plant_growth_worker.py) | Hourly promotion: due sprouts advance, immature plants stay put, interval gate respected. |
+| [`tests/test_garden_visit_worker.py`](../tests/test_garden_visit_worker.py) | Outbound phase moves + waters + auto-harvests; daylight gate blocks night; cooldown blocks repeat visits; inbound phase fires after `return_at`. |
+| [`web/src/store.world.test.ts`](../web/src/store.world.test.ts) | `applyWorldPatch` reducer per discriminator + plant/seed kind round-trip. |
 
 Run all together: `python -m pytest tests/test_world_*.py
-tests/test_session_controller_world.py tests/test_web_server_world.py`
+tests/test_session_controller_world.py tests/test_web_server_world.py
+tests/test_plant_growth_worker.py tests/test_garden_visit_worker.py`
 plus `cd web && npx vitest run src/store.world.test.ts`.

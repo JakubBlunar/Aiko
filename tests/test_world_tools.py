@@ -12,9 +12,12 @@ from app.core.world_store import WorldStore
 from app.llm.tools.world import (
     ChangePostureTool,
     ConsumeItemTool,
+    HarvestPlantTool,
     InspectItemTool,
     LookAroundTool,
     MoveToTool,
+    PlantSeedTool,
+    WaterPlantTool,
     build_world_tools,
 )
 
@@ -42,6 +45,34 @@ class _Harness:
             return {"deleted_item_id": item_id, "consumed": consumed}
         return {"item": item.to_dict(), "consumed": consumed}
 
+    # The garden tools call session-level helpers (add_world_item /
+    # delete_world_item / _notify_world). Provide thin stand-ins that
+    # touch the real store and record world patches for the tests.
+    def __init_world_listeners(self) -> None:
+        if not hasattr(self, "world_patches"):
+            self.world_patches: list[dict] = []
+
+    def _notify_world(self, patch):
+        self.__init_world_listeners()
+        self.world_patches.append(dict(patch))
+
+    def add_world_item(self, **kwargs):
+        self.__init_world_listeners()
+        result = self._world_store.add_item(**kwargs)
+        if result is None:
+            return None
+        item, _ = result
+        snap = item.to_dict()
+        self._notify_world({"item": snap})
+        return snap
+
+    def delete_world_item(self, item_id):
+        self.__init_world_listeners()
+        ok = self._world_store.remove_item(int(item_id))
+        if ok:
+            self._notify_world({"deleted_item_id": int(item_id)})
+        return ok
+
     def cleanup(self) -> None:
         self._world_store.close()
         try:
@@ -51,10 +82,10 @@ class _Harness:
 
 
 class BuildToolsTests(unittest.TestCase):
-    def test_build_returns_five_tools(self) -> None:
+    def test_build_returns_eight_tools(self) -> None:
         h = _Harness()
         tools = build_world_tools(h)
-        self.assertEqual(len(tools), 5)
+        self.assertEqual(len(tools), 8)
         names = {t.schema().name for t in tools}
         self.assertEqual(
             names,
@@ -64,6 +95,9 @@ class BuildToolsTests(unittest.TestCase):
                 "change_posture",
                 "inspect_item",
                 "consume_item",
+                "water_plant",
+                "plant_seed",
+                "harvest_plant",
             },
         )
         h.cleanup()
@@ -185,6 +219,120 @@ class ConsumeItemTests(unittest.TestCase):
         # Either we hit the "last cookie" branch or exhausted into a
         # ToolError via the loop break above. Both are valid.
         self.assertTrue(seen_last_message or h._world_store.find_item("cookies") is None)
+        h.cleanup()
+
+
+class WaterPlantTests(unittest.TestCase):
+    def test_water_plant_updates_state(self) -> None:
+        h = _Harness()
+        # seed_default already installs the garden so basil_seedling exists.
+        tool = WaterPlantTool(h)
+        # Move Aiko to the garden so the "must be in same location" check passes.
+        garden = h._world_store.get_location("garden")
+        h._world_store.set_state(location_id=garden.id)
+        result = json.loads(tool.run({"plant": "basil"}))
+        self.assertTrue(result["ok"])
+        plant = h._world_store.find_item("basil_seedling")
+        self.assertIn("last_watered_at", plant.state)
+        h.cleanup()
+
+    def test_water_plant_rejects_non_plant(self) -> None:
+        from app.llm.tools.base import ToolError
+
+        h = _Harness()
+        tool = WaterPlantTool(h)
+        with self.assertRaises(ToolError):
+            tool.run({"plant": "warm_lamp"})
+        h.cleanup()
+
+
+class PlantSeedTests(unittest.TestCase):
+    def test_plant_seed_consumes_and_creates_plant(self) -> None:
+        h = _Harness()
+        tool = PlantSeedTool(h)
+        # seed_default puts a sunflower seed packet in inventory.
+        before = h._world_store.find_item("seed_packet_sunflower")
+        self.assertIsNotNone(before)
+        result = json.loads(
+            tool.run({"seed": "sunflower seed packet", "where": "garden"})
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["stage"], "sprout")
+        # Original seed is gone.
+        self.assertIsNone(h._world_store.find_item("seed_packet_sunflower"))
+        # New sunflower sprout exists in the garden.
+        garden = h._world_store.get_location("garden")
+        plants_in_garden = [
+            i for i in h._world_store.list_items(location_id=garden.id)
+            if i.kind == "plant"
+            and (i.state or {}).get("species") == "sunflower"
+        ]
+        self.assertTrue(plants_in_garden)
+        h.cleanup()
+
+    def test_plant_seed_unknown_seed_raises(self) -> None:
+        from app.llm.tools.base import ToolError
+
+        h = _Harness()
+        tool = PlantSeedTool(h)
+        with self.assertRaises(ToolError):
+            tool.run({"seed": "magic bean"})
+        h.cleanup()
+
+
+class HarvestPlantTests(unittest.TestCase):
+    def _mature(self, h, species):
+        plant = next(
+            i for i in h._world_store.list_items(kind="plant")
+            if (i.state or {}).get("species") == species
+        )
+        h._world_store.update_item(
+            plant.id,
+            state={**(plant.state or {}), "stage": "mature"},
+        )
+        return plant
+
+    def test_harvest_refuses_non_mature(self) -> None:
+        from app.llm.tools.base import ToolError
+
+        h = _Harness()
+        tool = HarvestPlantTool(h)
+        with self.assertRaises(ToolError):
+            tool.run({"plant": "basil_seedling"})
+        h.cleanup()
+
+    def test_harvest_perennial_resets_plant(self) -> None:
+        h = _Harness()
+        tool = HarvestPlantTool(h)
+        plant = self._mature(h, "basil")
+        result = json.loads(tool.run({"plant": plant.name}))
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["lifecycle"], "perennial")
+        self.assertFalse(result["plant_deleted"])
+        self.assertTrue(result["plant_reset"])
+        refreshed = h._world_store.get_item(plant.id)
+        self.assertEqual(refreshed.state["stage"], "growing")
+        # Produce in kitchenette.
+        kitchen = h._world_store.get_location("kitchenette")
+        kitchen_food = [
+            i for i in h._world_store.list_items(location_id=kitchen.id)
+            if i.kind == "food"
+        ]
+        self.assertTrue(any("basil" in i.slug for i in kitchen_food))
+        h.cleanup()
+
+    def test_harvest_annual_deletes_and_drops_seed(self) -> None:
+        h = _Harness()
+        tool = HarvestPlantTool(h)
+        plant = self._mature(h, "tomato")
+        result = json.loads(tool.run({"plant": plant.name}))
+        self.assertTrue(result["plant_deleted"])
+        self.assertIsNone(h._world_store.get_item(plant.id))
+        new_seeds = [
+            i for i in h._world_store.list_items(kind="seed")
+            if (i.state or {}).get("species") == "tomato"
+        ]
+        self.assertTrue(new_seeds)
         h.cleanup()
 
 

@@ -121,6 +121,16 @@ export interface ChannelDeps {
   /** Read-only store accessor. Returning ``undefined`` for unwired
    * tests is OK — channels guard before using. */
   getStoreSnapshot: () => ChannelStoreSnapshot;
+  /** Optional debug hook the engine wires to the UI-debug-log bridge.
+   * Channels call this at decision points (reaction applied, overlay
+   * pulse started, motion fired, outfit switched, lip-sync gate
+   * tripped) to record what they did and why. The implementation in
+   * production routes to ``debugLog.log({source, kind, payload})``;
+   * tests pass either ``undefined`` (silent) or a spy to assert the
+   * channel called it. Use a stable ``source`` per channel so the
+   * backend allow-list matches by prefix
+   * (``channel.expression``, ``channel.overlay``, …). */
+  debug?: (source: string, kind: string, payload?: unknown) => void;
 }
 
 /** The slice of the Zustand store the channels read.

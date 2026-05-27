@@ -10,11 +10,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from datetime import datetime, timedelta, timezone
+
 from app.core.chat_database import ChatDatabase
 from app.core.world_store import (
     VALID_KINDS,
+    VALID_PLANT_STAGES,
     VALID_POSTURES,
     WorldStore,
+    promote_stage,
+    species_fact,
 )
 
 
@@ -369,6 +374,204 @@ class VocabularyTests(unittest.TestCase):
             item, _ = result
             self.assertIn(item.kind, VALID_KINDS)
             self.assertEqual(item.kind, "other")
+
+    def test_plant_and_seed_kinds_accepted(self) -> None:
+        with _TempDb() as (path, _db):
+            store = WorldStore(path)
+            loc = store.add_location(name="garden")
+            plant = store.add_item(
+                name="basil",
+                kind="plant",
+                location_id=loc.id,
+                state={"species": "basil", "stage": "sprout"},
+            )
+            seed = store.add_item(
+                name="sunflower seed",
+                kind="seed",
+                state={"species": "sunflower"},
+            )
+            assert plant is not None and seed is not None
+            self.assertEqual(plant[0].kind, "plant")
+            self.assertEqual(seed[0].kind, "seed")
+
+
+class GardenSeedAndGrowthTests(unittest.TestCase):
+    def test_ensure_garden_seed_idempotent(self) -> None:
+        with _TempDb() as (path, _db):
+            store = WorldStore(path)
+            # First call from a blank world inserts the garden + items.
+            self.assertTrue(store.ensure_garden_seed())
+            first_count = len(store.list_items())
+            # Second call is a no-op.
+            self.assertFalse(store.ensure_garden_seed())
+            self.assertEqual(len(store.list_items()), first_count)
+            garden = store.get_location("garden")
+            self.assertIsNotNone(garden)
+            plants = [
+                i for i in store.list_items(location_id=garden.id)
+                if i.kind == "plant"
+            ]
+            self.assertGreaterEqual(len(plants), 1)
+
+    def test_seed_default_installs_garden(self) -> None:
+        with _TempDb() as (path, _db):
+            store = WorldStore(path)
+            store.seed_default()
+            self.assertIsNotNone(store.get_location("garden"))
+            seeds = [i for i in store.list_items() if i.kind == "seed"]
+            self.assertGreaterEqual(len(seeds), 1)
+
+    def test_promote_stage_advances_after_min_age(self) -> None:
+        with _TempDb() as (path, _db):
+            store = WorldStore(path)
+            store.ensure_garden_seed()
+            sprouts = [
+                i for i in store.list_items(kind="plant")
+                if (i.state or {}).get("stage") == "sprout"
+            ]
+            self.assertTrue(sprouts)
+            item = sprouts[0]
+            # Pretend the plant was promoted 48h ago so the sprout
+            # stage's 24h gate is fully elapsed and watering is fresh.
+            now = datetime.now(timezone.utc)
+            past = now - timedelta(hours=48)
+            new_state = dict(item.state or {})
+            new_state["last_promotion_at"] = past.isoformat()
+            new_state["last_watered_at"] = (now - timedelta(hours=1)).isoformat()
+            store.update_item(item.id, state=new_state)
+            refreshed = store.get_item(item.id)
+            advanced = promote_stage(refreshed, now=now)
+            self.assertEqual(advanced, "sapling")
+
+    def test_promote_stage_blocked_when_dry(self) -> None:
+        with _TempDb() as (path, _db):
+            store = WorldStore(path)
+            store.ensure_garden_seed()
+            sprouts = [
+                i for i in store.list_items(kind="plant")
+                if (i.state or {}).get("stage") == "sprout"
+            ]
+            assert sprouts
+            item = sprouts[0]
+            now = datetime.now(timezone.utc)
+            ancient = now - timedelta(hours=48)
+            very_dry = now - timedelta(hours=200)  # well past 96h tolerance
+            new_state = dict(item.state or {})
+            new_state["last_promotion_at"] = ancient.isoformat()
+            new_state["last_watered_at"] = very_dry.isoformat()
+            store.update_item(item.id, state=new_state)
+            refreshed = store.get_item(item.id)
+            advanced = promote_stage(refreshed, now=now)
+            self.assertIsNone(advanced)
+            # Drought stress flag should be set so the UI can show it.
+            self.assertGreater(float((refreshed.state or {}).get("days_dry", 0)), 0)
+
+    def test_water_plant_refreshes_last_watered_at(self) -> None:
+        with _TempDb() as (path, _db):
+            store = WorldStore(path)
+            store.ensure_garden_seed()
+            plant = next(i for i in store.list_items(kind="plant"))
+            before = (plant.state or {}).get("last_watered_at", "")
+            store.update_item(plant.id, state={
+                **(plant.state or {}),
+                "last_watered_at": "1970-01-01T00:00:00+00:00",
+                "days_dry": 10,
+            })
+            updated = store.water_plant(plant.id)
+            assert updated is not None
+            after = (updated.state or {}).get("last_watered_at", "")
+            self.assertNotEqual(before, after)
+            self.assertEqual(updated.state.get("days_dry"), 0)
+
+
+class HarvestTests(unittest.TestCase):
+    def _make_mature(self, store: WorldStore, *, species: str) -> None:
+        store.seed_default()
+        plant = next(
+            i for i in store.list_items(kind="plant")
+            if (i.state or {}).get("species") == species
+        )
+        new_state = dict(plant.state or {})
+        new_state["stage"] = "mature"
+        store.update_item(plant.id, state=new_state)
+        return plant
+
+    def test_harvest_refuses_non_mature(self) -> None:
+        with _TempDb() as (path, _db):
+            store = WorldStore(path)
+            store.seed_default()
+            plant = next(
+                i for i in store.list_items(kind="plant")
+                if (i.state or {}).get("stage") == "sprout"
+            )
+            self.assertIsNone(store.harvest_plant(plant.id))
+
+    def test_harvest_perennial_resets_to_growing(self) -> None:
+        with _TempDb() as (path, _db):
+            store = WorldStore(path)
+            plant = self._make_mature(store, species="basil")
+            result = store.harvest_plant(plant.id)
+            self.assertIsNotNone(result)
+            self.assertTrue(result["plant"]["reset"])
+            self.assertFalse(result["plant"]["deleted"])
+            refreshed = store.get_item(plant.id)
+            self.assertIsNotNone(refreshed)
+            self.assertEqual(refreshed.state.get("stage"), "growing")
+            # Produce shows up in the kitchenette.
+            kitchen = store.get_location("kitchenette")
+            kitchen_items = (
+                store.list_items(location_id=kitchen.id) if kitchen else []
+            )
+            self.assertTrue(any(i.slug == "basil_leaves" for i in kitchen_items))
+
+    def test_harvest_annual_deletes_and_drops_seed(self) -> None:
+        with _TempDb() as (path, _db):
+            store = WorldStore(path)
+            plant = self._make_mature(store, species="tomato")
+            result = store.harvest_plant(plant.id)
+            self.assertIsNotNone(result)
+            self.assertTrue(result["plant"]["deleted"])
+            self.assertIsNone(store.get_item(plant.id))
+            # A fresh seed lands in inventory (location_id is None).
+            seeds = [
+                i for i in store.list_items(kind="seed")
+                if (i.state or {}).get("species") == "tomato"
+            ]
+            self.assertTrue(seeds)
+            self.assertIsNone(seeds[0].location_id)
+
+    def test_species_fact_falls_back_to_generic(self) -> None:
+        fact = species_fact("dragonfruit")
+        self.assertEqual(fact["produce_species"], "harvest")
+        self.assertEqual(fact["lifecycle"], "perennial")
+
+
+class OutdoorRenderTests(unittest.TestCase):
+    def test_render_block_uses_outdoor_phrasing_in_garden(self) -> None:
+        with _TempDb() as (path, _db):
+            store = WorldStore(path)
+            store.seed_default()
+            garden = store.get_location("garden")
+            self.assertIsNotNone(garden)
+            store.set_state(location_id=garden.id, activity="stretching")
+            block = store.render_block()
+            self.assertIn("outside", block.lower())
+            self.assertIn("garden", block.lower())
+
+    def test_render_block_plant_stage_suffix(self) -> None:
+        with _TempDb() as (path, _db):
+            store = WorldStore(path)
+            store.seed_default()
+            garden = store.get_location("garden")
+            store.set_state(location_id=garden.id)
+            # Force one plant to mature so the (ready to harvest) cue surfaces.
+            plant = next(i for i in store.list_items(kind="plant"))
+            store.update_item(
+                plant.id,
+                state={**(plant.state or {}), "stage": "mature"},
+            )
+            block = store.render_block()
+            self.assertIn("ready to harvest", block.lower())
 
 
 if __name__ == "__main__":

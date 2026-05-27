@@ -11,6 +11,7 @@ import sys
 import threading
 import traceback
 from types import TracebackType
+from typing import Any
 
 from app.core.log_context import get_turn_id
 
@@ -254,6 +255,62 @@ def log_event(stage: str, message: str) -> None:
             )
         except Exception:
             pass
+
+
+_UI_LOGGER_NAME = "app.ui"
+
+
+def log_ui_event(
+    entry: dict[str, Any],
+    *,
+    max_payload_bytes: int = 2048,
+) -> bool:
+    """Emit a UI-side debug event into the rotating ``app.log`` stream.
+
+    The browser POSTs structured entries to ``/api/logs/ui`` and the
+    handler hands each one to this helper. We render them as
+    ``INFO [ui] {source} {kind} {payload_json}`` so the line interleaves
+    with the existing backend events on the same logger. The payload is
+    truncated to ``max_payload_bytes`` (JSON length) and replaced with
+    ``{"truncated": true, "size": N}`` when oversized; this protects the
+    log from a misbehaving client trying to dump an arbitrary blob.
+
+    Returns ``True`` when a line was emitted, ``False`` when the entry
+    failed validation (missing ``source``/``kind``).
+    """
+    if not isinstance(entry, dict):
+        return False
+    source = str(entry.get("source") or "").strip()
+    kind = str(entry.get("kind") or "").strip()
+    if not source or not kind:
+        return False
+
+    payload: Any = entry.get("payload")
+    payload_text: str
+    if payload is None:
+        payload_text = ""
+    else:
+        try:
+            rendered = json.dumps(payload, ensure_ascii=False, default=str)
+        except Exception:
+            rendered = json.dumps(
+                {"unserializable": type(payload).__name__},
+                ensure_ascii=False,
+            )
+        if max_payload_bytes > 0 and len(rendered) > max_payload_bytes:
+            rendered = json.dumps(
+                {"truncated": True, "size": len(rendered)},
+                ensure_ascii=False,
+            )
+        payload_text = rendered
+
+    ts = str(entry.get("ts") or "")
+    ui_logger = logging.getLogger(_UI_LOGGER_NAME)
+    if payload_text:
+        ui_logger.info("[ui] %s %s %s ts=%s", source, kind, payload_text, ts or "-")
+    else:
+        ui_logger.info("[ui] %s %s ts=%s", source, kind, ts or "-")
+    return True
 
 
 def log_exception(

@@ -9,6 +9,7 @@ of it to the LLM so Aiko can:
 - ``change_posture`` (sitting / lying / curled_up / ...).
 - ``inspect_item`` for an item's full description and state.
 - ``consume_item`` for a consumable like a cookie (decrements quantity).
+- ``water_plant`` / ``plant_seed`` / ``harvest_plant`` — garden loop.
 
 Two categories of tool with different usage profiles:
 
@@ -393,6 +394,286 @@ class ConsumeItemTool:
         )
 
 
+# ── water_plant ─────────────────────────────────────────────────────────
+
+
+class WaterPlantTool:
+    """Refresh a plant's ``last_watered_at`` so growth stays on track."""
+
+    def __init__(self, session: "SessionController") -> None:
+        self._session = session
+
+    def schema(self) -> ToolSchema:
+        return ToolSchema(
+            name="water_plant",
+            description=(
+                "Water a specific plant you can see in your current "
+                "location. Use when the user mentions a plant, when you "
+                "noticed something looked dry, or when your reply "
+                "narrates watering. Refuses non-plant items politely. "
+                "Use sparingly — the garden worker already keeps things "
+                "alive during quiet windows."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "plant": {
+                        "type": "string",
+                        "description": (
+                            "Slug or short name of the plant, e.g. "
+                            "'basil_seedling', 'lavender'. Fuzzy matched."
+                        ),
+                    },
+                },
+                "required": ["plant"],
+            },
+        )
+
+    def run(self, arguments: dict[str, Any]) -> str:
+        store = getattr(self._session, "_world_store", None)
+        if store is None:
+            raise ToolError("water_plant: garden is unavailable")
+        target = (arguments.get("plant") or "").strip()
+        if not target:
+            raise ToolError("water_plant: 'plant' is required")
+        item = store.find_item(target)
+        if item is None:
+            raise ToolError(
+                f"water_plant: no plant matching '{target}' in your world"
+            )
+        if item.kind != "plant":
+            raise ToolError(
+                f"water_plant: '{item.name}' isn't a plant — try the "
+                "garden."
+            )
+        # Aiko has to be in the same location as the plant. Carried
+        # plants (no location) are watered freely.
+        if item.location_id is not None:
+            try:
+                state = store.get_state()
+            except Exception:
+                state = None
+            if state is not None and state.location_id != item.location_id:
+                raise ToolError(
+                    f"water_plant: you aren't near {item.name} right now."
+                )
+        updated = store.water_plant(item.id)
+        if updated is None:
+            raise ToolError(f"water_plant: failed to water {item.name}")
+        self._session._notify_world({"item": updated.to_dict()})
+        return json.dumps(
+            {
+                "ok": True,
+                "name": item.name,
+                "stage": str((updated.state or {}).get("stage", "")),
+            },
+            ensure_ascii=False,
+        )
+
+
+# ── plant_seed ──────────────────────────────────────────────────────────
+
+
+class PlantSeedTool:
+    """Plant a seed from inventory into a location, usually the garden."""
+
+    def __init__(self, session: "SessionController") -> None:
+        self._session = session
+
+    def schema(self) -> ToolSchema:
+        return ToolSchema(
+            name="plant_seed",
+            description=(
+                "Plant a seed you currently carry. Use when the user "
+                "hands you a seed or asks you to plant one. Defaults the "
+                "spot to the garden but you can pass any location slug. "
+                "The seed disappears from your inventory and a fresh "
+                "sprout shows up in the chosen spot."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "seed": {
+                        "type": "string",
+                        "description": (
+                            "Slug or short name of the seed packet, "
+                            "e.g. 'sunflower_seed_packet'. Fuzzy matched."
+                        ),
+                    },
+                    "where": {
+                        "type": "string",
+                        "description": (
+                            "Location slug or name. Defaults to 'garden'."
+                        ),
+                    },
+                },
+                "required": ["seed"],
+            },
+        )
+
+    def run(self, arguments: dict[str, Any]) -> str:
+        from datetime import datetime, timezone
+
+        from app.core.world_store import species_fact
+
+        store = getattr(self._session, "_world_store", None)
+        if store is None:
+            raise ToolError("plant_seed: garden is unavailable")
+        target = (arguments.get("seed") or "").strip()
+        if not target:
+            raise ToolError("plant_seed: 'seed' is required")
+        where = (arguments.get("where") or "garden").strip()
+        item = store.find_item(target)
+        if item is None or item.kind != "seed":
+            raise ToolError(
+                f"plant_seed: no seed matching '{target}' in your inventory"
+            )
+        loc = store.find_location(where)
+        if loc is None:
+            available = ", ".join(
+                l.slug for l in store.list_locations()
+            ) or "(none)"
+            raise ToolError(
+                f"plant_seed: no location matching '{where}'. "
+                f"Try: {available}"
+            )
+        species = str((item.state or {}).get("species") or "").lower()
+        if not species:
+            # Last-ditch guess from the seed name.
+            base = item.name.lower().replace("seed packet", "").strip()
+            species = base.split()[0] if base else "plant"
+        fact = species_fact(species)
+        now_iso = datetime.now(timezone.utc).isoformat()
+        plant_state = {
+            "species": species,
+            "stage": "sprout",
+            "planted_at": now_iso,
+            "last_watered_at": now_iso,
+            "last_promotion_at": now_iso,
+            "days_dry": 0,
+            "lifecycle": fact["lifecycle"],
+            "produce_species": fact["produce_species"],
+        }
+        # Remove the seed first, then add the new sprout. Using the
+        # session-level helpers so the WS broadcasts fire.
+        seed_id = int(item.id)
+        if not self._session.delete_world_item(seed_id):
+            raise ToolError(f"plant_seed: failed to consume {item.name}")
+        plant_name = f"{fact['display_name']} sprout"
+        new_plant = self._session.add_world_item(
+            name=plant_name,
+            kind="plant",
+            description=f"a fresh {fact['display_name']} sprout, just planted",
+            location_id=loc.id,
+            consumable=False,
+            quantity=1,
+            state=plant_state,
+            given_by="aiko",
+        )
+        if new_plant is None:
+            raise ToolError(
+                f"plant_seed: failed to plant {fact['display_name']} in "
+                f"{loc.name}"
+            )
+        return json.dumps(
+            {
+                "ok": True,
+                "planted": fact["display_name"],
+                "where": loc.name,
+                "stage": "sprout",
+            },
+            ensure_ascii=False,
+        )
+
+
+# ── harvest_plant ───────────────────────────────────────────────────────
+
+
+class HarvestPlantTool:
+    """Harvest a mature plant — produces food in the kitchen."""
+
+    def __init__(self, session: "SessionController") -> None:
+        self._session = session
+
+    def schema(self) -> ToolSchema:
+        return ToolSchema(
+            name="harvest_plant",
+            description=(
+                "Harvest a mature plant — moves the produce to the "
+                "kitchen and either deletes the plant (annuals, leaves "
+                "behind a fresh seed) or resets it to growing "
+                "(perennials, ready to bear again later). Only works on "
+                "plants where look_around shows '(mature, ready to "
+                "harvest)' — refuses younger plants. Use when your reply "
+                "mentions picking, gathering, or noticing a plant is "
+                "ready."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "plant": {
+                        "type": "string",
+                        "description": (
+                            "Slug or short name of the plant, e.g. "
+                            "'tomato_seedling', 'lavender'."
+                        ),
+                    },
+                },
+                "required": ["plant"],
+            },
+        )
+
+    def run(self, arguments: dict[str, Any]) -> str:
+        store = getattr(self._session, "_world_store", None)
+        if store is None:
+            raise ToolError("harvest_plant: garden is unavailable")
+        target = (arguments.get("plant") or "").strip()
+        if not target:
+            raise ToolError("harvest_plant: 'plant' is required")
+        item = store.find_item(target)
+        if item is None or item.kind != "plant":
+            raise ToolError(
+                f"harvest_plant: no plant matching '{target}' in your world"
+            )
+        stage = str((item.state or {}).get("stage", "")).lower()
+        if stage != "mature":
+            raise ToolError(
+                f"harvest_plant: {item.name} isn't ready yet "
+                f"(stage: {stage or 'unknown'}). Wait until it's mature."
+            )
+        result = store.harvest_plant(item.id)
+        if result is None:
+            raise ToolError(f"harvest_plant: failed to harvest {item.name}")
+        # Broadcast the patches the helper produced. Annual plants are
+        # deleted + a seed appears; perennials are reset in place.
+        plant_info = result["plant"]
+        produce = result.get("produce", {})
+        produce_item = produce.get("item")
+        if produce_item is not None:
+            self._session._notify_world({"item": produce_item})
+        if plant_info.get("deleted"):
+            self._session._notify_world({"deleted_item_id": int(item.id)})
+        else:
+            refreshed = store.get_item(int(item.id))
+            if refreshed is not None:
+                self._session._notify_world({"item": refreshed.to_dict()})
+        seed = result.get("seed")
+        if seed is not None and seed.get("item") is not None:
+            self._session._notify_world({"item": seed["item"]})
+        return json.dumps(
+            {
+                "ok": True,
+                "from_plant": item.name,
+                "produce_name": produce.get("name"),
+                "quantity": produce.get("quantity"),
+                "lifecycle": plant_info.get("lifecycle"),
+                "plant_deleted": bool(plant_info.get("deleted")),
+                "plant_reset": bool(plant_info.get("reset")),
+            },
+            ensure_ascii=False,
+        )
+
+
 # ── factory ─────────────────────────────────────────────────────────────
 
 
@@ -408,4 +689,7 @@ def build_world_tools(session: "SessionController") -> list[Any]:
         ChangePostureTool(session),
         InspectItemTool(session),
         ConsumeItemTool(session),
+        WaterPlantTool(session),
+        PlantSeedTool(session),
+        HarvestPlantTool(session),
     ]

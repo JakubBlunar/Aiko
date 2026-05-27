@@ -337,6 +337,10 @@ export class ExpressionChannel implements AvatarChannel {
     this._backchannelSeq += 1;
     const seq = this._backchannelSeq;
     this._adapter.expression(exprName);
+    this._deps.debug?.("channel.expression", "backchannelPulse", {
+      hint,
+      expression: exprName,
+    });
     this._cancelRestore();
     this._restoreHandle = this._schedule(() => {
       this._restoreHandle = null;
@@ -503,11 +507,19 @@ export class ExpressionChannel implements AvatarChannel {
     if (this._voiceMode === "listening" || this._voiceMode === "transcribing") {
       const expr = pickModeExpression(deps.manifest, "listening");
       this._applyExpressionByName(adapter, expr);
+      deps.debug?.("channel.expression", "applyMode", {
+        mode: "listening",
+        expression: expr,
+      });
       return;
     }
     if (this._voiceMode === "thinking") {
       const expr = pickModeExpression(deps.manifest, "thinking");
       this._applyExpressionByName(adapter, expr);
+      deps.debug?.("channel.expression", "applyMode", {
+        mode: "thinking",
+        expression: expr,
+      });
       return;
     }
     // No mode override — apply the persistent reaction.
@@ -523,10 +535,22 @@ export class ExpressionChannel implements AvatarChannel {
       // ExpressionManager's empty default motion, releasing the slot.
       adapter.resetExpression();
       this._activeExpressionName = "";
+      deps.debug?.("channel.expression", "resetExpression", {
+        reaction: this._currentReaction,
+        outfit: activeOutfit,
+      });
       return;
     }
     adapter.expression(expressionName);
     this._activeExpressionName = expressionName;
+    // The cry-bug forensic trail: ``reaction`` + ``outfit`` + chosen
+    // ``expression`` is the exact tuple I need to see in ``app.log``
+    // when a "she cried even though I said cheerful" report comes in.
+    deps.debug?.("channel.expression", "applyReaction", {
+      reaction: this._currentReaction,
+      outfit: activeOutfit,
+      expression: expressionName,
+    });
   }
 
   private _applyExpressionByName(
