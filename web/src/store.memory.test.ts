@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { useAssistantStore } from "./store";
-import type { Memory, MemoryOrder } from "./types";
+import type { Memory, MemoryOrder, MemoryTier } from "./types";
 
 /**
  * Covers the Zustand reducers backing the new Memory tab. The WS hook
@@ -43,6 +43,7 @@ function seedView(overrides: {
   page?: number;
   pageSize?: number;
   kindFilter?: string | null;
+  tierFilter?: MemoryTier | null;
   order?: MemoryOrder;
 }) {
   useAssistantStore.getState().setMemoryView({
@@ -53,6 +54,7 @@ function seedView(overrides: {
     page: overrides.page ?? 0,
     pageSize: overrides.pageSize ?? 50,
     kindFilter: overrides.kindFilter ?? null,
+    tierFilter: overrides.tierFilter ?? null,
     order: overrides.order ?? "recent",
   });
 }
@@ -203,5 +205,52 @@ describe("memoryView — page / filter setters reset page", () => {
     seedView({ items: [], total: 0, page: 1 });
     useAssistantStore.getState().setMemoryPage(-3);
     expect(useAssistantStore.getState().memoryView.page).toBe(0);
+  });
+
+  it("setMemoryTierFilter resets page to 0 and updates filter", () => {
+    seedView({ items: [], total: 0, page: 4 });
+    useAssistantStore.getState().setMemoryTierFilter("scratchpad");
+    const view = useAssistantStore.getState().memoryView;
+    expect(view.page).toBe(0);
+    expect(view.tierFilter).toBe("scratchpad");
+  });
+
+  it("setMemoryCounts stores the per-tier counts snapshot", () => {
+    const counts = { scratchpad: 4, long_term: 12, archive: 3, total: 19 };
+    useAssistantStore.getState().setMemoryCounts(counts);
+    expect(useAssistantStore.getState().memoryView.counts).toEqual(counts);
+  });
+});
+
+// Schema v8: tier filter interactions with the added-row reducer. A
+// scratchpad row should only prepend when tierFilter is null OR
+// matches; otherwise total stays put just like the kind filter.
+describe("memoryView — tier-aware applyMemoryAdded", () => {
+  it("prepends when tier filter matches", () => {
+    seedView({
+      items: [makeMemory({ id: 1, tier: "scratchpad" })],
+      total: 1,
+      tierFilter: "scratchpad",
+    });
+    useAssistantStore
+      .getState()
+      .applyMemoryAdded(makeMemory({ id: 5, tier: "scratchpad" }));
+    const view = useAssistantStore.getState().memoryView;
+    expect(view.items[0].id).toBe(5);
+    expect(view.total).toBe(2);
+  });
+
+  it("ignores rows whose tier doesn't match the active filter", () => {
+    seedView({
+      items: [makeMemory({ id: 1, tier: "scratchpad" })],
+      total: 1,
+      tierFilter: "scratchpad",
+    });
+    useAssistantStore
+      .getState()
+      .applyMemoryAdded(makeMemory({ id: 7, tier: "long_term" }));
+    const view = useAssistantStore.getState().memoryView;
+    expect(view.items.map((m) => m.id)).toEqual([1]);
+    expect(view.total).toBe(1);
   });
 });

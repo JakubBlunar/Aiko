@@ -38,6 +38,15 @@ if TYPE_CHECKING:
 log = logging.getLogger("app.memory_store")
 
 
+# Schema v8 — memory tiers. ``scratchpad`` is the fast-decay
+# probationary lane (new auto-extracted observations land here);
+# ``long_term`` is the default home for verified anchors; ``archive``
+# decays at zero so cold history sticks around without crowding
+# retrieval. Pinned rows are always coerced to ``long_term``.
+VALID_TIERS = ("scratchpad", "long_term", "archive")
+_DEFAULT_TIER = "long_term"
+
+
 VALID_KINDS = {
     "fact",
     "preference",
@@ -95,6 +104,21 @@ class Memory:
     # last_anniversaried_at}``, but intentionally generic so future
     # structured kinds can ride the same column without a migration.
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Schema v8 — tier (``scratchpad`` / ``long_term`` / ``archive``).
+    # See :data:`VALID_TIERS`. Pinned rows are always coerced to
+    # ``long_term``. New auto-extracted memories default to
+    # ``scratchpad`` (see :class:`MemoryExtractor`); explicit anchors
+    # ([[remember:]], promises, shared moments, manual UI) default to
+    # ``long_term``. The ``MemoryPromotionWorker`` shuffles rows
+    # between tiers on age + ``use_count`` + ``revival_score``.
+    tier: str = _DEFAULT_TIER
+    # Schema v8 — revival_score in [0, 1]. Bumped post-turn when Aiko's
+    # reply mentions enough of this memory's keywords (see
+    # :func:`SessionController._mark_revived_memories`). The decay()
+    # pass applies a small rebate proportional to revival_score so
+    # high-revival rows drift toward salience=1.0 and act like soft
+    # pins.
+    revival_score: float = 0.0
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -109,6 +133,8 @@ class Memory:
             "use_count": int(self.use_count),
             "pinned": bool(self.pinned),
             "metadata": dict(self.metadata) if self.metadata else {},
+            "tier": str(self.tier),
+            "revival_score": float(self.revival_score),
         }
 
 
@@ -156,6 +182,18 @@ def _decode_metadata(value: Any) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _normalize_tier(tier: str | None, *, pinned: bool = False) -> str:
+    """Return a valid tier name. Pinned rows are always coerced to long_term."""
+    if pinned:
+        return "long_term"
+    if tier is None:
+        return _DEFAULT_TIER
+    cleaned = str(tier).strip().lower()
+    if cleaned not in VALID_TIERS:
+        return _DEFAULT_TIER
+    return cleaned
+
+
 class MemoryStore:
     """Thread-safe long-term memory backed by the ``memories`` SQLite table.
 
@@ -168,10 +206,21 @@ class MemoryStore:
         db_path: Path,
         *,
         max_memories: int = 500,
+        scratchpad_cap: int = 1000,
+        archive_cap: int = 10000,
         dedupe_threshold: float = 0.92,
     ) -> None:
         self._db_path = db_path
         self._max = max(50, int(max_memories))
+        # Per-tier caps (schema v8). The long_term cap reuses ``_max``
+        # for backward compat with the existing ``max_memories``
+        # setting. ``prune()`` enforces these independently per tier so
+        # scratchpad churn never crowds verified long-term anchors.
+        self._tier_caps: dict[str, int] = {
+            "scratchpad": max(50, int(scratchpad_cap)),
+            "long_term": self._max,
+            "archive": max(50, int(archive_cap)),
+        }
         self._dedupe_threshold = float(dedupe_threshold)
         self._local = threading.local()
         self._lock = threading.Lock()
@@ -179,6 +228,22 @@ class MemoryStore:
         self._mirror: dict[int, Memory] = {}
         self._rag: "RagStore | None" = None
         self._reload_mirror()
+
+    def set_tier_caps(
+        self,
+        *,
+        scratchpad: int | None = None,
+        long_term: int | None = None,
+        archive: int | None = None,
+    ) -> None:
+        """Update tier caps at runtime (e.g. when settings change)."""
+        if scratchpad is not None:
+            self._tier_caps["scratchpad"] = max(50, int(scratchpad))
+        if long_term is not None:
+            self._tier_caps["long_term"] = max(50, int(long_term))
+            self._max = self._tier_caps["long_term"]
+        if archive is not None:
+            self._tier_caps["archive"] = max(50, int(archive))
 
     def attach_rag_store(self, rag_store: "RagStore | None") -> None:
         """Hook a :class:`RagStore` so subsequent writes mirror into LanceDB.
@@ -230,26 +295,35 @@ class MemoryStore:
 
     def _reload_mirror(self) -> None:
         conn = self._get_conn()
+        # Try the v8 shape first (tier + revival_score). Fall back to v7
+        # (metadata only), then v6 (no metadata). Pre-v6 databases land
+        # in the bottom-most ``except`` and start with an empty mirror.
         try:
             rows = conn.execute(
                 "SELECT id, content, kind, salience, embedding, source_session, "
                 "source_message_id, created_at, last_used_at, use_count, pinned, "
-                "metadata FROM memories"
+                "metadata, tier, revival_score FROM memories"
             ).fetchall()
         except sqlite3.OperationalError:
-            # The memories table doesn't exist yet (first boot before
-            # ChatDatabase created the schema), or it pre-dates v7 and
-            # lacks the ``metadata`` column. Fall back to the v6 shape.
             try:
                 rows = conn.execute(
                     "SELECT id, content, kind, salience, embedding, source_session, "
-                    "source_message_id, created_at, last_used_at, use_count, pinned "
-                    "FROM memories"
+                    "source_message_id, created_at, last_used_at, use_count, pinned, "
+                    "metadata FROM memories"
                 ).fetchall()
-                rows = [(*r, None) for r in rows]
+                # Append default (tier, revival_score) for pre-v8 rows.
+                rows = [(*r, _DEFAULT_TIER, 0.0) for r in rows]
             except sqlite3.OperationalError:
-                self._mirror = {}
-                return
+                try:
+                    rows = conn.execute(
+                        "SELECT id, content, kind, salience, embedding, source_session, "
+                        "source_message_id, created_at, last_used_at, use_count, pinned "
+                        "FROM memories"
+                    ).fetchall()
+                    rows = [(*r, None, _DEFAULT_TIER, 0.0) for r in rows]
+                except sqlite3.OperationalError:
+                    self._mirror = {}
+                    return
         with self._lock:
             self._mirror = {
                 r[0]: Memory(
@@ -265,6 +339,8 @@ class MemoryStore:
                     use_count=int(r[9]),
                     pinned=bool(r[10]),
                     metadata=_decode_metadata(r[11]),
+                    tier=_normalize_tier(r[12], pinned=bool(r[10])),
+                    revival_score=max(0.0, min(1.0, float(r[13] or 0.0))),
                 )
                 for r in rows
             }
@@ -293,6 +369,7 @@ class MemoryStore:
         metadata: dict[str, Any] | None = None,
         pinned: bool = False,
         skip_dedupe: bool = False,
+        tier: str | None = None,
     ) -> Memory | None:
         """Insert a memory, deduplicating against near-identical existing rows.
 
@@ -307,6 +384,10 @@ class MemoryStore:
         merge with similar non-pinned ones) and stores the row pinned from
         the start. ``skip_dedupe=True`` also bypasses dedupe — used when
         intentionally writing near-duplicate moments from different sources.
+
+        ``tier`` selects ``scratchpad`` / ``long_term`` / ``archive``.
+        Defaults to ``long_term`` (safety default for callers that forget).
+        Pinned rows are always coerced to ``long_term``.
         """
         cleaned = (content or "").strip()
         if not cleaned or len(cleaned) < 4:
@@ -322,6 +403,7 @@ class MemoryStore:
         norm = float(np.linalg.norm(emb))
         if norm > 0.0:
             emb = emb / norm
+        tier_normalized = _normalize_tier(tier, pinned=pinned)
 
         # Dedupe pass against in-memory mirror. Pinned writes bypass dedupe
         # so user-curated moments are never silently merged into a fuzzy
@@ -346,8 +428,8 @@ class MemoryStore:
             "INSERT INTO memories ("
             "  content, kind, salience, embedding, source_session, "
             "  source_message_id, created_at, last_used_at, use_count, pinned, "
-            "  metadata"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
+            "  metadata, tier, revival_score"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 0.0)",
             (
                 cleaned,
                 kind,
@@ -359,6 +441,7 @@ class MemoryStore:
                 None,
                 pinned_int,
                 meta_json,
+                tier_normalized,
             ),
         )
         conn.commit()
@@ -376,6 +459,8 @@ class MemoryStore:
             use_count=0,
             pinned=bool(pinned),
             metadata=dict(metadata) if metadata else {},
+            tier=tier_normalized,
+            revival_score=0.0,
         )
         with self._lock:
             self._mirror[new_id] = memory
@@ -393,7 +478,11 @@ class MemoryStore:
                 )
             except Exception:
                 log.debug("rag add_memory failed", exc_info=True)
-        if len(self._mirror) > self._max:
+        # Per-tier opportunistic prune. Cheaper to check the just-grown
+        # tier than to walk every row.
+        with self._lock:
+            tier_count = sum(1 for m in self._mirror.values() if m.tier == tier_normalized)
+        if tier_count > self._tier_caps.get(tier_normalized, self._max):
             self.prune()
         return memory
 
@@ -435,6 +524,35 @@ class MemoryStore:
                     mem.last_used_at = now
                     mem.use_count += 1
 
+    def mark_revived(self, ids: Iterable[int], *, delta: float) -> None:
+        """Bump ``revival_score`` for memories Aiko actually cited in her reply.
+
+        Called from ``SessionController._post_turn_inner_life`` after a
+        keyword-overlap scan over the assistant's reply text vs each
+        surfaced memory's content. ``delta`` is small (default 0.15) and
+        the result is clamped to ``[0, 1]``. Persistent revival drives
+        the decay rebate (see :meth:`decay`) and counts toward
+        :class:`MemoryPromotionWorker` promotion gates.
+        """
+        ids_list = [int(i) for i in ids if i]
+        if not ids_list or delta == 0:
+            return
+        d = float(delta)
+        conn = self._get_conn()
+        placeholders = ",".join("?" * len(ids_list))
+        conn.execute(
+            f"UPDATE memories SET revival_score = "
+            f"MAX(0.0, MIN(1.0, revival_score + ?)) "
+            f"WHERE id IN ({placeholders})",
+            (d, *ids_list),
+        )
+        conn.commit()
+        with self._lock:
+            for mid in ids_list:
+                mem = self._mirror.get(mid)
+                if mem is not None:
+                    mem.revival_score = max(0.0, min(1.0, mem.revival_score + d))
+
     def delete(self, memory_id: int) -> bool:
         conn = self._get_conn()
         cursor = conn.execute("DELETE FROM memories WHERE id = ?", (int(memory_id),))
@@ -458,6 +576,8 @@ class MemoryStore:
         embedding: np.ndarray | None = None,
         metadata: dict[str, Any] | None = None,
         metadata_merge: bool = False,
+        tier: str | None = None,
+        revival_score: float | None = None,
     ) -> Memory | None:
         """Patch one or more fields on an existing memory.
 
@@ -470,6 +590,10 @@ class MemoryStore:
         ``metadata_merge=True`` to shallow-merge instead — used by the
         anniversary path to stamp ``last_anniversaried_at`` without losing
         the original ``vibe`` / ``when`` / ``what`` fields.
+
+        ``tier`` may be ``"scratchpad"`` / ``"long_term"`` / ``"archive"``.
+        Pinned rows are coerced back to ``"long_term"`` regardless of the
+        requested tier. ``revival_score`` is clamped to ``[0, 1]``.
 
         Returns the updated :class:`Memory` snapshot, or ``None`` if the row
         doesn't exist.
@@ -513,16 +637,30 @@ class MemoryStore:
                 new_metadata = dict(metadata)
             metadata_changed = True
 
+        new_tier = mem.tier
+        if tier is not None:
+            new_tier = _normalize_tier(tier, pinned=mem.pinned)
+        elif mem.pinned and new_tier != "long_term":
+            # Defensive: a pinned row should never be sitting in a
+            # non-long_term tier. Coerce on any update touching the row.
+            new_tier = "long_term"
+
+        new_revival = mem.revival_score
+        if revival_score is not None:
+            new_revival = max(0.0, min(1.0, float(revival_score)))
+
         conn = self._get_conn()
         conn.execute(
             "UPDATE memories SET content = ?, kind = ?, salience = ?, embedding = ?, "
-            "metadata = ? WHERE id = ?",
+            "metadata = ?, tier = ?, revival_score = ? WHERE id = ?",
             (
                 new_content,
                 new_kind,
                 float(new_salience),
                 _encode(new_embedding),
                 _encode_metadata(new_metadata),
+                new_tier,
+                float(new_revival),
                 int(memory_id),
             ),
         )
@@ -535,6 +673,8 @@ class MemoryStore:
             mem.embedding = new_embedding
             if metadata_changed:
                 mem.metadata = new_metadata
+            mem.tier = new_tier
+            mem.revival_score = new_revival
             updated = mem
 
         if self._rag is not None:
@@ -559,8 +699,11 @@ class MemoryStore:
         """Pin or unpin a memory.
 
         Pinning nudges ``salience`` up to ``1.0`` so a future un-pin does not
-        snap back to a stale low value. Un-pinning leaves the existing
-        salience intact -- decay will gradually walk it back down.
+        snap back to a stale low value. It also coerces the row's ``tier``
+        to ``long_term`` so the row can never sit in ``scratchpad`` or
+        ``archive`` while pinned. Un-pinning leaves the existing salience
+        and tier intact -- decay + the promotion worker will manage them
+        from there.
         """
         with self._lock:
             mem = self._mirror.get(int(memory_id))
@@ -568,17 +711,20 @@ class MemoryStore:
             return None
         new_pinned = 1 if pinned else 0
         new_salience = mem.salience
+        new_tier = mem.tier
         if pinned:
             new_salience = max(new_salience, 1.0)
+            new_tier = "long_term"
         conn = self._get_conn()
         conn.execute(
-            "UPDATE memories SET pinned = ?, salience = ? WHERE id = ?",
-            (new_pinned, float(new_salience), int(memory_id)),
+            "UPDATE memories SET pinned = ?, salience = ?, tier = ? WHERE id = ?",
+            (new_pinned, float(new_salience), new_tier, int(memory_id)),
         )
         conn.commit()
         with self._lock:
             mem.pinned = bool(pinned)
             mem.salience = new_salience
+            mem.tier = new_tier
             updated = mem
         if self._rag is not None and pinned:
             # Mirror the salience bump so retrieval scoring matches what
@@ -602,64 +748,202 @@ class MemoryStore:
         with self._lock:
             return self._mirror.get(int(memory_id))
 
-    def decay(self, by: float = 0.02) -> None:
-        """Slowly forget unused memories. Call from background worker.
+    def decay(
+        self,
+        by: float | None = None,
+        *,
+        now: datetime | None = None,
+        elapsed_days: float | None = None,
+        decay_rates: dict[str, float] | None = None,
+        revival_coefficient: float = 0.05,
+        revival_decay_per_day: float = 0.02,
+        max_catchup_days: float = 30.0,
+    ) -> dict[str, float]:
+        """Apply wall-clock-driven decay, tier-aware with a revival rebate.
 
-        Pinned rows are skipped: they're explicitly user-curated as "don't
-        let this fade".
+        Default per-tier rates (per day): ``scratchpad=0.05``,
+        ``long_term=0.02``, ``archive=0.0``. Pass ``decay_rates`` to
+        override individual tiers from settings.
+
+        The actual decay magnitude is ``rate * elapsed_days``. By default
+        ``elapsed_days`` is computed from the persisted
+        ``memory.last_decay_run_at`` anchor in :class:`ChatDatabase`'s
+        ``kv_meta`` table, so running once an hour applies 1/24 of a
+        day; coming back online after 3 days produces 3 days' worth
+        (clamped to ``max_catchup_days`` so a long absence doesn't zero
+        everything). Pass ``elapsed_days`` explicitly for tests.
+
+        Each row gets a small *revival rebate* before decay applies:
+        ``salience' = clamp(salience + revival_coefficient * elapsed_days *
+        revival_score - rate * elapsed_days, 0, 1)``. ``revival_score``
+        itself decays at ``revival_decay_per_day`` so old revivals fade.
+
+        Pinned rows are skipped (their salience stays at 1.0).
+
+        Legacy positional ``by``: when set, applies that flat rate to
+        every tier (preserves the old daily-loop semantics for callers
+        that still pass ``decay(by=0.02)``). When ``by`` is provided,
+        ``elapsed_days`` defaults to 1.0 (one day) to match the old
+        contract.
         """
-        if by <= 0:
-            return
+        now_dt = now or datetime.now(timezone.utc)
+
+        # Resolve effective per-tier rates first so the legacy ``by`` arg
+        # can map onto them cleanly.
+        rates = {"scratchpad": 0.05, "long_term": 0.02, "archive": 0.0}
+        if decay_rates:
+            for tier, rate in decay_rates.items():
+                tier_norm = str(tier).strip().lower()
+                if tier_norm in rates:
+                    rates[tier_norm] = max(0.0, float(rate))
+        legacy_by = by is not None
+        if legacy_by:
+            flat = max(0.0, float(by))
+            rates = {t: flat for t in rates}
+            # Legacy callers expect one tick = one day's worth.
+            if elapsed_days is None:
+                elapsed_days = 1.0
+
+        # Compute elapsed_days from the persisted anchor if not supplied.
+        if elapsed_days is None:
+            last_dt = self._read_last_decay_run_at()
+            if last_dt is None:
+                # First-ever run: nothing to decay yet. Just persist the
+                # anchor so the next tick has a baseline.
+                self._write_last_decay_run_at(now_dt)
+                return {"elapsed_days": 0.0, "applied": False}
+            delta_seconds = max(0.0, (now_dt - last_dt).total_seconds())
+            elapsed_days = min(
+                float(max_catchup_days), delta_seconds / 86_400.0,
+            )
+
+        stats: dict[str, float] = {
+            "elapsed_days": float(elapsed_days),
+            "applied": False,
+        }
+        if elapsed_days <= 0.0:
+            self._write_last_decay_run_at(now_dt)
+            return stats
+
         conn = self._get_conn()
-        with self._lock:
-            for mem in self._mirror.values():
-                if mem.pinned:
-                    continue
-                mem.salience = max(0.0, mem.salience - float(by))
-        conn.execute(
-            "UPDATE memories SET salience = MAX(0.0, salience - ?) WHERE pinned = 0",
-            (float(by),),
-        )
+        # Per-tier salience update. ``MAX/MIN`` clamp to [0, 1].
+        # ``salience + rebate * revival_score - decay`` -- the rebate
+        # scales with both ``revival_score`` (per-row signal) and
+        # ``elapsed_days`` (uniform), so old high-revival rows
+        # actively gain salience between sweeps.
+        for tier in VALID_TIERS:
+            rate = rates.get(tier, 0.0)
+            decay_amount = rate * float(elapsed_days)
+            rebate = float(revival_coefficient) * float(elapsed_days)
+            if decay_amount <= 0.0 and rebate <= 0.0:
+                continue
+            conn.execute(
+                "UPDATE memories SET salience = "
+                "MAX(0.0, MIN(1.0, salience + ? * revival_score - ?)) "
+                "WHERE tier = ? AND pinned = 0",
+                (rebate, decay_amount, tier),
+            )
+
+        # Decay revival_score itself so a one-time spike fades without
+        # gating future rebates.
+        revival_delta = float(revival_decay_per_day) * float(elapsed_days)
+        if revival_delta > 0:
+            conn.execute(
+                "UPDATE memories SET revival_score = "
+                "MAX(0.0, revival_score - ?) WHERE pinned = 0",
+                (revival_delta,),
+            )
+
         conn.commit()
+        # Refresh the in-memory mirror after the bulk UPDATE so search /
+        # iter helpers see the new salience values immediately.
+        self._reload_mirror()
+        self._write_last_decay_run_at(now_dt)
+        stats["applied"] = True
+        return stats
+
+    _KV_LAST_DECAY = "memory.last_decay_run_at"
+
+    def _read_last_decay_run_at(self) -> datetime | None:
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT value FROM kv_meta WHERE key = ?",
+                (self._KV_LAST_DECAY,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return None
+        if row is None:
+            return None
+        try:
+            return datetime.fromisoformat(str(row[0]))
+        except (TypeError, ValueError):
+            return None
+
+    def _write_last_decay_run_at(self, when: datetime) -> None:
+        conn = self._get_conn()
+        try:
+            conn.execute(
+                "INSERT INTO kv_meta (key, value, updated_at) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, "
+                "updated_at = excluded.updated_at",
+                (self._KV_LAST_DECAY, when.isoformat(), when.isoformat()),
+            )
+            conn.commit()
+        except sqlite3.OperationalError:
+            # kv_meta missing means a pre-v8 schema; fail silently --
+            # the next ChatDatabase init will create the table.
+            log.debug("kv_meta unavailable; skipped decay anchor", exc_info=True)
 
     def prune(self) -> int:
-        """Delete the lowest-priority memories until count <= max_memories.
+        """Delete the lowest-priority memories per-tier until each tier fits.
 
-        Pinned rows are never selected as victims; if every row is pinned we
-        simply leave the store over-cap rather than evicting curated content.
+        Each tier has its own cap (see :meth:`set_tier_caps`). Within a
+        tier, victims are ranked by ``salience + 0.05 * min(use_count, 20)
+        + 0.1 * revival_score`` -- lowest scores die first. Pinned rows
+        are never selected (and pinned rows always live in ``long_term``
+        anyway). Returns total victims across all tiers.
         """
+        total_victims = 0
         with self._lock:
-            count = len(self._mirror)
-        if count <= self._max:
-            return 0
-        # Score = salience + 0.1 * (use_count clamped to 10).
-        # Lowest scoring non-pinned rows are deleted first.
-        candidates = [m for m in self._mirror.values() if not m.pinned]
-        ranked = sorted(
-            candidates,
-            key=lambda m: (
-                m.salience + 0.05 * min(m.use_count, 20)
-            ),
-        )
-        excess = count - self._max
-        victims = [m.id for m in ranked[:excess]]
-        if not victims:
-            return 0
-        conn = self._get_conn()
-        placeholders = ",".join("?" * len(victims))
-        conn.execute(f"DELETE FROM memories WHERE id IN ({placeholders})", victims)
-        conn.commit()
-        with self._lock:
-            for mid in victims:
-                self._mirror.pop(mid, None)
-        if self._rag is not None:
-            for mid in victims:
-                try:
-                    self._rag.delete_memory(str(mid))
-                except Exception:
-                    log.debug("rag delete during prune failed", exc_info=True)
-        log.info("pruned %d low-priority memories", len(victims))
-        return len(victims)
+            snapshot = list(self._mirror.values())
+        for tier in VALID_TIERS:
+            tier_rows = [m for m in snapshot if m.tier == tier and not m.pinned]
+            cap = self._tier_caps.get(tier, self._max)
+            if len(tier_rows) <= cap:
+                continue
+            tier_rows.sort(
+                key=lambda m: (
+                    m.salience
+                    + 0.05 * min(m.use_count, 20)
+                    + 0.1 * m.revival_score
+                ),
+            )
+            excess = len(tier_rows) - cap
+            victims = [m.id for m in tier_rows[:excess]]
+            if not victims:
+                continue
+            conn = self._get_conn()
+            placeholders = ",".join("?" * len(victims))
+            conn.execute(
+                f"DELETE FROM memories WHERE id IN ({placeholders})", victims,
+            )
+            conn.commit()
+            with self._lock:
+                for mid in victims:
+                    self._mirror.pop(mid, None)
+            if self._rag is not None:
+                for mid in victims:
+                    try:
+                        self._rag.delete_memory(str(mid))
+                    except Exception:
+                        log.debug("rag delete during prune failed", exc_info=True)
+            total_victims += len(victims)
+            log.info(
+                "pruned %d low-priority memories in tier=%s", len(victims), tier,
+            )
+        return total_victims
 
     # ── reads ─────────────────────────────────────────────────────────────
 
@@ -743,13 +1027,50 @@ class MemoryStore:
         with self._lock:
             return [m for m in self._mirror.values() if m.kind == kind_norm]
 
-    def count_memories(self, kind: str | None = None) -> int:
+    def iter_by_tier(self, tier: str) -> list[Memory]:
+        """Snapshot of all memories in a given tier. Cheap (mirror walk).
+
+        Used by :class:`MemoryPromotionWorker` to scan each tier on its
+        own schedule (promote/delete scratchpad, demote long_term, etc.).
+        """
+        tier_norm = (tier or "").strip().lower()
+        if tier_norm not in VALID_TIERS:
+            return []
         with self._lock:
-            mems = self._mirror.values()
-            if kind:
-                kind_norm = kind.strip().lower()
-                return sum(1 for m in mems if m.kind == kind_norm)
-            return len(self._mirror)
+            return [m for m in self._mirror.values() if m.tier == tier_norm]
+
+    def count_memories(
+        self,
+        kind: str | None = None,
+        *,
+        tier: str | None = None,
+    ) -> int:
+        with self._lock:
+            mems = list(self._mirror.values())
+        if kind:
+            kind_norm = kind.strip().lower()
+            mems = [m for m in mems if m.kind == kind_norm]
+        if tier:
+            tier_norm = tier.strip().lower()
+            mems = [m for m in mems if m.tier == tier_norm]
+        return len(mems)
+
+    def count_by_tier(self) -> dict[str, int]:
+        """Return ``{tier: count}`` covering every tier (zeros included).
+
+        Feeds the "scratchpad N | long_term M | archive K" header on the
+        Memory tab and the ``/api/memories/counts`` endpoint.
+        """
+        counts: dict[str, int] = {t: 0 for t in VALID_TIERS}
+        with self._lock:
+            for mem in self._mirror.values():
+                if mem.tier in counts:
+                    counts[mem.tier] += 1
+                else:
+                    counts.setdefault("long_term", 0)
+                    counts["long_term"] += 1
+        counts["total"] = sum(counts[t] for t in VALID_TIERS)
+        return counts
 
     def count(self) -> int:
         with self._lock:

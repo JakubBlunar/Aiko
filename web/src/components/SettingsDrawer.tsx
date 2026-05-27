@@ -7,6 +7,7 @@ import type {
   AvatarSettingsKnobs,
   Memory,
   MemoryOrder,
+  MemoryTier,
   MetricsResponse,
   PersonaWindowSettings,
   RagDocument,
@@ -21,6 +22,7 @@ import type {
 } from "../types";
 import {
   MEMORY_KINDS,
+  MEMORY_TIERS,
   SHARED_MOMENT_VIBES,
   WORLD_ACTIVITIES,
   WORLD_KINDS,
@@ -75,7 +77,9 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
   const setMemoryView = useAssistantStore((s) => s.setMemoryView);
   const setMemoryPage = useAssistantStore((s) => s.setMemoryPage);
   const setMemoryKindFilter = useAssistantStore((s) => s.setMemoryKindFilter);
+  const setMemoryTierFilter = useAssistantStore((s) => s.setMemoryTierFilter);
   const setMemoryOrder = useAssistantStore((s) => s.setMemoryOrder);
+  const setMemoryCounts = useAssistantStore((s) => s.setMemoryCounts);
   const applyMemoryUpdated = useAssistantStore((s) => s.applyMemoryUpdated);
   const applyMemoryDeleted = useAssistantStore((s) => s.applyMemoryDeleted);
   const applyMemoryAdded = useAssistantStore((s) => s.applyMemoryAdded);
@@ -344,6 +348,7 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
     async (overrides?: {
       page?: number;
       kindFilter?: string | null;
+      tierFilter?: MemoryTier | null;
       order?: MemoryOrder;
     }) => {
       const page = overrides?.page ?? memoryView.page;
@@ -351,16 +356,27 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
         overrides?.kindFilter !== undefined
           ? overrides.kindFilter
           : memoryView.kindFilter;
+      const tierFilter =
+        overrides?.tierFilter !== undefined
+          ? overrides.tierFilter
+          : memoryView.tierFilter;
       const order = overrides?.order ?? memoryView.order;
       setMemoryBusy(true);
       setMemoryError(null);
       try {
-        const data = await api.listMemories({
-          limit: MEMORY_PAGE_SIZE,
-          offset: page * MEMORY_PAGE_SIZE,
-          order,
-          kind: kindFilter,
-        });
+        const [data, counts] = await Promise.all([
+          api.listMemories({
+            limit: MEMORY_PAGE_SIZE,
+            offset: page * MEMORY_PAGE_SIZE,
+            order,
+            kind: kindFilter,
+            tier: tierFilter,
+          }),
+          // Counts fetch is independent of pagination -- always
+          // shows total population per tier so the header reflects
+          // the truth even while the page-1 list is filtered down.
+          api.getMemoryCounts().catch(() => null),
+        ]);
         setMemoryView({
           items: data.memories,
           total: data.total,
@@ -369,8 +385,10 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
           page,
           pageSize: MEMORY_PAGE_SIZE,
           kindFilter,
+          tierFilter,
           order,
         });
+        if (counts) setMemoryCounts(counts);
       } catch (err) {
         setMemoryError(String(err));
       } finally {
@@ -380,8 +398,10 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
     [
       memoryView.page,
       memoryView.kindFilter,
+      memoryView.tierFilter,
       memoryView.order,
       setMemoryView,
+      setMemoryCounts,
     ],
   );
 
@@ -403,6 +423,7 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
     activeTab,
     memoryView.page,
     memoryView.kindFilter,
+    memoryView.tierFilter,
     memoryView.order,
   ]);
 
@@ -1744,6 +1765,7 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                   newDraft={memoryNewDraft}
                   setNewDraft={setMemoryNewDraft}
                   onSetKindFilter={setMemoryKindFilter}
+                  onSetTierFilter={setMemoryTierFilter}
                   onSetOrder={setMemoryOrder}
                   onSetPage={setMemoryPage}
                   onRefresh={() => {
@@ -1917,7 +1939,9 @@ interface MemoryTabProps {
     page: number;
     pageSize: number;
     kindFilter: string | null;
+    tierFilter: MemoryTier | null;
     order: MemoryOrder;
+    counts: { scratchpad: number; long_term: number; archive: number; total: number } | null;
   };
   enabled: boolean;
   busy: boolean;
@@ -1932,6 +1956,7 @@ interface MemoryTabProps {
   newDraft: MemoryDraft;
   setNewDraft: (draft: MemoryDraft) => void;
   onSetKindFilter: (kind: string | null) => void;
+  onSetTierFilter: (tier: MemoryTier | null) => void;
   onSetOrder: (order: MemoryOrder) => void;
   onSetPage: (page: number) => void;
   onRefresh: () => void;
@@ -1958,6 +1983,7 @@ function MemoryTab({
   newDraft,
   setNewDraft,
   onSetKindFilter,
+  onSetTierFilter,
   onSetOrder,
   onSetPage,
   onRefresh,
@@ -1997,9 +2023,26 @@ function MemoryTab({
         </button>
       </div>
 
+      {view.counts ? (
+        <div className="flex flex-wrap items-center gap-2 text-[11px] text-ink-100/55">
+          <span className="text-ink-100/40">Tiers:</span>
+          <span title="Probationary lane — fast decay, gets promoted on use">
+            scratchpad <span className="text-ink-100/80">{view.counts.scratchpad}</span>
+          </span>
+          <span className="text-ink-100/30">·</span>
+          <span title="Verified anchors — normal decay">
+            long_term <span className="text-ink-100/80">{view.counts.long_term}</span>
+          </span>
+          <span className="text-ink-100/30">·</span>
+          <span title="Cold history — zero decay, needs a strong match to surface">
+            archive <span className="text-ink-100/80">{view.counts.archive}</span>
+          </span>
+        </div>
+      ) : null}
+
       <div className="flex flex-wrap items-center gap-2">
         <label className="flex items-center gap-1 text-[11px] text-ink-100/60">
-          <span>Filter:</span>
+          <span>Kind:</span>
           <select
             value={view.kindFilter ?? ""}
             onChange={(e) => onSetKindFilter(e.target.value || null)}
@@ -2009,6 +2052,23 @@ function MemoryTab({
             {MEMORY_KINDS.map((k) => (
               <option key={k} value={k}>
                 {k}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex items-center gap-1 text-[11px] text-ink-100/60">
+          <span>Tier:</span>
+          <select
+            value={view.tierFilter ?? ""}
+            onChange={(e) =>
+              onSetTierFilter((e.target.value || null) as MemoryTier | null)
+            }
+            className="rounded border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-ink-100/80 focus:border-ink-400 focus:outline-none"
+          >
+            <option value="">all tiers</option>
+            {MEMORY_TIERS.map((t) => (
+              <option key={t} value={t}>
+                {t}
               </option>
             ))}
           </select>
@@ -2181,9 +2241,37 @@ function MemoryTab({
                         <span className="rounded bg-white/5 px-1.5 py-0.5 text-ink-100/60">
                           {memory.kind}
                         </span>
+                        {memory.tier ? (
+                          <span
+                            className={
+                              memory.tier === "scratchpad"
+                                ? "rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-200"
+                                : memory.tier === "archive"
+                                ? "rounded bg-slate-500/20 px-1.5 py-0.5 text-slate-200"
+                                : "rounded bg-emerald-500/15 px-1.5 py-0.5 text-emerald-200"
+                            }
+                            title={
+                              memory.tier === "scratchpad"
+                                ? "Probationary — promoted to long_term on use or revival, deleted after TTL"
+                                : memory.tier === "archive"
+                                ? "Cold history — zero decay, only surfaces on strong matches"
+                                : "Verified anchor — normal decay"
+                            }
+                          >
+                            {memory.tier}
+                          </span>
+                        ) : null}
                         <span>
                           salience {(memory.salience * 100).toFixed(0)}%
                         </span>
+                        {typeof memory.revival_score === "number" && memory.revival_score > 0.05 ? (
+                          <span
+                            className="text-fuchsia-300/80"
+                            title="Revival score: how often Aiko cites this memory in her replies. Drives a small salience rebate on every decay tick."
+                          >
+                            revival {(memory.revival_score * 100).toFixed(0)}%
+                          </span>
+                        ) : null}
                         {memory.use_count > 0 ? (
                           <span>used {memory.use_count}x</span>
                         ) : null}

@@ -306,7 +306,7 @@ class PajamasHoodedVariantTests(unittest.TestCase):
             controller._patched.append(patch)  # type: ignore[attr-defined]
 
         with mock.patch(
-            "app.core.session_controller.persist_user_overrides",
+            "app.core.session.avatar_mixin.persist_user_overrides",
             side_effect=_capture,
         ):
             snap = controller.update_avatar_settings(
@@ -559,7 +559,7 @@ class BackchannelMotionDispatchTests(unittest.TestCase):
         # and never blocks on a real wait.
         ticks = iter([1.0, 1.05, 1.5])
         with mock.patch(
-            "app.core.session_controller.time.monotonic",
+            "app.core.session.avatar_mixin.time.monotonic",
             side_effect=lambda: next(ticks),
         ):
             controller._emit_backchannel_motion("agreement", "uh")
@@ -713,7 +713,7 @@ class UpdateAvatarSettingsPersistenceTests(unittest.TestCase):
             lambda snap: captured.append(dict(snap)),
         )
         with mock.patch(
-            "app.core.session_controller.persist_user_overrides",
+            "app.core.session.avatar_mixin.persist_user_overrides",
             side_effect=OSError("read-only fs"),
         ):
             controller.update_avatar_settings(scale_multiplier=1.4)

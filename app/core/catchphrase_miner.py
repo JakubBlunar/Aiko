@@ -324,6 +324,10 @@ class CatchphraseMiner:
                     salience=salience,
                     source_session=session_key,
                     source_message_id=None,
+                    # Schema v8: catchphrases are analytic outputs over
+                    # an entire conversation window -- already vetted
+                    # by recurrence, so they go straight to long_term.
+                    tier="long_term",
                 )
             except Exception:
                 log.debug("catchphrase memory insert failed", exc_info=True)

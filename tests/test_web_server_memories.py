@@ -52,20 +52,31 @@ class _MemoryState:
         order: str = "recent",
         offset: int = 0,
         kind: str | None = None,
+        tier: str | None = None,
     ) -> list[dict[str, Any]]:
         rows = list(self.rows.values())
         if kind:
             rows = [r for r in rows if r["kind"] == kind]
+        if tier:
+            rows = [r for r in rows if r.get("tier") == tier]
         if order == "top":
             rows.sort(key=lambda r: -r["salience"])
         else:
             rows.sort(key=lambda r: -r["id"])  # recent: highest id first
         return rows[offset : offset + limit]
 
-    def memory_count(self, kind: str | None = None) -> int:
-        if kind is None:
-            return len(self.rows)
-        return sum(1 for r in self.rows.values() if r["kind"] == kind)
+    def memory_count(
+        self,
+        kind: str | None = None,
+        *,
+        tier: str | None = None,
+    ) -> int:
+        rows = self.rows.values()
+        if kind is not None:
+            rows = [r for r in rows if r["kind"] == kind]
+        if tier is not None:
+            rows = [r for r in rows if r.get("tier") == tier]
+        return len(list(rows))
 
     def memory_cap(self) -> int:
         return self._cap
@@ -76,6 +87,7 @@ class _MemoryState:
         *,
         kind: str = "fact",
         salience: float = 0.6,
+        tier: str = "long_term",
     ) -> dict[str, Any] | None:
         cleaned = content.strip()
         if cleaned in self._dedupe_targets:
@@ -96,6 +108,8 @@ class _MemoryState:
             "last_used_at": None,
             "use_count": 0,
             "pinned": False,
+            "tier": tier,
+            "revival_score": 0.0,
         }
         self.rows[self._next] = row
         self._next += 1
@@ -108,6 +122,7 @@ class _MemoryState:
         content: str | None = None,
         kind: str | None = None,
         salience: float | None = None,
+        tier: str | None = None,
     ) -> dict[str, Any] | None:
         row = self.rows.get(int(memory_id))
         if row is None:
@@ -118,6 +133,8 @@ class _MemoryState:
             row["kind"] = kind
         if salience is not None:
             row["salience"] = float(salience)
+        if tier is not None:
+            row["tier"] = tier
         return dict(row)
 
     def set_memory_pinned(

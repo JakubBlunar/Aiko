@@ -158,6 +158,35 @@ export const MEMORY_KINDS: readonly MemoryKind[] = [
 
 export type MemoryOrder = "recent" | "top";
 
+/**
+ * Schema v8: memory tiers.
+ *
+ * - ``scratchpad`` -- probationary lane. New auto-extracted observations
+ *   land here; they decay fast and get pruned/promoted by the
+ *   ``MemoryPromotionWorker``. Slightly de-prioritized in retrieval so
+ *   verified anchors win ties.
+ * - ``long_term`` -- the default home. Verified facts, promises,
+ *   ``[[remember:...]]`` self-tags, shared moments, manual UI entries.
+ *   Normal decay rate.
+ * - ``archive`` -- cold history. Decays at zero; only surfaces on
+ *   strong cosine matches. Pinned rows are never in here (they're
+ *   coerced to ``long_term`` on save).
+ */
+export type MemoryTier = "scratchpad" | "long_term" | "archive";
+
+export const MEMORY_TIERS: readonly MemoryTier[] = [
+  "scratchpad",
+  "long_term",
+  "archive",
+];
+
+export interface MemoryCounts {
+  scratchpad: number;
+  long_term: number;
+  archive: number;
+  total: number;
+}
+
 export interface RagDocument {
   document_id: string;
   title: string;
@@ -187,6 +216,12 @@ export interface Memory {
   use_count: number;
   pinned: boolean;
   metadata?: Record<string, unknown>;
+  /** Schema v8 memory tier. Defaults to ``"long_term"`` on rows that
+   * predate v8 (the backend backfills on migration). */
+  tier?: MemoryTier;
+  /** Schema v8 revival score in [0, 1]; persistent positive revival
+   * drifts ``salience`` up via the decay rebate. */
+  revival_score?: number;
 }
 
 /** Closed vibe vocabulary mirrored from ``shared_moment_extractor.VIBE_VOCABULARY``. */
@@ -289,12 +324,17 @@ export interface MemoryUpdatePatch {
   content?: string;
   kind?: MemoryKind | string;
   salience?: number;
+  /** Schema v8: explicit tier override. Pinned rows are coerced back
+   * to ``"long_term"`` server-side regardless of what's sent. */
+  tier?: MemoryTier;
 }
 
 export interface MemoryCreatePayload {
   content: string;
   kind?: MemoryKind | string;
   salience?: number;
+  /** Schema v8: defaults to ``"long_term"`` server-side when omitted. */
+  tier?: MemoryTier;
 }
 
 /** Server response for ``POST /api/memories``. Either ``memory`` (a brand

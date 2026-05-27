@@ -177,6 +177,11 @@ class MemoryExtractor:
                 salience=cand["salience"],
                 source_session=session_key,
                 source_message_id=None,
+                # Schema v8: LLM-distilled observations are speculative.
+                # Land them in scratchpad so the promotion worker can
+                # either confirm them via retrieval / revival or sweep
+                # them away after the TTL.
+                tier="scratchpad",
             )
             if memory is not None:
                 inserted += 1

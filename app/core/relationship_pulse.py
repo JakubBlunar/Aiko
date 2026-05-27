@@ -249,6 +249,11 @@ class RelationshipPulseWorker:
                 embedding=embedding,
                 salience=self._salience,
                 source_session=None,
+                # Schema v8: relationship-pulse self-tags represent
+                # Aiko's own deliberate framing of her stance toward
+                # Jacob -- not speculative observations. Long_term so
+                # they anchor her sense of self even between sessions.
+                tier="long_term",
             )
         except Exception:
             log.debug("pulse memory add failed", exc_info=True)

@@ -80,6 +80,20 @@ _MEMORY_ANNIVERSARY_BONUS = 0.05
 _ANNIVERSARY_WINDOW_DAYS: tuple[int, ...] = (30, 90, 180, 365, 730, 1095, 1460, 1825)
 _ANNIVERSARY_TOLERANCE_DAYS = 1.0
 
+# Schema v8 — per-tier score offset applied to memory hits.
+# ``scratchpad`` rows are still probationary and pre-revival, so we
+# bias them slightly down; ``archive`` rows are cold history, so they
+# need a strong cosine match to surface (avoids unburying noise on
+# weak queries). ``long_term`` is the neutral baseline. The deltas are
+# small enough that a revived scratchpad row (revival_score > 0.5) or
+# a high-salience archive row still wins against an equally-similar
+# long_term sibling.
+_MEMORY_TIER_OFFSET: dict[str, float] = {
+    "scratchpad": -0.02,
+    "long_term": 0.0,
+    "archive": -0.03,
+}
+
 
 def _is_anniversary_today(metadata: dict | None) -> bool:
     """True if ``metadata.when`` falls inside an anniversary window today.
@@ -134,6 +148,12 @@ class RagRetriever:
         # tests and lean deployments can run without it; the recency
         # signal then simply stays at 0.
         self._memory_store = memory_store
+        # Schema v8 — IDs of memories surfaced in the last
+        # :meth:`retrieve` call. ``SessionController._post_turn_inner_life``
+        # reads this snapshot to run the keyword-overlap revival check
+        # against Aiko's reply and bump ``revival_score`` on rows she
+        # actually cited.
+        self._last_surfaced_memory_ids: list[int] = []
 
     @property
     def top_k(self) -> int:
@@ -221,6 +241,13 @@ class RagRetriever:
                                     getattr(mem, "metadata", None)
                                 ):
                                     h.score += _MEMORY_ANNIVERSARY_BONUS
+                                # Schema v8: tier offset. Reads from the
+                                # SQLite mirror (tier is not stored in
+                                # the LanceDB record). Defaults to 0
+                                # when the row predates v8 / tier is
+                                # missing so callers stay safe.
+                                tier = getattr(mem, "tier", "long_term")
+                                h.score += _MEMORY_TIER_OFFSET.get(tier, 0.0)
                     except Exception:
                         log.debug("pinned-bonus lookup failed", exc_info=True)
                 merged.append(h)
@@ -278,27 +305,41 @@ class RagRetriever:
         # the very next turn, breaking the "always wins" feedback loop
         # the legacy retriever suffered from. Best-effort — a broken
         # store must not abort the prompt build.
-        if self._memory_store is not None:
-            ids: list[int] = []
-            for hit in unique:
-                if hit.source != "memory":
-                    continue
-                raw = getattr(hit.record, "id", None)
-                if raw is None:
-                    continue
-                try:
-                    ids.append(int(raw))
-                except (TypeError, ValueError):
-                    # Lance memory ids are stringified ints; anything
-                    # that doesn't parse cleanly is a non-canonical row
-                    # we can't reach via the SQLite mirror anyway.
-                    continue
-            if ids:
-                try:
-                    self._memory_store.mark_used(ids)
-                except Exception:
-                    log.debug("mark_used failed", exc_info=True)
+        ids: list[int] = []
+        for hit in unique:
+            if hit.source != "memory":
+                continue
+            raw = getattr(hit.record, "id", None)
+            if raw is None:
+                continue
+            try:
+                ids.append(int(raw))
+            except (TypeError, ValueError):
+                # Lance memory ids are stringified ints; anything
+                # that doesn't parse cleanly is a non-canonical row
+                # we can't reach via the SQLite mirror anyway.
+                continue
+        # Schema v8: snapshot the surfaced memory IDs so
+        # SessionController can run the post-turn revival check (keyword
+        # overlap between Aiko's reply and each surfaced memory) before
+        # the next retrieve() clobbers the list.
+        self._last_surfaced_memory_ids = list(ids)
+        if self._memory_store is not None and ids:
+            try:
+                self._memory_store.mark_used(ids)
+            except Exception:
+                log.debug("mark_used failed", exc_info=True)
         return unique
+
+    @property
+    def last_surfaced_memory_ids(self) -> list[int]:
+        """Snapshot of memory IDs surfaced by the most recent ``retrieve``.
+
+        Empty list when the last call returned no memory hits or before
+        the first call. Consumed by :class:`SessionController` to
+        run the post-turn revival keyword-overlap check.
+        """
+        return list(self._last_surfaced_memory_ids)
 
     # ── formatting ──────────────────────────────────────────────────────
 

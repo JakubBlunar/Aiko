@@ -375,6 +375,10 @@ class PromiseExtractor:
                 salience=salience,
                 source_session=session_key,
                 source_message_id=promise.source_turn_id,
+                # Schema v8: explicit promises are user-visible
+                # commitments. Anchor them in long_term immediately so
+                # the promotion worker never has a chance to drop them.
+                tier="long_term",
             )
         except Exception:
             log.debug("promise insert failed", exc_info=True)

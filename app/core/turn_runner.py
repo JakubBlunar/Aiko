@@ -872,6 +872,11 @@ class TurnRunner:
                     salience=self._self_tagged_salience,
                     source_session=session_key,
                     source_message_id=assistant_message_id,
+                    # Schema v8: ``[[remember:...]]`` and
+                    # ``[[remember:self:...]]`` tags are Aiko's own
+                    # explicit anchors. Long_term so they never decay
+                    # through the scratchpad's fast lane.
+                    tier="long_term",
                 )
             except Exception as exc:
                 log.debug("self-tagged memory insert failed: %s", exc)

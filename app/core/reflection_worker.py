@@ -309,6 +309,11 @@ class ReflectionWorker:
                     salience=salience,
                     source_session=session_key,
                     source_message_id=None,
+                    # Schema v8: reflections / open questions /
+                    # callbacks are speculative LLM-journal output.
+                    # Scratchpad so they decay fast unless they prove
+                    # useful via retrieval / revival.
+                    tier="scratchpad",
                 )
             except Exception:
                 log.debug("reflection memory insert failed", exc_info=True)

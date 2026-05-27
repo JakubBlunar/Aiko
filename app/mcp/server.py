@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from mcp.server.fastmcp import FastMCP
 
@@ -549,6 +549,122 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return json.dumps(payload, indent=2)
         except Exception as exc:
             return f"get_log_config failed: {exc}"
+
+    # ── Schema v8: memory tiers + idle workers (E1/E2/G1) ───────────
+
+    @mcp.tool()
+    def inspect_memory_tiers() -> str:
+        """Return per-tier memory counts and a sample of the top rows
+        in each tier.
+
+        Quick health check for the memory-tier shuffler -- after a
+        ``force_promotion_sweep`` you should see scratchpad shrink and
+        long_term grow. Pinned rows always count under ``long_term``.
+        """
+        store = getattr(session, "_memory_store", None)
+        if store is None:
+            return json.dumps({"enabled": False})
+        try:
+            counts = store.count_by_tier()
+        except Exception as exc:
+            return f"count_by_tier failed: {exc}"
+        samples: dict[str, list[dict[str, Any]]] = {}
+        for tier in ("scratchpad", "long_term", "archive"):
+            try:
+                rows = store.iter_by_tier(tier)
+            except Exception:
+                rows = []
+            rows.sort(
+                key=lambda m: (
+                    -float(m.salience),
+                    -float(getattr(m, "revival_score", 0.0) or 0.0),
+                ),
+            )
+            samples[tier] = [
+                {
+                    "id": int(m.id),
+                    "kind": m.kind,
+                    "salience": round(float(m.salience), 3),
+                    "revival_score": round(float(getattr(m, "revival_score", 0.0) or 0.0), 3),
+                    "use_count": int(m.use_count),
+                    "pinned": bool(m.pinned),
+                    "content": (m.content or "")[:160],
+                }
+                for m in rows[:5]
+            ]
+        payload = {
+            "enabled": True,
+            "counts": counts,
+            "top_per_tier": samples,
+        }
+        return json.dumps(payload, indent=2, default=str)
+
+    @mcp.tool()
+    def inspect_idle_workers() -> str:
+        """Return per-worker run state from the IdleWorkerScheduler.
+
+        Use this to confirm a worker actually ran (``last_run_at`` not
+        ``None``), to see how long it's been since the last successful
+        sweep (``run_count``), and to surface any swallowed exception
+        (``last_error``).
+        """
+        sched = getattr(session, "_idle_scheduler", None)
+        if sched is None:
+            return json.dumps(
+                {"enabled": False, "reason": "scheduler not running"},
+                indent=2,
+            )
+        try:
+            return json.dumps(
+                {
+                    "enabled": True,
+                    "workers": sched.get_records(),
+                },
+                indent=2,
+                default=str,
+            )
+        except Exception as exc:
+            return f"inspect_idle_workers failed: {exc}"
+
+    @mcp.tool()
+    def force_promotion_sweep() -> str:
+        """Run the MemoryPromotionWorker once, ignoring its interval gate.
+
+        Returns the worker's result dict (``promoted``,
+        ``deleted_scratchpad``, ``demoted_archive``, ``coerced_pinned``,
+        ``pruned``). Useful when iterating on tier knobs -- skip the
+        wait between scheduled sweeps.
+        """
+        sched = getattr(session, "_idle_scheduler", None)
+        if sched is None:
+            return "scheduler not running (memory.tiers_enabled may be off)"
+        try:
+            result = sched.force_run("memory_promotion")
+        except KeyError:
+            return "memory_promotion worker not registered"
+        except Exception as exc:
+            return f"force_promotion_sweep raised: {exc}"
+        return json.dumps(result or {}, indent=2, default=str)
+
+    @mcp.tool()
+    def force_decay_sweep() -> str:
+        """Run the MemoryDecayWorker once, ignoring its interval gate.
+
+        Returns the decay stats (``elapsed_days``, ``applied``). On
+        the very first call after boot, ``elapsed_days`` is 0 because
+        the worker just installs the wall-clock anchor; the next call
+        applies real decay.
+        """
+        sched = getattr(session, "_idle_scheduler", None)
+        if sched is None:
+            return "scheduler not running (memory.tiers_enabled may be off)"
+        try:
+            result = sched.force_run("memory_decay")
+        except KeyError:
+            return "memory_decay worker not registered"
+        except Exception as exc:
+            return f"force_decay_sweep raised: {exc}"
+        return json.dumps(result or {}, indent=2, default=str)
 
     # ── Resources ────────────────────────────────────────────────────
 
