@@ -1100,6 +1100,7 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
             axes=self._render_axes_block,
             knowledge_gaps=self._render_knowledge_gaps_block,
             belief_gaps=self._render_belief_gaps_block,
+            novelty=self._render_novelty_block,
         )
         self._prompt_assembler.set_pinned_self_memories_provider(
             self._top_pinned_self_memories,
@@ -1711,6 +1712,31 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
                 log.warning("BeliefInferenceWorker init failed", exc_info=True)
                 self._belief_worker = None
                 self._belief_rate_limiter = None
+
+        # K6 — surprise / novelty detector. Pure in-process helper:
+        # one embed + a tiny in-memory ring per turn, no DB writes,
+        # no background worker. Registered as a per-turn inner-life
+        # provider below (taking ``user_text``), same shape as the
+        # F2 knowledge-gap block. Requires an Embedder; if RAG is
+        # disabled the detector still works (it just can't warm
+        # from past sessions and starts every install cold).
+        self._novelty_detector = None
+        if (
+            self._embedder is not None
+            and bool(getattr(settings.agent, "novelty_detection_enabled", True))
+        ):
+            try:
+                from app.core.novelty_detector import NoveltyDetector
+
+                self._novelty_detector = NoveltyDetector(
+                    embedder=self._embedder,
+                    rag_store=self._rag_store,
+                    user_id=self._user_id,
+                    memory_settings=self._memory_settings,
+                )
+            except Exception:
+                log.warning("NoveltyDetector init failed", exc_info=True)
+                self._novelty_detector = None
 
         self._proactive = ProactiveDirector(
             self._ollama,
@@ -3674,6 +3700,38 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
             "Name the gap once and gently if it fits, then move on. "
             "Don't repeat the question."
         )
+
+    def _render_novelty_block(self, user_text: str) -> str:
+        """K6: surface a one-line surprise/novelty signal for this turn.
+
+        The detector embeds ``user_text``, compares it to a rolling
+        centroid of recent user-message vectors, and returns a banded
+        result (``mild_shift`` or ``strong_novelty``). Empty string
+        when the detector is disabled, in warmup/cooldown, or the
+        distance is below the mild threshold -- which is the common
+        case, so the block disappears entirely on normal turns.
+        """
+        if not bool(
+            getattr(self._settings.agent, "novelty_detection_enabled", True)
+        ):
+            return ""
+        detector = getattr(self, "_novelty_detector", None)
+        if detector is None:
+            return ""
+        try:
+            result = detector.detect(user_text)
+        except Exception:
+            log.debug("novelty detector raised", exc_info=True)
+            return ""
+        if result is None:
+            return ""
+        try:
+            from app.core.novelty_detector import render_inner_life_block
+
+            return render_inner_life_block(result)
+        except Exception:
+            log.debug("novelty block render failed", exc_info=True)
+            return ""
 
     def _render_world_block(self) -> str:
         """Aiko's room: a compact ambient block with location + items.

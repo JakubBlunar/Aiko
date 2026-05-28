@@ -467,6 +467,15 @@ class AgentSettings:
     # ``state_key='belief_worker.rate_state'``.
     belief_worker_per_hour_cap: int = 4
     belief_worker_per_day_cap: int = 20
+    # ── K6 personality backlog: surprise / novelty detector ──────────
+    # Master switch for :class:`app.core.novelty_detector.NoveltyDetector`.
+    # When disabled the detector is never instantiated and the
+    # ``novelty`` inner-life provider is left unregistered, so the
+    # prompt-assembler short-circuits the block with zero cost on the
+    # hot path. The detector itself is purely in-process (one
+    # Embedder.embed call per turn + a tiny ring buffer); there's no
+    # rate-cap because the per-turn cost is the same as RAG retrieval.
+    novelty_detection_enabled: bool = True
     # Rolling summary background worker.
     summary_idle_seconds: float = 15.0  # quiet time before summarising
     summary_min_unsummarized_messages: int = 6  # minimum new msgs to trigger
@@ -724,6 +733,33 @@ class MemorySettings:
     # every tick so a runaway extraction can't flood the store.
     # Confirmed / contradicted / stale audit rows are kept regardless.
     belief_max_active_per_user: int = 200
+    # ── K6 personality backlog: surprise / novelty detector ──────────
+    # Size of the rolling centroid window. The detector keeps the
+    # last N user-message embeddings (cross-session per user) in an
+    # in-memory ring; the centroid is their re-normalised mean.
+    # Bigger windows smooth more aggressively, smaller ones react
+    # faster to topic pivots. 12 spans a few conversational beats
+    # without being so long that a real shift gets averaged away.
+    novelty_window: int = 12
+    # Minimum ring size before the detector starts emitting a band.
+    # Below this we just collect vectors and stay silent so a cold
+    # start (or a brand-new install) doesn't fire "this is novel" on
+    # the first three turns of every session.
+    novelty_warmup_min: int = 3
+    # Distance band thresholds. ``distance = 1.0 - cosine`` against
+    # the centroid (vectors are unit-norm, so distance lives in
+    # ``[0, 2]`` but practical values cluster well below 1.0).
+    # Tuned conservatively so small lexical variations (greetings,
+    # filler) stay below ``mild`` and only real topic pivots cross
+    # ``strong``. Set ``strong < mild`` and the detector falls back
+    # to single-threshold behaviour.
+    novelty_mild_threshold: float = 0.35
+    novelty_strong_threshold: float = 0.55
+    # Turns to suppress further novelty signals after a hit. Prevents
+    # "you keep saying surprising things" piles when a user runs
+    # through several genuinely-new topics in a row. The current turn
+    # still contributes to the centroid so the baseline keeps moving.
+    novelty_cooldown_turns: int = 2
     # IdleWorkerScheduler tick + quiet gate. Lowering ``wake_seconds``
     # makes workers fire sooner after a quiet period starts but
     # increases idle CPU; ``quiet_threshold`` is how long since the
@@ -1151,6 +1187,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             belief_worker_per_day_cap=max(
                 0, int(agent_raw.get("belief_worker_per_day_cap", 20)),
             ),
+            novelty_detection_enabled=bool(
+                agent_raw.get("novelty_detection_enabled", True),
+            ),
             shared_moments_enabled=bool(
                 agent_raw.get("shared_moments_enabled", True),
             ),
@@ -1415,6 +1454,32 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             belief_max_active_per_user=max(
                 10,
                 int(memory_raw.get("belief_max_active_per_user", 200)),
+            ),
+            novelty_window=max(
+                2,
+                int(memory_raw.get("novelty_window", 12)),
+            ),
+            novelty_warmup_min=max(
+                2,
+                int(memory_raw.get("novelty_warmup_min", 3)),
+            ),
+            novelty_mild_threshold=max(
+                0.0,
+                min(
+                    2.0,
+                    float(memory_raw.get("novelty_mild_threshold", 0.35)),
+                ),
+            ),
+            novelty_strong_threshold=max(
+                0.0,
+                min(
+                    2.0,
+                    float(memory_raw.get("novelty_strong_threshold", 0.55)),
+                ),
+            ),
+            novelty_cooldown_turns=max(
+                0,
+                int(memory_raw.get("novelty_cooldown_turns", 2)),
             ),
             idle_worker_wake_seconds=max(
                 1.0, float(memory_raw.get("idle_worker_wake_seconds", 60.0))

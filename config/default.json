@@ -68,7 +68,8 @@
     "belief_tracking_enabled": true,
     "belief_worker_enabled": true,
     "belief_worker_per_hour_cap": 4,
-    "belief_worker_per_day_cap": 20
+    "belief_worker_per_day_cap": 20,
+    "novelty_detection_enabled": true
   },
   "audio": {
     "sample_rate": 16000,
@@ -150,6 +151,11 @@
     "belief_recent_window_hours": 24,
     "belief_stale_after_days": 90,
     "belief_max_active_per_user": 200,
+    "novelty_window": 12,
+    "novelty_warmup_min": 3,
+    "novelty_mild_threshold": 0.35,
+    "novelty_strong_threshold": 0.55,
+    "novelty_cooldown_turns": 2,
     "idle_worker_wake_seconds": 60.0,
     "idle_worker_quiet_threshold_seconds": 30
   },

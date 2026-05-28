@@ -103,6 +103,74 @@ class RagStoreCRUDTests(_TmpRagBase):
         for h in hits:
             self.assertEqual(h.record.session_id, "s2")
 
+    def test_list_recent_user_vectors_filters_role_and_prefix(self) -> None:
+        # K6 helper: must return only role='user' rows from sessions
+        # whose id starts with the given user-id prefix, most recent
+        # first, capped at ``limit``.
+        v1 = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        v2 = np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32)
+        v3 = np.array([0.0, 0.0, 1.0, 0.0], dtype=np.float32)
+        v_other = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+        # Alice user across two sessions.
+        self.store.add_message(
+            session_id="alice:s1", message_id=1, role="user",
+            content="alice first message", embedding=v1,
+            created_at="2026-01-01T10:00:00+00:00",
+        )
+        self.store.add_message(
+            session_id="alice:s1", message_id=2, role="assistant",
+            content="aiko reply -- should be excluded", embedding=v2,
+            created_at="2026-01-01T10:00:30+00:00",
+        )
+        self.store.add_message(
+            session_id="alice:s2", message_id=10, role="user",
+            content="alice second session", embedding=v2,
+            created_at="2026-01-02T11:00:00+00:00",
+        )
+        # Different user should never appear in alice's scan.
+        self.store.add_message(
+            session_id="bob:s1", message_id=1, role="user",
+            content="bob is unrelated", embedding=v_other,
+            created_at="2026-01-02T12:00:00+00:00",
+        )
+        # And a third alice message (most recent).
+        self.store.add_message(
+            session_id="alice:s2", message_id=11, role="user",
+            content="alice newest message", embedding=v3,
+            created_at="2026-01-03T09:00:00+00:00",
+        )
+
+        vectors = self.store.list_recent_user_vectors(
+            user_id_prefix="alice", limit=5,
+        )
+        self.assertEqual(len(vectors), 3)
+        # Most-recent first: newest alice message (v3) leads.
+        np.testing.assert_allclose(vectors[0], v3, rtol=1e-5, atol=1e-5)
+        # Limit must be respected.
+        capped = self.store.list_recent_user_vectors(
+            user_id_prefix="alice", limit=2,
+        )
+        self.assertEqual(len(capped), 2)
+        # Prefix isolation: bob's vector never appears.
+        for vec in vectors:
+            self.assertFalse(
+                np.allclose(vec, v_other, atol=1e-5),
+                "bob's vector leaked into alice's scan",
+            )
+        # Empty prefix matches every user row (single-user installs).
+        all_users = self.store.list_recent_user_vectors(
+            user_id_prefix="", limit=10,
+        )
+        self.assertEqual(len(all_users), 4)
+
+    def test_list_recent_user_vectors_empty_when_no_user_rows(self) -> None:
+        self.assertEqual(
+            self.store.list_recent_user_vectors(
+                user_id_prefix="ghost", limit=5,
+            ),
+            [],
+        )
+
     def test_documents_listing_and_delete(self) -> None:
         v = np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32)
         self.store.add_document_chunk(
