@@ -1386,6 +1386,33 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
             self._prepared_nudge_store = None
             self._narrative_weaver = None
 
+        # Schema v10 — follow-up worker rides the same idle scheduler
+        # as the decay/promotion workers and uses the prepared-nudge
+        # store the NarrativeWeaver normally fills. Wired here so both
+        # dependencies are guaranteed available; failures only drop
+        # the proactive callback path (the persona rule + retrieval
+        # annotations still work).
+        if (
+            self._idle_scheduler is not None
+            and self._memory_store is not None
+            and self._prepared_nudge_store is not None
+        ):
+            try:
+                from app.core.follow_up_worker import FollowUpWorker
+
+                self._idle_scheduler.register(
+                    FollowUpWorker(
+                        memory_store=self._memory_store,
+                        prepared_nudge_store=self._prepared_nudge_store,
+                        user_id_provider=lambda: self._user_id,
+                        user_display_name_provider=(
+                            lambda: self.user_display_name
+                        ),
+                    )
+                )
+            except Exception:
+                log.warning("FollowUpWorker init failed", exc_info=True)
+
         self._proactive = ProactiveDirector(
             self._ollama,
             self._chat_db,

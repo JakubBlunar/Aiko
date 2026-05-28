@@ -74,10 +74,18 @@ class MemoryRetriever:
         """Format the retrieved memories into a system-prompt-ready block."""
         if not hits:
             return ""
+        # Schema v10: deferred import keeps this fallback lightweight
+        # (the LanceDB-backed path already imports the helpers; the
+        # SQLite-only path is the cold standby).
+        from datetime import datetime, timezone
+
+        from app.core.rag_retriever import _temporal_suffix
+
         lines = [
             f"What you know about {user_display_name} (long-term memory):"
         ]
         seen: set[str] = set()
+        now = datetime.now(timezone.utc)
         for hit in hits:
             content = (hit.memory.content or "").strip()
             if not content:
@@ -93,7 +101,16 @@ class MemoryRetriever:
             confidence = getattr(hit.memory, "confidence", None)
             if confidence is not None and float(confidence) < 0.5:
                 suffix = " (uncertain)"
-            lines.append(f"- {content}{suffix}")
+            # Schema v10: append the temporal time-tag, same rendering
+            # as the RAG path so the two retrievers feel identical to
+            # the LLM.
+            time_suffix = _temporal_suffix(
+                temporal_type=getattr(hit.memory, "temporal_type", None),
+                event_time=getattr(hit.memory, "event_time", None),
+                created_at=getattr(hit.memory, "created_at", None),
+                now=now,
+            )
+            lines.append(f"- {content}{suffix}{time_suffix}")
         if len(lines) == 1:
             return ""
         return "\n".join(lines)

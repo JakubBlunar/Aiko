@@ -62,6 +62,18 @@ def _now_iso() -> str:
 
 @dataclass(slots=True)
 class MemoryRecord:
+    """LanceDB-side view of a memory row.
+
+    Intentionally narrower than :class:`app.core.memory_store.Memory`:
+    fields that are queried during retrieval but not used for vector
+    search (``pinned``, ``metadata``, ``tier``, ``revival_score``,
+    ``confidence``, and the v10 temporal fields ``event_time``,
+    ``temporal_type``, ``relevance_until``) are joined from SQLite by
+    :class:`RagRetriever` at query time. The join is cheap (in-memory
+    dict lookup against ``MemoryStore``'s mirror) and lets us avoid a
+    LanceDB schema migration every time we add a new lifecycle field.
+    """
+
     id: str
     content: str
     kind: str  # "fact" | "preference" | "event" | "relationship" | "self"
@@ -145,6 +157,16 @@ class RagHit:
     # SQLite mirror (LanceDB's MemoryRecord does not carry confidence).
     # ``None`` for non-memory hits or when the join could not resolve.
     confidence: float | None = None
+    # Schema v10 — temporal-awareness fields, also joined from SQLite
+    # by :class:`RagRetriever` for memory hits. ``temporal_type`` is
+    # always set (defaults to ``'durable'``) for resolved memory rows;
+    # ``event_time`` and ``relevance_until`` are ``None`` when the
+    # extractor didn't or couldn't anchor a wall-clock moment to the
+    # memory. All three stay ``None`` for non-memory hits and for
+    # legacy pre-v10 rows that haven't been migrated yet.
+    temporal_type: str | None = None
+    event_time: str | None = None
+    relevance_until: str | None = None
 
     @property
     def text(self) -> str:

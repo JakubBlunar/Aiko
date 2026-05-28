@@ -910,6 +910,16 @@ class TurnRunner:
                     # explicit anchors. Long_term so they never decay
                     # through the scratchpad's fast lane.
                     tier="long_term",
+                    # Schema v10: persona instructs Aiko to use these
+                    # tags for *durable* facts and self-notes (one
+                    # short sentence in third / first person). The
+                    # batch :class:`MemoryExtractor` is the path that
+                    # parses temporal language out of the transcript;
+                    # inline tags get the safe default so ``yesterday``
+                    # in a tag content stays as content (it's already
+                    # rare, and the LLM extractor catches the same
+                    # turn anyway).
+                    temporal_type="durable",
                 )
             except Exception as exc:
                 log.debug("self-tagged memory insert failed: %s", exc)

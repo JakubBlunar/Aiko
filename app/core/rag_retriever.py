@@ -23,7 +23,7 @@ Design notes:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Iterable, Sequence
 
 from app.core.rag_store import RagHit
@@ -121,6 +121,230 @@ def _confidence_penalty(confidence: float | None) -> float:
         return 0.0
     gap = _MEMORY_CONFIDENCE_PENALTY_THRESHOLD - max(0.0, value)
     return -(gap / _MEMORY_CONFIDENCE_PENALTY_THRESHOLD) * _MEMORY_CONFIDENCE_PENALTY_MAX
+
+
+# Schema v10 — humanized time annotations for retrieved memories.
+# ``_humanize_past`` and ``_humanize_future`` return short, natural
+# phrases ("yesterday", "3 days ago", "tonight 20:00") that
+# :func:`_temporal_suffix` wraps into the bullet annotation Aiko sees
+# in the prompt block. The format is intentionally informal — it's
+# meant to read like a friend's note ("you mentioned this 3 days
+# ago"), not a database timestamp.
+_HOUR_SECONDS = 3600.0
+_DAY_SECONDS = 86400.0
+
+
+def _to_aware(dt: datetime) -> datetime:
+    """Promote a tz-naive datetime to UTC. No-op for aware values."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _parse_temporal_iso(value: str | None) -> datetime | None:
+    """ISO-8601 -> aware datetime, with ``Z`` and naive normalisation."""
+    if not value or not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return _to_aware(dt)
+
+
+def _humanize_past(when_iso: str, now: datetime) -> str:
+    """Render ``when_iso`` as a short past-tense phrase relative to ``now``.
+
+    ``in the past`` is the safe fallback when parsing fails. Day-of-week
+    granularity kicks in for 2-6 days ago; week / month / year units take
+    over beyond that.
+    """
+    when = _parse_temporal_iso(when_iso)
+    if when is None:
+        return "in the past"
+    now = _to_aware(now)
+    delta = (now - when).total_seconds()
+    if delta < 0:
+        # Caller asked us to render a future time as past — defensive
+        # fall-through. Treat as "moments ago" so we don't print
+        # nonsense.
+        return "moments ago"
+    if delta < _HOUR_SECONDS:
+        minutes = max(1, int(delta // 60))
+        return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+    if delta < _DAY_SECONDS:
+        hours = max(1, int(delta // _HOUR_SECONDS))
+        return f"{hours} hour{'s' if hours != 1 else ''} ago"
+    days = int(delta // _DAY_SECONDS)
+    if days == 1:
+        return "yesterday"
+    if days < 7:
+        return f"{days} days ago"
+    if days < 30:
+        weeks = days // 7
+        return f"{weeks} week{'s' if weeks != 1 else ''} ago"
+    if days < 365:
+        months = max(1, days // 30)
+        return f"{months} month{'s' if months != 1 else ''} ago"
+    years = max(1, days // 365)
+    return f"{years} year{'s' if years != 1 else ''} ago"
+
+
+def _humanize_future(when_iso: str | None, now: datetime) -> str:
+    """Render ``when_iso`` as a short future-tense phrase relative to ``now``.
+
+    Falls back to ``"soon"`` when ``when_iso`` is missing or
+    unparseable so a future_plan with no precise time still gets a
+    sensible suffix.
+    """
+    if not when_iso:
+        return "soon"
+    when = _parse_temporal_iso(when_iso)
+    if when is None:
+        return "soon"
+    now = _to_aware(now)
+    delta = (when - now).total_seconds()
+    if delta <= 0:
+        # Time has passed — caller should have flipped this to
+        # past_event by now. Render with the "should be done by now"
+        # framing so Aiko knows to ask retrospectively.
+        return "earlier"
+    # Same calendar day
+    when_local = when.astimezone()
+    now_local = now.astimezone()
+    same_day = when_local.date() == now_local.date()
+    tomorrow = (when_local.date() - now_local.date()).days == 1
+    clock = when_local.strftime("%H:%M")
+    if same_day:
+        # Pod-aware phrasing: "tonight" reads more naturally than
+        # "today at 20:00" in casual chat. Hours are local.
+        hour = when_local.hour
+        if hour < 5:
+            return f"later tonight {clock}"
+        if hour < 12:
+            return f"this morning {clock}"
+        if hour < 17:
+            return f"this afternoon {clock}"
+        if hour < 22:
+            return f"tonight {clock}"
+        return f"late tonight {clock}"
+    if tomorrow:
+        hour = when_local.hour
+        if hour < 12:
+            return f"tomorrow morning {clock}"
+        if hour < 17:
+            return f"tomorrow afternoon {clock}"
+        if hour < 22:
+            return f"tomorrow evening {clock}"
+        return f"tomorrow night {clock}"
+    days = int(delta // _DAY_SECONDS)
+    if days < 7:
+        # Use the weekday name + clock for the "next few days" bucket.
+        return f"on {when_local.strftime('%A')} {clock}"
+    if days < 14:
+        return "next week"
+    if days < 30:
+        weeks = days // 7
+        return f"in {weeks} week{'s' if weeks != 1 else ''}"
+    if days < 365:
+        months = max(1, days // 30)
+        return f"in {months} month{'s' if months != 1 else ''}"
+    years = max(1, days // 365)
+    return f"in {years} year{'s' if years != 1 else ''}"
+
+
+# Schema v10 — score adjustments for temporally-classified memories.
+# ``future_plan`` rows whose moment is still ahead get a tiny demotion
+# so they don't crowd current-relevance hits unless the cosine match
+# is genuinely strong. ``past_event`` rows whose ``relevance_until``
+# has already passed are filtered out entirely (they stay in DB for
+# archive / reflection use, just not in the live RAG block). The
+# magnitudes are deliberately small — the deltas tune ordering, not
+# visibility.
+_FUTURE_PLAN_PENALTY = -0.05
+
+
+def _temporal_filter_drops(mem, now: datetime) -> bool:
+    """True if the v10 temporal fields say this memory should be skipped.
+
+    Currently only ``past_event`` rows whose ``relevance_until`` is in
+    the past are dropped — they've outlived their freshness window
+    and continuing to surface them in normal RAG produces the exact
+    "asking about progress on something that already finished" bug
+    this work targets. Other temporal types are kept.
+    """
+    temporal_type = getattr(mem, "temporal_type", None)
+    if temporal_type != "past_event":
+        return False
+    relevance_until = getattr(mem, "relevance_until", None)
+    if not relevance_until:
+        return False
+    until = _parse_temporal_iso(relevance_until)
+    if until is None:
+        return False
+    return until < _to_aware(now)
+
+
+def _temporal_boost(mem) -> float:
+    """Score adjustment derived from the v10 temporal classification.
+
+    ``future_plan`` rows get a small demotion so an upcoming-but-not-
+    yet-arrived plan doesn't crowd a current-relevance hit. Returns 0
+    for everything else so the function stays cheap and additive.
+    """
+    if getattr(mem, "temporal_type", None) == "future_plan":
+        return _FUTURE_PLAN_PENALTY
+    return 0.0
+
+
+def _temporal_suffix(
+    *,
+    temporal_type: str | None,
+    event_time: str | None,
+    created_at: str | None,
+    now: datetime,
+) -> str:
+    """Build the parenthetical time tag for a retrieved memory bullet.
+
+    Returns ``""`` for ``durable`` / ``preference`` / unknown types
+    (timeless memories should render with no suffix, exactly like
+    pre-v10 retrieval). ``ongoing`` gets a short "(ongoing)" tag.
+    ``past_event`` and ``future_plan`` get humanised relative-time
+    phrases sourced from ``event_time`` (with ``created_at`` as a
+    fallback for past events that lacked an explicit event_time —
+    "we learned this N days ago" is still better than no anchor).
+    """
+    if not temporal_type:
+        return ""
+    t = temporal_type.lower()
+    if t in ("durable", "preference"):
+        return ""
+    if t == "ongoing":
+        return " (ongoing)"
+    if t == "past_event":
+        anchor = event_time or created_at
+        if not anchor:
+            return ""
+        return f" ({_humanize_past(anchor, now)})"
+    if t == "future_plan":
+        when = _parse_temporal_iso(event_time)
+        if when is None:
+            return f" (planned for {_humanize_future(event_time, now)})"
+        if when <= _to_aware(now):
+            # Time has passed but the decay worker hasn't reclassified
+            # yet — render with the explicit "should be done by now"
+            # framing so Aiko picks the retrospective lane.
+            return (
+                f" (was planned for {_humanize_future(event_time, when - timedelta(seconds=1))}"
+                " — should be done by now)"
+            )
+        return f" (planned for {_humanize_future(event_time, now)})"
+    return ""
 
 
 def _is_anniversary_today(metadata: dict | None) -> bool:
@@ -290,6 +514,33 @@ class RagRetriever:
                                 h.score += _confidence_penalty(mem_confidence)
                                 if mem_confidence is not None:
                                     h.confidence = float(mem_confidence)
+                                # Schema v10: stamp the temporal
+                                # fields onto the hit so format_block
+                                # can render the time-tag suffix
+                                # without a second SQLite roundtrip.
+                                # ``temporal_type`` always lands (the
+                                # SQLite column has a NOT NULL
+                                # default); ``event_time`` and
+                                # ``relevance_until`` are ``None`` for
+                                # legacy / pre-v10 rows or when the
+                                # extractor didn't anchor a timestamp.
+                                h.temporal_type = getattr(
+                                    mem, "temporal_type", None
+                                )
+                                h.event_time = getattr(mem, "event_time", None)
+                                h.relevance_until = getattr(
+                                    mem, "relevance_until", None
+                                )
+                                # Apply the relevance-window filter
+                                # *and* the future-plan boost. We tag
+                                # the hit with a sentinel score so
+                                # the dedupe/top-k cut at the bottom
+                                # of ``retrieve`` discards it, instead
+                                # of scattering ``continue`` here.
+                                if _temporal_filter_drops(mem, datetime.now(timezone.utc)):
+                                    h.score = -1.0
+                                else:
+                                    h.score += _temporal_boost(mem)
                     except Exception:
                         log.debug("pinned-bonus lookup failed", exc_info=True)
                 merged.append(h)
@@ -330,9 +581,14 @@ class RagRetriever:
                 log.debug("document search failed", exc_info=True)
 
         # Dedupe by content text (case-insensitive, whitespace-stripped).
+        # Schema v10: hits flagged with ``score < 0`` by the temporal
+        # filter (e.g. expired past_events) are dropped here before
+        # the top-k cut so they never make it into the prompt block.
         seen: set[str] = set()
         unique: list[RagHit] = []
         for h in sorted(merged, key=lambda x: x.score, reverse=True):
+            if h.score < 0:
+                continue
             key = (h.text or "").strip().lower()
             if not key or key in seen:
                 continue
@@ -407,6 +663,7 @@ class RagRetriever:
         self_lines: list[str] = []
         message_lines: list[str] = []
         document_lines: list[str] = []
+        now = datetime.now(timezone.utc)
         for hit in hits:
             text = (hit.text or "").strip()
             if not text:
@@ -421,10 +678,22 @@ class RagRetriever:
                 confidence = getattr(hit, "confidence", None)
                 if confidence is not None and float(confidence) < 0.5:
                     suffix = " (uncertain)"
+                # Schema v10: append the temporal time-tag (e.g.
+                # "(yesterday)", "(planned for tonight 20:00)",
+                # "(ongoing)") so Aiko reads the memory at the right
+                # tense. Empty for durable/preference rows so the
+                # output stays identical to pre-v10 for legacy /
+                # timeless memories.
+                time_suffix = _temporal_suffix(
+                    temporal_type=getattr(hit, "temporal_type", None),
+                    event_time=getattr(hit, "event_time", None),
+                    created_at=getattr(hit.record, "created_at", None),
+                    now=now,
+                )
                 if kind in ("self", "self_tagged"):
-                    self_lines.append(f"- {text}{suffix}")
+                    self_lines.append(f"- {text}{suffix}{time_suffix}")
                 else:
-                    user_lines.append(f"- {text}{suffix}")
+                    user_lines.append(f"- {text}{suffix}{time_suffix}")
             elif hit.source == "message":
                 role = (getattr(hit.record, "role", "") or "").lower()
                 speaker = (
