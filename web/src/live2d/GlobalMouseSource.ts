@@ -22,6 +22,17 @@
  * fine. ``GazeChannel``'s existing clamps saturate the gaze at
  * ``±0.7`` X / [-0.5, 0.7] Y, which reads as "Aiko is looking max in
  * that direction" without ever feeling out-of-range.
+ *
+ * Window focus: unlike :class:`WindowMouseSource`, this source
+ * intentionally always reports ``windowFocused: true``. The OS
+ * cursor poll keeps producing fresh data even while the persona
+ * window is unfocused, so there is no reason to push
+ * :class:`GazeChannel` into its idle-break path on blur — that's
+ * what lets Aiko keep tracking the cursor when the user is working
+ * in another app. The "user walked away from the mouse" case is
+ * still handled cleanly by the ``lastMoveAt`` staleness check in
+ * :class:`GazeChannel` (eyes ease back to centre after
+ * ``IDLE_BREAK_MS``).
  */
 import type { MouseSource } from "./AvatarEngine";
 import type { MouseSnapshot } from "./types";
@@ -83,7 +94,6 @@ export class GlobalMouseSource implements MouseSource {
    * stationary so :class:`GazeChannel`'s ``IDLE_BREAK_MS`` fires
    * correctly even though we're polling at 60Hz. */
   private _lastMoveAt = 0;
-  private _windowFocused = true;
   private _geometry: CachedGeometry = DEFAULT_GEOMETRY;
   /** Whether the geometry cache has ever been refreshed. We treat the
    * default-zeros as "unknown" and skip the cursor translation
@@ -117,9 +127,6 @@ export class GlobalMouseSource implements MouseSource {
         }
       });
     this._cursorApi = options.cursorApi ?? productionCursorApi;
-    if (typeof document !== "undefined") {
-      this._windowFocused = document.hasFocus();
-    }
   }
 
   snapshot(): MouseSnapshot {
@@ -128,7 +135,12 @@ export class GlobalMouseSource implements MouseSource {
       x: this._x,
       y: this._y,
       lastMoveAt: this._lastMoveAt,
-      windowFocused: this._windowFocused,
+      // GlobalMouseSource polls the OS cursor regardless of webview
+      // focus, so cursor data is always "live". Reporting ``true``
+      // here keeps GazeChannel in cursor-follow mode while the
+      // persona window is unfocused; idle-break is still handled by
+      // GazeChannel's ``lastMoveAt`` staleness check.
+      windowFocused: true,
       containerRect: {
         left: rect.left,
         top: rect.top,
@@ -143,25 +155,6 @@ export class GlobalMouseSource implements MouseSource {
   subscribe(): () => void {
     if (this._disposed) {
       return () => undefined;
-    }
-
-    // Focus tracking still works through the DOM — Tauri webviews
-    // dispatch ``focus`` / ``blur`` on ``window`` the same way a
-    // browser tab does.
-    let detachFocus: (() => void) | null = null;
-    if (typeof window !== "undefined") {
-      const onFocus = () => {
-        this._windowFocused = true;
-      };
-      const onBlur = () => {
-        this._windowFocused = false;
-      };
-      window.addEventListener("focus", onFocus);
-      window.addEventListener("blur", onBlur);
-      detachFocus = () => {
-        window.removeEventListener("focus", onFocus);
-        window.removeEventListener("blur", onBlur);
-      };
     }
 
     // Prime the geometry cache + subscribe to refresh events. Both
@@ -218,9 +211,6 @@ export class GlobalMouseSource implements MouseSource {
       if (this._unlistenScale) {
         this._unlistenScale();
         this._unlistenScale = null;
-      }
-      if (detachFocus) {
-        detachFocus();
       }
     };
   }

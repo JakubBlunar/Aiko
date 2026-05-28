@@ -111,9 +111,14 @@ function makeScheduler(): ManualScheduler {
 }
 
 function installFakeWindow() {
-  // ``GlobalMouseSource.subscribe`` reads ``document.hasFocus()`` and
-  // attaches focus / blur listeners to ``window``. We stub both
-  // globals so the source initialises cleanly under Node.
+  // ``GlobalMouseSource`` doesn't depend on DOM focus events anymore
+  // (it always reports ``windowFocused: true`` so the gaze keeps
+  // tracking the OS cursor while the persona window is unfocused).
+  // We still stub ``window`` and ``document`` because ``snapshot``
+  // reads ``window.innerWidth / innerHeight`` and the source's
+  // module-level guards check ``typeof window``. The
+  // ``addEventListener`` spy is also used by the regression test
+  // below to lock down the "no focus / blur listeners" contract.
   const win = {
     innerWidth: 320,
     innerHeight: 480,
@@ -360,6 +365,43 @@ describe("GlobalMouseSource — lifecycle", () => {
     await Promise.resolve();
     await sched.drain();
     expect(source.snapshot().x).toBe(300);
+    teardown();
+  });
+
+  it("always reports windowFocused: true so the gaze keeps tracking when the persona window is blurred", async () => {
+    // Regression for the desktop bug where Aiko's eyes would stop
+    // tracking once the persona window lost focus. ``GazeChannel``
+    // forces an idle-break when ``mouse.windowFocused === false``,
+    // which was wrong for the global cursor poll: it keeps
+    // producing fresh data regardless of webview focus. The fix
+    // hardcodes the field to ``true`` and drops the focus / blur
+    // listeners entirely; this test pins both halves of that
+    // contract.
+    const { api, state } = makeCursorApi();
+    state.cursor = { x: 800, y: 300 };
+    state.geometry = { innerX: 500, innerY: 200, scaleFactor: 1 };
+    const sched = makeScheduler();
+    const source = new GlobalMouseSource({
+      container: makeContainer(),
+      cursorApi: api,
+      scheduleFrame: sched.schedule,
+      cancelFrame: sched.cancel,
+    });
+    const teardown = source.subscribe();
+    await sched.drain();
+    await sched.drain();
+    expect(source.snapshot().windowFocused).toBe(true);
+    // No focus / blur listeners should have been attached: the
+    // source must not depend on DOM focus events anymore.
+    const win = (
+      globalThis as unknown as {
+        window: { addEventListener: ReturnType<typeof vi.fn> };
+      }
+    ).window;
+    const focusCalls = win.addEventListener.mock.calls.filter(
+      (c: unknown[]) => c[0] === "focus" || c[0] === "blur",
+    );
+    expect(focusCalls).toHaveLength(0);
     teardown();
   });
 });
