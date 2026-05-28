@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import re
 
 
@@ -300,6 +301,59 @@ _GAP_OPEN_TAIL_PATTERN = re.compile(
     flags=re.IGNORECASE,
 )
 
+# F5 personality backlog: [[conflict:reason]] — Aiko self-flag for a
+# memory contradiction she noticed mid-turn ("hold on, that doesn't
+# match what you told me last week"). The body is a short free-text
+# reason (4-200 chars, no square brackets / newlines) the worker
+# logs alongside the auto-detected pair. Stripped from chat / TTS
+# the same way as ``[[gap:...]]``; the SessionController dispatch
+# (``_post_turn_inner_life``) logs the reason and force_runs the
+# F5 worker so the conflict surfaces in the next idle window.
+_CONFLICT_TAG_PATTERN = re.compile(
+    r"\[\[conflict:([^\[\]\n]{4,200}?)\]\]",
+    flags=re.IGNORECASE,
+)
+_CONFLICT_OPEN_TAIL_PATTERN = re.compile(
+    r"\[\[conflict:[^\]]*\Z",
+    flags=re.IGNORECASE,
+)
+
+# K2 personality backlog: [[predict:kind:topic:state:confidence]] —
+# Aiko self-tag for a theory-of-mind prediction about the user
+# ("I think Jacob is excited about the tokyo trip"). The grammar
+# uses four colon-separated fields mirroring the existing
+# ``[[moment:vibe:summary]]`` precedent:
+#
+#   kind        -- 'mood' | 'opinion' (canonical, lowercased)
+#   topic       -- short topic phrase, 2-80 chars, no '[' / ']' / '\n'
+#   state       -- predicted state phrase, 2-120 chars, same character set
+#   confidence  -- decimal in [0, 1], one or two digit fraction OK
+#
+# Examples::
+#
+#   [[predict:mood:tokyo trip:excited:0.8]]
+#   [[predict:opinion:rust language:overhyped:0.6]]
+#
+# Stripped from chat / TTS the same way as ``[[conflict:...]]``.
+# The SessionController dispatch (``_post_turn_inner_life``) calls
+# :func:`extract_predict_tags` and upserts each tuple via
+# :class:`app.core.belief_store.BeliefStore`, then force_runs the
+# K2 worker so any belief Aiko already inferred gets a fresh
+# gap-detector evaluation in the same tick.
+_PREDICT_TAG_PATTERN = re.compile(
+    r"\[\[predict:"
+    r"([a-zA-Z]{3,12}):"           # kind
+    r"([^:\[\]\n]{2,80}?):"        # topic
+    r"([^:\[\]\n]{2,120}?):"       # predicted state
+    r"(\d{1}(?:\.\d{1,3})?)"        # confidence (0, 1, 0.7, 0.85, ...)
+    r"\]\]",
+    flags=re.IGNORECASE,
+)
+_PREDICT_OPEN_TAIL_PATTERN = re.compile(
+    r"\[\[predict:[^\]]*\Z",
+    flags=re.IGNORECASE,
+)
+
 # Alexia bundle: [[overlay:NAME]] fires a transient overlay pulse on
 # the avatar (sweat / blush / dizzy / question / ...). The grammar
 # is identical in shape to ``[[reaction:X]]`` — the LLM emits one
@@ -383,6 +437,76 @@ def extract_motion_commands(text: str) -> list[tuple[str, int]]:
     ]
 
 
+def extract_conflict_tags(text: str) -> list[str]:
+    """Return the body of every well-formed ``[[conflict:reason]]`` tag.
+
+    The body is trimmed but preserves the original case (the F5 worker
+    logs it verbatim alongside the auto-detected pair). Empty / mal-
+    formed tags are skipped.
+    """
+    source = str(text or "")
+    if not source:
+        return []
+    out: list[str] = []
+    for m in _CONFLICT_TAG_PATTERN.finditer(source):
+        body = (m.group(1) or "").strip()
+        if body:
+            out.append(body)
+    return out
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class PredictTag:
+    """Parsed ``[[predict:kind:topic:state:confidence]]`` tuple.
+
+    The K2 dispatch path on :class:`SessionController` hands these
+    straight to :meth:`BeliefStore.upsert`. ``kind`` and ``topic`` are
+    lowercased + trimmed; ``predicted_state`` preserves its original
+    casing because UI / TTS render it back to the user. ``confidence``
+    is clamped to ``[0, 1]``.
+    """
+
+    kind: str
+    topic: str
+    predicted_state: str
+    confidence: float
+
+
+def extract_predict_tags(text: str) -> list[PredictTag]:
+    """Return every well-formed ``[[predict:kind:topic:state:conf]]`` tag.
+
+    Malformed tags (kind outside ``{mood, opinion}``, empty topic/state,
+    confidence outside ``[0, 1]``) are silently skipped so a partial
+    LLM emission can never break the turn.
+    """
+    source = str(text or "")
+    if not source:
+        return []
+    out: list[PredictTag] = []
+    for m in _PREDICT_TAG_PATTERN.finditer(source):
+        kind = (m.group(1) or "").strip().lower()
+        topic = (m.group(2) or "").strip().lower()
+        state = (m.group(3) or "").strip()
+        try:
+            confidence = float(m.group(4))
+        except ValueError:
+            continue
+        if kind not in ("mood", "opinion"):
+            continue
+        if not topic or not state:
+            continue
+        confidence = max(0.0, min(1.0, confidence))
+        out.append(
+            PredictTag(
+                kind=kind,
+                topic=topic,
+                predicted_state=state,
+                confidence=confidence,
+            )
+        )
+    return out
+
+
 def strip_all_meta_tags(text: str) -> str:
     """Remove every closed meta tag the assistant emits.
 
@@ -432,6 +556,12 @@ def strip_all_meta_tags(text: str) -> str:
     # F2: same treatment for [[gap:topic:question]].
     s = _GAP_TAG_PATTERN.sub("", s)
     s = _GAP_OPEN_TAIL_PATTERN.sub("", s)
+    # F5: same treatment for [[conflict:reason]] self-tags.
+    s = _CONFLICT_TAG_PATTERN.sub("", s)
+    s = _CONFLICT_OPEN_TAIL_PATTERN.sub("", s)
+    # K2: same treatment for [[predict:kind:topic:state:confidence]].
+    s = _PREDICT_TAG_PATTERN.sub("", s)
+    s = _PREDICT_OPEN_TAIL_PATTERN.sub("", s)
     # Alexia bundle: drop fully-formed overlay / outfit / motion tags
     # + their unclosed openers at end-of-stream. Side-channel
     # (TurnRunner) extracted them earlier; stripping here guarantees
@@ -520,6 +650,8 @@ _META_OPENERS = (
     "[[motion:",
     "[[moment:",
     "[[gap:",
+    "[[conflict:",
+    "[[predict:",
 )
 
 
@@ -549,6 +681,8 @@ def _looks_like_partial_opener(suffix: str) -> bool:
     if lowered.startswith("[[moment:") and "]]" not in lowered:
         return True
     if lowered.startswith("[[gap:") and "]]" not in lowered:
+        return True
+    if lowered.startswith("[[conflict:") and "]]" not in lowered:
         return True
     # Mid-tag like ``[[d`` / ``[[de`` / ``[[s`` etc.
     if lowered.startswith("[["):

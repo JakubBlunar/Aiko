@@ -7,11 +7,14 @@ import type {
   AvatarProfile,
   AvatarResponse,
   AvatarSettingsKnobs,
+  Belief,
+  BeliefsResponse,
   ChatMessage,
   DesktopSettings,
   Identity,
   Memory,
   MemoriesResponse,
+  MemoryConflictsResponse,
   MemoryCounts,
   MemoryCreatePayload,
   MemoryCreateResponse,
@@ -170,6 +173,95 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(answer !== undefined ? { answer } : {}),
+    }),
+  // ── Memory conflicts (F5) ────────────────────────────────────────
+  listMemoryConflicts: (
+    options: {
+      limit?: number;
+      offset?: number;
+      status?: string;
+      includeRecent?: boolean;
+    } = {},
+  ) => {
+    const limit = options.limit ?? 50;
+    const offset = options.offset ?? 0;
+    const params = new URLSearchParams({
+      limit: String(limit),
+      offset: String(offset),
+      include_recent: options.includeRecent === false ? "false" : "true",
+    });
+    if (options.status) params.set("status", options.status);
+    return jsonFetch<MemoryConflictsResponse>(
+      `/api/memory-conflicts?${params.toString()}`,
+    );
+  },
+  resolveMemoryConflict: (
+    pairId: number,
+    payload: { winner_id: number; action?: "demote" | "delete" },
+  ) =>
+    jsonFetch<{
+      pair_id: number;
+      winner_id: number;
+      loser_id: number;
+      action: string;
+      status?: string;
+      deleted?: boolean;
+    }>(`/api/memory-conflicts/${pairId}/resolve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  dismissMemoryConflict: (pairId: number) =>
+    jsonFetch<{ dismissed: number }>(
+      `/api/memory-conflicts/${pairId}/dismiss`,
+      { method: "POST" },
+    ),
+  // ── Theory-of-mind beliefs (K2) ──────────────────────────────────
+  listBeliefs: (
+    options: {
+      limit?: number;
+      offset?: number;
+      kind?: "mood" | "opinion";
+      status?: "active" | "confirmed" | "contradicted" | "stale";
+    } = {},
+  ) => {
+    const limit = options.limit ?? 50;
+    const offset = options.offset ?? 0;
+    const params = new URLSearchParams({
+      limit: String(limit),
+      offset: String(offset),
+    });
+    if (options.kind) params.set("kind", options.kind);
+    if (options.status) params.set("status", options.status);
+    return jsonFetch<BeliefsResponse>(`/api/beliefs?${params.toString()}`);
+  },
+  createBelief: (payload: {
+    kind: "mood" | "opinion";
+    topic: string;
+    predicted_state: string;
+    confidence?: number;
+  }) =>
+    jsonFetch<{ belief: Belief }>(`/api/beliefs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  updateBelief: (
+    id: number,
+    payload: {
+      predicted_state?: string;
+      confidence?: number;
+      status?: "active" | "confirmed" | "contradicted" | "stale";
+    },
+  ) =>
+    jsonFetch<{ belief: Belief }>(`/api/beliefs/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  deleteBelief: (id: number) =>
+    jsonFetch<{ deleted: number }>(`/api/beliefs/${id}`, {
+      method: "DELETE",
     }),
   // ── Fact-checker status (F1) ─────────────────────────────────────
   factCheckerStatus: () =>

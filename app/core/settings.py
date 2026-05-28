@@ -429,6 +429,44 @@ class AgentSettings:
     # return. Token-bucket persisted to ``kv_meta`` under a separate key.
     idle_curiosity_per_hour_cap: int = 2
     idle_curiosity_per_day_cap: int = 6
+    # ── F5 personality backlog: conflicting-memory detector ──────────
+    # Master switch for
+    # :class:`app.core.memory_conflict_worker.MemoryConflictWorker`.
+    # When disabled the worker never registers its idle tick and the
+    # Conflicts sub-tab in the Memory drawer is hidden.
+    conflict_detector_enabled: bool = True
+    # Hourly + daily caps on LLM verification calls the worker is
+    # allowed to issue. The hybrid heuristic gate keeps most pairs
+    # below this cap; only borderline (e.g. numerical-mismatch) pairs
+    # consume budget. The token-bucket is persisted to ``kv_meta`` via
+    # a dedicated :class:`FactCheckRateLimiter` with
+    # ``state_key='conflict_detector.rate_state'`` so an idle pass
+    # from the F1 fact-checker can't starve the F5 budget (and vice
+    # versa).
+    conflict_detector_per_hour_cap: int = 6
+    conflict_detector_per_day_cap: int = 30
+    # ── K2 personality backlog: theory-of-mind / belief tracking ─────
+    # Master switch for the whole K2 surface (worker + gap detector +
+    # tag parser + REST + UI). When disabled the worker never runs,
+    # the gap detector is short-circuited, and the Beliefs sub-tab in
+    # the Memory drawer is hidden. Self-tag emissions
+    # (``[[predict:...]]``) are still stripped from chat so they
+    # never leak to the user, but the parsed payload is dropped.
+    belief_tracking_enabled: bool = True
+    # Master switch for the background inference worker only. With
+    # ``belief_tracking_enabled=True`` but
+    # ``belief_worker_enabled=False`` Aiko's self-tag fast path still
+    # writes beliefs and the gap detector still surfaces mismatches;
+    # only the autonomous inference pass is suppressed.
+    belief_worker_enabled: bool = True
+    # Hourly + daily caps on LLM extraction calls the worker is
+    # allowed to issue. Lower-cap by default than the F1 fact-checker
+    # because belief inference is a "nice-to-have" mining job, not a
+    # correctness gate. Dedicated
+    # :class:`FactCheckRateLimiter` with
+    # ``state_key='belief_worker.rate_state'``.
+    belief_worker_per_hour_cap: int = 4
+    belief_worker_per_day_cap: int = 20
     # Rolling summary background worker.
     summary_idle_seconds: float = 15.0  # quiet time before summarising
     summary_min_unsummarized_messages: int = 6  # minimum new msgs to trigger
@@ -625,6 +663,67 @@ class MemorySettings:
     # rate-cap gives the worker room to chip away at a backlog without
     # hammering the search engine.
     idle_curiosity_interval_seconds: int = 1800
+    # F5: conflicting-memory detector cadence. The all-pairs cosine
+    # scan is cheap (NumPy on the in-memory mirror) but the heuristic
+    # gate + occasional LLM call adds up, so once an hour is plenty.
+    conflict_detector_interval_seconds: int = 3600
+    # Cosine similarity band used to short-circuit the candidate
+    # filter. Pairs below ``min`` are topically distant (no point
+    # checking for contradiction); pairs >= ``max`` are dedupe-likely
+    # (the row would already have been merged at write time). The
+    # default 0.80-0.92 was chosen so paraphrases sit just above and
+    # related-but-distinct claims sit in-band.
+    conflict_detector_similarity_min: float = 0.80
+    conflict_detector_similarity_max: float = 0.92
+    # When the F3 confidence delta between the two halves of a
+    # confirmed conflict is at least this big, the worker auto-demotes
+    # the loser instead of asking the user. Higher = more cautious
+    # auto-resolution; lower = more eager. 0.30 means
+    # MemoryExtractor-default (0.7) vs F1-verified (0.95) auto-resolves
+    # but two MemoryExtractor rows (both 0.7) always surface to the
+    # Conflicts tab.
+    conflict_detector_auto_resolve_delta: float = 0.30
+    # Caps on the candidate corpus and pair count per tick. The all-
+    # pairs loop is O(n^2) on the corpus; ``max_corpus`` keeps that
+    # bounded for tens of thousands of memories. ``max_pairs_per_run``
+    # caps the heuristic+LLM work per tick so a hot streak of
+    # contradictions doesn't burn the per-day LLM budget on one run.
+    conflict_detector_max_corpus: int = 1000
+    conflict_detector_max_pairs_per_run: int = 50
+    # ── K2 personality backlog: theory-of-mind / belief tracking ─────
+    # Background inference worker cadence. The worker spends one LLM
+    # call per tick to extract beliefs from the last
+    # ``belief_worker_lookback_turns`` user turns; once an hour leaves
+    # plenty of room between calls without making the model feel
+    # forgetful.
+    belief_worker_interval_seconds: int = 3600
+    # How many recent **user** messages the worker passes to the LLM
+    # per extraction. Larger windows give a richer signal but cost
+    # more tokens; 12 is enough to span a few conversational beats.
+    belief_worker_lookback_turns: int = 12
+    # Gap-detector thresholds. The mood pass surfaces a gap when
+    # ``|val_pred - val_obs|`` exceeds ``belief_gap_valence_threshold``,
+    # ``|aro_pred - aro_obs|`` exceeds ``belief_gap_arousal_threshold``,
+    # or the recomputed valence band crosses into opposing territory.
+    # Tuned conservatively so a small affect drift can't pelt Aiko
+    # with "am I reading this wrong?" beats every turn.
+    belief_gap_valence_threshold: float = 0.30
+    belief_gap_arousal_threshold: float = 0.25
+    # Window the mood-gap pass considers. Predictions older than this
+    # are skipped on the mood pass (they age out via the stale sweep
+    # instead). Opinion beliefs have no recency window because a long-
+    # held belief can still be contradicted by a fresh message.
+    belief_recent_window_hours: int = 24
+    # Active beliefs untouched (no check, no update) for this many
+    # days are bulk-flipped to ``stale`` on the gap detector's first
+    # sweep of the tick. Stale rows stay in the table as audit
+    # history but are dropped from future detector passes.
+    belief_stale_after_days: int = 90
+    # Hard ceiling on ``active`` beliefs per user. The worker prunes
+    # the lowest-confidence + oldest active rows down to this cap on
+    # every tick so a runaway extraction can't flood the store.
+    # Confirmed / contradicted / stale audit rows are kept regardless.
+    belief_max_active_per_user: int = 200
     # IdleWorkerScheduler tick + quiet gate. Lowering ``wake_seconds``
     # makes workers fire sooner after a quiet period starts but
     # increases idle CPU; ``quiet_threshold`` is how long since the
@@ -1031,6 +1130,27 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             idle_curiosity_per_day_cap=max(
                 0, int(agent_raw.get("idle_curiosity_per_day_cap", 6)),
             ),
+            conflict_detector_enabled=bool(
+                agent_raw.get("conflict_detector_enabled", True),
+            ),
+            conflict_detector_per_hour_cap=max(
+                0, int(agent_raw.get("conflict_detector_per_hour_cap", 6)),
+            ),
+            conflict_detector_per_day_cap=max(
+                0, int(agent_raw.get("conflict_detector_per_day_cap", 30)),
+            ),
+            belief_tracking_enabled=bool(
+                agent_raw.get("belief_tracking_enabled", True),
+            ),
+            belief_worker_enabled=bool(
+                agent_raw.get("belief_worker_enabled", True),
+            ),
+            belief_worker_per_hour_cap=max(
+                0, int(agent_raw.get("belief_worker_per_hour_cap", 4)),
+            ),
+            belief_worker_per_day_cap=max(
+                0, int(agent_raw.get("belief_worker_per_day_cap", 20)),
+            ),
             shared_moments_enabled=bool(
                 agent_raw.get("shared_moments_enabled", True),
             ),
@@ -1210,6 +1330,91 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             idle_curiosity_interval_seconds=max(
                 60,
                 int(memory_raw.get("idle_curiosity_interval_seconds", 1800)),
+            ),
+            conflict_detector_interval_seconds=max(
+                60,
+                int(
+                    memory_raw.get("conflict_detector_interval_seconds", 3600),
+                ),
+            ),
+            conflict_detector_similarity_min=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get(
+                            "conflict_detector_similarity_min", 0.80
+                        ),
+                    ),
+                ),
+            ),
+            conflict_detector_similarity_max=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get(
+                            "conflict_detector_similarity_max", 0.92
+                        ),
+                    ),
+                ),
+            ),
+            conflict_detector_auto_resolve_delta=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get(
+                            "conflict_detector_auto_resolve_delta", 0.30
+                        ),
+                    ),
+                ),
+            ),
+            conflict_detector_max_corpus=max(
+                10,
+                int(memory_raw.get("conflict_detector_max_corpus", 1000)),
+            ),
+            conflict_detector_max_pairs_per_run=max(
+                1,
+                int(
+                    memory_raw.get(
+                        "conflict_detector_max_pairs_per_run", 50,
+                    ),
+                ),
+            ),
+            belief_worker_interval_seconds=max(
+                60,
+                int(memory_raw.get("belief_worker_interval_seconds", 3600)),
+            ),
+            belief_worker_lookback_turns=max(
+                1,
+                int(memory_raw.get("belief_worker_lookback_turns", 12)),
+            ),
+            belief_gap_valence_threshold=max(
+                0.0,
+                min(
+                    1.0,
+                    float(memory_raw.get("belief_gap_valence_threshold", 0.30)),
+                ),
+            ),
+            belief_gap_arousal_threshold=max(
+                0.0,
+                min(
+                    1.0,
+                    float(memory_raw.get("belief_gap_arousal_threshold", 0.25)),
+                ),
+            ),
+            belief_recent_window_hours=max(
+                1,
+                int(memory_raw.get("belief_recent_window_hours", 24)),
+            ),
+            belief_stale_after_days=max(
+                1,
+                int(memory_raw.get("belief_stale_after_days", 90)),
+            ),
+            belief_max_active_per_user=max(
+                10,
+                int(memory_raw.get("belief_max_active_per_user", 200)),
             ),
             idle_worker_wake_seconds=max(
                 1.0, float(memory_raw.get("idle_worker_wake_seconds", 60.0))

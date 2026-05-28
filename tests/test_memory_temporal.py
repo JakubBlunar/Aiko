@@ -161,7 +161,7 @@ class TestSchemaV10Migration(unittest.TestCase):
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         finally:
             conn.close()
-        self.assertEqual(version, 10)
+        self.assertEqual(version, 12)
         self.assertIn("temporal_type", cols)
         self.assertIn("event_time", cols)
         self.assertIn("relevance_until", cols)

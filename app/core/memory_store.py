@@ -310,7 +310,25 @@ class MemoryStore:
         # In-memory mirror so cosine search is a single NumPy pass.
         self._mirror: dict[int, Memory] = {}
         self._rag: "RagStore | None" = None
+        # Listeners notified after each successful ``delete``. Used by
+        # the F5 :class:`app.core.memory_conflict_store.MemoryConflictStore`
+        # to cascade-clean any conflict pair that referenced the
+        # deleted row. Listeners run synchronously on the caller
+        # thread and any exception is swallowed so a buggy listener
+        # cannot break a legit delete.
+        self._delete_listeners: list[Any] = []
         self._reload_mirror()
+
+    def add_delete_listener(self, callback: Any) -> None:
+        """Register ``callback(memory_id: int)`` invoked after delete."""
+        if callback is not None and callback not in self._delete_listeners:
+            self._delete_listeners.append(callback)
+
+    def remove_delete_listener(self, callback: Any) -> None:
+        try:
+            self._delete_listeners.remove(callback)
+        except ValueError:
+            pass
 
     def set_tier_caps(
         self,
@@ -735,7 +753,18 @@ class MemoryStore:
                 self._rag.delete_memory(str(int(memory_id)))
             except Exception:
                 log.debug("rag delete_memory failed", exc_info=True)
-        return cursor.rowcount > 0
+        deleted = cursor.rowcount > 0
+        if deleted and self._delete_listeners:
+            for listener in list(self._delete_listeners):
+                try:
+                    listener(int(memory_id))
+                except Exception:
+                    log.debug(
+                        "memory delete listener raised for id=%s",
+                        memory_id,
+                        exc_info=True,
+                    )
+        return deleted
 
     _UNSET: object = object()
 

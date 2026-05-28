@@ -510,6 +510,13 @@ class PromptAssembler:
         # empty when no gap is sufficiently relevant. Dropped in
         # aggressive mode.
         self._knowledge_gaps_provider: Callable[[str], str] | None = None
+        # K2 personality backlog: belief-gap "you had Jacob pegged as X
+        # but it actually reads Y" lines. Source rows come from the
+        # post-turn :class:`BeliefGapDetector`; the provider only
+        # renders cached gaps from the previous turn -- it does no
+        # work itself, so we can safely call it on every turn. Dropped
+        # in aggressive mode.
+        self._belief_gaps_provider: Callable[[], str] | None = None
         # Per-turn dynamic blocks: not part of ``_StaticSlices`` because
         # they change every utterance. ``vocal_tone`` is set immediately
         # before the live turn dispatch by ``SessionController`` after
@@ -622,6 +629,7 @@ class PromptAssembler:
         anniversary: Callable[[], str] | None = None,
         axes: Callable[[], str] | None = None,
         knowledge_gaps: Callable[[str], str] | None = None,
+        belief_gaps: Callable[[], str] | None = None,
     ) -> None:
         """Register optional inner-life block providers.
 
@@ -669,6 +677,8 @@ class PromptAssembler:
             self._axes_provider = axes
         if knowledge_gaps is not None:
             self._knowledge_gaps_provider = knowledge_gaps
+        if belief_gaps is not None:
+            self._belief_gaps_provider = belief_gaps
 
     def set_last_reaction(self, reaction: str | None) -> None:
         if not reaction:
@@ -1034,6 +1044,14 @@ class PromptAssembler:
                 log.debug("knowledge gaps provider raised", exc_info=True)
                 knowledge_gaps_block = ""
 
+        belief_gaps_block = ""
+        if not aggressive and self._belief_gaps_provider is not None:
+            try:
+                belief_gaps_block = self._belief_gaps_provider() or ""
+            except Exception:
+                log.debug("belief gaps provider raised", exc_info=True)
+                belief_gaps_block = ""
+
         # Alexia bundle: capability lookup is *not* a string provider —
         # it returns the raw flags so we can build the overlay /
         # outfit grammar dynamically per-prompt. Defensive: swallow
@@ -1111,6 +1129,12 @@ class PromptAssembler:
             system_parts.append(arc_block)
         if agenda_block:
             system_parts.append(agenda_block)
+        if belief_gaps_block:
+            # K2: surface up to two "your read on X doesn't match the
+            # room" lines right alongside the knowledge-gap block.
+            # Same "things on Aiko's mind" cluster -- belief gaps are
+            # the affective sibling of knowledge gaps.
+            system_parts.append(belief_gaps_block)
         if knowledge_gaps_block:
             # F2: surface one "wondering about" bullet right after
             # agenda. Keeps the "things on Aiko's mind" cluster

@@ -15,7 +15,12 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
+
+
+def _now_iso_for_conflict() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 if TYPE_CHECKING:  # pragma: no cover - import-cycle guard
     from app.core.memory_extractor import MemoryExtractor
@@ -226,6 +231,65 @@ class MemoryFacadeMixin:
             self._memory_updated_listeners = listeners
         if callback and callback not in listeners:
             listeners.append(callback)
+
+    # K2 personality backlog: belief CRUD listener hooks ─────────────
+    # The web layer subscribes to these so the Beliefs sub-tab can
+    # broadcast belief_added / belief_updated / belief_deleted over
+    # WebSocket without polling.
+
+    def add_belief_added_listener(
+        self, callback: Callable[[dict[str, Any]], None],
+    ) -> None:
+        listeners = getattr(self, "_belief_added_listeners", None)
+        if listeners is None:
+            listeners = []
+            self._belief_added_listeners = listeners
+        if callback and callback not in listeners:
+            listeners.append(callback)
+
+    def add_belief_updated_listener(
+        self, callback: Callable[[dict[str, Any]], None],
+    ) -> None:
+        listeners = getattr(self, "_belief_updated_listeners", None)
+        if listeners is None:
+            listeners = []
+            self._belief_updated_listeners = listeners
+        if callback and callback not in listeners:
+            listeners.append(callback)
+
+    def add_belief_deleted_listener(
+        self, callback: Callable[[dict[str, Any]], None],
+    ) -> None:
+        listeners = getattr(self, "_belief_deleted_listeners", None)
+        if listeners is None:
+            listeners = []
+            self._belief_deleted_listeners = listeners
+        if callback and callback not in listeners:
+            listeners.append(callback)
+
+    def _notify_belief_added(self, payload: dict[str, Any]) -> None:
+        listeners = getattr(self, "_belief_added_listeners", None) or []
+        for listener in list(listeners):
+            try:
+                listener(payload)
+            except Exception:
+                log.debug("belief added listener raised", exc_info=True)
+
+    def _notify_belief_updated(self, payload: dict[str, Any]) -> None:
+        listeners = getattr(self, "_belief_updated_listeners", None) or []
+        for listener in list(listeners):
+            try:
+                listener(payload)
+            except Exception:
+                log.debug("belief updated listener raised", exc_info=True)
+
+    def _notify_belief_deleted(self, payload: dict[str, Any]) -> None:
+        listeners = getattr(self, "_belief_deleted_listeners", None) or []
+        for listener in list(listeners):
+            try:
+                listener(payload)
+            except Exception:
+                log.debug("belief deleted listener raised", exc_info=True)
 
     def _notify_memory_added(self, memory: Any) -> None:
         for listener in list(self._memory_listeners):
@@ -577,3 +641,324 @@ class MemoryFacadeMixin:
             if isinstance(stamp, str) and (latest is None or stamp > latest):
                 latest = stamp
         return latest
+
+    # ── Memory conflicts (F5 personality backlog) ────────────────────
+
+    def list_memory_conflicts(
+        self,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        status: str | None = None,
+        include_recently_resolved: bool = True,
+    ) -> dict[str, Any]:
+        """Return open conflicts plus a recently-auto-resolved tail.
+
+        Shape::
+
+            {
+              "open": [pair_dict, ...],
+              "recently_auto_resolved": [pair_dict, ...],  # if asked
+              "counts": {"open": int, "auto_resolved": int, ...}
+            }
+
+        ``pair_dict`` includes the two memory snapshots inline so the
+        UI can render the side-by-side card without a second round
+        trip. Returns empty lists when the store hasn't booted (e.g.
+        the worker / config is disabled).
+        """
+        store = getattr(self, "_memory_conflict_store", None)
+        memory_store = getattr(self, "_memory_store", None)
+        if store is None or memory_store is None:
+            return {
+                "open": [],
+                "recently_auto_resolved": [],
+                "counts": {
+                    "open": 0,
+                    "auto_resolved": 0,
+                    "user_resolved": 0,
+                    "dismissed": 0,
+                },
+            }
+
+        def _to_payload(pair: Any) -> dict[str, Any] | None:
+            try:
+                mem_a = memory_store.get(int(pair.memory_a_id))
+                mem_b = memory_store.get(int(pair.memory_b_id))
+            except Exception:
+                mem_a = None
+                mem_b = None
+            return {
+                "id": int(pair.id),
+                "memory_a_id": int(pair.memory_a_id),
+                "memory_b_id": int(pair.memory_b_id),
+                "memory_a": mem_a.to_dict() if mem_a is not None else None,
+                "memory_b": mem_b.to_dict() if mem_b is not None else None,
+                "similarity": float(pair.similarity),
+                "confidence_delta": float(pair.confidence_delta),
+                "heuristic_label": str(pair.heuristic_label),
+                "heuristic_signals": list(pair.heuristic_signals),
+                "llm_verdict": pair.llm_verdict,
+                "llm_reason": pair.llm_reason,
+                "status": str(pair.status),
+                "winner_id": pair.winner_id,
+                "loser_id": pair.loser_id,
+                "resolution_action": pair.resolution_action,
+                "flagged_by": str(pair.flagged_by),
+                "detected_at": str(pair.detected_at),
+                "resolved_at": pair.resolved_at,
+            }
+
+        try:
+            if status is None:
+                open_pairs = store.list_open(limit=limit, offset=offset)
+            else:
+                open_pairs = store.list_recent(
+                    limit=limit, offset=offset, status=status,
+                )
+        except Exception:
+            log.debug("memory conflicts list failed", exc_info=True)
+            open_pairs = []
+
+        recently_resolved: list[dict[str, Any]] = []
+        if include_recently_resolved and status is None:
+            try:
+                rr = store.list_recently_auto_resolved(limit=10)
+                recently_resolved = [
+                    p for p in (_to_payload(x) for x in rr) if p is not None
+                ]
+            except Exception:
+                log.debug(
+                    "memory conflicts recent list failed", exc_info=True,
+                )
+
+        try:
+            counts = store.count_by_status()
+        except Exception:
+            counts = {
+                "open": 0,
+                "auto_resolved": 0,
+                "user_resolved": 0,
+                "dismissed": 0,
+            }
+
+        open_payload = [
+            p for p in (_to_payload(x) for x in open_pairs) if p is not None
+        ]
+        return {
+            "open": open_payload,
+            "recently_auto_resolved": recently_resolved,
+            "counts": counts,
+        }
+
+    def resolve_memory_conflict(
+        self,
+        pair_id: int,
+        *,
+        winner_id: int,
+        action: str = "demote",
+    ) -> dict[str, Any] | None:
+        """Apply a user-chosen resolution to a conflict pair.
+
+        ``action`` is ``'demote'`` (clamp loser confidence to 0.20,
+        archive tier) or ``'delete'`` (remove the loser memory). The
+        cascade-cleanup hook on ``MemoryStore.delete`` keeps the
+        ``memory_conflicts`` row coherent in the delete case --
+        ``mark_user_resolved`` is still called first so the resolved
+        row carries the correct winner/action stamp before the
+        cascade-cleanup might wipe it.
+        """
+        store = getattr(self, "_memory_conflict_store", None)
+        memory_store = getattr(self, "_memory_store", None)
+        if store is None or memory_store is None:
+            return None
+        action_norm = str(action or "").strip().lower()
+        if action_norm not in {"demote", "delete"}:
+            raise ValueError(
+                f"invalid action {action!r} (use 'demote' or 'delete')"
+            )
+        pair = store.get(int(pair_id))
+        if pair is None:
+            return None
+        winner_int = int(winner_id)
+        if winner_int not in (pair.memory_a_id, pair.memory_b_id):
+            raise ValueError(
+                "winner_id must equal memory_a_id or memory_b_id of the pair",
+            )
+        loser_int = (
+            pair.memory_b_id if winner_int == pair.memory_a_id
+            else pair.memory_a_id
+        )
+        store.mark_user_resolved(
+            int(pair_id),
+            winner_id=winner_int,
+            loser_id=loser_int,
+            action=action_norm,
+        )
+        try:
+            if action_norm == "demote":
+                memory_store.update(
+                    loser_int,
+                    confidence=0.20,
+                    tier="archive",
+                    metadata={
+                        "superseded_by": int(winner_int),
+                        "superseded_at": _now_iso_for_conflict(),
+                        "superseded_reason": "user_resolved_conflict",
+                    },
+                    metadata_merge=True,
+                )
+                self._notify_memory_updated({"memory_id": int(loser_int)})
+            else:  # delete
+                memory_store.delete(loser_int)
+                # cascade-cleanup deletes the conflict row, so we can't
+                # re-fetch it. Return the snapshot we already have.
+                self._notify_memory_updated({"deleted_memory_id": int(loser_int)})
+                return {
+                    "pair_id": int(pair_id),
+                    "winner_id": winner_int,
+                    "loser_id": loser_int,
+                    "action": action_norm,
+                    "deleted": True,
+                }
+        except Exception:
+            log.debug(
+                "resolve_memory_conflict apply failed pair_id=%s",
+                pair_id,
+                exc_info=True,
+            )
+            return None
+        snap = store.get(int(pair_id))
+        return {
+            "pair_id": int(pair_id),
+            "winner_id": winner_int,
+            "loser_id": loser_int,
+            "action": action_norm,
+            "status": snap.status if snap is not None else "user_resolved",
+        }
+
+    def dismiss_memory_conflict(self, pair_id: int) -> bool:
+        store = getattr(self, "_memory_conflict_store", None)
+        if store is None:
+            return False
+        return bool(store.dismiss(int(pair_id)))
+
+    # ── K2 theory-of-mind belief facade ──────────────────────────────
+
+    def list_beliefs(
+        self,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        kind: str | None = None,
+        status: str | None = None,
+        include_counts: bool = True,
+    ) -> dict[str, Any]:
+        """Return a paginated belief list + per-status counts.
+
+        Mirrors the shape of ``list_memory_conflicts`` so the
+        Beliefs sub-tab can render counts + paginated rows from a
+        single REST call.
+        """
+        store = getattr(self, "_belief_store", None)
+        if store is None:
+            return {
+                "beliefs": [],
+                "counts": {
+                    "active": 0,
+                    "confirmed": 0,
+                    "contradicted": 0,
+                    "stale": 0,
+                },
+                "enabled": False,
+            }
+        rows = store.list_recent(
+            user_id=self._user_id,
+            kind=kind,
+            status=status,
+            limit=int(limit),
+            offset=int(offset),
+        )
+        payload: dict[str, Any] = {
+            "beliefs": [r.to_payload() for r in rows],
+            "enabled": True,
+        }
+        if include_counts:
+            payload["counts"] = store.count_by_status(user_id=self._user_id)
+        return payload
+
+    def add_belief(
+        self,
+        *,
+        kind: str,
+        topic: str,
+        predicted_state: str,
+        confidence: float | None = None,
+    ) -> dict[str, Any] | None:
+        """Manual belief create (REST POST /api/beliefs)."""
+        store = getattr(self, "_belief_store", None)
+        if store is None:
+            return None
+        embedder = getattr(self, "_embedder", None)
+        embedding = None
+        if embedder is not None:
+            try:
+                embedding = embedder.embed(topic)
+            except Exception:
+                log.debug("belief manual embed failed", exc_info=True)
+        belief = store.upsert(
+            user_id=self._user_id,
+            kind=kind,
+            topic=topic,
+            predicted_state=predicted_state,
+            confidence=confidence,
+            source="manual",
+            topic_embedding=embedding,
+        )
+        if belief is None:
+            return None
+        payload = belief.to_payload()
+        try:
+            self._notify_belief_added(payload)
+        except Exception:
+            log.debug("manual belief notify failed", exc_info=True)
+        return payload
+
+    def update_belief(
+        self,
+        belief_id: int,
+        *,
+        predicted_state: str | None = None,
+        confidence: float | None = None,
+        status: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Apply a partial belief edit (REST PATCH /api/beliefs/{id})."""
+        store = getattr(self, "_belief_store", None)
+        if store is None:
+            return None
+        belief = store.update(
+            int(belief_id),
+            predicted_state=predicted_state,
+            confidence=confidence,
+            status=status,
+        )
+        if belief is None:
+            return None
+        payload = belief.to_payload()
+        try:
+            self._notify_belief_updated(payload)
+        except Exception:
+            log.debug("belief update notify failed", exc_info=True)
+        return payload
+
+    def delete_belief(self, belief_id: int) -> bool:
+        store = getattr(self, "_belief_store", None)
+        if store is None:
+            return False
+        ok = bool(store.delete(int(belief_id)))
+        if ok:
+            try:
+                self._notify_belief_deleted({"id": int(belief_id)})
+            except Exception:
+                log.debug("belief delete notify failed", exc_info=True)
+        return ok

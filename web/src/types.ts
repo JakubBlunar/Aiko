@@ -398,6 +398,80 @@ export interface MemoryCreateResponse {
   deduped_into?: Memory;
 }
 
+// ── Memory conflicts (F5) ───────────────────────────────────────────
+
+/** One ``memory_conflicts`` row. The two memory snapshots are inlined
+ * so the side-by-side card can render without a second round trip. */
+export interface MemoryConflictPair {
+  id: number;
+  memory_a_id: number;
+  memory_b_id: number;
+  memory_a: Memory | null;
+  memory_b: Memory | null;
+  similarity: number;
+  confidence_delta: number;
+  heuristic_label: "definite" | "borderline" | "no";
+  heuristic_signals: string[];
+  llm_verdict: "YES" | "NO" | "UNRELATED" | null;
+  llm_reason: string | null;
+  status: "open" | "auto_resolved" | "user_resolved" | "dismissed";
+  winner_id: number | null;
+  loser_id: number | null;
+  resolution_action: "demote" | "delete" | "dismiss" | null;
+  flagged_by: "auto" | "aiko";
+  detected_at: string;
+  resolved_at: string | null;
+}
+
+export interface MemoryConflictsResponse {
+  open: MemoryConflictPair[];
+  recently_auto_resolved: MemoryConflictPair[];
+  counts: {
+    open: number;
+    auto_resolved: number;
+    user_resolved: number;
+    dismissed: number;
+  };
+}
+
+// ── K2 theory-of-mind beliefs ───────────────────────────────────────
+
+export type BeliefKind = "mood" | "opinion";
+export type BeliefStatus = "active" | "confirmed" | "contradicted" | "stale";
+export type BeliefSource = "self_tag" | "worker" | "manual";
+
+export interface Belief {
+  id: number;
+  user_id: string;
+  kind: BeliefKind;
+  topic: string;
+  predicted_state: string;
+  confidence: number;
+  /** Mood beliefs only; null for opinions. */
+  valence: number | null;
+  /** Mood beliefs only; null for opinions. */
+  arousal: number | null;
+  source: BeliefSource;
+  source_message_id: number | null;
+  observed_at: string;
+  last_checked_at: string | null;
+  status: BeliefStatus;
+  /** Stamp of the last detected mismatch with the live signal. */
+  gap_seen_at: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface BeliefsResponse {
+  beliefs: Belief[];
+  counts?: {
+    active: number;
+    confirmed: number;
+    contradicted: number;
+    stale: number;
+  };
+  enabled: boolean;
+}
+
 // ── Live2D avatar (fixed Alexia bundle) ─────────────────────────────
 
 export interface ExpressionRef {

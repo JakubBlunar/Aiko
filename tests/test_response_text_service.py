@@ -73,6 +73,137 @@ class StripAllMetaTagsTests(unittest.TestCase):
         ).strip()
         self.assertEqual(out, "before  after".strip())
 
+    def test_conflict_tag_is_dropped_with_reason(self) -> None:
+        # F5 [[conflict:reason]] is private and must not leak to chat
+        # or TTS, but the reason text must survive in the parsed
+        # extraction path.
+        from app.core.services.response_text_service import (
+            extract_conflict_tags,
+        )
+
+        text = (
+            "Wait, [[conflict:vegetarian last week, now steakhouse]] "
+            "that doesn't quite add up."
+        )
+        out = strip_all_meta_tags(text)
+        self.assertNotIn("[[conflict", out)
+        self.assertNotIn("vegetarian last week", out)
+        self.assertIn("Wait", out)
+        self.assertIn("that doesn't quite add up", out)
+        # Reason survives in the extraction.
+        reasons = extract_conflict_tags(text)
+        self.assertEqual(
+            reasons, ["vegetarian last week, now steakhouse"],
+        )
+
+    def test_unclosed_conflict_at_end_is_suppressed(self) -> None:
+        out = strip_all_meta_tags("hello there [[conflict:still typing")
+        self.assertEqual(out.strip(), "hello there")
+        self.assertNotIn("[[conflict", out)
+
+
+class ConflictTagHoldbackTests(unittest.TestCase):
+    """The streaming holdback must wait for the closing ``]]`` before
+    emitting any of the ``[[conflict:`` body."""
+
+    def test_partial_opener_holds_back(self) -> None:
+        from app.core.services.response_text_service import (
+            safe_visible_prefix,
+        )
+
+        partial = "Wait [[conflict:user said"
+        out = safe_visible_prefix(partial)
+        # Everything from the opener onward must be held until close.
+        self.assertEqual(out, "Wait ")
+
+    def test_complete_tag_strips_cleanly(self) -> None:
+        from app.core.services.response_text_service import (
+            safe_visible_prefix,
+        )
+
+        full = "Wait [[conflict:user said]] really?"
+        out = safe_visible_prefix(full)
+        self.assertNotIn("[[conflict", out)
+        self.assertIn("Wait", out)
+        self.assertIn("really?", out)
+
+
+class PredictTagTests(unittest.TestCase):
+    """K2 ``[[predict:kind:topic:state:confidence]]`` tag handling."""
+
+    def test_predict_tag_is_dropped_and_extracted(self) -> None:
+        from app.core.services.response_text_service import (
+            extract_predict_tags,
+        )
+
+        text = (
+            "Sounds like [[predict:mood:tokyo trip:nervous:0.7]] "
+            "you're getting nervous about it."
+        )
+        out = strip_all_meta_tags(text)
+        self.assertNotIn("[[predict", out)
+        self.assertNotIn("nervous:0.7", out)
+        self.assertIn("Sounds like", out)
+        self.assertIn("you're getting nervous", out)
+        tags = extract_predict_tags(text)
+        self.assertEqual(len(tags), 1)
+        self.assertEqual(tags[0].kind, "mood")
+        self.assertEqual(tags[0].topic, "tokyo trip")
+        self.assertEqual(tags[0].predicted_state, "nervous")
+        self.assertAlmostEqual(tags[0].confidence, 0.7)
+
+    def test_predict_two_tags_in_one_message(self) -> None:
+        from app.core.services.response_text_service import (
+            extract_predict_tags,
+        )
+
+        text = (
+            "Two reads: [[predict:mood:tokyo:excited:0.8]] and "
+            "[[predict:opinion:rust language:overhyped:0.6]]"
+        )
+        tags = extract_predict_tags(text)
+        self.assertEqual(len(tags), 2)
+        kinds = {t.kind for t in tags}
+        self.assertEqual(kinds, {"mood", "opinion"})
+
+    def test_predict_invalid_kind_rejected(self) -> None:
+        from app.core.services.response_text_service import (
+            extract_predict_tags,
+        )
+
+        tags = extract_predict_tags("[[predict:bogus:x:y:0.5]]")
+        self.assertEqual(tags, [])
+
+    def test_predict_confidence_clamped(self) -> None:
+        from app.core.services.response_text_service import (
+            extract_predict_tags,
+        )
+
+        tags = extract_predict_tags("[[predict:mood:topic:state:1.5]]")
+        self.assertEqual(len(tags), 1)
+        self.assertEqual(tags[0].confidence, 1.0)
+
+    def test_predict_unclosed_at_end_is_suppressed(self) -> None:
+        from app.core.services.response_text_service import (
+            safe_visible_prefix,
+        )
+
+        partial = "hi [[predict:mood:tokyo"
+        out = safe_visible_prefix(partial)
+        self.assertEqual(out.strip(), "hi")
+        self.assertNotIn("[[predict", out)
+
+    def test_predict_complete_tag_streams_cleanly(self) -> None:
+        from app.core.services.response_text_service import (
+            safe_visible_prefix,
+        )
+
+        full = "Wait [[predict:mood:tokyo:nervous:0.7]] really?"
+        out = safe_visible_prefix(full)
+        self.assertNotIn("[[predict", out)
+        self.assertIn("Wait", out)
+        self.assertIn("really?", out)
+
 
 class ParseReactionAtStartStackTests(unittest.TestCase):
     """Phase 3 stacked-reaction grammar: ``[[reaction:A+B]]`` must
