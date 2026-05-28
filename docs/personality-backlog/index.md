@@ -73,29 +73,33 @@ K9 topic-graph browser · K10 persona regression tests ·
 K11 counterfactual cache · K12 calendar-linked anticipation ·
 K13 stylometric mirror · K14 implicit engagement signals ·
 K15 self-disclosure / vulnerability budget ·
-K16 unified ambient grounding line · K17 clarification-repair ·
+K17 clarification-repair ·
 K19 cold-start companion onboarding ·
 K20 metacognitive calibration · K21 fresh-eyes thread re-summary.
 
 (K2 theory-of-mind, K3 routine awareness, K6 novelty detector,
-and K18 topic stagnation have shipped — see
-[`shipped.md`](shipped.md).)
+K16 unified ambient grounding line, and K18 topic stagnation have
+shipped — see [`shipped.md`](shipped.md).)
 
 ### P. Performance + observability — [`perf.md`](perf.md)
 
 Cross-cutting gaps that aren't features in their own right but
 compound across every K-series entry:
 
-- **P1.** Per-turn embed budget + timing.
-- **P2.** Prompt-build phase telemetry.
 - **P3.** Slice-cache validation cost.
 - **P4.** RAG memory-hit batch lookups.
 - **P5.** Novelty warm-up Lance scan.
 - **P6.** MessageIndexer queue visibility.
 - **P7.** Typed-mode prefetch parity with voice.
-- **P8.** Idle-worker queue visibility / starvation.
 - **P9.** Frontend streaming token append cost.
 - **P10.** Schedule-learner missing index.
+- **P11.** Reclaim background-worker `num_predict` from reasoning
+  leakage (try `/no_think` on qwen3-family workers).
+
+(P1 per-turn embed budget + timing, P2 prompt-build phase
+telemetry, P8 idle-worker queue visibility + multi-worker drain,
+and P12 bulk memory-mirror on startup have shipped — see
+[`shipped.md`](shipped.md).)
 
 ---
 

@@ -26,6 +26,7 @@ class _FakeOllama:
         timeout_seconds,
         options,
         format_json,
+        **kwargs,
     ):
         self.calls.append(
             {

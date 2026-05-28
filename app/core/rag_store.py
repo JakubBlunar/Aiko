@@ -29,7 +29,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 import pyarrow as pa
@@ -396,6 +396,73 @@ class RagStore:
             # Upsert by deleting existing with same id then adding.
             self._memories.delete(f"id = '{row['id']}'")
             self._memories.add([row])
+
+    def add_memories_bulk(
+        self,
+        records: Iterable[Mapping[str, Any]],
+        *,
+        chunk_size: int = 500,
+    ) -> int:
+        """Upsert many memories in batched delete + add ops.
+
+        Each record dict needs the same fields :meth:`add_memory`
+        takes (``record_id``, ``content``, ``kind``, ``embedding``,
+        ``salience``, ``source_session``, ``source_message_id``,
+        ``created_at``). Empty-content rows are skipped silently —
+        same behaviour as the per-row path. Vectors are normalised
+        and dim-checked once per row up front; nothing is written if
+        any row fails validation. Returns the number of rows written.
+
+        Each chunk lands in two LanceDB ops: one ``delete`` with an
+        ``id IN (...)`` predicate, one ``add`` with the row batch.
+        That collapses the per-row delete+add storm in
+        :meth:`MemoryStore.migrate_to_rag` from O(2*N) write ops to
+        O(2*ceil(N/chunk_size)). ``chunk_size`` keeps the SQL
+        predicate length bounded for very large memory stores.
+        """
+        rows: list[dict[str, Any]] = []
+        for record in records:
+            content = (str(record.get("content") or "")).strip()
+            if not content:
+                continue
+            embedding = record.get("embedding")
+            if embedding is None:
+                continue
+            self._check_dim(embedding)
+            rid = str(record.get("record_id") or "").strip()
+            if not rid:
+                continue
+            source_message_id = record.get("source_message_id")
+            rows.append({
+                "id": rid,
+                "content": content,
+                "kind": (str(record.get("kind") or "fact").strip().lower() or "fact"),
+                "salience": float(max(0.0, min(1.0, float(record.get("salience", 0.5))))),
+                "source_session": record.get("source_session"),
+                "source_message_id": (
+                    int(source_message_id) if source_message_id is not None else None
+                ),
+                "created_at": record.get("created_at") or _now_iso(),
+                "last_used_at": None,
+                "use_count": 0,
+                "vector": self._norm(embedding),
+            })
+        if not rows:
+            return 0
+        chunk = max(1, int(chunk_size))
+        with self._lock:
+            for start in range(0, len(rows), chunk):
+                batch = rows[start:start + chunk]
+                ids_csv = ", ".join(
+                    "'" + r["id"].replace("'", "''") + "'" for r in batch
+                )
+                # Delete any existing rows with these ids in one op,
+                # then bulk-insert the batch. LanceDB writes a single
+                # fragment per ``add`` call, so we land at most two
+                # write ops per chunk regardless of batch size.
+                self._memories.delete(f"id IN ({ids_csv})")
+                self._memories.add(batch)
+        return len(rows)
 
     def delete_memory(self, record_id: str) -> None:
         with self._lock:

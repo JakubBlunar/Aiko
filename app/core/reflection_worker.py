@@ -280,6 +280,7 @@ class ReflectionWorker:
                     "num_predict": self._max_tokens,
                 },
                 model=self._model,
+                surface="reflection_worker",
             )
         except Exception:
             log.debug("reflection LLM call failed", exc_info=True)

@@ -40,7 +40,7 @@ class _FakeOllama:
         self.calls: list[dict] = []
         self.fail = False
 
-    def chat(self, messages, options=None, model=None):
+    def chat(self, messages, options=None, model=None, **kwargs):
         self.calls.append({"messages": messages, "options": options})
         if self.fail:
             raise RuntimeError("simulated llm failure")

@@ -288,6 +288,7 @@ class MemoryConsolidator:
                     "num_predict": self._max_tokens,
                 },
                 model=self._model,
+                surface="memory_consolidator",
             )
         except Exception:
             log.debug("merge LLM call failed", exc_info=True)

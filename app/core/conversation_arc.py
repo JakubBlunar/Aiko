@@ -434,6 +434,7 @@ class ArcSmootherWorker:
                     "num_predict": self._max_tokens,
                 },
                 model=self._model,
+                surface="conversation_arc",
             )
         except Exception:
             log.debug("arc smoother LLM call failed", exc_info=True)

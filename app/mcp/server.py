@@ -645,6 +645,39 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"inspect_idle_workers failed: {exc}"
 
     @mcp.tool()
+    def get_idle_workers_status() -> str:
+        """Return the enriched IdleWorkerScheduler view (P8).
+
+        Adds ``next_due_at`` (when the worker is scheduled to fire
+        next, given its interval), ``overdue_seconds`` (positive =
+        already past due and waiting on a quiet window or budget;
+        negative = not due yet), and per-worker timing stats
+        (``avg_duration_ms`` EMA, ``last_duration_ms``,
+        ``total_duration_ms``, ``error_count``). Workers are sorted
+        most-overdue first so the lead is the worst-starved one.
+
+        The header includes scheduler-level config
+        (``wake_seconds``, ``tick_budget_ms``, ``max_per_tick``,
+        ``quiet``) so a single tool call answers "is the scheduler
+        dormant because it's not quiet, or because nothing is due, or
+        because the budget is too small?".
+        """
+        sched = getattr(session, "_idle_scheduler", None)
+        if sched is None:
+            return json.dumps(
+                {"enabled": False, "reason": "scheduler not running"},
+                indent=2,
+            )
+        try:
+            return json.dumps(
+                {"enabled": True, **sched.get_status()},
+                indent=2,
+                default=str,
+            )
+        except Exception as exc:
+            return f"get_idle_workers_status failed: {exc}"
+
+    @mcp.tool()
     def force_promotion_sweep() -> str:
         """Run the MemoryPromotionWorker once, ignoring its interval gate.
 

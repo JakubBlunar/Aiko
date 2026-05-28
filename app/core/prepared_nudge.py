@@ -404,6 +404,7 @@ class NarrativeWeaver:
                     "num_predict": self._max_tokens,
                 },
                 model=self._model,
+                surface="prepared_nudge_resume",
             )
         except Exception:
             log.debug("resume opener LLM call failed", exc_info=True)
@@ -535,6 +536,7 @@ class NarrativeWeaver:
                     "num_predict": self._max_tokens,
                 },
                 model=self._model,
+                surface="prepared_nudge_weave",
             )
         except Exception:
             log.debug("narrative weave LLM call failed", exc_info=True)

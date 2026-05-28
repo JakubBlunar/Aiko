@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from collections.abc import Generator
@@ -105,8 +106,19 @@ def _extract_done_reason(payload: object) -> str | None:
     return text or None
 
 
+# Some surfaces are *intentionally* truncation-prone: the cap is short
+# by design and the response body is discarded. Warning on every call
+# would just be noise. The clearest example is ``tool_pass`` — the
+# pre-streaming tool-selection round caps ``num_predict`` to 256
+# because tool calls are tiny structured payloads and any prose is
+# thrown away (the streaming pass produces the user-facing reply).
+# Add a surface here only when truncation is harmless by design.
+_BENIGN_TRUNCATION_SURFACES: frozenset[str] = frozenset({"tool_pass"})
+
+
 def _warn_if_truncated(
     usage: "OllamaUsage", *, model: str, surface: str,
+    benign: bool = False,
 ) -> None:
     """Emit a single WARNING when ``done_reason == "length"``.
 
@@ -115,18 +127,120 @@ def _warn_if_truncated(
     else lives on ``OllamaUsage`` so this stays a thin observability
     hook. Only ``"length"`` triggers — ``"stop"`` is the clean exit
     and any unknown values stay silent rather than fire a noisy
-    catch-all.
+    catch-all. Surfaces in :data:`_BENIGN_TRUNCATION_SURFACES` are
+    suppressed because their truncation is intentional.
+
+    ``benign=True`` downgrades the warning to a DEBUG line. Use it
+    when the visible answer is complete but a hidden thinking trace
+    tipped the response past ``num_predict`` — that's a tuning hint,
+    not an operational alarm.
     """
     if usage.done_reason != "length":
         return
+    if surface in _BENIGN_TRUNCATION_SURFACES:
+        return
+    if benign:
+        log.debug(
+            "ollama response capped on thinking trace (answer looks "
+            "complete): surface=%s model=%s completion_tokens=%d",
+            surface,
+            model,
+            int(usage.completion_tokens),
+        )
+        return
     log.warning(
         "ollama response truncated: surface=%s model=%s "
-        "completion_tokens=%d (hit num_predict cap; raise "
-        "chat_llm.max_tokens if this is frequent)",
+        "completion_tokens=%d (hit num_predict cap; raise the "
+        "num_predict for this surface if this is frequent)",
         surface,
         model,
         int(usage.completion_tokens),
     )
+
+
+# Reasoning models (qwen3.x, deepseek-r1, gpt-oss, ...) sometimes leak
+# their internal chain-of-thought into ``message.content`` even when we
+# pass ``think=False`` to /api/chat. Different fine-tunes use different
+# wrapper tokens, so we accept the common ones (case-insensitive) and
+# strip them before handing content back to callers. We DO NOT strip
+# when ``think=True`` is explicitly requested — at that point the
+# caller is asking for the trace.
+_THINKING_BLOCK_RE: re.Pattern[str] = re.compile(
+    r"<\s*(think|thinking|reasoning|reflection)\s*>.*?"
+    r"<\s*/\s*\1\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+# Some fine-tunes open a thinking block but never close it before
+# running out of budget (or before the answer starts). When that
+# happens the *whole* unclosed tail is reasoning we can drop. This
+# pattern matches ``<think>`` (and variants) with no matching close
+# anywhere after it.
+_UNCLOSED_THINKING_RE: re.Pattern[str] = re.compile(
+    r"<\s*(think|thinking|reasoning|reflection)\s*>(?:(?!<\s*/\s*\1\s*>).)*\Z",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _strip_thinking_blocks_with_signal(text: str) -> tuple[str, bool]:
+    """Strip thinking blocks and report whether any were removed.
+
+    Returns ``(cleaned, had_thinking)``. ``had_thinking`` lets the
+    caller distinguish two flavours of ``done_reason="length"``:
+
+    1. The model wrote a thinking trace and a complete answer, but the
+       *trace* tipped the response over ``num_predict``. The visible
+       reply is fine; the warning would be a false positive.
+    2. The model didn't think (or barely did), so the cap actually
+       chopped the answer.
+
+    Combined with :func:`_content_looks_complete` we can downgrade the
+    first case to debug noise instead of surfacing it as a WARNING.
+    """
+    if not text or "<" not in text:
+        return text, False
+    cleaned = _THINKING_BLOCK_RE.sub("", text)
+    cleaned = _UNCLOSED_THINKING_RE.sub("", cleaned)
+    cleaned = cleaned.strip()
+    return cleaned, cleaned != text
+
+
+def _strip_thinking_blocks(text: str) -> str:
+    """Remove ``<think>...</think>``-style blocks from LLM content.
+
+    Returns the text unchanged when there are no thinking markers,
+    so the common case is essentially free. Both balanced blocks and
+    a final unclosed block are stripped, then we collapse surrounding
+    whitespace so the cleaned content starts and ends where the
+    actual answer does.
+    """
+    cleaned, _ = _strip_thinking_blocks_with_signal(text)
+    return cleaned
+
+
+# Closing punctuation that signals "the answer made it to a natural
+# stop". Non-exhaustive on purpose — the goal is to suppress only the
+# cases we're confident about and warn on anything else.
+_TERMINAL_PUNCTUATION: tuple[str, ...] = (
+    ".", "!", "?", "…", '"', "'", "`", ")", "]", "}", ">",
+)
+
+
+def _content_looks_complete(text: str) -> bool:
+    """Heuristic: did the visible answer reach a natural stop?
+
+    True when ``text`` is non-empty and ends with closing punctuation
+    after stripping trailing whitespace. False for empty content
+    (cap chopped everything) or content that ends mid-word/mid-clause.
+    """
+    if not text:
+        return False
+    return text.rstrip().endswith(_TERMINAL_PUNCTUATION)
+
+
+# Public alias so streaming consumers (which buffer chunks themselves)
+# can run the same strip as the non-streaming entry points without
+# importing a private symbol.
+strip_thinking_blocks = _strip_thinking_blocks
 
 
 class OllamaClient:
@@ -204,9 +318,11 @@ class OllamaClient:
         options: dict[str, object] | None = None,
         model: str | None = None,
         think: bool = False,
+        *,
+        surface: str = "chat",
     ) -> str:
         return self.chat_with_tools(
-            messages, options=options, model=model, think=think
+            messages, options=options, model=model, think=think, surface=surface,
         ).content
 
     def chat_with_tools(
@@ -218,6 +334,7 @@ class OllamaClient:
         model: str | None = None,
         think: bool = False,
         keep_alive: str | None = None,
+        surface: str = "chat_with_tools",
     ) -> OllamaChatResponse:
         merged_options: dict[str, object] = {"temperature": self._settings.temperature}
         if options:
@@ -270,6 +387,9 @@ class OllamaClient:
         body = response.json()
         message = body.get("message", {}) if isinstance(body, dict) else {}
         content = str(message.get("content", "") or "")
+        had_thinking = False
+        if not think:
+            content, had_thinking = _strip_thinking_blocks_with_signal(content)
         done_reason = _extract_done_reason(body)
         self.last_usage = OllamaUsage(
             prompt_tokens=int(body.get("prompt_eval_count", 0) or 0),
@@ -279,7 +399,12 @@ class OllamaClient:
             prompt_eval_duration_ms=float(body.get("prompt_eval_duration", 0) or 0) / 1e6,
             done_reason=done_reason,
         )
-        _warn_if_truncated(self.last_usage, model=use_model, surface="chat_with_tools")
+        _warn_if_truncated(
+            self.last_usage,
+            model=use_model,
+            surface=surface,
+            benign=had_thinking and _content_looks_complete(content),
+        )
         self._announce_connection(use_model)
         tool_calls = self._parse_tool_calls(message.get("tool_calls", []))
         log.debug(
@@ -306,6 +431,7 @@ class OllamaClient:
         stop_event: threading.Event | None = None,
         format_json: bool = False,
         think: bool = False,
+        surface: str = "chat_stream",
     ) -> Generator[str, None, None]:
         """Stream content tokens from Ollama /api/chat.
 
@@ -384,7 +510,7 @@ class OllamaClient:
             )
             raise
         self.last_usage = usage
-        _warn_if_truncated(usage, model=use_model, surface="chat_stream")
+        _warn_if_truncated(usage, model=use_model, surface=surface)
         self._announce_connection(use_model)
         elapsed_ms = (time.monotonic() - t0) * 1000.0
         log.debug(
@@ -407,6 +533,7 @@ class OllamaClient:
         format_json: bool = True,
         think: bool = False,
         keep_alive: str | None = None,
+        surface: str = "chat_json",
     ) -> tuple[str, OllamaUsage]:
         """One-shot non-streaming call (defaults to ``format=json``).
 
@@ -456,6 +583,9 @@ class OllamaClient:
         body = response.json()
         message = body.get("message", {}) if isinstance(body, dict) else {}
         content = str(message.get("content", "") or "")
+        had_thinking = False
+        if not think:
+            content, had_thinking = _strip_thinking_blocks_with_signal(content)
         usage = OllamaUsage(
             prompt_tokens=int(body.get("prompt_eval_count", 0) or 0),
             completion_tokens=int(body.get("eval_count", 0) or 0),
@@ -464,7 +594,12 @@ class OllamaClient:
             prompt_eval_duration_ms=float(body.get("prompt_eval_duration", 0) or 0) / 1e6,
             done_reason=_extract_done_reason(body),
         )
-        _warn_if_truncated(usage, model=use_model, surface="chat_json")
+        _warn_if_truncated(
+            usage,
+            model=use_model,
+            surface=surface,
+            benign=had_thinking and _content_looks_complete(content),
+        )
         self._announce_connection(use_model)
         log.debug(
             "ollama chat_json: model=%s msgs=%d elapsed_ms=%.0f "

@@ -83,23 +83,44 @@ class TestIdleWorkerScheduler(unittest.TestCase):
         self.assertEqual(recs[0]["run_count"], 0)
         self.assertIn("boom", recs[0]["last_error"] or "")
 
-    def test_scheduler_loop_caps_one_run_per_tick(self) -> None:
-        # ``wake_seconds`` is clamped to >= 0.5 inside the scheduler.
-        sched = IdleWorkerScheduler(wake_seconds=0.5)
+    def test_scheduler_loop_runs_multiple_due_workers_per_tick(self) -> None:
+        # P8: tick-budget drain runs as many due workers as fit. With a
+        # generous budget and tiny no-op workers, both register a run
+        # on the very first tick rather than rotating one-per-tick.
+        sched = IdleWorkerScheduler(
+            wake_seconds=0.5, tick_budget_ms=2000,
+        )
         a = _Worker("a")
         b = _Worker("b")
         sched.register(a)
         sched.register(b)
         sched.start()
         try:
-            # ~2 wake ticks. One worker fires per tick (cap), rotating
-            # by oldest last_run, so both should accumulate at most one
-            # apart.
+            time.sleep(1.2)
+        finally:
+            sched.stop()
+        # Both workers run inside the single first tick (anti-starvation
+        # forces #1, budget admits #2). Subsequent ticks may add more.
+        self.assertGreaterEqual(a.runs, 1)
+        self.assertGreaterEqual(b.runs, 1)
+
+    def test_scheduler_caps_per_tick_when_max_per_tick_set(self) -> None:
+        # max_per_tick=1 reproduces the legacy one-per-tick behaviour.
+        sched = IdleWorkerScheduler(
+            wake_seconds=0.5, tick_budget_ms=2000, max_per_tick=1,
+        )
+        a = _Worker("a")
+        b = _Worker("b")
+        sched.register(a)
+        sched.register(b)
+        sched.start()
+        try:
             time.sleep(1.6)
         finally:
             sched.stop()
+        # Two ticks, one worker each, rotating by oldest last_run.
         total = a.runs + b.runs
-        self.assertGreaterEqual(total, 1)
+        self.assertGreaterEqual(total, 2)
         self.assertLessEqual(abs(a.runs - b.runs), 2)
 
     def test_is_quiet_callback_skips_tick(self) -> None:

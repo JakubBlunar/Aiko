@@ -348,6 +348,7 @@ class PromiseExtractor:
                     "num_predict": self._llm_max_tokens,
                 },
                 model=self._model,
+                surface="promise_extractor",
             )
         except Exception:
             log.debug("promise LLM call failed", exc_info=True)

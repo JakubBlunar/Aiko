@@ -132,6 +132,7 @@ class SelfImageWorker:
                     "num_predict": self._max_tokens,
                 },
                 model=self._model,
+                surface="self_image_worker",
             )
         except Exception:
             log.debug("self-image LLM call failed", exc_info=True)

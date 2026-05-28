@@ -197,26 +197,6 @@ new inner-life provider exposing the live budget,
 
 ---
 
-## K16. Unified ambient grounding line
-
-Today the prompt carries world, activity, affect, circadian,
-routines, anniversary, and presence as separate inner-life blocks
-(~4-8 lines on a typical turn). Companion-AI grounding research
-suggests one fused "where we are right now" sentence ("Sunday
-morning, you're working in Cursor, mood reads upbeat — usual
-hangout slot") reads more human and saves tokens. Implementation
-is purely additive: a new top-level provider that consumes the
-existing block builders and renders them into one paragraph,
-with the granular blocks dropped under `aggressive=True`. The
-risk is over-fusion (an LLM-generated summary would drift); keep
-it template-driven so it stays deterministic. Key files: new
-`app/core/grounding_line.py`,
-[`app/core/prompt_assembler.py`](../../app/core/prompt_assembler.py)
-(provider order: grounding line first, granular blocks fallback),
-persona note explaining the format.
-
----
-
 ## K17. Clarification-repair protocol
 
 Distinct from K8 (rupture-and-repair, which fires on affect drop

@@ -401,6 +401,7 @@ class UserProfileWorker:
                     "num_predict": self._max_tokens,
                 },
                 model=self._model,
+                surface="user_profile",
             )
         except Exception:
             log.debug("profile worker LLM call failed", exc_info=True)

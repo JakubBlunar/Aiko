@@ -70,6 +70,7 @@ class _FakeOllama:
         *,
         options: dict[str, Any] | None = None,
         model: str | None = None,
+        **kwargs: Any,
     ) -> str:
         self.calls += 1
         self.last_messages = messages

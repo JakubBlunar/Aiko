@@ -550,6 +550,148 @@ result, empty-prefix matches all users).
 
 ---
 
+## K16. Unified ambient grounding line
+
+Today the system prompt carries seven separate "ambient" inner-life
+blocks (circadian, world, activity-awareness, affect/mood,
+relationship-pulse, user_state, ambient_noise) plus their carryover
+mood hint — eight blocks, each with its own "but only mention when
+natural" tail. The LLM sees that as eight facts to recite. Companion-AI
+grounding research (and a year of running with the granular blocks)
+points the other way: one fused paragraph reads as continuous awareness
+and ducks the surveillance-theatre tic that comes from repeating the
+"don't recite this" guard eight times per turn.
+
+K16 ships a new
+[`GroundingLineRenderer`](../../app/core/grounding_line.py) that
+consumes a structured `GroundingContext` (built once per turn from the
+same store getters the granular block providers already use) and
+composes a deterministic, template-driven 1-3 sentence paragraph at
+the top of the system prompt. The renderer is **pure / no LLM call /
+no randomness**: tests in
+[`tests/test_grounding_line.py`](../../tests/test_grounding_line.py)
+lock the texture for representative slot combinations so a refactor
+that intends to change the texture has to update the tests first.
+
+The fusion scope is intentionally conservative. Fused into the line:
+circadian (time + day + drowsy), activity-awareness ("Jacob's in
+Cursor"), user_state ("reads upbeat, energy normal"), affect ("your
+private feeling is content"), relationship phase + age, world
+(location + posture + activity), ambient_noise (loud / soft hum
+rider on sentence 1). Always-standalone in every K16 mode (each
+carries data fusion would dilute): anniversary, profile bullets,
+pajama, knowledge_gaps, belief_gaps, novelty, stagnation, agenda,
+axes, petname, vocal_tone, catchphrase, narrative, arc.
+
+### The three-mode config (canonical reference)
+
+K16 ships behind `agent.grounding_line_mode`, a string-valued setting
+in [`AgentSettings`](../../app/core/settings.py) (default `"off"`,
+mirrored in [`config/default.json`](../../config/default.json)).
+Invalid values clamp to `"off"` with a debug log so a typo never
+wedges the prompt. Three modes:
+
+- `off` (default): no grounding line; all eight granular ambient
+  blocks render exactly as before. Safe rollback target — flip back
+  here instantly if `replace` or `split` reads worse than the status
+  quo.
+- `replace`: the grounding line replaces all eight ambient blocks.
+  Cleanest test of the "one paragraph reads as continuous awareness"
+  hypothesis. Most aggressive.
+- `split`: middle ground. The grounding line replaces situational
+  signals (circadian, world, activity, ambient_noise) but keeps
+  {affect, mood_hint, relationship, user_state} as standalone
+  because they carry trend / phase phrasing the fused line cannot
+  represent without dilution.
+
+### Suppression matrix
+
+Which blocks render in which mode:
+
+| Block                                    | `off`  | `split` | `replace` |
+|------------------------------------------|--------|---------|-----------|
+| grounding_line                           | empty  | shown   | shown     |
+| circadian                                | shown  | dropped | dropped   |
+| world                                    | shown  | dropped | dropped   |
+| activity                                 | shown  | dropped | dropped   |
+| ambient_noise                            | shown  | dropped | dropped   |
+| affect                                   | shown  | shown   | dropped   |
+| mood_hint                                | shown  | shown   | dropped   |
+| relationship                             | shown  | shown   | dropped   |
+| user_state                               | shown  | shown   | dropped   |
+| anniversary, profile, pajama, novelty,   | shown  | shown   | shown     |
+| stagnation, knowledge_gaps, belief_gaps, |        |         |           |
+| agenda, axes, petname, vocal_tone,       |        |         |           |
+| catchphrase, narrative, arc              |        |         |           |
+
+The mode arg is stored on the assembler via
+`PromptAssembler.set_grounding_line_mode(mode)` (called once at boot
+by `SessionController` and again on any settings reload) rather than
+threaded through `assemble_with_budget` — saves `TurnRunner` from
+caring about a runtime knob it doesn't otherwise consume. The
+suppression logic lives inline in `assemble_with_budget` keyed off
+that stored value, with a defensive gate that refuses to append the
+grounding block when `mode == "off"` even if a misbehaving provider
+returns text.
+
+### When to use which
+
+- **Picking a default**: `off` until persona is retuned (the K16
+  persona note is in
+  [`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt)
+  under "Where you are right now") and at least a few sessions have
+  been A/B'd against `replace`.
+- **Companion-feel comparison**: flip between `off` and `replace`
+  over comparable conversations and read the assistant's replies
+  side by side.
+- **Isolating fusion vs. trend phrasing**: `split` keeps the trend
+  signals (affect "lately you've been...", relationship phase line)
+  standalone, so a difference between `split` and `replace` reads
+  attributes the texture change to fusing the trend slots
+  specifically.
+- **Debugging a regression**: revert to `off` first; the granular
+  blocks are well-understood.
+
+### How to flip the mode
+
+- Edit `agent.grounding_line_mode` in
+  [`config/default.json`](../../config/default.json) (or your
+  override config) to `"off"` / `"replace"` / `"split"` and restart.
+- A live settings-reload path can call
+  `PromptAssembler.set_grounding_line_mode(...)` directly; the
+  setter is idempotent and safe to invoke between turns.
+
+### Verifying the flip took effect
+
+- MCP `get_last_response_detail` after a turn — the response detail
+  dict includes `provider_ms.grounding_line`. In `off` mode this
+  entry is missing or zero (the SessionController-side provider
+  short-circuits without invoking the renderer). In `replace` /
+  `split` it's a small positive number (the renderer is template-
+  driven, sub-millisecond per render).
+- DEBUG-level `prompt built:` log line from
+  `app.core.prompt_assembler` (see P2): the `providers=` count drops
+  by the number of suppressed granular blocks; `slowest_provider=`
+  shifts.
+- The persona note doubles as a sanity gate: if Aiko starts reciting
+  the time / app / mood verbatim in `replace` mode, the persona is
+  the place to tune (not the renderer template).
+
+Tests:
+[`tests/test_grounding_line.py`](../../tests/test_grounding_line.py)
+covers the renderer in isolation (empty / partial / full slot
+combinations, weekday + period phrasing, drowsy + noise riders,
+indoor vs. outdoor framing, capitalisation when relationship leads
+sentence 3, user-name fallback). The K16 mode integration sits in
+[`tests/test_prompt_assembler.py`](../../tests/test_prompt_assembler.py)
+under `GroundingLineModeTests`: `off` keeps every granular block,
+`replace` drops eight, `split` drops only situational, invalid mode
+clamps to `off`, the grounding line is dropped under `aggressive=True`
+even in `replace`, and `provider_ms["grounding_line"]` lands in P2
+telemetry.
+
+---
+
 ## K18. Topic stagnation detector
 
 The inverse of K6: instead of firing on a single divergent turn, K18
@@ -738,3 +880,196 @@ teaches Aiko to surface them as "I was reading about X — turns
 out..." rather than reciting them as bare facts. Tests:
 `tests/test_idle_curiosity_worker.py` plus the new state-key
 independence test in `tests/test_fact_check_rate_limiter.py`.
+
+---
+
+## P1. Per-turn embed budget + timing
+
+Single shared
+[`Embedder`](../../app/llm/embedder.py)
+serves three live consumers per turn —
+[`RagRetriever`](../../app/core/rag_retriever.py) embeds
+`"ctx || query"`, K6
+[`NoveltyDetector`](../../app/core/novelty_detector.py) embeds the
+raw user message, K18
+[`TopicStagnationDetector`](../../app/core/topic_stagnation.py)
+piggybacks on K6's distance — plus the async
+[`MessageIndexer`](../../app/core/message_indexer.py) on the
+background thread. Two HTTP `/api/embeddings` round-trips per turn
+is the common case once novelty + RAG are both on. Before P1 there
+was no per-turn count or wall time, so "my turn felt slow" couldn't
+be attributed to embeds without a custom log dive.
+
+The embedder now exposes a tiny per-thread budget API:
+`begin_turn()` resets a thread-local counter pair on the calling
+thread, every cache-miss `embed()` call adds its measured wall time
++ one increment, and `end_turn()` returns the
+`(calls, ms)` tuple and clears state. LRU cache hits don't count as
+calls (they're free). The counters are *thread-local* on purpose —
+`MessageIndexer` shares the same `Embedder` instance from a
+background worker, and we don't want its async writes polluting the
+turn thread's accounting; threads that never call `begin_turn` see
+`active=False` and skip all accounting.
+[`TurnRunner.run`](../../app/core/turn_runner.py) brackets each
+turn with begin/end, stamps the result onto
+`PromptTelemetry.embed_calls` / `embed_ms` right before the
+`turn done:` INFO log, and the public `run()`'s `finally` calls
+`end_turn` again as a defensive cleanup so an exception mid-flow
+can't leak counter state into the next turn.
+
+The headline INFO line gained four new fields
+(`embed_calls=N embed_ms=N assemble_ms=N rag_lookup_ms=N`) and the
+[`SessionController`](../../app/core/session_controller.py) metrics
+dict carries them through to
+[`get_last_response_detail`](../../app/mcp/server.py) so MCP can
+grep regressions over time. Tests:
+`tests/test_embedder.py` (begin/end/peek/double-begin/cache-hit
+isolation/thread-isolation), plus
+`tests/test_turn_runner_telemetry.py::EmbedTurnBoundaryTests`
+(stamping, cleanup-on-raise, no-embedder fallback, early-return
+edge case).
+
+Out of scope (deferred): substring-match de-duplication across the
+RAG `"ctx || query"` and K6 `query`-only strings — different
+strings produce different vectors, so the obvious win is "make K6
+and RAG use the same embedding when the second string is a
+substring of the first", which needs more design than this
+observability slice could carry. Tracked as a follow-up.
+
+---
+
+## P2. Prompt-build phase telemetry
+
+`turn done:` already logged `rag_prefetch=` / `prebuild=` slice-cache
+events but not the wall time of RAG retrieval, individual
+inner-life providers, or the total assemble. The DEBUG
+`prompt built:` line counted only a hardcoded ten inner blocks —
+the eleven that have shipped since
+(belief-gaps, novelty, stagnation, activity, anniversary, axes,
+knowledge-gaps, …) were invisible. A regression in any of them
+couldn't be attributed without instrumenting the suspect by hand.
+
+[`PromptAssembler`](../../app/core/prompt_assembler.py) now wraps
+every provider call through a `_safe_provider(timing_sink=…)` /
+`_timed_phase` pair into a flat
+`provider_ms: dict[str, float]` keyed by the provider name. The
+RAG lookup phase (prefetch lookup + live retrieval + legacy
+fallback) is timed into `rag_lookup_ms`; the entire
+`assemble_with_budget` body is timed into `assemble_ms`. All three
+join `PromptTelemetry` (and `as_dict()` so JSON consumers see the
+same shape), get re-emitted on the
+`turn done:` INFO line, and propagate via the SessionController
+metrics dict to `get_last_response_detail`. The DEBUG
+`prompt built:` line dropped the legacy 10-block counter and now
+emits `providers=N provider_ms_total=N slowest_provider=name:ms`
+derived from the live timing dict, so adding a future provider
+(e.g. K17 clarification-repair) automatically lands in the
+headline without a code change.
+
+A timed provider that *raises* still records its bucket — the
+operator wants to see "novelty took 3ms and exploded", not "novelty
+silently disappeared from the telemetry". Tests:
+`tests/test_prompt_assembler.py::PhaseTelemetryTests` (empty when
+nothing wired, populated for each live provider, round-trip via
+`as_dict`, `assemble_ms` covers the full build, P1 fields stay
+zero on direct assemble) and
+`tests/test_prompt_assembler.py::FailingProviderTimingTests` (raise
+still records).
+
+---
+
+## P8. Idle-worker queue visibility + multi-worker drain
+
+`IdleWorkerScheduler` was capped at one worker per 60 s tick.
+With ~10+ workers registered (decay, promotion, schedule,
+fact-check, conflict, belief, follow-up, idle-curiosity, …) the
+loser of a tie waited a full minute, and a single misconfigured
+cadence could quietly starve the backlog with no MCP-visible signal
+beyond rummaging through `last_run_at` rows. The natural quiet
+window between turns — Aiko's 10-30 s of TTS plus the user's typing
+time before the next submit — was being thrown away.
+
+The scheduler now drains as many due workers as fit into a per-tick
+wall-time budget (`tick_budget_ms`, default 3000). Workers are
+sorted oldest `last_run_at` first; each worker's
+[`avg_duration_ms`](../../app/core/idle_worker.py) (EMA, alpha=0.3
+on `IdleWorkerRecord`) is the cost estimate. Anti-starvation always
+admits the most-overdue ready worker even if its estimate exceeds
+the remaining budget, so a tight budget on a slow machine still
+makes progress instead of looping forever. A hard
+`max_per_tick` cap (0 = unlimited) is available for operators who
+want to clamp tick log volume on heavy backlogs;
+`max_per_tick=1` reproduces the legacy single-worker behaviour.
+
+Per-run wall time is folded into the EMA on success; failures bump
+`error_count` (cumulative, separate from `last_error` which gets
+cleared on the next clean run). The scheduler emits one structured
+INFO line per non-empty tick:
+
+```
+idle_workers tick: ran=3 due=5 skipped_budget=2 queue_after=2
+                   tick_ms=472 budget_ms=3000 names=memory_decay,memory_promotion,fact_checker
+```
+
+A new MCP tool `get_idle_workers_status` returns the enriched
+view: scheduler config (`wake_seconds`, `tick_budget_ms`,
+`max_per_tick`, `quiet`) plus a `workers` list sorted most-overdue
+first. Each row carries `last_run_at`, `next_due_at`,
+`overdue_seconds` (positive = waiting), `avg_duration_ms`,
+`last_duration_ms`, `total_duration_ms`, `run_count`,
+`error_count`, `last_error`. The legacy `inspect_idle_workers`
+tool stays for quick checks; reach for `get_idle_workers_status`
+when you want to answer "which workers are starving and why?".
+
+Settings: [`MemorySettings.idle_worker_tick_budget_ms`](../../app/core/settings.py)
++ `idle_worker_max_per_tick`, mirrored in
+[`config/default.json`](../../config/default.json). Tests:
+`tests/test_idle_worker_p8.py` (EMA shape, multi-worker drain,
+anti-starvation under tight/zero budgets, oldest-first ordering,
+error counter, `get_status` shape with never-run vs. run workers,
+summary log content), plus the legacy
+`tests/test_idle_worker_scheduler.py` updated for the new
+multi-worker default and a `max_per_tick=1` regression.
+
+
+## P12. Bulk memory-mirror on startup
+
+`MemoryStore.migrate_to_rag` re-pushed every SQLite memory into
+LanceDB on every boot via a per-row
+[`RagStore.add_memory`](../../app/core/rag_store.py) loop. Each
+call did its own `delete` + `add` under the write lock, so 135
+memories meant 270 LanceDB write ops with manifest churn between
+each. On Windows that landed at ~525 ms per op, ~71 s total — a
+visible startup hang between `RagStore ready` and `RAG: mirrored
+N existing memories into LanceDB` in the log, and one that
+scaled linearly with memory count.
+
+The mirror now goes through a new
+[`RagStore.add_memories_bulk`](../../app/core/rag_store.py)
+batch path: one `delete` with an `id IN (...)` predicate plus one
+`add(rows)` per chunk. With `chunk_size=500` (the default) a
+typical install lands all rows in a single chunk — two write ops
+total instead of 2*N. `migrate_to_rag` builds the records list
+once, drops embedding-less / blank-content rows up front (same
+implicit filter the per-row path had), and now wraps the whole
+bulk call in `try`/`except` so a misbehaving LanceDB doesn't
+abort startup. The "RAG: mirrored N existing memories into
+LanceDB" log line is preserved.
+
+Empirically: ~71 s -> ~1-2 s on the same 135-memory install,
+and the cost stays roughly flat as the memory count grows
+because LanceDB writes a single fragment per `add(batch)` call
+regardless of batch size. The bulk path also escapes apostrophes
+in record ids defensively before splicing into the SQL predicate.
+
+Tests:
+[`tests/test_rag_store.py::BulkAddMemoriesTests`](../../tests/test_rag_store.py)
+covers new-rows, upsert-existing, mixed batches, the
+`chunk_size` boundary, empty-content / missing-embedding skipping,
+and id-with-apostrophe escaping.
+[`tests/test_memory_migrate_bulk.py`](../../tests/test_memory_migrate_bulk.py)
+pins the migration shape: one `add_memories_bulk` call per
+boot, `add_memory` never touched, no-embedding rows filtered out
+before the bulk batch is built, `None` rag store is a no-op, and
+a raised bulk exception returns 0 instead of crashing.
+

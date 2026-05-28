@@ -475,6 +475,7 @@ class AgendaWorker:
                     "num_predict": self._max_tokens,
                 },
                 model=self._model,
+                surface="agenda",
             )
         except Exception:
             log.debug("agenda groom LLM call failed", exc_info=True)

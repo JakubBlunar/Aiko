@@ -183,6 +183,7 @@ class RelationshipPulseWorker:
                     "num_predict": self._max_tokens,
                 },
                 model=self._model,
+                surface="relationship_pulse",
             )
         except Exception:
             log.debug("relationship pulse LLM call failed", exc_info=True)

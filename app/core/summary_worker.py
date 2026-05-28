@@ -216,6 +216,7 @@ class SummaryWorker:
                 timeout_seconds=self._timeout,
                 options={"temperature": 0.3, "num_predict": self._target_tokens},
                 format_json=False,
+                surface="summary_worker",
             )
         except Exception as exc:
             log.warning("summary call failed: %s", exc)

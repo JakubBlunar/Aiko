@@ -275,6 +275,7 @@ class ProactiveDirector:
                 timeout_seconds=self._timeout,
                 options={"temperature": 0.7, "num_predict": self._max_tokens},
                 format_json=False,
+                surface="proactive_silence",
             )
         except Exception as exc:
             log.info("proactive call failed: %s", exc)
@@ -412,6 +413,7 @@ class ProactiveDirector:
                 timeout_seconds=self._timeout,
                 options={"temperature": 0.7, "num_predict": self._max_tokens},
                 format_json=False,
+                surface="proactive_typed",
             )
         except Exception as exc:
             log.info("proactive(typed) call failed: %s", exc)

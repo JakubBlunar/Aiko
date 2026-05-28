@@ -24,7 +24,7 @@ class _FakeOllama:
     def __init__(self):
         self.calls = 0
 
-    def chat_json(self, messages, *, model, timeout_seconds, options, format_json):
+    def chat_json(self, messages, *, model, timeout_seconds, options, format_json, **kwargs):
         self.calls += 1
 
         class _Usage:
