@@ -477,6 +477,87 @@ class AxesBlockProviderTests(unittest.TestCase):
             self.assertNotIn("How the relationship feels", messages[0]["content"])
 
 
+class NoveltyBlockProviderTests(unittest.TestCase):
+    """K6 novelty provider lands in the system prompt, is dropped under
+    ``aggressive=True``, and receives the current ``user_text``."""
+
+    def test_novelty_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="nv1", role="user", content="hi", token_count=2,
+            )
+            seen: list[str] = []
+
+            def _provider(user_text: str) -> str:
+                seen.append(user_text)
+                return "Heads-up: Jacob just brought up something new."
+
+            assembler.set_inner_life_providers(novelty=_provider)
+            messages, _ = assembler.assemble_with_budget(
+                "nv1",
+                "what about quantum computing?",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertEqual(seen, ["what about quantum computing?"])
+            self.assertIn("Heads-up", messages[0]["content"])
+
+    def test_novelty_block_silent_when_provider_empty(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="nv2", role="user", content="hi", token_count=2,
+            )
+            # Empty provider -> system prompt doesn't grow a Heads-up line.
+            assembler.set_inner_life_providers(novelty=lambda _t: "")
+            messages, _ = assembler.assemble_with_budget(
+                "nv2",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertNotIn("Heads-up", messages[0]["content"])
+
+    def test_novelty_block_dropped_under_aggressive(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="nv3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                novelty=lambda _t: "Heads-up: out of the blue.",
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "nv3",
+                "x",
+                context_window=4096,
+                response_budget=256,
+                aggressive=True,
+            )
+            self.assertNotIn("Heads-up", messages[0]["content"])
+
+    def test_novelty_provider_exception_swallowed(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="nv4", role="user", content="hi", token_count=2,
+            )
+
+            def _boom(_t: str) -> str:
+                raise RuntimeError("detector exploded")
+
+            assembler.set_inner_life_providers(novelty=_boom)
+            # Should not raise; the block just disappears.
+            messages, _ = assembler.assemble_with_budget(
+                "nv4",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertNotIn("Heads-up", messages[0]["content"])
+
+
 class GrammarAddendumTests(unittest.TestCase):
     """Spot-checks on the new dynamic prompt addendum builders.
 

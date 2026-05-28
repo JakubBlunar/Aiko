@@ -463,6 +463,72 @@ class RagStore:
                 return False
         return bool(df)
 
+    def list_recent_user_vectors(
+        self,
+        *,
+        user_id_prefix: str,
+        limit: int = 12,
+    ) -> list[np.ndarray]:
+        """Return the last ``limit`` user-message vectors (most recent first).
+
+        Used by the K6 novelty detector to warm its rolling-centroid
+        ring buffer from past sessions of the same user. The scan
+        pulls only the columns we need (``role``, ``session_id``,
+        ``created_at``, ``vector``) via PyArrow so we don't drag the
+        ``content`` payload through memory for hundreds of rows.
+
+        Filtering:
+
+        - ``role == 'user'``.
+        - ``session_id`` starts with ``f"{user_id_prefix}:"`` when
+          ``user_id_prefix`` is provided. Empty / falsy prefix
+          matches all sessions (single-user installs).
+
+        The returned vectors are already L2-normalized -- ``add_message``
+        applies :meth:`_norm` before write -- so callers can dot them
+        directly without renormalisation.
+        """
+        cap = max(1, int(limit))
+        with self._lock:
+            try:
+                table = self._messages.to_arrow().select(
+                    ["role", "session_id", "created_at", "vector"],
+                )
+            except Exception:
+                log.debug(
+                    "list_recent_user_vectors to_arrow failed",
+                    exc_info=True,
+                )
+                return []
+        if table.num_rows == 0:
+            return []
+        roles = table.column("role").to_pylist()
+        session_ids = table.column("session_id").to_pylist()
+        created_ats = table.column("created_at").to_pylist()
+        vectors = table.column("vector").to_pylist()
+        prefix = (user_id_prefix or "").strip()
+        scope = f"{prefix}:" if prefix else None
+        rows: list[tuple[str, np.ndarray]] = []
+        for role, session_id, created_at, vec in zip(
+            roles, session_ids, created_ats, vectors,
+        ):
+            if str(role) != "user":
+                continue
+            sid = str(session_id or "")
+            if scope is not None and not sid.startswith(scope):
+                continue
+            if vec is None:
+                continue
+            try:
+                arr = np.asarray(vec, dtype=np.float32)
+            except Exception:
+                continue
+            if arr.size == 0:
+                continue
+            rows.append((str(created_at or ""), arr))
+        rows.sort(key=lambda r: r[0], reverse=True)
+        return [arr for _, arr in rows[:cap]]
+
     def search_messages(
         self,
         query_embedding: Sequence[float],

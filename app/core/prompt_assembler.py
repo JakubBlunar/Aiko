@@ -517,6 +517,13 @@ class PromptAssembler:
         # work itself, so we can safely call it on every turn. Dropped
         # in aggressive mode.
         self._belief_gaps_provider: Callable[[], str] | None = None
+        # K6 personality backlog: surprise/novelty signal. Takes the
+        # current ``user_text`` (like the F2 knowledge-gap provider)
+        # because the detector compares the live turn embedding to a
+        # rolling centroid. Returns ``""`` on silent/warmup/cooldown
+        # turns; banded "Heads-up: ..." lines otherwise. Dropped in
+        # aggressive mode.
+        self._novelty_provider: Callable[[str], str] | None = None
         # Per-turn dynamic blocks: not part of ``_StaticSlices`` because
         # they change every utterance. ``vocal_tone`` is set immediately
         # before the live turn dispatch by ``SessionController`` after
@@ -630,6 +637,7 @@ class PromptAssembler:
         axes: Callable[[], str] | None = None,
         knowledge_gaps: Callable[[str], str] | None = None,
         belief_gaps: Callable[[], str] | None = None,
+        novelty: Callable[[str], str] | None = None,
     ) -> None:
         """Register optional inner-life block providers.
 
@@ -679,6 +687,8 @@ class PromptAssembler:
             self._knowledge_gaps_provider = knowledge_gaps
         if belief_gaps is not None:
             self._belief_gaps_provider = belief_gaps
+        if novelty is not None:
+            self._novelty_provider = novelty
 
     def set_last_reaction(self, reaction: str | None) -> None:
         if not reaction:
@@ -1052,6 +1062,19 @@ class PromptAssembler:
                 log.debug("belief gaps provider raised", exc_info=True)
                 belief_gaps_block = ""
 
+        # K6: per-turn surprise/novelty signal. Same shape as the F2
+        # knowledge-gap provider (takes ``user_text``), since the
+        # detector scores the live utterance against a rolling
+        # centroid. Returns "" on silent / warmup / cooldown turns,
+        # which is the common case.
+        novelty_block = ""
+        if not aggressive and self._novelty_provider is not None:
+            try:
+                novelty_block = self._novelty_provider(user_text) or ""
+            except Exception:
+                log.debug("novelty provider raised", exc_info=True)
+                novelty_block = ""
+
         # Alexia bundle: capability lookup is *not* a string provider —
         # it returns the raw flags so we can build the overlay /
         # outfit grammar dynamically per-prompt. Defensive: swallow
@@ -1135,6 +1158,12 @@ class PromptAssembler:
             # Same "things on Aiko's mind" cluster -- belief gaps are
             # the affective sibling of knowledge gaps.
             system_parts.append(belief_gaps_block)
+        if novelty_block:
+            # K6: surface the "Heads-up: Jacob just brought up
+            # something new" line right after belief_gaps so reaction
+            # cues cluster together and land before the knowledge_gap
+            # "wondering about" bullet -- reacting beats wondering.
+            system_parts.append(novelty_block)
         if knowledge_gaps_block:
             # F2: surface one "wondering about" bullet right after
             # agenda. Keeps the "things on Aiko's mind" cluster

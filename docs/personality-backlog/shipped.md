@@ -481,6 +481,75 @@ plus extensions to `tests/test_response_text_service.py`.
 
 ---
 
+## K6. Surprise / novelty detector
+
+A per-turn signal that lets Aiko react with real surprise when Jacob
+pivots away from the recent topic baseline, instead of accepting an
+out-of-the-blue message with the same flat acknowledgement she'd
+give a continuation. No new schema, no REST surface — the detector
+is in-process and the signal lives entirely in the inner-life
+prompt.
+
+The [`NoveltyDetector`](../../app/core/novelty_detector.py) keeps an
+in-memory `collections.deque[np.ndarray]` of size `novelty_window`
+(default 12) on each `SessionController`. On the first `detect()`
+call per session it lazily warms the ring from
+[`RagStore.list_recent_user_vectors`](../../app/core/rag_store.py)
+filtered by the current user prefix (`session_id` starts with
+`{user_id}:`) so a topic genuinely discussed yesterday won't re-fire
+"this is new" today. On every turn it embeds `user_text`
+synchronously via the shared `Embedder`, computes
+`distance = 1 - cosine(vec, centroid)` against the renormalised mean
+of the ring, and classifies into two bands:
+`distance >= novelty_strong_threshold` (default 0.55) -> `strong_novelty`,
+`>= novelty_mild_threshold` (default 0.35) -> `mild_shift`,
+otherwise silent. The current vector is appended to the ring on
+every call (silent / banded / cooldown) so the baseline keeps
+moving with the conversation. After a hit the detector enters a
+`novelty_cooldown_turns` suppression window (default 2) so a run of
+genuinely-novel turns doesn't pile "you keep saying surprising
+things" beats on top of each other. A short (`< 8` chars) text or a
+ring still below `novelty_warmup_min` (default 3) returns `None`
+silently — cold-start installs don't blare novelty on their first
+three turns.
+
+The signal surfaces through a new `novelty` inner-life provider on
+[`PromptAssembler`](../../app/core/prompt_assembler.py) (same shape
+as `knowledge_gaps`: takes the live `user_text`, called inside
+`assemble_with_budget`, dropped under `aggressive=True`). The
+provider's banded copy lands in the system prompt right after
+`belief_gaps_block`, before `knowledge_gaps_block`, clustering all
+"things on Aiko's mind" cues together. Persona guidance in
+[`aiko_companion.txt`](../../data/persona/aiko_companion.txt)
+("Surprise and novelty") teaches Aiko to acknowledge the pivot
+once with the mild band and to ask a real follow-up with the strong
+band, without performing surprise when no note is present.
+
+Settings live on `AgentSettings` (`novelty_detection_enabled`,
+master switch) and `MemorySettings`
+(`novelty_window`, `novelty_warmup_min`,
+`novelty_mild_threshold`, `novelty_strong_threshold`,
+`novelty_cooldown_turns`), mirrored in
+[`config/default.json`](../../config/default.json). The detector
+module logs one INFO line per turn
+(`novelty-detector: distance=%.3f band=%s window=%d user=%s`)
+plus a one-shot
+`novelty-detector: warmed ring=N user=X` on the first detect of a
+session — both grep-friendly via MCP `tail_logs(module_contains="novelty")`.
+
+Tests: [`tests/test_novelty_detector.py`](../../tests/test_novelty_detector.py)
+(cold start / warm prefill / band classification / cooldown / ring
+maxlen / short-text skip / lazy warm called-once / warm failure
+fallback), plus extensions to
+[`tests/test_prompt_assembler.py`](../../tests/test_prompt_assembler.py)
+(novelty block lands, silent when empty, dropped under aggressive,
+exceptions swallowed) and
+[`tests/test_rag_store.py`](../../tests/test_rag_store.py)
+(role + session-prefix filtering, recency order, limit, empty
+result, empty-prefix matches all users).
+
+---
+
 ## Temporal memory awareness (schema v10)
 
 Gives every memory three new fields — `event_time`, `temporal_type`

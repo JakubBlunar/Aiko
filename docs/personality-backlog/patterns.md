@@ -71,20 +71,6 @@ not a rewrite.
 
 ---
 
-## K6. Surprise / novelty detector
-
-Flag user inputs that diverge significantly from the recent
-topic-cluster baseline (cosine distance from a rolling centroid of the
-last N user turns). Lets Aiko react with actual surprise ("oh — that's
-a new one") rather than blank acceptance. Key files: new
-`app/core/novelty_detector.py`,
-[`app/core/rag_store.py`](../../app/core/rag_store.py) (reuses the
-existing user-message embeddings — no new index needed),
-[`app/core/session_controller.py`](../../app/core/session_controller.py)
-(novelty score becomes an inner-life signal the LLM can react to).
-
----
-
 ## K7. Forgetting protocol
 
 Formalize a "I don't remember that as well anymore" gracenote when
