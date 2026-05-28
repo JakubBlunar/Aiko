@@ -5,7 +5,7 @@ import the canonical reaction names without pulling in the avatar
 loader. Previously co-located with ``persona_manager`` (deleted as
 part of the Alexia bundling work).
 
-The canonical 22-name set is what the affect/cadence pipelines emit
+The canonical 27-name set is what the affect/cadence pipelines emit
 via ``[[reaction:X]]`` tags. ``_REACTION_SYNONYMS`` is fuzzy-match
 material for personas where we have to *guess* a sensible default
 mapping from expression filenames. ``_REACTION_NEIGHBOURS`` is the
@@ -15,9 +15,12 @@ avatar lacks a direct mapping for the requested reaction.
 from __future__ import annotations
 
 
-# Reactions Aiko can emit. The full 22-name set covers every label
+# Reactions Aiko can emit. The full 27-name set covers every label
 # the affect/cadence pipeline produces; if we shrink this we get
-# silent reaction drops.
+# silent reaction drops. The Phase 5 expression overhaul added five
+# entries (``cry``, ``confused``, ``embarrassed``, ``nervous``,
+# ``defiant``) on top of the original 22 — see
+# ``docs/personality-backlog/shipped.md`` §B4.
 REACTIONS: tuple[str, ...] = (
     "neutral",
     "cheerful",

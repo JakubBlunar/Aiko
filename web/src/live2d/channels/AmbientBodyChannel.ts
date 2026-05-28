@@ -81,6 +81,19 @@ const BREATH_AMPLITUDE = 1.5;
 const BREATH_PERIOD_S = 6;
 const TAIL_BOOST_FREQ_MUL = 1.8;
 const TAIL_BOOST_AMP_MUL = 1.5;
+// On rigs that route the cat-tail params through ``physics.evaluate``
+// (Alexia: ``PhysicsSetting16`` with input ``ParamBreath`` -> the
+// five tail segment params), the ``tickTier3`` direct-sine boost
+// above is silently overwritten before render. The fix is to
+// elevate the *physics input* (``ParamBreath``) for the boost
+// window in ``tickPreModel`` (which runs after physics), letting
+// physics propagate the faster wave naturally into all tail
+// segments. Frequency carries the visible "speed" perception;
+// amplitude saturates against the 0..1 ParamBreath clamp at
+// expressiveness=1 but still helps when the user has lowered the
+// expressiveness slider.
+const TAIL_BREATH_BOOST_FREQ_MUL = 2.5;
+const TAIL_BREATH_BOOST_AMP_MUL = 1.5;
 /** Base breath frequency (Hz) — matches the pixi-live2d-display
  * default of ~0.21 Hz / 4.8s period. We modulate around this with
  * arousal: low arousal -> slower breath, high arousal -> faster. */
@@ -309,10 +322,18 @@ export class AmbientBodyChannel implements AvatarChannel {
       if (expressiveness <= 0) {
         adapter.setParam("ParamBreath", 0.5);
       } else {
-        const freq = BREATH_BASE_HZ * (0.7 + 0.7 * arousal);
+        const tailBoostUntil = deps.engineState.tailWagBoostUntil;
+        const tailBreathBoost =
+          (caps.has_tail_wag ?? false) &&
+          tailBoostUntil > 0 &&
+          now < tailBoostUntil;
+        const freqMul = tailBreathBoost ? TAIL_BREATH_BOOST_FREQ_MUL : 1;
+        const ampMul = tailBreathBoost ? TAIL_BREATH_BOOST_AMP_MUL : 1;
+        const freq = BREATH_BASE_HZ * (0.7 + 0.7 * arousal) * freqMul;
         const t = now / 1000;
-        const amplitude = 0.5 * Math.min(1, expressiveness);
-        const value = 0.5 + amplitude * Math.sin(2 * Math.PI * freq * t);
+        const amplitude = 0.5 * Math.min(1, expressiveness) * ampMul;
+        const clampedAmp = Math.min(0.5, amplitude);
+        const value = 0.5 + clampedAmp * Math.sin(2 * Math.PI * freq * t);
         adapter.setParam("ParamBreath", value);
       }
     }

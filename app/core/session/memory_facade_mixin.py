@@ -292,12 +292,23 @@ class MemoryFacadeMixin:
                 assistant_name=assistant_name,
             )
             if safe is None:
-                log.debug("fact-check: skipping personal gap question")
+                # The privacy module already logged the reason at INFO;
+                # we add the enqueue-side context so the audit trail
+                # threads from "memory written" -> "scrub blocked".
+                log.info(
+                    "fact-check enqueue skip: knowledge_gap memory_id=%s "
+                    "scrub returned None",
+                    memory_id,
+                )
                 return
             queue.enqueue(
                 memory_id=int(memory_id),
                 claim_text=question,
                 claim_kind="knowledge_gap",
+            )
+            log.info(
+                "fact-check enqueued: kind=knowledge_gap memory_id=%s",
+                memory_id,
             )
             return
 
@@ -312,13 +323,21 @@ class MemoryFacadeMixin:
             assistant_name=assistant_name,
         )
         if decision.personal:
-            log.debug(
-                "fact-check: skipping personal memory (%s)", decision.reason,
+            # The classify call already logged the BLOCK at INFO with
+            # reason + preview; this line gives the enqueue-side
+            # context (memory_id) so an audit can correlate the two
+            # in ``data/app.log``.
+            log.info(
+                "fact-check enqueue skip: personal memory_id=%s reason=%s",
+                memory_id,
+                decision.reason,
             )
             return
 
         from app.core.claim_extractor import find_claims
 
+        enqueued = 0
+        skipped = 0
         for claim in find_claims(content):
             # Belt-and-braces: even after the memory cleared the
             # classifier, individual claim spans (especially
@@ -330,11 +349,22 @@ class MemoryFacadeMixin:
                 assistant_name=assistant_name,
             )
             if safe is None:
+                skipped += 1
                 continue
             queue.enqueue(
                 memory_id=int(memory_id),
                 claim_text=claim.text,
                 claim_kind=claim.kind,
+            )
+            enqueued += 1
+        if enqueued or skipped:
+            log.info(
+                "fact-check enqueue done: memory_id=%s kind=%s enqueued=%d "
+                "skipped_by_scrub=%d",
+                memory_id,
+                kind,
+                enqueued,
+                skipped,
             )
 
     def _fact_check_user_names(self) -> list[str]:

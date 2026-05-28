@@ -57,7 +57,11 @@
     "cadence_enabled": true,
     "fact_checker_enabled": true,
     "fact_checker_per_hour_cap": 10,
-    "fact_checker_per_day_cap": 50
+    "fact_checker_per_day_cap": 50,
+    "schedule_learner_enabled": true,
+    "idle_curiosity_enabled": true,
+    "idle_curiosity_per_hour_cap": 2,
+    "idle_curiosity_per_day_cap": 6
   },
   "audio": {
     "sample_rate": 16000,

@@ -46,6 +46,29 @@ from typing import Iterable
 log = logging.getLogger("app.fact_check_privacy")
 
 
+# Maximum chars of raw memory / claim content we render in a single
+# log line. Privacy auditing wants to see *what* was checked so the
+# rules can be tightened, but a long memory blob would clobber the
+# rotating log. ``data/app.log`` is local-only — the truncation is
+# purely about line readability, not a leak boundary.
+_LOG_PREVIEW_CHARS = 160
+
+
+def _preview(text: str | None) -> str:
+    """Return a single-line, length-bounded preview of ``text``.
+
+    Newlines collapse to spaces so every log entry stays on one line
+    (cheap grep-ability). Empty / None input produces ``"<empty>"`` so
+    a missing field is obvious in the audit trail.
+    """
+    if not text:
+        return "<empty>"
+    flat = " ".join(str(text).split())
+    if len(flat) > _LOG_PREVIEW_CHARS:
+        return flat[: _LOG_PREVIEW_CHARS - 1] + "…"
+    return flat
+
+
 # ── memory kinds that are inherently personal ───────────────────────────
 #
 # These kinds describe the user (or the user-assistant relationship)
@@ -173,12 +196,53 @@ def classify_memory_for_fact_check(
     Returns a :class:`PrivacyDecision` with ``personal=True`` when the
     memory should be skipped. The ``reason`` field is intended for
     logs/debugging and never user-facing.
+
+    Logs every decision so a privacy audit can replay what was sent
+    where: blocks land at INFO (rare, important to see), allows land
+    at DEBUG (one per memory write — high volume).
     """
     kind_norm = (kind or "").strip().lower()
+    text = (content or "").strip()
+
+    decision = _classify_inner(
+        kind_norm=kind_norm,
+        text=text,
+        user_names=user_names,
+        assistant_name=assistant_name,
+    )
+
+    if decision.personal:
+        log.info(
+            "privacy classify BLOCK kind=%s reason=%s preview=%r",
+            kind_norm or "<missing>",
+            decision.reason,
+            _preview(text),
+        )
+    else:
+        log.debug(
+            "privacy classify ALLOW kind=%s preview=%r",
+            kind_norm or "<missing>",
+            _preview(text),
+        )
+    return decision
+
+
+def _classify_inner(
+    *,
+    kind_norm: str,
+    text: str,
+    user_names: Iterable[str] | None,
+    assistant_name: str | None,
+) -> PrivacyDecision:
+    """Pure decision logic split out from :func:`classify_memory_for_fact_check`.
+
+    Kept private because the public wrapper owns the audit-log line
+    that fires for every decision; callers should always go through
+    the wrapper so logs stay consistent.
+    """
     if kind_norm in _PERSONAL_KINDS:
         return PrivacyDecision(True, f"personal_kind:{kind_norm}")
 
-    text = (content or "").strip()
     if not text:
         return PrivacyDecision(True, "empty_content")
 
@@ -240,21 +304,28 @@ def scrub_claim_for_search(
     """
     text = (claim_text or "").strip()
     if not text:
+        log.info("privacy scrub BLOCK reason=empty_claim")
         return None
 
-    # Hard rejects — no safe redaction.
-    if _EMAIL_RE.search(text):
-        return None
-    if _PHONE_RE.search(text):
-        return None
-    if _URL_RE.search(text):
-        return None
-    if _IPV4_RE.search(text):
-        return None
-    if _COORDS_RE.search(text):
-        return None
-    if _STREET_ADDRESS_RE.search(text):
-        return None
+    # Hard rejects — no safe redaction. Logged at INFO so the
+    # privacy audit shows every refused claim with the reason; the
+    # text preview goes alongside so we can tighten patterns later
+    # without re-running the original write path.
+    for matcher, reason in (
+        (_EMAIL_RE, "email"),
+        (_PHONE_RE, "phone"),
+        (_URL_RE, "url"),
+        (_IPV4_RE, "ipv4"),
+        (_COORDS_RE, "coordinates"),
+        (_STREET_ADDRESS_RE, "street_address"),
+    ):
+        if matcher.search(text):
+            log.info(
+                "privacy scrub BLOCK reason=%s preview=%r",
+                reason,
+                _preview(text),
+            )
+            return None
 
     # Build the token list of words to strip out: names + private time
     # markers + first-person pronouns. We rebuild the string by
@@ -270,11 +341,13 @@ def scrub_claim_for_search(
     # Split on whitespace while preserving punctuation-adjacent words.
     # ``re.findall`` of word-or-non-word chunks would over-fragment;
     # a simple split + per-token clean is good enough for short claims.
+    dropped_tokens: list[str] = []
     out_tokens: list[str] = []
     for raw_token in text.split():
         # Strip surrounding punctuation for the comparison only.
         bare = re.sub(r"^\W+|\W+$", "", raw_token).lower()
         if bare in strip_tokens:
+            dropped_tokens.append(bare)
             continue
         out_tokens.append(raw_token)
 
@@ -283,12 +356,42 @@ def scrub_claim_for_search(
     scrubbed = re.sub(r"\s{2,}", " ", scrubbed)
 
     if len(scrubbed) < _MIN_SAFE_CLAIM_CHARS:
+        log.info(
+            "privacy scrub BLOCK reason=too_short_after_redaction "
+            "preview=%r dropped=%s",
+            _preview(text),
+            dropped_tokens,
+        )
         return None
 
     # Require at least one alphabetic word survives so a bare year /
     # date doesn't make it through ("2023" on its own is not a
     # checkable claim).
     if not re.search(r"[A-Za-z]{3,}", scrubbed):
+        log.info(
+            "privacy scrub BLOCK reason=no_alpha_word "
+            "preview=%r dropped=%s",
+            _preview(text),
+            dropped_tokens,
+        )
         return None
 
+    if dropped_tokens:
+        # Redaction actually fired — INFO-log so the audit captures
+        # every claim where private tokens were removed before the
+        # claim went out to the search engine.
+        log.info(
+            "privacy scrub REDACT in=%r out=%r dropped=%s",
+            _preview(text),
+            _preview(scrubbed),
+            dropped_tokens,
+        )
+    else:
+        # Pass-through. DEBUG because this is the normal high-volume
+        # path; the audit can opt in by lowering the level.
+        log.debug(
+            "privacy scrub PASS in=%r out=%r",
+            _preview(text),
+            _preview(scrubbed),
+        )
     return scrubbed

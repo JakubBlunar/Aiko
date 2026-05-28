@@ -1263,6 +1263,105 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
                             "IdleFactChecker boot failed", exc_info=True
                         )
                         self._idle_fact_checker = None
+
+                # G3 — idle curiosity worker. Picks Aiko's existing
+                # ``open_question`` memories one at a time, web-searches
+                # them, and writes the answer back as a
+                # ``curiosity_finding`` memory. Reuses the F1 fact-
+                # checker's ``WebSearchTool`` instance and cancel event
+                # so a starting turn aborts both workers cleanly. The
+                # rate limiter is a *separate* ``FactCheckRateLimiter``
+                # instance keyed on ``"idle_curiosity.rate_state"`` so
+                # the two web-search budgets don't share counters.
+                self._idle_curiosity = None
+                self._idle_curiosity_rate_limiter = None
+                if (
+                    self._fact_check_cancel is not None
+                    and self._embedder is not None
+                    and bool(
+                        getattr(
+                            settings.agent, "idle_curiosity_enabled", True,
+                        )
+                    )
+                ):
+                    try:
+                        from app.core.fact_check_rate_limiter import (
+                            FactCheckRateLimiter,
+                        )
+                        from app.core.idle_curiosity_worker import (
+                            IdleCuriosityWorker,
+                        )
+                        from app.llm.tools.builtins import WebSearchTool
+
+                        # ``WebSearchTool`` is a thin DDGS wrapper with
+                        # no state to share between workers, so a fresh
+                        # instance is fine. Build one here so the
+                        # curiosity worker survives the F1 path being
+                        # disabled / failing.
+                        try:
+                            curiosity_search_tool = WebSearchTool()
+                        except Exception:
+                            log.info(
+                                "idle_curiosity disabled: web_search "
+                                "tool unavailable",
+                            )
+                            curiosity_search_tool = None
+                        if curiosity_search_tool is not None:
+                            self._idle_curiosity_rate_limiter = (
+                                FactCheckRateLimiter(
+                                    self._chat_db,
+                                    per_hour_cap=int(
+                                        getattr(
+                                            settings.agent,
+                                            "idle_curiosity_per_hour_cap",
+                                            2,
+                                        )
+                                    ),
+                                    per_day_cap=int(
+                                        getattr(
+                                            settings.agent,
+                                            "idle_curiosity_per_day_cap",
+                                            6,
+                                        )
+                                    ),
+                                    state_key="idle_curiosity.rate_state",
+                                )
+                            )
+                            self._idle_curiosity = IdleCuriosityWorker(
+                                memory_store=self._memory_store,
+                                embedder=self._embedder,
+                                ollama=self._ollama,
+                                chat_model=self._effective_chat_model,
+                                web_search_tool=curiosity_search_tool,
+                                rate_limiter=(
+                                    self._idle_curiosity_rate_limiter
+                                ),
+                                cancel_event=self._fact_check_cancel,
+                                agent_settings=settings.agent,
+                                memory_settings=self._memory_settings,
+                                user_names_provider=(
+                                    self._fact_check_user_names
+                                ),
+                                assistant_name_provider=(
+                                    self._fact_check_assistant_name
+                                ),
+                                notify_memory_added=(
+                                    self._notify_memory_added
+                                ),
+                                notify_memory_updated=(
+                                    self._notify_memory_updated
+                                ),
+                            )
+                            self._idle_scheduler.register(
+                                self._idle_curiosity,
+                            )
+                    except Exception:
+                        log.warning(
+                            "IdleCuriosityWorker boot failed",
+                            exc_info=True,
+                        )
+                        self._idle_curiosity = None
+
                 # Aiko's living garden — plant stage promotion + visiting
                 # the garden during idle daylight windows. Both workers
                 # piggyback on the shared scheduler so they share the
@@ -1412,6 +1511,34 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
                 )
             except Exception:
                 log.warning("FollowUpWorker init failed", exc_info=True)
+
+        # G2 — schedule learner. Independent of the FollowUpWorker
+        # gate above (no prepared-nudge dependency), so wired after
+        # the same idle scheduler. Reads only ``messages.created_at``
+        # — never message content — and writes a single
+        # ``usual_hours`` profile field. Failures only drop the
+        # schedule field; the rest of the scheduler stays.
+        if (
+            self._idle_scheduler is not None
+            and self._user_profile_store is not None
+            and bool(
+                getattr(settings.agent, "schedule_learner_enabled", True)
+            )
+        ):
+            try:
+                from app.core.schedule_learner import ScheduleLearner
+
+                self._idle_scheduler.register(
+                    ScheduleLearner(
+                        chat_db=self._chat_db,
+                        profile_store=self._user_profile_store,
+                        user_id_provider=lambda: self._user_id,
+                        agent_settings=settings.agent,
+                        memory_settings=self._memory_settings,
+                    )
+                )
+            except Exception:
+                log.warning("ScheduleLearner init failed", exc_info=True)
 
         self._proactive = ProactiveDirector(
             self._ollama,

@@ -1,4 +1,4 @@
-"""Hourly + daily rate limiter for the F1 background fact-checker.
+"""Hourly + daily rate limiter for background web-search workers.
 
 Implemented as a simple counter persisted in ``kv_meta`` (one entry for
 the hour bucket, one for the day bucket). Each ``allow(now)`` call:
@@ -11,6 +11,12 @@ the hour bucket, one for the day bucket). Each ``allow(now)`` call:
 A persisted limiter survives restarts so a daily cap isn't gamed by
 killing the app at minute 59. The hour bucket uses
 ``YYYY-MM-DDTHH``-style keys; the day bucket uses ``YYYY-MM-DD``.
+
+Originally written for the F1 background fact-checker (hence the class
+name); the algorithm is generic, so the G3 idle-curiosity worker
+instantiates its own copy with a different ``state_key`` and an
+independent budget. Each ``state_key`` corresponds to one ``kv_meta``
+row, so two limiters in the same process never share counters.
 
 Concurrency: one process owns the DB by design, but the limiter still
 takes an internal lock so e.g. the REST status endpoint can read counts
@@ -31,11 +37,20 @@ if TYPE_CHECKING:
 log = logging.getLogger("app.fact_check_rate_limiter")
 
 
-_KV_KEY = "fact_checker.rate_state"
+# Default ``kv_meta`` key for the F1 fact-checker. The constructor
+# accepts ``state_key=`` to override; G3's curiosity worker uses
+# ``"idle_curiosity.rate_state"`` so the two budgets stay independent.
+_DEFAULT_STATE_KEY = "fact_checker.rate_state"
 
 
 class FactCheckRateLimiter:
-    """Token-bucket style rate limiter with hour + day caps."""
+    """Token-bucket style rate limiter with hour + day caps.
+
+    Two separate workers (e.g. the fact-checker and the idle curiosity
+    worker) each own their own limiter with a distinct ``state_key``
+    so neither can exhaust the other's budget. The class name predates
+    the curiosity worker; it stays generic at the algorithm level.
+    """
 
     def __init__(
         self,
@@ -43,11 +58,17 @@ class FactCheckRateLimiter:
         *,
         per_hour_cap: int = 10,
         per_day_cap: int = 50,
+        state_key: str = _DEFAULT_STATE_KEY,
     ) -> None:
         self._chat_db = chat_db
         self._per_hour_cap = max(0, int(per_hour_cap))
         self._per_day_cap = max(0, int(per_day_cap))
+        self._state_key = str(state_key) or _DEFAULT_STATE_KEY
         self._lock = threading.Lock()
+
+    @property
+    def state_key(self) -> str:
+        return self._state_key
 
     @property
     def per_hour_cap(self) -> int:
@@ -73,7 +94,7 @@ class FactCheckRateLimiter:
         )
 
     def _load(self) -> dict[str, object]:
-        raw = self._chat_db.kv_get(_KV_KEY)
+        raw = self._chat_db.kv_get(self._state_key)
         if not raw:
             return {}
         try:
@@ -84,7 +105,7 @@ class FactCheckRateLimiter:
 
     def _save(self, state: dict[str, object]) -> None:
         try:
-            self._chat_db.kv_set(_KV_KEY, json.dumps(state))
+            self._chat_db.kv_set(self._state_key, json.dumps(state))
         except Exception:
             log.debug("rate limiter save failed", exc_info=True)
 

@@ -346,12 +346,17 @@ class AlexiaPhase5MappingTests(unittest.TestCase):
     def test_alexia_reaction_map_has_phase5_entries(self) -> None:
         from app.core.avatar_profile import _ALEXIA_REACTION_MAP
 
-        # Each Phase 5 reaction must have its canonical direct
-        # mapping on Alexia. Empty strings are allowed elsewhere in
-        # the table to defer to the neighbour chain, but for these
-        # three the visual audit identified the right expression.
+        # ``embarrassed`` and ``defiant`` have direct mappings the
+        # visual audit identified. ``nervous`` is intentionally
+        # unmapped (empty string) so it cascades through
+        # ``concerned`` → ``serious`` → ``thoughtful``; the previous
+        # ``yfmz`` mapping fired the pajamas outfit as a side
+        # effect, visibly flipping her clothes whenever
+        # ``[[reaction:nervous]]`` landed. Persona stacks
+        # ``[[reaction:nervous+sweat]]`` for the visible sweat-drop
+        # punch.
         self.assertEqual(_ALEXIA_REACTION_MAP.get("embarrassed"), "lh")
-        self.assertEqual(_ALEXIA_REACTION_MAP.get("nervous"), "yfmz")
+        self.assertEqual(_ALEXIA_REACTION_MAP.get("nervous"), "")
         self.assertEqual(_ALEXIA_REACTION_MAP.get("defiant"), "mj")
 
 

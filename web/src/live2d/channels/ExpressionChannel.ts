@@ -87,7 +87,9 @@ import type {
 // to "visibly crying". The sad family (``sad``, ``melancholy``,
 // ``wistful``, ``concerned``, ``tired``, ``cry``) intentionally chains
 // among themselves — that's where the tear-streak overlay belongs.
-const _REACTION_NEIGHBOURS: Record<string, string[]> = {
+// Exported so tests in ``ExpressionChannel.test.ts`` can lock parity
+// with the Python source of truth in ``app/core/reactions.py``.
+export const _REACTION_NEIGHBOURS: Record<string, string[]> = {
   amused: ["cheerful", "playful", "friendly", "warm", "neutral"],
   playful: ["amused", "cheerful", "excited", "friendly", "warm"],
   enthusiastic: ["excited", "cheerful", "playful", "friendly"],
@@ -115,7 +117,21 @@ const _REACTION_NEIGHBOURS: Record<string, string[]> = {
   cheerful: ["amused", "friendly", "warm", "playful", "neutral"],
   excited: ["enthusiastic", "cheerful", "playful", "surprised", "neutral"],
   sad: ["melancholy", "wistful", "concerned", "neutral"],
+  // ``cry`` falls back to ``sad`` first so models without a distinct
+  // cry overlay still produce a sad-leaning visual.
+  cry: ["sad", "melancholy", "wistful", "concerned", "neutral"],
+  // ``confused`` walks toward curiosity / pondering first so rigs
+  // without a dizzy overlay still produce a "thinking" visual rather
+  // than collapsing to neutral.
+  confused: ["curious", "thoughtful", "surprised", "neutral"],
   angry: ["frustrated", "serious", "neutral"],
+  // Phase 5 (expression overhaul) neighbour chains. The goal is that
+  // a minimal-rig avatar without the dedicated overlay still produces
+  // something visually plausible (e.g. ``embarrassed`` -> ``warm``
+  // smile is a much better degrade than ``embarrassed`` -> ``neutral``).
+  embarrassed: ["warm", "tender", "cheerful", "friendly", "neutral"],
+  nervous: ["concerned", "serious", "thoughtful", "neutral"],
+  defiant: ["frustrated", "angry", "serious", "neutral"],
   neutral: ["calm", "friendly", "warm"],
 };
 
@@ -127,7 +143,7 @@ const _REACTION_NEIGHBOURS: Record<string, string[]> = {
 // turns a routine backchannel or thinking-pause into Aiko visibly
 // crying. The LLM's explicit ``[[reaction:concerned]]`` still routes
 // to whatever the rig has mapped — this list only covers the auto
-// fallbacks. See ``docs/personality-backlog.md`` §B5.
+// fallbacks. See ``docs/personality-backlog/shipped.md`` §B5.
 const _BACKCHANNEL_TO_REACTION: Record<BackchannelHint, string[]> = {
   agreement: ["cheerful", "friendly", "warm"],
   // Disagreement reads as a serious / thoughtful face, not a sob.

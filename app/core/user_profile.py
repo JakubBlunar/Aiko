@@ -52,6 +52,12 @@ PROFILE_FIELDS: tuple[str, ...] = (
     "current_focus",
     "values",
     "goals",
+    # G2 backlog: written deterministically by
+    # :class:`app.core.schedule_learner.ScheduleLearner` from
+    # ``messages.created_at`` buckets. The LLM worker is allowed to
+    # *also* observe it (e.g. "Jacob said he works nights") but the
+    # idle scan is the primary writer.
+    "usual_hours",
 )
 
 def _build_prompt(user_display_name: str = "the user") -> str:
@@ -78,6 +84,8 @@ def _build_prompt(user_display_name: str = "the user") -> str:
         "  - current_focus     (what they've been focused on lately)\n"
         "  - values            (1-3 things they seem to care about)\n"
         "  - goals             (an active goal they mentioned)\n"
+        "  - usual_hours       (when they tend to be around, e.g. "
+        "\"weekday evenings\"; the schedule worker also writes this)\n"
         "\n"
         "Rules:\n"
         "- Output ONLY valid JSON. No prose around it.\n"

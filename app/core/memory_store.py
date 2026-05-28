@@ -123,6 +123,15 @@ VALID_KINDS = {
     # writing the answer as a sibling memory. Confidence defaults to
     # ``0.0`` (the row is a question, not a fact).
     "knowledge_gap",
+    # G3 personality backlog — answer Aiko discovered on her own by
+    # web-searching an existing ``open_question`` memory during idle
+    # downtime. Written by
+    # :class:`app.core.idle_curiosity_worker.IdleCuriosityWorker`.
+    # Carries ``{source_open_question_id, source_query, discovered_at}``
+    # in the ``metadata`` JSON column. The persona file tells Aiko to
+    # surface these as "I was reading about X — turns out..." rather
+    # than recite them as bare facts.
+    "curiosity_finding",
 }
 
 

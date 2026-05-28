@@ -640,5 +640,162 @@ class OutfitGatedExpressionsTests(unittest.TestCase):
         json.dumps(encoded)
 
 
+class AvatarOverridesTests(unittest.TestCase):
+    """``avatar_overrides.json`` is a per-rig escape hatch for cases
+    where the multilingual synonym tables in
+    :mod:`app.core.avatar_profile` can't catch the rig's chosen
+    parameter names. The motivating case is Alexia's cat ears, which
+    live on parameters named ``Hair 5`` / ``Hair 5-1`` / ``Hair 5-2``
+    / ``Hair 5-3`` after the cdi3 translation pass — none match
+    ``_EAR_SEGMENT_SYNONYMS``, so synonym detection silently skips
+    them. The override file pins the IDs explicitly. The mechanism
+    deliberately stays narrow: only ``cat_ear_param_ids`` and
+    ``cat_tail_param_ids`` are supported in this pass."""
+
+    def _write_min_rig(self, root: Path, *, parameters: list[dict[str, str]]) -> None:
+        (root / "Mini.model3.json").write_text(json.dumps({
+            "Version": 3,
+            "FileReferences": {
+                "Moc": "Mini.moc3",
+                "DisplayInfo": "Mini.cdi3.json",
+            },
+        }), encoding="utf-8")
+        (root / "Mini.cdi3.json").write_text(json.dumps({
+            "Version": 3,
+            "Parameters": parameters,
+            "Parts": [],
+        }), encoding="utf-8")
+
+    def test_override_replaces_synonym_detected_ear_ids(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # Rig has ``Hair 5*`` params that the synonym table does
+            # NOT recognise as ear segments — without an override we
+            # would expect ``cat_ear_param_ids = []`` and
+            # ``has_ear_wiggle = False``.
+            self._write_min_rig(root, parameters=[
+                {"Id": "Param13", "GroupId": "ParamGroup5", "Name": "Hair 5"},
+                {"Id": "Param14", "GroupId": "ParamGroup5", "Name": "Hair 5-1"},
+                {"Id": "Param15", "GroupId": "ParamGroup5", "Name": "Hair 5-2"},
+                {"Id": "Param18", "GroupId": "ParamGroup5", "Name": "Hair 5-3"},
+            ])
+            (root / "avatar_overrides.json").write_text(json.dumps({
+                "cat_ear_param_ids": ["Param13", "Param14", "Param15", "Param18"],
+            }), encoding="utf-8")
+            profile = from_disk(root)
+        self.assertEqual(
+            profile.cat_ear_param_ids,
+            ["Param13", "Param14", "Param15", "Param18"],
+        )
+        self.assertTrue(profile.capabilities.get("has_ear_wiggle", False))
+
+    def test_override_can_pin_tail_ids_and_flip_capability(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # No tail-named params in the rig, so synonym detection
+            # leaves the list empty and ``has_tail_wag`` False.
+            self._write_min_rig(root, parameters=[
+                {"Id": "ParamX", "GroupId": "", "Name": "Random"},
+            ])
+            (root / "avatar_overrides.json").write_text(json.dumps({
+                "cat_tail_param_ids": [
+                    "Param_Angle_Rotation_1_ArtMesh202",
+                    "Param_Angle_Rotation_2_ArtMesh202",
+                ],
+            }), encoding="utf-8")
+            profile = from_disk(root)
+        self.assertEqual(
+            profile.cat_tail_param_ids,
+            [
+                "Param_Angle_Rotation_1_ArtMesh202",
+                "Param_Angle_Rotation_2_ArtMesh202",
+            ],
+        )
+        self.assertTrue(profile.capabilities.get("has_tail_wag", False))
+        self.assertTrue(profile.capabilities.get("has_cat_tail", False))
+
+    def test_empty_override_list_clears_detected_values(self) -> None:
+        # Explicit ``[]`` is a way to disable a feature on a rig whose
+        # synonyms accidentally trigger it. ``has_ear_wiggle`` must
+        # follow.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_min_rig(root, parameters=[
+                {"Id": "ParamA", "GroupId": "", "Name": "Left ear 1"},
+                {"Id": "ParamB", "GroupId": "", "Name": "Right ear 1"},
+            ])
+            (root / "avatar_overrides.json").write_text(json.dumps({
+                "cat_ear_param_ids": [],
+            }), encoding="utf-8")
+            profile = from_disk(root)
+        self.assertEqual(profile.cat_ear_param_ids, [])
+        self.assertFalse(profile.capabilities.get("has_ear_wiggle", True))
+
+    def test_missing_override_file_leaves_detection_intact(self) -> None:
+        # Without an override file, the bare-rig fixture's behaviour
+        # must be unchanged.
+        profile = from_disk(_MIN)
+        # _MIN already detects the ear params via synonyms; the test
+        # is just that loading still works (no spurious error from
+        # the optional override loader).
+        self.assertTrue(profile.capabilities.get("has_ear_wiggle", False))
+
+    def test_malformed_override_file_is_ignored_with_warning(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_min_rig(root, parameters=[
+                {"Id": "ParamA", "GroupId": "", "Name": "Left ear 1"},
+            ])
+            (root / "avatar_overrides.json").write_text(
+                "{not valid json", encoding="utf-8",
+            )
+            # Loader must not raise — corrupted user-edited files
+            # should fall back to synonym detection rather than
+            # crashing the whole avatar pipeline.
+            profile = from_disk(root)
+        # Synonym detection still picked up "Left ear 1".
+        self.assertEqual(profile.cat_ear_param_ids, ["ParamA"])
+
+    def test_non_string_override_values_are_rejected(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_min_rig(root, parameters=[
+                {"Id": "ParamA", "GroupId": "", "Name": "Left ear 1"},
+            ])
+            (root / "avatar_overrides.json").write_text(json.dumps({
+                "cat_ear_param_ids": [123, None, "Param13"],
+            }), encoding="utf-8")
+            profile = from_disk(root)
+        # Bad types -> override is rejected wholesale, fall back to
+        # synonym detection.
+        self.assertEqual(profile.cat_ear_param_ids, ["ParamA"])
+
+
+class AlexiaCatEarOverrideTests(unittest.TestCase):
+    """Regression pin on the bundled Alexia override file. The four
+    ``Hair 5*`` parameters (``Param13`` / ``Param14`` / ``Param15``
+    / ``Param18``) are physics outputs of ``PhysicsSetting13`` and
+    ``PhysicsSetting14`` — they animate the ``Cat ears`` part. If
+    this file ever drifts, ``[[overlay:ear_wiggle]]`` will silently
+    no-op on Alexia."""
+
+    def test_alexia_override_file_pins_canonical_ear_param_ids(self) -> None:
+        override_path = (
+            Path(__file__).resolve().parent.parent
+            / "data" / "personas" / "active" / "Alexia"
+            / "avatar_overrides.json"
+        )
+        self.assertTrue(
+            override_path.exists(),
+            "data/personas/active/Alexia/avatar_overrides.json missing — "
+            "ear_wiggle requires this file on Alexia",
+        )
+        data = json.loads(override_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            data.get("cat_ear_param_ids"),
+            ["Param13", "Param14", "Param15", "Param18"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

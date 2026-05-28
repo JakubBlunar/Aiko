@@ -152,7 +152,7 @@ Every record is formatted as:
 | **Compaction not triggering** | Grep `context overflow projected` and `compactions=`; if the threshold is wrong, look at `est_tokens=` / `budget=` from `prompt_assembler`. |
 | **Scheduler jobs queued but not running** | `set_log_level("app.scheduler", "DEBUG")`, watch `scheduler drain:` for `jobs_run=` and `queue_after=`. |
 | **Crash / unhandled exception** | Read `data/crashlog.txt` (separate from `app.log`, only fatal traces + faulthandler dumps). |
-| **Wrong expression / cry-cascade / lip-sync glitch** | Enable **Settings drawer → Chat → Diagnostics → Debug logging**, reproduce, then grep `data/app.log` for `[ui]` lines. The browser pushes WS events + avatar-channel decisions (`channel.expression applyReaction reaction=… expression=…`) into the same file as the backend timestamps so cause + effect sit side-by-side. See [B6 in personality-backlog](docs/personality-backlog.md#b6-ui-debug-logging-bridge). |
+| **Wrong expression / cry-cascade / lip-sync glitch** | Enable **Settings drawer → Chat → Diagnostics → Debug logging**, reproduce, then grep `data/app.log` for `[ui]` lines. The browser pushes WS events + avatar-channel decisions (`channel.expression applyReaction reaction=… expression=…`) into the same file as the backend timestamps so cause + effect sit side-by-side. See [B6 in personality-backlog/shipped.md](docs/personality-backlog/shipped.md#b6-ui-debug-logging-bridge). |
 
 ### d. Level cheat sheet
 
