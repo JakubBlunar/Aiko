@@ -115,7 +115,7 @@ describe("GestureChannel — wink", () => {
   });
 });
 
-describe("GestureChannel — ear_wiggle", () => {
+describe("GestureChannel — ear_wiggle (tickTier3 fallback)", () => {
   it("writes a 4 Hz sine on every ear segment, then 0 on expiry", () => {
     const adapter = new FakeAdapter();
     const channel = new GestureChannel();
@@ -134,11 +134,17 @@ describe("GestureChannel — ear_wiggle", () => {
     expect(adapter.params.get("EarR1")).toBe(v1);
     expect(Math.abs(v1!)).toBeLessThanOrEqual(15 + 1e-9);
 
-    // Past the deadline — every ear param snaps back to 0.
+    // Past the deadline — every ear param snaps back to 0 in
+    // tickTier3.
     channel.tickTier3!(clock.advance(220), 0.22);
     expect(adapter.params.get("EarL1")).toBe(0);
     expect(adapter.params.get("EarL2")).toBe(0);
     expect(adapter.params.get("EarR1")).toBe(0);
+    // Slot lifecycle moved to tickPreModel (so the post-physics
+    // rest-snap on physics-driven rigs is the LAST write of the
+    // expiry frame). tickPreModel completes the cycle and nulls
+    // the slot.
+    channel.tickPreModel!();
     expect(channel.isAnyActive).toBe(false);
   });
 
@@ -163,6 +169,123 @@ describe("GestureChannel — ear_wiggle", () => {
     channel.onOverlay!({ name: "ear_wiggle", until: clock.now() + 100 });
     channel.tickTier3!(clock.advance(16), 0.016);
     expect(adapter.setParamHistory).toHaveLength(0);
+  });
+});
+
+describe("GestureChannel — ear_wiggle (tickPreModel post-physics path)", () => {
+  // tickPreModel runs after ``physics.evaluate`` (see
+  // ``docs/alexia-model-notes.md`` §5), so writes here win on
+  // physics-driven rigs where the ear params are downstream of
+  // ``ParamEyeR/LOpen`` via PhysicsSetting13/14. Without this path
+  // the tickTier3 sine is silently overwritten by physics on every
+  // frame and ``[[overlay:ear_wiggle]]`` produces no visible motion
+  // on Alexia.
+
+  it("writes a 4 Hz sine on every ear segment in tickPreModel while alive", () => {
+    const adapter = new FakeAdapter();
+    const channel = new GestureChannel();
+    const { deps, clock } = makeDeps(
+      { has_ear_wiggle: true },
+      { cat_ear_param_ids: ["EarA", "EarB", "EarC", "EarD"] },
+    );
+    channel.attach(adapter, deps);
+    channel.onOverlay!({ name: "ear_wiggle", until: clock.now() + 600 });
+
+    clock.advance(16);
+    channel.tickPreModel!();
+    const v1 = adapter.params.get("EarA");
+    expect(v1).toBeDefined();
+    // All four params share the same sine value (single-phase
+    // write — the rig groups them under one curve so phase offsets
+    // would fight the rigging).
+    expect(adapter.params.get("EarB")).toBe(v1);
+    expect(adapter.params.get("EarC")).toBe(v1);
+    expect(adapter.params.get("EarD")).toBe(v1);
+    expect(Math.abs(v1!)).toBeLessThanOrEqual(15 + 1e-9);
+  });
+
+  it("writes 0 to every ear segment exactly once on expiry, then nulls the slot", () => {
+    const adapter = new FakeAdapter();
+    const channel = new GestureChannel();
+    const { deps, clock } = makeDeps(
+      { has_ear_wiggle: true },
+      { cat_ear_param_ids: ["EarA", "EarB"] },
+    );
+    channel.attach(adapter, deps);
+    channel.onOverlay!({ name: "ear_wiggle", until: clock.now() + 100 });
+
+    // Burn through the gesture window, then tick past expiry.
+    clock.advance(200);
+    channel.tickPreModel!();
+    expect(adapter.params.get("EarA")).toBe(0);
+    expect(adapter.params.get("EarB")).toBe(0);
+    expect(channel.isAnyActive).toBe(false);
+
+    // Subsequent tickPreModel calls are pure no-ops.
+    const beforeCount = adapter.setParamHistory.length;
+    clock.advance(16);
+    channel.tickPreModel!();
+    expect(adapter.setParamHistory.length).toBe(beforeCount);
+  });
+
+  it("rest-snap is the LAST write of the expiry frame (wins over post-tickTier3 writes)", () => {
+    // Simulates the production frame order: tickTier3 → physics →
+    // tickPreModel. We don't actually run physics here, but we
+    // verify that on a frame where tickTier3 also wrote (sine OR
+    // rest-snap), the tickPreModel rest-snap is still the last
+    // visible write — that's the property that wins on Alexia.
+    const adapter = new FakeAdapter();
+    const channel = new GestureChannel();
+    const { deps, clock } = makeDeps(
+      { has_ear_wiggle: true },
+      { cat_ear_param_ids: ["EarA"] },
+    );
+    channel.attach(adapter, deps);
+    channel.onOverlay!({ name: "ear_wiggle", until: clock.now() + 100 });
+
+    clock.advance(200); // past the deadline
+    // tickTier3 first.
+    channel.tickTier3!(clock.now(), 0.2);
+    // Pretend physics ran here and clobbered the rest write with
+    // an arbitrary non-zero value (this is what
+    // PhysicsSetting13 / 14 do on Alexia from ParamEyeR/LOpen).
+    adapter.setParam("EarA", 0.42);
+    // Now tickPreModel runs and must clobber the physics output
+    // with the rest-snap.
+    channel.tickPreModel!();
+    expect(adapter.params.get("EarA")).toBe(0);
+  });
+
+  it("is a no-op in tickPreModel when has_ear_wiggle is missing", () => {
+    const adapter = new FakeAdapter();
+    const channel = new GestureChannel();
+    const { deps, clock } = makeDeps(
+      {},
+      { cat_ear_param_ids: ["EarA"] },
+    );
+    channel.attach(adapter, deps);
+    channel.onOverlay!({ name: "ear_wiggle", until: clock.now() + 100 });
+    clock.advance(16);
+    channel.tickPreModel!();
+    expect(adapter.setParamHistory).toHaveLength(0);
+  });
+
+  it("retires the slot on expiry even when cat_ear_param_ids is empty", () => {
+    // No ear segments to write — the channel must still retire the
+    // gesture so a leaked slot doesn't keep ``isAnyActive`` stuck
+    // true forever.
+    const adapter = new FakeAdapter();
+    const channel = new GestureChannel();
+    const { deps, clock } = makeDeps(
+      { has_ear_wiggle: true },
+      { cat_ear_param_ids: [] },
+    );
+    channel.attach(adapter, deps);
+    channel.onOverlay!({ name: "ear_wiggle", until: clock.now() + 100 });
+    expect(channel.isAnyActive).toBe(true);
+    clock.advance(200);
+    channel.tickPreModel!();
+    expect(channel.isAnyActive).toBe(false);
   });
 });
 

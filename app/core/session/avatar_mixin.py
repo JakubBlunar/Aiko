@@ -73,6 +73,18 @@ _BACKCHANNEL_MOTION_MAP: dict[str, tuple[str, ...]] = {
 }
 
 
+# Per-overlay duration overrides (ms). Names omitted here fall back
+# to the ``_emit_avatar_overlay`` default of 1500 ms. ``tail_wag``
+# gets a longer window because the prompt grammar in
+# :mod:`app.core.prompt_assembler` advertises it as a "~2 s burst"
+# and the visual is more satisfying when the wag has time to
+# register on a physics-driven rig (where the boost runs through
+# ``ParamBreath`` and propagates with the natural physics delay).
+_OVERLAY_DURATION_OVERRIDES_MS: dict[str, int] = {
+    "tail_wag": 2000,
+}
+
+
 class AvatarMixin:
     """Avatar, desktop-shell, circadian-outfit and LLM-tag emit methods."""
 
@@ -536,7 +548,9 @@ class AvatarMixin:
                 return "pajamas_hooded"
         return "day" if has_day else ""
 
-    def _emit_avatar_overlay(self, name: str, *, duration_ms: int = 1500) -> None:
+    def _emit_avatar_overlay(
+        self, name: str, *, duration_ms: int | None = None
+    ) -> None:
         """Forward an LLM-driven ``[[overlay:X]]`` to the renderer.
 
         Skipped silently if the loaded avatar doesn't support the
@@ -575,6 +589,8 @@ class AvatarMixin:
         cap_key = f"has_{normalized}"
         if not avatar.capabilities.get(cap_key, False):
             return
+        if duration_ms is None:
+            duration_ms = _OVERLAY_DURATION_OVERRIDES_MS.get(normalized, 1500)
         payload = {
             "name": normalized,
             "duration_ms": int(max(150, duration_ms)),

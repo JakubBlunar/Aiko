@@ -479,14 +479,19 @@ _ALEXIA_REACTION_MAP: dict[str, str] = {
     # tilted smile) is the closest direct hit; the persona expects
     # the LLM to stack ``[[reaction:embarrassed+blush]]`` for the
     # full blush+smile beat, where the ``+blush`` component fires a
-    # Param58 overlay pulse on top. ``nervous`` → ``yfmz``
-    # (sweat-meets-mouth-anxiety) is the closest single-expression
-    # match; ``[[reaction:nervous+sweat]]`` adds the Param44 sweat
-    # drop. ``defiant`` → ``mj`` (head_sunglasses also drives a
-    # stubborn-pout shape on this rig); the LLM is encouraged to
-    # stack with ``+pout`` overlays for the full hmph beat.
+    # Param58 overlay pulse on top. ``nervous`` is intentionally
+    # left unmapped — the previous ``yfmz`` choice fired the pajamas
+    # outfit envelope as a side effect, visibly flipping her clothes
+    # whenever ``[[reaction:nervous]]`` landed. The neighbour chain
+    # (``concerned`` → ``serious`` → ``thoughtful`` → ``neutral``)
+    # gives nervous a concerned-leaning face; the persona stacks
+    # ``[[reaction:nervous+sweat]]`` for the visible Param44 sweat
+    # drop. ``defiant`` → ``mj`` (head_sunglasses-on-hair reads as
+    # a cocky / "whatever" tilt and doesn't disturb outfit state);
+    # the persona stacks ``[[reaction:defiant+question]]`` for the
+    # "hmph, really?" beat.
     "embarrassed": "lh",
-    "nervous":     "yfmz",
+    "nervous":     "",
     "defiant":     "mj",
 }
 
@@ -576,6 +581,17 @@ def from_disk(root: Path | str, *, display_name: str = "") -> AvatarProfile:
         parts=parts,
         expressions=expressions,
         root=root_path,
+    )
+    # Per-rig overrides for fields the multilingual synonym tables can't
+    # always catch (e.g. Alexia's cat ears live on parameters named
+    # ``Hair 5`` / ``Hair 5-1`` / ... after the CDI3 translation pass,
+    # which does not match any ear synonym). The override file is
+    # optional; if absent we keep the synonym-detected values.
+    cat_tail_param_ids, cat_ear_param_ids = _apply_avatar_overrides(
+        root_path,
+        capabilities,
+        cat_tail_param_ids,
+        cat_ear_param_ids,
     )
     reaction_mapping = _build_reaction_mapping(
         expressions=expressions,
@@ -918,6 +934,98 @@ def _detect_capabilities(
         cat_tail_param_ids,
         cat_ear_param_ids,
     )
+
+
+def _apply_avatar_overrides(
+    root: Path,
+    capabilities: dict[str, bool],
+    cat_tail_param_ids: list[str],
+    cat_ear_param_ids: list[str],
+) -> tuple[list[str], list[str]]:
+    """Apply optional per-rig overrides from ``<root>/avatar_overrides.json``.
+
+    The synonym-driven detection in :func:`_detect_capabilities` works
+    well for rigs whose parameter names match the multilingual synonym
+    tables (Chinese / English / Japanese). It misses cases where the
+    rig author chose unrelated names — for example Alexia's cat-ear
+    segments are named ``Hair 5`` / ``Hair 5-1`` / ... after the CDI3
+    translation pass, which match no ear synonym, so ``ear_wiggle``
+    silently no-ops on Alexia.
+
+    The override file lets a rig pin its own param IDs explicitly. The
+    file is optional — when absent, the inputs are returned unchanged.
+    Schema (all keys optional)::
+
+        {
+          "cat_ear_param_ids":  ["Param13", "Param14", ...],
+          "cat_tail_param_ids": ["Param_Angle_Rotation_1_ArtMesh202", ...]
+        }
+
+    A non-empty override list **replaces** the detected list. An
+    empty list (``[]``) explicitly clears the detected list. Missing
+    keys leave the detected list unchanged.
+
+    Capability flags that derive from these lists are recomputed on
+    return:
+
+      - ``has_ear_wiggle``  ↔  ``bool(cat_ear_param_ids)``
+      - ``has_tail_wag``    ↔  ``bool(cat_tail_param_ids)``
+      - ``has_cat_tail``    is also forced True/False to keep its
+        alias relationship with ``has_tail_wag`` consistent.
+    """
+    override_path = root / "avatar_overrides.json"
+    if not override_path.exists():
+        return cat_tail_param_ids, cat_ear_param_ids
+    try:
+        raw = override_path.read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except Exception:
+        log.warning(
+            "avatar_overrides.json present but unreadable at %s — ignoring",
+            override_path,
+            exc_info=True,
+        )
+        return cat_tail_param_ids, cat_ear_param_ids
+    if not isinstance(data, dict):
+        log.warning(
+            "avatar_overrides.json at %s must be a JSON object; got %s",
+            override_path,
+            type(data).__name__,
+        )
+        return cat_tail_param_ids, cat_ear_param_ids
+
+    new_tail = cat_tail_param_ids
+    new_ears = cat_ear_param_ids
+    if "cat_tail_param_ids" in data:
+        candidate = data.get("cat_tail_param_ids")
+        if isinstance(candidate, list) and all(isinstance(x, str) for x in candidate):
+            new_tail = [str(x) for x in candidate]
+            log.info(
+                "avatar override: cat_tail_param_ids=%s (was %s)",
+                new_tail, cat_tail_param_ids,
+            )
+        else:
+            log.warning(
+                "avatar_overrides.json cat_tail_param_ids must be a list of strings; ignoring",
+            )
+    if "cat_ear_param_ids" in data:
+        candidate = data.get("cat_ear_param_ids")
+        if isinstance(candidate, list) and all(isinstance(x, str) for x in candidate):
+            new_ears = [str(x) for x in candidate]
+            log.info(
+                "avatar override: cat_ear_param_ids=%s (was %s)",
+                new_ears, cat_ear_param_ids,
+            )
+        else:
+            log.warning(
+                "avatar_overrides.json cat_ear_param_ids must be a list of strings; ignoring",
+            )
+
+    capabilities["has_ear_wiggle"] = bool(new_ears)
+    has_tail = bool(new_tail)
+    capabilities["has_cat_tail"] = has_tail
+    capabilities["has_tail_wag"] = has_tail
+    return new_tail, new_ears
 
 
 def _detect_mouth_overlay_param_ids(

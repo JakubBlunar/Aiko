@@ -19,6 +19,7 @@ import json
 import logging
 import re
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
@@ -36,6 +37,22 @@ if TYPE_CHECKING:
 
 
 log = logging.getLogger("app.idle_fact_checker")
+
+
+# Cap on how much of a claim / snippet / raw model output we render
+# per log line. Audit-friendly previews; the rotating log stays
+# scannable.
+_LOG_PREVIEW_CHARS = 200
+
+
+def _preview(text: str | None) -> str:
+    """Single-line, length-bounded preview for the audit log."""
+    if not text:
+        return "<empty>"
+    flat = " ".join(str(text).split())
+    if len(flat) > _LOG_PREVIEW_CHARS:
+        return flat[: _LOG_PREVIEW_CHARS - 1] + "…"
+    return flat
 
 
 # ── prompt template ────────────────────────────────────────────────────
@@ -157,37 +174,128 @@ class IdleFactChecker:
         # have slipped past ``is_ready`` if multiple workers were
         # scheduled in the same window.
         if not self._rate_limiter.allow():
+            log.info(
+                "fact-check skip: rate limited (memory_id=%s claim=%r)",
+                claim.memory_id,
+                _preview(claim.claim_text),
+            )
             self._queue.requeue_front(claim)
             return {"skipped": True, "reason": "rate_limited"}
+        log.info(
+            "fact-check start: memory_id=%s kind=%s claim=%r",
+            claim.memory_id,
+            claim.claim_kind,
+            _preview(claim.claim_text),
+        )
         # Privacy gate (defense in depth — the queue gate already
         # filtered most personal memories upstream). Returns a safe
         # variant or None when the claim can't be scrubbed cleanly.
+        # The privacy module logs the actual decision; we log the
+        # outcome from the worker's perspective so timing context is
+        # preserved.
         safe_query = self._scrub_claim(claim)
         if safe_query is None:
-            log.debug(
-                "fact-check: claim dropped at search-time privacy gate",
+            log.info(
+                "fact-check skip: privacy gate dropped claim "
+                "memory_id=%s claim=%r",
+                claim.memory_id,
+                _preview(claim.claim_text),
             )
             return {"skipped": True, "reason": "privacy_gate"}
+        log.info(
+            "fact-check scrubbed: memory_id=%s safe_query=%r",
+            claim.memory_id,
+            _preview(safe_query),
+        )
+
+        search_t0 = time.monotonic()
         try:
             snippets = self._search(claim, safe_query=safe_query)
         except Exception:
-            log.debug("fact-check web search failed", exc_info=True)
+            search_ms = (time.monotonic() - search_t0) * 1000.0
+            log.warning(
+                "fact-check search failed: memory_id=%s elapsed_ms=%.0f",
+                claim.memory_id,
+                search_ms,
+                exc_info=True,
+            )
             return {"checked": 0, "error": "search_failed"}
+        search_ms = (time.monotonic() - search_t0) * 1000.0
+        # Render the result list compactly: first 80 chars of each
+        # title + truncated URL host so the audit can tell what the
+        # search engine returned without dumping the full snippets
+        # (those go in DEBUG).
+        result_summary = [
+            {
+                "title": (s.get("title") or "")[:80],
+                "url": (s.get("url") or "")[:120],
+            }
+            for s in snippets
+        ]
+        log.info(
+            "fact-check search done: memory_id=%s elapsed_ms=%.0f "
+            "result_count=%d top=%s",
+            claim.memory_id,
+            search_ms,
+            len(snippets),
+            result_summary,
+        )
+        if log.isEnabledFor(logging.DEBUG):
+            for idx, s in enumerate(snippets):
+                log.debug(
+                    "fact-check snippet[%d]: title=%r url=%s body=%r",
+                    idx,
+                    (s.get("title") or "")[:120],
+                    (s.get("url") or "")[:160],
+                    _preview(s.get("snippet")),
+                )
         if self._cancel_event.is_set():
+            log.info(
+                "fact-check cancelled mid-search: memory_id=%s",
+                claim.memory_id,
+            )
             self._queue.requeue_front(claim)
             return {"cancelled": True}
+
+        distil_t0 = time.monotonic()
         verdict = self._distil(claim, snippets, safe_query=safe_query)
+        distil_ms = (time.monotonic() - distil_t0) * 1000.0
         if verdict is None:
+            log.info(
+                "fact-check distil cancel/parse-fail: memory_id=%s elapsed_ms=%.0f",
+                claim.memory_id,
+                distil_ms,
+            )
             # ``_distil`` returns None on cancel or parse failure. Put
             # the claim back at the head so the next tick retries.
             self._queue.requeue_front(claim)
             return {"cancelled": True}
-        applied = self._apply_verdict(claim, verdict)
+        log.info(
+            "fact-check distil done: memory_id=%s elapsed_ms=%.0f "
+            "verdict=%s delta=%+.2f rewrite=%r",
+            claim.memory_id,
+            distil_ms,
+            verdict.kind,
+            verdict.delta,
+            _preview(verdict.rewrite) if verdict.rewrite else None,
+        )
+
+        applied = self._apply_verdict(claim, verdict) or {}
+        log.info(
+            "fact-check apply done: memory_id=%s verdict=%s "
+            "confidence %.2f -> %.2f rewrote=%s resolved_gap=%s",
+            claim.memory_id,
+            verdict.kind,
+            float(applied.get("confidence_before", 0.0)),
+            float(applied.get("confidence_after", 0.0)),
+            bool(applied.get("rewrote", False)),
+            bool(applied.get("resolved_gap", False)),
+        )
         return {
             "checked": 1,
             "verdict": verdict.kind,
             "memory_id": claim.memory_id,
-            **(applied or {}),
+            **applied,
         }
 
     # ── pieces ───────────────────────────────────────────────────────
@@ -279,16 +387,27 @@ class IdleFactChecker:
         # place that sees the original claim text (the verdict
         # application step, which writes back to the memory store).
         prompt_claim = safe_query if safe_query else claim.claim_text
+        user_content = _USER_TEMPLATE.format(
+            claim=prompt_claim,
+            excerpts=excerpts_text,
+        )
         messages = [
             {"role": "system", "content": _SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": _USER_TEMPLATE.format(
-                    claim=prompt_claim,
-                    excerpts=excerpts_text,
-                ),
-            },
+            {"role": "user", "content": user_content},
         ]
+        # The full prompt only goes to the LLM (local) and to DEBUG
+        # logs so an audit can see exactly what was sent. The user
+        # part already contains the scrubbed claim + the search
+        # excerpts, so this is the single source of truth for "what
+        # did the model see".
+        if log.isEnabledFor(logging.DEBUG):
+            log.debug(
+                "fact-check distil prompt: model=%s prompt_chars=%d "
+                "user_payload=%r",
+                self._chat_model,
+                len(user_content) + len(_SYSTEM_PROMPT),
+                _preview(user_content),
+            )
         # We rely on chat_stream's stop_event support for cancellation.
         # The format_json hint nudges Ollama-supporting models to emit
         # a single JSON object; we still tolerate stray prose via the
@@ -305,13 +424,23 @@ class IdleFactChecker:
             for chunk in stream:
                 chunks.append(chunk)
         except Exception:
-            log.debug("fact-check distil call raised", exc_info=True)
+            log.warning("fact-check distil call raised", exc_info=True)
             return None
         if self._cancel_event.is_set():
             return None
         raw = "".join(chunks).strip()
         if not raw:
+            log.info(
+                "fact-check distil produced empty output: memory_id=%s",
+                claim.memory_id,
+            )
             return None
+        log.debug(
+            "fact-check distil raw: memory_id=%s chars=%d preview=%r",
+            claim.memory_id,
+            len(raw),
+            _preview(raw),
+        )
         return self._parse_verdict(raw)
 
     def _parse_verdict(self, raw: str) -> Verdict | None:
@@ -403,7 +532,11 @@ class IdleFactChecker:
                 confidence=new_conf,
             )
         except Exception:
-            log.debug("fact-check update failed", exc_info=True)
+            log.warning(
+                "fact-check update failed: memory_id=%s",
+                claim.memory_id,
+                exc_info=True,
+            )
             return {"update_failed": True}
 
         if updated is not None and self._notify_memory_updated is not None:

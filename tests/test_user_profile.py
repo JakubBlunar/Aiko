@@ -255,5 +255,50 @@ class UserProfileWorkerTests(unittest.TestCase):
             f.close()
 
 
+# ── G2: usual_hours field ─────────────────────────────────────────────
+
+
+class UsualHoursFieldTests(unittest.TestCase):
+    """The G2 schedule learner upserts a single ``usual_hours`` field
+    via :class:`UserProfileStore`. The store has to (a) accept it as
+    one of the valid fields and (b) round-trip through SQLite so the
+    rendered profile block picks it up.
+    """
+
+    def test_usual_hours_is_in_profile_fields(self) -> None:
+        self.assertIn("usual_hours", PROFILE_FIELDS)
+
+    def test_round_trip_through_upsert(self) -> None:
+        f = _Fixture()
+        try:
+            wrote = f.store.upsert(
+                "user-1",
+                "usual_hours",
+                "weekday evenings (18-23)",
+                confidence=0.8,
+            )
+            self.assertTrue(wrote)
+            entries = f.store.fields("user-1")
+            self.assertIn("usual_hours", entries)
+            self.assertEqual(
+                entries["usual_hours"].value, "weekday evenings (18-23)",
+            )
+            self.assertGreater(entries["usual_hours"].confidence, 0.0)
+        finally:
+            f.close()
+
+    def test_render_block_includes_usual_hours(self) -> None:
+        f = _Fixture()
+        try:
+            f.store.upsert(
+                "user-1", "usual_hours", "weekend afternoons", 0.8,
+            )
+            block = f.store.render_block("user-1")
+            self.assertIn("usual hours", block.lower())
+            self.assertIn("weekend afternoons", block)
+        finally:
+            f.close()
+
+
 if __name__ == "__main__":
     unittest.main()

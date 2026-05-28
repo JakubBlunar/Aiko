@@ -475,5 +475,95 @@ class TestIdleFactCheckerHonoursPrivacyGate(unittest.TestCase):
         self.assertNotIn("Jacob", user_msg["content"])
 
 
+# ── audit logging ──────────────────────────────────────────────────────
+
+
+class TestPrivacyAuditLogging(unittest.TestCase):
+    """The privacy gate must emit one audit-friendly log line per
+    decision so ``data/app.log`` carries the trail needed to tighten
+    the rules later."""
+
+    def test_classify_block_logs_at_info_with_reason_and_preview(self) -> None:
+        with self.assertLogs("app.fact_check_privacy", level="INFO") as cm:
+            classify_memory_for_fact_check(
+                kind="self",
+                content="I really like coffee",
+            )
+        self.assertTrue(
+            any(
+                "BLOCK" in r.getMessage()
+                and "personal_kind:self" in r.getMessage()
+                for r in cm.records
+            ),
+            msg=f"expected BLOCK log line, got: {[r.getMessage() for r in cm.records]}",
+        )
+
+    def test_classify_allow_logs_at_debug_only(self) -> None:
+        # DEBUG level enabled → ALLOW line must appear; INFO level
+        # alone must not (high-volume path).
+        with self.assertLogs("app.fact_check_privacy", level="DEBUG") as cm:
+            classify_memory_for_fact_check(
+                kind="fact",
+                content="Python 3.12 was released in 2023",
+            )
+        msgs = [r.getMessage() for r in cm.records]
+        allow_lines = [m for m in msgs if "ALLOW" in m]
+        self.assertEqual(
+            len(allow_lines),
+            1,
+            msg=f"expected exactly one ALLOW line, got: {msgs}",
+        )
+        self.assertEqual(allow_lines[0].split()[0], "privacy")
+
+    def test_scrub_block_email_logs_at_info(self) -> None:
+        with self.assertLogs("app.fact_check_privacy", level="INFO") as cm:
+            scrub_claim_for_search("contact me at jacob@example.com")
+        self.assertTrue(
+            any(
+                "BLOCK" in r.getMessage() and "email" in r.getMessage()
+                for r in cm.records
+            ),
+            msg=f"expected scrub BLOCK email line, got: {[r.getMessage() for r in cm.records]}",
+        )
+
+    def test_scrub_redact_logs_dropped_tokens(self) -> None:
+        with self.assertLogs("app.fact_check_privacy", level="INFO") as cm:
+            cleaned = scrub_claim_for_search(
+                "Jacob practices violin since 2010",
+                user_names=["Jacob"],
+            )
+        self.assertIsNotNone(cleaned)
+        # The audit line must include both the dropped tokens and the
+        # before/after preview so a rule-tightening pass can identify
+        # patterns in the wild.
+        redact_lines = [
+            r.getMessage() for r in cm.records if "REDACT" in r.getMessage()
+        ]
+        self.assertEqual(len(redact_lines), 1)
+        line = redact_lines[0]
+        self.assertIn("jacob", line.lower())
+        self.assertIn("violin", line)
+
+    def test_scrub_block_too_short_includes_dropped_tokens(self) -> None:
+        # The whole claim is name + first-person → after redaction the
+        # remainder is too short. The block log should record both the
+        # reason AND the tokens we dropped, so the audit can spot
+        # patterns where the gate is firing too aggressively.
+        with self.assertLogs("app.fact_check_privacy", level="INFO") as cm:
+            scrub_claim_for_search(
+                "Jacob me my I",
+                user_names=["Jacob"],
+            )
+        block_lines = [
+            r.getMessage()
+            for r in cm.records
+            if "BLOCK" in r.getMessage()
+            and "too_short_after_redaction" in r.getMessage()
+        ]
+        self.assertEqual(len(block_lines), 1)
+        line = block_lines[0]
+        self.assertIn("dropped=", line)
+
+
 if __name__ == "__main__":
     unittest.main()

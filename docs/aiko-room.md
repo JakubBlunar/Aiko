@@ -266,7 +266,8 @@ foreshadowing of that — extending it would let outdoor scenes share
 phrasing instead of being hardcoded.
 
 Marked as a follow-up in
-[`docs/personality-backlog.md`](personality-backlog.md).
+[`docs/personality-backlog/`](personality-backlog/index.md) — see
+[H5 in `immersion.md`](personality-backlog/immersion.md#h5-second-scene--travel-semantics).
 
 ---
 

@@ -384,6 +384,91 @@ describe("AmbientBodyChannel — tickPreModel: arousal-scaled breath", () => {
     expect(adapter.params.has("ParamBreath")).toBe(false);
   });
 
+  it("boosts ParamBreath frequency while tailWagBoostUntil is in the future and has_tail_wag is on", () => {
+    // Physics-driven tail rigs (Alexia) read ParamBreath via the
+    // physics chain. Boosting freq here is what makes the tail
+    // visibly wag faster during ``[[overlay:tail_wag]]``; the
+    // ``tickTier3`` direct-sine path only matters for non-physics
+    // rigs.
+    const adapter = new FakeAdapter();
+    const channel = new AmbientBodyChannel();
+    const { deps, clock, engineState } = makeDeps(
+      { has_breath: true, has_tail_wag: true },
+      { mood: { label: "content", intensity: 0.5, valence: 0, arousal: 0.4 } },
+    );
+    channel.attach(adapter, deps);
+
+    // Baseline: no boost active. Sample 30s @ 60fps for a stable
+    // zero-crossing count.
+    const baseline = samplePreModel(channel, adapter, clock, "ParamBreath", 1800, 1 / 60);
+
+    // Activate the boost. Use a deadline far enough out that all
+    // boosted samples land inside it.
+    engineState.tailWagBoostUntil = clock.now() + 60_000;
+    const boosted = samplePreModel(channel, adapter, clock, "ParamBreath", 1800, 1 / 60);
+
+    const baselineCrossings = countZeroCrossings(baseline, 0.5);
+    const boostedCrossings = countZeroCrossings(boosted, 0.5);
+    // 2.5x freq mul; allow 1.6x slack for sampling noise.
+    expect(boostedCrossings).toBeGreaterThan(baselineCrossings * 1.6);
+  });
+
+  it("returns ParamBreath to baseline frequency once tailWagBoostUntil expires", () => {
+    const adapter = new FakeAdapter();
+    const channel = new AmbientBodyChannel();
+    const { deps, clock, engineState } = makeDeps(
+      { has_breath: true, has_tail_wag: true },
+      { mood: { label: "content", intensity: 0.5, valence: 0, arousal: 0.4 } },
+    );
+    channel.attach(adapter, deps);
+
+    // Boost a short window, then sample after expiry.
+    engineState.tailWagBoostUntil = clock.now() + 100;
+    samplePreModel(channel, adapter, clock, "ParamBreath", 60, 1 / 60); // burn the boost window
+
+    // After expiry, the breath driver should match an unboosted run.
+    const afterBoost = samplePreModel(channel, adapter, clock, "ParamBreath", 1800, 1 / 60);
+
+    const adapter2 = new FakeAdapter();
+    const channel2 = new AmbientBodyChannel();
+    const { deps: deps2, clock: clock2 } = makeDeps(
+      { has_breath: true, has_tail_wag: true },
+      { mood: { label: "content", intensity: 0.5, valence: 0, arousal: 0.4 } },
+    );
+    channel2.attach(adapter2, deps2);
+    const unboosted = samplePreModel(channel2, adapter2, clock2, "ParamBreath", 1800, 1 / 60);
+
+    const afterCrossings = countZeroCrossings(afterBoost, 0.5);
+    const unboostedCrossings = countZeroCrossings(unboosted, 0.5);
+    // After the boost expires, frequency should match within ~15%
+    // (small drift from clock offset / sampling phase).
+    expect(Math.abs(afterCrossings - unboostedCrossings)).toBeLessThan(
+      Math.max(unboostedCrossings * 0.15, 4),
+    );
+  });
+
+  it("does not boost ParamBreath when has_tail_wag is missing", () => {
+    // A rig without the cat-tail capability shouldn't accelerate
+    // its breath even if some other channel set ``tailWagBoostUntil``.
+    const adapter = new FakeAdapter();
+    const channel = new AmbientBodyChannel();
+    const { deps, clock, engineState } = makeDeps(
+      { has_breath: true },
+      { mood: { label: "content", intensity: 0.5, valence: 0, arousal: 0.4 } },
+    );
+    channel.attach(adapter, deps);
+
+    const unboosted = samplePreModel(channel, adapter, clock, "ParamBreath", 1800, 1 / 60);
+    engineState.tailWagBoostUntil = clock.now() + 60_000;
+    const stillUnboosted = samplePreModel(channel, adapter, clock, "ParamBreath", 1800, 1 / 60);
+
+    const unCrossings = countZeroCrossings(unboosted, 0.5);
+    const stillCrossings = countZeroCrossings(stillUnboosted, 0.5);
+    expect(Math.abs(unCrossings - stillCrossings)).toBeLessThan(
+      Math.max(unCrossings * 0.15, 4),
+    );
+  });
+
   it("expressiveness 0 collapses ParamBreath to a fixed mid-value", () => {
     const adapter = new FakeAdapter();
     const channel = new AmbientBodyChannel();

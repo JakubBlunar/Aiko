@@ -405,6 +405,30 @@ class AgentSettings:
     # keeping a chatty session from burning unbounded web queries.
     fact_checker_per_hour_cap: int = 10
     fact_checker_per_day_cap: int = 50
+    # ── G2 personality backlog: schedule learner ──────────────────────
+    # Master switch for :class:`app.core.schedule_learner.ScheduleLearner`,
+    # the IdleWorker that buckets ``messages.created_at`` into a
+    # ``usual_hours`` user-profile field. Cheap to run; safe to leave on.
+    schedule_learner_enabled: bool = True
+    # Minimum number of user messages in the rolling window before the
+    # worker writes anything. Below this threshold the field stays
+    # untouched so a fresh DB doesn't claim a confident schedule.
+    schedule_learner_min_samples: int = 5
+    # Rolling window the bucketing scan considers. 30 days keeps the
+    # picture current without being noisy after a single anomalous day.
+    schedule_learner_window_days: int = 30
+    # ── G3 personality backlog: idle curiosity worker ─────────────────
+    # Master switch for
+    # :class:`app.core.idle_curiosity_worker.IdleCuriosityWorker`. When
+    # disabled, ``open_question`` memories simply never get web-searched.
+    idle_curiosity_enabled: bool = True
+    # Hourly + daily caps on web searches the curiosity worker is
+    # allowed to issue. Strictly tighter than the fact-checker so a
+    # multi-week absence (with a backlog of open questions) cannot dump
+    # a wall of "I was reading about" beats on the user when they
+    # return. Token-bucket persisted to ``kv_meta`` under a separate key.
+    idle_curiosity_per_hour_cap: int = 2
+    idle_curiosity_per_day_cap: int = 6
     # Rolling summary background worker.
     summary_idle_seconds: float = 15.0  # quiet time before summarising
     summary_min_unsummarized_messages: int = 6  # minimum new msgs to trigger
@@ -593,6 +617,14 @@ class MemorySettings:
     # written memories gets verified over a session. The worker still
     # respects the per-hour/per-day rate caps in :class:`AgentSettings`.
     fact_checker_interval_seconds: int = 300
+    # G2: schedule learner cadence. The bucket scan is cheap and the
+    # picture changes slowly, so once a day is plenty.
+    schedule_learner_interval_seconds: int = 86400
+    # G3: idle curiosity worker cadence. Each tick web-searches at most
+    # one open question, so a 30-minute interval combined with the
+    # rate-cap gives the worker room to chip away at a backlog without
+    # hammering the search engine.
+    idle_curiosity_interval_seconds: int = 1800
     # IdleWorkerScheduler tick + quiet gate. Lowering ``wake_seconds``
     # makes workers fire sooner after a quiet period starts but
     # increases idle CPU; ``quiet_threshold`` is how long since the
@@ -981,6 +1013,24 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             fact_checker_per_day_cap=max(
                 0, int(agent_raw.get("fact_checker_per_day_cap", 50))
             ),
+            schedule_learner_enabled=bool(
+                agent_raw.get("schedule_learner_enabled", True),
+            ),
+            schedule_learner_min_samples=max(
+                1, int(agent_raw.get("schedule_learner_min_samples", 5)),
+            ),
+            schedule_learner_window_days=max(
+                1, int(agent_raw.get("schedule_learner_window_days", 30)),
+            ),
+            idle_curiosity_enabled=bool(
+                agent_raw.get("idle_curiosity_enabled", True),
+            ),
+            idle_curiosity_per_hour_cap=max(
+                0, int(agent_raw.get("idle_curiosity_per_hour_cap", 2)),
+            ),
+            idle_curiosity_per_day_cap=max(
+                0, int(agent_raw.get("idle_curiosity_per_day_cap", 6)),
+            ),
             shared_moments_enabled=bool(
                 agent_raw.get("shared_moments_enabled", True),
             ),
@@ -1150,6 +1200,16 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             fact_checker_interval_seconds=max(
                 30,
                 int(memory_raw.get("fact_checker_interval_seconds", 300)),
+            ),
+            schedule_learner_interval_seconds=max(
+                60,
+                int(
+                    memory_raw.get("schedule_learner_interval_seconds", 86400)
+                ),
+            ),
+            idle_curiosity_interval_seconds=max(
+                60,
+                int(memory_raw.get("idle_curiosity_interval_seconds", 1800)),
             ),
             idle_worker_wake_seconds=max(
                 1.0, float(memory_raw.get("idle_worker_wake_seconds", 60.0))

@@ -16,7 +16,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 
-import { ExpressionChannel } from "./ExpressionChannel";
+import { ExpressionChannel, _REACTION_NEIGHBOURS } from "./ExpressionChannel";
 import { FakeAdapter } from "../__fixtures__/fake-model";
 import { FakeClock } from "../__fixtures__/fake-clock";
 import { buildManifest } from "../__fixtures__/test-manifest";
@@ -1048,5 +1048,66 @@ describe("ExpressionChannel — debug instrumentation", () => {
       channel.attach(adapter, deps);
       channel.onReaction!("sad");
     }).not.toThrow();
+  });
+});
+
+// Hardcoded mirror of ``REACTIONS`` from ``app/core/reactions.py``.
+// If the Python source grows a new reaction, this list must grow too
+// AND ``_REACTION_NEIGHBOURS`` must gain a chain for it (see B5
+// cry-cascade safety). Drift on either side will break the parity
+// test below.
+const PYTHON_REACTIONS = [
+  "neutral",
+  "cheerful",
+  "excited",
+  "enthusiastic",
+  "amused",
+  "playful",
+  "surprised",
+  "curious",
+  "friendly",
+  "warm",
+  "tender",
+  "thoughtful",
+  "wistful",
+  "calm",
+  "serious",
+  "concerned",
+  "sad",
+  "melancholy",
+  "cry",
+  "tired",
+  "gentle",
+  "angry",
+  "frustrated",
+  "confused",
+  "embarrassed",
+  "nervous",
+  "defiant",
+] as const;
+
+describe("ExpressionChannel — _REACTION_NEIGHBOURS parity with Python", () => {
+  it("has a non-empty neighbour chain for every Python reaction", () => {
+    const missing: string[] = [];
+    for (const reaction of PYTHON_REACTIONS) {
+      const chain = _REACTION_NEIGHBOURS[reaction];
+      if (!chain || chain.length === 0) {
+        missing.push(reaction);
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+
+  it("only references reactions Python knows about (neighbours stay canonical)", () => {
+    const knownReactions = new Set<string>(PYTHON_REACTIONS);
+    const offenders: Array<[string, string]> = [];
+    for (const [reaction, chain] of Object.entries(_REACTION_NEIGHBOURS)) {
+      for (const neighbour of chain) {
+        if (!knownReactions.has(neighbour)) {
+          offenders.push([reaction, neighbour]);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 });

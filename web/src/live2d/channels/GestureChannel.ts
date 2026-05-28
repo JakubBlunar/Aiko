@@ -14,7 +14,15 @@
  *   - **ear_wiggle**: 4 Hz sine on every detected ear segment for
  *     the gesture lifetime, then snap back to ``0``. Multiple
  *     segments share the same phase — visually that's exactly the
- *     "twitch in unison" we want.
+ *     "twitch in unison" we want. The sine is written in BOTH
+ *     ``tickTier3`` (for non-physics rigs that don't run a
+ *     ``tickPreModel`` pass) and ``tickPreModel`` (so physics-driven
+ *     rigs like Alexia, where the ear params are downstream of
+ *     ``ParamEyeROpen`` / ``ParamEyeLOpen`` via the rig's
+ *     PhysicsSetting13 / 14, get a write that lands AFTER
+ *     ``physics.evaluate`` and therefore wins). The state slot is
+ *     nulled exclusively from ``tickPreModel`` so the rest-snap is
+ *     guaranteed to be the final write of the expiry frame.
  *
  *   - **tail_wag**: this channel does NOT drive the cat-tail
  *     params directly. The always-on cat-tail sine lives in
@@ -150,17 +158,19 @@ export class GestureChannel implements AvatarChannel {
       });
     }
 
-    // Ear-wiggle: 4Hz sine on every ear segment while alive, then
-    // snap back to 0 once on expiry. ``cat_ear_param_ids`` may be
-    // empty even when ``has_ear_wiggle`` is true (ear capability
-    // detection on a rig without independent segments) — we use
-    // the same loop guard as the legacy code.
+    // Ear-wiggle (non-physics fallback). Writes the same 4 Hz sine /
+    // rest-snap that ``tickPreModel`` writes; on physics-driven rigs
+    // these are clobbered by ``physics.evaluate`` before render, but
+    // on rigs without a physics file (Mini fixture, future minimal
+    // rigs) ``tickPreModel`` may still no-op so this branch is what
+    // produces the visible twitch. State management (slot nulling)
+    // lives exclusively in ``tickPreModel`` so the final-frame
+    // rest-write wins on physics rigs.
     if (caps.has_ear_wiggle && this._earWiggle) {
       const ids = deps.manifest.cat_ear_param_ids ?? [];
       if (ids.length > 0) {
         if (now < this._earWiggle.until) {
-          const t = now / 1000;
-          const value = Math.sin(2 * Math.PI * EAR_FREQ_HZ * t) * EAR_AMP;
+          const value = this._earWiggleValue(now);
           for (const id of ids) {
             adapter.setParam(id, value);
           }
@@ -168,10 +178,7 @@ export class GestureChannel implements AvatarChannel {
           for (const id of ids) {
             adapter.setParam(id, 0);
           }
-          this._earWiggle = null;
         }
-      } else if (now >= this._earWiggle.until) {
-        this._earWiggle = null;
       }
     }
 
@@ -185,6 +192,50 @@ export class GestureChannel implements AvatarChannel {
     ) {
       deps.engineState.tailWagBoostUntil = 0;
     }
+  }
+
+  /** Post-physics pass. Mirrors the ``tickTier3`` ear-wiggle write
+   * so physics-driven rigs (Alexia: ear params are downstream of
+   * ``ParamEyeROpen`` / ``ParamEyeLOpen`` via PhysicsSetting13 / 14)
+   * get a write that lands AFTER ``physics.evaluate`` and therefore
+   * wins. Slot nulling on expiry is owned here so the rest-snap is
+   * the last write of the expiry frame across both passes. */
+  tickPreModel(): void {
+    const adapter = this._adapter;
+    const deps = this._deps;
+    if (!adapter || !deps) {
+      return;
+    }
+    const caps = deps.manifest.capabilities ?? {};
+    if (!(caps.has_ear_wiggle && this._earWiggle)) {
+      return;
+    }
+    const now = deps.now();
+    const ids = deps.manifest.cat_ear_param_ids ?? [];
+    if (ids.length === 0) {
+      // No ear segments to write — still need to retire the slot once
+      // the gesture window passes so we don't leak state.
+      if (now >= this._earWiggle.until) {
+        this._earWiggle = null;
+      }
+      return;
+    }
+    if (now < this._earWiggle.until) {
+      const value = this._earWiggleValue(now);
+      for (const id of ids) {
+        adapter.setParam(id, value);
+      }
+    } else {
+      for (const id of ids) {
+        adapter.setParam(id, 0);
+      }
+      this._earWiggle = null;
+    }
+  }
+
+  private _earWiggleValue(now: number): number {
+    const t = now / 1000;
+    return Math.sin(2 * Math.PI * EAR_FREQ_HZ * t) * EAR_AMP;
   }
 
   private _tickWink(

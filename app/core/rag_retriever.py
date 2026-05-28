@@ -670,14 +670,24 @@ class RagRetriever:
                 continue
             if hit.source == "memory":
                 kind = (getattr(hit.record, "kind", "") or "").lower()
+                # Suffix tags. Order matters: "(uncertain)" first so
+                # confidence reads before provenance.
+                suffix_tags: list[str] = []
                 # Schema v9: append "(uncertain)" so the LLM hedges when
                 # the underlying memory has a low confidence score (the
                 # F1 fact-checker may have flagged it, or it never had
                 # a high-confidence source to begin with).
-                suffix = ""
                 confidence = getattr(hit, "confidence", None)
                 if confidence is not None and float(confidence) < 0.5:
-                    suffix = " (uncertain)"
+                    suffix_tags.append("(uncertain)")
+                # G3: append "(curiosity)" so the persona rule can
+                # surface findings as "I was reading about X — turns
+                # out…" rather than reciting them as bare facts. The
+                # tag is invisible to the user; only the LLM ever
+                # sees it.
+                if kind == "curiosity_finding":
+                    suffix_tags.append("(curiosity)")
+                suffix = (" " + " ".join(suffix_tags)) if suffix_tags else ""
                 # Schema v10: append the temporal time-tag (e.g.
                 # "(yesterday)", "(planned for tonight 20:00)",
                 # "(ongoing)") so Aiko reads the memory at the right
