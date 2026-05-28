@@ -337,6 +337,7 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
     [upsertSharedMoment],
   );
   const documentFileRef = useRef<HTMLInputElement | null>(null);
+  const tabsBarRef = useRef<HTMLElement | null>(null);
 
   const [metrics, setMetricsResp] = useState<MetricsResponse | null>(null);
   const liveMetrics = useAssistantStore((s) => s.metrics);
@@ -489,6 +490,23 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
     if (!open || activeTab !== "world") return;
     void refreshWorld();
   }, [open, activeTab, refreshWorld]);
+
+  // Translate vertical mouse-wheel into horizontal scroll on the tab bar
+  // so users don't have to drag the scrollbar when tabs overflow. React's
+  // synthetic onWheel is passive on the root container, so preventDefault
+  // there is a no-op; attach a native non-passive listener instead.
+  useEffect(() => {
+    if (!open) return;
+    const el = tabsBarRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY === 0) return;
+      el.scrollLeft += e.deltaY;
+      e.preventDefault();
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [open]);
 
   // Refresh the Together tab whenever it opens or the user changes the
   // vibe filter / page. WS patches handle live moments + axes between
@@ -925,7 +943,7 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
         onClick={onClose}
         role="presentation"
       />
-      <div className="flex h-full w-full max-w-lg flex-col border-l border-white/10 bg-[#0f0a1f] shadow-2xl">
+      <div className="flex h-full w-full max-w-2xl lg:max-w-3xl flex-col border-l border-white/10 bg-[#0f0a1f] shadow-2xl">
         <header className="flex items-center justify-between border-b border-white/5 px-5 py-4">
           <div>
             <h2 className="text-base font-semibold text-ink-100">Settings</h2>
@@ -943,6 +961,7 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
         </header>
 
         <nav
+          ref={tabsBarRef}
           className="flex shrink-0 gap-1 overflow-x-auto border-b border-white/5 bg-white/[0.015] px-3 py-2"
           aria-label="Settings sections"
         >
