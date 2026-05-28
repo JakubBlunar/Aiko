@@ -42,11 +42,16 @@ export interface AssistantSettings {
     language: string | null;
   };
   audio: {
-    microphone_device: number | null;
-    output_device: number | null;
     vad_level_threshold: number;
     vad_silence_seconds: number;
     barge_in_enabled: boolean;
+    /**
+     * Client-side toggles for the browser DSP stack. Persisted in
+     * ``localStorage`` and used as ``getUserMedia`` constraints; the
+     * server only sees them via the ``mic_start`` frame's
+     * ``dsp_flags`` byte so it can record what the client claimed.
+     */
+    earcons_enabled?: boolean;
   };
   proactive?: {
     silence_seconds: number;
@@ -884,6 +889,15 @@ export type WsServerEvent =
       /** First-run identity. Optional only for backwards compatibility
        * with older backends; missing falls back to a REST fetch. */
       identity?: Identity;
+      /** Server-assigned id for this WebSocket. Used to determine
+       * whether we currently own the microphone in multi-client mode. */
+      client_id?: string;
+      /** Current voice owner id, if any. */
+      voice_owner_id?: string | null;
+    }
+  | {
+      type: "voice_owner_changed";
+      owner_id: string | null;
     }
   | { type: "token"; chunk: string }
   | { type: "turn_done"; metrics: MetricsSnapshot }

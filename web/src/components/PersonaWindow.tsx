@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { useMicCapture } from "../hooks/useMicCapture";
 import { useAssistantStore } from "../store";
 import { desktop } from "../desktop/commands";
 import type { WsClientCommand } from "../types";
@@ -8,6 +9,7 @@ import { PersonaInput } from "./PersonaInput";
 
 interface PersonaWindowProps {
   send: (cmd: WsClientCommand) => void;
+  sendBytes: (frame: Uint8Array) => void;
 }
 
 /** Toggle a ``persona`` class on the document root so the global CSS in
@@ -33,7 +35,7 @@ function usePersonaBackdrop() {
  * connect to the same Python backend over WebSocket and receive the
  * same broadcast events. There is no inter-window direct messaging.
  */
-export function PersonaWindow({ send }: PersonaWindowProps) {
+export function PersonaWindow({ send, sendBytes }: PersonaWindowProps) {
   usePersonaBackdrop();
   const avatar = useAssistantStore((s) => s.avatar);
   const voiceMode = useAssistantStore((s) => s.voiceMode);
@@ -41,6 +43,13 @@ export function PersonaWindow({ send }: PersonaWindowProps) {
   const connection = useAssistantStore((s) => s.connection);
   const turnInProgress = useAssistantStore((s) => s.turnInProgress);
   const ttsState = useAssistantStore((s) => s.ttsState);
+  const clientId = useAssistantStore((s) => s.clientId);
+  const voiceOwnerId = useAssistantStore((s) => s.voiceOwnerId);
+  const remotelyOwned = Boolean(
+    voiceOwnerId && clientId && voiceOwnerId !== clientId,
+  );
+
+  useMicCapture({ sendBytes });
 
   const connected = connection.status === "connected";
 
@@ -112,6 +121,7 @@ export function PersonaWindow({ send }: PersonaWindowProps) {
           connected={connected}
           onClick={onMicToggle}
           size="compact"
+          remotelyOwned={remotelyOwned}
         />
         <PersonaInput onSend={onSend} connected={connected} busy={turnInProgress} />
       </div>

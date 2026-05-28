@@ -2,14 +2,19 @@
 
 Design notes
 ============
-- The browser owns *no* audio. TTS plays through pocket-tts -> sounddevice in
-  Python; STT captures from the system mic in Python. The websocket only
-  carries text events (tokens, transcripts, state).
-- One websocket = one user. We broadcast every assistant event to all
-  connected sockets so multiple tabs stay in sync.
-- The chat call is synchronous on a worker thread: the UI POSTs ``chat`` over
-  the websocket and we run :meth:`SessionController.chat_once_streaming` in a
-  thread, forwarding tokens as they arrive.
+- The **client** owns the audio interfaces. Each connected browser /
+  Tauri webview opens its own ``getUserMedia`` mic and ``AudioContext``
+  speaker; binary WS frames carry PCM in both directions (see
+  ``app.web.audio_frames`` for the type table). JSON events still
+  carry tokens, transcripts, state, etc.
+- Only one client at a time is the **voice owner** — the one whose
+  mic frames the server actually consumes. Every other connected
+  client still receives Aiko's TTS audio, transcripts, and chat
+  events so multiple tabs / devices stay in sync.
+- The chat call is synchronous on a worker thread: the UI POSTs
+  ``chat`` over the websocket and we run
+  :meth:`SessionController.chat_once_streaming` in a thread,
+  forwarding tokens as they arrive.
 """
 from __future__ import annotations
 
@@ -32,6 +37,7 @@ if TYPE_CHECKING:
 from app.core import crash_logging
 from app.core.live_session import LiveSession
 from app.core.settings import OUTFIT_MODES
+from app.web import audio_frames as _frames
 
 
 log = logging.getLogger("app.web.server")
@@ -50,43 +56,129 @@ _PERSONA_TEXT_DIR = _PROJECT_ROOT / "data" / "persona"
 
 
 class _Hub:
-    """Thread-safe registry of active websockets with broadcast helpers."""
+    """Thread-safe registry of active websockets with broadcast helpers.
+
+    Holds one entry per connection — each tagged with a ``client_id``
+    so the voice-owner lock can target a single socket and so
+    ``voice_owner_changed`` events identify who's holding the mic.
+    Binary frames (TTS / earcon PCM, see :mod:`app.web.audio_frames`)
+    are broadcast via :meth:`broadcast_bytes`; JSON state still goes
+    through :meth:`broadcast`.
+    """
 
     def __init__(self) -> None:
-        self._sockets: set[WebSocket] = set()
+        # Map: WebSocket -> client_id. Sockets without an id (briefly,
+        # during accept) are stored under ``None``.
+        self._sockets: dict[WebSocket, str] = {}
         self._lock = threading.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._voice_owner_id: str | None = None
 
     def attach_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
 
-    def add(self, ws: WebSocket) -> None:
+    def add(self, ws: WebSocket, client_id: str) -> None:
         with self._lock:
-            self._sockets.add(ws)
+            self._sockets[ws] = client_id
 
-    def discard(self, ws: WebSocket) -> None:
+    def discard(self, ws: WebSocket) -> str | None:
+        """Remove ``ws``; if it owned the mic, return the freed id."""
+        released: str | None = None
         with self._lock:
-            self._sockets.discard(ws)
+            client_id = self._sockets.pop(ws, None)
+            if client_id is not None and self._voice_owner_id == client_id:
+                released = client_id
+                self._voice_owner_id = None
+        return released
 
-    def snapshot(self) -> list[WebSocket]:
+    def snapshot(self) -> list[tuple[WebSocket, str]]:
         with self._lock:
-            return list(self._sockets)
+            return list(self._sockets.items())
 
-    def broadcast(self, message: dict[str, Any]) -> None:
-        """Schedule a broadcast onto the asyncio loop from any thread."""
+    @property
+    def voice_owner_id(self) -> str | None:
+        with self._lock:
+            return self._voice_owner_id
+
+    def claim_voice(self, client_id: str) -> tuple[bool, str | None]:
+        """Try to give ``client_id`` mic ownership.
+
+        Returns ``(claimed, previous_owner_id)``. A claim by the
+        current owner is idempotent (claimed=True, previous=client_id).
+        We allow takeover by default — the most-recent claimant wins
+        so a user moving devices doesn't get stuck if they forget to
+        release the mic on the other browser.
+        """
+        with self._lock:
+            previous = self._voice_owner_id
+            self._voice_owner_id = client_id
+            return True, previous
+
+    def release_voice(self, client_id: str) -> bool:
+        """Release the lock if ``client_id`` is the current owner."""
+        with self._lock:
+            if self._voice_owner_id == client_id:
+                self._voice_owner_id = None
+                return True
+            return False
+
+    def _schedule(self, coro: Any) -> None:
+        """Submit ``coro`` onto the hub's asyncio loop.
+
+        Works from both on-loop (WS handlers calling broadcast as
+        a synchronous side-effect) and off-loop (background worker
+        threads — TTS, MCP) callers. The on-loop path uses
+        ``loop.create_task`` directly to avoid the
+        ``run_coroutine_threadsafe`` quirk where same-thread
+        submissions can fail to dispatch under the FastAPI test
+        client's portal.
+        """
         loop = self._loop
         if loop is None or loop.is_closed():
+            coro.close()
             return
         try:
-            asyncio.run_coroutine_threadsafe(self._broadcast_async(message), loop)
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        try:
+            if running is loop:
+                loop.create_task(coro)
+            else:
+                asyncio.run_coroutine_threadsafe(coro, loop)
         except Exception:
             log.debug("broadcast scheduling failed", exc_info=True)
+            try:
+                coro.close()
+            except Exception:
+                pass
+
+    def broadcast(self, message: dict[str, Any]) -> None:
+        """Schedule a JSON broadcast onto the asyncio loop from any thread."""
+        self._schedule(self._broadcast_async(message))
+
+    def broadcast_bytes(self, frame: bytes) -> None:
+        """Schedule a binary-frame broadcast onto the asyncio loop.
+
+        Used for TTS / earcon PCM streams. The frame must already be
+        type-byte-prefixed (see :mod:`app.web.audio_frames`).
+        """
+        if not frame:
+            return
+        self._schedule(self._broadcast_bytes_async(frame))
 
     async def _broadcast_async(self, message: dict[str, Any]) -> None:
         payload = json.dumps(message, default=str)
-        for ws in self.snapshot():
+        for ws, _cid in self.snapshot():
             try:
                 await ws.send_text(payload)
+            except Exception:
+                self.discard(ws)
+
+    async def _broadcast_bytes_async(self, frame: bytes) -> None:
+        for ws, _cid in self.snapshot():
+            try:
+                await ws.send_bytes(frame)
             except Exception:
                 self.discard(ws)
 
@@ -213,6 +305,44 @@ def create_web_app(session: "SessionController") -> FastAPI:
         _partial_state["last_sent"] = now
         _partial_state["last_text"] = text
         hub.broadcast({"type": "stt_partial_live", "text": text})
+
+    # Audio frames: TTS / earcon PCM flows from PocketTtsService /
+    # EarconPlayer through SessionController, out to every connected
+    # client as ``0x10`` / ``0x11`` binary frames. We bracket each
+    # clip with ``audio_start`` / ``audio_end`` so the client knows
+    # when to spin up / flush its scheduler.
+    _stream_started: dict[str, bool] = {"tts": False, "earcon": False}
+
+    def _on_audio_frame(stream: str, sample_rate: int, channels: int, pcm: bytes) -> None:
+        if not pcm:
+            return
+        stream_byte = _frames.stream_byte(stream)
+        if stream_byte == 0:
+            return
+        if not _stream_started.get(stream, False):
+            hub.broadcast_bytes(
+                _frames.build_audio_start(stream_byte, sample_rate, channels)
+            )
+            _stream_started[stream] = True
+        if stream_byte == _frames.FRAME_TTS_PCM:
+            hub.broadcast_bytes(_frames.build_tts_pcm(pcm))
+        elif stream_byte == _frames.FRAME_EARCON_PCM:
+            hub.broadcast_bytes(_frames.build_earcon_pcm(pcm))
+
+    def _on_audio_frame_end(stream: str) -> None:
+        stream_byte = _frames.stream_byte(stream)
+        if stream_byte == 0:
+            return
+        if _stream_started.get(stream, False):
+            hub.broadcast_bytes(_frames.build_audio_end(stream_byte))
+            _stream_started[stream] = False
+
+    try:
+        session.set_audio_frame_listener(
+            _on_audio_frame, end_listener=_on_audio_frame_end,
+        )
+    except Exception:
+        log.debug("audio frame listener wiring failed", exc_info=True)
 
     session.add_message_listener(_on_message)
     session.add_tts_state_listener(_on_tts_state)
@@ -487,8 +617,6 @@ def create_web_app(session: "SessionController") -> FastAPI:
                 "language": s.stt.language,
             },
             "audio": {
-                "microphone_device": session.microphone_device,
-                "output_device": session.output_device,
                 "vad_level_threshold": session.vad_level_threshold,
                 "vad_silence_seconds": session.vad_silence_seconds,
                 "barge_in_enabled": session.barge_in_enabled(),
@@ -596,12 +724,6 @@ def create_web_app(session: "SessionController") -> FastAPI:
             session._settings.tts.enabled = bool(tts["enabled"])
             session._tts.set_enabled(bool(tts["enabled"]))
         audio = payload.get("audio") or {}
-        if "microphone_device" in audio:
-            mic = audio["microphone_device"]
-            session.set_microphone_device(int(mic) if mic is not None else None)
-        if "output_device" in audio:
-            out = audio["output_device"]
-            session.set_output_device(int(out) if out is not None else None)
         if "vad_level_threshold" in audio:
             session.set_vad_level_threshold(float(audio["vad_level_threshold"]))
         if "vad_silence_seconds" in audio:
@@ -815,13 +937,6 @@ def create_web_app(session: "SessionController") -> FastAPI:
     @app.get("/api/voices")
     def list_voices() -> JSONResponse:
         return JSONResponse(session.list_tts_voices())
-
-    @app.get("/api/audio/devices")
-    def list_audio_devices() -> JSONResponse:
-        return JSONResponse({
-            "input": [{"index": i, "name": n} for i, n in session.list_microphone_devices()],
-            "output": [{"index": i, "name": n} for i, n in session.list_output_devices()],
-        })
 
     @app.post("/api/logs/ui")
     async def post_ui_logs(payload: dict[str, Any]) -> JSONResponse:
@@ -1656,19 +1771,42 @@ def create_web_app(session: "SessionController") -> FastAPI:
     async def _startup() -> None:
         hub.attach_loop(asyncio.get_running_loop())
 
+    async def _broadcast_voice_owner_async(owner_id: str | None) -> None:
+        """Send ``voice_owner_changed`` to every connected client.
+
+        We send directly inside the active handler task instead of
+        scheduling onto the loop so the message lands deterministically
+        before the handler awaits its next receive — important for the
+        test client which drives requests synchronously.
+        """
+        payload = json.dumps(
+            {"type": "voice_owner_changed", "owner_id": owner_id},
+            default=str,
+        )
+        for sock, _cid in hub.snapshot():
+            try:
+                await sock.send_text(payload)
+            except Exception:
+                hub.discard(sock)
+
     @app.websocket("/ws")
     async def websocket_endpoint(ws: WebSocket) -> None:
         await ws.accept()
-        hub.add(ws)
+        import uuid as _uuid
+        client_id = _uuid.uuid4().hex
+        hub.add(ws, client_id)
+        ws.client_id = client_id  # type: ignore[attr-defined]
 
         # On connect, prime the client with current state.
         try:
             await ws.send_text(json.dumps({
                 "type": "hello",
+                "client_id": client_id,
                 "session": session.session_key,
                 "model": session.effective_chat_model,
                 "tts_enabled": bool(session._settings.tts.enabled),
                 "voice_active": bool(live_session.is_active),
+                "voice_owner_id": hub.voice_owner_id,
                 "context_window": session.context_window_size,
                 "context_source": session.context_window_source,
                 "avatar": session.avatar_payload(),
@@ -1687,7 +1825,54 @@ def create_web_app(session: "SessionController") -> FastAPI:
 
         try:
             while True:
-                raw = await ws.receive_text()
+                # ``receive()`` returns the full ASGI envelope so we can
+                # handle both text (JSON control messages) and bytes
+                # (binary mic frames) without the framework guessing.
+                envelope = await ws.receive()
+                if envelope.get("type") != "websocket.receive":
+                    # Disconnect / connect events surface here too; only
+                    # ``receive`` carries payload data.
+                    if envelope.get("type") == "websocket.disconnect":
+                        break
+                    continue
+
+                if "bytes" in envelope and envelope["bytes"] is not None:
+                    data: bytes = envelope["bytes"]
+                    if not data:
+                        continue
+                    frame_type = data[0]
+                    if frame_type == _frames.FRAME_MIC_START:
+                        if hub.voice_owner_id != client_id:
+                            # Stale frame from a non-owner; drop.
+                            continue
+                        parsed = _frames.parse_mic_start(data[1:])
+                        if parsed is None:
+                            continue
+                        sample_rate, channels, dsp_flags = parsed
+                        try:
+                            session.feed_audio_start(sample_rate, channels, dsp_flags)
+                        except Exception:
+                            log.debug("feed_audio_start failed", exc_info=True)
+                    elif frame_type == _frames.FRAME_MIC_PCM:
+                        if hub.voice_owner_id != client_id:
+                            continue
+                        pcm = data[1:]
+                        if not pcm:
+                            continue
+                        # We've already adopted sample_rate/channels via
+                        # ``mic_start``; pass 0 to signal "use whatever
+                        # the source last latched".
+                        try:
+                            session.feed_audio_frame(0, 0, pcm)
+                        except Exception:
+                            log.debug("feed_audio_frame failed", exc_info=True)
+                    else:
+                        log.debug("unknown binary frame: 0x%02x", frame_type)
+                    continue
+
+                raw = envelope.get("text")
+                if raw is None:
+                    continue
                 try:
                     msg = json.loads(raw)
                 except json.JSONDecodeError:
@@ -1738,15 +1923,35 @@ def create_web_app(session: "SessionController") -> FastAPI:
                     hub.broadcast({"type": "history_cleared", "session": session.session_key})
 
                 elif msg_type == "voice_start":
+                    # Claim mic ownership for this client. The server
+                    # only consumes mic frames from the owning client;
+                    # the previous owner (if any) is notified via the
+                    # broadcast below so its UI can flip back to idle.
+                    _claimed, previous = hub.claim_voice(client_id)
+                    if previous and previous != client_id:
+                        try:
+                            session.feed_audio_end()
+                        except Exception:
+                            log.debug("feed_audio_end on takeover failed", exc_info=True)
                     if not live_session.is_active:
                         live_session.start()
                     else:
-                        # Re-broadcast current state so a reconnected client
-                        # can re-sync its UI.
                         hub.broadcast({"type": "voice_state", "state": "listening"})
+                    await _broadcast_voice_owner_async(client_id)
 
                 elif msg_type == "voice_stop":
-                    live_session.stop()
+                    released = hub.release_voice(client_id)
+                    if released:
+                        try:
+                            session.feed_audio_end()
+                        except Exception:
+                            log.debug("feed_audio_end on release failed", exc_info=True)
+                        await _broadcast_voice_owner_async(None)
+                    if not hub.voice_owner_id:
+                        # Only stop the LiveSession when nobody is
+                        # holding the mic — another client may still
+                        # be the owner after a takeover-then-release.
+                        live_session.stop()
 
                 elif msg_type == "ping":
                     await ws.send_text(json.dumps({"type": "pong"}))
@@ -1785,7 +1990,23 @@ def create_web_app(session: "SessionController") -> FastAPI:
         except Exception:
             log.exception("websocket loop crashed")
         finally:
-            hub.discard(ws)
+            released_owner = hub.discard(ws)
+            if released_owner is not None:
+                try:
+                    session.feed_audio_end()
+                except Exception:
+                    log.debug("feed_audio_end on disconnect failed", exc_info=True)
+                if not hub.voice_owner_id:
+                    try:
+                        live_session.stop()
+                    except Exception:
+                        log.debug("live_session.stop on disconnect failed", exc_info=True)
+                # Broadcast inline so the message lands while the
+                # remaining sockets' handlers are still active — a
+                # background ``hub.broadcast`` race here can let the
+                # disconnect side's cleanup finish before the task
+                # fires, which the FastAPI test client hates.
+                await _broadcast_voice_owner_async(hub.voice_owner_id)
 
     return app
 

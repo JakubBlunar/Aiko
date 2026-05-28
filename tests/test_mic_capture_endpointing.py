@@ -1,10 +1,11 @@
-"""Lightweight integration tests for the new endpoint_check / on_chunk
-hooks in :class:`app.audio.mic_capture.MicrophoneCapture`.
+"""Lightweight integration tests for the endpoint_check / on_chunk
+hooks in :class:`app.audio.client_mic_source.ClientMicSource`.
 
-We don't actually open a microphone or use sounddevice; instead we
-monkey-patch ``sd.InputStream`` with a fake that yields a scripted
-sequence of audio chunks (silence vs. speech) so we can drive the
-capture loop deterministically and assert on its behaviour:
+The source is fed scripted PCM via ``feed_pcm`` (matching how the
+WS layer drives it in production); we don't open a microphone or
+use sounddevice. Each test pushes a deterministic sequence of
+silence / speech chunks into the queue and asserts on the capture
+loop's behaviour:
 
 - ``on_chunk`` fires once per chunk during the speech region (and
   replays the pre-roll once on speech-start).
@@ -18,16 +19,13 @@ capture loop deterministically and assert on its behaviour:
 """
 from __future__ import annotations
 
+import threading
+import time
 import unittest
-from contextlib import contextmanager
-from dataclasses import dataclass
-from typing import Iterator
-from unittest import mock
 
 import numpy as np
 
-from app.audio import mic_capture
-from app.audio.mic_capture import MicrophoneCapture
+from app.audio.client_mic_source import ClientMicSource
 from app.core.settings import AudioSettings
 
 
@@ -49,47 +47,57 @@ def _speech_chunk(amplitude: float = 0.3) -> np.ndarray:
     return wave.reshape(-1, CHANNELS)
 
 
-@dataclass
-class _FakeStream:
-    chunks: list[np.ndarray]
-    idx: int = 0
-
-    def read(self, _frames: int) -> tuple[np.ndarray, bool]:
-        if self.idx >= len(self.chunks):
-            # Loop the last chunk forever once we exhaust the script —
-            # the capture loop's own deadlines (max_seconds, hard cap)
-            # ensure we always terminate.
-            chunk = self.chunks[-1]
-        else:
-            chunk = self.chunks[self.idx]
-            self.idx += 1
-        return chunk.copy(), False
+def _to_pcm_bytes(chunk: np.ndarray) -> bytes:
+    mono = chunk[:, 0] if chunk.ndim > 1 else chunk
+    pcm = np.clip(mono, -1.0, 1.0)
+    return (pcm * 32767).astype(np.int16).tobytes()
 
 
-@contextmanager
-def _patched_input_stream(chunks: list[np.ndarray]) -> Iterator[_FakeStream]:
-    fake = _FakeStream(chunks=chunks)
-
-    @contextmanager
-    def _ctx(*_args: object, **_kwargs: object) -> Iterator[_FakeStream]:
-        yield fake
-
-    with mock.patch.object(mic_capture.sd, "InputStream", _ctx):
-        yield fake
-
-
-def _build_capture() -> MicrophoneCapture:
+def _build_capture() -> ClientMicSource:
     settings = AudioSettings(
         sample_rate=SAMPLE_RATE,
         channels=CHANNELS,
         enable_microphone=True,
-        microphone_device=None,
-        output_device=None,
         vad_level_threshold=0.02,
         vad_silence_seconds=1.0,
         barge_in_enabled=False,
     )
-    return MicrophoneCapture(settings)
+    return ClientMicSource(settings)
+
+
+class _Feeder:
+    """Drip scripted PCM chunks into a ClientMicSource on a worker thread."""
+
+    def __init__(self, source: ClientMicSource, chunks: list[np.ndarray]) -> None:
+        self._source = source
+        self._chunks = chunks
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> None:
+        self._source.feed_start(SAMPLE_RATE, CHANNELS, 0)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=1.0)
+        self._source.feed_end()
+
+    def _run(self) -> None:
+        for chunk in self._chunks:
+            if self._stop.is_set():
+                return
+            self._source.feed_pcm(SAMPLE_RATE, CHANNELS, _to_pcm_bytes(chunk))
+            # 100 ms of pre-buffered audio per feed call; sleep so the
+            # capture loop's RMS / VAD math runs against fresh data
+            # rather than draining the queue in one go.
+            time.sleep(0.02)
+        # Loop the last chunk forever so the capture loop's
+        # ``max_seconds`` / silence caps eventually break us.
+        last = self._chunks[-1] if self._chunks else _silence_chunk()
+        while not self._stop.is_set():
+            self._source.feed_pcm(SAMPLE_RATE, CHANNELS, _to_pcm_bytes(last))
+            time.sleep(0.02)
 
 
 class CaptureLoopTests(unittest.TestCase):
@@ -117,7 +125,9 @@ class CaptureLoopTests(unittest.TestCase):
         if endpoint_check is not None:
             endpoint_check = _wrap_endpoint(endpoint_check)
 
-        with _patched_input_stream(chunks):
+        feeder = _Feeder(cap, chunks)
+        feeder.start()
+        try:
             samples = cap.capture_phrase(
                 max_seconds=10.0,
                 use_webrtc_vad=False,
@@ -131,6 +141,8 @@ class CaptureLoopTests(unittest.TestCase):
                 endpoint_check=endpoint_check,
                 **kwargs,
             )
+        finally:
+            feeder.stop()
         return samples, on_chunk_calls, endpoint_calls
 
     def test_legacy_path_still_works_without_callbacks(self) -> None:
@@ -141,7 +153,9 @@ class CaptureLoopTests(unittest.TestCase):
             + [_silence_chunk()] * 6
         )
         cap = _build_capture()
-        with _patched_input_stream(chunks):
+        feeder = _Feeder(cap, chunks)
+        feeder.start()
+        try:
             samples = cap.capture_phrase(
                 max_seconds=5.0,
                 use_webrtc_vad=False,
@@ -150,6 +164,8 @@ class CaptureLoopTests(unittest.TestCase):
                 min_speech_seconds_before_stop=0.3,
                 speech_start_grace_seconds=0.0,
             )
+        finally:
+            feeder.stop()
         self.assertIsNotNone(samples)
         # Exit was via the silence cap, not the max_seconds deadline.
         self.assertGreater(len(samples), 0)

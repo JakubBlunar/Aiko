@@ -6,6 +6,7 @@ import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from app.core.settings import AudioSettings, SttSettings
 
@@ -14,15 +15,16 @@ log = logging.getLogger("app.stt.realtime_stt_service")
 
 try:
     import numpy as np
-    import sounddevice as sd
 except ImportError:
-    np = None
-    sd = None
+    np = None  # type: ignore[assignment]
 
 try:
     import wave
 except ImportError:
     wave = None
+
+if TYPE_CHECKING:
+    from app.audio.client_mic_source import ClientMicSource
 
 try:
     from RealtimeSTT import AudioToTextRecorder
@@ -154,50 +156,44 @@ class RealtimeSttService:
         max_seconds: float = 15.0,
         silence_seconds: float = 1.2,
         chunk_seconds: float = 0.2,
-        device: int | None = None,
+        mic_source: "ClientMicSource | None" = None,
     ) -> str:
+        """Record from the client mic source, feed RealtimeSTT, transcribe.
+
+        Returns the final transcript or ``""``. The mic source must be
+        the same :class:`ClientMicSource` the WS hub feeds with
+        binary mic frames, so the timing of "silence" lines up with
+        what the client is actually streaming.
         """
-        Record from microphone, feed to RealtimeSTT, until silence or max_seconds.
-        Returns transcribed text.
-        """
-        if self._recorder is None or np is None or sd is None:
+        if self._recorder is None or np is None or mic_source is None:
             return ""
-        if device is None:
-            device = self._audio_settings.microphone_device
         sample_rate = self._audio_settings.sample_rate
         channels = self._audio_settings.channels
-        chunk_frames = int(sample_rate * chunk_seconds) * channels
+        chunk_frames = max(1, int(sample_rate * chunk_seconds)) * max(1, channels)
         silence_chunks = max(1, int(silence_seconds / chunk_seconds))
         silent_count = 0
         start = time.perf_counter()
         last_text_len = 0
 
-        def callback(indata, _frames, _time_info, _status):
-            self.feed_audio(indata)
-
         log.debug(
-            "STT capture start: device=%s sample_rate=%d max_s=%.1f silence_s=%.1f",
-            device if device is not None else "default",
+            "STT capture start: client-fed sample_rate=%d max_s=%.1f silence_s=%.1f",
             sample_rate, max_seconds, silence_seconds,
         )
-        # Don't fight a context that's already managed elsewhere (LiveSession
-        # keeps the recorder live across phrases). We only start/stop when
-        # this method is the owner.
+        # Avoid double-managing the recorder context: LiveSession keeps
+        # it open across phrases, in which case ``record_until_silence``
+        # just feeds audio.
         owns_context = not self._context_active
         result = ""
         try:
             if owns_context:
                 self.start_context()
-            with sd.InputStream(
-                samplerate=sample_rate,
-                channels=channels,
-                dtype=np.int16,
-                blocksize=chunk_frames,
-                callback=callback,
-                device=device,
-            ):
+            # Mirror the old ``sd.InputStream`` reader on the queue
+            # surface that :class:`ClientMicSource` exposes.
+            from app.audio.client_mic_source import _QueuedInputStream  # local: shim
+            with _QueuedInputStream(mic_source, channels=channels) as stream:
                 while (time.perf_counter() - start) < max_seconds:
-                    time.sleep(chunk_seconds)
+                    chunk, _ = stream.read(chunk_frames)
+                    self.feed_audio(chunk)
                     current = self.text()
                     if current:
                         if len(current) > last_text_len:
@@ -218,9 +214,6 @@ class RealtimeSttService:
                 self.stop_context()
             duration_ms = (time.perf_counter() - start) * 1000.0
             chars = len(result)
-            # INFO: one line per voice turn — comparable to "turn done" for typed
-            # turns. Full transcript text stays at DEBUG to avoid leaking
-            # transcripts into INFO-level logs.
             log.info(
                 "STT capture done: chars=%d duration_ms=%.0f",
                 chars, duration_ms,

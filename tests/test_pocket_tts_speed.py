@@ -1,21 +1,21 @@
 """Tests for the Phase 1b speed plumbing in PocketTtsService.
 
 We can't load the real Pocket-TTS model in CI (huge download, CPU-only
-inference), so these tests stub ``sounddevice`` and the model and
-verify the contract:
+inference), so these tests stub the model loader and verify the
+contract:
 
   - ``speak_async(text, reaction=…)`` derives speed from the reaction
     table and clamps to the safe range.
   - ``speak_async(text, speed=…)`` overrides the reaction default.
-  - ``_speak_worker`` calls ``sd.play`` with a samplerate scaled by
-    ``speed`` (the actual mechanism that makes Aiko speak faster /
-    slower).
+  - ``_speak_worker`` emits PCM through ``pcm_listener`` at the
+    playback rate (samplerate scaled by ``speed``); this is the
+    actual mechanism that makes Aiko speak faster / slower.
   - The amplitude pacer is fed the playback rate, not the synthesis
     rate, so lip-sync stays in step.
 
 The fragility budget is small because we touch only the contract
-between cadence → TtsQueue → speak_async → sd.play. Internal Pocket-TTS
-behaviour is mocked.
+between cadence → TtsQueue → speak_async → pcm_listener. Internal
+Pocket-TTS behaviour is mocked.
 """
 from __future__ import annotations
 
@@ -33,16 +33,14 @@ from app.tts.pocket_tts_service import (
 
 
 def _make_service() -> PocketTtsService:
-    """Build a PocketTtsService with the model + sd loader bypassed."""
+    """Build a PocketTtsService with the model loader bypassed."""
     settings = MagicMock()
     settings.enabled = True
-    # Bypass the auto-load thread spun up in __init__: stub TTSModel /
-    # numpy / sd to None so the constructor records "missing" and
-    # doesn't try to import anything heavy. We then wire fakes in by
-    # hand.
+    # Bypass the auto-load thread spun up in __init__: stub TTSModel
+    # to None so the constructor records "missing" and doesn't try to
+    # import anything heavy. We then wire fakes in by hand.
     with patch("app.tts.pocket_tts_service.TTSModel", None), \
-         patch("app.tts.pocket_tts_service.np", np), \
-         patch("app.tts.pocket_tts_service.sd", MagicMock()):
+         patch("app.tts.pocket_tts_service.np", np):
         svc = PocketTtsService(settings)
 
     # Fake out the model + voice state so generate_audio works without
@@ -151,38 +149,33 @@ class SpeakAsyncSpeedOverrideTests(unittest.TestCase):
 
 
 class SpeakWorkerSamplerateTests(unittest.TestCase):
-    """``_speak_worker`` is what actually calls ``sd.play``; it must
-    scale the samplerate by ``speed`` so playback runs faster / slower.
+    """``_speak_worker`` is what actually emits PCM through the
+    listener; it must scale the samplerate by ``speed`` so playback
+    runs faster / slower on the client side.
     """
 
-    def test_play_called_with_scaled_samplerate(self) -> None:
+    def _capture_first_rate(self, speed: float) -> int:
         svc = _make_service()
-        with patch("app.tts.pocket_tts_service.sd") as fake_sd:
-            fake_sd.play = MagicMock()
-            fake_sd.wait = MagicMock()
-            done = threading.Event()
-            svc._speak_worker(
-                "hello", on_done=done.set, speed=1.05, on_amplitude=None,
-            )
-            done.wait(timeout=1.0)
-            fake_sd.play.assert_called_once()
-            args, kwargs = fake_sd.play.call_args
-            # args[0] is the audio buffer; args[1] is the playback rate.
-            playback_rate = args[1]
-            self.assertEqual(playback_rate, int(16000 * 1.05))
+        captured: list[int] = []
+
+        def _listener(rate: int, _channels: int, _pcm: bytes) -> None:
+            captured.append(rate)
+
+        svc.set_pcm_listener(_listener)
+        done = threading.Event()
+        svc._speak_worker(
+            "hello", on_done=done.set, speed=speed, on_amplitude=None,
+        )
+        done.wait(timeout=1.0)
+        return captured[0]
+
+    def test_play_called_with_scaled_samplerate(self) -> None:
+        playback_rate = self._capture_first_rate(1.05)
+        self.assertEqual(playback_rate, int(16000 * 1.05))
 
     def test_play_uses_native_samplerate_at_speed_one(self) -> None:
-        svc = _make_service()
-        with patch("app.tts.pocket_tts_service.sd") as fake_sd:
-            fake_sd.play = MagicMock()
-            fake_sd.wait = MagicMock()
-            done = threading.Event()
-            svc._speak_worker(
-                "hello", on_done=done.set, speed=1.0, on_amplitude=None,
-            )
-            done.wait(timeout=1.0)
-            args, _ = fake_sd.play.call_args
-            self.assertEqual(args[1], 16000)
+        playback_rate = self._capture_first_rate(1.0)
+        self.assertEqual(playback_rate, 16000)
 
 
 if __name__ == "__main__":

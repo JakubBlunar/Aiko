@@ -27,7 +27,15 @@ class TtsEngine(Protocol):
         """Request immediate stop of any in-progress playback."""
         ...
 
-    def set_output_device(self, device_index: int | None) -> None:
+    def set_pcm_listener(
+        self,
+        listener: Callable[[int, int, bytes], None] | None,
+        *,
+        end_listener: Callable[[], None] | None = None,
+    ) -> None:
+        """Install a callback that receives synthesised Int16 LE PCM
+        chunks. The session controller routes the bytes to the WS hub
+        which broadcasts them to every connected client."""
         ...
 
     def speak_async(

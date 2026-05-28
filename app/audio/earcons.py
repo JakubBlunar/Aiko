@@ -1,7 +1,9 @@
 """Lightweight earcon (notification sound) player.
 
-Generates short sine-wave tones programmatically and plays them
-on a separate sounddevice stream so they don't block TTS playback.
+Generates short sine-wave tones programmatically and streams the
+resulting Int16 PCM through a ``pcm_listener`` callback so the WS hub
+can broadcast them as ``0x11 earcon_pcm`` frames; every connected
+client plays them through its own WebAudio context.
 
 Two earcon families live here:
 
@@ -15,15 +17,20 @@ Two earcon families live here:
 from __future__ import annotations
 
 import threading
+import time
+from collections.abc import Callable
 
 try:
     import numpy as np
-    import sounddevice as sd
 except ImportError:
-    np = None
-    sd = None
+    np = None  # type: ignore[assignment]
 
 _SAMPLE_RATE = 22050
+
+# ``(sample_rate, channels, pcm_int16_le_bytes)`` per chunk; empty
+# payload signals end-of-clip.
+PcmListener = Callable[[int, int, bytes], None]
+PcmEndListener = Callable[[], None]
 
 _TONES: dict[str, list[tuple[float, float, float]]] = {
     "listening": [(880, 0.08, 0.25), (1100, 0.08, 0.2)],
@@ -134,12 +141,23 @@ def _build_sound(name: str) -> "np.ndarray | None":
 
 
 class EarconPlayer:
-    """Plays short notification sounds without blocking TTS."""
+    """Streams short notification sounds to connected clients."""
 
-    def __init__(self, enabled: bool = True, output_device: int | None = None) -> None:
-        self._enabled = enabled and sd is not None and np is not None
-        self._output_device = output_device
+    # ~50 ms per chunk so earcons share the same WS framing rhythm
+    # as the TTS PCM stream.
+    _EMIT_CHUNK_SECONDS: float = 0.05
+
+    def __init__(
+        self,
+        enabled: bool = True,
+        *,
+        pcm_listener: PcmListener | None = None,
+        clip_end_listener: PcmEndListener | None = None,
+    ) -> None:
+        self._enabled = enabled and np is not None
         self._cache: dict[str, "np.ndarray"] = {}
+        self._pcm_listener: PcmListener | None = pcm_listener
+        self._clip_end_listener: PcmEndListener | None = clip_end_listener
 
     @property
     def enabled(self) -> bool:
@@ -147,7 +165,18 @@ class EarconPlayer:
 
     @enabled.setter
     def enabled(self, value: bool) -> None:
-        self._enabled = bool(value) and sd is not None and np is not None
+        self._enabled = bool(value) and np is not None
+
+    def set_pcm_listener(
+        self,
+        listener: PcmListener | None,
+        *,
+        end_listener: PcmEndListener | None = None,
+    ) -> None:
+        """Install / replace the PCM emitter (wired by SessionController)."""
+        self._pcm_listener = listener
+        if end_listener is not None:
+            self._clip_end_listener = end_listener
 
     def play(self, name: str) -> None:
         """Fire-and-forget playback (default for system notifications)."""
@@ -158,21 +187,22 @@ class EarconPlayer:
             return
         threading.Thread(
             target=self._play_worker,
-            args=(audio, False),
+            args=(audio,),
             daemon=True,
             name=f"earcon-{name}",
         ).start()
 
     def play_blocking(self, name: str) -> None:
         """Synchronous playback used by the TTS queue's stage-direction
-        splicer (Phase 1c). Returns when the earcon has finished so the
-        next text chunk lines up naturally in time."""
+        splicer (Phase 1c). Returns when the earcon PCM has been pushed
+        through the listener so the next text chunk lines up naturally
+        in time on the wire."""
         if not self._enabled:
             return
         audio = self._get(name)
         if audio is None:
             return
-        self._play_worker(audio, True)
+        self._play_worker(audio)
 
     def _get(self, name: str) -> "np.ndarray | None":
         if name not in self._cache:
@@ -182,16 +212,44 @@ class EarconPlayer:
             self._cache[name] = sound
         return self._cache[name]
 
-    def _play_worker(self, audio: "np.ndarray", blocking: bool = False) -> None:
+    def _play_worker(self, audio: "np.ndarray") -> None:
+        listener = self._pcm_listener
+        if listener is None or np is None:
+            end_listener = self._clip_end_listener
+            if end_listener is not None:
+                try:
+                    end_listener()
+                except Exception:
+                    pass
+            return
+        playback_duration_s = 0.0
         try:
-            sd.play(audio, _SAMPLE_RATE, device=self._output_device)
-            if blocking:
-                sd.wait()
-            else:
-                # Fire-and-forget: still call wait() so the *next*
-                # ``sd.play`` doesn't truncate this one. The thread we
-                # ran on is daemon so total cost is just one extra
-                # thread per earcon.
-                sd.wait()
+            flat = audio.reshape(-1) if audio.ndim > 1 else audio
+            if flat.size == 0:
+                return
+            playback_duration_s = float(flat.size) / float(_SAMPLE_RATE)
+            chunk_samples = max(1, int(_SAMPLE_RATE * self._EMIT_CHUNK_SECONDS))
+            pcm16 = (np.clip(flat, -1.0, 1.0) * 32767.0).round().astype(np.int16, copy=False)
+            ship_t0 = time.monotonic()
+            for start in range(0, pcm16.size, chunk_samples):
+                end = min(start + chunk_samples, pcm16.size)
+                listener(_SAMPLE_RATE, 1, pcm16[start:end].tobytes())
+            # Bytes leave the WS at network speed; the actual playback
+            # on the client takes ``playback_duration_s`` seconds. Block
+            # the worker for that long so :class:`TtsQueue` only
+            # advances to the next text chunk after the earcon has
+            # really finished — otherwise a stage-direction earcon
+            # spliced mid-sentence would let the next sentence's PCM
+            # arrive before the earcon finishes playing on the client.
+            remaining = playback_duration_s - (time.monotonic() - ship_t0)
+            if remaining > 0.0:
+                time.sleep(remaining)
         except Exception:
             pass
+        finally:
+            end_listener = self._clip_end_listener
+            if end_listener is not None:
+                try:
+                    end_listener()
+                except Exception:
+                    pass

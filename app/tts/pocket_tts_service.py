@@ -1,4 +1,14 @@
-"""Pocket TTS backend -- CPU-only, 100M params, voice cloning support."""
+"""Pocket TTS backend -- CPU-only, 100M params, voice cloning support.
+
+The synthesis still happens locally with ``pocket_tts``; the only thing
+that's moved is **playback**. Instead of pushing samples through
+``sounddevice.play``, the service emits Int16 LE PCM chunks (~50 ms each)
+through a ``pcm_listener`` callback. :class:`SessionController` wires
+that listener to the WS hub, which broadcasts the bytes as
+``0x10 tts_pcm`` binary frames to every connected client; each client
+plays them through its own WebAudio context. See the design note in
+``app/web/server.py``.
+"""
 from __future__ import annotations
 
 import logging
@@ -14,16 +24,21 @@ log = logging.getLogger("app.tts.pocket_tts_service")
 
 try:
     import numpy as np
-    import sounddevice as sd
 except ImportError:
     np = None  # type: ignore[assignment]
-    sd = None  # type: ignore[assignment]
 
 try:
     from pocket_tts import TTSModel, export_model_state as _export_model_state
 except ImportError:
     TTSModel = None  # type: ignore[assignment,misc]
     _export_model_state = None
+
+
+# Type alias for the per-clip PCM emitter: ``(sample_rate, channels,
+# pcm_bytes_int16_le)`` per chunk; ``pcm_bytes`` is empty on the trailing
+# end-of-clip notification so the receiver can flush its playback queue.
+PcmListener = Callable[[int, int, bytes], None]
+PcmEndListener = Callable[[], None]
 
 _BUILTIN_VOICES = ["alba", "marius", "javert", "jean", "fantine", "cosette", "eponine", "azelma"]
 
@@ -74,9 +89,14 @@ _SPEED_MAX = 1.08
 class PocketTtsService:
     """TTS using Kyutai Pocket TTS. Runs on CPU, supports voice cloning."""
 
-    def __init__(self, settings: TtsSettings, output_device: int | None = None) -> None:
+    def __init__(
+        self,
+        settings: TtsSettings,
+        *,
+        pcm_listener: PcmListener | None = None,
+        clip_end_listener: PcmEndListener | None = None,
+    ) -> None:
         self._settings = settings
-        self._output_device = output_device
         self._lock = threading.Lock()
         self._model: TTSModel | None = None
         self._voice_state: dict | None = None
@@ -86,8 +106,10 @@ class PocketTtsService:
         self._loaded = threading.Event()
         self._audio_cache: dict[str, tuple] = {}
         self._cache_lock = threading.Lock()
+        self._pcm_listener: PcmListener | None = pcm_listener
+        self._clip_end_listener: PcmEndListener | None = clip_end_listener
 
-        if TTSModel is not None and np is not None and sd is not None:
+        if TTSModel is not None and np is not None:
             threading.Thread(target=self._load_model, daemon=True, name="pocket-tts-load").start()
         else:
             parts = []
@@ -95,10 +117,26 @@ class PocketTtsService:
                 parts.append("pocket-tts")
             if np is None:
                 parts.append("numpy")
-            if sd is None:
-                parts.append("sounddevice")
             self._last_error = f"Missing: {', '.join(parts)}. pip install {' '.join(parts)}"
             self._loaded.set()
+
+    # ── playback wiring ──────────────────────────────────────────────
+
+    def set_pcm_listener(
+        self,
+        listener: PcmListener | None,
+        *,
+        end_listener: PcmEndListener | None = None,
+    ) -> None:
+        """Install / replace the PCM emitter.
+
+        Called from :class:`SessionController` once the WS hub is
+        wired so audio frames flow to every connected client. Safe to
+        call before or after :meth:`speak_async`.
+        """
+        self._pcm_listener = listener
+        if end_listener is not None:
+            self._clip_end_listener = end_listener
 
     def _load_model(self) -> None:
         t0 = time.monotonic()
@@ -206,14 +244,14 @@ class PocketTtsService:
         self._stop_requested.set()
         with self._cache_lock:
             self._audio_cache.clear()
-        try:
-            if sd is not None:
-                sd.stop()
-        except Exception:
-            pass
-
-    def set_output_device(self, device_index: int | None) -> None:
-        self._output_device = device_index
+        # Fire the end-of-clip notification so listeners can flush any
+        # buffered audio on the client. PCM emitter itself is stateless.
+        end_listener = self._clip_end_listener
+        if end_listener is not None:
+            try:
+                end_listener()
+            except Exception:
+                pass
 
     def list_voices(self) -> list[str]:
         voices = list(_BUILTIN_VOICES)
@@ -313,9 +351,8 @@ class PocketTtsService:
             "TTS enqueue: chunk_chars=%d speed=%.2f", chunk_chars, speed,
         )
         played_ms = 0.0
+        playback_duration_s = 0.0
         try:
-            if sd is None:
-                return
             result = self.generate_audio(text, speed)
             if result is None or self._stop_requested.is_set():
                 return
@@ -336,14 +373,11 @@ class PocketTtsService:
                 if abs(speed - 1.0) > 1e-3
                 else sample_rate
             )
-            sd.play(
-                audio_data.reshape(-1, 1),
-                playback_rate,
-                device=self._output_device,
-            )
+            playback_duration_s = float(audio_data.size) / float(playback_rate)
 
-            # Spawn the lip-sync amplitude pacer right after audio starts so its
-            # emissions line up with what the user is hearing.
+            # Spawn the lip-sync amplitude pacer in parallel with the
+            # PCM emission so amplitude callbacks line up with what the
+            # client will play.
             if on_amplitude is not None:
                 amplitude_thread = threading.Thread(
                     target=self._amplitude_pacer,
@@ -353,7 +387,26 @@ class PocketTtsService:
                 )
                 amplitude_thread.start()
 
-            sd.wait()
+            self._emit_pcm(audio_data, playback_rate)
+
+            # ``_emit_pcm`` returns the moment the bytes leave the WS;
+            # the actual playback on the client takes
+            # ``playback_duration_s`` seconds. We block here so:
+            #   - the amplitude pacer runs its full natural course
+            #     (lip sync stays in frame for the whole utterance);
+            #   - ``on_done`` only fires after the audio has finished
+            #     playing on the client, which is what
+            #     :class:`TtsQueue` relies on to dispatch the next
+            #     sentence at the right wall-clock moment.
+            # We poll the stop flag so barge-in still cuts cleanly.
+            deadline = play_t0 + playback_duration_s
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    break
+                if self._stop_requested.wait(timeout=min(remaining, 0.05)):
+                    break
+
             played_ms = (time.monotonic() - play_t0) * 1000.0
             log.debug(
                 "TTS play done: chunk_chars=%d generate_ms=%.0f played_ms=%.0f speed=%.2f",
@@ -377,6 +430,101 @@ class PocketTtsService:
             if on_done:
                 try:
                     on_done()
+                except Exception:
+                    pass
+
+    # ── PCM emission ─────────────────────────────────────────────────
+
+    # Emit ~50 ms chunks so the client scheduler has predictable buffer
+    # sizes and so the WS message rate caps at ~20 frames/sec/clip.
+    _EMIT_CHUNK_SECONDS: float = 0.05
+    # Number of chunks shipped immediately before we start pacing the
+    # rest at real-time. ~250 ms is enough to ride out typical network
+    # / GC jitter on the client without underrunning the audio
+    # scheduler, while keeping the per-frame burst size small enough
+    # that the avatar render thread doesn't stutter.
+    _PRE_ROLL_CHUNKS: int = 5
+
+    def _emit_pcm(self, audio: "np.ndarray", sample_rate: int) -> None:
+        """Push the synthesised clip out through ``pcm_listener``.
+
+        Audio arrives as float32 in roughly ``[-1, 1]``. We convert to
+        Int16 LE in 50 ms slices and call the listener once per slice;
+        an empty bytes payload follows so the client knows the clip is
+        finished and can flush its scheduler.
+
+        After an initial pre-roll of :attr:`_PRE_ROLL_CHUNKS` slices,
+        the rest of the chunks are paced at real-time wall-clock so
+        that:
+          - the WebSocket doesn't burst 20+ binary frames in a single
+            tick (which forced a matching burst of AudioBuffer /
+            AudioBufferSourceNode allocations on the client and
+            stuttered the Live2D render thread);
+          - long utterances spread the encoder / network load evenly
+            instead of front-loading it;
+          - barge-in stops shipping the rest of the clip the moment
+            ``stop_requested`` flips.
+        """
+        listener = self._pcm_listener
+        if np is None:
+            return
+        flat = audio.reshape(-1) if audio.ndim > 1 else audio
+        if flat.size == 0:
+            return
+        if listener is None:
+            # Without a listener there's no place to play the audio
+            # locally any more — we just discard it. The end callback
+            # still fires so any state machine waiting on clip-end
+            # bookkeeping (e.g. UI ducking) advances.
+            end_listener = self._clip_end_listener
+            if end_listener is not None:
+                try:
+                    end_listener()
+                except Exception:
+                    pass
+            return
+
+        # ``playback_rate`` already encodes the speed nudge, so the
+        # client only needs to know the effective sample rate.
+        chunk_samples = max(1, int(sample_rate * self._EMIT_CHUNK_SECONDS))
+        total = flat.size
+        scaled = np.clip(flat, -1.0, 1.0) * 32767.0
+        # Astype rounds toward zero — use ``.round()`` first so the
+        # quietest samples don't all collapse to zero asymmetrically.
+        pcm16 = scaled.round().astype(np.int16, copy=False)
+        ship_t0 = time.monotonic()
+        chunk_index = 0
+        try:
+            for start in range(0, total, chunk_samples):
+                if self._stop_requested.is_set():
+                    break
+                end = min(start + chunk_samples, total)
+                listener(int(sample_rate), 1, pcm16[start:end].tobytes())
+                chunk_index += 1
+                # Pre-roll: ship the first few chunks back-to-back so
+                # the client has audio ready before its scheduler
+                # needs the first sample. Then pace at real-time —
+                # the deadline for the *next* chunk to leave is
+                # ``ship_t0 + (chunk_index - PRE_ROLL_CHUNKS) * chunk_seconds``.
+                if chunk_index > self._PRE_ROLL_CHUNKS:
+                    target = (
+                        ship_t0
+                        + (chunk_index - self._PRE_ROLL_CHUNKS)
+                        * self._EMIT_CHUNK_SECONDS
+                    )
+                    delay = target - time.monotonic()
+                    if delay > 0.0:
+                        # ``Event.wait`` returns True when the flag is
+                        # set, so we cut over to the stop branch on
+                        # barge-in without waiting out the rest of
+                        # the chunk's slice.
+                        if self._stop_requested.wait(timeout=delay):
+                            break
+        finally:
+            end_listener = self._clip_end_listener
+            if end_listener is not None:
+                try:
+                    end_listener()
                 except Exception:
                     pass
 

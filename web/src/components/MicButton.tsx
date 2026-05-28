@@ -9,6 +9,13 @@ interface MicButtonProps {
    * window where horizontal real estate is tight; ``default`` matches
    * the original ``ChatView`` mic button. */
   size?: "default" | "compact";
+  /**
+   * Multi-client voice-ownership state. When ``remotelyOwned`` is true
+   * a different client is currently holding the mic; the button stays
+   * clickable (clicking takes over) but renders the "take over" tint
+   * so the user can tell at a glance that voice mode is shared.
+   */
+  remotelyOwned?: boolean;
 }
 
 /**
@@ -27,6 +34,7 @@ export function MicButton({
   connected,
   onClick,
   size = "default",
+  remotelyOwned = false,
 }: MicButtonProps) {
   const isOn = voiceMode !== "off";
   const dims =
@@ -34,19 +42,25 @@ export function MicButton({
       ? "h-9 w-9 rounded-lg text-base"
       : "h-12 w-12 rounded-xl text-xl";
   const ringRadius = size === "compact" ? "rounded-lg" : "rounded-xl";
+  const tone = isOn
+    ? "border-pink-400/60 bg-pink-500/20 text-pink-100 hover:bg-pink-500/30"
+    : remotelyOwned
+      ? "border-amber-300/60 bg-amber-500/15 text-amber-100 hover:bg-amber-500/25"
+      : "border-white/10 bg-black/30 text-ink-100/70 hover:border-ink-400 hover:text-ink-100";
+  const title = isOn
+    ? "Stop voice mode"
+    : remotelyOwned
+      ? "Another device has the mic — take over"
+      : "Start voice mode";
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={!connected}
-      title={isOn ? "Stop voice mode" : "Start voice mode"}
-      aria-label={isOn ? "Stop voice mode" : "Start voice mode"}
+      title={title}
+      aria-label={title}
       aria-pressed={isOn}
-      className={`relative flex shrink-0 items-center justify-center self-center border transition ${dims} ${
-        isOn
-          ? "border-pink-400/60 bg-pink-500/20 text-pink-100 hover:bg-pink-500/30"
-          : "border-white/10 bg-black/30 text-ink-100/70 hover:border-ink-400 hover:text-ink-100"
-      } disabled:cursor-not-allowed disabled:opacity-40`}
+      className={`relative flex shrink-0 items-center justify-center self-center border transition ${dims} ${tone} disabled:cursor-not-allowed disabled:opacity-40`}
     >
       {isOn && voiceMode === "listening" ? (
         <span
@@ -59,7 +73,9 @@ export function MicButton({
           }}
         />
       ) : null}
-      <span className="relative">{isOn ? "🎙️" : "🎤"}</span>
+      <span className="relative">
+        {isOn ? "🎙️" : remotelyOwned ? "🎧" : "🎤"}
+      </span>
     </button>
   );
 }
