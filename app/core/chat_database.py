@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_SCHEMA_VERSION = 9
+_SCHEMA_VERSION = 10
 
 _CREATE_TABLES = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -77,14 +77,33 @@ CREATE TABLE IF NOT EXISTS memories (
     -- fact-checker mutates this column up on positive verification and
     -- down on contradiction. RAG demotes low-confidence hits during
     -- retrieval; the prompt assembler tags them "(uncertain)".
-    confidence REAL NOT NULL DEFAULT 0.7
+    confidence REAL NOT NULL DEFAULT 0.7,
+    -- Schema v10: temporal awareness. ``temporal_type`` classifies how
+    -- the memory relates to time: ``durable`` (default, timeless fact),
+    -- ``preference`` (taste/identity, also timeless), ``ongoing`` (an
+    -- active project/state with a soft expiry), ``past_event`` (already
+    -- happened — Aiko should ask retrospectively, never as if it's
+    -- live), ``future_plan`` (mentioned by the user as upcoming —
+    -- ``event_time`` is when it's supposed to happen). ``event_time``
+    -- is the ISO-8601 timestamp the *event* refers to (parsed by
+    -- MemoryExtractor from the user's words, not the row insert
+    -- moment). ``relevance_until`` is when retrieval should stop
+    -- surfacing the row in normal RAG (the row stays in DB for archive
+    -- / reflection use). All three default to NULL/'durable' so legacy
+    -- rows keep their pre-v10 behavior — they render with no time
+    -- suffix, exactly like today.
+    event_time TEXT,
+    temporal_type TEXT NOT NULL DEFAULT 'durable',
+    relevance_until TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_memories_kind ON memories(kind);
 CREATE INDEX IF NOT EXISTS idx_memories_salience ON memories(salience);
 -- Note: idx_memories_tier is created in ``_init_schema`` after the
 -- v7→v8 ALTER guarantees the ``tier`` column exists. Including it
 -- here would crash the executescript on legacy v6/v7 databases
--- where ``tier`` hasn't been added yet.
+-- where ``tier`` hasn't been added yet. The same applies to the v10
+-- ``idx_memories_event_time`` and ``idx_memories_temporal_type``
+-- indices, which depend on the v9->v10 ALTERs.
 
 -- Phase 2b: persistent emotional state per user.
 CREATE TABLE IF NOT EXISTS affect_state (
@@ -238,6 +257,19 @@ CREATE TABLE IF NOT EXISTS kv_meta (
 # Tables that existed in earlier schemas but are no longer used.
 _OBSOLETE_TABLES = ("personality_notes", "recent_topics", "message_embeddings")
 
+# Indices over ``memories`` columns that were added by post-v3
+# migrations. They cannot live in ``_CREATE_TABLES`` because the
+# corresponding columns may not exist yet on legacy databases (the
+# executescript runs CREATE INDEX before the v?->vN ALTERs do their
+# work). ``_init_schema`` runs each statement in a try/except so the
+# fresh-DB / already-current / upgraded-DB paths can all share the
+# same definition list.
+_DEPENDENT_MEMORY_INDICES: tuple[str, ...] = (
+    "CREATE INDEX IF NOT EXISTS idx_memories_tier ON memories(tier)",
+    "CREATE INDEX IF NOT EXISTS idx_memories_event_time ON memories(event_time)",
+    "CREATE INDEX IF NOT EXISTS idx_memories_temporal_type ON memories(temporal_type)",
+)
+
 
 @dataclass(slots=True)
 class MessageRow:
@@ -359,27 +391,27 @@ class ChatDatabase:
         row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
         if row is None:
             # Fresh database: CREATE TABLE memories above already
-            # includes the ``tier`` column, so the dependent index can
+            # includes the ``tier`` and v10 ``event_time`` /
+            # ``temporal_type`` columns, so all dependent indices can
             # be created here.
-            try:
-                conn.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_memories_tier ON memories(tier)"
-                )
-            except sqlite3.OperationalError:
-                pass
+            for stmt in _DEPENDENT_MEMORY_INDICES:
+                try:
+                    conn.execute(stmt)
+                except sqlite3.OperationalError:
+                    pass
             conn.execute("INSERT INTO schema_version (version) VALUES (?)", (_SCHEMA_VERSION,))
             conn.commit()
             return
         if row[0] >= _SCHEMA_VERSION:
-            # Already on current schema -- make sure the tier index
-            # exists in case a prior partial migration skipped it.
-            try:
-                conn.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_memories_tier ON memories(tier)"
-                )
-                conn.commit()
-            except sqlite3.OperationalError:
-                pass
+            # Already on current schema -- make sure the dependent
+            # indices exist in case a prior partial migration skipped
+            # any of them.
+            for stmt in _DEPENDENT_MEMORY_INDICES:
+                try:
+                    conn.execute(stmt)
+                except sqlite3.OperationalError:
+                    pass
+            conn.commit()
             return
         # On upgrade: drop tables that are no longer used so they stop wasting
         # space and confusing later readers. ``messages`` and
@@ -454,6 +486,32 @@ class ChatDatabase:
             )
         except sqlite3.OperationalError:
             pass
+        # v9 -> v10: temporal awareness columns. ``temporal_type``
+        # backfills to ``'durable'`` so legacy rows render with no time
+        # suffix in retrieval -- exactly the pre-v10 behavior. The
+        # ``event_time`` and ``relevance_until`` columns stay NULL for
+        # legacy rows; only memories the new MemoryExtractor flow
+        # writes will populate them. The dependent indices are created
+        # via ``_DEPENDENT_MEMORY_INDICES`` below.
+        try:
+            conn.execute("ALTER TABLE memories ADD COLUMN event_time TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute(
+                "ALTER TABLE memories ADD COLUMN temporal_type TEXT NOT NULL DEFAULT 'durable'"
+            )
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE memories ADD COLUMN relevance_until TEXT")
+        except sqlite3.OperationalError:
+            pass
+        for stmt in _DEPENDENT_MEMORY_INDICES:
+            try:
+                conn.execute(stmt)
+            except sqlite3.OperationalError:
+                pass
         conn.execute("UPDATE schema_version SET version = ?", (_SCHEMA_VERSION,))
         conn.commit()
 

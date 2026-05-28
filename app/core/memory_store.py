@@ -47,6 +47,44 @@ VALID_TIERS = ("scratchpad", "long_term", "archive")
 _DEFAULT_TIER = "long_term"
 
 
+# Schema v10 — temporal type. ``durable`` (default, timeless fact) and
+# ``preference`` (taste/identity, also timeless) render with no time
+# suffix in retrieval. ``ongoing`` is an active project/state with a
+# soft expiry (``relevance_until``). ``past_event`` is a historical
+# moment Aiko should reference retrospectively, never as if it just
+# happened. ``future_plan`` is something the user mentioned as
+# upcoming; ``event_time`` carries the ISO-8601 moment it's supposed
+# to take place. The ``MemoryDecayWorker`` flips ``future_plan`` rows
+# to ``past_event`` once their ``event_time`` passes; the
+# ``FollowUpWorker`` schedules a one-shot nudge near ``event_time``
+# so Aiko can ask retrospectively when the moment fits.
+VALID_TEMPORAL_TYPES = (
+    "durable",
+    "preference",
+    "ongoing",
+    "past_event",
+    "future_plan",
+)
+_DEFAULT_TEMPORAL_TYPE = "durable"
+
+
+def _coerce_temporal_type(value: str | None) -> str:
+    """Normalize and validate a temporal_type string.
+
+    Falls back to ``'durable'`` (the safe baseline) for unknown or
+    missing values so legacy callers and bad LLM output don't crash
+    inserts. Raises only on completely non-string input.
+    """
+    if value is None:
+        return _DEFAULT_TEMPORAL_TYPE
+    if not isinstance(value, str):
+        raise TypeError(f"temporal_type must be a string, got {type(value).__name__}")
+    cleaned = value.strip().lower()
+    if cleaned in VALID_TEMPORAL_TYPES:
+        return cleaned
+    return _DEFAULT_TEMPORAL_TYPE
+
+
 VALID_KINDS = {
     "fact",
     "preference",
@@ -139,6 +177,18 @@ class Memory:
     # to lines with ``confidence < 0.5``. Knowledge-gap rows default to
     # ``0.0`` since they're open questions, not facts.
     confidence: float = 0.7
+    # Schema v10 — temporal awareness. ``temporal_type`` classifies how
+    # the memory relates to time (see :data:`VALID_TEMPORAL_TYPES`).
+    # ``event_time`` is the ISO-8601 moment the *event* refers to as
+    # parsed by :class:`MemoryExtractor` from the user's words ("gym
+    # tonight at 8" -> 2026-05-28T20:00:00+02:00). ``relevance_until``
+    # is when retrieval should stop surfacing the row in normal RAG
+    # (the row stays in DB for archive / reflection use). All three
+    # default to NULL/'durable' so legacy rows keep their pre-v10
+    # behavior — they render with no time suffix, exactly like today.
+    event_time: str | None = None
+    temporal_type: str = _DEFAULT_TEMPORAL_TYPE
+    relevance_until: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -156,6 +206,9 @@ class Memory:
             "tier": str(self.tier),
             "revival_score": float(self.revival_score),
             "confidence": float(self.confidence),
+            "event_time": self.event_time,
+            "temporal_type": str(self.temporal_type),
+            "relevance_until": self.relevance_until,
         }
 
 
@@ -316,45 +369,72 @@ class MemoryStore:
 
     def _reload_mirror(self) -> None:
         conn = self._get_conn()
-        # Try the v9 shape first (tier + revival_score + confidence).
-        # Fall back to v8 (no confidence), v7 (no tier/revival), v6 (no
-        # metadata). Pre-v6 databases land in the bottom-most ``except``
-        # and start with an empty mirror.
+        # Try the v10 shape first (event_time + temporal_type +
+        # relevance_until). Fall back through v9 (no temporal), v8 (no
+        # confidence), v7 (no tier/revival), v6 (no metadata). Pre-v6
+        # databases land in the bottom-most ``except`` and start with
+        # an empty mirror.
         try:
             rows = conn.execute(
                 "SELECT id, content, kind, salience, embedding, source_session, "
                 "source_message_id, created_at, last_used_at, use_count, pinned, "
-                "metadata, tier, revival_score, confidence FROM memories"
+                "metadata, tier, revival_score, confidence, "
+                "event_time, temporal_type, relevance_until FROM memories"
             ).fetchall()
         except sqlite3.OperationalError:
             try:
                 rows = conn.execute(
                     "SELECT id, content, kind, salience, embedding, source_session, "
                     "source_message_id, created_at, last_used_at, use_count, pinned, "
-                    "metadata, tier, revival_score FROM memories"
+                    "metadata, tier, revival_score, confidence FROM memories"
                 ).fetchall()
-                # Append default confidence=0.7 for pre-v9 rows.
-                rows = [(*r, 0.7) for r in rows]
+                # Append default temporal fields for pre-v10 rows.
+                rows = [(*r, None, _DEFAULT_TEMPORAL_TYPE, None) for r in rows]
             except sqlite3.OperationalError:
                 try:
                     rows = conn.execute(
                         "SELECT id, content, kind, salience, embedding, source_session, "
                         "source_message_id, created_at, last_used_at, use_count, pinned, "
-                        "metadata FROM memories"
+                        "metadata, tier, revival_score FROM memories"
                     ).fetchall()
-                    # Append default (tier, revival_score, confidence) for pre-v8 rows.
-                    rows = [(*r, _DEFAULT_TIER, 0.0, 0.7) for r in rows]
+                    # Append default confidence + temporal fields for pre-v9 rows.
+                    rows = [(*r, 0.7, None, _DEFAULT_TEMPORAL_TYPE, None) for r in rows]
                 except sqlite3.OperationalError:
                     try:
                         rows = conn.execute(
                             "SELECT id, content, kind, salience, embedding, source_session, "
-                            "source_message_id, created_at, last_used_at, use_count, pinned "
-                            "FROM memories"
+                            "source_message_id, created_at, last_used_at, use_count, pinned, "
+                            "metadata FROM memories"
                         ).fetchall()
-                        rows = [(*r, None, _DEFAULT_TIER, 0.0, 0.7) for r in rows]
+                        # Append default (tier, revival_score, confidence, event_time,
+                        # temporal_type, relevance_until) for pre-v8 rows.
+                        rows = [
+                            (*r, _DEFAULT_TIER, 0.0, 0.7, None, _DEFAULT_TEMPORAL_TYPE, None)
+                            for r in rows
+                        ]
                     except sqlite3.OperationalError:
-                        self._mirror = {}
-                        return
+                        try:
+                            rows = conn.execute(
+                                "SELECT id, content, kind, salience, embedding, source_session, "
+                                "source_message_id, created_at, last_used_at, use_count, pinned "
+                                "FROM memories"
+                            ).fetchall()
+                            rows = [
+                                (
+                                    *r,
+                                    None,
+                                    _DEFAULT_TIER,
+                                    0.0,
+                                    0.7,
+                                    None,
+                                    _DEFAULT_TEMPORAL_TYPE,
+                                    None,
+                                )
+                                for r in rows
+                            ]
+                        except sqlite3.OperationalError:
+                            self._mirror = {}
+                            return
         with self._lock:
             self._mirror = {
                 r[0]: Memory(
@@ -373,6 +453,9 @@ class MemoryStore:
                     tier=_normalize_tier(r[12], pinned=bool(r[10])),
                     revival_score=max(0.0, min(1.0, float(r[13] or 0.0))),
                     confidence=max(0.0, min(1.0, float(r[14] if r[14] is not None else 0.7))),
+                    event_time=r[15] if r[15] else None,
+                    temporal_type=_coerce_temporal_type(r[16]),
+                    relevance_until=r[17] if r[17] else None,
                 )
                 for r in rows
             }
@@ -403,6 +486,9 @@ class MemoryStore:
         skip_dedupe: bool = False,
         tier: str | None = None,
         confidence: float | None = None,
+        event_time: str | None = None,
+        temporal_type: str | None = None,
+        relevance_until: str | None = None,
     ) -> Memory | None:
         """Insert a memory, deduplicating against near-identical existing rows.
 
@@ -426,6 +512,15 @@ class MemoryStore:
         means "use the kind-aware default" (``0.85`` for ``self_tagged``,
         ``0.7`` for everything else; ``0.0`` for ``knowledge_gap`` which is
         a question, not a fact). Pinned rows clamp confidence to ``>= 0.9``.
+
+        ``temporal_type`` / ``event_time`` / ``relevance_until`` are the v10
+        temporal-awareness fields. ``temporal_type`` defaults to
+        ``'durable'`` (the safe baseline — renders with no time suffix in
+        retrieval, exactly like pre-v10 memories). ``event_time`` is the
+        ISO-8601 moment the *event* refers to ("gym tonight at 8" stored
+        on 2026-05-28T18:30 has ``event_time=2026-05-28T20:00``).
+        ``relevance_until`` is when normal RAG retrieval should stop
+        surfacing the row; the row stays in DB for archive use.
         """
         cleaned = (content or "").strip()
         if not cleaned or len(cleaned) < 4:
@@ -455,6 +550,14 @@ class MemoryStore:
         if pinned and confidence_value < 0.9:
             confidence_value = 0.9
 
+        temporal_type_normalized = _coerce_temporal_type(temporal_type)
+        event_time_clean = event_time.strip() if isinstance(event_time, str) and event_time.strip() else None
+        relevance_until_clean = (
+            relevance_until.strip()
+            if isinstance(relevance_until, str) and relevance_until.strip()
+            else None
+        )
+
         # Dedupe pass against in-memory mirror. Pinned writes bypass dedupe
         # so user-curated moments are never silently merged into a fuzzy
         # nearby row (matters most for shared_moment).
@@ -478,8 +581,9 @@ class MemoryStore:
             "INSERT INTO memories ("
             "  content, kind, salience, embedding, source_session, "
             "  source_message_id, created_at, last_used_at, use_count, pinned, "
-            "  metadata, tier, revival_score, confidence"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 0.0, ?)",
+            "  metadata, tier, revival_score, confidence, "
+            "  event_time, temporal_type, relevance_until"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 0.0, ?, ?, ?, ?)",
             (
                 cleaned,
                 kind,
@@ -493,6 +597,9 @@ class MemoryStore:
                 meta_json,
                 tier_normalized,
                 confidence_value,
+                event_time_clean,
+                temporal_type_normalized,
+                relevance_until_clean,
             ),
         )
         conn.commit()
@@ -513,6 +620,9 @@ class MemoryStore:
             tier=tier_normalized,
             revival_score=0.0,
             confidence=confidence_value,
+            event_time=event_time_clean,
+            temporal_type=temporal_type_normalized,
+            relevance_until=relevance_until_clean,
         )
         with self._lock:
             self._mirror[new_id] = memory
@@ -618,6 +728,8 @@ class MemoryStore:
                 log.debug("rag delete_memory failed", exc_info=True)
         return cursor.rowcount > 0
 
+    _UNSET: object = object()
+
     def update(
         self,
         memory_id: int,
@@ -631,6 +743,9 @@ class MemoryStore:
         tier: str | None = None,
         revival_score: float | None = None,
         confidence: float | None = None,
+        event_time: object | None = _UNSET,
+        temporal_type: str | None = None,
+        relevance_until: object | None = _UNSET,
     ) -> Memory | None:
         """Patch one or more fields on an existing memory.
 
@@ -647,6 +762,12 @@ class MemoryStore:
         ``tier`` may be ``"scratchpad"`` / ``"long_term"`` / ``"archive"``.
         Pinned rows are coerced back to ``"long_term"`` regardless of the
         requested tier. ``revival_score`` is clamped to ``[0, 1]``.
+
+        ``temporal_type`` / ``event_time`` / ``relevance_until`` are the v10
+        temporal-awareness fields (see :data:`VALID_TEMPORAL_TYPES`).
+        ``event_time`` and ``relevance_until`` use a sentinel default
+        (``_UNSET``) so callers can explicitly clear them with ``None``
+        without conflating "leave as-is" and "set to NULL".
 
         Returns the updated :class:`Memory` snapshot, or ``None`` if the row
         doesn't exist.
@@ -708,10 +829,33 @@ class MemoryStore:
             if mem.pinned and new_confidence < 0.9:
                 new_confidence = 0.9
 
+        new_event_time = mem.event_time
+        if event_time is not self._UNSET:
+            if event_time is None:
+                new_event_time = None
+            elif isinstance(event_time, str) and event_time.strip():
+                new_event_time = event_time.strip()
+            else:
+                new_event_time = None
+
+        new_temporal_type = mem.temporal_type
+        if temporal_type is not None:
+            new_temporal_type = _coerce_temporal_type(temporal_type)
+
+        new_relevance_until = mem.relevance_until
+        if relevance_until is not self._UNSET:
+            if relevance_until is None:
+                new_relevance_until = None
+            elif isinstance(relevance_until, str) and relevance_until.strip():
+                new_relevance_until = relevance_until.strip()
+            else:
+                new_relevance_until = None
+
         conn = self._get_conn()
         conn.execute(
             "UPDATE memories SET content = ?, kind = ?, salience = ?, embedding = ?, "
-            "metadata = ?, tier = ?, revival_score = ?, confidence = ? WHERE id = ?",
+            "metadata = ?, tier = ?, revival_score = ?, confidence = ?, "
+            "event_time = ?, temporal_type = ?, relevance_until = ? WHERE id = ?",
             (
                 new_content,
                 new_kind,
@@ -721,6 +865,9 @@ class MemoryStore:
                 new_tier,
                 float(new_revival),
                 float(new_confidence),
+                new_event_time,
+                new_temporal_type,
+                new_relevance_until,
                 int(memory_id),
             ),
         )
@@ -736,6 +883,9 @@ class MemoryStore:
             mem.tier = new_tier
             mem.revival_score = new_revival
             mem.confidence = new_confidence
+            mem.event_time = new_event_time
+            mem.temporal_type = new_temporal_type
+            mem.relevance_until = new_relevance_until
             updated = mem
 
         if self._rag is not None:
@@ -755,6 +905,34 @@ class MemoryStore:
             except Exception:
                 log.debug("rag update mirror failed", exc_info=True)
         return updated
+
+    def reclassify(
+        self,
+        memory_id: int,
+        *,
+        temporal_type: str,
+        event_time: object | None = _UNSET,
+        relevance_until: object | None = _UNSET,
+    ) -> Memory | None:
+        """Flip the v10 temporal classification of a memory in-place.
+
+        Used by :class:`MemoryDecayWorker` to convert a ``future_plan``
+        whose ``event_time`` has passed into a ``past_event`` (with a
+        fresh ``relevance_until = event_time + 7d`` so the row can still
+        be referenced retrospectively for a week before sliding to
+        ``archive``).
+
+        Pass ``event_time=None`` / ``relevance_until=None`` explicitly to
+        clear those columns; omit the arg (sentinel) to leave them as-is.
+        Returns the updated :class:`Memory` snapshot, or ``None`` if the
+        row doesn't exist.
+        """
+        return self.update(
+            memory_id,
+            temporal_type=temporal_type,
+            event_time=event_time,
+            relevance_until=relevance_until,
+        )
 
     def set_pinned(self, memory_id: int, pinned: bool) -> Memory | None:
         """Pin or unpin a memory.
@@ -818,6 +996,49 @@ class MemoryStore:
     def get(self, memory_id: int) -> Memory | None:
         with self._lock:
             return self._mirror.get(int(memory_id))
+
+    # ── Schema v10 temporal-awareness helpers ────────────────────────
+
+    def list_by_temporal_type(
+        self,
+        temporal_type: str,
+        *,
+        event_time_before: str | None = None,
+        relevance_until_before: str | None = None,
+        limit: int | None = None,
+    ) -> list[Memory]:
+        """Filtered scan over the in-memory mirror by v10 temporal columns.
+
+        Used by :class:`MemoryDecayWorker` for the reclassification
+        passes (future_plan -> past_event when ``event_time`` slips
+        into the past; past_event -> archive when ``relevance_until``
+        passes) and by :class:`FollowUpWorker` to find due plans.
+
+        ``event_time_before`` / ``relevance_until_before`` are ISO-8601
+        strings; rows whose corresponding column is missing or sorts
+        AFTER the threshold are skipped. Lexical comparison on ISO-8601
+        is correct as long as the strings are properly formatted (which
+        the writer paths guarantee).
+        """
+        normalized = _coerce_temporal_type(temporal_type)
+        with self._lock:
+            mirror_snapshot = list(self._mirror.values())
+        out: list[Memory] = []
+        for mem in mirror_snapshot:
+            if mem.temporal_type != normalized:
+                continue
+            if event_time_before is not None:
+                et = mem.event_time
+                if not et or et >= event_time_before:
+                    continue
+            if relevance_until_before is not None:
+                ru = mem.relevance_until
+                if not ru or ru >= relevance_until_before:
+                    continue
+            out.append(mem)
+            if limit is not None and len(out) >= int(limit):
+                break
+        return out
 
     def decay(
         self,
