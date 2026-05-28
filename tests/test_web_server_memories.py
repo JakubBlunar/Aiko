@@ -280,6 +280,258 @@ class CreateMemoryEndpointTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
 
 
+class _ConflictState:
+    """In-memory stand-in for the F5 memory-conflict facade."""
+
+    def __init__(self) -> None:
+        self.pairs: dict[int, dict[str, Any]] = {}
+        self._next = 1
+        self.last_resolve_args: dict[str, Any] | None = None
+        self.last_dismiss_id: int | None = None
+
+    def record(
+        self,
+        *,
+        a: int,
+        b: int,
+        similarity: float = 0.85,
+        confidence_delta: float = 0.2,
+        status: str = "open",
+        winner_id: int | None = None,
+        loser_id: int | None = None,
+    ) -> int:
+        pid = self._next
+        self._next += 1
+        self.pairs[pid] = {
+            "id": pid,
+            "memory_a_id": a,
+            "memory_b_id": b,
+            "memory_a": {
+                "id": a,
+                "content": f"memory {a}",
+                "kind": "fact",
+                "confidence": 0.7,
+            },
+            "memory_b": {
+                "id": b,
+                "content": f"memory {b}",
+                "kind": "fact",
+                "confidence": 0.5,
+            },
+            "similarity": similarity,
+            "confidence_delta": confidence_delta,
+            "heuristic_label": "definite",
+            "heuristic_signals": ["antonym:loves/hates"],
+            "llm_verdict": None,
+            "llm_reason": None,
+            "status": status,
+            "winner_id": winner_id,
+            "loser_id": loser_id,
+            "resolution_action": None,
+            "flagged_by": "auto",
+            "detected_at": "2026-05-28T00:00:00Z",
+            "resolved_at": None,
+        }
+        return pid
+
+    def list_memory_conflicts(
+        self,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        status: str | None = None,
+        include_recently_resolved: bool = True,
+    ) -> dict[str, Any]:
+        open_pairs = [
+            p for p in self.pairs.values() if p["status"] == "open"
+        ]
+        if status is not None:
+            open_pairs = [
+                p for p in self.pairs.values() if p["status"] == status
+            ]
+        recently = [
+            p for p in self.pairs.values() if p["status"] == "auto_resolved"
+        ] if include_recently_resolved else []
+        counts = {
+            "open": sum(1 for p in self.pairs.values() if p["status"] == "open"),
+            "auto_resolved": sum(
+                1 for p in self.pairs.values() if p["status"] == "auto_resolved"
+            ),
+            "user_resolved": sum(
+                1 for p in self.pairs.values() if p["status"] == "user_resolved"
+            ),
+            "dismissed": sum(
+                1 for p in self.pairs.values() if p["status"] == "dismissed"
+            ),
+        }
+        return {
+            "open": open_pairs[offset : offset + limit],
+            "recently_auto_resolved": recently,
+            "counts": counts,
+        }
+
+    def resolve_memory_conflict(
+        self,
+        pair_id: int,
+        *,
+        winner_id: int,
+        action: str = "demote",
+    ) -> dict[str, Any] | None:
+        pair = self.pairs.get(int(pair_id))
+        if pair is None:
+            return None
+        if winner_id not in (pair["memory_a_id"], pair["memory_b_id"]):
+            raise ValueError("winner_id must equal memory_a_id or memory_b_id")
+        loser_id = (
+            pair["memory_b_id"]
+            if winner_id == pair["memory_a_id"]
+            else pair["memory_a_id"]
+        )
+        self.last_resolve_args = {
+            "pair_id": int(pair_id),
+            "winner_id": int(winner_id),
+            "action": action,
+        }
+        pair["status"] = "user_resolved"
+        pair["winner_id"] = int(winner_id)
+        pair["loser_id"] = int(loser_id)
+        pair["resolution_action"] = action
+        return {
+            "pair_id": int(pair_id),
+            "winner_id": int(winner_id),
+            "loser_id": int(loser_id),
+            "action": action,
+            "status": "user_resolved",
+        }
+
+    def dismiss_memory_conflict(self, pair_id: int) -> bool:
+        pair = self.pairs.get(int(pair_id))
+        if pair is None:
+            return False
+        self.last_dismiss_id = int(pair_id)
+        pair["status"] = "dismissed"
+        return True
+
+
+def _build_client_with_conflicts() -> tuple[TestClient, _ConflictState]:
+    state = _ConflictState()
+    session = MagicMock()
+    session.memory_store = state  # truthy
+    session.list_memory_conflicts.side_effect = state.list_memory_conflicts
+    session.resolve_memory_conflict.side_effect = state.resolve_memory_conflict
+    session.dismiss_memory_conflict.side_effect = state.dismiss_memory_conflict
+    app = create_web_app(session)
+    return TestClient(app), state
+
+
+class ListMemoryConflictsTests(unittest.TestCase):
+    def test_returns_open_and_counts(self) -> None:
+        client, state = _build_client_with_conflicts()
+        state.record(a=1, b=2)
+        state.record(a=3, b=4)
+        state.record(
+            a=5, b=6,
+            status="auto_resolved",
+            winner_id=5, loser_id=6,
+        )
+        response = client.get("/api/memory-conflicts")
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(len(body["open"]), 2)
+        self.assertEqual(len(body["recently_auto_resolved"]), 1)
+        self.assertEqual(body["counts"]["open"], 2)
+        self.assertEqual(body["counts"]["auto_resolved"], 1)
+
+    def test_status_filter(self) -> None:
+        client, state = _build_client_with_conflicts()
+        state.record(a=1, b=2)
+        state.record(a=3, b=4, status="dismissed")
+        response = client.get("/api/memory-conflicts?status=dismissed")
+        body = response.json()
+        self.assertEqual(len(body["open"]), 1)
+        self.assertEqual(body["open"][0]["status"], "dismissed")
+
+    def test_empty_when_no_conflicts(self) -> None:
+        client, _ = _build_client_with_conflicts()
+        response = client.get("/api/memory-conflicts")
+        body = response.json()
+        self.assertEqual(body["open"], [])
+        self.assertEqual(body["counts"]["open"], 0)
+
+
+class ResolveMemoryConflictTests(unittest.TestCase):
+    def test_resolve_demote_applies(self) -> None:
+        client, state = _build_client_with_conflicts()
+        pid = state.record(a=1, b=2)
+        response = client.post(
+            f"/api/memory-conflicts/{pid}/resolve",
+            json={"winner_id": 1, "action": "demote"},
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["pair_id"], pid)
+        self.assertEqual(body["winner_id"], 1)
+        self.assertEqual(body["loser_id"], 2)
+        self.assertEqual(body["action"], "demote")
+        self.assertEqual(state.pairs[pid]["status"], "user_resolved")
+
+    def test_resolve_delete_applies(self) -> None:
+        client, state = _build_client_with_conflicts()
+        pid = state.record(a=1, b=2)
+        response = client.post(
+            f"/api/memory-conflicts/{pid}/resolve",
+            json={"winner_id": 2, "action": "delete"},
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["winner_id"], 2)
+        self.assertEqual(body["loser_id"], 1)
+        self.assertEqual(body["action"], "delete")
+
+    def test_resolve_unknown_pair_returns_404(self) -> None:
+        client, _ = _build_client_with_conflicts()
+        response = client.post(
+            "/api/memory-conflicts/9999/resolve",
+            json={"winner_id": 1, "action": "demote"},
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_resolve_missing_winner_id_returns_400(self) -> None:
+        client, state = _build_client_with_conflicts()
+        pid = state.record(a=1, b=2)
+        response = client.post(
+            f"/api/memory-conflicts/{pid}/resolve",
+            json={"action": "demote"},
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_resolve_invalid_winner_id_returns_400(self) -> None:
+        client, state = _build_client_with_conflicts()
+        pid = state.record(a=1, b=2)
+        # 99 is not a, b of the pair.
+        response = client.post(
+            f"/api/memory-conflicts/{pid}/resolve",
+            json={"winner_id": 99, "action": "demote"},
+        )
+        self.assertEqual(response.status_code, 400)
+
+
+class DismissMemoryConflictTests(unittest.TestCase):
+    def test_dismiss_marks_pair(self) -> None:
+        client, state = _build_client_with_conflicts()
+        pid = state.record(a=1, b=2)
+        response = client.post(f"/api/memory-conflicts/{pid}/dismiss")
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["dismissed"], pid)
+        self.assertEqual(state.pairs[pid]["status"], "dismissed")
+
+    def test_dismiss_unknown_pair_returns_404(self) -> None:
+        client, _ = _build_client_with_conflicts()
+        response = client.post("/api/memory-conflicts/9999/dismiss")
+        self.assertEqual(response.status_code, 404)
+
+
 class PinMemoryEndpointTests(unittest.TestCase):
     def test_pin_default_true(self) -> None:
         client, state = _build_client()

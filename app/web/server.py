@@ -379,6 +379,32 @@ def create_web_app(session: "SessionController") -> FastAPI:
     except Exception:
         log.debug("memory listener subscription failed", exc_info=True)
 
+    # K2: belief CRUD listener bridge.
+    def _on_belief_added(payload: dict[str, Any]) -> None:
+        try:
+            hub.broadcast({"type": "belief_added", "belief": dict(payload)})
+        except Exception:
+            log.debug("belief_added broadcast failed", exc_info=True)
+
+    def _on_belief_updated(payload: dict[str, Any]) -> None:
+        try:
+            hub.broadcast({"type": "belief_updated", "belief": dict(payload)})
+        except Exception:
+            log.debug("belief_updated broadcast failed", exc_info=True)
+
+    def _on_belief_deleted(payload: dict[str, Any]) -> None:
+        try:
+            hub.broadcast({"type": "belief_deleted", **dict(payload)})
+        except Exception:
+            log.debug("belief_deleted broadcast failed", exc_info=True)
+
+    try:
+        session.add_belief_added_listener(_on_belief_added)
+        session.add_belief_updated_listener(_on_belief_updated)
+        session.add_belief_deleted_listener(_on_belief_deleted)
+    except Exception:
+        log.debug("belief listener subscription failed", exc_info=True)
+
     def _on_tool_event(event: str, payload: dict[str, Any]) -> None:
         # Tool calls and results stream out as a small event so the UI can
         # show "Aiko is checking the time / searching the web / recalling
@@ -1183,6 +1209,154 @@ def create_web_app(session: "SessionController") -> FastAPI:
         if snapshot is None:
             raise HTTPException(404, "knowledge gap not found")
         return JSONResponse({"gap": snapshot})
+
+    # ── REST: memory conflicts (F5) ──────────────────────────────────
+
+    @app.get("/api/memory-conflicts")
+    def list_memory_conflicts(
+        limit: int = 50,
+        offset: int = 0,
+        status: str | None = None,
+        include_recent: bool = True,
+    ) -> JSONResponse:
+        clamped_limit = max(1, min(int(limit), 200))
+        clamped_offset = max(0, int(offset))
+        status_norm = (status or "").strip().lower() or None
+        snapshot = session.list_memory_conflicts(
+            limit=clamped_limit,
+            offset=clamped_offset,
+            status=status_norm,
+            include_recently_resolved=bool(include_recent),
+        )
+        return JSONResponse(snapshot)
+
+    @app.post("/api/memory-conflicts/{pair_id}/resolve")
+    async def resolve_memory_conflict(
+        pair_id: int, payload: dict[str, Any] | None = None,
+    ) -> JSONResponse:
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "expected JSON object body")
+        winner_id = payload.get("winner_id")
+        action = payload.get("action", "demote")
+        if not isinstance(winner_id, int):
+            raise HTTPException(400, "winner_id must be an integer")
+        if not isinstance(action, str):
+            raise HTTPException(400, "action must be a string")
+        try:
+            result = session.resolve_memory_conflict(
+                int(pair_id),
+                winner_id=int(winner_id),
+                action=action,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if result is None:
+            raise HTTPException(404, "conflict pair not found")
+        hub.broadcast({
+            "type": "memory_conflict_resolved",
+            "pair_id": int(pair_id),
+        })
+        return JSONResponse(result)
+
+    @app.post("/api/memory-conflicts/{pair_id}/dismiss")
+    async def dismiss_memory_conflict(pair_id: int) -> JSONResponse:
+        ok = session.dismiss_memory_conflict(int(pair_id))
+        if not ok:
+            raise HTTPException(404, "conflict pair not found")
+        hub.broadcast({
+            "type": "memory_conflict_dismissed",
+            "pair_id": int(pair_id),
+        })
+        return JSONResponse({"dismissed": int(pair_id)})
+
+    # ── REST: theory-of-mind beliefs (K2) ────────────────────────────
+
+    @app.get("/api/beliefs")
+    def list_beliefs(
+        limit: int = 50,
+        offset: int = 0,
+        kind: str | None = None,
+        status: str | None = None,
+    ) -> JSONResponse:
+        clamped_limit = max(1, min(int(limit), 200))
+        clamped_offset = max(0, int(offset))
+        kind_norm = (kind or "").strip().lower() or None
+        status_norm = (status or "").strip().lower() or None
+        snapshot = session.list_beliefs(
+            limit=clamped_limit,
+            offset=clamped_offset,
+            kind=kind_norm,
+            status=status_norm,
+        )
+        return JSONResponse(snapshot)
+
+    @app.post("/api/beliefs")
+    async def create_belief(
+        payload: dict[str, Any] | None = None,
+    ) -> JSONResponse:
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "expected JSON object body")
+        kind = payload.get("kind")
+        topic = payload.get("topic")
+        state = payload.get("predicted_state")
+        confidence = payload.get("confidence")
+        if not isinstance(kind, str) or kind.strip().lower() not in ("mood", "opinion"):
+            raise HTTPException(400, "kind must be 'mood' or 'opinion'")
+        if not isinstance(topic, str) or not topic.strip():
+            raise HTTPException(400, "topic must be a non-empty string")
+        if not isinstance(state, str) or not state.strip():
+            raise HTTPException(400, "predicted_state must be a non-empty string")
+        if confidence is not None and not isinstance(confidence, (int, float)):
+            raise HTTPException(400, "confidence must be a number")
+        belief = session.add_belief(
+            kind=kind.strip().lower(),
+            topic=topic,
+            predicted_state=state,
+            confidence=float(confidence) if confidence is not None else None,
+        )
+        if belief is None:
+            raise HTTPException(503, "belief tracking unavailable")
+        return JSONResponse({"belief": belief})
+
+    @app.patch("/api/beliefs/{belief_id}")
+    async def patch_belief(
+        belief_id: int, payload: dict[str, Any] | None = None,
+    ) -> JSONResponse:
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "expected JSON object body")
+        predicted_state = payload.get("predicted_state")
+        confidence = payload.get("confidence")
+        status = payload.get("status")
+        if predicted_state is not None and not isinstance(predicted_state, str):
+            raise HTTPException(400, "predicted_state must be a string")
+        if confidence is not None and not isinstance(confidence, (int, float)):
+            raise HTTPException(400, "confidence must be a number")
+        if status is not None and not isinstance(status, str):
+            raise HTTPException(400, "status must be a string")
+        # Reject empty PATCH (mirrors PATCH /api/memories behaviour).
+        if predicted_state is None and confidence is None and status is None:
+            raise HTTPException(
+                400, "expected at least one of predicted_state/confidence/status",
+            )
+        try:
+            belief = session.update_belief(
+                int(belief_id),
+                predicted_state=predicted_state,
+                confidence=float(confidence) if confidence is not None else None,
+                status=status,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if belief is None:
+            raise HTTPException(404, "belief not found")
+        return JSONResponse({"belief": belief})
+
+    @app.delete("/api/beliefs/{belief_id}")
+    async def delete_belief(belief_id: int) -> JSONResponse:
+        ok = session.delete_belief(int(belief_id))
+        if not ok:
+            raise HTTPException(404, "belief not found")
+        return JSONResponse({"deleted": int(belief_id)})
 
     # ── REST: fact-checker status (F1) ───────────────────────────────
 

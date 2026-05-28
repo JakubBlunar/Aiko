@@ -6,7 +6,13 @@ import type {
   AccessoryCatalogue,
   AssistantSettings,
   AvatarSettingsKnobs,
+  Belief,
+  BeliefKind,
+  BeliefStatus,
+  BeliefsResponse,
   Memory,
+  MemoryConflictPair,
+  MemoryConflictsResponse,
   MemoryOrder,
   MemoryTier,
   MetricsResponse,
@@ -2957,6 +2963,10 @@ function MemoryTab({
 
       <KnowledgeGapsPanel />
 
+      <MemoryConflictsPanel />
+
+      <BeliefsPanel />
+
       <FactCheckerStatusFooter />
     </Section>
   );
@@ -3123,6 +3133,264 @@ function KnowledgeGapsPanel() {
   );
 }
 
+// ── F5: memory conflicts panel ──────────────────────────────────────
+
+function MemoryConflictsPanel() {
+  const [data, setData] = useState<MemoryConflictsResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [showResolved, setShowResolved] = useState(false);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const snapshot = await api.listMemoryConflicts({
+        limit: 50,
+        includeRecent: true,
+      });
+      setData(snapshot);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const onResolve = useCallback(
+    async (pair: MemoryConflictPair, winnerId: number) => {
+      try {
+        await api.resolveMemoryConflict(pair.id, {
+          winner_id: winnerId,
+          action: "demote",
+        });
+        void refresh();
+      } catch (err) {
+        setError(String(err));
+      }
+    },
+    [refresh],
+  );
+
+  const onDismiss = useCallback(
+    async (pair: MemoryConflictPair) => {
+      try {
+        await api.dismissMemoryConflict(pair.id);
+        void refresh();
+      } catch (err) {
+        setError(String(err));
+      }
+    },
+    [refresh],
+  );
+
+  const open = data?.open ?? [];
+  const resolved = data?.recently_auto_resolved ?? [];
+  const counts = data?.counts ?? {
+    open: 0,
+    auto_resolved: 0,
+    user_resolved: 0,
+    dismissed: 0,
+  };
+
+  return (
+    <div className="mt-4 space-y-2 rounded-md border border-white/5 bg-white/[0.02] p-3">
+      <div className="flex items-center justify-between gap-2 text-[11px]">
+        <span
+          className="font-medium text-ink-100/70"
+          title="Pairs of memories the F5 detector flagged as contradicting. Pick which side to keep -- the loser is moved to archive at low confidence so RAG stops surfacing it."
+        >
+          Conflicts
+          <span className="ml-2 text-ink-100/40">({counts.open})</span>
+        </span>
+        <button
+          type="button"
+          onClick={refresh}
+          disabled={loading}
+          className="rounded border border-white/10 px-2 py-0.5 hover:border-ink-400 disabled:opacity-40"
+        >
+          {loading ? "..." : "refresh"}
+        </button>
+      </div>
+      {error ? (
+        <div className="rounded border border-rose-400/40 bg-rose-500/10 px-2 py-1 text-[11px] text-rose-200">
+          {error}
+        </div>
+      ) : null}
+      {open.length === 0 ? (
+        <p className="text-[11px] text-ink-100/40">
+          No open conflicts. Aiko's F5 detector will flag pairs here when
+          two memories disagree about the same topic.
+        </p>
+      ) : (
+        <ul className="space-y-2">
+          {open.map((pair) => (
+            <ConflictPairCard
+              key={pair.id}
+              pair={pair}
+              onResolve={onResolve}
+              onDismiss={onDismiss}
+            />
+          ))}
+        </ul>
+      )}
+      {resolved.length > 0 ? (
+        <div className="mt-2 rounded border border-white/5 bg-white/[0.02] p-2 text-[11px]">
+          <button
+            type="button"
+            onClick={() => setShowResolved((v) => !v)}
+            className="flex w-full items-center justify-between text-left text-ink-100/60 hover:text-ink-100"
+          >
+            <span>
+              Recently auto-resolved
+              <span className="ml-2 text-ink-100/40">
+                ({counts.auto_resolved})
+              </span>
+            </span>
+            <span className="text-ink-100/40">
+              {showResolved ? "hide" : "show"}
+            </span>
+          </button>
+          {showResolved ? (
+            <ul className="mt-2 space-y-1">
+              {resolved.map((pair) => (
+                <li
+                  key={pair.id}
+                  className="rounded border border-white/5 bg-white/[0.02] px-2 py-1 text-ink-100/50"
+                >
+                  <div className="text-[10px] uppercase text-ink-100/40">
+                    auto-demoted #{pair.loser_id} · kept #{pair.winner_id}
+                    {" · "}sim {pair.similarity.toFixed(2)} · Δconf{" "}
+                    {pair.confidence_delta.toFixed(2)}
+                  </div>
+                  <div className="text-ink-100/70">
+                    A: {pair.memory_a?.content ?? "(deleted)"}
+                  </div>
+                  <div className="text-ink-100/70">
+                    B: {pair.memory_b?.content ?? "(deleted)"}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+interface ConflictPairCardProps {
+  pair: MemoryConflictPair;
+  onResolve: (pair: MemoryConflictPair, winnerId: number) => void | Promise<void>;
+  onDismiss: (pair: MemoryConflictPair) => void | Promise<void>;
+}
+
+function ConflictPairCard({
+  pair,
+  onResolve,
+  onDismiss,
+}: ConflictPairCardProps) {
+  const a = pair.memory_a;
+  const b = pair.memory_b;
+  return (
+    <li className="rounded border border-amber-400/30 bg-amber-500/5 p-2 text-[11px]">
+      <div className="mb-1 flex flex-wrap items-center gap-1 text-[10px] uppercase tracking-wide text-amber-200/80">
+        <span>
+          sim {pair.similarity.toFixed(2)}
+        </span>
+        <span>·</span>
+        <span>{pair.heuristic_label}</span>
+        {pair.heuristic_signals.length > 0 ? (
+          <>
+            <span>·</span>
+            {pair.heuristic_signals.map((signal) => (
+              <span
+                key={signal}
+                className="rounded bg-amber-500/10 px-1 py-px text-[9px] normal-case"
+              >
+                {signal}
+              </span>
+            ))}
+          </>
+        ) : null}
+        {pair.llm_verdict ? (
+          <>
+            <span>·</span>
+            <span>LLM: {pair.llm_verdict}</span>
+          </>
+        ) : null}
+        {pair.flagged_by === "aiko" ? (
+          <span className="rounded bg-violet-500/30 px-1 text-[9px] text-violet-100">
+            aiko-flagged
+          </span>
+        ) : null}
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <ConflictMemorySide
+          memory={a}
+          isWinner={false}
+          onPick={() => onResolve(pair, pair.memory_a_id)}
+        />
+        <ConflictMemorySide
+          memory={b}
+          isWinner={false}
+          onPick={() => onResolve(pair, pair.memory_b_id)}
+        />
+      </div>
+      <div className="mt-2 flex justify-end">
+        <button
+          type="button"
+          onClick={() => onDismiss(pair)}
+          className="rounded border border-white/10 px-2 py-0.5 text-[11px] text-ink-100/60 hover:border-rose-400/60 hover:text-rose-200"
+          title="Mark as not actually a conflict; keep both memories untouched."
+        >
+          not a conflict
+        </button>
+      </div>
+    </li>
+  );
+}
+
+interface ConflictMemorySideProps {
+  memory: Memory | null;
+  isWinner: boolean;
+  onPick: () => void | Promise<void>;
+}
+
+function ConflictMemorySide({
+  memory,
+  onPick,
+}: ConflictMemorySideProps) {
+  if (memory === null) {
+    return (
+      <div className="rounded border border-white/5 bg-white/[0.03] p-2 text-ink-100/50 italic">
+        (memory missing)
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-1 rounded border border-white/5 bg-white/[0.03] p-2">
+      <div className="text-[10px] uppercase tracking-wide text-ink-100/40">
+        #{memory.id} · {memory.kind} · conf{" "}
+        {memory.confidence?.toFixed(2) ?? "—"}
+      </div>
+      <div className="text-ink-100/90">{memory.content}</div>
+      <button
+        type="button"
+        onClick={onPick}
+        className="mt-1 self-end rounded border border-emerald-400/40 px-2 py-0.5 text-[11px] text-emerald-200 hover:bg-emerald-500/10"
+        title="Keep this side; the other becomes archived at low confidence."
+      >
+        keep this
+      </button>
+    </div>
+  );
+}
+
 // ── F1: background fact-checker status footer ──────────────────────
 
 interface FactCheckerSnapshot {
@@ -3145,6 +3413,299 @@ function formatRelative(iso: string | null): string {
   if (delta < 3600) return `${Math.round(delta / 60)}m ago`;
   if (delta < 86400) return `${Math.round(delta / 3600)}h ago`;
   return `${Math.round(delta / 86400)}d ago`;
+}
+
+// ── K2: beliefs panel ────────────────────────────────────────────────
+
+const BELIEF_STATUS_FILTERS: { id: BeliefStatus | "all"; label: string }[] = [
+  { id: "active", label: "Active" },
+  { id: "contradicted", label: "Contradicted" },
+  { id: "confirmed", label: "Confirmed" },
+  { id: "stale", label: "Stale" },
+  { id: "all", label: "All" },
+];
+
+function BeliefsPanel() {
+  const [data, setData] = useState<BeliefsResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState<BeliefStatus | "all">("active");
+  const [kindFilter, setKindFilter] = useState<BeliefKind | "all">("all");
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const snapshot = await api.listBeliefs({
+        limit: 100,
+        kind: kindFilter === "all" ? undefined : kindFilter,
+        status: statusFilter === "all" ? undefined : statusFilter,
+      });
+      setData(snapshot);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, [kindFilter, statusFilter]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const handleContradict = useCallback(
+    async (belief: Belief) => {
+      try {
+        await api.updateBelief(belief.id, { status: "contradicted" });
+        void refresh();
+      } catch (err) {
+        setError(String(err));
+      }
+    },
+    [refresh],
+  );
+
+  const handleConfirm = useCallback(
+    async (belief: Belief) => {
+      try {
+        await api.updateBelief(belief.id, { status: "confirmed" });
+        void refresh();
+      } catch (err) {
+        setError(String(err));
+      }
+    },
+    [refresh],
+  );
+
+  const handleDelete = useCallback(
+    async (belief: Belief) => {
+      try {
+        await api.deleteBelief(belief.id);
+        void refresh();
+      } catch (err) {
+        setError(String(err));
+      }
+    },
+    [refresh],
+  );
+
+  const beliefs = data?.beliefs ?? [];
+  const counts = data?.counts;
+  const enabled = data?.enabled ?? true;
+  const grouped = useMemo(() => {
+    const mood: Belief[] = [];
+    const opinion: Belief[] = [];
+    for (const b of beliefs) {
+      if (b.kind === "mood") mood.push(b);
+      else opinion.push(b);
+    }
+    return { mood, opinion };
+  }, [beliefs]);
+
+  if (!enabled) {
+    return (
+      <div className="mt-4 space-y-2 rounded-md border border-white/5 bg-white/[0.02] p-3 text-[11px] text-ink-100/40">
+        Belief tracking is disabled. Enable
+        <code className="mx-1">belief_tracking_enabled</code>
+        in agent settings to surface theory-of-mind beliefs here.
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-4 space-y-2 rounded-md border border-white/5 bg-white/[0.02] p-3">
+      <div className="flex items-center justify-between gap-2 text-[11px]">
+        <span
+          className="font-medium text-ink-100/70"
+          title="What Aiko currently thinks you feel about specific topics (mood) or what you think about them (opinion). Mood beliefs flip to contradicted when the live affect read disagrees; opinion beliefs flip when your message lexically contradicts the prediction."
+        >
+          Beliefs
+          {counts ? (
+            <span className="ml-2 text-ink-100/40">
+              ({counts.active} active · {counts.contradicted} contradicted)
+            </span>
+          ) : null}
+        </span>
+        <button
+          type="button"
+          onClick={refresh}
+          disabled={loading}
+          className="rounded border border-white/10 px-2 py-0.5 hover:border-ink-400 disabled:opacity-40"
+        >
+          {loading ? "..." : "refresh"}
+        </button>
+      </div>
+      <div className="flex flex-wrap items-center gap-1 text-[10px] uppercase tracking-wide text-ink-100/40">
+        <span>kind:</span>
+        {(["all", "mood", "opinion"] as const).map((k) => (
+          <button
+            key={k}
+            type="button"
+            onClick={() => setKindFilter(k as BeliefKind | "all")}
+            className={
+              "rounded border px-1.5 py-0.5 " +
+              (kindFilter === k
+                ? "border-ink-400 bg-ink-400/10 text-ink-100"
+                : "border-white/10 text-ink-100/60 hover:border-ink-400/60")
+            }
+          >
+            {k}
+          </button>
+        ))}
+        <span className="ml-2">status:</span>
+        {BELIEF_STATUS_FILTERS.map((opt) => (
+          <button
+            key={opt.id}
+            type="button"
+            onClick={() => setStatusFilter(opt.id)}
+            className={
+              "rounded border px-1.5 py-0.5 " +
+              (statusFilter === opt.id
+                ? "border-ink-400 bg-ink-400/10 text-ink-100"
+                : "border-white/10 text-ink-100/60 hover:border-ink-400/60")
+            }
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+      {error ? (
+        <div className="rounded border border-rose-400/40 bg-rose-500/10 px-2 py-1 text-[11px] text-rose-200">
+          {error}
+        </div>
+      ) : null}
+      {beliefs.length === 0 ? (
+        <p className="text-[11px] text-ink-100/40">
+          No beliefs in this view. Aiko's K2 worker mines fresh predictions
+          from recent turns; she can also tag them inline.
+        </p>
+      ) : (
+        <div className="space-y-3">
+          {grouped.mood.length > 0 ? (
+            <div>
+              <div className="mb-1 text-[10px] uppercase tracking-wide text-ink-100/40">
+                Mood ({grouped.mood.length})
+              </div>
+              <ul className="space-y-1">
+                {grouped.mood.map((b) => (
+                  <BeliefCard
+                    key={b.id}
+                    belief={b}
+                    onContradict={handleContradict}
+                    onConfirm={handleConfirm}
+                    onDelete={handleDelete}
+                  />
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {grouped.opinion.length > 0 ? (
+            <div>
+              <div className="mb-1 text-[10px] uppercase tracking-wide text-ink-100/40">
+                Opinion ({grouped.opinion.length})
+              </div>
+              <ul className="space-y-1">
+                {grouped.opinion.map((b) => (
+                  <BeliefCard
+                    key={b.id}
+                    belief={b}
+                    onContradict={handleContradict}
+                    onConfirm={handleConfirm}
+                    onDelete={handleDelete}
+                  />
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface BeliefCardProps {
+  belief: Belief;
+  onContradict: (b: Belief) => void | Promise<void>;
+  onConfirm: (b: Belief) => void | Promise<void>;
+  onDelete: (b: Belief) => void | Promise<void>;
+}
+
+function BeliefCard({
+  belief,
+  onContradict,
+  onConfirm,
+  onDelete,
+}: BeliefCardProps) {
+  const statusTone =
+    belief.status === "contradicted"
+      ? "border-rose-400/30 bg-rose-500/5"
+      : belief.status === "confirmed"
+      ? "border-emerald-400/30 bg-emerald-500/5"
+      : belief.status === "stale"
+      ? "border-white/10 bg-white/[0.02] opacity-70"
+      : "border-amber-400/30 bg-amber-500/5";
+  const gapPing =
+    belief.gap_seen_at && belief.status === "contradicted"
+      ? "ring-1 ring-rose-400/40"
+      : "";
+  return (
+    <li
+      className={`rounded border p-2 text-[11px] ${statusTone} ${gapPing}`}
+    >
+      <div className="mb-1 flex flex-wrap items-center gap-1 text-[10px] uppercase tracking-wide text-ink-100/60">
+        <span>{belief.kind}</span>
+        <span>·</span>
+        <span>{belief.status}</span>
+        <span>·</span>
+        <span>conf {belief.confidence.toFixed(2)}</span>
+        <span>·</span>
+        <span>source {belief.source}</span>
+        <span>·</span>
+        <span>{formatRelative(belief.observed_at)}</span>
+      </div>
+      <div className="text-ink-100/80">
+        <span className="font-medium">{belief.topic}</span>
+        <span className="text-ink-100/40"> — </span>
+        <span>{belief.predicted_state}</span>
+      </div>
+      {belief.kind === "mood" && belief.valence !== null ? (
+        <div className="mt-1 text-[10px] text-ink-100/50">
+          predicted valence {belief.valence.toFixed(2)}
+          {belief.arousal !== null
+            ? ` · arousal ${belief.arousal.toFixed(2)}`
+            : ""}
+        </div>
+      ) : null}
+      {belief.gap_seen_at ? (
+        <div className="mt-1 text-[10px] text-rose-200/80">
+          gap seen {formatRelative(belief.gap_seen_at)}
+        </div>
+      ) : null}
+      <div className="mt-2 flex flex-wrap items-center gap-1 text-[10px]">
+        <button
+          type="button"
+          onClick={() => void onContradict(belief)}
+          className="rounded border border-white/10 px-1.5 py-0.5 hover:border-rose-300 hover:text-rose-200"
+        >
+          mark contradicted
+        </button>
+        <button
+          type="button"
+          onClick={() => void onConfirm(belief)}
+          className="rounded border border-white/10 px-1.5 py-0.5 hover:border-emerald-300 hover:text-emerald-200"
+        >
+          mark confirmed
+        </button>
+        <button
+          type="button"
+          onClick={() => void onDelete(belief)}
+          className="rounded border border-white/10 px-1.5 py-0.5 hover:border-rose-400 hover:text-rose-200"
+        >
+          delete
+        </button>
+      </div>
+    </li>
+  );
 }
 
 function FactCheckerStatusFooter() {

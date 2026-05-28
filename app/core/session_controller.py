@@ -1099,6 +1099,7 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
             anniversary=self._render_anniversary_block,
             axes=self._render_axes_block,
             knowledge_gaps=self._render_knowledge_gaps_block,
+            belief_gaps=self._render_belief_gaps_block,
         )
         self._prompt_assembler.set_pinned_self_memories_provider(
             self._top_pinned_self_memories,
@@ -1539,6 +1540,177 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
                 )
             except Exception:
                 log.warning("ScheduleLearner init failed", exc_info=True)
+
+        # F5 — conflicting-memory detector. Always builds the store
+        # (REST endpoints and the ``[[conflict:reason]]`` tag dispatch
+        # need it even when the worker is disabled), then conditionally
+        # builds + registers the worker. The cascade-cleanup hook on
+        # ``MemoryStore.delete`` keeps ``memory_conflicts`` rows from
+        # dangling when a user deletes a memory through the Memory
+        # drawer.
+        self._memory_conflict_store = None
+        self._memory_conflict_worker = None
+        self._memory_conflict_rate_limiter = None
+        if self._memory_store is not None and self._chat_db is not None:
+            try:
+                from app.core.memory_conflict_store import (
+                    MemoryConflictStore,
+                )
+
+                self._memory_conflict_store = MemoryConflictStore(
+                    self._chat_db,
+                )
+                self._memory_store.add_delete_listener(
+                    self._memory_conflict_store.delete_for_memory,
+                )
+            except Exception:
+                log.warning(
+                    "MemoryConflictStore init failed", exc_info=True,
+                )
+                self._memory_conflict_store = None
+        if (
+            self._idle_scheduler is not None
+            and self._memory_conflict_store is not None
+            and self._fact_check_cancel is not None
+            and bool(
+                getattr(settings.agent, "conflict_detector_enabled", True)
+            )
+        ):
+            try:
+                from app.core.fact_check_rate_limiter import (
+                    FactCheckRateLimiter,
+                )
+                from app.core.memory_conflict_worker import (
+                    MemoryConflictWorker,
+                )
+
+                self._memory_conflict_rate_limiter = FactCheckRateLimiter(
+                    self._chat_db,
+                    per_hour_cap=int(
+                        getattr(
+                            settings.agent,
+                            "conflict_detector_per_hour_cap",
+                            6,
+                        )
+                    ),
+                    per_day_cap=int(
+                        getattr(
+                            settings.agent,
+                            "conflict_detector_per_day_cap",
+                            30,
+                        )
+                    ),
+                    state_key="conflict_detector.rate_state",
+                )
+                self._memory_conflict_worker = MemoryConflictWorker(
+                    memory_store=self._memory_store,
+                    conflict_store=self._memory_conflict_store,
+                    ollama=self._ollama,
+                    chat_model=self._effective_chat_model,
+                    rate_limiter=self._memory_conflict_rate_limiter,
+                    cancel_event=self._fact_check_cancel,
+                    agent_settings=settings.agent,
+                    memory_settings=self._memory_settings,
+                    notify_memory_updated=self._notify_memory_updated,
+                )
+                self._idle_scheduler.register(self._memory_conflict_worker)
+            except Exception:
+                log.warning(
+                    "MemoryConflictWorker init failed", exc_info=True,
+                )
+                self._memory_conflict_worker = None
+                self._memory_conflict_rate_limiter = None
+
+        # K2 — theory-of-mind / belief tracking. Always builds the store
+        # (the [[predict:...]] tag dispatch + REST endpoints need it
+        # even when the worker is disabled), then conditionally builds
+        # the gap detector and the inference worker. Inner-life
+        # provider is registered against the prompt assembler below
+        # once the detector exists.
+        self._belief_store = None
+        self._belief_worker = None
+        self._belief_rate_limiter = None
+        self._belief_gap_detector = None
+        # Cached gap list produced by the post-turn detector for the
+        # NEXT turn's inner-life provider. Cleared after each render.
+        self._pending_belief_gaps: list[Any] = []
+        if (
+            self._chat_db is not None
+            and bool(getattr(settings.agent, "belief_tracking_enabled", True))
+        ):
+            try:
+                from app.core.belief_store import BeliefStore
+
+                self._belief_store = BeliefStore(self._chat_db)
+            except Exception:
+                log.warning("BeliefStore init failed", exc_info=True)
+                self._belief_store = None
+        if self._belief_store is not None:
+            try:
+                from app.core.belief_gap_detector import BeliefGapDetector
+
+                self._belief_gap_detector = BeliefGapDetector(
+                    belief_store=self._belief_store,
+                    belief_settings=self._memory_settings,
+                )
+            except Exception:
+                log.warning("BeliefGapDetector init failed", exc_info=True)
+                self._belief_gap_detector = None
+        if (
+            self._idle_scheduler is not None
+            and self._belief_store is not None
+            and self._fact_check_cancel is not None
+            and self._embedder is not None
+            and bool(getattr(settings.agent, "belief_worker_enabled", True))
+        ):
+            try:
+                from app.core.belief_worker import BeliefInferenceWorker
+                from app.core.fact_check_rate_limiter import (
+                    FactCheckRateLimiter,
+                )
+
+                self._belief_rate_limiter = FactCheckRateLimiter(
+                    self._chat_db,
+                    per_hour_cap=int(
+                        getattr(
+                            settings.agent,
+                            "belief_worker_per_hour_cap",
+                            4,
+                        )
+                    ),
+                    per_day_cap=int(
+                        getattr(
+                            settings.agent,
+                            "belief_worker_per_day_cap",
+                            20,
+                        )
+                    ),
+                    state_key="belief_worker.rate_state",
+                )
+                self._belief_worker = BeliefInferenceWorker(
+                    belief_store=self._belief_store,
+                    chat_db=self._chat_db,
+                    embedder=self._embedder,
+                    ollama=self._ollama,
+                    chat_model=self._effective_chat_model,
+                    rate_limiter=self._belief_rate_limiter,
+                    cancel_event=self._fact_check_cancel,
+                    agent_settings=settings.agent,
+                    belief_settings=self._memory_settings,
+                    session_id_provider=lambda: self._session_id,
+                    user_id_provider=lambda: self._user_id,
+                    user_names_provider=lambda: [self.user_display_name]
+                    if self.user_display_name
+                    else [],
+                    assistant_name_provider=lambda: "Aiko",
+                    notify_belief_added=self._notify_belief_added,
+                    notify_belief_updated=self._notify_belief_updated,
+                )
+                self._idle_scheduler.register(self._belief_worker)
+            except Exception:
+                log.warning("BeliefInferenceWorker init failed", exc_info=True)
+                self._belief_worker = None
+                self._belief_rate_limiter = None
 
         self._proactive = ProactiveDirector(
             self._ollama,
@@ -3469,6 +3641,40 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
             + bullet
         )
 
+    def _render_belief_gaps_block(self) -> str:
+        """K2: surface up to two belief-gap lines from the previous turn.
+
+        The gap detector runs in ``_post_turn_inner_life`` and stashes
+        any detected mismatches into ``self._pending_belief_gaps``. We
+        consume that list here (clearing it after read) so the gap
+        only appears in the next turn's prompt -- after that Aiko
+        either addressed it or the belief got contradicted/confirmed
+        and won't re-surface.
+        """
+        if not bool(getattr(self._settings.agent, "belief_tracking_enabled", True)):
+            return ""
+        gaps = getattr(self, "_pending_belief_gaps", None) or []
+        if not gaps:
+            return ""
+        try:
+            from app.core.belief_gap_detector import render_inner_life_block
+
+            block = render_inner_life_block(gaps, max_lines=2)
+        except Exception:
+            log.debug("belief gaps render failed", exc_info=True)
+            block = ""
+        # Clear regardless of render success so we don't keep retrying
+        # the same broken render on every turn.
+        self._pending_belief_gaps = []
+        if not block:
+            return ""
+        return (
+            f"Your theory-of-mind read on {self.user_display_name} "
+            "doesn't quite match the live signal:\n" + block + "\n"
+            "Name the gap once and gently if it fits, then move on. "
+            "Don't repeat the question."
+        )
+
     def _render_world_block(self) -> str:
         """Aiko's room: a compact ambient block with location + items.
 
@@ -4735,6 +4941,146 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
                         self._notify_knowledge_gap_added(gap)
             except Exception:
                 log.debug("knowledge gap inline extraction failed", exc_info=True)
+
+        # F5: inline [[conflict:reason]] self-tag. Aiko emits this when
+        # she notices a memory contradiction mid-turn ("hold on, that
+        # doesn't match what you told me last week"). We log the
+        # reason for audit and force_run the F5 worker so the
+        # conflict surfaces in the next idle window even if it's
+        # outside the regular cadence. The cosine band + heuristic
+        # gate still filters the candidate pairs -- we don't try to
+        # attribute the tag to a specific (a, b) here.
+        conflict_worker = getattr(self, "_memory_conflict_worker", None)
+        if conflict_worker is not None and raw_assistant_text:
+            try:
+                from app.core.services.response_text_service import (
+                    extract_conflict_tags,
+                )
+
+                tags = extract_conflict_tags(raw_assistant_text)
+                if tags:
+                    log.info(
+                        "F5 self-flag: aiko reported %d conflict reason(s): %s",
+                        len(tags),
+                        [t[:120] for t in tags],
+                    )
+                    scheduler = getattr(self, "_idle_scheduler", None)
+                    if scheduler is not None:
+                        try:
+                            scheduler.force_run(conflict_worker.name)
+                        except Exception:
+                            log.debug(
+                                "F5 force_run failed", exc_info=True,
+                            )
+            except Exception:
+                log.debug(
+                    "conflict-tag inline extraction failed", exc_info=True,
+                )
+
+        # K2: inline [[predict:kind:topic:state:confidence]] self-tag.
+        # Aiko's theory-of-mind prediction about the user gets parsed
+        # here and upserted into the BeliefStore. We optionally embed
+        # the topic so the store can fuzzy-merge near-duplicates on
+        # the next upsert. The gap detector pass below picks up the
+        # fresh row if its mood prediction disagrees with the live
+        # affect read.
+        belief_store = getattr(self, "_belief_store", None)
+        if (
+            belief_store is not None
+            and raw_assistant_text
+            and bool(getattr(self._settings.agent, "belief_tracking_enabled", True))
+        ):
+            try:
+                from app.core.services.response_text_service import (
+                    extract_predict_tags,
+                )
+
+                tags = extract_predict_tags(raw_assistant_text)
+                if tags:
+                    log.info(
+                        "K2 self-flag: aiko predicted %d belief(s)",
+                        len(tags),
+                    )
+                    embedder = getattr(self, "_embedder", None)
+                    for t in tags:
+                        embedding = None
+                        if embedder is not None:
+                            try:
+                                embedding = embedder.embed(t.topic)
+                            except Exception:
+                                log.debug(
+                                    "K2 embed topic failed",
+                                    exc_info=True,
+                                )
+                        try:
+                            belief = belief_store.upsert(
+                                user_id=self._user_id,
+                                kind=t.kind,
+                                topic=t.topic,
+                                predicted_state=t.predicted_state,
+                                confidence=t.confidence,
+                                source="self_tag",
+                                topic_embedding=embedding,
+                            )
+                            if belief is not None:
+                                log.info(
+                                    "K2 belief from tag: id=%s kind=%s "
+                                    "topic=%r state=%r confidence=%.2f",
+                                    belief.id,
+                                    belief.kind,
+                                    belief.topic,
+                                    belief.predicted_state,
+                                    belief.confidence,
+                                )
+                                self._notify_belief_added(belief.to_payload())
+                        except Exception:
+                            log.debug(
+                                "K2 upsert from tag raised", exc_info=True,
+                            )
+            except Exception:
+                log.debug(
+                    "predict-tag inline extraction failed", exc_info=True,
+                )
+
+        # K2: post-turn gap detector pass. Compares active mood
+        # beliefs against the live affect read and active opinion
+        # beliefs against the user's most recent message. Surfaced
+        # gaps are stashed for the next-turn ``_render_belief_gaps_block``
+        # provider to consume.
+        gap_detector = getattr(self, "_belief_gap_detector", None)
+        if (
+            gap_detector is not None
+            and bool(getattr(self._settings.agent, "belief_tracking_enabled", True))
+        ):
+            try:
+                affect_store = getattr(self, "_affect_store", None)
+                affect = (
+                    affect_store.get(self._user_id)
+                    if affect_store is not None
+                    else None
+                )
+                gaps = gap_detector.detect(
+                    user_id=self._user_id,
+                    affect=affect,
+                    recent_user_message=user_text,
+                )
+                if gaps:
+                    self._pending_belief_gaps = list(gaps)
+                    # Mirror the per-row contradiction flips out to
+                    # listeners so the UI's Beliefs sub-tab can
+                    # refresh without polling.
+                    for g in gaps:
+                        try:
+                            row = belief_store.get(g.belief_id) if belief_store else None
+                            if row is not None:
+                                self._notify_belief_updated(row.to_payload())
+                        except Exception:
+                            log.debug(
+                                "K2 notify_belief_updated raised",
+                                exc_info=True,
+                            )
+            except Exception:
+                log.debug("belief gap detector raised", exc_info=True)
 
         # Apply per-turn drift to the relationship axes. Cheap (no LLM).
         axes_updater = getattr(self, "_relationship_axes_updater", None)

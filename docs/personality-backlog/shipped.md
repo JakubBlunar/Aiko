@@ -358,6 +358,129 @@ gained a confidence column + filter. Pinned rows clamp to `>= 0.9`.
 
 ---
 
+## F5. Conflicting-memory detector (schema v11)
+
+Periodic background worker that scans pairs of allow-listed memories
+(`fact` / `preference` / `relationship` / `event`) with high cosine
+similarity but lexically contradicting content. New
+[`memory_conflicts`](../../app/core/chat_database.py) table (schema
+v11) records each detected pair with the heuristic signals,
+optional LLM verdict, and a status of `open` / `auto_resolved` /
+`user_resolved` / `dismissed`. The
+[`MemoryConflictStore`](../../app/core/memory_conflict_store.py)
+wraps it with `record` / `list_open` / `mark_user_resolved` /
+`dismiss` / `delete_for_memory` (cascade-cleanup hook on
+`MemoryStore.delete`).
+
+Detection is hybrid: a cheap heuristic gate in
+[`conflict_heuristics.py`](../../app/core/conflict_heuristics.py)
+(negation flip, antonym table, numerical mismatch) labels each
+candidate pair `definite` (skip LLM, resolve immediately),
+`borderline` (LLM verifies via a `YES` / `NO` / `UNRELATED` JSON
+prompt, rate-limited through a dedicated
+[`FactCheckRateLimiter`](../../app/core/fact_check_rate_limiter.py)
+with `state_key="conflict_detector.rate_state"`), or `no` (drop
+without LLM cost). Confirmed conflicts with `|conf_a - conf_b| >=
+0.30` (default) auto-demote the loser to `tier=archive`,
+`confidence=0.20`, with `metadata.superseded_by` stamped — the rest
+surface in the new Conflicts sub-tab on the Memory drawer for the
+user to resolve via Keep-this / dismiss buttons. The worker
+[`MemoryConflictWorker`](../../app/core/memory_conflict_worker.py)
+registers with the shipped `IdleWorkerScheduler` on an hourly
+cadence and respects per-tick caps (`max_corpus=1000`,
+`max_pairs_per_run=50`) so an O(n²) sweep can never tank a tick.
+
+Aiko can also self-flag mid-turn with `[[conflict:short reason]]`
+(parsed in
+[`response_text_service.py`](../../app/core/services/response_text_service.py),
+stripped from chat/TTS, dispatched in
+[`SessionController._post_turn_inner_life`](../../app/core/session_controller.py)
+to `IdleWorkerScheduler.force_run` so the worker runs immediately
+instead of waiting for the next hour). REST endpoints
+`/api/memory-conflicts` (GET / resolve / dismiss) in
+[`app/web/server.py`](../../app/web/server.py) back the new
+Conflicts sub-tab in
+[`SettingsDrawer.tsx`](../../web/src/components/SettingsDrawer.tsx),
+which renders a side-by-side card per pair with similarity, both
+confidences, the heuristic signals chips, and the LLM reason when
+present. A collapsed "Recently auto-resolved" tail provides a
+read-only audit log. Tests:
+[`tests/test_conflict_heuristics.py`](../../tests/test_conflict_heuristics.py),
+[`tests/test_memory_conflict_store.py`](../../tests/test_memory_conflict_store.py),
+[`tests/test_memory_conflict_worker.py`](../../tests/test_memory_conflict_worker.py),
+plus extensions to `tests/test_response_text_service.py` and
+`tests/test_web_server_memories.py`.
+
+---
+
+## K2. Theory-of-mind / belief tracking (schema v12)
+
+A persistent model of what Aiko *thinks* Jacob believes / feels,
+kept separate from the facts she knows. New
+[`beliefs`](../../app/core/chat_database.py) table (schema v12) holds
+two shapes in one store, distinguished by the `kind` column:
+`mood` beliefs carry numeric `valence` / `arousal` so the gap
+detector can compare directly against the live
+[`AffectState`](../../app/core/affect_state.py), and `opinion`
+beliefs hold a free-text predicted state ("rust is overhyped"). The
+[`BeliefStore`](../../app/core/belief_store.py) wraps it with
+`upsert` (dedupes by `(user_id, kind, topic)` plus topic-embedding
+cosine ≥ 0.88) / `list_active` / `mark_contradicted` /
+`mark_confirmed` / `mark_stale` / `delete` / `count_by_status`,
+mirroring the F5 store shape.
+
+Two write paths feed the store. The self-tag fast path adds a new
+`[[predict:kind:topic:state:confidence]]` grammar to
+[`response_text_service.py`](../../app/core/services/response_text_service.py)
+(parsed alongside `[[conflict:...]]`, stripped from chat/TTS,
+dispatched in `_post_turn_inner_life`); the
+[`BeliefInferenceWorker`](../../app/core/belief_worker.py) mines
+recent user turns once an hour, privacy-scrubs the transcript via
+[`fact_check_privacy.scrub_claim_for_search`](../../app/core/fact_check_privacy.py),
+spends one rate-limited LLM call through a dedicated
+[`FactCheckRateLimiter`](../../app/core/fact_check_rate_limiter.py)
+(`state_key="belief_worker.rate_state"`) to extract a JSON array of
+`{kind, topic, predicted_state, confidence}` tuples, then upserts
+with `source="worker"`. Self-tagged beliefs at higher confidence are
+preserved over worker rewrites.
+
+The
+[`BeliefGapDetector`](../../app/core/belief_gap_detector.py) runs
+each post-turn and surfaces mismatches: for each active mood belief
+younger than `belief_recent_window_hours` (default 24h), it
+flips the row to `contradicted` when
+`|val_pred - val_obs| > belief_gap_valence_threshold` (default 0.30),
+`|aro_pred - aro_obs| > belief_gap_arousal_threshold` (default 0.25),
+or the recomputed valence band lands in opposing territory. Opinion
+beliefs use
+[`conflict_heuristics.classify_pair`](../../app/core/conflict_heuristics.py)
+against the user's recent message — a `definite` heuristic flips to
+`contradicted`, a strong Jaccard overlap nudges to `confirmed`, and
+beliefs untouched for `belief_stale_after_days` (default 90) bulk-
+flip to `stale`. Surfaced gaps render up to two lines into the next
+turn's prompt via a new `belief_gaps` inner-life provider
+("Your nervous read on tokyo trip isn't matching the live affect.
+Name the gap once and gently if it fits, then move on.").
+
+REST endpoints `/api/beliefs` (GET / POST / PATCH / DELETE) in
+[`app/web/server.py`](../../app/web/server.py) back a new Beliefs
+sub-tab in
+[`SettingsDrawer.tsx`](../../web/src/components/SettingsDrawer.tsx),
+grouped by kind with a per-row gap pulse + filter chips for kind /
+status. WebSocket events `belief_added` / `belief_updated` /
+`belief_deleted` keep the panel live without polling. Persona
+guidance in
+[`aiko_companion.txt`](../../data/persona/aiko_companion.txt)
+teaches the `[[predict:...]]` tag and the gentle gap-naming beat.
+Tests:
+[`tests/test_belief_store.py`](../../tests/test_belief_store.py),
+[`tests/test_belief_worker.py`](../../tests/test_belief_worker.py),
+[`tests/test_belief_gap_detector.py`](../../tests/test_belief_gap_detector.py),
+[`tests/test_web_server_beliefs.py`](../../tests/test_web_server_beliefs.py),
+plus extensions to `tests/test_response_text_service.py`.
+
+---
+
 ## Temporal memory awareness (schema v10)
 
 Gives every memory three new fields — `event_time`, `temporal_type`

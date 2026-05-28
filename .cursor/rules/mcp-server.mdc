@@ -1,7 +1,11 @@
 ---
 description: Guide for using the embedded MCP server to interact with and debug the live assistant app
-alwaysApply: true
+alwaysApply: false
 ---
+
+Currently don't use mcp server for testing, app is shipped as web so playwright-mcp is easier to use for testing
+
+Server has logs in the console.
 
 # Embedded MCP Server
 
@@ -9,17 +13,17 @@ The assistant app runs an MCP server on `http://localhost:6274/sse` (when enable
 
 ## Available MCP Tools
 
-| Tool | Purpose |
-|------|---------|
+| Tool                               | Purpose                                                                                                     |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------- |
 | `send_message(message, skip_tts?)` | Send text to the assistant; returns the full response. UI updates live. Set `skip_tts=true` during testing. |
-| `get_status()` | Model name, context window, tool count, TTS engine, metrics. |
-| `list_agent_tools()` | All tools the agent has (browser, search_history, etc.). |
-| `get_last_response_detail()` | Last response timing breakdown (llm_ms, tts_ms, etc.). |
-| `clear_history()` | Reset conversation session. |
-| `get_browser_snapshot()` | Accessibility tree of the current browser page (what the agent sees). |
-| `get_browser_screenshot()` | Screenshot of the current browser page. |
-| `get_browser_url()` | Current tabs and URLs. |
-| `get_browser_console()` | Recent console messages (errors, warnings). |
+| `get_status()`                     | Model name, context window, tool count, TTS engine, metrics.                                                |
+| `list_agent_tools()`               | All tools the agent has (browser, search_history, etc.).                                                    |
+| `get_last_response_detail()`       | Last response timing breakdown (llm_ms, tts_ms, etc.).                                                      |
+| `clear_history()`                  | Reset conversation session.                                                                                 |
+| `get_browser_snapshot()`           | Accessibility tree of the current browser page (what the agent sees).                                       |
+| `get_browser_screenshot()`         | Screenshot of the current browser page.                                                                     |
+| `get_browser_url()`                | Current tabs and URLs.                                                                                      |
+| `get_browser_console()`            | Recent console messages (errors, warnings).                                                                 |
 
 ## Debugging Workflow
 

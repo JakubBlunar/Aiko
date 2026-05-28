@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_SCHEMA_VERSION = 10
+_SCHEMA_VERSION = 12
 
 _CREATE_TABLES = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -252,6 +252,75 @@ CREATE TABLE IF NOT EXISTS kv_meta (
     value TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+-- Schema v11: F5 conflicting-memory detector. Each row pins ONE
+-- pair of conflicting memories (memory_a_id < memory_b_id, enforced
+-- by the worker on insert). ``status`` walks ``open`` ->
+-- ``user_resolved`` / ``auto_resolved`` / ``dismissed``. The
+-- ``flagged_by`` column distinguishes worker-found pairs (``auto``)
+-- from Aiko-flagged ones (``aiko``, via the ``[[conflict:reason]]``
+-- self-tag) so the UI can label the surface accordingly. ``winner_id``
+-- / ``loser_id`` / ``resolution_action`` are NULL until resolved.
+-- The CASCADE-on-delete behavior is implemented in
+-- :class:`MemoryConflictStore.delete_for_memory` rather than via SQL
+-- foreign keys because ``memories`` rows are managed through
+-- ``MemoryStore`` (which keeps an in-memory mirror that would drift
+-- if SQL deleted rows behind its back).
+CREATE TABLE IF NOT EXISTS memory_conflicts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    memory_a_id INTEGER NOT NULL,
+    memory_b_id INTEGER NOT NULL,
+    similarity REAL NOT NULL,
+    confidence_delta REAL NOT NULL,
+    heuristic_label TEXT NOT NULL,
+    heuristic_signals TEXT,
+    llm_verdict TEXT,
+    llm_reason TEXT,
+    status TEXT NOT NULL DEFAULT 'open',
+    winner_id INTEGER,
+    loser_id INTEGER,
+    resolution_action TEXT,
+    flagged_by TEXT NOT NULL DEFAULT 'auto',
+    detected_at TEXT NOT NULL,
+    resolved_at TEXT,
+    UNIQUE(memory_a_id, memory_b_id)
+);
+CREATE INDEX IF NOT EXISTS idx_memory_conflicts_status ON memory_conflicts(status);
+
+-- Schema v12: K2 theory-of-mind / belief tracking. Each row is one
+-- belief Aiko holds *about* the user: either a mood prediction
+-- ("Jacob is excited about the tokyo trip") or a topical opinion
+-- ("Jacob thinks Rust is overhyped"). The ``UNIQUE(user_id, kind,
+-- topic)`` constraint dedupes naturally; the :class:`BeliefStore`
+-- upsert path also collapses near-duplicate topics by embedding
+-- cosine. ``status`` walks ``active`` -> ``confirmed`` /
+-- ``contradicted`` / ``stale``. ``valence`` and ``arousal`` are
+-- ``NULL`` for opinions; mood beliefs fill them so the gap detector
+-- can compare directly against :class:`AffectState`. ``source``
+-- distinguishes self-tag, worker, and manual creates. ``metadata``
+-- is a generic JSON blob for future fields (e.g. polarity tags).
+CREATE TABLE IF NOT EXISTS beliefs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    topic TEXT NOT NULL,
+    topic_embedding BLOB,
+    predicted_state TEXT NOT NULL,
+    confidence REAL NOT NULL DEFAULT 0.6,
+    valence REAL,
+    arousal REAL,
+    source TEXT NOT NULL DEFAULT 'self_tag',
+    source_message_id INTEGER,
+    observed_at TEXT NOT NULL,
+    last_checked_at TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    gap_seen_at TEXT,
+    metadata TEXT,
+    UNIQUE(user_id, kind, topic)
+);
+CREATE INDEX IF NOT EXISTS idx_beliefs_status ON beliefs(status);
+CREATE INDEX IF NOT EXISTS idx_beliefs_topic ON beliefs(topic);
+CREATE INDEX IF NOT EXISTS idx_beliefs_user_kind ON beliefs(user_id, kind);
 """
 
 # Tables that existed in earlier schemas but are no longer used.
@@ -508,6 +577,33 @@ class ChatDatabase:
         except sqlite3.OperationalError:
             pass
         for stmt in _DEPENDENT_MEMORY_INDICES:
+            try:
+                conn.execute(stmt)
+            except sqlite3.OperationalError:
+                pass
+        # v10 -> v11: F5 conflicting-memory detector. The
+        # ``memory_conflicts`` table CREATE above is idempotent, so on
+        # upgrade there's nothing to ALTER -- the executescript already
+        # added it. We do create the status index defensively here in
+        # case ``CREATE INDEX IF NOT EXISTS`` ran before the table
+        # existed (it can't on this codepath, but the pattern
+        # matches the v7->v8 tier-index handling).
+        try:
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memory_conflicts_status "
+                "ON memory_conflicts(status)"
+            )
+        except sqlite3.OperationalError:
+            pass
+        # v11 -> v12: K2 belief tracking. The ``beliefs`` table CREATE
+        # above is idempotent. Defensive index creates mirror the v11
+        # pattern so legacy databases that pre-date the CREATE INDEX
+        # statements pick them up on upgrade.
+        for stmt in (
+            "CREATE INDEX IF NOT EXISTS idx_beliefs_status ON beliefs(status)",
+            "CREATE INDEX IF NOT EXISTS idx_beliefs_topic ON beliefs(topic)",
+            "CREATE INDEX IF NOT EXISTS idx_beliefs_user_kind ON beliefs(user_id, kind)",
+        ):
             try:
                 conn.execute(stmt)
             except sqlite3.OperationalError:

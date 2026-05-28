@@ -26,20 +26,6 @@ goal. Different shape from G3: G3 is "looked it up, done"; goals are
 
 ---
 
-## K2. Theory-of-mind / belief tracking
-
-Track Aiko's *model* of what Jacob believes / feels separately from
-facts she has. Pairs with [`app/core/affect_state.py`](../../app/core/affect_state.py)
-— Aiko's prediction of Jacob's mood vs. her direct read becomes an
-explicit gap she can act on ("I thought you were excited about the
-trip — am I reading this wrong?"). Key files:
-[`app/core/affect_state.py`](../../app/core/affect_state.py),
-new `app/core/belief_model.py` (a thin store keyed on
-`(topic, predicted_state, confidence, observed_at)`), persona update
-to teach the prediction-vs-observation framing.
-
----
-
 ## K3. Routine / ritual awareness
 
 Beyond G2's hour buckets, name recurring patterns ("Sunday-morning

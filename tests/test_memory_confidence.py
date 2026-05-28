@@ -46,8 +46,8 @@ def _emb(text: str) -> np.ndarray:
 
 
 class TestSchemaMigration(unittest.TestCase):
-    def test_schema_version_is_10(self) -> None:
-        self.assertEqual(_SCHEMA_VERSION, 10)
+    def test_schema_version_is_12(self) -> None:
+        self.assertEqual(_SCHEMA_VERSION, 12)
 
     def test_fresh_database_has_confidence_column(self) -> None:
         path, _store = _store_factory()
@@ -114,7 +114,7 @@ class TestSchemaMigration(unittest.TestCase):
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         finally:
             conn.close()
-        self.assertEqual(version, 10)
+        self.assertEqual(version, 12)
         # Unpinned row stays at 0.7 default.
         self.assertEqual(rows[0][0], "unpinned row")
         self.assertAlmostEqual(rows[0][2], 0.7, places=5)
