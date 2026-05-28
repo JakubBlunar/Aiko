@@ -125,6 +125,7 @@ class _StubOllamaClient:
         stop_event: threading.Event | None = None,
         format_json: bool = False,
         think: bool = False,
+        **kwargs: Any,
     ) -> Iterable[str]:
         self.chat_calls.append(
             {

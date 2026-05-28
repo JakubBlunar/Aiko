@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import logging
 from pathlib import Path
 from typing import Any
+
+
+log = logging.getLogger("app.settings")
 
 
 @dataclass(slots=True)
@@ -492,6 +496,59 @@ class AgentSettings:
     # to focus on K6 alone. Leaving it on with conservative
     # thresholds is the intended default.
     topic_stagnation_enabled: bool = True
+    # ── K16. Unified ambient grounding line ───────────────────────────
+    # The grounding line is one paragraph at the top of the system
+    # prompt that fuses the seven "ambient" inner-life signals
+    # (circadian, world, activity-awareness, affect/mood,
+    # relationship-pulse, user_state, ambient_noise) into a single
+    # continuous-awareness paragraph. The companion-feel hypothesis is
+    # that the LLM treats one paragraph as continuous awareness rather
+    # than seven separate facts to recite.
+    #
+    # Three modes (the canonical reference; mirrored verbatim in
+    # docs/personality-backlog/shipped.md and AGENTS.md):
+    #
+    # ``off`` (default): no grounding line; the seven granular blocks
+    #   render as today. Safe rollback target. Use this until you've
+    #   verified ``replace`` reads well in your sessions.
+    # ``replace``: the grounding line replaces all eight ambient
+    #   blocks (the seven listed above plus mood_hint). Cleanest test
+    #   of the hypothesis. Most aggressive.
+    # ``split``: the grounding line replaces situational signals
+    #   (circadian, world, activity, ambient_noise) but keeps
+    #   {affect, mood_hint, relationship, user_state} as standalone
+    #   blocks. Use when you want to keep the trend phrasing
+    #   (affect "lately you've been..."; relationship phase line)
+    #   that the fused line cannot represent without dilution.
+    #
+    # Suppression matrix (which blocks render in which mode):
+    #
+    #   block            off    split    replace
+    #   grounding_line   empty  shown    shown
+    #   circadian        shown  dropped  dropped
+    #   world            shown  dropped  dropped
+    #   activity         shown  dropped  dropped
+    #   ambient_noise    shown  dropped  dropped
+    #   affect           shown  shown    dropped
+    #   mood_hint        shown  shown    dropped
+    #   relationship     shown  shown    dropped
+    #   user_state       shown  shown    dropped
+    #   anniversary, profile bullets, pajama, knowledge_gaps,
+    #   belief_gaps, novelty, stagnation, agenda, axes, petname,
+    #   vocal_tone, catchphrase, narrative, arc -- ALWAYS shown,
+    #   never affected by this mode.
+    #
+    # Verifying the flip took effect:
+    #   - MCP ``get_last_response_detail`` shows
+    #     ``provider_ms.grounding_line`` non-zero in ``replace``/``split``,
+    #     missing or zero in ``off``.
+    #   - DEBUG ``prompt built:`` log line: ``providers=`` count drops
+    #     by the number of suppressed granular blocks.
+    #
+    # Invalid values (anything other than off/replace/split) clamp to
+    # ``off`` with a debug log so a typo in the config never breaks the
+    # prompt.
+    grounding_line_mode: str = "off"
     # Rolling summary background worker.
     summary_idle_seconds: float = 15.0  # quiet time before summarising
     summary_min_unsummarized_messages: int = 6  # minimum new msgs to trigger
@@ -524,6 +581,14 @@ class AgentSettings:
     # Self-image pulse: once per UTC day in the first speaking window after
     # midnight. ``enabled=False`` skips entirely.
     self_image_pulse_enabled: bool = True
+    # ``num_predict`` ceiling for the self-image LLM call. The prompt asks
+    # for a 60–120 word paragraph (~160 tokens), but reasoning models like
+    # qwen3.x can leak chain-of-thought into the response and eat budget
+    # before the actual paragraph starts. The default leaves headroom for
+    # that without being so large that a runaway response is unbounded.
+    # Bump this if you keep seeing ``surface=self_image_worker`` truncation
+    # warnings in the log.
+    self_image_max_tokens: int = 320
     # Prepared-nudge job runs in late speaking windows; cap how stale a
     # prepared nudge can be before ProactiveDirector re-synthesises.
     prepared_nudge_ttl_seconds: float = 600.0
@@ -554,6 +619,12 @@ class AgentSettings:
     relationship_pulse_enabled: bool = True
     relationship_pulse_min_hours: float = 168.0  # ~7 days
     relationship_pulse_min_turns: int = 30
+    # ``num_predict`` ceiling for the weekly pulse. The prompt asks for
+    # 1–2 sentences (≤50 words ~ 70 tokens), but qwen3.x-style models
+    # can leak hidden reasoning before the answer starts. 256 leaves
+    # comfortable headroom; bump it if you still see truncation warnings
+    # tagged ``surface=relationship_pulse``.
+    relationship_pulse_max_tokens: int = 256
 
     # ── Cadence / prosody (Phase 5b) ──────────────────────────────────
     # ProsodyDispatcher inserts per-sentence reactions, occasional micro
@@ -837,6 +908,17 @@ class MemorySettings:
     # last user activity before the scheduler considers itself idle.
     idle_worker_wake_seconds: float = 60.0
     idle_worker_quiet_threshold_seconds: int = 30
+    # P8: per-tick wall-time budget in milliseconds. The scheduler runs
+    # as many due workers as fit into this budget per wake-up so the
+    # natural typing/speaking gap between turns drains backlog instead
+    # of one worker at a time. Anti-starvation always lets the
+    # most-overdue worker fire even if its EMA estimate exceeds the
+    # remaining budget. Set to a small value (e.g. 500) to approximate
+    # the old one-per-tick behaviour; ``max_per_tick`` (0 = unlimited)
+    # is a hard cap if you want to clamp tick log volume on heavy
+    # backlogs.
+    idle_worker_tick_budget_ms: int = 3000
+    idle_worker_max_per_tick: int = 0
 
 
 @dataclass(slots=True)
@@ -1017,6 +1099,28 @@ def _normalize_tts_length_scale(value: Any) -> float:
         return max(0.65, min(f, 1.35))
     except (TypeError, ValueError):
         return 1.0
+
+
+_GROUNDING_LINE_MODES: frozenset[str] = frozenset({"off", "replace", "split"})
+
+
+def _parse_grounding_line_mode(value: Any) -> str:
+    """Clamp ``agent.grounding_line_mode`` to the K16 mode set.
+
+    Accepts ``"off"`` / ``"replace"`` / ``"split"`` (case-insensitive,
+    whitespace-stripped). Anything else falls back to ``"off"`` with a
+    debug log so a typo in the config never wedges the prompt. See the
+    full mode table on
+    :attr:`AgentSettings.grounding_line_mode`.
+    """
+    raw = str(value if value is not None else "off").strip().lower()
+    if raw in _GROUNDING_LINE_MODES:
+        return raw
+    log.debug(
+        "settings: invalid agent.grounding_line_mode=%r; falling back to 'off'",
+        value,
+    )
+    return "off"
 
 
 def _parse_chat_llm(raw: dict[str, Any]) -> ChatLlmSettings:
@@ -1267,6 +1371,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             topic_stagnation_enabled=bool(
                 agent_raw.get("topic_stagnation_enabled", True),
             ),
+            grounding_line_mode=_parse_grounding_line_mode(
+                agent_raw.get("grounding_line_mode", "off"),
+            ),
             shared_moments_enabled=bool(
                 agent_raw.get("shared_moments_enabled", True),
             ),
@@ -1299,6 +1406,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             agenda_groom_every_n_turns=max(1, int(agent_raw.get("agenda_groom_every_n_turns", 8))),
             arc_update_every_n_turns=max(1, int(agent_raw.get("arc_update_every_n_turns", 1))),
             self_image_pulse_enabled=bool(agent_raw.get("self_image_pulse_enabled", True)),
+            self_image_max_tokens=max(120, int(agent_raw.get("self_image_max_tokens", 320))),
             prepared_nudge_ttl_seconds=max(30.0, float(agent_raw.get("prepared_nudge_ttl_seconds", 600.0))),
             filler_enabled=bool(agent_raw.get("filler_enabled", True)),
             filler_first_token_ms=max(150, int(agent_raw.get("filler_first_token_ms", 800))),
@@ -1311,6 +1419,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             relationship_pulse_enabled=bool(agent_raw.get("relationship_pulse_enabled", True)),
             relationship_pulse_min_hours=max(24.0, float(agent_raw.get("relationship_pulse_min_hours", 168.0))),
             relationship_pulse_min_turns=max(5, int(agent_raw.get("relationship_pulse_min_turns", 30))),
+            relationship_pulse_max_tokens=max(80, int(agent_raw.get("relationship_pulse_max_tokens", 256))),
             cadence_enabled=bool(agent_raw.get("cadence_enabled", True)),
             resume_opener_min_hours=max(0.0, float(agent_raw.get("resume_opener_min_hours", 4.0))),
             resume_opener_ttl_seconds=max(60.0, float(agent_raw.get("resume_opener_ttl_seconds", 1800.0))),
@@ -1609,6 +1718,14 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             idle_worker_quiet_threshold_seconds=max(
                 0,
                 int(memory_raw.get("idle_worker_quiet_threshold_seconds", 30)),
+            ),
+            idle_worker_tick_budget_ms=max(
+                0,
+                int(memory_raw.get("idle_worker_tick_budget_ms", 3000)),
+            ),
+            idle_worker_max_per_tick=max(
+                0,
+                int(memory_raw.get("idle_worker_max_per_tick", 0)),
             ),
         ),
         chat_llm=_parse_chat_llm(chat_llm_raw),

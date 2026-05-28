@@ -12,63 +12,10 @@ once you sit down with them. Pair any K-series entry with the
 relevant P-item if it's near the same code; otherwise pick whichever
 unblocks the testing flow you're stuck on.
 
----
-
-## P1. Per-turn embed budget + timing
-
-**Motivation.** A typed turn can hit Ollama `/api/embeddings` more
-than once with different strings: `RagRetriever._build_query`
-embeds `"ctx || query"`, K6 `NoveltyDetector.detect` embeds raw
-`user_text`, and `MessageIndexer` may re-embed the user message
-asynchronously. The shared `Embedder` LRU only matches on exact
-key, so two HTTP embeds per turn is the common case once novelty +
-RAG are both on. Today there's no per-turn count or wall-time, so
-"my turn felt slow" can't be attributed to embeds without a custom
-log dive.
-
-**Key files.** [`app/llm/embedder.py`](../../app/llm/embedder.py),
-[`app/core/rag_retriever.py`](../../app/core/rag_retriever.py),
-[`app/core/novelty_detector.py`](../../app/core/novelty_detector.py),
-[`app/core/turn_runner.py`](../../app/core/turn_runner.py).
-
-**Sketched approach.** Add a small per-turn embed coordinator in
-the embedder (cache by normalised text within a turn boundary so
-RAG and novelty share a vector when the strings substring-match).
-Extend `PromptTelemetry` and the `turn done:` INFO line with
-`embed_ms=` / `embed_calls=` fields, and surface them on
-`get_last_response_detail` so MCP can grep regressions over time.
-
-**Effort.** Medium.
-
----
-
-## P2. Prompt-build phase telemetry
-
-**Motivation.** `turn done:` already logs `rag_prefetch=` and
-`prebuild=` slice-cache events but not the wall time of RAG
-retrieval, individual inner-life providers, or total prompt
-assembly. The DEBUG `prompt built:` line counts only the legacy 10
-inner blocks — knowledge-gaps, belief-gaps, novelty, activity,
-relationship axes, anniversary, routines, and circadian are
-invisible — so a regression in a single provider can't be
-attributed without instrumenting the suspect by hand.
-
-**Key files.**
-[`app/core/prompt_assembler.py`](../../app/core/prompt_assembler.py)
-(`PromptTelemetry`, the `prompt built:` DEBUG line),
-[`app/core/turn_runner.py`](../../app/core/turn_runner.py)
-(`turn done:`),
-[`app/mcp/server.py`](../../app/mcp/server.py)
-(`get_last_response_detail`).
-
-**Sketched approach.** Time each inner-life provider with a
-context manager (`with self._timed("novelty"):`) into a flat
-`provider_ms: dict[str, float]`; emit at DEBUG and roll up into
-`PromptTelemetry`. Update the DEBUG `prompt built:` field list to
-match the live providers — drop the legacy hard-coded 10. New
-fields are additive, no consumer breaks.
-
-**Effort.** Small.
+(P1 per-turn embed budget + timing, P2 prompt-build phase
+telemetry, P8 idle-worker queue visibility + multi-worker drain,
+and P12 bulk memory-mirror on startup have shipped — see
+[`shipped.md`](shipped.md).)
 
 ---
 
@@ -195,29 +142,6 @@ diary entry.
 
 ---
 
-## P8. Idle-worker queue visibility + starvation
-
-**Motivation.** `IdleWorkerScheduler` runs **one** worker per
-60 s tick, but ~10+ workers register (decay, promotion, schedule,
-curiosity, fact-check, conflict, belief, follow-up, …). When two
-workers come due simultaneously, the loser waits a full tick.
-Overdue workers are invisible except by log-grep; there's no
-`jobs_overdue=` / `next_due=` summary in MCP or the INFO drain
-line. A single misconfigured cadence can quietly starve the
-backlog for hours.
-
-**Key files.**
-[`app/core/idle_worker_scheduler.py`](../../app/core/idle_worker_scheduler.py)
-(emit a per-tick summary log + new MCP-surfacable stats),
-[`app/mcp/server.py`](../../app/mcp/server.py)
-(new `get_idle_workers_status` tool returning name / last_run /
-next_due / overdue_seconds rows),
-AGENTS.md log field table.
-
-**Effort.** Small.
-
----
-
 ## P9. Frontend streaming append: O(n) per token
 
 **Motivation.** The Virtuoso virtualisation fixed the *render*
@@ -266,3 +190,61 @@ also unlocks multi-week recurrence trends past the rolling
 window.
 
 **Effort.** Small (index) or medium (aggregate cache).
+
+---
+
+## P11. Reclaim background-worker `num_predict` from reasoning leakage
+
+**Motivation.** Reasoning-tuned models (qwen3.x family especially,
+including the `jaahas/qwen3.5-uncensored:9b` build we run today)
+ignore `think=False` and still emit `<think>...</think>` tokens
+that count fully against `num_predict`. We strip those blocks
+post-hoc in `OllamaClient`, and the truncation warning is now
+downgraded to DEBUG when the visible answer reaches a natural
+stop, so the noise is gone — but the *budget* is still being
+spent on a trace that the operator never sees. A self-image pulse
+with `max_tokens=320` may only have ~200 tokens of actual prose;
+the rest is reasoning we throw away. That eats wall-time on every
+worker run and forces us to over-provision the cap to avoid real
+truncation.
+
+**Key files.**
+[`app/core/self_image_worker.py`](../../app/core/self_image_worker.py)
+(`_PROMPT`),
+[`app/core/relationship_pulse.py`](../../app/core/relationship_pulse.py)
+(`_build_pulse_prompt`),
+[`app/core/curiosity_worker.py`](../../app/core/curiosity_worker.py),
+[`app/core/promise_extractor.py`](../../app/core/promise_extractor.py),
+[`app/core/dream_worker.py`](../../app/core/dream_worker.py),
+[`app/core/conversation_arc.py`](../../app/core/conversation_arc.py),
+[`app/core/agenda.py`](../../app/core/agenda.py),
+[`app/core/memory_consolidator.py`](../../app/core/memory_consolidator.py),
+[`app/core/reflection_worker.py`](../../app/core/reflection_worker.py),
+[`app/core/user_profile.py`](../../app/core/user_profile.py),
+[`app/core/shared_moment_extractor.py`](../../app/core/shared_moment_extractor.py),
+[`app/core/prepared_nudge.py`](../../app/core/prepared_nudge.py),
+[`app/llm/ollama_client.py`](../../app/llm/ollama_client.py)
+(maybe a centralized `no_think_hint` helper applied to the user
+message of any background-worker call).
+
+**Sketched approach.** Append `/no_think` to the user-content
+side of every background-worker prompt (qwen3 honours it as a
+soft directive in some fine-tunes; it's a no-op on
+non-reasoning models). Compare before/after: the
+`completion_tokens` field on the MCP `get_last_response_detail`
+should drop noticeably for surfaces tagged
+`self_image_worker`, `relationship_pulse`, etc. If qwen3.5
+uncensored ignores it, fall back to (a) wrapping prompts with
+`<no_think>...</no_think>` tags some templates support, or (b)
+running background workers on a non-reasoning Ollama model
+(e.g. a small 3B instruct) via a `chat_llm.background_model`
+setting; the main turn still uses the reasoning model.
+
+**Open questions.** Does `/no_think` actually save tokens on
+`jaahas/qwen3.5-uncensored:9b` specifically, or does this fine-
+tune ignore both? If it ignores, the cleaner path is the dual-
+model split (background_model setting), which is more code but
+also unlocks faster background-worker turnaround independently.
+
+**Effort.** Small (just the prompt suffix + before/after token
+measurements). Medium if we need the dual-model split.

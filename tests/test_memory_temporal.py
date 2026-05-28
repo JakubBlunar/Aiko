@@ -401,6 +401,7 @@ class TestMemoryExtractorTemporal(unittest.TestCase):
                 timeout_seconds,
                 options,
                 format_json,
+                **kwargs,
             ):
                 return canned, _Usage()
 

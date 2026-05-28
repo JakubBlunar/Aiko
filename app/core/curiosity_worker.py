@@ -241,6 +241,7 @@ class CuriosityWorker:
                     "num_predict": self._max_tokens,
                 },
                 model=self._model,
+                surface="curiosity_worker",
             )
             llm_ms = (time.monotonic() - t0) * 1000.0
         except Exception:

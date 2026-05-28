@@ -673,6 +673,301 @@ class StagnationBlockProviderTests(unittest.TestCase):
             self.assertEqual(seen, ["we keep circling this"])
 
 
+class GroundingLineModeTests(unittest.TestCase):
+    """K16 unified ambient grounding line modes.
+
+    Locks the suppression matrix:
+      ``off``     -- grounding line absent; granular blocks render.
+      ``replace`` -- grounding line present; eight granular blocks
+                     suppressed (circadian, ambient_noise, affect,
+                     mood_hint, relationship, user_state, world,
+                     activity).
+      ``split``   -- grounding line present; only situational blocks
+                     suppressed (circadian, ambient_noise, world,
+                     activity); affect / mood_hint / relationship /
+                     user_state retained.
+
+    Anniversary, profile, novelty, stagnation, knowledge_gaps,
+    belief_gaps, agenda, axes, petname, vocal_tone, catchphrase,
+    narrative, arc, pajama are NEVER suppressed and are checked here
+    only as a regression guard.
+    """
+
+    GRANULAR_PROVIDERS = {
+        "circadian": "GRAN_CIRCADIAN",
+        "ambient_noise": "GRAN_NOISE",
+        "world": "GRAN_WORLD",
+        "activity": "GRAN_ACTIVITY",
+        "affect": "GRAN_AFFECT",
+        "relationship": "GRAN_RELATIONSHIP",
+        "user_state": "GRAN_USER_STATE",
+        "anniversary": "GRAN_ANNIV",
+        "axes": "GRAN_AXES",
+    }
+
+    def _wire(self, assembler, *, grounding_text: str) -> None:
+        kwargs = {name: (lambda v=value: v) for name, value in self.GRANULAR_PROVIDERS.items()}
+        kwargs["grounding_line"] = lambda: grounding_text
+        assembler.set_inner_life_providers(**kwargs)
+
+    def test_off_mode_keeps_all_granular_blocks(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="g1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_grounding_line_mode("off")
+            self._wire(assembler, grounding_text="GROUND_LINE_OFF_PARAGRAPH")
+            messages, _ = assembler.assemble_with_budget(
+                "g1", "x", context_window=4096, response_budget=256,
+            )
+            content = messages[0]["content"]
+            self.assertNotIn("GROUND_LINE", content)
+            for label in self.GRANULAR_PROVIDERS.values():
+                self.assertIn(label, content, f"missing {label} in off mode")
+
+    def test_replace_mode_drops_eight_blocks_keeps_others(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="g2", role="user", content="hi", token_count=2,
+            )
+            assembler.set_grounding_line_mode("replace")
+            self._wire(assembler, grounding_text="GROUND_LINE_REPLACE")
+            messages, _ = assembler.assemble_with_budget(
+                "g2", "x", context_window=4096, response_budget=256,
+            )
+            content = messages[0]["content"]
+            self.assertIn("GROUND_LINE_REPLACE", content)
+            # Eight blocks dropped under replace.
+            for label in (
+                "GRAN_CIRCADIAN", "GRAN_NOISE",
+                "GRAN_WORLD", "GRAN_ACTIVITY",
+                "GRAN_AFFECT", "GRAN_RELATIONSHIP",
+                "GRAN_USER_STATE",
+            ):
+                self.assertNotIn(label, content, f"{label} should be suppressed in replace mode")
+            # Always-standalone regression guards.
+            self.assertIn("GRAN_ANNIV", content)
+            self.assertIn("GRAN_AXES", content)
+
+    def test_split_mode_drops_situational_keeps_trend(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="g3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_grounding_line_mode("split")
+            self._wire(assembler, grounding_text="GROUND_LINE_SPLIT")
+            messages, _ = assembler.assemble_with_budget(
+                "g3", "x", context_window=4096, response_budget=256,
+            )
+            content = messages[0]["content"]
+            self.assertIn("GROUND_LINE_SPLIT", content)
+            # Situational blocks dropped under split.
+            for label in (
+                "GRAN_CIRCADIAN", "GRAN_NOISE",
+                "GRAN_WORLD", "GRAN_ACTIVITY",
+            ):
+                self.assertNotIn(label, content, f"{label} should be suppressed in split mode")
+            # Trend / phase blocks retained under split.
+            for label in (
+                "GRAN_AFFECT", "GRAN_RELATIONSHIP", "GRAN_USER_STATE",
+            ):
+                self.assertIn(label, content, f"{label} should be retained in split mode")
+            # Always-standalone.
+            self.assertIn("GRAN_ANNIV", content)
+            self.assertIn("GRAN_AXES", content)
+
+    def test_invalid_mode_clamps_to_off(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="g4", role="user", content="hi", token_count=2,
+            )
+            assembler.set_grounding_line_mode("nonsense")
+            self._wire(assembler, grounding_text="GROUND_LINE_INVALID")
+            messages, _ = assembler.assemble_with_budget(
+                "g4", "x", context_window=4096, response_budget=256,
+            )
+            content = messages[0]["content"]
+            # Mode clamped to off -> grounding block builds (provider
+            # still returns text), but no granular suppression fires.
+            self.assertIn("GRAN_CIRCADIAN", content)
+            self.assertIn("GRAN_AFFECT", content)
+
+    def test_grounding_line_dropped_under_aggressive(self) -> None:
+        # Even in replace/split, aggressive trim suppresses the
+        # grounding line (paragraph savings come from the rolling
+        # summary anyway).
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="g5", role="user", content="hi", token_count=2,
+            )
+            assembler.set_grounding_line_mode("replace")
+            self._wire(assembler, grounding_text="GROUND_LINE_AGG")
+            messages, _ = assembler.assemble_with_budget(
+                "g5", "x",
+                context_window=4096, response_budget=256, aggressive=True,
+            )
+            content = messages[0]["content"]
+            self.assertNotIn("GROUND_LINE_AGG", content)
+
+    def test_grounding_line_provider_timing_recorded(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="g6", role="user", content="hi", token_count=2,
+            )
+            assembler.set_grounding_line_mode("replace")
+            self._wire(assembler, grounding_text="GROUND_LINE_TIMING")
+            _, telemetry = assembler.assemble_with_budget(
+                "g6", "x", context_window=4096, response_budget=256,
+            )
+            self.assertIn("grounding_line", telemetry.provider_ms)
+            self.assertGreaterEqual(telemetry.provider_ms["grounding_line"], 0.0)
+
+
+class PhaseTelemetryTests(unittest.TestCase):
+    """P2 (perf backlog): per-provider wall time + aggregate phase
+    timings on :class:`PromptTelemetry`. These tests pin the data
+    contract -- not the absolute timing numbers, which are machine-
+    dependent."""
+
+    def test_provider_ms_only_includes_providers_that_ran(self) -> None:
+        # No providers wired -> empty dict, not a hardcoded list of
+        # zeros. This is the v1 promise: the dict reflects live wiring,
+        # not a legacy 10-block schema.
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="pt1", role="user", content="hi", token_count=2,
+            )
+            _, telem = assembler.assemble_with_budget(
+                "pt1",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertEqual(telem.provider_ms, {})
+
+    def test_provider_ms_records_each_wired_provider(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="pt2", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                affect=lambda: "affect",
+                circadian=lambda: "circ",
+                novelty=lambda _t: "Heads-up.",
+                stagnation=lambda _t: "",
+            )
+            _, telem = assembler.assemble_with_budget(
+                "pt2",
+                "anything",
+                context_window=4096,
+                response_budget=256,
+            )
+            # Static (zero-arg) providers go through the cached slice
+            # build, which has its own timing path; we don't pin it
+            # here. The live (per-turn) providers MUST appear.
+            self.assertIn("novelty", telem.provider_ms)
+            self.assertIn("stagnation", telem.provider_ms)
+            for name, ms in telem.provider_ms.items():
+                # Wall time must always be non-negative -- catches
+                # timer-direction bugs.
+                self.assertGreaterEqual(ms, 0.0, f"provider {name}")
+
+    def test_provider_ms_round_tripped_through_as_dict(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="pt3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                novelty=lambda _t: "Heads-up.",
+            )
+            _, telem = assembler.assemble_with_budget(
+                "pt3", "x", context_window=4096, response_budget=256,
+            )
+            payload = telem.as_dict()
+            # Survives round-trip and is JSON-friendly (floats only).
+            self.assertIn("novelty", payload["provider_ms"])
+            self.assertIsInstance(payload["provider_ms"]["novelty"], float)
+            # New top-level fields exist.
+            self.assertIn("rag_lookup_ms", payload)
+            self.assertIn("assemble_ms", payload)
+            self.assertGreaterEqual(payload["assemble_ms"], 0.0)
+
+    def test_assemble_ms_covers_full_build(self) -> None:
+        # ``assemble_ms`` must be at least the sum of recorded provider
+        # times -- catches a bug where the timer is started in the
+        # wrong place (e.g. *after* the slice cache instead of at the
+        # top of ``assemble_with_budget``).
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="pt4", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                novelty=lambda _t: "n",
+                belief_gaps=lambda: "b",
+                knowledge_gaps=lambda _t: "k",
+            )
+            _, telem = assembler.assemble_with_budget(
+                "pt4", "x", context_window=4096, response_budget=256,
+            )
+            provider_total = sum(telem.provider_ms.values())
+            # Allow a small float-rounding tolerance: provider_ms
+            # entries are rounded to 2dp, ``assemble_ms`` likewise.
+            self.assertGreaterEqual(
+                telem.assemble_ms + 0.05, provider_total,
+                f"assemble_ms={telem.assemble_ms} < provider_total={provider_total}",
+            )
+
+    def test_embed_fields_default_to_zero_without_turn_runner(self) -> None:
+        # ``assemble_with_budget`` only stamps the assemble/RAG/provider
+        # phase fields; the P1 embed_calls/embed_ms are populated by
+        # ``TurnRunner`` post-build. Direct callers (tests, ad-hoc
+        # scripts) should see clean zeros.
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="pt5", role="user", content="hi", token_count=2,
+            )
+            _, telem = assembler.assemble_with_budget(
+                "pt5", "x", context_window=4096, response_budget=256,
+            )
+            self.assertEqual(telem.embed_calls, 0)
+            self.assertEqual(telem.embed_ms, 0.0)
+
+
+class FailingProviderTimingTests(unittest.TestCase):
+    """A provider that raises must still record a timing bucket -- the
+    operator wants to see "novelty took 3ms then exploded", not "novelty
+    silently disappeared from the telemetry"."""
+
+    def test_raising_provider_is_still_timed(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="pt6", role="user", content="hi", token_count=2,
+            )
+
+            def _boom(_t: str) -> str:
+                raise RuntimeError("explode")
+
+            assembler.set_inner_life_providers(novelty=_boom)
+            _, telem = assembler.assemble_with_budget(
+                "pt6", "x", context_window=4096, response_budget=256,
+            )
+            # The provider raised but timing must still be recorded so
+            # operators can see "this provider is broken AND was slow".
+            self.assertIn("novelty", telem.provider_ms)
+
+
 class GrammarAddendumTests(unittest.TestCase):
     """Spot-checks on the new dynamic prompt addendum builders.
 

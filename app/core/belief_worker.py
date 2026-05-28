@@ -470,6 +470,7 @@ class BeliefInferenceWorker:
                 model=self._chat_model,
                 stop_event=self._cancel_event,
                 format_json=True,
+                surface="belief_worker",
             )
             for chunk in stream:
                 chunks.append(chunk)

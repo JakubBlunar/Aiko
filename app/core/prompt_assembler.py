@@ -17,7 +17,8 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -306,20 +307,64 @@ def _build_motion_grammar_addendum(motion_names: list[str]) -> str:
     )
 
 
-def _safe_provider(provider: Callable[[], str] | None) -> str:
+def _safe_provider(
+    provider: Callable[[], str] | None,
+    *,
+    timing_sink: dict[str, float] | None = None,
+    timing_name: str | None = None,
+) -> str:
     """Run an inner-life block provider, swallowing exceptions.
 
     Hot-path safety: a broken provider must NEVER kill the prompt build.
     Returns ``""`` on any failure.
+
+    P2: when ``timing_sink`` and ``timing_name`` are both provided, the
+    elapsed wall time of the provider call is added to the sink under
+    ``timing_name``. Adding (rather than overwriting) keeps the contract
+    well-defined when the same name is somehow timed twice in a build,
+    though that shouldn't happen with the current call sites.
     """
     if provider is None:
         return ""
+    if timing_sink is not None and timing_name:
+        start = time.perf_counter()
+        try:
+            text = provider()
+        except Exception:
+            log.debug("inner-life provider raised", exc_info=True)
+            text = ""
+        finally:
+            elapsed_ms = (time.perf_counter() - start) * 1000.0
+            timing_sink[timing_name] = (
+                timing_sink.get(timing_name, 0.0) + elapsed_ms
+            )
+        return (text or "").strip()
     try:
         text = provider()
     except Exception:
         log.debug("inner-life provider raised", exc_info=True)
         return ""
     return (text or "").strip()
+
+
+@contextmanager
+def _timed_phase(
+    sink: dict[str, float], name: str,
+) -> Iterator[None]:
+    """Context manager that adds the wall time of the body to ``sink[name]``.
+
+    Used for phases that aren't a simple provider call: the RAG lookup,
+    the user-text-aware providers (``knowledge_gaps`` / ``belief_gaps`` /
+    ``novelty`` / ``stagnation``), and any fold-up totals. Add semantics
+    (rather than overwrite) so a phase wrapped twice in a build remains
+    monotonically increasing.
+    """
+    start = time.perf_counter()
+    try:
+        yield
+    finally:
+        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        sink[name] = sink.get(name, 0.0) + elapsed_ms
 
 # Reserve a buffer between (estimated tokens used) and (model's context window)
 # so we never send a request that bumps against the limit and gets truncated
@@ -373,6 +418,26 @@ class PromptTelemetry:
     # actually paid off this turn.
     rag_prefetch_event: str = "skip"
     slice_cache_event: str = "skip"
+    # P2 (perf backlog): per-phase wall time captured during
+    # ``assemble_with_budget`` so a slow turn can be attributed without
+    # bisecting each provider by hand. ``provider_ms`` is keyed by the
+    # provider name (``"affect"``, ``"novelty"``, ``"stagnation"``, …);
+    # entries are only present when a provider was actually wired and
+    # ran. ``rag_lookup_ms`` covers the prefetch lookup + live RAG call;
+    # ``assemble_ms`` is the total wall time of ``assemble_with_budget``
+    # so consumers can compute "everything else" by subtraction.
+    provider_ms: dict[str, float] = field(default_factory=dict)
+    rag_lookup_ms: float = 0.0
+    assemble_ms: float = 0.0
+    # P1 (perf backlog): per-turn embed budget. Populated by
+    # ``TurnRunner`` from the shared :class:`Embedder`'s thread-local
+    # turn counters; covers RAG retrieval, K6/K18 detection, and any
+    # other ``embedder.embed`` calls that happened on the turn thread
+    # while the turn boundary was active. Async writes from
+    # ``MessageIndexer`` run on a different thread and don't pollute
+    # these counters.
+    embed_calls: int = 0
+    embed_ms: float = 0.0
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -405,6 +470,15 @@ class PromptTelemetry:
             "compaction_triggered": bool(self.compaction_triggered),
             "rag_prefetch_event": str(self.rag_prefetch_event),
             "slice_cache_event": str(self.slice_cache_event),
+            # P2: per-phase wall-time breakdown.
+            "provider_ms": {
+                str(k): round(float(v), 2) for k, v in self.provider_ms.items()
+            },
+            "rag_lookup_ms": round(float(self.rag_lookup_ms), 2),
+            "assemble_ms": round(float(self.assemble_ms), 2),
+            # P1: per-turn embed budget.
+            "embed_calls": int(self.embed_calls),
+            "embed_ms": round(float(self.embed_ms), 2),
         }
 
 
@@ -533,6 +607,22 @@ class PromptAssembler:
         # first so K18 can read its ``last_distance`` / ``last_band``
         # off the K6 detector. Dropped in aggressive mode.
         self._stagnation_provider: Callable[[str], str] | None = None
+        # K16 unified ambient grounding line. One paragraph that fuses
+        # circadian/world/activity/affect/relationship/user_state/
+        # ambient_noise into a single continuous-awareness sentence at
+        # the top of the system prompt. Provider returns ``""`` when
+        # ``agent.grounding_line_mode == "off"``; the suppression of the
+        # underlying granular blocks lives inline in
+        # ``assemble_with_budget`` based on the per-turn mode argument.
+        self._grounding_line_provider: Callable[[], str] | None = None
+        # K16 mode selector: ``"off"`` / ``"replace"`` / ``"split"``.
+        # Stored on the assembler (rather than threaded through
+        # ``assemble_with_budget``) so :class:`TurnRunner` doesn't need
+        # to thread a per-turn arg. ``SessionController`` sets the mode
+        # once at boot via :meth:`set_grounding_line_mode` and again on
+        # any settings reload. Suppression of granular blocks lives
+        # inline in :meth:`assemble_with_budget` keyed off this value.
+        self._grounding_line_mode: str = "off"
         # Per-turn dynamic blocks: not part of ``_StaticSlices`` because
         # they change every utterance. ``vocal_tone`` is set immediately
         # before the live turn dispatch by ``SessionController`` after
@@ -648,6 +738,7 @@ class PromptAssembler:
         belief_gaps: Callable[[], str] | None = None,
         novelty: Callable[[str], str] | None = None,
         stagnation: Callable[[str], str] | None = None,
+        grounding_line: Callable[[], str] | None = None,
     ) -> None:
         """Register optional inner-life block providers.
 
@@ -701,6 +792,8 @@ class PromptAssembler:
             self._novelty_provider = novelty
         if stagnation is not None:
             self._stagnation_provider = stagnation
+        if grounding_line is not None:
+            self._grounding_line_provider = grounding_line
 
     def set_last_reaction(self, reaction: str | None) -> None:
         if not reaction:
@@ -711,6 +804,22 @@ class PromptAssembler:
             self._last_reaction = None
         else:
             self._last_reaction = cleaned
+
+    def set_grounding_line_mode(self, mode: str) -> None:
+        """K16: configure how the unified grounding line interacts with
+        the granular ambient blocks.
+
+        Accepts ``"off"`` / ``"replace"`` / ``"split"`` (case-
+        insensitive); anything else clamps to ``"off"`` so a typo
+        upstream never wedges the prompt. See
+        :attr:`AgentSettings.grounding_line_mode` for the full mode
+        table and suppression matrix. Idempotent — call again on
+        settings reload to flip modes live.
+        """
+        cleaned = str(mode or "").strip().lower()
+        if cleaned not in ("off", "replace", "split"):
+            cleaned = "off"
+        self._grounding_line_mode = cleaned
 
     # ── public API ────────────────────────────────────────────────────────
 
@@ -907,6 +1016,15 @@ class PromptAssembler:
         recent-message window and drops the RAG block (the rolling summary
         already encodes long-term context).
         """
+        # P2 (perf backlog): per-phase wall time. Captured via
+        # ``_safe_provider(timing_sink=…)`` and ``_timed_phase`` context
+        # managers below; folded into ``PromptTelemetry.provider_ms`` at
+        # the end so MCP / get_last_response_detail can attribute "this
+        # turn was slow because of <provider>" without a custom log
+        # dive.
+        provider_ms: dict[str, float] = {}
+        rag_lookup_ms = 0.0
+        assemble_started_at = time.perf_counter()
         # Listening-window cache hit (Phase 3): if the slices we built
         # speculatively while the user was speaking still match the
         # session's static state, skip the persona/self-image disk reads,
@@ -978,6 +1096,7 @@ class PromptAssembler:
 
         memory_block = ""
         rag_prefetch_event = "skip"
+        rag_phase_start = time.perf_counter()
         if not aggressive:
             # Phase 1b: try the speculative pre-fetch cache first. On a hit
             # we skip the embed + multi-source retrieval entirely, saving
@@ -1022,6 +1141,10 @@ class PromptAssembler:
                 except Exception:
                     log.debug("memory retrieval failed", exc_info=True)
                     memory_block = ""
+        # P2: capture wall time of the RAG phase (prefetch lookup + live
+        # retrieval + legacy fallback). On ``aggressive=True`` builds the
+        # whole block is skipped, so ``rag_lookup_ms`` reads ~0.
+        rag_lookup_ms = (time.perf_counter() - rag_phase_start) * 1000.0
 
         summary_text = ""
         if summary and summary.summary.strip():
@@ -1034,45 +1157,77 @@ class PromptAssembler:
         # whose contents change between turns even when ``history_max_id``
         # doesn't move (NarrativeWeaver runs every N turns, ProactiveDirector
         # consumes nudges) — caching it would surface stale text.
-        vocal_tone_block = _safe_provider(self._vocal_tone_provider)
-        catchphrase_block = _safe_provider(self._catchphrase_provider)
-        petname_block = _safe_provider(self._petname_provider)
-        ambient_noise_block = _safe_provider(self._ambient_noise_provider)
-        pajama_block = _safe_provider(self._pajama_provider)
-        narrative_block = _safe_provider(self._narrative_provider)
+        vocal_tone_block = _safe_provider(
+            self._vocal_tone_provider,
+            timing_sink=provider_ms, timing_name="vocal_tone",
+        )
+        catchphrase_block = _safe_provider(
+            self._catchphrase_provider,
+            timing_sink=provider_ms, timing_name="catchphrase",
+        )
+        petname_block = _safe_provider(
+            self._petname_provider,
+            timing_sink=provider_ms, timing_name="petname",
+        )
+        ambient_noise_block = _safe_provider(
+            self._ambient_noise_provider,
+            timing_sink=provider_ms, timing_name="ambient_noise",
+        )
+        pajama_block = _safe_provider(
+            self._pajama_provider,
+            timing_sink=provider_ms, timing_name="pajama",
+        )
+        narrative_block = _safe_provider(
+            self._narrative_provider,
+            timing_sink=provider_ms, timing_name="narrative",
+        )
         # Aiko's room: read fresh every turn so cookie consumption / state
         # changes from agent tools surface immediately in the next prompt.
         # Dropped in aggressive mode to free tokens for history.
-        world_block = "" if aggressive else _safe_provider(self._world_provider)
+        world_block = "" if aggressive else _safe_provider(
+            self._world_provider,
+            timing_sink=provider_ms, timing_name="world",
+        )
         # Activity awareness: read fresh so a user who alt-tabs to a
         # different app between turns is reflected in the next prompt.
         # Dropped in aggressive mode for the same reason as world.
-        activity_block = "" if aggressive else _safe_provider(self._activity_provider)
+        activity_block = "" if aggressive else _safe_provider(
+            self._activity_provider,
+            timing_sink=provider_ms, timing_name="activity",
+        )
         # Schema v7: shared-moment anniversary line + relationship-axes
         # summary. Both empty strings most turns; the anniversary
         # provider also stamps the chosen moment so it won't fire
         # repeatedly inside the rate-limit window. Dropped in
         # aggressive mode.
-        anniversary_block = "" if aggressive else _safe_provider(self._anniversary_provider)
-        axes_block = "" if aggressive else _safe_provider(self._axes_provider)
+        anniversary_block = "" if aggressive else _safe_provider(
+            self._anniversary_provider,
+            timing_sink=provider_ms, timing_name="anniversary",
+        )
+        axes_block = "" if aggressive else _safe_provider(
+            self._axes_provider,
+            timing_sink=provider_ms, timing_name="axes",
+        )
         # F2: knowledge-gap "wondering about" line. Query-aware (so the
         # block picks the gap closest to what the user is talking about
         # right now) which is why it's not a zero-arg provider.
         knowledge_gaps_block = ""
         if not aggressive and self._knowledge_gaps_provider is not None:
-            try:
-                knowledge_gaps_block = self._knowledge_gaps_provider(user_text) or ""
-            except Exception:
-                log.debug("knowledge gaps provider raised", exc_info=True)
-                knowledge_gaps_block = ""
+            with _timed_phase(provider_ms, "knowledge_gaps"):
+                try:
+                    knowledge_gaps_block = self._knowledge_gaps_provider(user_text) or ""
+                except Exception:
+                    log.debug("knowledge gaps provider raised", exc_info=True)
+                    knowledge_gaps_block = ""
 
         belief_gaps_block = ""
         if not aggressive and self._belief_gaps_provider is not None:
-            try:
-                belief_gaps_block = self._belief_gaps_provider() or ""
-            except Exception:
-                log.debug("belief gaps provider raised", exc_info=True)
-                belief_gaps_block = ""
+            with _timed_phase(provider_ms, "belief_gaps"):
+                try:
+                    belief_gaps_block = self._belief_gaps_provider() or ""
+                except Exception:
+                    log.debug("belief gaps provider raised", exc_info=True)
+                    belief_gaps_block = ""
 
         # K6: per-turn surprise/novelty signal. Same shape as the F2
         # knowledge-gap provider (takes ``user_text``), since the
@@ -1081,11 +1236,12 @@ class PromptAssembler:
         # which is the common case.
         novelty_block = ""
         if not aggressive and self._novelty_provider is not None:
-            try:
-                novelty_block = self._novelty_provider(user_text) or ""
-            except Exception:
-                log.debug("novelty provider raised", exc_info=True)
-                novelty_block = ""
+            with _timed_phase(provider_ms, "novelty"):
+                try:
+                    novelty_block = self._novelty_provider(user_text) or ""
+                except Exception:
+                    log.debug("novelty provider raised", exc_info=True)
+                    novelty_block = ""
 
         # K18: topic-stagnation signal. Sibling of K6 above and runs
         # immediately after, so the stagnation detector can read the
@@ -1097,11 +1253,46 @@ class PromptAssembler:
         # silent / warmup / cooldown / suppressed turn.
         stagnation_block = ""
         if not aggressive and self._stagnation_provider is not None:
-            try:
-                stagnation_block = self._stagnation_provider(user_text) or ""
-            except Exception:
-                log.debug("stagnation provider raised", exc_info=True)
-                stagnation_block = ""
+            with _timed_phase(provider_ms, "stagnation"):
+                try:
+                    stagnation_block = self._stagnation_provider(user_text) or ""
+                except Exception:
+                    log.debug("stagnation provider raised", exc_info=True)
+                    stagnation_block = ""
+
+        # K16: unified ambient grounding line. Always built (the
+        # provider itself short-circuits to ``""`` when the mode is
+        # ``off``); the suppression of the granular ambient blocks
+        # happens just below this block. Timing lands in the same
+        # ``provider_ms`` dict as every other provider so MCP
+        # ``get_last_response_detail`` can attribute the cost.
+        grounding_block = ""
+        if not aggressive and self._grounding_line_provider is not None:
+            grounding_block = _safe_provider(
+                self._grounding_line_provider,
+                timing_sink=provider_ms, timing_name="grounding_line",
+            )
+        # Suppression matrix (see AgentSettings.grounding_line_mode):
+        #   off     -> grounding_block already "" via the provider; no
+        #              granular suppression.
+        #   split   -> drop {circadian, ambient_noise, world, activity}.
+        #   replace -> drop {circadian, ambient_noise, affect, mood
+        #              hint, relationship, user_state, world, activity}.
+        # Anniversary, profile, pajama, knowledge_gaps, belief_gaps,
+        # novelty, stagnation, agenda, axes, petname, vocal_tone,
+        # catchphrase, narrative, arc are NEVER suppressed — they each
+        # carry data that fusing dilutes.
+        grounding_mode = self._grounding_line_mode
+        if grounding_block and grounding_mode in ("split", "replace"):
+            circadian_block = ""
+            ambient_noise_block = ""
+            world_block = ""
+            activity_block = ""
+            if grounding_mode == "replace":
+                affect_block = ""
+                mood_hint = ""
+                relationship_block = ""
+                user_state_block = ""
 
         # Alexia bundle: capability lookup is *not* a string provider —
         # it returns the raw flags so we can build the overlay /
@@ -1146,6 +1337,17 @@ class PromptAssembler:
             system_parts.append(self_image_block)
         if narrative_block:
             system_parts.append(narrative_block)
+        # K16: unified ambient grounding line. Lands immediately after
+        # narrative so the LLM reads "where we are right now" before
+        # any of the granular ambient blocks (circadian, world,
+        # activity, affect, etc.). Empty in mode ``off``; non-empty
+        # in ``replace`` and ``split`` (the granular blocks above are
+        # then suppressed by the matrix applied above when this block
+        # rendered). The mode gate is defensive: even if a provider
+        # misbehaves and returns text while the mode is ``off``, the
+        # assembler refuses to append.
+        if grounding_block and grounding_mode in ("replace", "split"):
+            system_parts.append(grounding_block)
         if ambient:
             system_parts.append(ambient)
         if circadian_block:
@@ -1316,32 +1518,47 @@ class PromptAssembler:
             compaction_triggered=bool(compaction_triggered),
             rag_prefetch_event=rag_prefetch_event,
             slice_cache_event=slice_event,
+            # P2: per-phase wall time. ``provider_ms`` is rounded for
+            # log readability but the dict only contains entries for
+            # providers that actually ran this build.
+            provider_ms={k: round(v, 2) for k, v in provider_ms.items()},
+            rag_lookup_ms=round(rag_lookup_ms, 2),
+            assemble_ms=round(
+                (time.perf_counter() - assemble_started_at) * 1000.0, 2,
+            ),
+            # P1 fields are stamped post-assemble by ``TurnRunner`` from
+            # the embedder's per-turn counters; we leave them at the
+            # default 0 here so a stand-alone assemble call (e.g. tests
+            # without a turn boundary) still produces a valid telemetry.
         )
 
         # Per plan: tweaking-only headline for the prompt build. Stays
         # at DEBUG so default-INFO logs aren't flooded; bump
         # `app.core.prompt_assembler` to DEBUG when tracing retrieval/budget.
         # Field names align with AGENTS.md "Standard line shape".
-        inner_blocks_count = sum(
-            1
-            for n in (
-                telemetry.affect_tokens,
-                telemetry.circadian_tokens,
-                telemetry.profile_tokens,
-                telemetry.user_state_tokens,
-                telemetry.relationship_tokens,
-                telemetry.arc_tokens,
-                telemetry.narrative_tokens,
-                telemetry.agenda_tokens,
-                telemetry.world_tokens,
-                telemetry.self_image_tokens,
+        # P2: ``inner_blocks`` was previously a hard-coded count of 10
+        # static slots that never picked up novelty / belief_gaps /
+        # routines / etc.; now it's the live provider count derived
+        # from the timing dict, so adding a new provider doesn't
+        # silently leave it out of the headline. ``provider_ms_total``
+        # rolls up the wall time of every provider that actually ran;
+        # ``slowest_provider`` calls out the worst offender so a
+        # regression in a single provider lights up immediately.
+        provider_count = len(provider_ms)
+        provider_ms_total = sum(provider_ms.values())
+        if provider_ms:
+            slowest_name, slowest_ms = max(
+                provider_ms.items(), key=lambda kv: kv[1],
             )
-            if n > 0
-        )
+            slowest_field = f"{slowest_name}:{slowest_ms:.1f}"
+        else:
+            slowest_field = "-"
         log.debug(
             "prompt built: ctx=%d budget=%d est_tokens=%d "
             "sys=%d hist=%d user=%d rag_tokens=%d "
-            "history_msgs_in=%d history_msgs_out=%d inner_blocks=%d "
+            "history_msgs_in=%d history_msgs_out=%d "
+            "providers=%d provider_ms_total=%.1f slowest_provider=%s "
+            "rag_lookup_ms=%.1f assemble_ms=%.1f "
             "summary_active=%s compaction=%s aggressive=%s",
             context_window,
             budget_tokens,
@@ -1352,7 +1569,11 @@ class PromptAssembler:
             telemetry.rag_tokens,
             kept_count,
             dropped_count,
-            inner_blocks_count,
+            provider_count,
+            provider_ms_total,
+            slowest_field,
+            telemetry.rag_lookup_ms,
+            telemetry.assemble_ms,
             "1" if telemetry.summary_active else "0",
             "1" if telemetry.compaction_triggered else "0",
             "1" if aggressive else "0",

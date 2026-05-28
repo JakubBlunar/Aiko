@@ -7,12 +7,22 @@ controlled by :attr:`OllamaSettings.embedding_model` (default
 
 A small in-memory LRU cache (keyed by sha1 of the text + model) keeps repeated
 retrieval embeds from hitting the GPU on every turn.
+
+P1 (perf backlog): per-turn embed budget. ``begin_turn`` / ``end_turn``
+maintain thread-local counters of HTTP calls + cumulative wall time so the
+turn runner can attribute "this turn was slow because of embeds" without a
+custom log dive. The counters are thread-local on purpose -- the
+``MessageIndexer`` runs on a background thread that shares this same
+``Embedder`` instance, and we don't want its async embeds to pollute the
+turn-thread's accounting. Cache hits (LRU) don't count as calls; only real
+``/api/embeddings`` round-trips do.
 """
 from __future__ import annotations
 
 import hashlib
 import logging
 import threading
+import time
 from collections import OrderedDict
 from typing import Iterable
 
@@ -48,6 +58,13 @@ class Embedder:
         self._cache: OrderedDict[str, np.ndarray] = OrderedDict()
         self._lock = threading.Lock()
         self._session = requests.Session()
+        # P1: thread-local turn counters. ``begin_turn`` initialises
+        # the slot on the current thread; ``embed`` increments it on
+        # every cache miss; ``end_turn`` reads it back and clears.
+        # Threads that never call ``begin_turn`` (e.g. the
+        # ``MessageIndexer`` background worker) just see ``active=False``
+        # and skip accounting entirely.
+        self._turn_local = threading.local()
 
     # ── public API ────────────────────────────────────────────────────────
 
@@ -67,13 +84,81 @@ class Embedder:
                 # LRU touch.
                 self._cache.move_to_end(key)
                 return cached
+        # P1: time the actual HTTP call. Cache hits above don't count
+        # as calls (they're free); only round-trips go on the meter.
+        call_start = time.perf_counter()
         vector = self._call_ollama(normalized)
+        call_ms = (time.perf_counter() - call_start) * 1000.0
+        self._record_turn_call(call_ms)
         with self._lock:
             self._cache[key] = vector
             self._cache.move_to_end(key)
             while len(self._cache) > self._cache_size:
                 self._cache.popitem(last=False)
         return vector
+
+    # ── P1: per-turn budget hooks ───────────────────────────────────────────
+
+    def begin_turn(self) -> None:
+        """Start counting embed calls + wall time on the current thread.
+
+        Called by ``TurnRunner`` right before the prompt build so any
+        embed that runs on the turn thread (RAG retrieval, K6 detector,
+        K18 detector via K6) lands on this turn's budget. Idempotent
+        within a thread -- a second call resets the counters, which is
+        the right thing if a previous turn somehow forgot to call
+        ``end_turn``.
+        """
+        self._turn_local.active = True
+        self._turn_local.calls = 0
+        self._turn_local.elapsed_ms = 0.0
+
+    def end_turn(self) -> tuple[int, float]:
+        """Stop counting and return ``(calls, elapsed_ms)`` for this thread.
+
+        Safe to call without a matching ``begin_turn`` -- returns
+        ``(0, 0.0)`` and leaves the thread-local slot uninitialised.
+        Always clears state so the next turn starts cold.
+        """
+        active = bool(getattr(self._turn_local, "active", False))
+        if not active:
+            return (0, 0.0)
+        calls = int(getattr(self._turn_local, "calls", 0) or 0)
+        elapsed_ms = float(getattr(self._turn_local, "elapsed_ms", 0.0) or 0.0)
+        self._turn_local.active = False
+        self._turn_local.calls = 0
+        self._turn_local.elapsed_ms = 0.0
+        return (calls, elapsed_ms)
+
+    def peek_turn_stats(self) -> tuple[int, float]:
+        """Read the current thread's running turn counters without resetting.
+
+        Useful for tests and ad-hoc instrumentation. Returns
+        ``(0, 0.0)`` outside a turn boundary.
+        """
+        if not bool(getattr(self._turn_local, "active", False)):
+            return (0, 0.0)
+        return (
+            int(getattr(self._turn_local, "calls", 0) or 0),
+            float(getattr(self._turn_local, "elapsed_ms", 0.0) or 0.0),
+        )
+
+    def _record_turn_call(self, call_ms: float) -> None:
+        """Add one HTTP call + its wall time to the current thread's budget.
+
+        Silently no-ops on threads that haven't entered a turn (e.g.
+        the ``MessageIndexer`` background worker), so ad-hoc embeds
+        from tools / workers never accidentally land on a user turn.
+        """
+        if not bool(getattr(self._turn_local, "active", False)):
+            return
+        self._turn_local.calls = (
+            int(getattr(self._turn_local, "calls", 0) or 0) + 1
+        )
+        self._turn_local.elapsed_ms = (
+            float(getattr(self._turn_local, "elapsed_ms", 0.0) or 0.0)
+            + float(call_ms)
+        )
 
     def batch_embed(self, texts: Iterable[str]) -> list[np.ndarray]:
         """Embed a list of texts. Sequential -- Ollama doesn't batch over HTTP."""

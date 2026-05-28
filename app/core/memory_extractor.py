@@ -294,6 +294,7 @@ class MemoryExtractor:
                 timeout_seconds=self._timeout,
                 options={"temperature": 0.2, "num_predict": 512},
                 format_json=True,
+                surface="memory_extractor",
             )
         except Exception as exc:
             log.warning("memory extractor LLM call failed: %s", exc)

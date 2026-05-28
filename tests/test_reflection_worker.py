@@ -27,7 +27,7 @@ class _FakeOllama:
         self.calls: list[dict[str, object]] = []
         self.fail = False
 
-    def chat(self, messages, options=None, model=None):  # pragma: no cover - thin
+    def chat(self, messages, options=None, model=None, **kwargs):  # pragma: no cover - thin
         self.calls.append({
             "messages": messages,
             "options": options,

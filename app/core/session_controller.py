@@ -876,6 +876,7 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
                     memory_store=self._memory_store,
                     target_path=self_image_path,
                     model=self._effective_chat_model,
+                    max_tokens=settings.agent.self_image_max_tokens,
                 )
             except Exception:
                 log.warning("SelfImageWorker init failed", exc_info=True)
@@ -925,6 +926,7 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
                     model=self._effective_chat_model,
                     min_hours=settings.agent.relationship_pulse_min_hours,
                     min_turns=settings.agent.relationship_pulse_min_turns,
+                    max_tokens=settings.agent.relationship_pulse_max_tokens,
                     user_display_name_provider=lambda: self.user_display_name,
                 )
             except Exception:
@@ -1102,10 +1104,20 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
             belief_gaps=self._render_belief_gaps_block,
             novelty=self._render_novelty_block,
             stagnation=self._render_stagnation_block,
+            grounding_line=self._render_grounding_line,
         )
         self._prompt_assembler.set_pinned_self_memories_provider(
             self._top_pinned_self_memories,
         )
+        # K16: register the grounding-line mode so the assembler knows
+        # which granular blocks to suppress on each turn. Idempotent;
+        # safe to re-call on settings reload.
+        try:
+            self._prompt_assembler.set_grounding_line_mode(
+                getattr(self._settings.agent, "grounding_line_mode", "off"),
+            )
+        except Exception:
+            log.debug("grounding_line_mode setter failed", exc_info=True)
 
         # Phase 5b: feed the prosody dispatcher live affect/circadian.
         prosody = getattr(self, "_prosody", None)
@@ -1181,6 +1193,8 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
                     is_quiet_callback=self._is_user_idle,
                     kv_get=self._chat_db.kv_get,
                     kv_set=self._chat_db.kv_set,
+                    tick_budget_ms=self._memory_settings.idle_worker_tick_budget_ms,
+                    max_per_tick=self._memory_settings.idle_worker_max_per_tick,
                 )
                 self._idle_scheduler.register(
                     MemoryPromotionWorker(self._memory_store, self._memory_settings)
@@ -1830,8 +1844,8 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
         self._decision_trace: deque[dict[str, str]] = deque(maxlen=500)
 
         # ── Metrics ──────────────────────────────────────────────────────
-        self._last_metrics: dict[str, float | int | str] = self._zero_metrics()
-        self._metrics_history: deque[dict[str, float | int | str]] = deque(maxlen=10)
+        self._last_metrics: dict[str, Any] = self._zero_metrics()
+        self._metrics_history: deque[dict[str, Any]] = deque(maxlen=10)
         self._compactions_total = 0
         # TTS timing: the moment chat_once_streaming finishes the LLM stream
         # is the natural "TTS may begin" mark; ``_tts_turn_start_at`` captures
@@ -2413,6 +2427,7 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
                 self._ollama.chat(
                     [{"role": "user", "content": "Reply with OK."}],
                     model=effective,
+                    surface="model_warmup",
                 )
             except Exception as exc:
                 log.warning("chat model warmup failed: %s", exc)
@@ -2866,7 +2881,7 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
     # ── Metrics ─────────────────────────────────────────────────────
 
     @staticmethod
-    def _zero_metrics() -> dict[str, float | int | str]:
+    def _zero_metrics() -> dict[str, Any]:
         return {
             "mode": "idle",
             "capture_ms": 0.0,
@@ -2904,9 +2919,20 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
             # Phase 1c: time-to-first-stream-delta + filler injection.
             "first_token_ms": 0.0,
             "filler_emitted": False,
+            # P1 (perf backlog): per-turn embed budget. Surfaced via
+            # ``get_last_response_detail`` so MCP can grep regressions
+            # over time. Zero on the idle frame.
+            "embed_calls": 0,
+            "embed_ms": 0.0,
+            # P2 (perf backlog): prompt-build phase telemetry. Per-
+            # provider wall time so a regression in a single provider
+            # can be attributed without instrumenting it by hand.
+            "provider_ms": {},
+            "rag_lookup_ms": 0.0,
+            "assemble_ms": 0.0,
         }
 
-    def get_last_metrics(self) -> dict[str, float | int | str]:
+    def get_last_metrics(self) -> dict[str, Any]:
         return dict(self._last_metrics)
 
     def get_average_metrics(self) -> dict[str, float | str | int]:
@@ -3120,7 +3146,7 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
         if self._context_window > 0 and usage.prompt_tokens > 0:
             prompt_pct = round(usage.prompt_tokens / float(self._context_window), 4)
 
-        metrics: dict[str, float | int | str | bool] = {
+        metrics: dict[str, Any] = {
             "mode": mode,
             "capture_ms": round(capture_ms, 1),
             "stt_ms": round(stt_ms, 1),
@@ -3155,6 +3181,13 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
                 "summary_active": tdict["summary_active"],
                 "summary_messages": tdict["summary_messages"],
                 "compaction_triggered": tdict["compaction_triggered"],
+                # P1: per-turn embed budget.
+                "embed_calls": tdict["embed_calls"],
+                "embed_ms": tdict["embed_ms"],
+                # P2: prompt-build phase telemetry.
+                "provider_ms": tdict["provider_ms"],
+                "rag_lookup_ms": tdict["rag_lookup_ms"],
+                "assemble_ms": tdict["assemble_ms"],
             })
         self._set_last_metrics(metrics)
 
@@ -3171,10 +3204,10 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
         return result.text
 
     def _set_last_metrics(
-        self, metrics: dict[str, float | int | str | bool],
+        self, metrics: dict[str, Any],
     ) -> None:
-        self._last_metrics = dict(metrics)  # type: ignore[arg-type]
-        self._metrics_history.append(dict(metrics))  # type: ignore[arg-type]
+        self._last_metrics = dict(metrics)
+        self._metrics_history.append(dict(metrics))
 
     # ── Inner-life block providers (Phase 2b, 2e, 3a, ...) ──────────
 
@@ -3812,6 +3845,131 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
             )
         except Exception:
             log.debug("topic stagnation block render failed", exc_info=True)
+            return ""
+
+    def _build_grounding_context(self) -> "Any":
+        """Assemble the K16 grounding-line slots from live state.
+
+        Reads the same stores the granular block providers read; no
+        new database queries land here. Individual store failures
+        degrade to None slots instead of raising so the prompt still
+        renders if one subsystem is sick.
+        """
+        from app.core.grounding_line import GroundingContext
+        from app.core.world_store import _OUTDOOR_SLUGS
+
+        ctx = GroundingContext(user_display_name=self.user_display_name)
+
+        try:
+            cstate = _circadian.compute()
+            ctx.weekday = cstate.weekday
+            ctx.is_weekend = bool(cstate.is_weekend)
+            ctx.period = cstate.period
+            ctx.hour = int(cstate.hour)
+            ctx.minute = int(cstate.minute)
+            ctx.is_drowsy = bool(cstate.drowsy)
+        except Exception:
+            log.debug("grounding circadian slot failed", exc_info=True)
+
+        try:
+            affect = self._affect_store.get(self._user_id)
+            label = (affect.mood_label or "").strip()
+            if label:
+                ctx.mood_label = label
+        except Exception:
+            log.debug("grounding affect slot failed", exc_info=True)
+
+        store = getattr(self, "_user_state_store", None)
+        if store is not None:
+            try:
+                state = store.get(self._user_id)
+                ctx.user_perceived_mood = (
+                    state.perceived_mood if state.perceived_mood else None
+                )
+                ctx.user_perceived_energy = (
+                    state.perceived_energy if state.perceived_energy else None
+                )
+                ctx.user_perceived_focus = (
+                    state.perceived_focus if state.perceived_focus else None
+                )
+            except Exception:
+                log.debug("grounding user_state slot failed", exc_info=True)
+
+        world = getattr(self, "_world_store", None)
+        if world is not None:
+            try:
+                wstate = world.get_state()
+                if wstate.location_id is not None:
+                    loc = world.get_location_by_id(int(wstate.location_id))
+                    if loc is not None:
+                        ctx.world_location = loc.name
+                        ctx.world_outdoor = bool(
+                            getattr(loc, "slug", "") in _OUTDOOR_SLUGS
+                        )
+                ctx.world_posture = (wstate.posture or "").strip() or None
+                ctx.world_activity = (wstate.activity or "").strip() or None
+            except Exception:
+                log.debug("grounding world slot failed", exc_info=True)
+
+        tracker = getattr(self, "_relationship_tracker", None)
+        if tracker is not None:
+            try:
+                from datetime import datetime, timezone
+                from app.core.relationship import _days_since, phase_for
+
+                rstate = tracker.get(self._user_id)
+                now = datetime.now(timezone.utc)
+                ctx.relationship_phase = phase_for(rstate, now=now)
+                days = _days_since(rstate, now=now)
+                ctx.relationship_days = int(days) if days is not None else None
+            except Exception:
+                log.debug("grounding relationship slot failed", exc_info=True)
+
+        try:
+            app = self._user_active_app
+            if (
+                app
+                and bool(getattr(self._settings.agent, "activity_awareness_enabled", False))
+            ):
+                ctx.user_app = app
+        except Exception:
+            log.debug("grounding activity slot failed", exc_info=True)
+
+        noise = getattr(self, "_ambient_noise", None)
+        if noise is not None:
+            try:
+                snap = noise.snapshot()
+                if snap.is_very_noisy:
+                    ctx.noise_level = "loud"
+                elif snap.is_noisy:
+                    ctx.noise_level = "soft_hum"
+            except Exception:
+                log.debug("grounding noise slot failed", exc_info=True)
+
+        return ctx
+
+    def _render_grounding_line(self) -> str:
+        """K16 unified ambient grounding line provider.
+
+        Returns ``""`` when ``agent.grounding_line_mode`` is ``"off"``
+        (the default) so the granular ambient blocks render unchanged.
+        For ``"replace"`` and ``"split"`` the renderer composes one
+        paragraph from live state; the suppression of the underlying
+        granular blocks is handled by :class:`PromptAssembler` based
+        on the same mode value passed through ``assemble_with_budget``.
+        """
+        try:
+            mode = getattr(self._settings.agent, "grounding_line_mode", "off")
+            if mode == "off":
+                return ""
+            from app.core.grounding_line import render as _render_line
+
+            ctx = self._build_grounding_context()
+            if ctx is None:
+                return ""
+            return _render_line(ctx)
+        except Exception:
+            log.debug("grounding line render failed", exc_info=True)
             return ""
 
     def _render_world_block(self) -> str:

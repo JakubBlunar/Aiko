@@ -357,28 +357,36 @@ class MemoryStore:
         """Copy every existing memory into the RagStore (idempotent).
 
         Returns how many rows were written. Safe to call multiple times --
-        :meth:`RagStore.add_memory` upserts on ``id`` so re-runs are no-ops.
+        :meth:`RagStore.add_memories_bulk` upserts on ``id`` so re-runs
+        are no-ops content-wise but still pay the bulk delete+add cost.
+        Rows with no embedding or empty content are skipped silently
+        rather than aborting the whole migration.
         """
         if rag_store is None:
             return 0
         with self._lock:
             mems = list(self._mirror.values())
-        written = 0
-        for mem in mems:
-            try:
-                rag_store.add_memory(
-                    record_id=str(mem.id),
-                    content=mem.content,
-                    kind=mem.kind,
-                    embedding=mem.embedding,
-                    salience=mem.salience,
-                    source_session=mem.source_session,
-                    source_message_id=mem.source_message_id,
-                    created_at=mem.created_at,
-                )
-                written += 1
-            except Exception:
-                log.debug("rag mirror failed for memory id=%s", mem.id, exc_info=True)
+        records = [
+            {
+                "record_id": str(mem.id),
+                "content": mem.content,
+                "kind": mem.kind,
+                "embedding": mem.embedding,
+                "salience": mem.salience,
+                "source_session": mem.source_session,
+                "source_message_id": mem.source_message_id,
+                "created_at": mem.created_at,
+            }
+            for mem in mems
+            if mem.embedding is not None and (mem.content or "").strip()
+        ]
+        if not records:
+            return 0
+        try:
+            written = rag_store.add_memories_bulk(records)
+        except Exception:
+            log.debug("rag bulk mirror failed", exc_info=True)
+            return 0
         if written:
             log.info("RAG: mirrored %d existing memories into LanceDB", written)
         return written

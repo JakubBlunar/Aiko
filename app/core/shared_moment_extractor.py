@@ -482,6 +482,7 @@ class MomentDetector:
                     "num_predict": self._llm_max_tokens,
                 },
                 model=self._model,
+                surface="shared_moments",
             )
         except Exception:
             log.debug("moment LLM call failed", exc_info=True)

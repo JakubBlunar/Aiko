@@ -311,6 +311,20 @@ class TurnRunner:
         # the inner body exits (success, return, exception).
         turn_id = secrets.token_hex(4)
         token = set_turn_id(turn_id)
+        # P1 (perf backlog): start the per-turn embed counters on this
+        # thread. ``_run_inner`` reads them via ``end_turn`` right
+        # before the headline INFO log so the counters land both on
+        # the log line *and* on ``result.telemetry``. The ``finally``
+        # below calls ``end_turn`` again as a defensive cleanup -- it
+        # returns ``(0, 0.0)`` on an already-ended turn, so the double
+        # call never inflates the numbers, but it does guarantee that
+        # an exception mid-flow doesn't leak counter state into the
+        # next turn on the same thread.
+        if self._embedder is not None:
+            try:
+                self._embedder.begin_turn()
+            except Exception:
+                log.debug("embedder.begin_turn failed", exc_info=True)
         try:
             return self._run_inner(
                 session_key=session_key,
@@ -325,6 +339,13 @@ class TurnRunner:
                 resume_user_message_id=resume_user_message_id,
             )
         finally:
+            if self._embedder is not None:
+                try:
+                    self._embedder.end_turn()
+                except Exception:
+                    log.debug(
+                        "embedder.end_turn (cleanup) failed", exc_info=True,
+                    )
             reset_turn_id(token)
 
     def _run_inner(
@@ -447,6 +468,7 @@ class TurnRunner:
                 },
                 model=self._model,
                 stop_event=self._stop,
+                surface="turn_stream",
             )
             for delta in stream:
                 if not first_delta_seen:
@@ -695,11 +717,26 @@ class TurnRunner:
                 listen_extensions = int(self._listen_extensions_provider() or 0)
             except Exception:
                 listen_extensions = 0
+        # P1: read the embedder's per-turn counters and stamp them on
+        # telemetry so the headline log line below can include them.
+        # Public ``run()`` also calls ``end_turn`` in its finally as a
+        # defensive cleanup -- safe because ``end_turn`` returns
+        # ``(0, 0.0)`` on a thread that doesn't currently have an
+        # active turn, so a double-end never inflates the numbers.
+        if self._embedder is not None:
+            try:
+                embed_calls, embed_ms = self._embedder.end_turn()
+            except Exception:
+                log.debug("embedder.end_turn failed", exc_info=True)
+                embed_calls, embed_ms = (0, 0.0)
+            telemetry.embed_calls = int(embed_calls)
+            telemetry.embed_ms = round(float(embed_ms), 2)
         log.info(
             "turn done: chars=%d mood=%s prompt=%d completion=%d ctx_pct=%.1f "
             "first_token_ms=%s total_ms=%.0f eval_ms=%.0f tools=%d "
             "compactions=%d filler=%s aborted=%s mood_fallback=%s "
-            "rag_prefetch=%s prebuild=%s listen_extensions=%d",
+            "rag_prefetch=%s prebuild=%s listen_extensions=%d "
+            "embed_calls=%d embed_ms=%.0f assemble_ms=%.0f rag_lookup_ms=%.0f",
             len(cleaned),
             mood or "neutral",
             usage.prompt_tokens,
@@ -716,6 +753,10 @@ class TurnRunner:
             telemetry.rag_prefetch_event,
             telemetry.slice_cache_event,
             listen_extensions,
+            telemetry.embed_calls,
+            telemetry.embed_ms,
+            telemetry.assemble_ms,
+            telemetry.rag_lookup_ms,
         )
 
         # Carry-over for the *next* turn's filler tone.
@@ -779,6 +820,7 @@ class TurnRunner:
                     },
                     tools=tool_schemas,
                     model=self._model,
+                    surface="tool_pass",
                 )
             except Exception:
                 log.exception("chat_with_tools round %d failed", round_idx)

@@ -188,6 +188,149 @@ class RagStoreCRUDTests(_TmpRagBase):
         self.assertEqual(self.store.list_documents(), [])
 
 
+class BulkAddMemoriesTests(_TmpRagBase):
+    """``RagStore.add_memories_bulk`` is the workhorse behind
+    :meth:`MemoryStore.migrate_to_rag` — startup mirror of every
+    SQLite memory into LanceDB. The per-row path was 270 LanceDB
+    write ops for 135 memories (~71s on Windows); the bulk path
+    collapses each chunk into a single delete + add. These tests
+    pin the contract: rows land, ids upsert, chunking matches the
+    no-chunk result, and bad rows are skipped silently like the
+    per-row path.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.store = RagStore(self.tmp, embedding_model="x", vector_dim=4)
+
+    @staticmethod
+    def _vec(seed: int) -> np.ndarray:
+        rng = np.random.default_rng(seed=seed)
+        v = rng.normal(size=4).astype(np.float32)
+        v /= max(1e-6, float(np.linalg.norm(v)))
+        return v
+
+    def _record(
+        self,
+        rid: str,
+        *,
+        content: str | None = None,
+        kind: str = "fact",
+        salience: float = 0.5,
+        embedding: np.ndarray | None = None,
+    ) -> dict[str, object]:
+        return {
+            "record_id": rid,
+            "content": content if content is not None else f"memory {rid}",
+            "kind": kind,
+            "embedding": embedding if embedding is not None else self._vec(hash(rid) & 0x7FFFFFFF),
+            "salience": salience,
+            "source_session": None,
+            "source_message_id": None,
+            "created_at": None,
+        }
+
+    def test_bulk_add_new_rows(self) -> None:
+        records = [self._record(f"m{i}") for i in range(50)]
+        written = self.store.add_memories_bulk(records)
+        self.assertEqual(written, 50)
+        self.assertEqual(self.store.counts()["memories"], 50)
+        # Round-trip: the embedding for "m7" should still match itself
+        # closely enough to come back at the top of search.
+        target = self._vec(hash("m7") & 0x7FFFFFFF)
+        hits = self.store.search_memories(target, top_k=3, min_score=0.0)
+        self.assertTrue(any(h.record.id == "m7" for h in hits))
+
+    def test_bulk_upserts_existing_rows(self) -> None:
+        v = self._vec(1)
+        self.store.add_memory(
+            record_id="m1", content="old", kind="fact", embedding=v,
+        )
+        # Same id, new content via the bulk path. Upsert semantics
+        # (one row remaining, with the new content) must hold.
+        self.store.add_memories_bulk(
+            [self._record("m1", content="fresh", embedding=v)],
+        )
+        self.assertEqual(self.store.counts()["memories"], 1)
+        hits = self.store.search_memories(v, top_k=5, min_score=0.0)
+        m1_hits = [h for h in hits if h.record.id == "m1"]
+        self.assertEqual(len(m1_hits), 1)
+        self.assertEqual(m1_hits[0].record.content, "fresh")
+
+    def test_mixed_new_and_existing_in_one_call(self) -> None:
+        # Seed three rows individually, then bulk-write a batch of
+        # ten that includes those three (with new content) plus seven
+        # new ids. The end state should be ten rows with the three
+        # existing rows refreshed.
+        for i in range(3):
+            self.store.add_memory(
+                record_id=f"m{i}", content="old", kind="fact",
+                embedding=self._vec(i),
+            )
+        records = [
+            # Refresh the seeded three: same vector, new content.
+            self._record(f"m{i}", content="refreshed", embedding=self._vec(i))
+            for i in range(3)
+        ] + [self._record(f"m{i}") for i in range(3, 10)]
+        written = self.store.add_memories_bulk(records)
+        self.assertEqual(written, 10)
+        self.assertEqual(self.store.counts()["memories"], 10)
+        # Refreshed content for the seeded ids.
+        hits = self.store.search_memories(
+            self._vec(0), top_k=10, min_score=0.0,
+        )
+        m0 = next(h for h in hits if h.record.id == "m0")
+        self.assertEqual(m0.record.content, "refreshed")
+
+    def test_chunk_boundary_matches_single_chunk(self) -> None:
+        # Same input, different chunk size. The end state must be
+        # identical: count, ids, and content per id.
+        records = [self._record(f"m{i}") for i in range(10)]
+        self.store.add_memories_bulk(records, chunk_size=4)
+        self.assertEqual(self.store.counts()["memories"], 10)
+        # Compare against a fresh store with chunk_size big enough
+        # to land everything in one chunk.
+        other_dir = self.tmp / "other"
+        other_dir.mkdir()
+        other = RagStore(other_dir, embedding_model="x", vector_dim=4)
+        other.add_memories_bulk(records, chunk_size=1000)
+        self.assertEqual(other.counts()["memories"], 10)
+
+    def test_empty_content_rows_skipped(self) -> None:
+        records = [
+            self._record("m1", content="real content"),
+            self._record("m2", content=""),
+            self._record("m3", content="   "),
+            self._record("m4", content="another real one"),
+        ]
+        written = self.store.add_memories_bulk(records)
+        self.assertEqual(written, 2)
+        self.assertEqual(self.store.counts()["memories"], 2)
+
+    def test_missing_embedding_skipped(self) -> None:
+        records = [
+            self._record("m1"),
+            {**self._record("m2"), "embedding": None},
+            self._record("m3"),
+        ]
+        written = self.store.add_memories_bulk(records)
+        self.assertEqual(written, 2)
+        self.assertEqual(self.store.counts()["memories"], 2)
+
+    def test_id_with_apostrophe_is_quoted_safely(self) -> None:
+        # The bulk delete builds an ``id IN (...)`` SQL predicate, so
+        # any apostrophe in a record id has to be escaped or the
+        # delete blows up. Belt-and-braces in case future ids embed
+        # one.
+        records = [
+            self._record("m'1"),
+            self._record("m2"),
+        ]
+        written = self.store.add_memories_bulk(records)
+        self.assertEqual(written, 2)
+        self.assertEqual(self.store.counts()["memories"], 2)
+
+
 class RagStoreEmbeddingSwapTests(_TmpRagBase):
     def test_dim_change_triggers_rebuild(self) -> None:
         s1 = RagStore(self.tmp, embedding_model="model-a", vector_dim=4)

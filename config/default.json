@@ -71,7 +71,8 @@
     "belief_worker_per_hour_cap": 4,
     "belief_worker_per_day_cap": 20,
     "novelty_detection_enabled": true,
-    "topic_stagnation_enabled": true
+    "topic_stagnation_enabled": true,
+    "grounding_line_mode": "off"
   },
   "audio": {
     "sample_rate": 16000,
@@ -167,7 +168,9 @@
     "stagnation_cooldown_turns": 4,
     "stagnation_post_novelty_suppression_turns": 3,
     "idle_worker_wake_seconds": 60.0,
-    "idle_worker_quiet_threshold_seconds": 30
+    "idle_worker_quiet_threshold_seconds": 30,
+    "idle_worker_tick_budget_ms": 3000,
+    "idle_worker_max_per_tick": 0
   },
   "tools": {
     "enabled": true,
