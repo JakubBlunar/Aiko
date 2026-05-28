@@ -550,6 +550,91 @@ result, empty-prefix matches all users).
 
 ---
 
+## K18. Topic stagnation detector
+
+The inverse of K6: instead of firing on a single divergent turn, K18
+fires when the rolling per-turn distance to the K6 centroid stays
+*low* across a window — the conversation has been circling the same
+ground for a while and Aiko may want to either acknowledge the
+rhythm, take a soft pivot, or offer a real off-ramp. Picked up
+specifically as the "we've been on this for ten messages, do you
+want to actually wrap or keep going?" cue companion-AI literature
+keeps flagging.
+
+Implemented as a **sibling** of `NoveltyDetector` rather than an
+extension of it: a new
+[`TopicStagnationDetector`](../../app/core/topic_stagnation.py) is
+a pure streak counter — no embedder, no rag_store, no per-user
+state — that consumes the per-turn distance K6 already computed.
+To make that consumption cheap, `NoveltyDetector` was extended with
+two tiny additive attributes (`last_distance` and `last_band`) that
+get reset at the top of every `detect()` and populated on every
+code path that actually measured (normal + cooldown turns; warmup
+and short-text turns leave them `None`). K18 reads those off the
+K6 detector during prompt assembly without re-embedding anything.
+
+The detector keeps a `collections.deque[float]` of size
+`stagnation_window` (default 6) and bands the rolling mean:
+`mean < stagnation_strong_threshold` (default 0.10) → `strong_lull`,
+`mean < stagnation_mild_threshold` (default 0.18) → `mild_lull`,
+otherwise silent. Three suppression gates keep the cue rare:
+warmup until the deque is full, `stagnation_cooldown_turns`
+(default 4 — longer than K6's because lulls are by nature
+drawn-out) after each fire, and a
+`stagnation_post_novelty_suppression_turns` (default 3) window
+right after K6 fires so a fresh topic shift doesn't immediately
+read as "we've been on this for a while". A `distance=None` from
+K6 (short text / warmup / embed failure) is treated as "no
+measurement" and does not advance the streak.
+
+The signal surfaces through a new `stagnation` inner-life provider
+on [`PromptAssembler`](../../app/core/prompt_assembler.py) — same
+shape as the K6 `novelty` provider, dropped under
+`aggressive=True`. Provider order matters: `novelty` runs first so
+its `last_distance`/`last_band` are fresh when the stagnation
+provider reads them. The rendered "Heads-up: you've been circling
+…" / "Heads-up: this thread has been pretty looped …" line lands
+in the system prompt immediately after `novelty_block`, clustering
+both reaction cues together. Persona guidance in
+[`aiko_companion.txt`](../../data/persona/aiko_companion.txt)
+("Same topic for a while", added right after "Surprise and
+novelty") teaches Aiko to take a soft pivot on the mild band, to
+either deepen the thread or offer a real off-ramp on the strong
+band, and explicitly says the absence of the cue is also a signal
+— a focused conversation is fine.
+
+Settings live on `AgentSettings` (`topic_stagnation_enabled`,
+master switch) and `MemorySettings` (`stagnation_window`,
+`stagnation_mild_threshold`, `stagnation_strong_threshold`,
+`stagnation_cooldown_turns`,
+`stagnation_post_novelty_suppression_turns`), mirrored in
+[`config/default.json`](../../config/default.json). Defaults are
+intentionally conservative; calibration is the kind of thing only
+live testing settles. The detector logs one INFO line per scoring
+turn (`topic-stagnation: mean=%.3f band=%s window=%d`) — grep via
+MCP `tail_logs(module_contains="topic_stagnation")`.
+
+Tests:
+[`tests/test_topic_stagnation.py`](../../tests/test_topic_stagnation.py)
+(warmup, band thresholds, misordered-threshold safety, cooldown,
+post-novelty suppression, `distance=None` handling, render copy
+including `{user_name}` interpolation), plus K18 hooks added to
+[`tests/test_novelty_detector.py`](../../tests/test_novelty_detector.py)
+(`last_distance`/`last_band` populated on normal + silent +
+cooldown turns, left `None` on warmup and short-text), and a new
+provider-slot block in
+[`tests/test_prompt_assembler.py`](../../tests/test_prompt_assembler.py)
+(stagnation block lands after novelty, silent when empty, dropped
+under aggressive, exceptions swallowed, `user_text` is forwarded
+to the provider).
+
+Out of scope (deferred): `ProactiveDirector` bias on
+`strong_lull`, settings-UI controls for the thresholds, and a
+per-cluster "lulled on topic A but not B" variant — that one
+needs the K9 topic graph first.
+
+---
+
 ## Temporal memory awareness (schema v10)
 
 Gives every memory three new fields — `event_time`, `temporal_type`
@@ -599,6 +684,34 @@ is allow-listed in
 [`app/core/user_profile.py`](../../app/core/user_profile.py)
 `PROFILE_FIELDS` so the LLM `UserProfileWorker` is also aware of
 it. Tests: `tests/test_schedule_learner.py`.
+
+---
+
+## K3. Routine / ritual awareness
+
+Second pass inside the same `ScheduleLearner` that names recurring
+slots ("Sunday-morning chats", "Friday-evening wind-downs") and
+writes them into a new `routines` field on `UserProfile`. Where G2
+counts total volume per `(daytype, bucket)`, K3 counts *distinct
+ISO weeks* per `(weekday, bucket)` so a slot only qualifies once
+it has actually recurred across multiple weeks (default: ≥3
+distinct weeks AND ≥30% of the rolling window). Naming is
+deterministic via a 28-entry `_RITUAL_LABELS` dict (Mon-Sun × 4
+hour-buckets); the rendered phrase is comma-joined, capped at 240
+chars to fit `ProfileEntry.value`, and idempotent (re-detection of
+the same slot short-circuits the upsert). Confidence is the max
+recurrence density across chosen cells. Surfacing is passive: the
+field joins the rendered profile block alongside `usual_hours`,
+and a persona note in
+[`aiko_companion.txt`](../../data/persona/aiko_companion.txt)
+teaches Aiko to lean into a matching rhythm only when the moment
+actually fits — never as a list, never as a calendar reminder.
+Settings:
+[`AgentSettings.routine_detection_enabled`](../../app/core/settings.py)
+plus `MemorySettings.routine_min_touches` /
+`routine_min_share` / `routine_max_active`. Tests:
+`tests/test_schedule_learner.py::RoutineDetectionTests` plus a
+`PROFILE_FIELDS` assertion in `tests/test_user_profile.py`.
 
 ---
 

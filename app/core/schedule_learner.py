@@ -85,6 +85,69 @@ _MAX_BUCKETS_RENDERED = 2
 _MIN_BUCKET_SHARE = 0.20
 
 
+# K3 (routine / ritual awareness) builds on the same bucket math but
+# operates at finer granularity: weekday name × hour-bucket. Where
+# G2 says "weekday evenings" (a daytype-coarse phrase), K3 says
+# "Sunday-morning chats" (a named ritual). We only count a slot as a
+# ritual if the user has touched it in several different ISO weeks —
+# raw volume isn't enough, recurrence across weeks is what makes
+# something a routine.
+_WEEKDAY_NAMES: tuple[str, ...] = (
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+)
+
+
+# Mon..Sun × 4 buckets = 28 deterministic labels. Names are written
+# to read naturally inside the rendered profile block ("Routines:
+# Sunday-morning chats, Friday-evening wind-downs"); they avoid the
+# word "ritual" so the line doesn't feel surveillance-y. The labels
+# stay constant across runs so a re-detection of the same slot
+# produces the same string and the idempotent upsert short-circuits.
+_RITUAL_LABELS: dict[tuple[str, str], str] = {
+    ("monday", "morning"): "Monday-morning check-ins",
+    ("monday", "afternoon"): "Monday-afternoon catch-ups",
+    ("monday", "evening"): "Monday-evening unwinds",
+    ("monday", "late"): "Monday-late nights",
+    ("tuesday", "morning"): "Tuesday-morning check-ins",
+    ("tuesday", "afternoon"): "Tuesday-afternoon catch-ups",
+    ("tuesday", "evening"): "Tuesday-evening unwinds",
+    ("tuesday", "late"): "Tuesday-late nights",
+    ("wednesday", "morning"): "Wednesday-morning check-ins",
+    ("wednesday", "afternoon"): "Wednesday-afternoon catch-ups",
+    ("wednesday", "evening"): "Wednesday-evening unwinds",
+    ("wednesday", "late"): "Wednesday-late nights",
+    ("thursday", "morning"): "Thursday-morning check-ins",
+    ("thursday", "afternoon"): "Thursday-afternoon catch-ups",
+    ("thursday", "evening"): "Thursday-evening unwinds",
+    ("thursday", "late"): "Thursday-late nights",
+    ("friday", "morning"): "Friday-morning check-ins",
+    ("friday", "afternoon"): "Friday-afternoon catch-ups",
+    ("friday", "evening"): "Friday-evening wind-downs",
+    ("friday", "late"): "Friday-late nights",
+    ("saturday", "morning"): "Saturday-morning chats",
+    ("saturday", "afternoon"): "Saturday-afternoon hangs",
+    ("saturday", "evening"): "Saturday-evening wind-downs",
+    ("saturday", "late"): "Saturday-late nights",
+    ("sunday", "morning"): "Sunday-morning chats",
+    ("sunday", "afternoon"): "Sunday-afternoon hangs",
+    ("sunday", "evening"): "Sunday-evening unwinds",
+    ("sunday", "late"): "Sunday-late nights",
+}
+
+
+# Hard cap on the rendered ``routines`` value to fit ``ProfileEntry``'s
+# 240-char column. We additionally truncate the *number of clusters*
+# via the user-facing ``routine_max_active`` setting; this is the
+# safety net for pathological label widths.
+_ROUTINES_VALUE_CAP = 240
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -117,6 +180,23 @@ def _classify_local(when_local: datetime) -> tuple[str, str]:
     daytype = "weekend" if when_local.weekday() >= 5 else "weekday"
     bucket = _HOUR_TO_BUCKET.get(when_local.hour, "late")
     return daytype, bucket
+
+
+def _weekday_name_local(when_local: datetime) -> str:
+    """Return ``"monday"`` … ``"sunday"`` for a local-tz datetime."""
+    return _WEEKDAY_NAMES[when_local.weekday()]
+
+
+def _iso_week_key(when_local: datetime) -> tuple[int, int]:
+    """Return ``(iso_year, iso_week)`` for a local-tz datetime.
+
+    We key recurrence on the ISO calendar (year + week-of-year) so the
+    set cardinality of "distinct weeks the slot was touched" is what
+    drives the routine threshold. Using year+week (not just week) is
+    what makes a 30-day window straddling Dec/Jan still count cleanly.
+    """
+    iso = when_local.isocalendar()
+    return (int(iso[0]), int(iso[1]))
 
 
 def _summarize_buckets(
@@ -153,6 +233,80 @@ def _summarize_buckets(
         label = _BUCKET_RENDER.get((daytype, bucket))
         if label is None or label in seen_labels:
             continue
+        parts.append(label)
+        seen_labels.add(label)
+    return ", ".join(parts), chosen
+
+
+def _summarize_routines(
+    weekly_seen: dict[tuple[str, str], set[tuple[int, int]]],
+    *,
+    total_weeks: int,
+    min_touches: int,
+    min_share: float,
+    max_active: int,
+) -> tuple[str, list[tuple[str, str, int, float]]]:
+    """Return ``(rendered_str, top_clusters)`` for the K3 routines pass.
+
+    ``weekly_seen`` is keyed by ``(weekday_name, bucket)`` and the
+    value is the set of ``(iso_year, iso_week)`` tuples that lit up
+    that slot. ``top_clusters`` is a list of
+    ``(weekday, bucket, weeks_seen, share)`` tuples sorted by
+    ``weeks_seen`` descending; useful for tests and logs.
+
+    A cell qualifies as a routine when **both** thresholds clear:
+
+    * ``len(weeks) >= min_touches`` — raw recurrence floor (e.g. 3
+      different weeks). Stops a single busy week from minting a
+      ritual.
+    * ``len(weeks) / total_weeks >= min_share`` — proportional floor
+      (e.g. 30% of weeks in the rolling window). Tightens the bar
+      proportionally as the window grows; without this, a 6-month
+      window could mint a "routine" off ~3 weeks.
+
+    The rendered string is empty when no cell qualifies, when no
+    cells map to a known label in ``_RITUAL_LABELS``, or when the
+    join would exceed the 240-char ``ProfileEntry`` cap (we trim the
+    cluster list rather than the string mid-name).
+    """
+    if total_weeks <= 0:
+        return "", []
+    qualifying: list[tuple[str, str, int, float]] = []
+    for (weekday, bucket), weeks in weekly_seen.items():
+        weeks_seen = len(weeks)
+        if weeks_seen < min_touches:
+            continue
+        share = weeks_seen / float(total_weeks)
+        if share < min_share:
+            continue
+        qualifying.append((weekday, bucket, int(weeks_seen), float(share)))
+    if not qualifying:
+        return "", []
+    # Sort by weeks_seen descending; tie-break on weekday order so
+    # the rendered output is deterministic across runs.
+    weekday_order = {name: idx for idx, name in enumerate(_WEEKDAY_NAMES)}
+    qualifying.sort(
+        key=lambda item: (
+            -item[2],
+            weekday_order.get(item[0], 7),
+            item[1],
+        )
+    )
+    chosen: list[tuple[str, str, int, float]] = qualifying[:max_active]
+
+    parts: list[str] = []
+    seen_labels: set[str] = set()
+    for weekday, bucket, _w, _s in chosen:
+        label = _RITUAL_LABELS.get((weekday, bucket))
+        if label is None or label in seen_labels:
+            continue
+        # If adding this label would push us past the column cap,
+        # stop early — the trailing items are by construction the
+        # less-recurrent ones, so dropping them is the right side
+        # of the precision/recall trade-off.
+        candidate = ", ".join(parts + [label])
+        if len(candidate) > _ROUTINES_VALUE_CAP:
+            break
         parts.append(label)
         seen_labels.add(label)
     return ", ".join(parts), chosen
@@ -262,7 +416,7 @@ class ScheduleLearner:
             )
             return {"errored": True}
 
-        counts = self._bucket_rows(rows)
+        counts, weekly_seen = self._bucket_rows_extended(rows)
         total = sum(counts.values())
         log.info(
             "schedule-learner samples: total=%d unique_buckets=%d",
@@ -288,12 +442,6 @@ class ScheduleLearner:
             [(d, b, c) for d, b, c, _s in top],
             rendered or "<none>",
         )
-        if not rendered:
-            return {
-                "samples": total,
-                "wrote": False,
-                "reason": "no_dominant_bucket",
-            }
 
         user_id = self._resolve_user_id()
         if not user_id:
@@ -306,47 +454,167 @@ class ScheduleLearner:
                 "reason": "no_user_id",
             }
 
-        existing = self._profile_store.fields(user_id).get("usual_hours")
-        existing_value = (existing.value or "").strip() if existing else ""
-        if existing_value == rendered:
-            log.info(
-                "schedule-learner upsert skipped: usual_hours unchanged "
-                "(%r, samples=%d)",
-                rendered,
-                total,
-            )
-            return {
-                "samples": total,
-                "wrote": False,
-                "reason": "unchanged",
-                "value": rendered,
-            }
-
-        confidence = _confidence_from_samples(total)
-        try:
-            wrote = self._profile_store.upsert(
-                user_id,
-                "usual_hours",
-                rendered,
-                confidence,
-            )
-        except Exception:
-            log.warning(
-                "schedule-learner upsert failed", exc_info=True,
-            )
-            return {"samples": total, "wrote": False, "errored": True}
-        log.info(
-            "schedule-learner upsert: usual_hours=%r confidence=%.2f wrote=%s",
-            rendered,
-            confidence,
-            bool(wrote),
-        )
-        return {
+        result: dict[str, Any] = {
             "samples": total,
-            "wrote": bool(wrote),
-            "value": rendered,
-            "confidence": float(confidence),
+            "wrote": False,
         }
+
+        # ── G2: usual_hours (coarse daytype phrase) ───────────────────
+        if rendered:
+            existing = self._profile_store.fields(user_id).get("usual_hours")
+            existing_value = (existing.value or "").strip() if existing else ""
+            if existing_value == rendered:
+                log.info(
+                    "schedule-learner upsert skipped: usual_hours unchanged "
+                    "(%r, samples=%d)",
+                    rendered,
+                    total,
+                )
+                result["reason"] = "unchanged"
+                result["value"] = rendered
+            else:
+                confidence = _confidence_from_samples(total)
+                try:
+                    wrote = self._profile_store.upsert(
+                        user_id,
+                        "usual_hours",
+                        rendered,
+                        confidence,
+                    )
+                except Exception:
+                    log.warning(
+                        "schedule-learner upsert failed", exc_info=True,
+                    )
+                    return {"samples": total, "wrote": False, "errored": True}
+                log.info(
+                    "schedule-learner upsert: usual_hours=%r "
+                    "confidence=%.2f wrote=%s",
+                    rendered,
+                    confidence,
+                    bool(wrote),
+                )
+                result["wrote"] = bool(wrote) or result["wrote"]
+                result["value"] = rendered
+                result["confidence"] = float(confidence)
+        else:
+            result["reason"] = "no_dominant_bucket"
+
+        # ── K3: routines (named ritual phrase) ────────────────────────
+        # Detection runs against the same window as G2, but recurrence
+        # is measured in distinct ISO weeks. ``total_weeks`` is the
+        # ceiling of ``window_days / 7`` so a 30-day window gives 5
+        # weeks of denominator regardless of where ``now`` lands inside
+        # the ISO calendar.
+        routines_rendered = ""
+        routines_top: list[tuple[str, str, int, float]] = []
+        if bool(
+            getattr(
+                self._agent_settings, "routine_detection_enabled", True,
+            )
+        ):
+            min_touches = max(
+                1,
+                int(
+                    getattr(
+                        self._memory_settings,
+                        "routine_min_touches",
+                        3,
+                    )
+                ),
+            )
+            min_share = max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        getattr(
+                            self._memory_settings,
+                            "routine_min_share",
+                            0.30,
+                        )
+                    ),
+                ),
+            )
+            max_active = max(
+                1,
+                int(
+                    getattr(
+                        self._memory_settings,
+                        "routine_max_active",
+                        5,
+                    )
+                ),
+            )
+            total_weeks = max(1, (window_days + 6) // 7)
+            routines_rendered, routines_top = _summarize_routines(
+                weekly_seen,
+                total_weeks=total_weeks,
+                min_touches=min_touches,
+                min_share=min_share,
+                max_active=max_active,
+            )
+            log.info(
+                "schedule-learner routines: total_weeks=%d top=%s rendered=%r",
+                total_weeks,
+                [(d, b, w) for d, b, w, _s in routines_top],
+                routines_rendered or "<none>",
+            )
+
+            if routines_rendered:
+                existing_routines = self._profile_store.fields(user_id).get(
+                    "routines"
+                )
+                existing_routines_value = (
+                    (existing_routines.value or "").strip()
+                    if existing_routines
+                    else ""
+                )
+                if existing_routines_value == routines_rendered:
+                    log.info(
+                        "schedule-learner upsert skipped: routines unchanged "
+                        "(%r)",
+                        routines_rendered,
+                    )
+                    result["routines_reason"] = "unchanged"
+                    result["routines_value"] = routines_rendered
+                else:
+                    # Confidence is the max recurrence density of any
+                    # chosen cell, capped at 0.95 like
+                    # ``_confidence_from_samples``. A cell that
+                    # happened in 4-of-5 weeks is "loud"; a cell that
+                    # just clears the floor reads as a soft suggestion.
+                    max_share = max(
+                        (s for _d, _b, _w, s in routines_top), default=0.0,
+                    )
+                    routines_confidence = max(0.0, min(0.95, max_share))
+                    try:
+                        wrote_routines = self._profile_store.upsert(
+                            user_id,
+                            "routines",
+                            routines_rendered,
+                            routines_confidence,
+                        )
+                    except Exception:
+                        log.warning(
+                            "schedule-learner routines upsert failed",
+                            exc_info=True,
+                        )
+                        wrote_routines = False
+                    else:
+                        log.info(
+                            "schedule-learner upsert: routines=%r "
+                            "confidence=%.2f wrote=%s",
+                            routines_rendered,
+                            routines_confidence,
+                            bool(wrote_routines),
+                        )
+                    result["routines_wrote"] = bool(wrote_routines)
+                    result["routines_value"] = routines_rendered
+                    result["routines_confidence"] = float(routines_confidence)
+                    if wrote_routines:
+                        result["wrote"] = True
+
+        return result
 
     # ── helpers ──────────────────────────────────────────────────────
 
@@ -370,7 +638,30 @@ class ScheduleLearner:
     def _bucket_rows(
         self, rows: Iterable[tuple[Any, ...]],
     ) -> dict[tuple[str, str], int]:
+        """Daytype × bucket histogram (G2). See ``_bucket_rows_extended``
+        for the per-weekday recurrence picture used by K3.
+        """
+        counts, _weekly_seen = self._bucket_rows_extended(rows)
+        return counts
+
+    def _bucket_rows_extended(
+        self, rows: Iterable[tuple[Any, ...]],
+    ) -> tuple[
+        dict[tuple[str, str], int],
+        dict[tuple[str, str], set[tuple[int, int]]],
+    ]:
+        """Single pass that builds both views the worker needs.
+
+        Returns a tuple of:
+
+        * ``counts`` — ``(daytype, bucket) -> total samples``. Same
+          shape G2's ``_summarize_buckets`` consumes.
+        * ``weekly_seen`` — ``(weekday_name, bucket) -> set of
+          (iso_year, iso_week)``. Drives K3's recurrence detection;
+          the set cardinality is the "weeks_seen" axis.
+        """
         counts: dict[tuple[str, str], int] = {}
+        weekly_seen: dict[tuple[str, str], set[tuple[int, int]]] = {}
         for row in rows:
             if not row:
                 continue
@@ -380,7 +671,12 @@ class ScheduleLearner:
             local = dt.astimezone()
             key = _classify_local(local)
             counts[key] = counts.get(key, 0) + 1
-        return counts
+
+            weekday = _weekday_name_local(local)
+            bucket = _HOUR_TO_BUCKET.get(local.hour, "late")
+            slot = (weekday, bucket)
+            weekly_seen.setdefault(slot, set()).add(_iso_week_key(local))
+        return counts, weekly_seen
 
     def _resolve_user_id(self) -> str:
         try:
@@ -389,4 +685,12 @@ class ScheduleLearner:
             return ""
 
 
-__all__ = ["ScheduleLearner"]
+__all__ = [
+    "ScheduleLearner",
+    "_classify_local",
+    "_summarize_buckets",
+    "_summarize_routines",
+    "_confidence_from_samples",
+    "_RITUAL_LABELS",
+    "_WEEKDAY_NAMES",
+]

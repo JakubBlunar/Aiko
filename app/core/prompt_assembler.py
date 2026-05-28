@@ -524,6 +524,15 @@ class PromptAssembler:
         # turns; banded "Heads-up: ..." lines otherwise. Dropped in
         # aggressive mode.
         self._novelty_provider: Callable[[str], str] | None = None
+        # K18 personality backlog: topic stagnation signal. Sibling
+        # of the novelty provider above; consumes the per-turn
+        # distance K6 just computed (no extra embedding) and emits
+        # a "Heads-up: you've been circling..." line when the rolling
+        # mean distance stays low for a window. Order in
+        # ``set_inner_life_providers`` matters -- novelty must run
+        # first so K18 can read its ``last_distance`` / ``last_band``
+        # off the K6 detector. Dropped in aggressive mode.
+        self._stagnation_provider: Callable[[str], str] | None = None
         # Per-turn dynamic blocks: not part of ``_StaticSlices`` because
         # they change every utterance. ``vocal_tone`` is set immediately
         # before the live turn dispatch by ``SessionController`` after
@@ -638,6 +647,7 @@ class PromptAssembler:
         knowledge_gaps: Callable[[str], str] | None = None,
         belief_gaps: Callable[[], str] | None = None,
         novelty: Callable[[str], str] | None = None,
+        stagnation: Callable[[str], str] | None = None,
     ) -> None:
         """Register optional inner-life block providers.
 
@@ -689,6 +699,8 @@ class PromptAssembler:
             self._belief_gaps_provider = belief_gaps
         if novelty is not None:
             self._novelty_provider = novelty
+        if stagnation is not None:
+            self._stagnation_provider = stagnation
 
     def set_last_reaction(self, reaction: str | None) -> None:
         if not reaction:
@@ -1075,6 +1087,22 @@ class PromptAssembler:
                 log.debug("novelty provider raised", exc_info=True)
                 novelty_block = ""
 
+        # K18: topic-stagnation signal. Sibling of K6 above and runs
+        # immediately after, so the stagnation detector can read the
+        # just-populated ``last_distance``/``last_band`` off the
+        # ``NoveltyDetector`` to decide whether to fire (and whether
+        # to enter post-novelty suppression). Same provider shape
+        # (takes ``user_text`` for symmetry, though the streak
+        # detector itself doesn't read it). Returns "" on the common
+        # silent / warmup / cooldown / suppressed turn.
+        stagnation_block = ""
+        if not aggressive and self._stagnation_provider is not None:
+            try:
+                stagnation_block = self._stagnation_provider(user_text) or ""
+            except Exception:
+                log.debug("stagnation provider raised", exc_info=True)
+                stagnation_block = ""
+
         # Alexia bundle: capability lookup is *not* a string provider —
         # it returns the raw flags so we can build the overlay /
         # outfit grammar dynamically per-prompt. Defensive: swallow
@@ -1164,6 +1192,14 @@ class PromptAssembler:
             # cues cluster together and land before the knowledge_gap
             # "wondering about" bullet -- reacting beats wondering.
             system_parts.append(novelty_block)
+        if stagnation_block:
+            # K18: sibling of K6 -- "Heads-up: you've been circling
+            # the same topic for a bit" sits immediately next to the
+            # surprise cue so reaction-shaping context clusters
+            # together. Empty on the common turn (suppressed by
+            # warmup, cooldown, post-novelty window, or above-
+            # threshold mean).
+            system_parts.append(stagnation_block)
         if knowledge_gaps_block:
             # F2: surface one "wondering about" bullet right after
             # agenda. Keeps the "things on Aiko's mind" cluster

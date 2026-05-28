@@ -43,9 +43,11 @@ prompt for the next brainstorm, not a queue.
 
 ### G. Background workers — [`workers.md`](workers.md)
 
-No open items right now — G1 / G2 / G3 all shipped. New worker
-ideas show up in [`patterns.md`](patterns.md) until they earn a
-G-letter.
+- *Cleanup* — drop or wire the unused
+  `consolidator_state.last_cluster_index` column.
+
+New worker ideas show up in [`patterns.md`](patterns.md) until they
+earn a G-letter; several (K1, K8, K10, K14, K21) are worker-shaped.
 
 ### H. Immersion polish — [`immersion.md`](immersion.md)
 
@@ -65,12 +67,35 @@ G-letter.
 
 ### K. Patterns to explore — [`patterns.md`](patterns.md)
 
-K1 long-term goals · K2 theory-of-mind · K3 routine awareness ·
-K4 dialogue-act tagging · K5 mood-shell tilt · K6 novelty detector ·
+K1 long-term goals · K4 dialogue-act tagging · K5 mood-shell tilt ·
 K7 forgetting protocol · K8 affect rupture-and-repair ·
 K9 topic-graph browser · K10 persona regression tests ·
 K11 counterfactual cache · K12 calendar-linked anticipation ·
-K13 stylometric mirror.
+K13 stylometric mirror · K14 implicit engagement signals ·
+K15 self-disclosure / vulnerability budget ·
+K16 unified ambient grounding line · K17 clarification-repair ·
+K19 cold-start companion onboarding ·
+K20 metacognitive calibration · K21 fresh-eyes thread re-summary.
+
+(K2 theory-of-mind, K3 routine awareness, K6 novelty detector,
+and K18 topic stagnation have shipped — see
+[`shipped.md`](shipped.md).)
+
+### P. Performance + observability — [`perf.md`](perf.md)
+
+Cross-cutting gaps that aren't features in their own right but
+compound across every K-series entry:
+
+- **P1.** Per-turn embed budget + timing.
+- **P2.** Prompt-build phase telemetry.
+- **P3.** Slice-cache validation cost.
+- **P4.** RAG memory-hit batch lookups.
+- **P5.** Novelty warm-up Lance scan.
+- **P6.** MessageIndexer queue visibility.
+- **P7.** Typed-mode prefetch parity with voice.
+- **P8.** Idle-worker queue visibility / starvation.
+- **P9.** Frontend streaming token append cost.
+- **P10.** Schedule-learner missing index.
 
 ---
 

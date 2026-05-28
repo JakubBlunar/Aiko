@@ -28,10 +28,12 @@ from typing import Any
 
 from app.core.chat_database import ChatDatabase
 from app.core.schedule_learner import (
+    _RITUAL_LABELS,
     ScheduleLearner,
     _classify_local,
     _confidence_from_samples,
     _summarize_buckets,
+    _summarize_routines,
 )
 from app.core.user_profile import UserProfileStore
 
@@ -41,11 +43,17 @@ class _StubAgent:
     schedule_learner_enabled: bool = True
     schedule_learner_min_samples: int = 5
     schedule_learner_window_days: int = 30
+    # K3 knobs — defaults match config/default.json so the existing
+    # G2 tests behave identically when the new pass runs.
+    routine_detection_enabled: bool = True
 
 
 @dataclass
 class _StubMemory:
     schedule_learner_interval_seconds: int = 86400
+    routine_min_touches: int = 3
+    routine_min_share: float = 0.30
+    routine_max_active: int = 5
 
 
 def _insert_user_message(
@@ -66,6 +74,10 @@ def _build_world(
     window_days: int = 30,
     interval_seconds: int = 86400,
     user_id: str = "default",
+    routine_detection_enabled: bool = True,
+    routine_min_touches: int = 3,
+    routine_min_share: float = 0.30,
+    routine_max_active: int = 5,
 ) -> dict[str, Any]:
     d = tempfile.mkdtemp()
     path = Path(d) / "chat.db"
@@ -75,9 +87,13 @@ def _build_world(
         schedule_learner_enabled=enabled,
         schedule_learner_min_samples=min_samples,
         schedule_learner_window_days=window_days,
+        routine_detection_enabled=routine_detection_enabled,
     )
     memory = _StubMemory(
         schedule_learner_interval_seconds=interval_seconds,
+        routine_min_touches=routine_min_touches,
+        routine_min_share=routine_min_share,
+        routine_max_active=routine_max_active,
     )
     worker = ScheduleLearner(
         chat_db=chat_db,
@@ -251,6 +267,270 @@ class TestRun(unittest.TestCase):
         result = world["worker"].run()
         self.assertEqual(result["samples"], 0)
         self.assertEqual(result["wrote"], False)
+
+
+class TestSummarizeRoutines(unittest.TestCase):
+    """Pure-function tests on the K3 detector. Synthetic
+    ``weekly_seen`` dicts let us pin the math without depending on
+    the test runner's local timezone."""
+
+    def test_picks_recurring_slot_above_thresholds(self) -> None:
+        # Sunday-morning lit up in 4 of 5 weeks; clearly a routine.
+        weekly_seen = {
+            ("sunday", "morning"): {
+                (2026, 18), (2026, 19), (2026, 20), (2026, 21),
+            },
+        }
+        rendered, top = _summarize_routines(
+            weekly_seen,
+            total_weeks=5,
+            min_touches=3,
+            min_share=0.30,
+            max_active=5,
+        )
+        self.assertEqual(rendered, "Sunday-morning chats")
+        self.assertEqual(len(top), 1)
+        weekday, bucket, weeks_seen, share = top[0]
+        self.assertEqual((weekday, bucket), ("sunday", "morning"))
+        self.assertEqual(weeks_seen, 4)
+        self.assertAlmostEqual(share, 0.8, places=4)
+
+    def test_skips_slot_with_too_few_distinct_weeks(self) -> None:
+        # Two weeks isn't enough — could be a coincidence, not a
+        # routine. The min_share check would otherwise pass (2/5=0.40).
+        weekly_seen = {
+            ("sunday", "morning"): {(2026, 19), (2026, 20)},
+        }
+        rendered, top = _summarize_routines(
+            weekly_seen,
+            total_weeks=5,
+            min_touches=3,
+            min_share=0.30,
+            max_active=5,
+        )
+        self.assertEqual(rendered, "")
+        self.assertEqual(top, [])
+
+    def test_skips_slot_below_min_share(self) -> None:
+        # Three weeks lit up, but a 20-week window means share=0.15
+        # which is below the 0.30 floor — long-window noise floor.
+        weekly_seen = {
+            ("friday", "evening"): {(2026, 1), (2026, 2), (2026, 3)},
+        }
+        rendered, _top = _summarize_routines(
+            weekly_seen,
+            total_weeks=20,
+            min_touches=3,
+            min_share=0.30,
+            max_active=5,
+        )
+        self.assertEqual(rendered, "")
+
+    def test_caps_at_max_active(self) -> None:
+        # Four qualifying cells, cap=2 — only the densest two land.
+        weekly_seen = {
+            ("monday", "morning"): {(2026, 18), (2026, 19), (2026, 20)},
+            ("tuesday", "evening"): {
+                (2026, 18), (2026, 19), (2026, 20), (2026, 21),
+            },
+            ("friday", "evening"): {
+                (2026, 18), (2026, 19), (2026, 20),
+            },
+            ("sunday", "morning"): {
+                (2026, 18), (2026, 19), (2026, 20),
+                (2026, 21), (2026, 22),
+            },
+        }
+        rendered, top = _summarize_routines(
+            weekly_seen,
+            total_weeks=5,
+            min_touches=3,
+            min_share=0.30,
+            max_active=2,
+        )
+        # ``top`` returns the capped slice (top-N by recurrence
+        # density), not the full qualifying set.
+        self.assertEqual(len(top), 2)
+        chosen_keys = [(weekday, bucket) for weekday, bucket, _w, _s in top]
+        self.assertEqual(
+            chosen_keys,
+            [("sunday", "morning"), ("tuesday", "evening")],
+        )
+        # Rendered phrase honours the cap and the sort order.
+        self.assertEqual(
+            rendered,
+            "Sunday-morning chats, Tuesday-evening unwinds",
+        )
+
+    def test_empty_weekly_seen(self) -> None:
+        rendered, top = _summarize_routines(
+            {}, total_weeks=5,
+            min_touches=3, min_share=0.30, max_active=5,
+        )
+        self.assertEqual(rendered, "")
+        self.assertEqual(top, [])
+
+    def test_zero_total_weeks_is_safe(self) -> None:
+        # Defensive: callers should pass total_weeks >= 1, but we
+        # short-circuit cleanly if they don't.
+        rendered, top = _summarize_routines(
+            {("sunday", "morning"): {(2026, 19)}},
+            total_weeks=0,
+            min_touches=1,
+            min_share=0.0,
+            max_active=5,
+        )
+        self.assertEqual(rendered, "")
+        self.assertEqual(top, [])
+
+    def test_deterministic_naming_via_label_dict(self) -> None:
+        # Every label in _RITUAL_LABELS should produce a non-empty
+        # rendered string when its slot qualifies — locks down full
+        # 28-cell coverage.
+        for (weekday, bucket), label in _RITUAL_LABELS.items():
+            weekly_seen = {
+                (weekday, bucket): {
+                    (2026, 18), (2026, 19), (2026, 20), (2026, 21),
+                },
+            }
+            rendered, _top = _summarize_routines(
+                weekly_seen,
+                total_weeks=5,
+                min_touches=3,
+                min_share=0.30,
+                max_active=5,
+            )
+            self.assertEqual(rendered, label)
+
+
+class TestRunRoutines(unittest.TestCase):
+    """End-to-end coverage: routines flow through ``ScheduleLearner.run``
+    and land in the ``UserProfileStore``."""
+
+    def test_run_writes_routines_when_recurrence_qualifies(self) -> None:
+        world = _build_world(
+            min_samples=3,
+            window_days=30,
+            routine_min_touches=3,
+            routine_min_share=0.30,
+        )
+        # Build local-tz-aware Sunday timestamps across 4 different
+        # ISO weeks so the bucket math is unambiguous regardless of
+        # the test runner's timezone. We anchor to a "now" that's
+        # comfortably inside our 30-day window.
+        now_local = datetime.now().astimezone()
+        # Find the most recent Sunday at 09:00 local time.
+        days_since_sunday = (now_local.weekday() + 1) % 7
+        sunday_anchor = now_local.replace(
+            hour=9, minute=0, second=0, microsecond=0,
+        ) - timedelta(days=days_since_sunday)
+        for week in range(4):
+            when_local = sunday_anchor - timedelta(weeks=week)
+            _insert_user_message(
+                world["chat_db"],
+                when=when_local.astimezone(timezone.utc),
+            )
+        result = world["worker"].run()
+        self.assertIn("routines_value", result)
+        self.assertEqual(result.get("routines_wrote"), True)
+        # The label space at 09:00 local time is "morning"; on a
+        # Sunday that maps to a known fixture string.
+        self.assertEqual(result["routines_value"], "Sunday-morning chats")
+        stored = world["profile_store"].fields(world["user_id"]).get(
+            "routines",
+        )
+        self.assertIsNotNone(stored)
+        assert stored is not None
+        self.assertEqual(stored.value, "Sunday-morning chats")
+
+    def test_run_does_not_write_routines_when_below_threshold(self) -> None:
+        world = _build_world(
+            min_samples=3,
+            window_days=30,
+            routine_min_touches=3,
+        )
+        # Only two distinct ISO weeks → recurrence floor not cleared,
+        # but the eight messages comfortably clear ``min_samples`` so
+        # G2 runs normally.
+        now_local = datetime.now().astimezone()
+        days_since_sunday = (now_local.weekday() + 1) % 7
+        sunday_anchor = now_local.replace(
+            hour=9, minute=0, second=0, microsecond=0,
+        ) - timedelta(days=days_since_sunday)
+        for week in range(2):
+            for offset_h in range(4):
+                when_local = (
+                    sunday_anchor
+                    - timedelta(weeks=week, hours=offset_h)
+                )
+                _insert_user_message(
+                    world["chat_db"],
+                    when=when_local.astimezone(timezone.utc),
+                )
+        result = world["worker"].run()
+        # G2 may or may not write usual_hours depending on the local
+        # bucket distribution; what we assert is that routines stay
+        # empty — recurrence is too thin.
+        self.assertNotIn(
+            "routines",
+            world["profile_store"].fields(world["user_id"]),
+        )
+        self.assertNotIn("routines_wrote", result)
+
+    def test_run_routines_idempotent_when_unchanged(self) -> None:
+        world = _build_world(
+            min_samples=3,
+            window_days=30,
+            routine_min_touches=3,
+        )
+        now_local = datetime.now().astimezone()
+        days_since_sunday = (now_local.weekday() + 1) % 7
+        sunday_anchor = now_local.replace(
+            hour=9, minute=0, second=0, microsecond=0,
+        ) - timedelta(days=days_since_sunday)
+        for week in range(4):
+            when_local = sunday_anchor - timedelta(weeks=week)
+            _insert_user_message(
+                world["chat_db"],
+                when=when_local.astimezone(timezone.utc),
+            )
+        first = world["worker"].run()
+        self.assertEqual(first.get("routines_wrote"), True)
+        second = world["worker"].run()
+        # ``routines_wrote`` is absent on the no-op pass; instead we
+        # see the "unchanged" reason and the value is preserved.
+        self.assertEqual(second.get("routines_reason"), "unchanged")
+        self.assertEqual(
+            second.get("routines_value"), first["routines_value"],
+        )
+        self.assertNotIn("routines_wrote", second)
+
+    def test_run_skips_routines_when_disabled(self) -> None:
+        world = _build_world(
+            min_samples=3,
+            window_days=30,
+            routine_min_touches=3,
+            routine_detection_enabled=False,
+        )
+        now_local = datetime.now().astimezone()
+        days_since_sunday = (now_local.weekday() + 1) % 7
+        sunday_anchor = now_local.replace(
+            hour=9, minute=0, second=0, microsecond=0,
+        ) - timedelta(days=days_since_sunday)
+        for week in range(4):
+            when_local = sunday_anchor - timedelta(weeks=week)
+            _insert_user_message(
+                world["chat_db"],
+                when=when_local.astimezone(timezone.utc),
+            )
+        result = world["worker"].run()
+        # Disable flag short-circuits the K3 pass entirely; G2 may
+        # still run depending on the local bucket distribution.
+        self.assertNotIn("routines_value", result)
+        self.assertNotIn(
+            "routines",
+            world["profile_store"].fields(world["user_id"]),
+        )
 
 
 class TestIsReady(unittest.TestCase):

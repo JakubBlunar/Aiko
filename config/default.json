@@ -59,6 +59,7 @@
     "fact_checker_per_hour_cap": 10,
     "fact_checker_per_day_cap": 50,
     "schedule_learner_enabled": true,
+    "routine_detection_enabled": true,
     "idle_curiosity_enabled": true,
     "idle_curiosity_per_hour_cap": 2,
     "idle_curiosity_per_day_cap": 6,
@@ -69,7 +70,8 @@
     "belief_worker_enabled": true,
     "belief_worker_per_hour_cap": 4,
     "belief_worker_per_day_cap": 20,
-    "novelty_detection_enabled": true
+    "novelty_detection_enabled": true,
+    "topic_stagnation_enabled": true
   },
   "audio": {
     "sample_rate": 16000,
@@ -151,11 +153,19 @@
     "belief_recent_window_hours": 24,
     "belief_stale_after_days": 90,
     "belief_max_active_per_user": 200,
+    "routine_min_touches": 3,
+    "routine_min_share": 0.30,
+    "routine_max_active": 5,
     "novelty_window": 12,
     "novelty_warmup_min": 3,
     "novelty_mild_threshold": 0.35,
     "novelty_strong_threshold": 0.55,
     "novelty_cooldown_turns": 2,
+    "stagnation_window": 6,
+    "stagnation_mild_threshold": 0.18,
+    "stagnation_strong_threshold": 0.10,
+    "stagnation_cooldown_turns": 4,
+    "stagnation_post_novelty_suppression_turns": 3,
     "idle_worker_wake_seconds": 60.0,
     "idle_worker_quiet_threshold_seconds": 30
   },

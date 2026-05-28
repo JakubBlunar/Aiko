@@ -1101,6 +1101,7 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
             knowledge_gaps=self._render_knowledge_gaps_block,
             belief_gaps=self._render_belief_gaps_block,
             novelty=self._render_novelty_block,
+            stagnation=self._render_stagnation_block,
         )
         self._prompt_assembler.set_pinned_self_memories_provider(
             self._top_pinned_self_memories,
@@ -1737,6 +1738,32 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
             except Exception:
                 log.warning("NoveltyDetector init failed", exc_info=True)
                 self._novelty_detector = None
+
+        # K18 (topic stagnation) — sibling of K6 that consumes the
+        # per-turn distance the novelty detector exposes via
+        # ``last_distance``/``last_band``. No embedder, no rag_store,
+        # no rate-cap; the per-turn cost is a deque append + a mean.
+        # Disabling K6 doesn't disable K18 explicitly here, but the
+        # provider returns "" silently when ``last_distance`` is
+        # always None (which it will be without the K6 detector
+        # populating it), so the cue stays quiet.
+        self._topic_stagnation_detector = None
+        if bool(
+            getattr(settings.agent, "topic_stagnation_enabled", True)
+        ):
+            try:
+                from app.core.topic_stagnation import (
+                    TopicStagnationDetector,
+                )
+
+                self._topic_stagnation_detector = TopicStagnationDetector(
+                    memory_settings=self._memory_settings,
+                )
+            except Exception:
+                log.warning(
+                    "TopicStagnationDetector init failed", exc_info=True,
+                )
+                self._topic_stagnation_detector = None
 
         self._proactive = ProactiveDirector(
             self._ollama,
@@ -3731,6 +3758,60 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
             return render_inner_life_block(result)
         except Exception:
             log.debug("novelty block render failed", exc_info=True)
+            return ""
+
+    def _render_stagnation_block(self, user_text: str) -> str:
+        """K18: surface a one-line "we've been on this for a while" cue.
+
+        Sibling of :meth:`_render_novelty_block`; runs *after* it on
+        the prompt-assembly path so we can read the just-computed
+        ``last_distance`` / ``last_band`` off the K6 detector without
+        re-embedding. Empty string when disabled, when K6 didn't
+        measure a distance this turn (short text / warmup / embed
+        failure), when we're inside the post-novelty suppression
+        window, when we're inside a hit cooldown, or when the
+        rolling mean stays above the mild threshold -- which is the
+        common case, so the block disappears entirely on normal
+        turns.
+        """
+        if not bool(
+            getattr(self._settings.agent, "topic_stagnation_enabled", True)
+        ):
+            return ""
+        detector = getattr(self, "_topic_stagnation_detector", None)
+        if detector is None:
+            return ""
+        novelty = getattr(self, "_novelty_detector", None)
+        # ``last_distance`` is always reset at the top of each
+        # ``NoveltyDetector.detect`` call, so the value we read here
+        # belongs unambiguously to this turn (or stays ``None`` if
+        # K6 was disabled / didn't measure).
+        distance = (
+            getattr(novelty, "last_distance", None) if novelty is not None
+            else None
+        )
+        novelty_just_fired = bool(
+            getattr(novelty, "last_band", None)
+        ) if novelty is not None else False
+        try:
+            result = detector.detect(
+                distance,
+                novelty_just_fired=novelty_just_fired,
+            )
+        except Exception:
+            log.debug("topic stagnation detector raised", exc_info=True)
+            return ""
+        if result is None:
+            return ""
+        try:
+            from app.core.topic_stagnation import render_inner_life_block
+
+            return render_inner_life_block(
+                result,
+                user_display_name=self.user_display_name,
+            )
+        except Exception:
+            log.debug("topic stagnation block render failed", exc_info=True)
             return ""
 
     def _render_world_block(self) -> str:

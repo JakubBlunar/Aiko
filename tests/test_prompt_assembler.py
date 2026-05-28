@@ -558,6 +558,121 @@ class NoveltyBlockProviderTests(unittest.TestCase):
             self.assertNotIn("Heads-up", messages[0]["content"])
 
 
+class StagnationBlockProviderTests(unittest.TestCase):
+    """K18 stagnation provider lands in the system prompt right after
+    novelty, is dropped under ``aggressive=True``, receives
+    ``user_text`` (for symmetry with the K6 provider), and survives
+    a raising provider without breaking the turn."""
+
+    def test_stagnation_block_lands_after_novelty(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="st1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                novelty=lambda _t: "Heads-up: novelty cue.",
+                stagnation=lambda _t: "Heads-up: been on this for a while.",
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "st1",
+                "we keep coming back to this",
+                context_window=4096,
+                response_budget=256,
+            )
+            content = messages[0]["content"]
+            # Both blocks should be present...
+            self.assertIn("Heads-up: novelty cue", content)
+            self.assertIn("been on this for a while", content)
+            # ...with novelty *before* stagnation, since reaction
+            # cues cluster together and the order encodes the K6-then-
+            # K18 dataflow.
+            self.assertLess(
+                content.index("novelty cue"),
+                content.index("been on this for a while"),
+            )
+
+    def test_stagnation_block_silent_when_provider_empty(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="st2", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                stagnation=lambda _t: "",
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "st2",
+                "anything",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertNotIn("Heads-up", messages[0]["content"])
+
+    def test_stagnation_block_dropped_under_aggressive(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="st3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                stagnation=lambda _t: "Heads-up: lulled.",
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "st3",
+                "x",
+                context_window=4096,
+                response_budget=256,
+                aggressive=True,
+            )
+            self.assertNotIn("Heads-up", messages[0]["content"])
+
+    def test_stagnation_provider_exception_swallowed(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="st4", role="user", content="hi", token_count=2,
+            )
+
+            def _boom(_t: str) -> str:
+                raise RuntimeError("stagnation exploded")
+
+            assembler.set_inner_life_providers(stagnation=_boom)
+            # Should not raise; the block just disappears.
+            messages, _ = assembler.assemble_with_budget(
+                "st4",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertNotIn("Heads-up", messages[0]["content"])
+
+    def test_stagnation_provider_receives_user_text(self) -> None:
+        # The provider takes ``user_text`` for symmetry with K6 even
+        # though the streak detector itself doesn't currently read
+        # it -- pin the contract so future refactors don't silently
+        # drop the argument.
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="st5", role="user", content="hi", token_count=2,
+            )
+            seen: list[str] = []
+
+            def _provider(user_text: str) -> str:
+                seen.append(user_text)
+                return ""
+
+            assembler.set_inner_life_providers(stagnation=_provider)
+            assembler.assemble_with_budget(
+                "st5",
+                "we keep circling this",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertEqual(seen, ["we keep circling this"])
+
+
 class GrammarAddendumTests(unittest.TestCase):
     """Spot-checks on the new dynamic prompt addendum builders.
 
