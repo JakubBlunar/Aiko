@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { api } from "../api";
+import { useMicCapture } from "../hooks/useMicCapture";
 import { useAssistantStore } from "../store";
 import type { ToolEvent, VoiceMode, WsClientCommand } from "../types";
 import { SHARED_MOMENT_VIBES } from "../types";
@@ -8,6 +10,7 @@ import { MicButton } from "./MicButton";
 
 interface ChatViewProps {
   send: (cmd: WsClientCommand) => void;
+  sendBytes: (frame: Uint8Array) => void;
 }
 
 const REACTION_EMOJI: Record<string, string> = {
@@ -43,7 +46,7 @@ function formatTime(iso: string): string {
   }
 }
 
-export function ChatView({ send }: ChatViewProps) {
+export function ChatView({ send, sendBytes }: ChatViewProps) {
   const messages = useAssistantStore((s) => s.messages);
   const status = useAssistantStore((s) => s.status);
   const turnInProgress = useAssistantStore((s) => s.turnInProgress);
@@ -57,22 +60,44 @@ export function ChatView({ send }: ChatViewProps) {
   const currentPartial = useAssistantStore((s) => s.currentPartial);
   const toolActivity = useAssistantStore((s) => s.toolActivity);
   const sessionKey = useAssistantStore((s) => s.sessionKey);
+  const clientId = useAssistantStore((s) => s.clientId);
+  const voiceOwnerId = useAssistantStore((s) => s.voiceOwnerId);
+  const remotelyOwned = Boolean(
+    voiceOwnerId && clientId && voiceOwnerId !== clientId,
+  );
+
+  useMicCapture({ sendBytes });
 
   const [draft, setDraft] = useState("");
-  const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  // Tracks whether we've already done the "land at bottom" jump for the
-  // current session. Reset when the session key or first-load completes.
-  const initialScrolledRef = useRef<string | null>(null);
-  // ``followingTail`` captures the user's intent: true while they are
-  // pinned to (or near) the bottom; false the moment they scroll up to
-  // read history. We update this from ``scroll`` events so the value
-  // reflects the *previous* layout, before a new message arrives. Then
-  // when a message lands, we stick to bottom iff this flag is true —
-  // which sidesteps the old "compare distance against the new
-  // scrollHeight" race that broke for messages taller than the
-  // threshold (anything > 120 px would silently un-stick the chat).
-  const followingTailRef = useRef(true);
+  // Virtuoso virtualises the chat list so the DOM only ever holds the
+  // bubbles currently on screen (plus a small overscan buffer). This
+  // matters at two ends of the spectrum: long histories (50+ bubbles)
+  // used to render every node on every store update; and the streaming
+  // turn used to force re-layout of the entire list on every token.
+  // ``followOutput`` carries the "stick-to-bottom unless the user
+  // scrolled up" rule that the old hand-rolled scrollRef machinery
+  // implemented; ``initialTopMostItemIndex`` lands on the latest
+  // message on first paint, including after a session switch.
+  const virtuosoRef = useRef<VirtuosoHandle | null>(null);
+  // Snap the chat to the bottom on session change. The session-id
+  // dependency triggers re-mount of the same Virtuoso instance with
+  // the new ``messages`` array; we still want to land at the tail on
+  // the very next render, regardless of where the previous session
+  // left the scroll position.
+  useEffect(() => {
+    if (messages.length === 0) return;
+    requestAnimationFrame(() => {
+      virtuosoRef.current?.scrollToIndex({
+        index: messages.length - 1,
+        align: "end",
+        behavior: "auto",
+      });
+    });
+    // ``messages.length`` intentionally omitted: this effect is keyed
+    // by the conversation, not by every token append.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionKey]);
 
   // Hide the transcript pill ~3s after we receive a final transcript.
   useEffect(() => {
@@ -80,62 +105,6 @@ export function ChatView({ send }: ChatViewProps) {
     const id = window.setTimeout(() => setLastTranscript(""), 3000);
     return () => window.clearTimeout(id);
   }, [lastTranscript, setLastTranscript]);
-
-  // Reset the "initial scrolled" guard when the session changes so that
-  // switching to another conversation also jumps to its latest message.
-  useEffect(() => {
-    initialScrolledRef.current = null;
-  }, [sessionKey]);
-
-  // Maintain ``followingTailRef`` from the user's scroll position. We
-  // use a small 32 px threshold here because the scroll listener fires
-  // *during* user gestures (no race with new messages), so its only
-  // job is detecting "is the user at the bottom right now?".
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const onScroll = () => {
-      const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-      followingTailRef.current = distance < 32;
-    };
-    el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
-  }, []);
-
-  // Scroll behavior:
-  //   1. On first paint with messages (or after a session switch), jump
-  //      straight to the bottom — the user wants to land on the most
-  //      recent message.
-  //   2. On subsequent updates (streaming tokens, new turn), only stick
-  //      to the bottom if the user was already at the tail just before
-  //      this update landed. ``followingTailRef`` is set from the
-  //      scroll listener above, so it reflects intent — not a heuristic
-  //      against the now-stale post-render geometry.
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el || messages.length === 0) return;
-
-    const sessionTag = sessionKey || "__default__";
-    if (initialScrolledRef.current !== sessionTag) {
-      initialScrolledRef.current = sessionTag;
-      // Two raf ticks: first lets layout settle (bubbles + auto-grown
-      // textarea), second performs the jump after final heights are known.
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          const node = scrollRef.current;
-          if (node) {
-            node.scrollTop = node.scrollHeight;
-            followingTailRef.current = true;
-          }
-        });
-      });
-      return;
-    }
-
-    if (followingTailRef.current) {
-      el.scrollTop = el.scrollHeight;
-    }
-  }, [messages, sessionKey]);
 
   // Auto-grow the input textarea up to its max-height so the row doesn't
   // start out as a tall 2-line box but still expands naturally.
@@ -159,6 +128,30 @@ export function ChatView({ send }: ChatViewProps) {
     }
     send({ type: "chat", text });
     setDraft("");
+    // Sending a message is an explicit "I want to engage with the
+    // latest content" gesture, so force-snap to the tail. This both
+    // shows the user's bubble immediately and re-arms Virtuoso's
+    // ``followOutput`` heuristic so Aiko's streaming reply keeps the
+    // chat pinned to the bottom. Without this jump, a user who had
+    // scrolled up to read history would type a message, see it land
+    // off-screen, and then watch Aiko reply somewhere they can't see.
+    // Two rAFs: first lets the new bubble + auto-grown textarea land,
+    // second performs the scroll once final heights are measured.
+    // Two rAFs: the first lets the store fan out the new user bubble
+    // and the textarea collapse back to its single-line height; the
+    // second performs the jump after the final layout is measured.
+    // ``"LAST"`` resolves against Virtuoso's internal data length, so
+    // we don't have to guess whether the user's bubble has landed in
+    // ``messages`` yet from this closure's perspective.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        virtuosoRef.current?.scrollToIndex({
+          index: "LAST",
+          align: "end",
+          behavior: "auto",
+        });
+      });
+    });
   };
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -204,22 +197,46 @@ export function ChatView({ send }: ChatViewProps) {
         </div>
       </div>
 
-      <div
-        ref={scrollRef}
-        className="flex-1 overflow-y-auto px-6 py-8"
-      >
+      <div className="flex min-h-0 flex-1 flex-col">
         {messages.length === 0 ? (
-          <EmptyState booting={connection.status !== "connected"} />
+          <div className="flex-1 overflow-y-auto px-6 py-8">
+            <EmptyState booting={connection.status !== "connected"} />
+            {toolActivity.length > 0 && turnInProgress ? (
+              <ToolActivityStrip activity={toolActivity} />
+            ) : null}
+          </div>
         ) : (
-          <ul className="mx-auto flex max-w-3xl flex-col gap-4">
-            {messages.map((msg) => (
-              <MessageBubble key={msg.id} {...msg} />
-            ))}
-          </ul>
+          <Virtuoso
+            ref={virtuosoRef}
+            data={messages}
+            // Stick to the bottom while the user is at the tail; freeze
+            // the scroll position the moment they scroll up to read
+            // history. ``"auto"`` is the same instant jump the old
+            // ``scrollTop = scrollHeight`` did — switch to ``"smooth"``
+            // here only if we ever want to animate it.
+            followOutput={(isAtBottom) => (isAtBottom ? "auto" : false)}
+            initialTopMostItemIndex={Math.max(0, messages.length - 1)}
+            computeItemKey={(_index, msg) => msg.id}
+            increaseViewportBy={{ top: 400, bottom: 600 }}
+            className="flex-1"
+            style={{ height: "100%" }}
+            itemContent={(_index, msg) => (
+              <div className="mx-auto max-w-3xl px-6 pb-4 first:pt-8">
+                <MessageBubble {...msg} />
+              </div>
+            )}
+            components={{
+              Footer: () =>
+                toolActivity.length > 0 && turnInProgress ? (
+                  <div className="px-6 pb-8">
+                    <ToolActivityStrip activity={toolActivity} />
+                  </div>
+                ) : (
+                  <div className="pb-8" />
+                ),
+            }}
+          />
         )}
-        {toolActivity.length > 0 && turnInProgress ? (
-          <ToolActivityStrip activity={toolActivity} />
-        ) : null}
       </div>
 
       <div className="border-t border-white/5 bg-white/[0.02] px-6 py-4">
@@ -236,6 +253,7 @@ export function ChatView({ send }: ChatViewProps) {
               audioLevel={audioLevel}
               connected={connection.status === "connected"}
               onClick={handleMicToggle}
+              remotelyOwned={remotelyOwned}
             />
             <textarea
               ref={textareaRef}
@@ -540,7 +558,17 @@ function renderMessageContent(content: string): React.ReactNode {
   });
 }
 
-function MessageBubble({
+// ``MessageBubble`` is wrapped in :func:`memo` below because every
+// streamed token rebuilds the entire ``messages`` array in the store
+// (a fresh reference is required for Zustand to fan out the change),
+// which makes the parent ``ChatView`` re-render. Without memo, the
+// ``messages.map`` would re-render every bubble in the history on
+// each token at 30-50 Hz — which used to starve the Live2D
+// ``requestAnimationFrame`` loop and visibly stutter the avatar.
+// Memoising on the prop tuple lets React skip every bubble whose
+// content / streaming flag / reaction is unchanged; only the
+// currently-streaming bubble actually re-renders per token.
+function MessageBubbleImpl({
   role,
   content,
   createdAt,
@@ -574,9 +602,9 @@ function MessageBubble({
 
   if (role === "system") {
     return (
-      <li className="mx-auto max-w-md text-center text-xs italic text-ink-100/40">
+      <div className="mx-auto max-w-md text-center text-xs italic text-ink-100/40">
         {content}
-      </li>
+      </div>
     );
   }
 
@@ -587,7 +615,8 @@ function MessageBubble({
   // backendId yet so the button stays hidden until the turn lands.
   const canMark = !streaming && backendId != null;
   return (
-    <li
+    <div
+      role="listitem"
       className={`group flex flex-col gap-1 ${
         isUser ? "items-end" : "items-start"
       }`}
@@ -661,6 +690,8 @@ function MessageBubble({
         {formatTime(createdAt)}
         {!isUser && reaction && reaction !== "neutral" ? ` · ${reaction}` : ""}
       </div>
-    </li>
+    </div>
   );
 }
+
+const MessageBubble = memo(MessageBubbleImpl);

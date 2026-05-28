@@ -53,6 +53,17 @@ interface AssistantState {
   setTtsState: (state: "idle" | "speaking", text?: string, reaction?: string) => void;
 
   /**
+   * Per-connection WebSocket identity. ``clientId`` is the id the server
+   * stamped on *our* socket inside the ``hello`` envelope; we compare
+   * it against ``voiceOwnerId`` to decide if we own the microphone.
+   * Both are empty / null until the first ``hello`` lands.
+   */
+  clientId: string;
+  voiceOwnerId: string | null;
+  setClientId: (clientId: string) => void;
+  setVoiceOwnerId: (ownerId: string | null) => void;
+
+  /**
    * First-run identity. Hydrated from the WS ``hello`` snapshot and
    * the REST ``GET /api/settings/identity`` fallback, then refreshed
    * on every ``identity_changed`` broadcast. ``null`` only before the
@@ -348,6 +359,11 @@ export const useAssistantStore = create<AssistantState>((set) => ({
   setTtsEnabled: (enabled) => set({ ttsEnabled: enabled }),
   setTtsState: (state, text = "", reaction = "neutral") =>
     set({ ttsState: state, ttsText: text, reaction }),
+
+  clientId: "",
+  voiceOwnerId: null,
+  setClientId: (clientId) => set({ clientId }),
+  setVoiceOwnerId: (voiceOwnerId) => set({ voiceOwnerId }),
 
   identity: null,
   setIdentity: (identity) => set({ identity }),

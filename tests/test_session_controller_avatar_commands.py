@@ -727,11 +727,13 @@ class UpdateAvatarSettingsPersistenceTests(unittest.TestCase):
 
     def test_existing_unrelated_keys_are_preserved(self) -> None:
         # Pretend the user already has tts/audio overrides — the
-        # avatar persist path must not nuke them.
+        # avatar persist path must not nuke them. ``output_device``
+        # is no longer a real setting (audio I/O moved to the client),
+        # so we use the still-valid ``vad_level_threshold`` here.
         self.user_json.write_text(
             json.dumps({
                 "tts": {"voice": "aiko1.safetensors"},
-                "audio": {"output_device": 3},
+                "audio": {"vad_level_threshold": 0.05},
             }),
             encoding="utf-8",
         )
@@ -739,7 +741,7 @@ class UpdateAvatarSettingsPersistenceTests(unittest.TestCase):
         controller.update_avatar_settings(scale_multiplier=2.5)
         body = json.loads(self.user_json.read_text(encoding="utf-8"))
         self.assertEqual(body["tts"], {"voice": "aiko1.safetensors"})
-        self.assertEqual(body["audio"], {"output_device": 3})
+        self.assertEqual(body["audio"], {"vad_level_threshold": 0.05})
         self.assertEqual(body["avatar"], {"scale_multiplier": 2.5})
 
     def test_persisted_value_round_trips_through_runtime_state(self) -> None:

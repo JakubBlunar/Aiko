@@ -117,8 +117,6 @@ def _build_client() -> tuple[TestClient, MagicMock, _SettingsStub]:
     session.tts_provider = "fake"
     session.tts_voice = "fake"
     session.stt_model = "fake"
-    session.microphone_device = None
-    session.output_device = None
     session.vad_level_threshold = 0.02
     session.vad_silence_seconds = 1.0
     session.barge_in_enabled.return_value = False

@@ -55,11 +55,6 @@ interface RawMessage {
   created_at: string;
 }
 
-export interface AudioDevices {
-  input: { index: number; name: string }[];
-  output: { index: number; name: string }[];
-}
-
 async function jsonFetch<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
   const url =
     typeof input === "string" && input.startsWith("/")
@@ -114,7 +109,6 @@ export const api = {
   listModels: (refresh = false) =>
     jsonFetch<string[]>(`/api/models${refresh ? "?refresh=true" : ""}`),
   listVoices: () => jsonFetch<string[]>("/api/voices"),
-  listAudioDevices: () => jsonFetch<AudioDevices>("/api/audio/devices"),
   listMemories: (
     options: {
       limit?: number;

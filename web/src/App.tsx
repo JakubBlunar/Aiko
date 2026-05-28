@@ -79,7 +79,7 @@ function usePersonaVisibilitySync() {
 }
 
 export default function App() {
-  const { send } = useAssistantSocket();
+  const { send, sendBytes } = useAssistantSocket();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const route = useRoute();
   const tauri = isTauri();
@@ -146,7 +146,7 @@ export default function App() {
   useActivityReporter({ send, enabled: activityEnabled });
 
   if (route === "persona") {
-    return <PersonaWindow send={send} />;
+    return <PersonaWindow send={send} sendBytes={sendBytes} />;
   }
 
   const togglePersona = () => {
@@ -166,7 +166,7 @@ export default function App() {
         personaWindowVisible={personaVisible}
       />
       <main className="flex h-full min-w-0 flex-1">
-        <ChatView send={send} />
+        <ChatView send={send} sendBytes={sendBytes} />
       </main>
       {/* The avatar rail in the main window is redundant when the
           floating persona window is showing — Aiko is already on screen

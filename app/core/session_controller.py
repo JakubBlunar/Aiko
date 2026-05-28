@@ -33,8 +33,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from app.audio.client_mic_source import ClientMicSource
 from app.audio.earcons import EarconPlayer
-from app.audio.mic_capture import MicrophoneCapture, list_output_devices
 from app.core.affect_state import AffectStore, AffectUpdater
 from app.core.backchannel_classifier import BackchannelGate, BackchannelHint
 from app.core.chat_database import ChatDatabase
@@ -526,16 +526,26 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
             self._world_store = None
 
         # ── TTS engine + queue ───────────────────────────────────────────
-        self._output_device = getattr(settings.audio, "output_device", None)
-        self._tts_engine = self._build_tts_service(
-            settings, output_device=self._output_device,
-        )
+        # Audio frame listener hook — wired by the web server when the
+        # WS hub is built. Until then PCM is discarded (used by the
+        # CLI / tests without a connected client).
+        self._audio_frame_listener: Callable[[str, int, int, bytes], None] | None = None
+        self._audio_frame_end_listener: Callable[[str], None] | None = None
+
+        self._tts_engine = self._build_tts_service(settings)
         # Earcon player must be created before TtsQueue so the queue can
         # use it for stage-direction splicing (Phase 1c). Construction
         # is cheap (no I/O until the first tone is requested).
         self._earcons = EarconPlayer(
             enabled=getattr(settings.audio, "earcons_enabled", True),
-            output_device=self._output_device,
+        )
+        self._tts_engine.set_pcm_listener(
+            lambda rate, ch, pcm: self._emit_audio_frame("tts", rate, ch, pcm),
+            end_listener=lambda: self._emit_audio_frame_end("tts"),
+        )
+        self._earcons.set_pcm_listener(
+            lambda rate, ch, pcm: self._emit_audio_frame("earcon", rate, ch, pcm),
+            end_listener=lambda: self._emit_audio_frame_end("earcon"),
         )
         self._tts = TtsQueue(
             self._tts_engine,
@@ -559,8 +569,10 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
         self._apply_assistant_preferences()
 
         # ── Microphone + STT ─────────────────────────────────────────────
-        self._microphone = MicrophoneCapture(settings.audio)
-        self._microphone_device = settings.audio.microphone_device
+        # The client streams mic PCM as 0x01/0x02 WS frames; the WS
+        # layer calls ``feed_audio_frame`` / ``feed_audio_start`` /
+        # ``feed_audio_end`` on us which forwards into the source.
+        self._microphone = ClientMicSource(settings.audio)
         self._realtime_stt = RealtimeSttService(settings.stt, settings.audio)
 
         # ── Prompt + workers + runner ────────────────────────────────────
@@ -1399,12 +1411,8 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
         # ── Runtime state ────────────────────────────────────────────────
         self._vad_level_threshold = settings.audio.vad_level_threshold
         self._vad_silence_seconds = settings.audio.vad_silence_seconds
-        self._live_input_mode = getattr(settings.audio, "live_input_mode", None) or "voice_detection"
-        self._live_ptt_type = getattr(settings.audio, "live_ptt_type", None) or "keyboard"
-        self._live_ptt_key = getattr(settings.audio, "live_ptt_key", None)
-        self._live_ptt_mouse_button = getattr(settings.audio, "live_ptt_mouse_button", None)
-        self._live_ptt_toggle = getattr(settings.audio, "live_ptt_toggle", False)
-        self._ptt_active = False
+        # Push-to-talk / input mode bookkeeping moved to the client.
+        # The server only ever sees the resulting PCM stream.
         self._live_no_speech_streak = 0
         self._live_voice_session_active = False
         self._turn_in_progress = False
@@ -1461,10 +1469,6 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
         self._tts.set_amplitude_listener(self._on_tts_amplitude)
         self._models_cache: list[str] | None = None
         self._models_cache_time = 0.0
-        self._input_devices_cache: list[tuple[int, str]] | None = None
-        self._input_devices_cache_time = 0.0
-        self._output_devices_cache: list[tuple[int, str]] | None = None
-        self._output_devices_cache_time = 0.0
         self._cache_ttl = 60.0
 
         # ── MCP debug server ─────────────────────────────────────────────
@@ -1779,105 +1783,89 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
     def active_session_type(self) -> str:
         return "chat"
 
-    # ── Audio: VAD / mic / output devices ───────────────────────────
-
-    def list_microphone_devices(self, *, refresh: bool = False) -> list[tuple[int, str]]:
-        now = time.monotonic()
-        if not refresh and self._input_devices_cache is not None and (now - self._input_devices_cache_time) < self._cache_ttl:
-            return list(self._input_devices_cache)
-        devices = self._microphone.list_input_devices()
-        self._input_devices_cache = list(devices)
-        self._input_devices_cache_time = now
-        return devices
-
-    def set_microphone_device(self, device_index: int | None) -> None:
-        self._microphone_device = device_index
-        self._microphone.set_device(device_index)
+    # ── Audio: client-fed mic + speaker streams ─────────────────────
 
     @property
-    def microphone_device(self) -> int | None:
-        return self._microphone_device
+    def mic_source(self) -> ClientMicSource:
+        """The active mic source. WS layer pipes binary frames into it."""
+        return self._microphone
 
-    def list_output_devices(self, *, refresh: bool = False) -> list[tuple[int, str]]:
-        now = time.monotonic()
-        if not refresh and self._output_devices_cache is not None and (now - self._output_devices_cache_time) < self._cache_ttl:
-            return list(self._output_devices_cache)
+    def feed_audio_start(
+        self,
+        sample_rate: int,
+        channels: int,
+        dsp_flags: int = 0,
+    ) -> None:
+        """Handle a ``0x02 mic_start`` frame from the active voice owner."""
         try:
-            devices = list_output_devices()
+            self._microphone.feed_start(sample_rate, channels, dsp_flags)
         except Exception:
-            devices = []
-        self._output_devices_cache = list(devices)
-        self._output_devices_cache_time = now
-        return devices
+            log.debug("mic feed_start failed", exc_info=True)
 
-    def set_output_device(self, device_index: int | None) -> None:
-        self._output_device = device_index
-        rebuild = getattr(self._tts_engine, "set_output_device", None)
-        if callable(rebuild):
-            try:
-                rebuild(device_index)
-            except Exception:
-                log.debug("tts engine rejected device switch", exc_info=True)
+    def feed_audio_frame(
+        self,
+        sample_rate: int,
+        channels: int,
+        pcm_int16_le: bytes,
+    ) -> None:
+        """Handle a ``0x01 mic_pcm`` frame from the active voice owner."""
         try:
-            self._earcons = EarconPlayer(
-                enabled=getattr(self._settings.audio, "earcons_enabled", True),
-                output_device=device_index,
-            )
+            self._microphone.feed_pcm(sample_rate, channels, pcm_int16_le)
         except Exception:
-            log.debug("earcons rebuild failed", exc_info=True)
+            log.debug("mic feed_pcm failed", exc_info=True)
 
-    @property
-    def output_device(self) -> int | None:
-        return self._output_device
+    def feed_audio_end(self) -> None:
+        """Signal end of the current mic stream (owner released / disconnected)."""
+        try:
+            self._microphone.feed_end()
+        except Exception:
+            log.debug("mic feed_end failed", exc_info=True)
+
+    def set_audio_frame_listener(
+        self,
+        listener: Callable[[str, int, int, bytes], None] | None,
+        *,
+        end_listener: Callable[[str], None] | None = None,
+    ) -> None:
+        """Install a sink for outbound TTS / earcon PCM.
+
+        The web server registers a callback that broadcasts the bytes
+        as ``0x10 tts_pcm`` / ``0x11 earcon_pcm`` frames to every
+        connected client. ``stream`` is ``"tts"`` or ``"earcon"`` so
+        the hub picks the right frame type.
+        """
+        self._audio_frame_listener = listener
+        self._audio_frame_end_listener = end_listener
+
+    def _emit_audio_frame(
+        self,
+        stream: str,
+        sample_rate: int,
+        channels: int,
+        pcm: bytes,
+    ) -> None:
+        listener = self._audio_frame_listener
+        if listener is None:
+            return
+        try:
+            listener(stream, int(sample_rate), int(channels), pcm)
+        except Exception:
+            log.debug("audio frame listener raised", exc_info=True)
+
+    def _emit_audio_frame_end(self, stream: str) -> None:
+        end_listener = self._audio_frame_end_listener
+        if end_listener is None:
+            return
+        try:
+            end_listener(stream)
+        except Exception:
+            log.debug("audio frame end listener raised", exc_info=True)
 
     def barge_in_enabled(self) -> bool:
         return bool(getattr(self._settings.audio, "barge_in_enabled", False))
 
     def set_barge_in_enabled(self, enabled: bool) -> None:
         self._settings.audio.barge_in_enabled = bool(enabled)
-
-    @property
-    def live_input_mode(self) -> str:
-        return self._live_input_mode
-
-    def set_live_input_mode(self, mode: str) -> None:
-        normalized = (mode or "").strip().lower()
-        if normalized:
-            self._live_input_mode = normalized
-
-    @property
-    def live_ptt_type(self) -> str:
-        return self._live_ptt_type
-
-    def set_live_ptt_type(self, ptt_type: str) -> None:
-        self._live_ptt_type = (ptt_type or "keyboard").strip().lower() or "keyboard"
-
-    @property
-    def live_ptt_key(self) -> str | None:
-        return self._live_ptt_key
-
-    def set_live_ptt_key(self, key: str | None) -> None:
-        self._live_ptt_key = (key or None) and str(key).strip()
-
-    @property
-    def live_ptt_mouse_button(self) -> str | None:
-        return self._live_ptt_mouse_button
-
-    def set_live_ptt_mouse_button(self, button: str | None) -> None:
-        self._live_ptt_mouse_button = (button or None) and str(button).strip().lower()
-
-    @property
-    def live_ptt_toggle(self) -> bool:
-        return bool(self._live_ptt_toggle)
-
-    def set_live_ptt_toggle(self, value: bool) -> None:
-        self._live_ptt_toggle = bool(value)
-
-    def get_ptt_active(self) -> bool:
-        return self._ptt_active
-
-    def set_ptt_active(self, active: bool) -> None:
-        self._ptt_active = bool(active)
 
     @property
     def vad_level_threshold(self) -> float:
@@ -1982,8 +1970,12 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
         except Exception:
             pass
         self._settings.tts.provider = normalized
-        self._tts_engine = self._build_tts_service(
-            self._settings, output_device=self._output_device,
+        self._tts_engine = self._build_tts_service(self._settings)
+        # Rewire the PCM listener so the new engine still pushes
+        # audio to whichever WS hub callback is currently installed.
+        self._tts_engine.set_pcm_listener(
+            lambda rate, ch, pcm: self._emit_audio_frame("tts", rate, ch, pcm),
+            end_listener=lambda: self._emit_audio_frame_end("tts"),
         )
         self._tts = TtsQueue(
             self._tts_engine,
@@ -4658,6 +4650,7 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
         text = self._realtime_stt.record_until_silence(
             max_seconds=max(3.0, min(seconds, 30.0)),
             silence_seconds=float(self._vad_silence_seconds),
+            mic_source=self._microphone,
         )
         capture_ms = (time.perf_counter() - capture_started) * 1000.0
         if not text:
@@ -5110,6 +5103,7 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
             text = self._realtime_stt.record_until_silence(
                 max_seconds=max(3.0, min(seconds, 30.0)),
                 silence_seconds=float(self._vad_silence_seconds),
+                mic_source=self._microphone,
             )
         except Exception as exc:
             return {"ok": False, "reason": "exception", "message": str(exc)}
@@ -5146,11 +5140,12 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
                 pass
 
     @staticmethod
-    def _build_tts_service(settings: AppSettings, output_device: int | None = None) -> Any:
+    def _build_tts_service(settings: AppSettings) -> Any:
         # Lean v1 ships only pocket-tts (matches the active user.json config).
-        # Kokoro / PyKokoro were removed -- restore them in v2 if needed.
+        # Playback now flows through ``set_pcm_listener`` -> WS hub
+        # -> connected clients; the engine no longer holds a device handle.
         from app.tts.pocket_tts_service import PocketTtsService
-        return PocketTtsService(settings.tts, output_device=output_device)
+        return PocketTtsService(settings.tts)
 
     # ── IdleWorkerScheduler activity gate (schema v8 / G1) ──────────
 

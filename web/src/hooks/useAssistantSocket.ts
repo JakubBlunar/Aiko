@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useRef } from "react";
 import { api } from "../api";
+import { AudioOutputManager } from "../audio/AudioOutputManager";
+import {
+  getStoredOutputDeviceId,
+  onDeviceListChange,
+} from "../audio/DeviceManager";
 import { desktop } from "../desktop/commands";
 import { backendBase } from "../desktop/runtime";
 import { playDone, playThinking } from "../earcons";
@@ -34,15 +39,24 @@ function resolveWsUrl(): string {
 
 /**
  * Single websocket client. Auto-reconnects on close. Caller gets a `send`
- * function for issuing commands; everything else lives in the Zustand store.
+ * function for issuing commands plus a `sendBytes` for binary frames
+ * (mic PCM); everything else lives in the Zustand store.
  */
 export function useAssistantSocket(): {
   send: (cmd: WsClientCommand) => void;
+  sendBytes: (frame: Uint8Array) => void;
+  audioOutput: AudioOutputManager;
 } {
   const socketRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<number | null>(null);
   const pingIntervalRef = useRef<number | null>(null);
   const closedByUser = useRef(false);
+  const audioOutputRef = useRef<AudioOutputManager | null>(null);
+  if (audioOutputRef.current === null) {
+    audioOutputRef.current = new AudioOutputManager({
+      sinkId: getStoredOutputDeviceId(),
+    });
+  }
   // Set true on the first successful ``open`` event. Until then we
   // suppress the brief "disconnected" flash that the WS lifecycle
   // would otherwise emit on every failed connect attempt while the
@@ -72,6 +86,12 @@ export function useAssistantSocket(): {
         store.setSessionKey(evt.session);
         store.setModel(evt.model);
         store.setTtsEnabled(evt.tts_enabled);
+        if (typeof evt.client_id === "string") {
+          store.setClientId(evt.client_id);
+        }
+        store.setVoiceOwnerId(
+          typeof evt.voice_owner_id === "string" ? evt.voice_owner_id : null,
+        );
         if (evt.context_window) {
           store.setContextInfo(
             evt.context_window,
@@ -406,6 +426,10 @@ export function useAssistantSocket(): {
         debugLog.setEnabled(Boolean(evt.logging.ui_log_enabled));
         break;
 
+      case "voice_owner_changed":
+        store.setVoiceOwnerId(evt.owner_id ?? null);
+        break;
+
       case "pong":
         break;
     }
@@ -417,6 +441,7 @@ export function useAssistantSocket(): {
     }
     setConnection({ status: "connecting", lastError: null });
     const ws = new WebSocket(resolveWsUrl());
+    ws.binaryType = "arraybuffer";
     socketRef.current = ws;
 
     // React StrictMode (and HMR) double-invoke the mount effect, so the
@@ -446,6 +471,15 @@ export function useAssistantSocket(): {
 
     ws.addEventListener("message", (event) => {
       if (!isCurrent()) return;
+      // Binary frames carry TTS / earcon PCM; pass them straight to
+      // the audio output manager. Text frames are JSON envelopes.
+      if (event.data instanceof ArrayBuffer) {
+        const out = audioOutputRef.current;
+        if (out) {
+          out.handleFrame(event.data);
+        }
+        return;
+      }
       try {
         const parsed = JSON.parse(event.data) as WsServerEvent;
         handleEvent(parsed);
@@ -562,5 +596,76 @@ export function useAssistantSocket(): {
     ws.send(JSON.stringify(cmd));
   }, []);
 
-  return { send };
+  const sendBytes = useCallback((frame: Uint8Array) => {
+    const ws = socketRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    ws.send(frame);
+  }, []);
+
+  // Re-route audio when the OS adds / removes devices (eg. plug in
+  // headphones while the app is open). We keep the cached deviceId
+  // around because the browser may reassign ids on re-enumeration;
+  // if the previous device is gone the manager falls back to the
+  // system default automatically.
+  useEffect(() => {
+    const out = audioOutputRef.current;
+    if (!out) return;
+    const stored = getStoredOutputDeviceId();
+    if (stored) {
+      void out.setSinkId(stored).catch(() => {
+        /* sink missing — fall back to default */
+      });
+    }
+    return onDeviceListChange(() => {
+      const next = getStoredOutputDeviceId();
+      if (next) {
+        void out.setSinkId(next).catch(() => {
+          /* ignore */
+        });
+      }
+    });
+  }, []);
+
+  // Pre-warm the AudioContext on the first user gesture. Creating an
+  // AudioContext blocks the main thread for 50-150 ms (sample-rate
+  // negotiation, sink probing) and used to land on the very first
+  // ``audio_start`` frame — which was almost always a short filler
+  // ("Okay, okay,", "Let me see —"). The avatar's render loop
+  // would stutter visibly during that one clip even though every
+  // subsequent clip ran smooth. Doing the work eagerly here pays
+  // the cost during a typed keystroke or a mouse click instead.
+  // Browser autoplay policies require the gesture anyway, so this
+  // also unlocks ``ctx.resume()`` for the first incoming clip.
+  useEffect(() => {
+    const out = audioOutputRef.current;
+    if (!out) return;
+    let warmed = false;
+    const warmUp = () => {
+      if (warmed) return;
+      warmed = true;
+      void out.resume().catch(() => {
+        /* still locked — try again on the next gesture */
+        warmed = false;
+      });
+      detach();
+    };
+    const events: (keyof WindowEventMap)[] = [
+      "pointerdown",
+      "keydown",
+      "touchstart",
+    ];
+    const detach = () => {
+      for (const evt of events) {
+        window.removeEventListener(evt, warmUp);
+      }
+    };
+    for (const evt of events) {
+      window.addEventListener(evt, warmUp, { once: false, passive: true });
+    }
+    return detach;
+  }, []);
+
+  return { send, sendBytes, audioOutput: audioOutputRef.current };
 }

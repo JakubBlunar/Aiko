@@ -5,10 +5,10 @@ description = "Aiko: a web-based AI companion with Ollama chat, RealtimeSTT, Poc
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-  # HTTP + audio I/O
+  # HTTP + audio processing
   "requests>=2.32.3",
-  "sounddevice>=0.5.1",
   "numpy>=2.2.3",
+  "scipy>=1.13.0",
   "soundfile>=0.13.0",
   "audioop-lts>=0.2.1; python_version>='3.13'",
   # Web/MCP servers

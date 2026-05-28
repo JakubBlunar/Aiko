@@ -63,10 +63,10 @@
     "sample_rate": 16000,
     "channels": 1,
     "enable_microphone": true,
-    "microphone_device": null,
     "vad_level_threshold": 0.02,
     "vad_silence_seconds": 1.0,
-    "barge_in_enabled": false
+    "barge_in_enabled": false,
+    "earcons_enabled": true
   },
   "stt": {
     "model": "large-v1",

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { api, type AudioDevices } from "../api";
+import { api } from "../api";
 import { desktop as desktopCommands } from "../desktop/commands";
 import { isTauri } from "../desktop/runtime";
 import type {
@@ -70,7 +70,24 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
   const [settings, setSettings] = useState<AssistantSettings | null>(null);
   const [models, setModels] = useState<string[]>([]);
   const [voices, setVoices] = useState<string[]>([]);
-  const [devices, setDevices] = useState<AudioDevices>({ input: [], output: [] });
+  const [deviceLists, setDeviceLists] = useState<{
+    inputs: { deviceId: string; label: string; groupId: string }[];
+    outputs: { deviceId: string; label: string; groupId: string }[];
+  }>({ inputs: [], outputs: [] });
+  const [inputDeviceId, setInputDeviceId] = useState<string>("");
+  const [outputDeviceId, setOutputDeviceId] = useState<string>("");
+  const [micPermission, setMicPermission] = useState<
+    "granted" | "denied" | "prompt" | "unknown"
+  >("unknown");
+  const [dspPrefs, setDspPrefs] = useState<{
+    echoCancellation: boolean;
+    noiseSuppression: boolean;
+    autoGainControl: boolean;
+  }>({
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+  });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<SettingsTabId>("chat");
@@ -322,11 +339,10 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
     setBusy(true);
     setError(null);
     try {
-      const [s, m, v, d] = await Promise.all([
+      const [s, m, v] = await Promise.all([
         api.getSettings(),
         api.listModels().catch(() => []),
         api.listVoices().catch(() => []),
-        api.listAudioDevices().catch(() => ({ input: [], output: [] })),
       ]);
       setSettings(s);
       // Keep the activity-awareness toggle in sync with the store so
@@ -338,7 +354,6 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
       );
       setModels(m);
       setVoices(v);
-      setDevices(d);
     } catch (err) {
       setError(String(err));
     } finally {
@@ -412,6 +427,38 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
       void refreshAll();
     }
   }, [open, refreshAll]);
+
+  // Hydrate the client-side audio device pickers + DSP toggles from
+  // localStorage and the browser's device enumeration API. Devices
+  // only return useful labels after the user has granted microphone
+  // permission, so the UI degrades gracefully (we show "Microphone N"
+  // stubs and prompt the user to enable permission before saving a
+  // preference).
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    const dm = import("../audio/DeviceManager");
+    void dm.then(async (mod) => {
+      if (cancelled) return;
+      setInputDeviceId(mod.getStoredInputDeviceId());
+      setOutputDeviceId(mod.getStoredOutputDeviceId());
+      setDspPrefs(mod.getStoredDspPreferences());
+      const permission = await mod.queryMicPermission();
+      if (cancelled) return;
+      setMicPermission(permission);
+      const lists = await mod.listDevices();
+      if (cancelled) return;
+      setDeviceLists(lists);
+      const unsub = mod.onDeviceListChange(async () => {
+        const next = await mod.listDevices();
+        if (!cancelled) setDeviceLists(next);
+      });
+      return () => unsub();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
 
   // Refresh the memory page whenever the user opens the Memory tab or
   // changes filter / sort / page. The dependencies are explicit so a
@@ -992,23 +1039,58 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
               </Section>
 
               <Section title="Audio devices">
-                <label className="block text-xs text-ink-100/60">Microphone</label>
+                <p className="mb-3 text-[11px] text-ink-100/50">
+                  Audio capture and playback now run in this browser /
+                  desktop window. Aiko's voice plays through the device
+                  you pick here, and the microphone is shared across
+                  all connected windows with a one-at-a-time lock
+                  (whoever clicks the mic last gets the floor).
+                </p>
+                {micPermission !== "granted" ? (
+                  <div className="mb-3 rounded-md border border-amber-300/40 bg-amber-500/10 p-3 text-[11px] text-amber-100/90">
+                    <div className="font-medium">
+                      Microphone permission required
+                    </div>
+                    <div className="mt-1 text-amber-100/70">
+                      Click the mic button (or grant access here) so we
+                      can list the available input devices with their
+                      real names.
+                    </div>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const mod = await import("../audio/DeviceManager");
+                        const ok = await mod.requestMicPermission();
+                        if (ok) {
+                          setMicPermission("granted");
+                          setDeviceLists(await mod.listDevices());
+                        } else {
+                          setMicPermission("denied");
+                        }
+                      }}
+                      className="mt-2 rounded-md border border-amber-300/60 bg-amber-500/20 px-3 py-1 text-amber-100 hover:bg-amber-500/30"
+                    >
+                      Grant microphone access
+                    </button>
+                  </div>
+                ) : null}
+                <label className="block text-xs text-ink-100/60">
+                  Microphone
+                </label>
                 <select
-                  value={settings.audio.microphone_device ?? ""}
-                  onChange={(e) =>
-                    void apply({
-                      audio: {
-                        microphone_device:
-                          e.target.value === "" ? null : Number(e.target.value),
-                      },
-                    })
-                  }
+                  value={inputDeviceId}
+                  onChange={async (e) => {
+                    const id = e.target.value;
+                    setInputDeviceId(id);
+                    const mod = await import("../audio/DeviceManager");
+                    mod.setStoredInputDeviceId(id);
+                  }}
                   className="mt-1 w-full rounded-md border border-white/10 bg-black/40 px-3 py-2 text-sm text-ink-100"
                 >
                   <option value="">System default</option>
-                  {devices.input.map((d) => (
-                    <option key={d.index} value={d.index}>
-                      [{d.index}] {d.name}
+                  {deviceLists.inputs.map((d, idx) => (
+                    <option key={d.deviceId || `in-${idx}`} value={d.deviceId}>
+                      {d.label || `Microphone ${idx + 1}`}
                     </option>
                   ))}
                 </select>
@@ -1016,21 +1098,19 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                   Output
                 </label>
                 <select
-                  value={settings.audio.output_device ?? ""}
-                  onChange={(e) =>
-                    void apply({
-                      audio: {
-                        output_device:
-                          e.target.value === "" ? null : Number(e.target.value),
-                      },
-                    })
-                  }
+                  value={outputDeviceId}
+                  onChange={async (e) => {
+                    const id = e.target.value;
+                    setOutputDeviceId(id);
+                    const mod = await import("../audio/DeviceManager");
+                    mod.setStoredOutputDeviceId(id);
+                  }}
                   className="mt-1 w-full rounded-md border border-white/10 bg-black/40 px-3 py-2 text-sm text-ink-100"
                 >
                   <option value="">System default</option>
-                  {devices.output.map((d) => (
-                    <option key={d.index} value={d.index}>
-                      [{d.index}] {d.name}
+                  {deviceLists.outputs.map((d, idx) => (
+                    <option key={d.deviceId || `out-${idx}`} value={d.deviceId}>
+                      {d.label || `Speaker ${idx + 1}`}
                     </option>
                   ))}
                 </select>
@@ -1047,6 +1127,88 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                   />
                   Allow barge-in (interrupt while Aiko is speaking)
                 </label>
+              </Section>
+
+              <Section title="Microphone DSP">
+                <p className="text-[11px] text-ink-100/50">
+                  Browser-level audio processing applied before frames
+                  are sent to the server. Defaults match modern
+                  videoconferencing clients; turn one off if your model
+                  already cleans up the signal itself.
+                </p>
+                <label className="mt-3 flex items-center justify-between gap-3 text-xs text-ink-100/80">
+                  <div>
+                    <div className="font-medium">Echo cancellation</div>
+                    <div className="text-[10px] text-ink-100/50">
+                      Removes the assistant's voice from the
+                      microphone feed when you have her on speakers.
+                    </div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={dspPrefs.echoCancellation}
+                    onChange={async (e) => {
+                      const next = {
+                        ...dspPrefs,
+                        echoCancellation: e.target.checked,
+                      };
+                      setDspPrefs(next);
+                      const mod = await import("../audio/DeviceManager");
+                      mod.setStoredDspPreferences({
+                        echoCancellation: next.echoCancellation,
+                      });
+                    }}
+                  />
+                </label>
+                <label className="mt-2 flex items-center justify-between gap-3 text-xs text-ink-100/80">
+                  <div>
+                    <div className="font-medium">Noise suppression</div>
+                    <div className="text-[10px] text-ink-100/50">
+                      Cuts steady background noise (fans, traffic) at
+                      the cost of softer breaths/whispers.
+                    </div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={dspPrefs.noiseSuppression}
+                    onChange={async (e) => {
+                      const next = {
+                        ...dspPrefs,
+                        noiseSuppression: e.target.checked,
+                      };
+                      setDspPrefs(next);
+                      const mod = await import("../audio/DeviceManager");
+                      mod.setStoredDspPreferences({
+                        noiseSuppression: next.noiseSuppression,
+                      });
+                    }}
+                  />
+                </label>
+                <label className="mt-2 flex items-center justify-between gap-3 text-xs text-ink-100/80">
+                  <div>
+                    <div className="font-medium">Auto gain control</div>
+                    <div className="text-[10px] text-ink-100/50">
+                      Keeps your level steady as you move toward / away
+                      from the mic. Disable for studio-quality input.
+                    </div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={dspPrefs.autoGainControl}
+                    onChange={async (e) => {
+                      const next = {
+                        ...dspPrefs,
+                        autoGainControl: e.target.checked,
+                      };
+                      setDspPrefs(next);
+                      const mod = await import("../audio/DeviceManager");
+                      mod.setStoredDspPreferences({
+                        autoGainControl: next.autoGainControl,
+                      });
+                    }}
+                  />
+                </label>
+                <VoiceOwnerRow />
               </Section>
 
               <Section title="Proactive nudges">
@@ -1914,6 +2076,33 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       </h3>
       <div className="space-y-2">{children}</div>
     </section>
+  );
+}
+
+/**
+ * Mini status pill describing the current voice ownership state.
+ * "Owned by this window" / "Owned by another window" / "Idle".
+ */
+function VoiceOwnerRow() {
+  const clientId = useAssistantStore((s) => s.clientId);
+  const voiceOwnerId = useAssistantStore((s) => s.voiceOwnerId);
+  const label = !voiceOwnerId
+    ? "No active microphone"
+    : clientId && voiceOwnerId === clientId
+      ? "This window"
+      : "Another window";
+  const tint = !voiceOwnerId
+    ? "border-white/10 bg-black/30 text-ink-100/60"
+    : clientId && voiceOwnerId === clientId
+      ? "border-pink-300/50 bg-pink-500/10 text-pink-100/90"
+      : "border-amber-300/50 bg-amber-500/10 text-amber-100/90";
+  return (
+    <div
+      className={`mt-3 flex items-center justify-between rounded-md border px-3 py-2 text-xs ${tint}`}
+    >
+      <span className="font-medium">Voice owner</span>
+      <span className="text-[10px] uppercase tracking-[0.2em]">{label}</span>
+    </div>
   );
 }
 

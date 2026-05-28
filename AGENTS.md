@@ -7,7 +7,7 @@ Aiko is a web-based AI companion built around:
 - **Python 3.11+** backend (FastAPI + WebSocket) under `app/`. Entry point: `python -m app.web` (or the `aiko-web` console script).
 - **React + Vite + PixiJS** frontend under `web/` (Live2D avatar, chat, voice controls, settings drawer, document upload).
 - **Ollama** for chat (via `OllamaClient` directly, not LangChain). The `chat_llm` block can route to any OpenAI-compatible endpoint instead.
-- **RealtimeSTT** + **Pocket-TTS** for voice in/out.
+- **RealtimeSTT** + **Pocket-TTS** for voice in/out, with **client-owned audio I/O**: the browser / Tauri shell captures the microphone (48 kHz Int16 mono, browser DSP) and plays back TTS, streaming raw PCM frames over the existing WebSocket. See [`docs/voice-mode.md`](docs/voice-mode.md) for the binary frame protocol and the voice-ownership lock used when multiple windows are open.
 - **LanceDB** for vector RAG over memories, recent chat messages, and uploaded documents.
 - **SQLite** (`data/chat_sessions.db`) as the source of truth for messages, summaries, and memory metadata.
 

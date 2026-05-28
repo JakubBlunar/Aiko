@@ -1,0 +1,181 @@
+# Voice mode (client-owned audio)
+
+This document describes how voice input and output flow between Aiko
+and her clients (browser tab or the Tauri desktop window). It replaces
+the earlier "server-side `sounddevice`" design — the backend no longer
+talks to the host's audio hardware at all.
+
+## Why client-owned audio?
+
+The original prototype captured the microphone and played TTS on the
+server using `sounddevice`. That worked for a single-machine setup but
+broke down quickly:
+
+- **Multi-window experience.** Both the chat view and the floating
+  persona window can be open simultaneously; only one of them can
+  hold the mic, but both should hear Aiko speak.
+- **Remote browser clients.** Running the backend on a workstation
+  and the UI in a laptop browser meant the wrong machine's
+  microphone was active.
+- **Audio quality.** Server-side capture had no access to modern
+  browser DSP (echo cancellation, noise suppression, AGC).
+- **Permission story.** Browsers gate microphone access behind a
+  user gesture; the server had no analogue.
+
+The refactor moves all audio I/O into the client. The server keeps
+ownership of the speech pipeline (STT, the agent, TTS synthesis), but
+the audio bytes themselves now travel over the existing WebSocket as
+binary frames.
+
+## Architecture
+
+```
+Client (browser / Tauri webview)              Server (FastAPI)
++---------------------------------+           +-----------------------------+
+| AudioInputManager               |           | _Hub (voice_owner_id)       |
+|  - getUserMedia (48 kHz mono)   |  binary   |   - mic_start / mic_pcm     |
+|  - mic-pcm-worklet -> Int16 LE  | --------> |   - resample 48k -> 16k     |
+|  - mic_start / mic_pcm frames   |    WS     |   - feeds ClientMicSource   |
++---------------------------------+           |                             |
+                                              |  ClientMicSource            |
+                                              |  -> RealtimeSttService      |
+                                              |  -> SessionController       |
+                                              |  -> PocketTtsService        |
++---------------------------------+   binary  |  PocketTtsService.pcm_listener
+| AudioOutputManager              | <-------- |  EarconPlayer.pcm_listener  |
+|  - AudioContext + scheduler     |    WS     |   - tts_pcm / earcon_pcm    |
+|  - setSinkId(output_device)     |           |   - audio_start / audio_end |
++---------------------------------+           +-----------------------------+
+```
+
+## Binary WebSocket frame protocol
+
+All audio data travels on the same WebSocket as JSON envelopes — text
+frames stay JSON, binary frames are PCM. Each binary frame starts with
+a 1-byte type discriminator (see `app/web/audio_frames.py` and
+`web/src/audio/protocol.ts`):
+
+| Byte | Direction         | Name           | Payload                                          |
+|------|-------------------|----------------|--------------------------------------------------|
+| 0x01 | client -> server  | `mic_pcm`      | Int16 LE PCM samples                             |
+| 0x02 | client -> server  | `mic_start`    | `[u32 sample_rate][u8 channels][u8 dsp_flags]`   |
+| 0x10 | server -> client  | `tts_pcm`      | Int16 LE PCM samples                             |
+| 0x11 | server -> client  | `earcon_pcm`   | Int16 LE PCM samples                             |
+| 0x12 | server -> client  | `audio_start`  | `[u8 stream][u32 sample_rate][u8 channels]`      |
+| 0x13 | server -> client  | `audio_end`    | `[u8 stream]`                                    |
+
+- All multi-byte integers are **big-endian** (network order).
+- `dsp_flags` is a bitset: bit 0 = echo cancellation, bit 1 = noise
+  suppression, bit 2 = auto gain control. The server uses it for
+  logging only; the actual DSP runs in the browser.
+- `stream` in `audio_start` / `audio_end` is either `0x10` (TTS) or
+  `0x11` (earcon) so the client can route the chunks to separate
+  scheduling queues.
+
+The wire format is intentionally trivial — there is no length prefix
+because WebSocket frames are message-framed already, and there is no
+sequence number because the underlying TCP stream preserves order.
+
+## Voice ownership
+
+Multiple clients connect to the same server (chat tab + persona
+window, or two browsers on different machines). The server assigns
+each socket a random `client_id` in the `hello` envelope and
+maintains a single `voice_owner_id` slot on the hub.
+
+- Calling `voice_start` claims the slot. If another client owned it,
+  it is preempted (takeover). The server broadcasts a
+  `voice_owner_changed` JSON event so every connected client knows.
+- Calling `voice_stop` releases the slot. Disconnecting releases it
+  too — the `finally` block in `websocket_endpoint` calls
+  `_broadcast_voice_owner_async` inline so the other windows learn
+  about the release before the next event loop tick.
+- The server **drops** `mic_pcm` / `mic_start` frames from any
+  client whose id does not match `voice_owner_id`. The UI gates this
+  too (the mic button on a non-owner window renders the
+  "take over" affordance instead of the active state).
+
+TTS, earcons, transcripts, and every other broadcast event go to **all**
+connected clients regardless of ownership. The lock only governs
+microphone *input*.
+
+## Client side
+
+- `web/src/audio/AudioInputManager.ts` — owns `getUserMedia`, the
+  `mic-pcm-worklet`, and the `mic_start` / `mic_pcm` framing. Pulls
+  device id + DSP toggles from `DeviceManager`.
+- `web/public/mic-pcm-worklet.js` — `AudioWorkletProcessor` that
+  converts the worklet's float32 input to Int16 LE in ~50 ms frames
+  and posts them back to the main thread with an RMS hint for the
+  level meter.
+- `web/src/audio/AudioOutputManager.ts` — single shared
+  `AudioContext` with a chained `AudioBufferSourceNode` scheduler.
+  Honours `setSinkId` so the user-picked speaker is respected.
+- `web/src/audio/DeviceManager.ts` — `enumerateDevices`,
+  permission queries, and the localStorage persistence for the
+  input/output device ids plus the three DSP toggles.
+- `web/src/hooks/useMicCapture.ts` — Zustand glue: tears the
+  `AudioInputManager` up when this client owns the mic, tears it
+  down when ownership is lost.
+- The mic button (`MicButton.tsx`) and both ChatView / PersonaWindow
+  consume `clientId` + `voiceOwnerId` from the store to render the
+  ownership state.
+
+## Server side
+
+- `app/audio/client_mic_source.py` — replaces the old
+  `MicrophoneCapture`. Exposes the same surface
+  (`capture_phrase`, `read_chunk`, ...) but reads from an internal
+  queue fed by the WebSocket layer. The `_QueuedInputStream` helper
+  mimics `sounddevice.InputStream` so the existing capture loops in
+  `RealtimeSttService` keep working unchanged.
+- `app/tts/pocket_tts_service.py` and `app/audio/earcons.py` — both
+  now emit Int16 LE PCM through a `pcm_listener` callback instead of
+  calling `sounddevice.play`. The `SessionController` wires those
+  listeners to `_emit_audio_frame`, which builds the appropriate
+  binary frame and hands it to the hub for broadcast.
+- `app/web/audio_frames.py` — single source of truth for the wire
+  format on the Python side. The TypeScript twin lives in
+  `web/src/audio/protocol.ts`.
+- `app/core/settings.py` — `AudioSettings` no longer carries
+  `microphone_device` / `output_device` / `live_ptt_*`. `load_settings`
+  migrates the old keys out of `user.json` on first run so the file
+  stays clean.
+
+## Audio quality
+
+- Microphone capture runs at **48 kHz Int16 mono**. The server
+  resamples to 16 kHz for STT using `scipy.signal.resample_poly`.
+- TTS clips are emitted at whatever sample rate the synthesis model
+  produces (currently 22050 Hz for the bundled "pocket" TTS, scaled
+  by the user's speed setting). The client retains that rate when
+  constructing each `AudioBuffer`, so no extra resample is needed.
+- Browser DSP defaults: echo cancellation, noise suppression, and
+  auto gain control are all **on** out of the box. The user can
+  toggle each one independently in the Settings drawer; the choices
+  persist in `localStorage` and surface to the server in the
+  `mic_start.dsp_flags` byte.
+
+## Testing
+
+- Backend: `tests/test_audio_frame_protocol.py`,
+  `tests/test_client_mic_source.py`,
+  `tests/test_web_server_voice_owner.py`,
+  `tests/test_tts_pcm_listener.py`.
+- Frontend: `web/src/audio/protocol.test.ts`,
+  `web/src/audio/DeviceManager.test.ts`,
+  `web/src/audio/AudioOutputManager.test.ts`.
+
+Run with `python -m pytest tests/` and `npm test --prefix web`.
+
+## Removed surfaces
+
+The following were deleted as part of the refactor; do not reintroduce
+them without revisiting this design:
+
+- `GET /api/audio/devices` endpoint.
+- `audio.microphone_device` / `audio.output_device` in `AppSettings`.
+- `audio.live_input_mode`, `audio.live_ptt_*` keys.
+- `app/audio/mic_capture.py` as a real module — it is now a
+  compatibility shim that re-exports `ClientMicSource`.
+- The `sounddevice` Python dependency.

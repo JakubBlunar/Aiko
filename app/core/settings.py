@@ -54,19 +54,28 @@ class ChatLlmSettings:
 
 @dataclass(slots=True)
 class AudioSettings:
+    """Server-side audio knobs.
+
+    The browser / Tauri client now owns mic capture and TTS playback, so
+    device pickers and PTT bindings moved off the server. What remains
+    are the parameters the server actually uses on the audio it
+    receives: ``sample_rate`` / ``channels`` describe the format the
+    STT / VAD pipeline expects (the client resamples to this rate),
+    ``vad_*`` knobs drive endpointing on the decoded stream, and
+    ``barge_in_enabled`` / ``earcons_enabled`` are user-facing toggles.
+
+    A one-shot migration in :func:`load_settings` strips the legacy
+    ``microphone_device``, ``output_device`` and ``live_ptt_*`` keys
+    from ``user.json`` if they're still there, so an upgrade doesn't
+    crash on stale config.
+    """
+
     sample_rate: int
     channels: int
     enable_microphone: bool
-    microphone_device: int | None
     vad_level_threshold: float
     vad_silence_seconds: float
     barge_in_enabled: bool = False
-    output_device: int | None = None
-    live_input_mode: str = "voice_detection"
-    live_ptt_type: str = "keyboard"
-    live_ptt_key: str | None = None
-    live_ptt_mouse_button: str | None = None
-    live_ptt_toggle: bool = False
     earcons_enabled: bool = True
 
 
@@ -830,7 +839,60 @@ def _parse_chat_llm(raw: dict[str, Any]) -> ChatLlmSettings:
     )
 
 
+def _migrate_legacy_audio_keys(user_path: Path) -> None:
+    """One-shot migration: drop ``audio.microphone_device`` /
+    ``audio.output_device`` / ``audio.live_*`` from ``user.json``.
+
+    These keys used to drive the server-side ``sounddevice`` stack;
+    they're meaningless now that the browser owns the audio
+    interfaces. We rewrite the file with the keys removed so
+    upgraded users don't see them resurface in
+    :func:`patch_user_overrides` round-trips.
+    """
+    if not user_path.is_file():
+        return
+    try:
+        existing = _read_config(user_path)
+    except Exception:
+        return
+    audio_block = existing.get("audio")
+    if not isinstance(audio_block, dict):
+        return
+    stale_keys = (
+        "microphone_device",
+        "output_device",
+        "live_input_mode",
+        "live_ptt_type",
+        "live_ptt_key",
+        "live_ptt_mouse_button",
+        "live_ptt_toggle",
+    )
+    removed = [k for k in stale_keys if k in audio_block]
+    if not removed:
+        return
+    for key in removed:
+        audio_block.pop(key, None)
+    try:
+        tmp = user_path.with_suffix(user_path.suffix + ".tmp")
+        tmp.write_text(
+            json.dumps(existing, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        tmp.replace(user_path)
+        _config_cache.pop(str(user_path), None)
+    except Exception:
+        # Migration is best-effort; the in-memory load below already
+        # ignores these keys, so a write failure is non-fatal.
+        return
+
+
 def load_settings(config_path: Path | None = None) -> AppSettings:
+    # Strip legacy server-audio keys before the first read so a stale
+    # ``user.json`` never re-introduces them via deep-merge.
+    try:
+        _migrate_legacy_audio_keys(USER_CONFIG_PATH)
+    except Exception:
+        pass
     if config_path is not None:
         base = _read_config(config_path)
     else:
@@ -876,20 +938,10 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             sample_rate=int(_required(audio, "sample_rate")),
             channels=int(_required(audio, "channels")),
             enable_microphone=bool(_required(audio, "enable_microphone")),
-            microphone_device=(
-                int(audio["microphone_device"]) if audio.get("microphone_device") is not None else None
-            ),
-            output_device=(
-                int(audio["output_device"]) if audio.get("output_device") is not None else None
-            ),
             vad_level_threshold=float(audio.get("vad_level_threshold", 0.02)),
             vad_silence_seconds=float(audio.get("vad_silence_seconds", 1.0)),
             barge_in_enabled=bool(audio.get("barge_in_enabled", False)),
-            live_input_mode=str(audio.get("live_input_mode", "voice_detection")).strip() or "voice_detection",
-            live_ptt_type=str(audio.get("live_ptt_type", "keyboard")).strip().lower() or "keyboard",
-            live_ptt_key=(str(audio["live_ptt_key"]).strip() or None) if audio.get("live_ptt_key") is not None else None,
-            live_ptt_mouse_button=(str(audio["live_ptt_mouse_button"]).strip().lower() or None) if audio.get("live_ptt_mouse_button") is not None else None,
-            live_ptt_toggle=bool(audio.get("live_ptt_toggle", False)),
+            earcons_enabled=bool(audio.get("earcons_enabled", True)),
         ),
         stt=SttSettings(
             model=str(stt.get("model", "base")),
