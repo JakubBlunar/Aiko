@@ -9,31 +9,53 @@ block from the legacy backlog file has been folded into this section
 
 ## H1. Conversation-arc surfacing via tag
 
+**Most of the infra is already live.**
 [`app/core/conversation_arc.py`](../../app/core/conversation_arc.py)
-already infers arcs internally; expose them as `[[arc:vulnerable]]` /
-`[[arc:silly]]` / `[[arc:focused]]` self-tags Aiko can emit, stored on
-the relevant `messages` row. Useful for the Together-tab timeline
-(filter by arc), retrieval scoring (arc-matched memories score
-slightly higher when the current arc matches), and post-hoc analysis
-of what kind of conversations were most common. Key files: persona
-file, [`app/core/conversation_arc.py`](../../app/core/conversation_arc.py),
+ships an `ArcEstimator`, an `ArcSmootherWorker`, an `ArcStore`, and
+the `_render_arc_block` inner-life provider already wires the
+inferred arc into the prompt. What's missing is the inline
+self-tag (`[[arc:vulnerable]]` / `[[arc:silly]]` /
+`[[arc:focused]]`) so Aiko can override or reinforce the
+estimator from her own read of the moment, plus the `messages.arc`
+column the parser would write into.
+
+The parser pattern already exists for `[[agenda:]]`, `[[moment:]]`,
+and `[[predict:]]` in
+[`app/core/services/response_text_service.py`](../../app/core/services/response_text_service.py)
+— the new tag follows the same shape (regex match → strip from
+spoken text → dispatch to the store). Once the column lands, the
+Together-tab timeline can filter by arc, and
+[`app/core/rag_retriever.py`](../../app/core/rag_retriever.py)
+can apply a small (`+0.03`?) score to arc-matched memories when
+the current arc repeats.
+
+Key files: persona file,
+[`app/core/services/response_text_service.py`](../../app/core/services/response_text_service.py)
+(parser), [`app/core/chat_database.py`](../../app/core/chat_database.py)
+(schema migration adding `messages.arc`),
+[`app/core/conversation_arc.py`](../../app/core/conversation_arc.py)
+(consume self-tag with priority over estimator),
 [`app/core/rag_retriever.py`](../../app/core/rag_retriever.py).
 
 ---
 
 ## H2. Calendar / time context block
 
-A small inner-life provider that summarises "what's true right now"
-— time of day (morning / afternoon / evening / late), day of week,
-season, holiday proximity (Christmas in 4 days, Jacob's birthday
-next week). Lets Aiko say "Sunday morning vibes" naturally without
-calling `get_time` every turn. Pairs nicely with the shipped
-schedule learner (G2) — once she knows Jacob's usual hours, she can
-comment when he's online unusually early or late. Key files: new
-helper in [`app/core/session_controller.py`](../../app/core/session_controller.py)
+**Partially superseded** by the shipped `_render_circadian_block`
+(time-of-day + day-of-week flavour) and the K3 routines surface
+(named recurring slots). What's still missing: holiday proximity
+(Christmas in 4 days, "happy new year" the morning of Jan 1) and
+user-birthday anticipation. The remaining work is a thin
+calendar feed plus a `birthday` field on `UserProfile`; both feed
+into a new `_render_time_context_block` that lives alongside the
+existing circadian provider rather than replacing it. Key files:
+new helper in
+[`app/core/session_controller.py`](../../app/core/session_controller.py)
 `_render_time_context_block`, wired into
 [`app/core/prompt_assembler.py`](../../app/core/prompt_assembler.py)
-right after `world_block` and dropped in `aggressive` mode.
+right after `world_block` and dropped in `aggressive` mode,
+[`app/core/user_profile.py`](../../app/core/user_profile.py)
+(new `birthday` field + LLM worker prompt update).
 
 ---
 

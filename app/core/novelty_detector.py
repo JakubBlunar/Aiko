@@ -122,6 +122,16 @@ class NoveltyDetector:
         )
         self._warmed = False
         self._cooldown_remaining = 0
+        # K18 (topic stagnation) consumes these per-turn signals:
+        # ``last_distance`` is the cosine distance the most recent
+        # ``detect()`` call computed against the live centroid (None
+        # when we couldn't measure -- short text, warmup, embed
+        # failure). ``last_band`` is the banded outcome we returned
+        # from that call (None when below the mild threshold or
+        # suppressed). Both are reset at the top of every ``detect``
+        # so a stale value never leaks across turns.
+        self.last_distance: float | None = None
+        self.last_band: str | None = None
 
     # ── public API ───────────────────────────────────────────────────
 
@@ -134,6 +144,12 @@ class NoveltyDetector:
         embedded vector to the ring on a non-silent call so the
         centroid evolves with the conversation.
         """
+        # K18 hooks: clear last-turn signals up front so a caller
+        # reading them after a warmup/short-text turn sees a clean
+        # ``None`` rather than a stale value from earlier in the
+        # session.
+        self.last_distance = None
+        self.last_band = None
         text = (user_text or "").strip()
         if len(text) < _MIN_TEXT_LENGTH:
             log.debug(
@@ -161,13 +177,26 @@ class NoveltyDetector:
         if self._cooldown_remaining > 0:
             self._cooldown_remaining -= 1
             # Still append so the baseline keeps moving even while we
-            # suppress the signal.
+            # suppress the signal. We *do* compute the distance here
+            # so K18 can see how close the conversation is to the
+            # centroid even on a suppressed novelty turn.
             vec = self._embed(text)
             if vec is not None:
+                # Distance off the centroid the *prior* ring saw, so
+                # we mirror the normal-path order: compute then
+                # append.
+                centroid_pre = _normalize(
+                    np.mean(np.stack(list(self._ring)), axis=0)
+                )
+                similarity_pre = float(np.dot(vec, centroid_pre))
+                self.last_distance = max(0.0, 1.0 - similarity_pre)
                 self._ring.append(vec)
             log.debug(
-                "novelty-detector: cooldown remaining=%d",
+                "novelty-detector: cooldown remaining=%d distance=%s",
                 self._cooldown_remaining,
+                f"{self.last_distance:.3f}"
+                if self.last_distance is not None
+                else "n/a",
             )
             return None
 
@@ -184,6 +213,10 @@ class NoveltyDetector:
         # Append after computing so the current turn doesn't bias its
         # own centroid -- the ring represents *prior* turns.
         self._ring.append(vec)
+        # Surface the measurement to K18 even when we end up below
+        # the mild band -- the stagnation detector needs every
+        # measured distance to track "we've been close to centroid".
+        self.last_distance = distance
 
         mild = float(self._setting("novelty_mild_threshold", _DEFAULT_MILD_THRESHOLD))
         strong = float(
@@ -217,6 +250,9 @@ class NoveltyDetector:
             0, int(self._setting("novelty_cooldown_turns", _DEFAULT_COOLDOWN_TURNS))
         )
         self._cooldown_remaining = cooldown
+        # Surface the band so K18's post-novelty suppression can fire
+        # without having to re-derive it from the returned result.
+        self.last_band = band
         return NoveltyResult(
             distance=distance,
             band=band,

@@ -417,6 +417,13 @@ class AgentSettings:
     # Rolling window the bucketing scan considers. 30 days keeps the
     # picture current without being noisy after a single anomalous day.
     schedule_learner_window_days: int = 30
+    # ── K3 personality backlog: routine / ritual awareness ────────────
+    # Master switch for the second pass inside ``ScheduleLearner`` that
+    # detects named recurring slots ("Sunday-morning chats") and writes
+    # them into the ``routines`` user-profile field. Disabling this
+    # leaves the G2 ``usual_hours`` write intact; only the K3 pass is
+    # skipped. Cheap (no LLM, no embedder), safe to leave on.
+    routine_detection_enabled: bool = True
     # ── G3 personality backlog: idle curiosity worker ─────────────────
     # Master switch for
     # :class:`app.core.idle_curiosity_worker.IdleCuriosityWorker`. When
@@ -476,6 +483,15 @@ class AgentSettings:
     # Embedder.embed call per turn + a tiny ring buffer); there's no
     # rate-cap because the per-turn cost is the same as RAG retrieval.
     novelty_detection_enabled: bool = True
+    # ── K18 personality backlog: topic stagnation detector ────────────
+    # Master switch for
+    # :class:`app.core.topic_stagnation.TopicStagnationDetector`.
+    # The detector is a pure streak counter over the per-turn distance
+    # K6 already computes (no extra embedding) so it's effectively
+    # free; this knob exists to silence the cue when a tester wants
+    # to focus on K6 alone. Leaving it on with conservative
+    # thresholds is the intended default.
+    topic_stagnation_enabled: bool = True
     # Rolling summary background worker.
     summary_idle_seconds: float = 15.0  # quiet time before summarising
     summary_min_unsummarized_messages: int = 6  # minimum new msgs to trigger
@@ -667,6 +683,30 @@ class MemorySettings:
     # G2: schedule learner cadence. The bucket scan is cheap and the
     # picture changes slowly, so once a day is plenty.
     schedule_learner_interval_seconds: int = 86400
+    # ── K3: routine / ritual awareness thresholds ────────────────────
+    # The K3 pass piggybacks on the G2 cadence (same worker, same
+    # window). These knobs only control whether a (weekday, bucket)
+    # cell qualifies as a named ritual.
+    #
+    # Minimum number of *distinct ISO weeks* the slot must light up
+    # before it's considered recurrent. 3 is the smallest value that
+    # actually reads as "happens regularly" (twice could be a
+    # coincidence; once is just one moment). Lower this for active
+    # testing, never below 1.
+    routine_min_touches: int = 3
+    # Proportional floor: the slot must light up in at least this
+    # share of weeks across the rolling window. With a 30-day window
+    # the denominator is 5 weeks, so 0.30 means "covered 2 of 5".
+    # This stops a long window from minting a "routine" off three
+    # weeks at the start of the window when the user has since drifted
+    # to other slots.
+    routine_min_share: float = 0.30
+    # Cap on how many named routines the worker writes into the
+    # ``routines`` profile field. The 240-char ``ProfileEntry`` cap is
+    # the hard upper bound; this knob is the soft one that keeps the
+    # rendered phrase from growing into a list. Top-N by recurrence
+    # density.
+    routine_max_active: int = 5
     # G3: idle curiosity worker cadence. Each tick web-searches at most
     # one open question, so a 30-minute interval combined with the
     # rate-cap gives the worker room to chip away at a backlog without
@@ -760,6 +800,37 @@ class MemorySettings:
     # through several genuinely-new topics in a row. The current turn
     # still contributes to the centroid so the baseline keeps moving.
     novelty_cooldown_turns: int = 2
+    # ── K18: topic-stagnation detector thresholds ────────────────────
+    # The K18 detector is a pure streak counter over the K6 distance
+    # stream -- no embeddings, no rag_store, no per-user state. These
+    # knobs only control when a sustained low-divergence streak counts
+    # as a "lull". Defaults are conservative on purpose; calibration
+    # is best done live and the persona explicitly tells Aiko that
+    # *not* hearing the cue is also a signal.
+    #
+    # Number of distance samples to average before scoring. 6 covers
+    # roughly a conversational beat (greeting, two follow-ups, two
+    # answers, a recap) so a single tight exchange doesn't fire by
+    # itself.
+    stagnation_window: int = 6
+    # Mean-distance band thresholds. Note the inversion vs K6: lower
+    # mean = MORE stagnant, so ``strong < mild``. A 6-turn mean
+    # below 0.18 reads as "we've been on this for a bit"; below 0.10
+    # reads as "we've been *very* on this". Set ``strong > mild`` and
+    # the detector falls back to a single-threshold behaviour using
+    # the tighter value.
+    stagnation_mild_threshold: float = 0.18
+    stagnation_strong_threshold: float = 0.10
+    # Turns to suppress further stagnation signals after a hit. The
+    # window is longer than K6's because lulls are by nature
+    # drawn-out; refiring on consecutive turns is almost never
+    # useful, even when the mean stays below threshold.
+    stagnation_cooldown_turns: int = 4
+    # Turns to keep K18 quiet after a K6 hit. Right after novelty
+    # fires the centroid is mid-shift, so distances are noisy for a
+    # few turns; waiting a beat avoids the "you just pivoted, but
+    # also you've been on this forever" weirdness.
+    stagnation_post_novelty_suppression_turns: int = 3
     # IdleWorkerScheduler tick + quiet gate. Lowering ``wake_seconds``
     # makes workers fire sooner after a quiet period starts but
     # increases idle CPU; ``quiet_threshold`` is how long since the
@@ -1157,6 +1228,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             schedule_learner_window_days=max(
                 1, int(agent_raw.get("schedule_learner_window_days", 30)),
             ),
+            routine_detection_enabled=bool(
+                agent_raw.get("routine_detection_enabled", True),
+            ),
             idle_curiosity_enabled=bool(
                 agent_raw.get("idle_curiosity_enabled", True),
             ),
@@ -1189,6 +1263,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             ),
             novelty_detection_enabled=bool(
                 agent_raw.get("novelty_detection_enabled", True),
+            ),
+            topic_stagnation_enabled=bool(
+                agent_raw.get("topic_stagnation_enabled", True),
             ),
             shared_moments_enabled=bool(
                 agent_raw.get("shared_moments_enabled", True),
@@ -1366,6 +1443,21 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                     memory_raw.get("schedule_learner_interval_seconds", 86400)
                 ),
             ),
+            routine_min_touches=max(
+                1,
+                int(memory_raw.get("routine_min_touches", 3)),
+            ),
+            routine_min_share=max(
+                0.0,
+                min(
+                    1.0,
+                    float(memory_raw.get("routine_min_share", 0.30)),
+                ),
+            ),
+            routine_max_active=max(
+                1,
+                int(memory_raw.get("routine_max_active", 5)),
+            ),
             idle_curiosity_interval_seconds=max(
                 60,
                 int(memory_raw.get("idle_curiosity_interval_seconds", 1800)),
@@ -1480,6 +1572,36 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             novelty_cooldown_turns=max(
                 0,
                 int(memory_raw.get("novelty_cooldown_turns", 2)),
+            ),
+            stagnation_window=max(
+                2,
+                int(memory_raw.get("stagnation_window", 6)),
+            ),
+            stagnation_mild_threshold=max(
+                0.0,
+                min(
+                    1.0,
+                    float(memory_raw.get("stagnation_mild_threshold", 0.18)),
+                ),
+            ),
+            stagnation_strong_threshold=max(
+                0.0,
+                min(
+                    1.0,
+                    float(memory_raw.get("stagnation_strong_threshold", 0.10)),
+                ),
+            ),
+            stagnation_cooldown_turns=max(
+                0,
+                int(memory_raw.get("stagnation_cooldown_turns", 4)),
+            ),
+            stagnation_post_novelty_suppression_turns=max(
+                0,
+                int(
+                    memory_raw.get(
+                        "stagnation_post_novelty_suppression_turns", 3,
+                    )
+                ),
             ),
             idle_worker_wake_seconds=max(
                 1.0, float(memory_raw.get("idle_worker_wake_seconds", 60.0))

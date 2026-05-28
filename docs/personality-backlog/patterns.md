@@ -26,21 +26,6 @@ goal. Different shape from G3: G3 is "looked it up, done"; goals are
 
 ---
 
-## K3. Routine / ritual awareness
-
-Beyond G2's hour buckets, name recurring patterns ("Sunday-morning
-chats", "post-work check-ins"). Less surveillance-feeling than "you
-log on at 9pm" because it's framed as ritual. Builds on the shipped
-`usual_hours` field. Key files:
-[`app/core/schedule_learner.py`](../../app/core/schedule_learner.py)
-(extend the bucketing pass to detect named clusters),
-[`app/core/user_profile.py`](../../app/core/user_profile.py)
-(new `routines` field — list of `{name, when_pattern, last_seen_at}`),
-persona note teaching Aiko to invoke the ritual frame when one
-matches.
-
----
-
 ## K4. Dialogue-act tagging
 
 Tag user turns by intent (question / story / vent / banter / planning
@@ -165,3 +150,139 @@ files: new `app/core/style_signal.py` (rolling stats over the last N
 user messages), [`app/core/user_profile.py`](../../app/core/user_profile.py)
 (new `style_signal` field — bucketed: terse / chatty / formal /
 casual / etc.), persona block consumer.
+
+---
+
+## K14. Implicit engagement signals
+
+Companion AIs tune themselves on implicit feedback: how *Jacob*
+reacted to Aiko's last turn (reply latency, message length delta,
+emoji frequency, conversation abandonment) is a stronger signal
+than anything Aiko self-tags. We have presence + activity but no
+"reward" stream from the user side. A small post-turn
+`EngagementTracker` would compute a per-turn engagement delta
+(e.g. `latency_z`, `length_delta`, `abandoned`) and feed it into
+two consumers: a tiny drift on relationship-axes (`closeness +=
++0.02 on high engagement, -0.02 on abandonment`) and a
+`ProactiveDirector` bias (skip the next nudge if the last turn
+got an abandoned signal — no point chasing a closed window). Key
+files: new `app/core/engagement_tracker.py`, post-turn hook in
+[`app/core/session_controller.py`](../../app/core/session_controller.py)
+`_post_turn_inner_life`,
+[`app/core/relationship_axes.py`](../../app/core/relationship_axes.py)
+(small bounded delta channel),
+[`app/core/proactive_director.py`](../../app/core/proactive_director.py)
+(eligibility AND-fold).
+
+---
+
+## K15. Self-disclosure / vulnerability budget
+
+Aiko has self-image, pinned self-memories, and reflection
+workers, but no cadence cap on personal disclosure depth. Over a
+long session she can over-share (or under-share when the moment
+calls for it) relative to where the relationship axes actually
+sit. A per-session "vulnerability budget" — a small token-bucket
+gated on `closeness` + `trust` — would cap how often she emits a
+self-tag of kind `self` (`[[remember:self:...]]`) and how deep
+the disclosure can go (a 1-3 scale: surface preference / mild
+admission / genuine softness). Out-of-budget moments still
+happen, just register as a rare event rather than the default
+register. Key files:
+[`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt)
+(soft-cap guidance),
+new inner-life provider exposing the live budget,
+[`app/core/memory_store.py`](../../app/core/memory_store.py)
+(`self` kind metadata for depth tier).
+
+---
+
+## K16. Unified ambient grounding line
+
+Today the prompt carries world, activity, affect, circadian,
+routines, anniversary, and presence as separate inner-life blocks
+(~4-8 lines on a typical turn). Companion-AI grounding research
+suggests one fused "where we are right now" sentence ("Sunday
+morning, you're working in Cursor, mood reads upbeat — usual
+hangout slot") reads more human and saves tokens. Implementation
+is purely additive: a new top-level provider that consumes the
+existing block builders and renders them into one paragraph,
+with the granular blocks dropped under `aggressive=True`. The
+risk is over-fusion (an LLM-generated summary would drift); keep
+it template-driven so it stays deterministic. Key files: new
+`app/core/grounding_line.py`,
+[`app/core/prompt_assembler.py`](../../app/core/prompt_assembler.py)
+(provider order: grounding line first, granular blocks fallback),
+persona note explaining the format.
+
+---
+
+## K17. Clarification-repair protocol
+
+Distinct from K8 (rupture-and-repair, which fires on affect drop
+after Aiko's turn). K17 covers *semantic* repair — "no that's
+not what I meant", "you misunderstood", a very short confused
+reply, an explicit `huh?` — and triggers a one-turn "let me re-
+read that" beat without waiting for affect drift. Pairs naturally
+with K4 dialogue-act tagging: a `clarification` act on the user's
+last message is the clean signal. Key files: new
+`app/core/clarification_detector.py` (regex + optional dialogue-
+act fallback), inner-life provider that adds a one-line "Jacob
+just signalled you missed the point — re-read his last two
+messages and say so plainly" hint,
+[`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt)
+"Reading {user_name}" section.
+
+---
+
+## K19. Cold-start companion onboarding
+
+`FirstRunOnboarding` gates on display name only. Companion-AI
+research stresses the first ~10 turns set the relational tone —
+preferences, boundaries, a first shared moment, communication
+style. A lightweight scripted arc (four to six conversational
+prompts spread across the first session, *not* a form) seeds
+`UserProfile` and `relationship_axes` with real data instead of
+defaults, and gives Aiko's prompt a "we're still meeting" hint
+that can soften her self-introduction cadence. Key files:
+[`web/src/components/FirstRunOnboarding.tsx`](../../web/src/components/FirstRunOnboarding.tsx),
+new `app/core/onboarding_director.py` (turn-counter + state
+machine), persona addendum block when `turn_count < N`,
+optionally `UserProfile` seed fields.
+
+---
+
+## K20. Metacognitive calibration
+
+F3 tracks how confident *Aiko* is in each memory. Nothing tracks
+how confident *Jacob* is in Aiko's answers. When he follow-up-
+fact-checks her, says "are you sure?", or rephrases a claim back
+softer, that's a signal her authority is shaky on the topic. A
+calibration state per user (or per memory cluster) lets her
+hedge verbally when Jacob is treating her as tentative — softer
+than F3's per-fact confidence, broader than K2's belief gaps.
+Key files: new `calibration_state` table or
+[`UserProfile`](../../app/core/user_profile.py) field,
+post-turn heuristic worker that inspects the last user message
+for "are you sure" / "actually" / "wait" patterns,
+inner-life provider that surfaces the live calibration as a
+one-line nudge ("Jacob's been double-checking you on tech topics
+lately — hedge").
+
+---
+
+## K21. Fresh-eyes thread re-summarisation
+
+Compaction compresses history when context overflows; it doesn't
+periodically re-synthesise "what this ongoing thread is *about*
+now" for Aiko's inner voice. After ~50 turns or daily (whichever
+comes first), an idle worker would draft a 3-sentence "current
+state of this thread" note pinned to the session, separate from
+the rolling summary. Improves long-thread coherence without
+paying a per-turn token cost, and gives Aiko a clean place to
+reset her read of where the conversation has actually gone. Key
+files: new `app/core/thread_resummary_worker.py` adjacent to the
+shipped `SummaryService` / `NarrativeWeaver`, inner-life provider
+that prefers the fresh-eyes note over the rolling summary when
+present, schema addition (a `thread_resummary` row per session or
+a metadata field on the latest summary).

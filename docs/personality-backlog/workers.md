@@ -16,5 +16,22 @@ and [`app/core/idle_curiosity_worker.py`](../../app/core/idle_curiosity_worker.p
 
 For new worker ideas not yet committed to a section letter, see
 [`patterns.md`](patterns.md) — several entries (K1 long-term goals,
-K8 affect rupture, K10 persona regression) would naturally take the
-shape of an idle worker.
+K8 affect rupture, K10 persona regression, K14 engagement signals,
+K21 fresh-eyes resummary) would naturally take the shape of an idle
+worker.
+
+---
+
+## G-CLEANUP. `consolidator_state.last_cluster_index` is dead weight
+
+Trivial cleanup item, parked here so it doesn't get forgotten.
+The schema carries
+[`consolidator_state.last_cluster_index`](../../app/core/memory_consolidator.py)
+but nothing reads it — the comment in the source flags it as
+unused. Either wire incremental clustering (the original intent)
+or drop the column in the next schema bump. Effort: trivial.
+
+For perf / observability gaps that aren't workers in their own
+right (turn-level embed budget, idle-worker queue visibility,
+typed-mode prefetch, etc.), see
+[`perf.md`](perf.md).

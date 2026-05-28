@@ -58,6 +58,14 @@ PROFILE_FIELDS: tuple[str, ...] = (
     # *also* observe it (e.g. "Jacob said he works nights") but the
     # idle scan is the primary writer.
     "usual_hours",
+    # K3 backlog: named recurring slots ("Sunday-morning chats",
+    # "Friday-evening wind-downs") detected by the same schedule
+    # learner — finer pass that requires multi-week recurrence rather
+    # than just total volume. The LLM worker may reinforce when the
+    # user mentions a routine explicitly ("we always do this on
+    # Sundays") but, like ``usual_hours``, the idle scan is the
+    # primary writer.
+    "routines",
 )
 
 def _build_prompt(user_display_name: str = "the user") -> str:
@@ -86,6 +94,10 @@ def _build_prompt(user_display_name: str = "the user") -> str:
         "  - goals             (an active goal they mentioned)\n"
         "  - usual_hours       (when they tend to be around, e.g. "
         "\"weekday evenings\"; the schedule worker also writes this)\n"
+        "  - routines          (named recurring slots they've mentioned, "
+        "e.g. \"Sunday-morning chats\"; the schedule worker also writes "
+        "this — only set it from explicit user words like \"we always do "
+        "this on Sundays\")\n"
         "\n"
         "Rules:\n"
         "- Output ONLY valid JSON. No prose around it.\n"

@@ -300,5 +300,54 @@ class UsualHoursFieldTests(unittest.TestCase):
             f.close()
 
 
+# ── K3: routines field ────────────────────────────────────────────────
+
+
+class RoutinesFieldTests(unittest.TestCase):
+    """The K3 routine pass writes named ritual phrases into the
+    ``routines`` field. Same shape as ``usual_hours`` — store has to
+    allow-list it and the rendered block has to surface it so Aiko's
+    persona block can lean into matching rhythms.
+    """
+
+    def test_routines_is_in_profile_fields(self) -> None:
+        self.assertIn("routines", PROFILE_FIELDS)
+
+    def test_round_trip_through_upsert(self) -> None:
+        f = _Fixture()
+        try:
+            wrote = f.store.upsert(
+                "user-1",
+                "routines",
+                "Sunday-morning chats, Friday-evening wind-downs",
+                confidence=0.6,
+            )
+            self.assertTrue(wrote)
+            entries = f.store.fields("user-1")
+            self.assertIn("routines", entries)
+            self.assertEqual(
+                entries["routines"].value,
+                "Sunday-morning chats, Friday-evening wind-downs",
+            )
+            self.assertGreater(entries["routines"].confidence, 0.0)
+        finally:
+            f.close()
+
+    def test_render_block_includes_routines(self) -> None:
+        f = _Fixture()
+        try:
+            f.store.upsert(
+                "user-1",
+                "routines",
+                "Sunday-morning chats",
+                0.7,
+            )
+            block = f.store.render_block("user-1")
+            self.assertIn("routines", block.lower())
+            self.assertIn("Sunday-morning chats", block)
+        finally:
+            f.close()
+
+
 if __name__ == "__main__":
     unittest.main()

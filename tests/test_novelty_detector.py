@@ -299,5 +299,101 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(render_inner_life_block(None), "")
 
 
+# K18 hooks: NoveltyDetector exposes the per-turn distance + band so
+# the topic-stagnation sibling can read them without re-embedding.
+# These attributes are reset at the top of every detect() call so a
+# stale value never leaks across turns.
+
+
+class K18ExposureTests(unittest.TestCase):
+    def test_normal_path_populates_distance_and_band(self) -> None:
+        det, _, _ = _build(
+            book={"a": _unit(1, 0, 0), "z": _unit(0, 0, 1)},
+            warm=[_unit(1, 0, 0)] * 4,
+            settings=_settings(
+                novelty_warmup_min=3,
+                novelty_mild_threshold=0.20,
+                novelty_strong_threshold=0.60,
+            ),
+        )
+        out = det.detect("zzzz zzzz")
+        self.assertIsNotNone(out)
+        # Orthogonal vector -> distance ≈ 1.0, band = strong.
+        self.assertIsNotNone(det.last_distance)
+        assert det.last_distance is not None
+        self.assertGreater(det.last_distance, 0.9)
+        self.assertEqual(det.last_band, BAND_STRONG)
+
+    def test_silent_below_threshold_still_populates_distance(self) -> None:
+        # K18 needs every measured distance, including the ones that
+        # don't cross any band -- those are *exactly* the ones that
+        # signal stagnation.
+        det, _, _ = _build(
+            book={"a": _unit(1, 0, 0)},
+            warm=[_unit(1, 0, 0)] * 4,
+            settings=_settings(
+                novelty_warmup_min=3,
+                novelty_mild_threshold=0.50,  # never crosses
+                novelty_strong_threshold=0.90,
+            ),
+        )
+        out = det.detect("alpha alpha alpha")
+        self.assertIsNone(out)
+        self.assertIsNotNone(det.last_distance)
+        assert det.last_distance is not None
+        # All [1,0,0] -> distance ≈ 0.
+        self.assertLess(det.last_distance, 0.05)
+        self.assertIsNone(det.last_band)
+
+    def test_cooldown_turn_still_measures_distance(self) -> None:
+        # On a cooldown turn K6 still embeds + computes a distance so
+        # K18 can keep its history moving. The band stays None
+        # because the result is suppressed.
+        det, _, _ = _build(
+            book={"a": _unit(1, 0, 0), "z": _unit(0, 0, 1)},
+            warm=[_unit(1, 0, 0)] * 4,
+            settings=_settings(
+                novelty_warmup_min=3,
+                novelty_mild_threshold=0.10,
+                novelty_strong_threshold=0.60,
+                novelty_cooldown_turns=2,
+            ),
+        )
+        first = det.detect("zzzz once")
+        self.assertIsNotNone(first)
+        # Cooldown turn: still novel input but the result is None.
+        self.assertIsNone(det.detect("zzzz cooldown"))
+        self.assertIsNotNone(det.last_distance)
+        assert det.last_distance is not None
+        self.assertGreater(det.last_distance, 0.5)
+        # ``last_band`` belongs to *this* call -- which was suppressed
+        # -- so it should be None even though the distance was high.
+        self.assertIsNone(det.last_band)
+
+    def test_short_text_leaves_distance_none(self) -> None:
+        det, _, _ = _build(
+            book={"a": _unit(1, 0, 0)},
+            warm=[_unit(1, 0, 0)] * 4,
+            settings=_settings(novelty_warmup_min=3),
+        )
+        # Burn one valid turn so any prior state is set, then
+        # confirm a short turn resets last_distance back to None.
+        det.detect("alpha alpha alpha")
+        det.detect("ok")
+        self.assertIsNone(det.last_distance)
+        self.assertIsNone(det.last_band)
+
+    def test_warmup_turn_leaves_distance_none(self) -> None:
+        # Warmup means we couldn't measure against a centroid, so
+        # last_distance stays None even though the embedder ran.
+        det, _, _ = _build(
+            book={"a": _unit(1, 0, 0)},
+            settings=_settings(novelty_warmup_min=3),
+        )
+        det.detect("alpha alpha alpha")
+        self.assertIsNone(det.last_distance)
+        self.assertIsNone(det.last_band)
+
+
 if __name__ == "__main__":
     unittest.main()

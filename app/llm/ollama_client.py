@@ -45,6 +45,13 @@ class OllamaUsage:
     total_duration_ms: float = 0.0
     eval_duration_ms: float = 0.0
     prompt_eval_duration_ms: float = 0.0
+    # Ollama's terminal status flag from the final chunk/body.
+    # Common values are ``"stop"`` (clean end of generation) and
+    # ``"length"`` (hit ``num_predict`` cap — the response is
+    # truncated mid-token-budget). ``None`` means the server didn't
+    # include the field, which we treat as "unknown, not truncated"
+    # so the warning gate stays specific.
+    done_reason: str | None = None
 
     @property
     def total_tokens(self) -> int:
@@ -62,13 +69,64 @@ class OllamaUsage:
         Used to combine the tool pre-pass and the streaming reply pass into a
         single per-turn telemetry record.
         """
+        # Truncation is sticky: if either pass got cut off, the merged
+        # usage carries that signal forward. Otherwise the later
+        # pass's reason wins (it's the one closer to "what the user
+        # actually saw").
+        if self.done_reason == "length" or other.done_reason == "length":
+            merged_reason: str | None = "length"
+        else:
+            merged_reason = other.done_reason or self.done_reason
         return OllamaUsage(
             prompt_tokens=self.prompt_tokens + other.prompt_tokens,
             completion_tokens=self.completion_tokens + other.completion_tokens,
             total_duration_ms=self.total_duration_ms + other.total_duration_ms,
             eval_duration_ms=self.eval_duration_ms + other.eval_duration_ms,
             prompt_eval_duration_ms=self.prompt_eval_duration_ms + other.prompt_eval_duration_ms,
+            done_reason=merged_reason,
         )
+
+
+def _extract_done_reason(payload: object) -> str | None:
+    """Return ``payload['done_reason']`` as a string, or ``None``.
+
+    The non-streaming `/api/chat` body and the final streaming chunk
+    both carry this field at the top level; older Ollama servers may
+    omit it. We coerce defensively because the type isn't guaranteed
+    across versions (it has historically been a plain string but we
+    don't want a future int/null to raise here).
+    """
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get("done_reason")
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _warn_if_truncated(
+    usage: "OllamaUsage", *, model: str, surface: str,
+) -> None:
+    """Emit a single WARNING when ``done_reason == "length"``.
+
+    The surface tag (e.g. ``"chat_stream"``) helps distinguish which
+    code path produced the truncated response in the log; everything
+    else lives on ``OllamaUsage`` so this stays a thin observability
+    hook. Only ``"length"`` triggers — ``"stop"`` is the clean exit
+    and any unknown values stay silent rather than fire a noisy
+    catch-all.
+    """
+    if usage.done_reason != "length":
+        return
+    log.warning(
+        "ollama response truncated: surface=%s model=%s "
+        "completion_tokens=%d (hit num_predict cap; raise "
+        "chat_llm.max_tokens if this is frequent)",
+        surface,
+        model,
+        int(usage.completion_tokens),
+    )
 
 
 class OllamaClient:
@@ -212,13 +270,16 @@ class OllamaClient:
         body = response.json()
         message = body.get("message", {}) if isinstance(body, dict) else {}
         content = str(message.get("content", "") or "")
+        done_reason = _extract_done_reason(body)
         self.last_usage = OllamaUsage(
             prompt_tokens=int(body.get("prompt_eval_count", 0) or 0),
             completion_tokens=int(body.get("eval_count", 0) or 0),
             total_duration_ms=float(body.get("total_duration", 0) or 0) / 1e6,
             eval_duration_ms=float(body.get("eval_duration", 0) or 0) / 1e6,
             prompt_eval_duration_ms=float(body.get("prompt_eval_duration", 0) or 0) / 1e6,
+            done_reason=done_reason,
         )
+        _warn_if_truncated(self.last_usage, model=use_model, surface="chat_with_tools")
         self._announce_connection(use_model)
         tool_calls = self._parse_tool_calls(message.get("tool_calls", []))
         log.debug(
@@ -309,6 +370,7 @@ class OllamaClient:
                         usage.total_duration_ms = float(chunk.get("total_duration", 0) or 0) / 1e6
                         usage.eval_duration_ms = float(chunk.get("eval_duration", 0) or 0) / 1e6
                         usage.prompt_eval_duration_ms = float(chunk.get("prompt_eval_duration", 0) or 0) / 1e6
+                        usage.done_reason = _extract_done_reason(chunk)
                     token = chunk.get("message", {}).get("content", "")
                     if token:
                         if first_token_ms is None:
@@ -322,6 +384,7 @@ class OllamaClient:
             )
             raise
         self.last_usage = usage
+        _warn_if_truncated(usage, model=use_model, surface="chat_stream")
         self._announce_connection(use_model)
         elapsed_ms = (time.monotonic() - t0) * 1000.0
         log.debug(
@@ -399,7 +462,9 @@ class OllamaClient:
             total_duration_ms=float(body.get("total_duration", 0) or 0) / 1e6,
             eval_duration_ms=float(body.get("eval_duration", 0) or 0) / 1e6,
             prompt_eval_duration_ms=float(body.get("prompt_eval_duration", 0) or 0) / 1e6,
+            done_reason=_extract_done_reason(body),
         )
+        _warn_if_truncated(usage, model=use_model, surface="chat_json")
         self._announce_connection(use_model)
         log.debug(
             "ollama chat_json: model=%s msgs=%d elapsed_ms=%.0f "
