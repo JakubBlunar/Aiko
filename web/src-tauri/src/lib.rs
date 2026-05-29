@@ -272,6 +272,7 @@ pub fn run() {
         ])
         .setup(|app| {
             install_tray(app.handle())?;
+            wire_main_close_to_hide(app.handle());
             wire_persona_close_to_hide(app.handle());
             Ok(())
         })
@@ -282,6 +283,14 @@ pub fn run() {
 /// Build the system-tray icon + menu. The menu mirrors what the user can
 /// already do from inside the main window (open / close persona) plus a
 /// proper Quit entry that exits the entire app.
+///
+/// On Windows in particular, omitting an explicit ``.icon(...)`` call
+/// leaves the tray slot registered but invisible -- the menu still pops
+/// on right-click but the user can't see the icon to find it. We feed
+/// the bundled window icon (the same one the installer / taskbar use)
+/// so the tray glyph is always present, and stamp a stderr log line
+/// either way so a future "no icon" report can be diagnosed from the
+/// terminal output.
 fn install_tray(app: &AppHandle) -> tauri::Result<()> {
     let show_main = MenuItem::with_id(app, "show_main", "Show main window", true, None::<&str>)?;
     let show_persona = MenuItem::with_id(
@@ -305,7 +314,18 @@ fn install_tray(app: &AppHandle) -> tauri::Result<()> {
         &[&show_main, &show_persona, &hide_persona, &separator, &quit],
     )?;
 
+    let icon = app
+        .default_window_icon()
+        .ok_or_else(|| {
+            eprintln!(
+                "[aiko-tray] default window icon missing -- did the bundle config drop it?",
+            );
+            tauri::Error::AssetNotFound("default window icon".into())
+        })?
+        .clone();
+
     let _tray = TrayIconBuilder::with_id("aiko-tray")
+        .icon(icon)
         .tooltip("Aiko")
         .menu(&menu)
         .on_menu_event(|app, event| match event.id.as_ref() {
@@ -346,15 +366,16 @@ fn install_tray(app: &AppHandle) -> tauri::Result<()> {
             }
         })
         .build(app)?;
+    eprintln!("[aiko-tray] tray icon installed");
     Ok(())
 }
 
 /// Intercept the persona window's close button so the X icon hides the
-/// window instead of destroying it. The main window's close exits the app
-/// (default Tauri behaviour); we leave that alone. Hiding via the X
-/// button funnels through the same emit path the tray + top-bar
-/// commands use, so the main window's UI flips back to "show avatar
-/// inline" without any other plumbing.
+/// window instead of destroying it. Both the main window
+/// (:func:`wire_main_close_to_hide`) and the persona window funnel
+/// through the same emit path the tray + top-bar commands use, so the
+/// main window's UI flips back to "show avatar inline" without any
+/// other plumbing.
 fn wire_persona_close_to_hide(app: &AppHandle) {
     if let Some(persona) = app.get_webview_window(PERSONA_LABEL) {
         let app_clone = app.clone();
@@ -362,6 +383,30 @@ fn wire_persona_close_to_hide(app: &AppHandle) {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 hide_persona_window(&app_clone);
+            }
+        });
+    }
+}
+
+/// Intercept the main window's close button so the X icon hides the
+/// window instead of destroying it. Closing-to-tray is the standard
+/// pattern for a tray-bearing app and -- more importantly -- it
+/// avoids ``PostMessage failed; ... 0x80070578 (Invalid window
+/// handle)`` errors on Windows: the default close path destroys the
+/// HWND while the tray and its background tasks still hold references
+/// to it. Subsequent tray clicks then fire ``PostMessage`` against the
+/// stale handle and Windows logs the error to stderr. Hiding instead
+/// of destroying keeps the HWND valid for the lifetime of the
+/// process; the user can re-open from the tray (left click on the
+/// icon, or "Show main window" in the menu) and quit deliberately
+/// via the tray's "Quit Aiko" entry.
+fn wire_main_close_to_hide(app: &AppHandle) {
+    if let Some(main) = app.get_webview_window(MAIN_LABEL) {
+        let main_clone = main.clone();
+        main.on_window_event(move |event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = main_clone.hide();
             }
         });
     }

@@ -74,6 +74,19 @@ interface AssistantState {
 
   // Chat transcript
   messages: ChatMessage[];
+  /**
+   * P9: per-turn draft for the active assistant bubble. Streamed
+   * tokens land here (one O(1) write per chunk) instead of
+   * cloning ``messages`` per token; the streaming MessageBubble
+   * subscribes to this slice directly so the rest of the
+   * transcript and Virtuoso's ``data`` reference stay stable
+   * across the whole turn. ``finishAssistantBubble`` commits the
+   * draft into the matching message and clears the slice; any
+   * path that wipes the transcript (``setMessages``,
+   * ``clearMessages``, session change) clears the draft too.
+   * ``null`` between turns.
+   */
+  streamingDraft: { id: string; content: string; reaction: string | undefined } | null;
   setMessages: (msgs: ChatMessage[]) => void;
   appendUserMessage: (content: string) => void;
   appendAssistantBubble: () => string; // returns id
@@ -369,6 +382,7 @@ export const useAssistantStore = create<AssistantState>((set) => ({
   setIdentity: (identity) => set({ identity }),
 
   messages: [],
+  streamingDraft: null,
   setMessages: (msgs) =>
     set({
       messages: msgs.map((m) =>
@@ -376,6 +390,10 @@ export const useAssistantStore = create<AssistantState>((set) => ({
           ? { ...m, content: stripMetaMarkers(m.content) }
           : m,
       ),
+      // History reload nukes any in-flight draft -- the bubble it
+      // referenced is gone, and a fresh ``setMessages`` always lands
+      // outside a turn.
+      streamingDraft: null,
     }),
   appendUserMessage: (content) =>
     set((state) => ({
@@ -397,50 +415,73 @@ export const useAssistantStore = create<AssistantState>((set) => ({
         {
           id,
           role: "assistant",
+          // Mid-stream content lives in ``streamingDraft``; the
+          // placeholder's ``content`` stays empty and is overwritten
+          // once at commit. Keeps ``messages`` stable across the
+          // whole turn so non-streaming bubbles never re-render.
           content: "",
           createdAt: new Date().toISOString(),
           streaming: true,
         },
       ],
+      streamingDraft: { id, content: "", reaction: undefined },
     }));
     return id;
   },
   appendAssistantToken: (chunk) =>
     set((state) => {
-      if (state.messages.length === 0) {
+      const draft = state.streamingDraft;
+      if (!draft) {
         return state;
       }
-      const last = state.messages[state.messages.length - 1];
-      if (last.role !== "assistant" || !last.streaming) {
-        return state;
-      }
-      const merged = last.content + chunk;
+      // ``stripMetaMarkers`` is idempotent on already-cleaned text,
+      // so doing it per chunk keeps the draft canonical even when a
+      // marker sits across two chunks (the half-marker tail stays in
+      // ``content`` until the next chunk completes it). Cost is
+      // O(m) per token same as before -- the win is that this no
+      // longer drags the whole ``messages`` array along with it.
+      const merged = draft.content + chunk;
       const reactionMatch = REACTION_TAG_RE.exec(merged);
       const reaction = reactionMatch
         ? reactionMatch[1].toLowerCase()
-        : last.reaction;
+        : draft.reaction;
       const cleaned = stripMetaMarkers(merged);
       return {
-        messages: [
-          ...state.messages.slice(0, -1),
-          { ...last, content: cleaned, reaction },
-        ],
+        streamingDraft: { id: draft.id, content: cleaned, reaction },
       };
     }),
   finishAssistantBubble: () =>
     set((state) => {
+      const draft = state.streamingDraft;
       if (state.messages.length === 0) {
-        return state;
+        return draft ? { streamingDraft: null } : state;
       }
       const last = state.messages[state.messages.length - 1];
       if (last.role !== "assistant" || !last.streaming) {
-        return state;
+        // No streaming bubble to commit into -- just clear any
+        // stale draft so we never leak across turns.
+        return draft ? { streamingDraft: null } : state;
       }
+      // Two failure modes to absorb here:
+      //   1. ``turn_done`` arrives before any token landed (rare but
+      //      possible if the agent produces no content). ``draft``
+      //      is the empty placeholder; we still flip ``streaming``.
+      //   2. ``error`` mid-stream -- we want partial text to stick
+      //      so the user sees what Aiko managed to say, then the
+      //      bubble exits the streaming state cleanly. Same code
+      //      path as a normal commit.
+      const committed = draft && draft.id === last.id ? draft : null;
       return {
         messages: [
           ...state.messages.slice(0, -1),
-          { ...last, streaming: false },
+          {
+            ...last,
+            content: committed ? committed.content : last.content,
+            reaction: committed?.reaction ?? last.reaction,
+            streaming: false,
+          },
         ],
+        streamingDraft: null,
       };
     }),
   pushSystemMessage: (content) =>
@@ -470,7 +511,7 @@ export const useAssistantStore = create<AssistantState>((set) => ({
     })),
   clearMessages: () => {
     bubbleCounter = 0;
-    set({ messages: [] });
+    set({ messages: [], streamingDraft: null });
   },
 
   status: "",
