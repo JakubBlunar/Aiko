@@ -28,7 +28,11 @@ The patch must target the module where the symbol is *looked up*.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+
+if TYPE_CHECKING:
+    from app.core.dialogue_act_tagger import DialogueActResult
 
 
 log = logging.getLogger("app.session")
@@ -126,6 +130,68 @@ class SpeakingWindowJobsMixin:
             ))
         except Exception:
             log.debug("agenda groom submit failed", exc_info=True)
+
+    def _maybe_schedule_dialogue_act_llm_job(
+        self,
+        *,
+        message_id: int,
+        user_text: str,
+        regex_result: "DialogueActResult",
+    ) -> None:
+        """K4: enqueue the LLM dialogue-act upgrade for one user row.
+
+        Only fires when the regex confidence sat at the low-confidence
+        floor (typically the fallback ``story`` bucket). The worker
+        re-tags the message and patches ``messages.dialogue_act`` if
+        the LLM disagrees with the regex.
+        """
+        tagger = getattr(self, "_dialogue_act_tagger", None)
+        if tagger is None:
+            return
+
+        session_key = self.session_key
+        history_window = 8
+
+        def _history_provider() -> list[tuple[str, str]]:
+            try:
+                rows = self._chat_db.get_messages(session_key, limit=history_window)
+            except Exception:
+                return []
+            return [
+                (str(r.role or ""), str(r.content or ""))
+                for r in rows
+                if r.role in ("user", "assistant")
+            ]
+
+        captured_text = str(user_text or "")
+        captured_id = int(message_id)
+        captured_regex = regex_result
+
+        def _job(_stop_flag: Any) -> None:
+            if _stop_flag is not None and _stop_flag.is_set():
+                return
+            try:
+                tagger.maybe_run_llm(
+                    message_id=captured_id,
+                    user_text=captured_text,
+                    regex_result=captured_regex,
+                    history_provider=_history_provider,
+                )
+            except Exception:
+                log.debug("dialogue_act llm job raised", exc_info=True)
+
+        try:
+            from app.core.speaking_window_scheduler import ScheduledJob
+
+            self._scheduler.submit(ScheduledJob(
+                name="dialogue_act_llm",
+                priority=70,
+                estimated_seconds=2.0,
+                callable=_job,
+                dedupe_key=f"dialogue_act_llm:{captured_id}",
+            ))
+        except Exception:
+            log.debug("dialogue_act llm submit failed", exc_info=True)
 
     def _maybe_schedule_promise_llm_job(self) -> None:
         """Phase 3c: enqueue the LLM promise extractor in the speaking window."""

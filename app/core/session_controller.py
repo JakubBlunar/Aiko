@@ -456,12 +456,39 @@ class SessionController(
                     try:
                         from app.core.rag_retriever import RagRetriever
 
+                        # H1 + K4 providers: read the live arc state per
+                        # retrieve() and run the regex hot-path tagger
+                        # on the query text. Wired here so the retriever
+                        # stays self-contained and PromptAssembler doesn't
+                        # need to know about either subsystem.
+                        def _arc_state_provider() -> Any:
+                            store = getattr(self, "_arc_store", None)
+                            if store is None:
+                                return None
+                            try:
+                                return store.get(self._user_id)
+                            except Exception:
+                                return None
+
+                        def _dialogue_act_provider(text: str) -> str | None:
+                            try:
+                                from app.core.dialogue_act_tagger import tag_regex
+                            except Exception:
+                                return None
+                            try:
+                                return tag_regex(text).act
+                            except Exception:
+                                return None
+
                         self._rag_retriever = RagRetriever(
                             self._rag_store,
                             self._embedder,
                             top_k=self._memory_settings.top_k,
                             score_threshold=self._memory_settings.score_threshold,
                             memory_store=self._memory_store,
+                            chat_db=self._chat_db,
+                            arc_state_provider=_arc_state_provider,
+                            dialogue_act_provider=_dialogue_act_provider,
                         )
                     except Exception:
                         log.warning("RagRetriever failed to init", exc_info=True)
@@ -827,6 +854,24 @@ class SessionController(
         except Exception:
             log.warning("PromiseExtractor init failed", exc_info=True)
             self._promise_extractor = None
+
+        # K4: per-turn dialogue-act tagger. Regex hot path runs inline
+        # in ``_post_turn_inner_life``; the LLM cold path (~3 user-turn
+        # cadence) upgrades any low-confidence regex result on the
+        # speaking-window scheduler.
+        self._dialogue_act_tagger = None
+        try:
+            from app.core.dialogue_act_tagger import DialogueActTagger
+
+            self._dialogue_act_tagger = DialogueActTagger(
+                ollama=self._ollama,
+                chat_db=self._chat_db,
+                model=self._effective_chat_model,
+                user_display_name_provider=lambda: self.user_display_name,
+            )
+        except Exception:
+            log.warning("DialogueActTagger init failed", exc_info=True)
+            self._dialogue_act_tagger = None
 
         # Phase 3a: structured user profile + per-turn user-state estimator.
         # The store is hot-path-safe (small SQL reads) and the estimator
@@ -1912,6 +1957,7 @@ class SessionController(
             prepared_nudge_store=self._prepared_nudge_store,
             user_id=self._user_id,
             user_display_name_provider=lambda: self.user_display_name,
+            arc_store=self._arc_store,
         )
 
         # ── Runtime state ────────────────────────────────────────────────
@@ -2277,6 +2323,13 @@ class SessionController(
                 self._memory_extractor.update_model(normalized)
             except Exception:
                 log.debug("memory extractor model update failed", exc_info=True)
+        if self._dialogue_act_tagger is not None:
+            try:
+                self._dialogue_act_tagger.update_runtime(model=normalized)
+            except Exception:
+                log.debug(
+                    "dialogue_act tagger model update failed", exc_info=True,
+                )
 
     @property
     def remember_history(self) -> bool:
@@ -3261,6 +3314,8 @@ class SessionController(
                 reaction=getattr(result, "reaction", "neutral") or "neutral",
                 assistant_text=getattr(result, "text", "") or "",
                 raw_assistant_text=getattr(result, "raw_text", "") or "",
+                user_message_id=user_message_id,
+                assistant_message_id=getattr(result, "assistant_message_id", None),
             )
         except Exception:
             log.debug("post-turn inner life failed", exc_info=True)

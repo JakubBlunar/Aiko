@@ -34,7 +34,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import numpy as np
 
-from app.core.chat_database import ChatDatabase
+from app.core.chat_database import ChatDatabase, _SCHEMA_VERSION
 from app.core.memory_decay_worker import MemoryDecayWorker
 from app.core.memory_extractor import (
     MemoryExtractor,
@@ -161,7 +161,7 @@ class TestSchemaV10Migration(unittest.TestCase):
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         finally:
             conn.close()
-        self.assertEqual(version, 12)
+        self.assertEqual(version, _SCHEMA_VERSION)
         self.assertIn("temporal_type", cols)
         self.assertIn("event_time", cols)
         self.assertIn("relevance_until", cols)

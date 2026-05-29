@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_SCHEMA_VERSION = 12
+_SCHEMA_VERSION = 13
 
 _CREATE_TABLES = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -21,7 +22,9 @@ CREATE TABLE IF NOT EXISTS messages (
     role TEXT NOT NULL,
     content TEXT NOT NULL,
     token_count INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    arc TEXT,
+    dialogue_act TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at);
 
@@ -348,6 +351,8 @@ class MessageRow:
     content: str
     token_count: int
     created_at: str
+    arc: str | None = None
+    dialogue_act: str | None = None
 
 
 @dataclass(slots=True)
@@ -608,6 +613,22 @@ class ChatDatabase:
                 conn.execute(stmt)
             except sqlite3.OperationalError:
                 pass
+        # v12 -> v13: H1 + K4 conversational signals. ``messages.arc`` stores
+        # Aiko's read of the conversation phase (one of six values from
+        # ``conversation_arc.VALID_ARCS``); ``messages.dialogue_act`` stores
+        # the user's per-turn intent (question / story / vent / banter /
+        # planning / chitchat). Both columns default NULL so historical rows
+        # stay clean -- only turns tagged after rollout populate them. No
+        # index: filter-by-equality on a small per-session table; the
+        # existing ``idx_messages_session`` already narrows the scan.
+        for stmt in (
+            "ALTER TABLE messages ADD COLUMN arc TEXT",
+            "ALTER TABLE messages ADD COLUMN dialogue_act TEXT",
+        ):
+            try:
+                conn.execute(stmt)
+            except sqlite3.OperationalError:
+                pass
         conn.execute("UPDATE schema_version SET version = ?", (_SCHEMA_VERSION,))
         conn.commit()
 
@@ -724,13 +745,16 @@ class ChatDatabase:
         role: str,
         content: str,
         token_count: int = 0,
+        *,
+        arc: str | None = None,
+        dialogue_act: str | None = None,
     ) -> int:
         conn = self._get_conn()
         created_at = _now_iso()
         cursor = conn.execute(
-            "INSERT INTO messages (session_id, role, content, token_count, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (session_id, role, content, token_count, created_at),
+            "INSERT INTO messages (session_id, role, content, token_count, created_at, arc, dialogue_act) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (session_id, role, content, token_count, created_at, arc, dialogue_act),
         )
         conn.commit()
         msg_id = int(cursor.lastrowid or 0)
@@ -742,6 +766,8 @@ class ChatDatabase:
                 content=content,
                 token_count=token_count,
                 created_at=created_at,
+                arc=arc,
+                dialogue_act=dialogue_act,
             )
             for listener in list(self._add_listeners):
                 try:
@@ -789,6 +815,67 @@ class ChatDatabase:
         conn.commit()
         return bool(cursor.rowcount)
 
+    def update_message_arc(self, message_id: int, arc: str | None) -> bool:
+        """Set the conversation-arc tag for a message row.
+
+        Used by the H1 self-tag pipeline (Aiko's ``[[arc:X]]`` emission)
+        and the opportunistic per-turn arc stamping. ``arc`` may be
+        ``None`` to clear the column.
+        """
+        if message_id <= 0:
+            return False
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "UPDATE messages SET arc = ? WHERE id = ?",
+            (arc if arc is None else str(arc), int(message_id)),
+        )
+        conn.commit()
+        return bool(cursor.rowcount)
+
+    def get_message_signals(
+        self, message_ids: Iterable[int]
+    ) -> dict[int, tuple[str | None, str | None]]:
+        """Return ``{id: (arc, dialogue_act)}`` for the given message ids.
+
+        Used by the RAG retriever to apply the H1 + K4 alignment boost
+        (cap ``+0.05``) without an extra row-by-row SQL roundtrip. Ids
+        that don't resolve are simply absent from the returned dict;
+        callers fall back to ``(None, None)`` per missing key.
+        """
+        ids = [int(mid) for mid in message_ids if mid is not None and int(mid) > 0]
+        if not ids:
+            return {}
+        unique_ids = list(dict.fromkeys(ids))
+        placeholders = ",".join("?" for _ in unique_ids)
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                f"SELECT id, arc, dialogue_act FROM messages WHERE id IN ({placeholders})",
+                unique_ids,
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return {}
+        return {int(r[0]): (r[1], r[2]) for r in rows}
+
+    def update_message_dialogue_act(
+        self, message_id: int, dialogue_act: str | None
+    ) -> bool:
+        """Set the user-side dialogue-act tag for a message row.
+
+        Used by the K4 ``DialogueActTagger`` -- regex hot path writes the
+        column inline; the LLM cold-path upgrade calls this again to
+        replace the value if it disagrees with the regex.
+        """
+        if message_id <= 0:
+            return False
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "UPDATE messages SET dialogue_act = ? WHERE id = ?",
+            (dialogue_act if dialogue_act is None else str(dialogue_act), int(message_id)),
+        )
+        conn.commit()
+        return bool(cursor.rowcount)
+
     def get_messages(
         self,
         session_id: str,
@@ -804,29 +891,29 @@ class ChatDatabase:
         from the end of the remaining set.
         """
         conn = self._get_conn()
+        select = (
+            "SELECT id, session_id, role, content, token_count, created_at, arc, dialogue_act "
+            "FROM messages WHERE session_id = ?"
+        )
         if offset and limit:
             rows = conn.execute(
-                "SELECT id, session_id, role, content, token_count, created_at "
-                "FROM messages WHERE session_id = ? ORDER BY id LIMIT ? OFFSET ?",
+                f"{select} ORDER BY id LIMIT ? OFFSET ?",
                 (session_id, limit, offset),
             ).fetchall()
         elif offset:
             rows = conn.execute(
-                "SELECT id, session_id, role, content, token_count, created_at "
-                "FROM messages WHERE session_id = ? ORDER BY id LIMIT -1 OFFSET ?",
+                f"{select} ORDER BY id LIMIT -1 OFFSET ?",
                 (session_id, offset),
             ).fetchall()
         elif limit:
             rows = conn.execute(
-                "SELECT id, session_id, role, content, token_count, created_at "
-                "FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+                f"{select} ORDER BY id DESC LIMIT ?",
                 (session_id, limit),
             ).fetchall()
             rows.reverse()
         else:
             rows = conn.execute(
-                "SELECT id, session_id, role, content, token_count, created_at "
-                "FROM messages WHERE session_id = ? ORDER BY id",
+                f"{select} ORDER BY id",
                 (session_id,),
             ).fetchall()
         return [MessageRow(*r) for r in rows]

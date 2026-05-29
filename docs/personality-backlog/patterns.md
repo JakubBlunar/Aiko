@@ -28,16 +28,8 @@ goal. Different shape from G3: G3 is "looked it up, done"; goals are
 
 ## K4. Dialogue-act tagging
 
-Tag user turns by intent (question / story / vent / banter / planning
-/ debugging). Pairs with H1 (arc tag) to give RAG and
-`ProactiveDirector` a finer handle. Cheap regex + small LLM hybrid; no
-new schema, just a `dialogue_act` column on `messages` and an
-extractor mirroring the shape of
-[`app/core/promise_extractor.py`](../../app/core/promise_extractor.py).
-Key files: new `app/core/dialogue_act_tagger.py`,
-[`app/core/chat_database.py`](../../app/core/chat_database.py) (column
-addition), [`app/core/rag_retriever.py`](../../app/core/rag_retriever.py)
-(weight act-matched memories higher when the current act repeats).
+Shipped — see [`shipped.md`](shipped.md) "H1 + K4. Conversation-arc
+self-tag + dialogue-act tagging (schema v13)".
 
 ---
 

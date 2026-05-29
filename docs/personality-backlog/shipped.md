@@ -1073,3 +1073,31 @@ boot, `add_memory` never touched, no-embedding rows filtered out
 before the bulk batch is built, `None` rag store is a no-op, and
 a raised bulk exception returns 0 instead of crashing.
 
+
+## H1 + K4. Conversation-arc self-tag + dialogue-act tagging (schema v13)
+
+H1 closes the loop on the conversation-arc tracker that already shipped
+in [`app/core/conversation_arc.py`](../../app/core/conversation_arc.py)
+and K4 adds the user-side cousin per turn. One schema migration adds two
+nullable columns to `messages` (`arc`, `dialogue_act`); the arc taxonomy
+trims to a companion-friendly six (drop `debug` / `deep_dive`, add
+`silly`). H1: a new `[[arc:NAME]]` self-tag (parsed in
+[`response_text_service.py`](../../app/core/services/response_text_service.py)
+mirroring `[[moment:]]` / `[[agenda:]]`) routes through
+`ArcStore.set_from_self_tag` at confidence `0.85` — the new middle rung
+on the ladder `regex 0.5 < self-tag 0.85 < smoother 0.95`. The estimator
+hot-path guard now refuses to overwrite a self-tag-or-better prior. K4:
+new [`app/core/dialogue_act_tagger.py`](../../app/core/dialogue_act_tagger.py)
+mirrors the [`promise_extractor`](../../app/core/promise_extractor.py)
+shape (regex hot path inline + LLM cold path via the speaking-window
+scheduler) and tags every user turn into one of `question / story /
+vent / banter / planning / chitchat`. Both signals feed
+[`rag_retriever.py`](../../app/core/rag_retriever.py) (`+0.03` per match,
+combined cap `+0.05`) and tighten
+[`proactive_director.py`](../../app/core/proactive_director.py)
+eligibility (suppress nudges on a `vent` turn; loosen cooldown on
+`silly` / `playful` arcs). Tests:
+[`tests/test_arc_self_tag.py`](../../tests/test_arc_self_tag.py),
+[`tests/test_dialogue_act_tagger.py`](../../tests/test_dialogue_act_tagger.py),
+[`tests/test_chat_database_migration.py`](../../tests/test_chat_database_migration.py),
+[`tests/test_rag_retriever_act_arc_boost.py`](../../tests/test_rag_retriever_act_arc_boost.py).

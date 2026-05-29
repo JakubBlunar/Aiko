@@ -21,7 +21,7 @@ from app.core.belief_store import (
     STATUS_CONTRADICTED,
     STATUS_STALE,
 )
-from app.core.chat_database import ChatDatabase
+from app.core.chat_database import ChatDatabase, _SCHEMA_VERSION
 
 
 def _build_db() -> tuple[ChatDatabase, BeliefStore, Path]:
@@ -32,13 +32,14 @@ def _build_db() -> tuple[ChatDatabase, BeliefStore, Path]:
 
 
 class SchemaMigrationTests(unittest.TestCase):
-    def test_fresh_database_lands_on_v12(self) -> None:
+    def test_fresh_database_lands_on_current_schema(self) -> None:
         _, _, path = _build_db()
         conn = sqlite3.connect(str(path))
         row = conn.execute(
             "SELECT version FROM schema_version LIMIT 1"
         ).fetchone()
-        self.assertEqual(row[0], 12)
+        self.assertEqual(row[0], _SCHEMA_VERSION)
+        self.assertGreaterEqual(_SCHEMA_VERSION, 12)
         cols = {
             r[1]
             for r in conn.execute(
@@ -62,7 +63,7 @@ class SchemaMigrationTests(unittest.TestCase):
         self.assertIn("idx_beliefs_topic", idx)
         conn.close()
 
-    def test_v11_database_upgrades_to_v12(self) -> None:
+    def test_v11_database_upgrades_to_current_schema(self) -> None:
         """A pre-v12 database (no beliefs table) gets migrated cleanly."""
         tmp = tempfile.mkdtemp()
         path = Path(tmp) / "legacy.db"
@@ -73,7 +74,9 @@ class SchemaMigrationTests(unittest.TestCase):
         conn.commit()
         conn.close()
 
-        # Opening through ChatDatabase triggers migration to v12.
+        # Opening through ChatDatabase triggers migration to the current
+        # schema version (v12 added beliefs; later versions are no-ops
+        # for the columns this test exercises).
         db = ChatDatabase(path)
         del db
 
@@ -81,7 +84,7 @@ class SchemaMigrationTests(unittest.TestCase):
         row = conn.execute(
             "SELECT version FROM schema_version LIMIT 1"
         ).fetchone()
-        self.assertEqual(row[0], 12)
+        self.assertEqual(row[0], _SCHEMA_VERSION)
         tables = {
             r[0]
             for r in conn.execute(

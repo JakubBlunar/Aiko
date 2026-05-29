@@ -40,6 +40,24 @@ from app.core.services.response_text_service import (
 from app.core.prompt_assembler import PromptAssembler
 from app.llm.ollama_client import OllamaClient
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.core.conversation_arc import ArcStore
+
+
+# H1 + K4: cooldown multiplier applied when the current arc is light and
+# inviting. ``silly`` / ``playful`` arcs are when proactive nudges land
+# best, so we loosen the cooldown gate by 30%; ``support`` arcs are
+# already gated by the affect rule, but we tighten further by 50%
+# defensively against piling on a vent. The other arcs land on 1.0.
+_ARC_COOLDOWN_MULTIPLIER: dict[str, float] = {
+    "silly": 0.7,
+    "playful": 0.7,
+    "support": 1.5,
+}
+_VENT_DIALOGUE_ACT = "vent"
+
 
 log = logging.getLogger("app.proactive")
 
@@ -119,6 +137,7 @@ class ProactiveDirector:
         cooldown_seconds_typed: float = 600.0,
         is_typed_eligible: BoolPredicate | None = None,
         user_display_name_provider: Callable[[], str] | None = None,
+        arc_store: "ArcStore | None" = None,
     ) -> None:
         self._ollama = ollama
         self._db = db
@@ -135,6 +154,10 @@ class ProactiveDirector:
         self._prepared_store = prepared_nudge_store
         self._user_id = user_id or "default"
         self._user_display_name_provider = user_display_name_provider
+        # H1 + K4: optional arc store for the eligibility bias. Reads
+        # the live arc per ``notify_silence`` call; ``None`` falls back
+        # to the legacy unbiased path.
+        self._arc_store = arc_store
 
         self._lock = threading.Lock()
         self._last_run_monotonic = 0.0
@@ -154,6 +177,39 @@ class ProactiveDirector:
 
     # ── public ────────────────────────────────────────────────────────
 
+    def _last_user_dialogue_act(self, session_key: str) -> str | None:
+        """Read the most recent user message's dialogue_act from SQLite.
+
+        Returns ``None`` when the lookup fails or no recent user row
+        carries a tag (legacy / pre-K4 sessions). Best-effort: an
+        exception here must never abort the proactive path.
+        """
+        try:
+            rows = self._db.get_messages(session_key, limit=4)
+        except Exception:
+            return None
+        for row in reversed(rows):
+            if (row.role or "").lower() == "user":
+                return row.dialogue_act
+        return None
+
+    def _arc_cooldown_multiplier(self) -> float:
+        """Return the cooldown scale based on the current arc.
+
+        ``silly`` / ``playful`` get ``0.7`` (loosened), ``support``
+        gets ``1.5`` (tighter), everything else is ``1.0``. Falls back
+        to ``1.0`` when no arc store is wired or the lookup fails.
+        """
+        if self._arc_store is None:
+            return 1.0
+        try:
+            state = self._arc_store.get(self._user_id)
+        except Exception:
+            return 1.0
+        if state is None:
+            return 1.0
+        return _ARC_COOLDOWN_MULTIPLIER.get(state.arc, 1.0)
+
     def notify_silence(self, session_key: str) -> None:
         """Possibly speak a proactive line. No-op if guards reject."""
         if not session_key:
@@ -163,10 +219,23 @@ class ProactiveDirector:
         if self._is_busy():
             log.debug("proactive skip: chat in progress")
             return
+        # K4: never pile on a vent. The user is processing something;
+        # a proactive nudge here reads as fix-it energy at exactly the
+        # wrong beat. The smoother / next user turn will let us back in.
+        if self._last_user_dialogue_act(session_key) == _VENT_DIALOGUE_ACT:
+            log.debug("proactive skip: last user dialogue_act=vent")
+            return
+        scale = self._arc_cooldown_multiplier()
+        effective_cooldown = self._cooldown * scale
         with self._lock:
             since = time.monotonic() - self._last_run_monotonic
-            if since < self._cooldown:
-                log.debug("proactive skip: cooldown %.1fs/%.1fs", since, self._cooldown)
+            if since < effective_cooldown:
+                log.debug(
+                    "proactive skip: cooldown %.1fs/%.1fs (arc_scale=%.2f)",
+                    since,
+                    effective_cooldown,
+                    scale,
+                )
                 return
             if self._inflight:
                 log.debug("proactive skip: already running")
@@ -199,13 +268,19 @@ class ProactiveDirector:
         if self._is_busy():
             log.debug("proactive(typed) skip: chat in progress")
             return
+        if self._last_user_dialogue_act(session_key) == _VENT_DIALOGUE_ACT:
+            log.debug("proactive(typed) skip: last user dialogue_act=vent")
+            return
+        scale = self._arc_cooldown_multiplier()
+        effective_cooldown = self._cooldown_typed * scale
         with self._lock:
             since = time.monotonic() - self._last_typed_run_monotonic
-            if since < self._cooldown_typed:
+            if since < effective_cooldown:
                 log.debug(
-                    "proactive(typed) skip: cooldown %.1fs/%.1fs",
+                    "proactive(typed) skip: cooldown %.1fs/%.1fs (arc_scale=%.2f)",
                     since,
-                    self._cooldown_typed,
+                    effective_cooldown,
+                    scale,
                 )
                 return
             if self._typed_inflight:

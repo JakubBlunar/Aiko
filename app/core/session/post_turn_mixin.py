@@ -238,6 +238,8 @@ class PostTurnMixin:
         reaction: str,
         assistant_text: str = "",
         raw_assistant_text: str = "",
+        user_message_id: int | None = None,
+        assistant_message_id: int | None = None,
     ) -> None:
         """Run all post-turn inner-life updates (cheap, no LLM).
 
@@ -383,6 +385,33 @@ class PostTurnMixin:
             except Exception:
                 log.debug("promise extraction failed", exc_info=True)
 
+        # K4: per-turn dialogue-act tagger. Regex hot path is cheap
+        # (microseconds) so we run it inline and write the result to
+        # ``messages.dialogue_act`` immediately. Low-confidence results
+        # (the fallback ``story`` bucket) get scheduled for an LLM
+        # upgrade on the speaking-window scheduler. Subsequent
+        # consumers (RAG retriever, ProactiveDirector) read the
+        # column straight from ``messages``.
+        tagger = getattr(self, "_dialogue_act_tagger", None)
+        if tagger is not None:
+            try:
+                tagger.notify_user_turn()
+                act_result = tagger.tag_user_turn(user_text)
+                if user_message_id and act_result.act:
+                    self._chat_db.update_message_dialogue_act(
+                        int(user_message_id), act_result.act,
+                    )
+                if user_message_id and tagger.should_run_llm(
+                    regex_result=act_result,
+                ):
+                    self._maybe_schedule_dialogue_act_llm_job(
+                        message_id=int(user_message_id),
+                        user_text=user_text,
+                        regex_result=act_result,
+                    )
+            except Exception:
+                log.debug("dialogue_act tagger failed", exc_info=True)
+
         # Phase 4a: inline [[agenda:...]] tags in raw assistant output.
         agenda_store = getattr(self, "_agenda_store", None)
         if agenda_store is not None and raw_assistant_text:
@@ -409,11 +438,12 @@ class PostTurnMixin:
         # Phase 4c: hot-path arc estimator on the user turn.
         estimator = getattr(self, "_arc_estimator", None)
         smoother = getattr(self, "_arc_smoother", None)
+        arc_store = getattr(self, "_arc_store", None)
+        try:
+            current_turn = self._chat_db.get_message_count(self.session_key)
+        except Exception:
+            current_turn = 0
         if estimator is not None:
-            try:
-                current_turn = self._chat_db.get_message_count(self.session_key)
-            except Exception:
-                current_turn = 0
             try:
                 estimator.apply_turn(
                     self._user_id,
@@ -422,6 +452,59 @@ class PostTurnMixin:
                 )
             except Exception:
                 log.debug("arc estimator failed", exc_info=True)
+
+        # H1: parse Aiko's ``[[arc:X]]`` self-tag from the raw reply and
+        # write it to the store at confidence 0.85 (between regex and
+        # smoother). Single-valued per turn -- if she emits more than
+        # one, take the last and ignore the rest. The estimator above
+        # ran first so the +0.1 confidence buffer protects this write
+        # against an immediate same-turn regex bump.
+        self_tagged_arc: str | None = None
+        if (
+            arc_store is not None
+            and raw_assistant_text
+        ):
+            try:
+                from app.core.conversation_arc import VALID_ARCS
+                from app.core.services.response_text_service import (
+                    parse_arc_tags,
+                )
+
+                tags = [t for t in parse_arc_tags(raw_assistant_text) if t in VALID_ARCS]
+                if tags:
+                    self_tagged_arc = tags[-1]
+                    arc_store.set_from_self_tag(
+                        self._user_id,
+                        self_tagged_arc,
+                        since_turn=current_turn,
+                    )
+                    log.info(
+                        "H1 self-tag: aiko set arc=%r (confidence=0.85)",
+                        self_tagged_arc,
+                    )
+            except Exception:
+                log.debug("H1 arc self-tag dispatch failed", exc_info=True)
+
+        # Stamp ``messages.arc`` on Aiko's row (preferring the self-tag,
+        # falling back to the current store state) and on the user row
+        # (always from the current store state) so the timeline filter
+        # has full coverage.
+        if arc_store is not None:
+            try:
+                state = arc_store.get(self._user_id)
+                user_arc_value = state.arc if state is not None else None
+                assistant_arc_value = self_tagged_arc or user_arc_value
+                if user_arc_value and user_message_id:
+                    self._chat_db.update_message_arc(
+                        int(user_message_id), user_arc_value,
+                    )
+                if assistant_arc_value and assistant_message_id:
+                    self._chat_db.update_message_arc(
+                        int(assistant_message_id), assistant_arc_value,
+                    )
+            except Exception:
+                log.debug("messages.arc stamp failed", exc_info=True)
+
         if smoother is not None:
             try:
                 smoother.notify_user_turn()

@@ -1,31 +1,38 @@
 """Conversation arc tracker (Phase 4c).
 
-A conversation drifts through "arcs": casual_check_in, deep_dive, support,
-planning, reflection, playful, debug. Aiko sounds more present when she
+A conversation drifts through "arcs": casual_check_in, support, planning,
+reflection, playful, silly. Aiko sounds more present when she
 acknowledges where she is in that drift, e.g. mode-matching prosody and
 turning down the suggestion volume when the user is venting.
 
-Two-tier design (same pattern as user_state + user_profile):
+Three-track design:
 
   * **Hot path (regex-only)**: :class:`ArcEstimator` runs per user turn,
     inspects the current message + a tiny rolling buffer, and emits a
-    candidate arc with confidence. Cost is microseconds.
+    candidate arc with confidence ~0.5. Cost is microseconds.
+
+  * **Self-tag (H1)**: when Aiko emits ``[[arc:X]]`` in her reply
+    (parsed by ``response_text_service``) the response-text dispatch
+    site calls :meth:`ArcStore.set_from_self_tag` with confidence 0.85.
+    Sits between regex and smoother on purpose -- her own read of the
+    room outranks a cheap regex but defers to the periodic LLM smoother.
 
   * **Cold path (LLM smoothing)**: :class:`ArcSmootherWorker` runs every
     N turns on the speaking-window scheduler. Looks at a wider history
     slice, asks the model to confirm or change the arc, and writes the
-    result back via :class:`ArcStore`.
+    result back via :class:`ArcStore` with confidence ~0.95.
 
-Both paths persist into the existing ``conversation_arc`` table:
+Confidence ordering (regex 0.5 < self-tag 0.85 < smoother 0.95) is
+enforced by :meth:`ArcEstimator.apply_turn`: a regex hit never
+overwrites a self-tag- or smoother-set arc.
+
+All three paths persist into the existing ``conversation_arc`` table:
 
     user_id TEXT PRIMARY KEY,
     arc TEXT NOT NULL DEFAULT 'casual_check_in',
     since_turn INTEGER NOT NULL DEFAULT 0,
     confidence REAL NOT NULL DEFAULT 0.5,
     updated_at TEXT NOT NULL
-
-The hot-path classifier never lowers a *high-confidence* LLM-set arc
-unless the new evidence is loud (e.g., explicit emotional shift words).
 """
 from __future__ import annotations
 
@@ -49,12 +56,11 @@ log = logging.getLogger("app.conversation_arc")
 
 VALID_ARCS: tuple[str, ...] = (
     "casual_check_in",
-    "deep_dive",
     "support",
     "planning",
     "reflection",
     "playful",
-    "debug",
+    "silly",
 )
 
 
@@ -118,6 +124,42 @@ class ArcStore:
             updated_at=self._now_iso(),
         )
 
+    def set_from_self_tag(
+        self,
+        user_id: str,
+        arc: str,
+        *,
+        since_turn: int,
+    ) -> ArcState:
+        """Write Aiko's ``[[arc:X]]`` self-tag at confidence ``0.85``.
+
+        Sits between regex (~0.5) and the LLM smoother (~0.95) on
+        purpose: her own read of the room outranks a cheap regex hit
+        but defers to the periodic smoothing pass. ``arc`` is validated
+        against :data:`VALID_ARCS`; an unknown value is rejected and
+        returns the existing state unchanged.
+
+        Same-arc emissions don't reset ``since_turn`` -- a string of
+        ``[[arc:support]]`` tags across consecutive replies represents
+        one continuous support arc, not many.
+        """
+        normalised = (arc or "").strip().lower()
+        if normalised not in VALID_ARCS:
+            log.debug("ignoring self-tag with unknown arc %r", arc)
+            return self.get_or_default(user_id)
+        prior = self.get(user_id)
+        anchor_turn = (
+            prior.since_turn
+            if prior is not None and prior.arc == normalised
+            else int(since_turn)
+        )
+        return self.upsert(
+            user_id,
+            arc=normalised,
+            since_turn=anchor_turn,
+            confidence=0.85,
+        )
+
     def upsert(
         self,
         user_id: str,
@@ -170,12 +212,11 @@ class ArcStore:
 # callers don't have to.
 _ARC_DESCRIPTORS: dict[str, str] = {
     "casual_check_in": "casual check-in",
-    "deep_dive": "deep dive",
     "support": "{name} is venting / needs support — listen more, fix less",
     "planning": "we're planning something concrete",
     "reflection": "reflective / introspective stretch",
     "playful": "playful banter",
-    "debug": "debugging / problem-solving stretch",
+    "silly": "silly / lighthearted goofing-around stretch",
 }
 
 
@@ -204,23 +245,21 @@ _PLANNING_RE = re.compile(
     r"(?:next|first)\s+steps?|action\s+items?|deadline)\b",
     re.IGNORECASE,
 )
-_DEEP_RE = re.compile(
-    r"\b(?:why\s+(?:does|do|is|are)|the\s+real\s+question|"
-    r"underlying|fundamentally|in\s+principle|theoretically|"
-    r"ontolog|epistem|metaphys|thesis|hypothesis)\b",
-    re.IGNORECASE,
-)
-_DEBUG_RE = re.compile(
-    r"\b(?:traceback|stack\s*trace|null\s*pointer|exception|"
-    r"undefined|null|nan|crashes?|crashed|segfault|core\s*dump|"
-    r"failing|broken|bug|error\s*code|stack\s*overflow|"
-    r"works\s+on\s+my\s+machine|reproduce\s+the\s+issue)\b",
-    re.IGNORECASE,
-)
 _PLAYFUL_RE = re.compile(
     r"\b(?:lol|lmao|rofl|hahaha+|tee?hee+|"
     r"that'?s\s+(?:hilarious|wild|insane)|"
-    r"you'?re\s+(?:silly|ridiculous|funny))\b",
+    r"you'?re\s+(?:ridiculous|funny))\b",
+    re.IGNORECASE,
+)
+_SILLY_RE = re.compile(
+    r"\b(?:what\s+if\s+(?:we|i|you|the)\s+(?:just\s+)?"
+    r"(?:turned|made|became|tried|invented)|"
+    r"imagine\s+(?:if|a\s+world|a\s+universe)|"
+    r"(?:ridiculous|absurd|wacky|wild|goofy|silly)\s+"
+    r"(?:idea|thought|notion|plan)|"
+    r"this\s+is\s+(?:so\s+|kinda\s+)?(?:silly|goofy|absurd|ridiculous)|"
+    r"would\s+be\s+(?:hilarious|silly|wild|absurd)\s+if|"
+    r"(?:you'?re|you\s+are)\s+(?:so\s+)?silly)\b",
     re.IGNORECASE,
 )
 _REFLECTION_RE = re.compile(
@@ -231,13 +270,16 @@ _REFLECTION_RE = re.compile(
 )
 
 
+# Regex confidences are intentionally capped at ~0.55 so the hot path
+# sits below the self-tag (0.85) and smoother (0.95) cliffs. Same arc
+# regex hits still bump confidence via the same-arc path in apply_turn,
+# but a regex never overwrites a higher-confidence prior on its own.
 _ARC_PATTERNS: tuple[tuple[str, re.Pattern[str], float], ...] = (
-    ("support", _SUPPORT_RE, 0.85),
-    ("debug", _DEBUG_RE, 0.75),
-    ("planning", _PLANNING_RE, 0.7),
-    ("reflection", _REFLECTION_RE, 0.65),
-    ("deep_dive", _DEEP_RE, 0.6),
-    ("playful", _PLAYFUL_RE, 0.55),
+    ("support", _SUPPORT_RE, 0.55),
+    ("planning", _PLANNING_RE, 0.5),
+    ("reflection", _REFLECTION_RE, 0.5),
+    ("silly", _SILLY_RE, 0.5),
+    ("playful", _PLAYFUL_RE, 0.5),
 )
 
 
@@ -284,11 +326,20 @@ class ArcEstimator:
                 confidence=decayed,
             )
         new_arc, new_conf = candidate
-        # If prior is sticky/high-confidence and this is a weaker hit on
-        # a different arc, refuse to overwrite — wait for the smoother.
+        # Confidence-ladder guard: regex (~0.5) must never overwrite a
+        # self-tag (0.85) or smoother (0.95)-set arc on a different
+        # value. The +0.1 buffer means a same-arc bump from a stronger
+        # regex still works, but a switch to a different arc only fires
+        # when prior confidence is below the sticky cliff. Self-tags
+        # land at 0.85 which sits above the default sticky 0.78, so
+        # they're naturally protected; the explicit 0.85 floor below
+        # documents the H1 contract regardless of `sticky_confidence`.
         if (
             prior.arc != new_arc
-            and prior.confidence >= self._sticky
+            and (
+                prior.confidence >= 0.85
+                or prior.confidence >= self._sticky
+            )
             and new_conf < prior.confidence + 0.1
         ):
             return self._store.upsert(
@@ -325,13 +376,16 @@ def _build_smooth_prompt(user_display_name: str = "the user") -> str:
         "conversation. Confirm or change the arc and emit a single JSON "
         "object:\n"
         "\n"
-        "{\"arc\": \"<one of: casual_check_in | deep_dive | support | planning | "
-        "reflection | playful | debug>\", \"confidence\": <0..1>}\n"
+        "{\"arc\": \"<one of: casual_check_in | support | planning | "
+        "reflection | playful | silly>\", \"confidence\": <0..1>}\n"
         "\n"
         "Rules:\n"
         "- Pick the arc that best describes the *current vibe*, not the topic.\n"
         f"- \"support\" wins when {name} is venting / asking for empathy.\n"
         "- \"planning\" wins when we're concretely organising next steps.\n"
+        "- \"reflection\" wins on introspective / looking-back stretches.\n"
+        "- \"playful\" is for warm banter; \"silly\" is for absurd, "
+        "low-stakes goofing around (\"what if cats ran the post office\").\n"
         "- \"casual_check_in\" is the default. Use it freely if nothing else fits.\n"
         "- Output ONLY the JSON object. No prose."
     )

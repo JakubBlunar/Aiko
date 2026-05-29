@@ -19,16 +19,23 @@ Design notes:
   - Recency is folded into message scores via an exponential decay on
     ``created_at``; older messages are penalized so RAG doesn't unearth a
     five-month-old line on every turn.
+  - H1 + K4: when an arc-state provider and chat_db are wired, hits whose
+    source ``messages`` row matches the *current* arc / dialogue_act get
+    a small boost (capped at ``+0.05`` combined). Two cheap dict lookups
+    per hit -- the join is a single SQL ``IN (...)`` query batched across
+    all surfaced hits.
 """
 from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Iterable, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Sequence
 
 from app.core.rag_store import RagHit
 
 if TYPE_CHECKING:
+    from app.core.chat_database import ChatDatabase
+    from app.core.conversation_arc import ArcState
     from app.core.memory_store import MemoryStore
     from app.core.rag_store import RagStore
     from app.llm.embedder import Embedder
@@ -102,6 +109,16 @@ _MEMORY_TIER_OFFSET: dict[str, float] = {
 # spec: "never hiding things from Aiko is the simpler invariant".
 _MEMORY_CONFIDENCE_PENALTY_THRESHOLD = 0.5
 _MEMORY_CONFIDENCE_PENALTY_MAX = 0.15
+
+# H1 + K4 — per-hit boost for source rows that share the current
+# conversation arc (H1) or the live user dialogue-act (K4). The deltas
+# are intentionally tiny: we want the alignment to nudge ordering when
+# cosine scores are near-tied, never to move a weak match past a strong
+# one. Combined cap is +0.05 -- a hit matching on both never gets the
+# full additive +0.06.
+_RAG_ARC_BOOST = 0.03
+_RAG_DIALOGUE_ACT_BOOST = 0.03
+_RAG_ALIGNMENT_BOOST_CAP = 0.05
 
 
 def _confidence_penalty(confidence: float | None) -> float:
@@ -385,6 +402,9 @@ class RagRetriever:
         include_messages: bool = True,
         include_documents: bool = True,
         memory_store: "MemoryStore | None" = None,
+        chat_db: "ChatDatabase | None" = None,
+        arc_state_provider: "Callable[[], ArcState | None] | None" = None,
+        dialogue_act_provider: "Callable[[str], str | None] | None" = None,
     ) -> None:
         self._store = store
         self._embedder = embedder
@@ -400,6 +420,16 @@ class RagRetriever:
         # tests and lean deployments can run without it; the recency
         # signal then simply stays at 0.
         self._memory_store = memory_store
+        # H1 + K4: optional handles for the conversation-arc / dialogue-act
+        # alignment boost. ``chat_db`` is used to fetch the per-row arc /
+        # dialogue_act for the surfaced hits' source ``messages`` rows;
+        # the providers return the *current* arc state and the regex-
+        # tagged dialogue-act for the live query. All three are optional;
+        # when any is None the boost is silently skipped so legacy /
+        # test wiring stays functional.
+        self._chat_db = chat_db
+        self._arc_state_provider = arc_state_provider
+        self._dialogue_act_provider = dialogue_act_provider
         # Schema v8 — IDs of memories surfaced in the last
         # :meth:`retrieve` call. ``SessionController._post_turn_inner_life``
         # reads this snapshot to run the keyword-overlap revival check
@@ -580,6 +610,16 @@ class RagRetriever:
             except Exception:
                 log.debug("document search failed", exc_info=True)
 
+        # H1 + K4: apply the conversation-arc / dialogue-act alignment
+        # boost. Combined cap is +0.05 so a hit matching on both never
+        # gets the full additive +0.06; misaligned hits stay at 0. The
+        # join is a single SQL ``IN (...)`` call across every surfaced
+        # hit, batched in :meth:`_apply_alignment_boost`.
+        try:
+            self._apply_alignment_boost(merged, query_text=query_text)
+        except Exception:
+            log.debug("alignment boost failed", exc_info=True)
+
         # Dedupe by content text (case-insensitive, whitespace-stripped).
         # Schema v10: hits flagged with ``score < 0`` by the temporal
         # filter (e.g. expired past_events) are dropped here before
@@ -638,6 +678,88 @@ class RagRetriever:
         run the post-turn revival keyword-overlap check.
         """
         return list(self._last_surfaced_memory_ids)
+
+    # ── alignment boost (H1 + K4) ───────────────────────────────────────
+
+    def _apply_alignment_boost(
+        self, hits: list[RagHit], *, query_text: str,
+    ) -> None:
+        """Bump hits whose source row matches the live arc / dialogue_act.
+
+        Called once per ``retrieve`` against the merged hit list; mutates
+        ``hit.score`` in place. Silently noops when any of the optional
+        wirings (``chat_db``, ``arc_state_provider``,
+        ``dialogue_act_provider``) is missing -- the legacy retrieval
+        ordering is unchanged in that case.
+
+        Combined boost is capped at ``_RAG_ALIGNMENT_BOOST_CAP`` so a
+        hit aligned on both signals never gets the full additive +0.06.
+        """
+        if not hits or self._chat_db is None:
+            return
+        current_arc: str | None = None
+        if self._arc_state_provider is not None:
+            try:
+                state = self._arc_state_provider()
+            except Exception:
+                state = None
+            if state is not None:
+                current_arc = getattr(state, "arc", None)
+        current_act: str | None = None
+        if self._dialogue_act_provider is not None and query_text:
+            try:
+                current_act = self._dialogue_act_provider(query_text)
+            except Exception:
+                current_act = None
+        if not current_arc and not current_act:
+            return
+
+        message_ids: list[int] = []
+        for h in hits:
+            mid = self._extract_message_id(h)
+            if mid is not None:
+                message_ids.append(mid)
+        if not message_ids:
+            return
+        try:
+            signals = self._chat_db.get_message_signals(message_ids)
+        except Exception:
+            log.debug("get_message_signals failed", exc_info=True)
+            return
+        if not signals:
+            return
+
+        for h in hits:
+            mid = self._extract_message_id(h)
+            if mid is None:
+                continue
+            row_arc, row_act = signals.get(mid, (None, None))
+            bonus = 0.0
+            if current_arc and row_arc and row_arc == current_arc:
+                bonus += _RAG_ARC_BOOST
+            if current_act and row_act and row_act == current_act:
+                bonus += _RAG_DIALOGUE_ACT_BOOST
+            if bonus <= 0.0:
+                continue
+            h.score += min(bonus, _RAG_ALIGNMENT_BOOST_CAP)
+
+    @staticmethod
+    def _extract_message_id(hit: RagHit) -> int | None:
+        """Return the underlying ``messages`` row id for a hit, or ``None``."""
+        record = hit.record
+        if hit.source == "memory":
+            mid = getattr(record, "source_message_id", None)
+        elif hit.source == "message":
+            mid = getattr(record, "message_id", None)
+        else:
+            return None
+        if mid is None:
+            return None
+        try:
+            value = int(mid)
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0 else None
 
     # ── formatting ──────────────────────────────────────────────────────
 

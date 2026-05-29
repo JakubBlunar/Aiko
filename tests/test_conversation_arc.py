@@ -109,7 +109,8 @@ class ArcEstimatorTests(unittest.TestCase):
                 current_turn=2,
             )
             self.assertEqual(state.arc, "support")
-            self.assertGreaterEqual(state.confidence, 0.8)
+            self.assertGreaterEqual(state.confidence, 0.5)
+            self.assertLess(state.confidence, 0.85)
             self.assertEqual(state.since_turn, 2)
         finally:
             f.close()
@@ -125,16 +126,16 @@ class ArcEstimatorTests(unittest.TestCase):
         finally:
             f.close()
 
-    def test_debug_signal(self):
+    def test_silly_signal(self):
         f = _Fixture()
         try:
             est = self._est(f.store)
             state = est.apply_turn(
                 "u1",
-                user_text="getting a stack trace and the function crashes",
+                user_text="imagine if cats ran the post office, that would be hilarious",
                 current_turn=4,
             )
-            self.assertEqual(state.arc, "debug")
+            self.assertEqual(state.arc, "silly")
         finally:
             f.close()
 
@@ -168,25 +169,27 @@ class ArcEstimatorTests(unittest.TestCase):
         f = _Fixture()
         try:
             est = self._est(f.store)
-            est.apply_turn(
+            first = est.apply_turn(
                 "u1",
-                user_text="why does this keep happening",
+                user_text="i've been thinking about it a lot lately",
                 current_turn=1,
             )
             after = est.apply_turn(
                 "u1",
-                user_text="fundamentally, why are we doing it this way",
+                user_text="looking back, i realized something",
                 current_turn=2,
             )
-            self.assertEqual(after.arc, "deep_dive")
+            self.assertEqual(first.arc, "reflection")
+            self.assertEqual(after.arc, "reflection")
+            self.assertGreaterEqual(after.confidence, first.confidence)
         finally:
             f.close()
 
 
 class ParseSmoothOutputTests(unittest.TestCase):
     def test_plain_json(self):
-        out = _parse_smooth_output('{"arc":"deep_dive","confidence":0.7}')
-        self.assertEqual(out, ("deep_dive", 0.7))
+        out = _parse_smooth_output('{"arc":"silly","confidence":0.7}')
+        self.assertEqual(out, ("silly", 0.7))
 
     def test_fenced_json(self):
         raw = "```json\n{\"arc\":\"support\",\"confidence\":0.9}\n```"
@@ -211,7 +214,7 @@ class ParseSmoothOutputTests(unittest.TestCase):
 
 
 class ArcSmootherWorkerTests(unittest.TestCase):
-    def _make(self, response: str = '{"arc":"deep_dive","confidence":0.8}', **overrides):
+    def _make(self, response: str = '{"arc":"silly","confidence":0.8}', **overrides):
         f = _Fixture()
         ollama = _FakeOllama(response)
         kwargs = {
@@ -247,14 +250,14 @@ class ArcSmootherWorkerTests(unittest.TestCase):
             state = worker.maybe_run(
                 "u1",
                 history_provider=lambda: [
-                    ("user", "let's get into the philosophy of it"),
+                    ("user", "what if we made everything out of cheese"),
                     ("assistant", "ok!"),
                 ],
                 current_turn=4,
             )
             self.assertIsNotNone(state)
             assert state is not None
-            self.assertEqual(state.arc, "deep_dive")
+            self.assertEqual(state.arc, "silly")
             self.assertEqual(worker.stats()["switches"], 1)
         finally:
             f.close()
@@ -337,6 +340,11 @@ class ValidArcsConstantTests(unittest.TestCase):
     def test_count_and_uniqueness(self):
         self.assertEqual(len(set(VALID_ARCS)), len(VALID_ARCS))
         self.assertIn("casual_check_in", VALID_ARCS)
+        self.assertIn("silly", VALID_ARCS)
+        # Dropped values from the v13 taxonomy refresh.
+        self.assertNotIn("deep_dive", VALID_ARCS)
+        self.assertNotIn("debug", VALID_ARCS)
+        self.assertEqual(len(VALID_ARCS), 6)
 
 
 if __name__ == "__main__":
