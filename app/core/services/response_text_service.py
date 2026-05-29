@@ -286,6 +286,21 @@ _MOMENT_OPEN_TAIL_PATTERN = re.compile(
     flags=re.IGNORECASE,
 )
 
+# H1: [[arc:NAME]] — Aiko's optional self-tag of the conversation arc
+# (one of the six values in :data:`app.core.conversation_arc.VALID_ARCS`).
+# Stripped from display + TTS like the other meta tags; consumed by
+# :class:`ArcStore.set_from_self_tag` at confidence 0.85 so a regex hit
+# can't immediately overwrite it. Tag is single-valued per turn -- if
+# Aiko emits more than one, callers take the last and ignore the rest.
+_ARC_TAG_PATTERN = re.compile(
+    r"\[\[arc:(?P<arc>[a-z_]+)\]\]",
+    flags=re.IGNORECASE,
+)
+_ARC_OPEN_TAIL_PATTERN = re.compile(
+    r"\[\[arc:[^\]]*\Z",
+    flags=re.IGNORECASE,
+)
+
 # F2 personality backlog: [[gap:topic:short question]] — knowledge-gap
 # journal entry (see :mod:`app.core.knowledge_gap_extractor`). Same
 # stripping treatment as [[remember:...]] and [[moment:...]]: invisible
@@ -437,6 +452,26 @@ def extract_motion_commands(text: str) -> list[tuple[str, int]]:
     ]
 
 
+def parse_arc_tags(text: str) -> list[str]:
+    """Return every well-formed ``[[arc:NAME]]`` value from ``text``.
+
+    Values are lowercased and trimmed; validation against
+    :data:`app.core.conversation_arc.VALID_ARCS` happens at the dispatch
+    site (this module avoids the import cycle). Tag is intentionally
+    single-valued per turn -- if Aiko emits more than one, the dispatcher
+    takes ``parse_arc_tags(...)[-1]`` and ignores the rest.
+    """
+    source = str(text or "")
+    if not source:
+        return []
+    out: list[str] = []
+    for m in _ARC_TAG_PATTERN.finditer(source):
+        value = (m.group("arc") or "").strip().lower()
+        if value:
+            out.append(value)
+    return out
+
+
 def extract_conflict_tags(text: str) -> list[str]:
     """Return the body of every well-formed ``[[conflict:reason]]`` tag.
 
@@ -553,6 +588,9 @@ def strip_all_meta_tags(text: str) -> str:
     # Schema v7: same treatment for [[moment:vibe:summary]].
     s = _MOMENT_TAG_PATTERN.sub("", s)
     s = _MOMENT_OPEN_TAIL_PATTERN.sub("", s)
+    # H1: same treatment for [[arc:NAME]] self-tags.
+    s = _ARC_TAG_PATTERN.sub("", s)
+    s = _ARC_OPEN_TAIL_PATTERN.sub("", s)
     # F2: same treatment for [[gap:topic:question]].
     s = _GAP_TAG_PATTERN.sub("", s)
     s = _GAP_OPEN_TAIL_PATTERN.sub("", s)
@@ -649,6 +687,7 @@ _META_OPENERS = (
     "[[outfit:",
     "[[motion:",
     "[[moment:",
+    "[[arc:",
     "[[gap:",
     "[[conflict:",
     "[[predict:",
@@ -679,6 +718,8 @@ def _looks_like_partial_opener(suffix: str) -> bool:
     if lowered.startswith("[[overlay:") and "]]" not in lowered:
         return True
     if lowered.startswith("[[moment:") and "]]" not in lowered:
+        return True
+    if lowered.startswith("[[arc:") and "]]" not in lowered:
         return True
     if lowered.startswith("[[gap:") and "]]" not in lowered:
         return True

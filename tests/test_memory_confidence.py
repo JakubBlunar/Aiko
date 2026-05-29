@@ -46,8 +46,12 @@ def _emb(text: str) -> np.ndarray:
 
 
 class TestSchemaMigration(unittest.TestCase):
-    def test_schema_version_is_12(self) -> None:
-        self.assertEqual(_SCHEMA_VERSION, 12)
+    def test_schema_version_is_at_least_v12(self) -> None:
+        # Confidence column landed in v12; later migrations are additive
+        # so we just assert the floor and that the constant matches the
+        # current head -- never lock the version literal here, otherwise
+        # every future schema bump would trip this assertion.
+        self.assertGreaterEqual(_SCHEMA_VERSION, 12)
 
     def test_fresh_database_has_confidence_column(self) -> None:
         path, _store = _store_factory()
@@ -114,7 +118,7 @@ class TestSchemaMigration(unittest.TestCase):
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         finally:
             conn.close()
-        self.assertEqual(version, 12)
+        self.assertEqual(version, _SCHEMA_VERSION)
         # Unpinned row stays at 0.7 default.
         self.assertEqual(rows[0][0], "unpinned row")
         self.assertAlmostEqual(rows[0][2], 0.7, places=5)

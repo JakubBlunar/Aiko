@@ -105,6 +105,11 @@ class TurnResult:
     # dispatched. Surfaced by the MCP ``get_last_response_detail`` tool so
     # we can see at a glance whether grammar compliance is degrading.
     mood_fallback: bool = False
+    # H1 + K4: the persisted ``messages`` row id for this turn's
+    # assistant reply, exposed so post-turn flows can stamp the
+    # parsed arc onto ``messages.arc`` without re-querying the DB.
+    # ``None`` when the reply was empty / aborted and never persisted.
+    assistant_message_id: int | None = None
 
 
 class TurnRunner:
@@ -774,6 +779,7 @@ class TurnRunner:
             filler_emitted=self._filler.fired,
             raw_text=full_raw,
             mood_fallback=mood_fallback,
+            assistant_message_id=assistant_message_id,
         )
 
     # ── helpers ───────────────────────────────────────────────────────

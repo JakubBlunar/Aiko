@@ -190,7 +190,7 @@ class CuriosityWorkerTests(unittest.TestCase):
             session_key="s1",
             user_text="yeah",
             assistant_text="...",
-            arc_label="deep_dive",
+            arc_label="support",
         )
         self.assertIsNone(result)
         self.assertEqual(ollama.calls, 0)

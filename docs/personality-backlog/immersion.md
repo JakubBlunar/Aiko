@@ -9,33 +9,8 @@ block from the legacy backlog file has been folded into this section
 
 ## H1. Conversation-arc surfacing via tag
 
-**Most of the infra is already live.**
-[`app/core/conversation_arc.py`](../../app/core/conversation_arc.py)
-ships an `ArcEstimator`, an `ArcSmootherWorker`, an `ArcStore`, and
-the `_render_arc_block` inner-life provider already wires the
-inferred arc into the prompt. What's missing is the inline
-self-tag (`[[arc:vulnerable]]` / `[[arc:silly]]` /
-`[[arc:focused]]`) so Aiko can override or reinforce the
-estimator from her own read of the moment, plus the `messages.arc`
-column the parser would write into.
-
-The parser pattern already exists for `[[agenda:]]`, `[[moment:]]`,
-and `[[predict:]]` in
-[`app/core/services/response_text_service.py`](../../app/core/services/response_text_service.py)
-— the new tag follows the same shape (regex match → strip from
-spoken text → dispatch to the store). Once the column lands, the
-Together-tab timeline can filter by arc, and
-[`app/core/rag_retriever.py`](../../app/core/rag_retriever.py)
-can apply a small (`+0.03`?) score to arc-matched memories when
-the current arc repeats.
-
-Key files: persona file,
-[`app/core/services/response_text_service.py`](../../app/core/services/response_text_service.py)
-(parser), [`app/core/chat_database.py`](../../app/core/chat_database.py)
-(schema migration adding `messages.arc`),
-[`app/core/conversation_arc.py`](../../app/core/conversation_arc.py)
-(consume self-tag with priority over estimator),
-[`app/core/rag_retriever.py`](../../app/core/rag_retriever.py).
+Shipped — see [`shipped.md`](shipped.md) "H1 + K4. Conversation-arc
+self-tag + dialogue-act tagging (schema v13)".
 
 ---
 
