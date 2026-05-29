@@ -273,6 +273,15 @@ export function useAssistantSocket(): {
 
       case "error":
         store.pushSystemMessage(`Error: ${evt.message}`);
+        // Commit any partial streamed text into the bubble before
+        // we drop ``turnInProgress``. Without this the bubble that
+        // was streaming when the error fired is left with
+        // ``streaming: true`` forever (selectable in the DOM via
+        // the ``.streaming-caret`` blink) and the partial reply
+        // would silently disappear from view on the next session
+        // switch when ``streamingDraft`` clears. ``finishAssistantBubble``
+        // is a no-op when there's nothing to commit.
+        store.finishAssistantBubble();
         store.setTurnInProgress(false);
         break;
 

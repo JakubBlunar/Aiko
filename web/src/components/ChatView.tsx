@@ -497,6 +497,7 @@ function EmptyState({ booting = false }: { booting?: boolean }) {
 }
 
 interface BubbleProps {
+  id: string;
   role: "user" | "assistant" | "system";
   content: string;
   createdAt: string;
@@ -558,17 +559,17 @@ function renderMessageContent(content: string): React.ReactNode {
   });
 }
 
-// ``MessageBubble`` is wrapped in :func:`memo` below because every
-// streamed token rebuilds the entire ``messages`` array in the store
-// (a fresh reference is required for Zustand to fan out the change),
-// which makes the parent ``ChatView`` re-render. Without memo, the
-// ``messages.map`` would re-render every bubble in the history on
-// each token at 30-50 Hz — which used to starve the Live2D
-// ``requestAnimationFrame`` loop and visibly stutter the avatar.
-// Memoising on the prop tuple lets React skip every bubble whose
-// content / streaming flag / reaction is unchanged; only the
-// currently-streaming bubble actually re-renders per token.
+// ``MessageBubble`` is wrapped in :func:`memo` below because the
+// streaming bubble subscribes to ``streamingDraft`` directly (P9):
+// the messages array stays referentially stable across the whole
+// turn so Virtuoso never re-keys, but the streaming bubble alone
+// re-renders per token via its own draft subscription. Non-
+// streaming bubbles get a stable ``null`` from the selector and
+// memo skips their re-render entirely. Without memo, every prop
+// fan-out from ``ChatView`` (e.g. on session switch or post-turn
+// metadata) would still re-render every visible bubble.
 function MessageBubbleImpl({
+  id,
   role,
   content,
   createdAt,
@@ -577,6 +578,18 @@ function MessageBubbleImpl({
   kind,
   backendId,
 }: BubbleProps) {
+  // P9: when this bubble is the active streaming bubble, pull its
+  // live content + reaction from the ``streamingDraft`` slice
+  // instead of the props. The selector returns the SAME ``null``
+  // reference for every other bubble (and between turns), so the
+  // store update fan-out leaves them untouched. Only the streaming
+  // bubble re-renders per token. On commit (``finishAssistantBubble``)
+  // the draft clears and the props become authoritative again.
+  const draft = useAssistantStore((s) =>
+    s.streamingDraft && s.streamingDraft.id === id ? s.streamingDraft : null,
+  );
+  const liveContent = draft ? draft.content : content;
+  const liveReaction = draft?.reaction ?? reaction;
   const [markOpen, setMarkOpen] = useState(false);
   const [marking, setMarking] = useState(false);
   const [marked, setMarked] = useState(false);
@@ -630,10 +643,10 @@ function MessageBubbleImpl({
               : "max-w-2xl border border-white/10 bg-white/[0.04] text-ink-100"
         } ${streaming ? "streaming-caret" : ""}`}
       >
-        {content
+        {liveContent
           ? isUser
-            ? content
-            : renderMessageContent(content)
+            ? liveContent
+            : renderMessageContent(liveContent)
           : streaming
             ? ""
             : "(empty)"}
@@ -688,7 +701,9 @@ function MessageBubbleImpl({
       <div className="text-[10px] text-ink-100/40">
         {isUser ? "you" : isProactive ? "aiko · proactive" : "aiko"} ·{" "}
         {formatTime(createdAt)}
-        {!isUser && reaction && reaction !== "neutral" ? ` · ${reaction}` : ""}
+        {!isUser && liveReaction && liveReaction !== "neutral"
+          ? ` · ${liveReaction}`
+          : ""}
       </div>
     </div>
   );
