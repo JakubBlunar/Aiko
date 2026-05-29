@@ -13,10 +13,19 @@ import { dirname, resolve } from "node:path";
  * its effects end-to-end. Lock in the wiring with cheap source
  * checks instead -- the runtime behaviour is covered by the Python
  * worker tests + manual verification.
+ *
+ * After the file-size refactor the panel lives at
+ * ``settings/memory/CuriositySeedsPanel.tsx`` and is re-exported
+ * back into the Memory tab; the assertions point at the new source
+ * file and the MemoryTab shell.
  */
 const here = dirname(fileURLToPath(import.meta.url));
-const settingsSource = readFileSync(
-  resolve(here, "SettingsDrawer.tsx"),
+const panelSource = readFileSync(
+  resolve(here, "settings", "memory", "CuriositySeedsPanel.tsx"),
+  "utf-8",
+);
+const memoryTabSource = readFileSync(
+  resolve(here, "settings", "MemoryTab.tsx"),
   "utf-8",
 );
 const apiSource = readFileSync(
@@ -26,24 +35,24 @@ const apiSource = readFileSync(
 
 describe("CuriositySeedsPanel wiring", () => {
   it("declares the panel function", () => {
-    expect(settingsSource).toMatch(
+    expect(panelSource).toMatch(
       /function\s+CuriositySeedsPanel\s*\(/,
     );
   });
 
   it("is mounted in the Memory tab next to the other panels", () => {
-    expect(settingsSource).toMatch(/<CuriositySeedsPanel\s*\/>/);
+    expect(memoryTabSource).toMatch(/<CuriositySeedsPanel\s*\/>/);
   });
 
   it("fetches seeds with kind=curiosity_seed", () => {
-    expect(settingsSource).toMatch(
+    expect(panelSource).toMatch(
       /kind:\s*"curiosity_seed"/,
     );
   });
 
   it("offers a 'regenerate now' control wired to runCuriositySeedWorker", () => {
-    expect(settingsSource).toMatch(/regenerate now/i);
-    expect(settingsSource).toMatch(/runCuriositySeedWorker/);
+    expect(panelSource).toMatch(/regenerate now/i);
+    expect(panelSource).toMatch(/runCuriositySeedWorker/);
   });
 
   it("api module exposes runCuriositySeedWorker hitting the right endpoint", () => {
