@@ -30,6 +30,7 @@ class _AgentStub:
     proactive_typed_enabled: bool = True
     proactive_silence_seconds_typed: float = 0.05
     activity_awareness_enabled: bool = False
+    proactive_typed_when_away: bool = False
 
 
 @dataclass
@@ -52,12 +53,14 @@ def _make_controller(
     user_present: bool = True,
     live_active: bool = False,
     turn_in_progress: bool = False,
+    proactive_typed_when_away: bool = False,
 ) -> tuple[SessionController, _DirectorStub]:
     controller = SessionController.__new__(SessionController)
     controller._settings = _SettingsStub(  # type: ignore[attr-defined]
         agent=_AgentStub(
             proactive_typed_enabled=typed_enabled,
             proactive_silence_seconds_typed=silence,
+            proactive_typed_when_away=proactive_typed_when_away,
         ),
     )
     controller._typed_silence_timer = None  # type: ignore[attr-defined]
@@ -184,6 +187,51 @@ class PresenceGateTests(unittest.TestCase):
         # Same value as default — should be a no-op (timer untouched).
         controller.set_user_present(True)
         self.assertIs(controller._typed_silence_timer, first_timer)
+
+
+class TypedWhenAwayFlagTests(unittest.TestCase):
+    """``proactive_typed_when_away`` opts out of the presence gate.
+
+    Default (``False``) keeps the historical behavior: hidden windows
+    -> no autonomous chime. Setting it to ``True`` lets the typed
+    proactive timer fire even when ``_user_present == False``, which
+    is the user's "let her talk while I'm away" opt-in.
+    """
+
+    def test_flag_off_respects_presence(self) -> None:
+        # All other gates passing, but the user is absent and the flag
+        # is off -> ineligible. This is the regression that the user
+        # originally hit (Aiko spoke while every window was hidden).
+        controller, _ = _make_controller(
+            user_present=False, proactive_typed_when_away=False,
+        )
+        self.assertFalse(controller._is_typed_proactive_eligible())
+
+    def test_flag_on_bypasses_presence(self) -> None:
+        # Flag on -> eligibility no longer depends on presence.
+        controller, _ = _make_controller(
+            user_present=False, proactive_typed_when_away=True,
+        )
+        self.assertTrue(controller._is_typed_proactive_eligible())
+
+    def test_flag_on_still_blocked_by_other_gates(self) -> None:
+        # The flag opens the *presence* gate only — the master toggle,
+        # voice mode, and turn-in-progress checks still apply. Otherwise
+        # flipping it would silently override the "Aiko shouldn't speak
+        # while I'm typing" guard.
+        controller, _ = _make_controller(
+            user_present=False, proactive_typed_when_away=True,
+        )
+        controller._settings.agent.proactive_typed_enabled = False
+        self.assertFalse(controller._is_typed_proactive_eligible())
+
+        controller._settings.agent.proactive_typed_enabled = True
+        controller._live_voice_session_active = True
+        self.assertFalse(controller._is_typed_proactive_eligible())
+
+        controller._live_voice_session_active = False
+        controller._turn_in_progress = True
+        self.assertFalse(controller._is_typed_proactive_eligible())
 
 
 if __name__ == "__main__":

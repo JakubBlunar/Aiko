@@ -122,7 +122,31 @@ export function usePresenceReporter(options: UsePresenceReporterOptions): void {
     // ── Tauri focus listeners ────────────────────────────────────
     let tauriUnlistenFocus: (() => void) | null = null;
     let tauriUnlistenBlur: (() => void) | null = null;
+    let tauriUnlistenHide: (() => void) | null = null;
     let cancelled = false;
+
+    /**
+     * Force a ``presence:false`` send right now, no debounce. Used by
+     * the ``presence-hide`` Tauri event the Rust side fires *before*
+     * the X-close path hides the window. Without this the 500 ms
+     * debounce would lose the race against Chromium freezing
+     * background webview timers, leaving the backend stuck on the
+     * last-known-good ``True`` until the user reopens the window
+     * (and the proactive timer would fire in the meantime).
+     */
+    const flushHidden = () => {
+      if (debounceTimerRef.current !== null) {
+        window.clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = null;
+      }
+      tauriFocusedRef.current = false;
+      lastSentRef.current = false;
+      try {
+        sendRef.current({ type: "presence", visible: false });
+      } catch (err) {
+        console.warn("[presence] flush-hidden send failed", err);
+      }
+    };
 
     if (isTauri()) {
       // Dynamic import keeps the @tauri-apps/api module out of the
@@ -147,13 +171,27 @@ export function usePresenceReporter(options: UsePresenceReporterOptions): void {
                 schedule();
               },
             );
+            // App-level event emitted just before the main window
+            // hides via the X close. Listened on the app handle
+            // (not the window) because Tauri's ``app.emit_to``
+            // routes by window label, and the window event channel
+            // is for ``tauri://*`` builtins.
+            const appMod = await import("@tauri-apps/api/event");
+            const hideUnlisten = await appMod.listen<unknown>(
+              "presence-hide",
+              () => {
+                flushHidden();
+              },
+            );
             if (cancelled) {
               focusUnlisten();
               blurUnlisten();
+              hideUnlisten();
               return;
             }
             tauriUnlistenFocus = focusUnlisten;
             tauriUnlistenBlur = blurUnlisten;
+            tauriUnlistenHide = hideUnlisten;
             // Seed the initial Tauri focus state directly; the events
             // only fire on transitions and we don't want to block the
             // first send waiting for a transition.
@@ -186,6 +224,7 @@ export function usePresenceReporter(options: UsePresenceReporterOptions): void {
       window.removeEventListener("blur", onBlur);
       if (tauriUnlistenFocus) tauriUnlistenFocus();
       if (tauriUnlistenBlur) tauriUnlistenBlur();
+      if (tauriUnlistenHide) tauriUnlistenHide();
       if (debounceTimerRef.current !== null) {
         window.clearTimeout(debounceTimerRef.current);
         debounceTimerRef.current = null;

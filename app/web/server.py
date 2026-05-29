@@ -73,6 +73,17 @@ class _Hub:
         self._lock = threading.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._voice_owner_id: str | None = None
+        # Per-client visibility cache. The WS layer writes the latest
+        # ``presence`` frame from each client here and folds the dict
+        # via :meth:`any_client_visible` so the proactive director can
+        # gate on "is *any* connected window visible right now?" rather
+        # than racing on a single session-wide flag overwritten by
+        # whichever client wrote last. Disconnects drop the entry so
+        # closing every window flips the fold to ``False`` automatically.
+        # Keys are ``client_id`` strings (not ``WebSocket`` objects) so
+        # ``discard`` -- which already returns the freed id -- can clean
+        # up without an extra back-pointer.
+        self._visible_by_client: dict[str, bool] = {}
 
     def attach_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
@@ -80,16 +91,44 @@ class _Hub:
     def add(self, ws: WebSocket, client_id: str) -> None:
         with self._lock:
             self._sockets[ws] = client_id
+            # Default to ``False`` until the client sends its first
+            # ``presence`` frame. Defaulting to ``True`` would let a
+            # stale-boot value override a correctly-reported ``False``
+            # from another open window (and the React reporter sends
+            # its initial frame eagerly on mount, so the gap is small).
+
+            self._visible_by_client.setdefault(client_id, False)
 
     def discard(self, ws: WebSocket) -> str | None:
         """Remove ``ws``; if it owned the mic, return the freed id."""
         released: str | None = None
         with self._lock:
             client_id = self._sockets.pop(ws, None)
-            if client_id is not None and self._voice_owner_id == client_id:
-                released = client_id
-                self._voice_owner_id = None
+            if client_id is not None:
+                self._visible_by_client.pop(client_id, None)
+                if self._voice_owner_id == client_id:
+                    released = client_id
+                    self._voice_owner_id = None
         return released
+
+    def set_client_presence(self, client_id: str, visible: bool) -> None:
+        """Record the latest ``presence`` frame from ``client_id``.
+
+        No-op for unknown ids (e.g. a disconnect raced the frame); the
+        dict only grows on :meth:`add` so the cache can't leak across
+        reconnects.
+        """
+        with self._lock:
+            if client_id not in self._visible_by_client:
+                return
+            self._visible_by_client[client_id] = bool(visible)
+
+    def any_client_visible(self) -> bool:
+        """``True`` iff at least one connected client most-recently
+        reported visible. Empty cache (no clients) returns ``False`` --
+        no windows = no presence."""
+        with self._lock:
+            return any(self._visible_by_client.values())
 
     def snapshot(self) -> list[tuple[WebSocket, str]]:
         with self._lock:
@@ -646,6 +685,9 @@ def create_web_app(session: "SessionController") -> FastAPI:
                 "cooldown_seconds_typed": float(
                     getattr(s.agent, "proactive_cooldown_seconds_typed", 600.0),
                 ),
+                "typed_when_away": bool(
+                    getattr(s.agent, "proactive_typed_when_away", False),
+                ),
             },
             "activity": {
                 # Surfaced as a top-level block (not under ``proactive``)
@@ -784,6 +826,10 @@ def create_web_app(session: "SessionController") -> FastAPI:
                 log.debug(
                     "proactive update_runtime (typed) failed", exc_info=True,
                 )
+        if "typed_when_away" in proactive:
+            session._settings.agent.proactive_typed_when_away = bool(
+                proactive["typed_when_away"]
+            )
         activity = payload.get("activity") or {}
         if "awareness_enabled" in activity:
             new_value = bool(activity["awareness_enabled"])
@@ -2088,11 +2134,18 @@ def create_web_app(session: "SessionController") -> FastAPI:
                     # Tab visibility / window focus from the React client.
                     # Folded into a single boolean client-side (browser
                     # ``visibilitychange`` AND-gated with Tauri
-                    # ``tauri://focus``/``blur``); the backend just
-                    # toggles the typed-mode proactive timer's gate.
+                    # ``tauri://focus``/``blur``).
+                    #
+                    # We then fold ACROSS clients in the hub so a
+                    # multi-window session (main + persona) reports
+                    # "present" iff at least one window is visible. A
+                    # naked ``set_user_present(visible)`` would let a
+                    # newly-blurred client overwrite a still-visible
+                    # sibling.
                     visible = bool(msg.get("visible", True))
+                    hub.set_client_presence(client_id, visible)
                     try:
-                        session.set_user_present(visible)
+                        session.set_user_present(hub.any_client_visible())
                     except Exception:
                         log.debug("set_user_present failed", exc_info=True)
 
@@ -2119,6 +2172,17 @@ def create_web_app(session: "SessionController") -> FastAPI:
             log.exception("websocket loop crashed")
         finally:
             released_owner = hub.discard(ws)
+            # Re-fold presence after the disconnect: ``hub.discard``
+            # has already removed this client's entry from
+            # ``_visible_by_client``, so an empty hub now reports
+            # ``False`` and the typed-proactive timer disarms. This
+            # is the path that catches "user closed the last window"
+            # cleanly even if the React side never managed to send a
+            # final ``presence`` frame.
+            try:
+                session.set_user_present(hub.any_client_visible())
+            except Exception:
+                log.debug("set_user_present on disconnect failed", exc_info=True)
             if released_owner is not None:
                 try:
                     session.feed_audio_end()

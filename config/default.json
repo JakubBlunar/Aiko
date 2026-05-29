@@ -22,6 +22,7 @@
     "proactive_typed_enabled": true,
     "proactive_silence_seconds_typed": 240,
     "proactive_cooldown_seconds_typed": 600,
+    "proactive_typed_when_away": false,
     "activity_awareness_enabled": false,
     "shared_moments_enabled": true,
     "shared_moments_llm_enabled": true,

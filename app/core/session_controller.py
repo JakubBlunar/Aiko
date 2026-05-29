@@ -2455,6 +2455,14 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
         Voice mode dominance lives here: when the user is on the mic
         the typed path is forcefully disabled regardless of presence
         signals (which are typed-mode only — see ``set_user_present``).
+
+        The presence gate is conditional on
+        ``agent.proactive_typed_when_away``: with it ``False`` (the
+        default) hidden / blurred windows silence the timer; with it
+        ``True`` the timer fires regardless. The flag exists so users
+        who want Aiko to chime in even when they've alt-tabbed away
+        can opt in without having to disable the proactive subsystem
+        entirely.
         """
         agent = self._settings.agent
         if not bool(getattr(agent, "proactive_typed_enabled", True)):
@@ -2463,7 +2471,9 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
             return False
         if self._turn_in_progress:
             return False
-        if not self._user_present:
+        if not self._user_present and not bool(
+            getattr(agent, "proactive_typed_when_away", False)
+        ):
             return False
         return True
 
