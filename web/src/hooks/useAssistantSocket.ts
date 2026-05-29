@@ -111,12 +111,6 @@ export function useAssistantSocket(): {
               /* avatar endpoint missing or backend offline -- ignore */
             });
         }
-        // Desktop snapshot is optional too: a stale backend may not
-        // emit it. The browser layout doesn't care; the persona window
-        // re-fetches via /api/desktop if the field is missing.
-        if (evt.desktop) {
-          store.setDesktop(evt.desktop);
-        }
         // Identity (first-run onboarding gate). Stale backends omit
         // it; in that case fall back to GET /api/settings/identity so
         // we never miss the onboarding modal trigger.
@@ -344,29 +338,6 @@ export function useAssistantSocket(): {
           user_display_name: evt.user_display_name,
           needs_onboarding: Boolean(evt.needs_onboarding),
         });
-        break;
-
-      case "desktop_settings_changed":
-        // Mirror the snapshot into the store first so any open window
-        // re-renders against the new geometry. Inside the Tauri shell
-        // we then issue the matching window-management commands so the
-        // OS-level frame matches; in the browser this is a no-op.
-        store.setPersonaWindow(evt.persona_window);
-        if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
-          import("../desktop/commands")
-            .then(({ desktop }) => {
-              void desktop.setPersonaGeometry(
-                evt.persona_window.width,
-                evt.persona_window.height,
-              );
-              void desktop.setPersonaAlwaysOnTop(
-                evt.persona_window.always_on_top,
-              );
-            })
-            .catch(() => {
-              /* desktop helpers absent at runtime — ignore */
-            });
-        }
         break;
 
       case "avatar_overlay":

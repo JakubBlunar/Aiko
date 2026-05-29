@@ -165,22 +165,30 @@ honoured if you override the setting, so existing checkouts keep working.
 
 ## Persona window settings persistence
 
-The persona window's geometry survives an app restart:
+The persona window's geometry survives an app restart on a per-machine
+basis (not via the Python config):
 
-* `config/default.json` defines the defaults at `desktop.persona_window`.
-* [`PersonaWindowSettings`](../app/core/settings.py) and
-  [`DesktopSettings`](../app/core/settings.py) wrap them with clamps
-  (`PERSONA_WINDOW_MIN/MAX_WIDTH` / `MIN/MAX_HEIGHT`).
-* `SessionController.update_desktop_settings(...)` clamps + persists to
-  `config/user.json` (mirrors the avatar-settings pattern), and
-  broadcasts a `desktop_settings_changed` WS event.
-* The frontend handler in `useAssistantSocket.ts` mirrors the snapshot
-  into the Zustand store (`setPersonaWindow`) and, when running inside
-  a Tauri webview, calls `desktop.setPersonaGeometry(width, height)`
-  + `desktop.setPersonaAlwaysOnTop(...)` so the OS-level frame matches.
-* `SettingsDrawer.tsx` "Avatar" tab has a "Persona window (desktop)"
-  section with width / height sliders + always-on-top checkbox + an
-  "Open persona window" button (disabled outside Tauri).
+* [`tauri-plugin-window-state`](https://v2.tauri.app/plugin/window-state/)
+  is registered in [`web/src-tauri/src/lib.rs`](../web/src-tauri/src/lib.rs)
+  with `StateFlags::POSITION | SIZE`. The plugin auto-saves both
+  windows on close and restores them on the next launch -- the saved
+  state lives in the OS-specific app-data dir, not in
+  `config/user.json`. We deliberately exclude `MAXIMIZED` /
+  `FULLSCREEN` so the user's last accidental maximize doesn't lock
+  them in.
+* The "always on top" preference is *not* covered by the plugin
+  (Tauri may rebuild the window without it). We persist it
+  client-side in `localStorage` (`aiko.persona.always_on_top`) via
+  the `personaAlwaysOnTop` slice on the Zustand store, and re-apply
+  it through the `set_persona_always_on_top` Tauri command on every
+  persona-open transition (see `usePersonaVisibilitySync` in
+  [`web/src/App.tsx`](../web/src/App.tsx)).
+* The settings drawer's "Persona window (desktop)" section in
+  [`SettingsDrawer.tsx`](../web/src/components/SettingsDrawer.tsx)
+  is intentionally minimal: an always-on-top checkbox, an "Open
+  persona window" button, and a "Reset window position" button
+  (calls `reset_persona_window_position` to recover from "I dragged
+  it offscreen"). All controls are disabled outside the Tauri shell.
 
 ## Global gaze (cross-monitor eye tracking)
 
@@ -247,9 +255,13 @@ After making any change to the shell:
    slides in. Drag it from the top strip (the "aiko · idle" pill).
 5. Click the persona window's mic button — it should toggle voice mode
    for both windows simultaneously (`voice_state` is a broadcast event).
-6. Open Settings → Avatar → Persona window. Drag the width / height
-   sliders. The persona window resizes live; close + reopen the desktop
-   app and confirm the values persisted to `config/user.json`.
+6. Open Settings → Avatar → Persona window. Toggle "Always on top"
+   off and on -- the persona window should drop / rise relative to
+   other apps. Drag and resize the persona window itself, then close
+   it and reopen via the tray or the **Persona** button: position +
+   size should be restored. Click "Reset window position" -- the
+   window should snap back to the default size, centered on the
+   current monitor.
 7. Right-click the system tray icon → **Hide persona window** /
    **Show persona window** / **Quit Aiko**. Quit fully terminates the
    process; if the backend is still running you'll see the WS reconnect

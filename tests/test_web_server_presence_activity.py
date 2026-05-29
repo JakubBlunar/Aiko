@@ -24,7 +24,6 @@ def _build_client() -> tuple[TestClient, MagicMock]:
     session.context_window_size = 8192
     session.context_window_source = "fallback"
     session.avatar_payload.return_value = {}
-    session.desktop_settings.return_value = {}
     # The hello frame reads ``_settings.tts.enabled``. MagicMock
     # bools-coerce truthy by default; setting it explicitly keeps the
     # JSON snapshot deterministic.

@@ -786,20 +786,6 @@ export type BackchannelHint =
   | "confused"
   | "thinking";
 
-/** Persona-window settings emitted from the Python backend. The Tauri
- * shell consumes these to resize / pin the persona window; browser
- * deployments simply ignore them. ``always_on_top`` is omitted from
- * the type union to keep the payload trivially serializable in tests. */
-export interface PersonaWindowSettings {
-  width: number;
-  height: number;
-  always_on_top: boolean;
-}
-
-export interface DesktopSettings {
-  persona_window: PersonaWindowSettings;
-}
-
 // ── Aiko's room (virtual world) ────────────────────────────────────
 
 export type WorldKind =
@@ -956,10 +942,6 @@ export type WsServerEvent =
       context_window?: number;
       context_source?: string;
       avatar?: AvatarProfile;
-      /** Desktop / Tauri shell knobs broadcast to every connecting
-       * client so a freshly-opened window already knows its target
-       * geometry without an extra REST round-trip. */
-      desktop?: DesktopSettings;
       /** First-run identity. Optional only for backwards compatibility
        * with older backends; missing falls back to a REST fetch. */
       identity?: Identity;
@@ -1031,10 +1013,6 @@ export type WsServerEvent =
       settings: AvatarSettingsKnobs;
       resolved_outfit?: ResolvedOutfit;
       circadian_period?: CircadianPeriod;
-    }
-  | {
-      type: "desktop_settings_changed";
-      persona_window: PersonaWindowSettings;
     }
   | {
       /** Pushed by ``PUT /api/settings/identity``. The frontend uses

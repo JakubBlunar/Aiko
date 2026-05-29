@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AvatarPanel } from "./components/AvatarPanel";
 import { ChatView } from "./components/ChatView";
 import { FirstRunOnboarding } from "./components/FirstRunOnboarding";
+import { PanelResizeHandle } from "./components/PanelResizeHandle";
 import { PersonaWindow } from "./components/PersonaWindow";
 import { SessionSidebar } from "./components/SessionSidebar";
 import { SettingsDrawer } from "./components/SettingsDrawer";
@@ -42,25 +43,48 @@ function useRoute(): "main" | "persona" {
  * and then subscribes to the ``persona-visibility`` Tauri event so any
  * trigger (top-bar button, tray menu, X button) flips the flag. The
  * event subscription is a no-op outside of Tauri so the browser layout
- * is untouched. */
+ * is untouched.
+ *
+ * Also re-applies the user's ``personaAlwaysOnTop`` preference every
+ * time the persona window becomes visible. We can't trust the OS to
+ * remember the flag across window recreations (Tauri tears the window
+ * down on close in some configurations), and the
+ * ``tauri-plugin-window-state`` plugin only persists position + size,
+ * not always-on-top -- so we own this bit explicitly via
+ * ``localStorage`` round-trip. */
 function usePersonaVisibilitySync() {
   const setPersonaWindowVisible = useAssistantStore(
     (s) => s.setPersonaWindowVisible,
   );
+  const personaAlwaysOnTop = useAssistantStore((s) => s.personaAlwaysOnTop);
+  // Pull through a ref so the listener callback below always sees the
+  // current preference without re-subscribing whenever the user
+  // toggles the checkbox in settings.
+  const personaAlwaysOnTopRef = useRef(personaAlwaysOnTop);
+  useEffect(() => {
+    personaAlwaysOnTopRef.current = personaAlwaysOnTop;
+  }, [personaAlwaysOnTop]);
+
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | null = null;
 
+    const applyAlwaysOnTopIfVisible = (visible: boolean) => {
+      if (!visible) return;
+      void desktop.setPersonaAlwaysOnTop(personaAlwaysOnTopRef.current);
+    };
+
     void desktop.isPersonaVisible().then((value) => {
-      if (!cancelled) {
-        setPersonaWindowVisible(Boolean(value));
-      }
+      if (cancelled) return;
+      const visible = Boolean(value);
+      setPersonaWindowVisible(visible);
+      applyAlwaysOnTopIfVisible(visible);
     });
 
     void listenPersonaVisibility((visible) => {
-      if (!cancelled) {
-        setPersonaWindowVisible(visible);
-      }
+      if (cancelled) return;
+      setPersonaWindowVisible(visible);
+      applyAlwaysOnTopIfVisible(visible);
     }).then((teardown) => {
       if (cancelled) {
         teardown();
@@ -84,6 +108,14 @@ export default function App() {
   const route = useRoute();
   const tauri = isTauri();
   const personaVisible = useAssistantStore((s) => s.personaWindowVisible);
+  const personaPanelWidth = useAssistantStore((s) => s.personaPanelWidth);
+  const setPersonaPanelWidth = useAssistantStore(
+    (s) => s.setPersonaPanelWidth,
+  );
+  const leftSidebarCollapsed = useAssistantStore(
+    (s) => s.leftSidebarCollapsed,
+  );
+  const toggleLeftSidebar = useAssistantStore((s) => s.toggleLeftSidebar);
 
   // Subscribe only on the main window. The persona window doesn't need
   // to know its own visibility (it can ask the OS / DOM directly) and
@@ -164,14 +196,30 @@ export default function App() {
         onOpenSettings={() => setSettingsOpen(true)}
         onTogglePersona={tauri ? togglePersona : undefined}
         personaWindowVisible={personaVisible}
+        collapsed={leftSidebarCollapsed}
+        onToggleCollapsed={toggleLeftSidebar}
       />
       <main className="flex h-full min-w-0 flex-1">
         <ChatView send={send} sendBytes={sendBytes} />
       </main>
       {/* The avatar rail in the main window is redundant when the
           floating persona window is showing — Aiko is already on screen
-          there. Hide it cleanly so the chat column gets the space back. */}
-      {personaVisible ? null : <AvatarPanel />}
+          there. Hide it cleanly so the chat column gets the space back.
+          When inline, a draggable separator lives between chat and
+          avatar so the user can rebalance the columns; the handle reads
+          + writes ``personaPanelWidth`` (clamped + persisted in the
+          store). */}
+      {personaVisible ? null : (
+        <>
+          <PanelResizeHandle
+            ariaLabel="Resize avatar panel"
+            onResize={(deltaX) =>
+              setPersonaPanelWidth(personaPanelWidth - deltaX)
+            }
+          />
+          <AvatarPanel />
+        </>
+      )}
       <SettingsDrawer open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <Toasts />
       <FirstRunOnboarding />

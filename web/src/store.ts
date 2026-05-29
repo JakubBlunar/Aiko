@@ -8,7 +8,6 @@ import type {
   BackchannelHint,
   ChatMessage,
   CircadianPeriod,
-  DesktopSettings,
   Identity,
   LoggingSettings,
   Memory,
@@ -16,7 +15,6 @@ import type {
   MemoryTier,
   MetricsSnapshot,
   MoodState,
-  PersonaWindowSettings,
   RelationshipAxes,
   ResolvedOutfit,
   SharedMoment,
@@ -223,11 +221,6 @@ interface AssistantState {
   mood: MoodState;
   setMood: (mood: MoodState) => void;
 
-  /** Desktop / Tauri shell knobs. Only consumed by the persona window;
-   * browser tabs leave them alone. ``null`` until the WS ``hello`` lands. */
-  desktop: DesktopSettings | null;
-  setDesktop: (next: DesktopSettings | null) => void;
-  setPersonaWindow: (patch: Partial<PersonaWindowSettings>) => void;
   /** Whether the detached persona window is currently visible. Driven
    * by the ``persona-visibility`` Tauri event in ``App.tsx``. The main
    * window uses this to hide the redundant inline avatar rail when
@@ -298,6 +291,36 @@ interface AssistantState {
   upsertSharedMoment: (moment: SharedMoment) => void;
   removeSharedMoment: (momentId: number) => void;
   setRelationshipAxes: (axes: RelationshipAxes) => void;
+
+  // ── Layout (in-window) ─────────────────────────────────────────────
+  /**
+   * P-layout: client-only chrome state. Both fields persist to
+   * ``localStorage`` so a reload restores the user's chosen
+   * layout. They never round-trip through the backend -- layout
+   * is a per-device preference, not a session-shared one.
+   *
+   * ``leftSidebarCollapsed`` flips between the full 288px
+   * conversations sidebar and a 56px icon rail (settings, expand,
+   * persona toggle, new session). ``personaPanelWidth`` is the
+   * inline avatar column's pixel width, clamped to
+   * ``[MIN_PERSONA_PANEL_W, MAX_PERSONA_PANEL_W]`` so a stale
+   * localStorage value can't render the panel offscreen.
+   */
+  leftSidebarCollapsed: boolean;
+  personaPanelWidth: number;
+  /**
+   * Whether the detached persona window should stay above other
+   * windows. Persisted client-side and reapplied via the
+   * ``set_persona_always_on_top`` Tauri command on every persona
+   * open transition (the OS doesn't keep this flag across window
+   * recreations, and we deliberately moved this off the server
+   * since browsers have no persona window).
+   */
+  personaAlwaysOnTop: boolean;
+  toggleLeftSidebar: () => void;
+  setLeftSidebarCollapsed: (collapsed: boolean) => void;
+  setPersonaPanelWidth: (px: number) => void;
+  setPersonaAlwaysOnTop: (on: boolean) => void;
 }
 
 /** State for the "Together" tab. ``page`` is zero-indexed. */
@@ -355,6 +378,68 @@ const nextId = (): string => {
   bubbleCounter += 1;
   return `m_${Date.now().toString(36)}_${bubbleCounter}`;
 };
+
+// ── Layout persistence helpers ──────────────────────────────────────
+//
+// These run at store-creation time to seed the layout slice from the
+// previous session's localStorage values, and on every setter to write
+// the new value back. ``localStorage`` access is wrapped in
+// ``try/catch`` because some environments (incognito, restricted
+// embeds, server-side render) make it throw on access -- the layout
+// just falls back to defaults rather than crashing the app.
+
+export const MIN_PERSONA_PANEL_W = 320;
+export const MAX_PERSONA_PANEL_W = 720;
+export const DEFAULT_PERSONA_PANEL_W = 440;
+
+const LS_LEFT_COLLAPSED = "aiko.layout.left_collapsed";
+const LS_PERSONA_PANEL_W = "aiko.layout.persona_panel_w";
+const LS_PERSONA_ALWAYS_ON_TOP = "aiko.persona.always_on_top";
+
+function clampPanelWidth(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_PERSONA_PANEL_W;
+  return Math.max(MIN_PERSONA_PANEL_W, Math.min(MAX_PERSONA_PANEL_W, value));
+}
+
+function readBool(key: string, fallback: boolean): boolean {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw == null) return fallback;
+    if (raw === "1" || raw === "true") return true;
+    if (raw === "0" || raw === "false") return false;
+    return fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeBool(key: string, value: boolean): void {
+  try {
+    localStorage.setItem(key, value ? "1" : "0");
+  } catch {
+    // Storage quota / permissions / SSR -- not worth surfacing.
+  }
+}
+
+function readPersonaPanelWidth(): number {
+  try {
+    const raw = localStorage.getItem(LS_PERSONA_PANEL_W);
+    if (raw == null) return DEFAULT_PERSONA_PANEL_W;
+    const parsed = Number.parseFloat(raw);
+    if (!Number.isFinite(parsed)) return DEFAULT_PERSONA_PANEL_W;
+    return clampPanelWidth(parsed);
+  } catch {
+    return DEFAULT_PERSONA_PANEL_W;
+  }
+}
+
+function writePersonaPanelWidth(value: number): void {
+  try {
+    localStorage.setItem(LS_PERSONA_PANEL_W, String(Math.round(value)));
+  } catch {
+    // No-op; see ``writeBool``.
+  }
+}
 
 export const useAssistantStore = create<AssistantState>((set) => ({
   connection: { status: "disconnected", lastError: null },
@@ -776,22 +861,6 @@ export const useAssistantStore = create<AssistantState>((set) => ({
   mood: { label: "content", intensity: 0.5, valence: 0, arousal: 0.4 },
   setMood: (mood) => set({ mood }),
 
-  desktop: null,
-  setDesktop: (next) => set({ desktop: next }),
-  setPersonaWindow: (patch) =>
-    set((state) => {
-      const current =
-        state.desktop?.persona_window ?? {
-          width: 320,
-          height: 480,
-          always_on_top: true,
-        };
-      return {
-        desktop: {
-          persona_window: { ...current, ...patch },
-        },
-      };
-    }),
   personaWindowVisible: false,
   setPersonaWindowVisible: (visible) =>
     set({ personaWindowVisible: Boolean(visible) }),
@@ -927,6 +996,30 @@ export const useAssistantStore = create<AssistantState>((set) => ({
           : state.togetherView.summary,
       },
     })),
+
+  // ── Layout slice ────────────────────────────────────────────────
+  leftSidebarCollapsed: readBool(LS_LEFT_COLLAPSED, false),
+  personaPanelWidth: readPersonaPanelWidth(),
+  personaAlwaysOnTop: readBool(LS_PERSONA_ALWAYS_ON_TOP, false),
+  toggleLeftSidebar: () =>
+    set((state) => {
+      const next = !state.leftSidebarCollapsed;
+      writeBool(LS_LEFT_COLLAPSED, next);
+      return { leftSidebarCollapsed: next };
+    }),
+  setLeftSidebarCollapsed: (collapsed) => {
+    writeBool(LS_LEFT_COLLAPSED, collapsed);
+    set({ leftSidebarCollapsed: collapsed });
+  },
+  setPersonaPanelWidth: (px) => {
+    const clamped = clampPanelWidth(px);
+    writePersonaPanelWidth(clamped);
+    set({ personaPanelWidth: clamped });
+  },
+  setPersonaAlwaysOnTop: (on) => {
+    writeBool(LS_PERSONA_ALWAYS_ON_TOP, on);
+    set({ personaAlwaysOnTop: on });
+  },
 }));
 
 // Convenience getter without subscribing (used inside the WS hook).

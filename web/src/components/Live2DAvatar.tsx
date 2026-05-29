@@ -190,21 +190,55 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
         console.error("Live2D model failed to load", url, err);
       });
 
+    // Refit on every container size change.
+    //
+    // We deliberately observe the *container element*, not the window,
+    // because the avatar panel is now resizable from the inline drag
+    // handle (see ``PanelResizeHandle`` + ``personaPanelWidth`` in the
+    // store). Dragging the handle changes the container's CSS width
+    // without resizing the window, so a plain ``window.resize``
+    // listener (and PIXI's own ``resizeTo`` machinery, which is also
+    // window-driven) misses the event entirely. The model would then
+    // keep its previous ``app.screen.width / 2`` x-coordinate, leaving
+    // Aiko visibly off-center until the panel was remounted (i.e.
+    // app reopen, or detach + close persona window).
+    //
+    // ResizeObserver fires for the OS window resize *and* CSS-driven
+    // size changes. We:
+    //   1. ``app.resize()`` -- forces PIXI to re-read its
+    //      ``resizeTo`` target so ``app.screen`` matches the new
+    //      container box;
+    //   2. ``fitModelToContainer`` -- recomputes the scale + the
+    //      anchor using the fresh ``app.screen``.
+    // Both steps are cheap, but ``getBounds()`` walks the model's
+    // display tree, so we coalesce bursts of observer callbacks into
+    // one rAF tick. With a 120Hz cursor that drops the work from
+    // ~2 calls/frame to 1.
+    let rafPending = false;
     const handleResize = () => {
-      if (!modelRef.current || !appRef.current) {
-        return;
-      }
-      fitModelToContainer(
-        modelRef.current,
-        appRef.current,
-        manifest.settings.scale_multiplier ?? 1,
-      );
+      if (rafPending) return;
+      rafPending = true;
+      window.requestAnimationFrame(() => {
+        rafPending = false;
+        const app = appRef.current;
+        const model = modelRef.current;
+        if (!app) return;
+        app.resize();
+        if (model) {
+          fitModelToContainer(
+            model,
+            app,
+            manifest.settings.scale_multiplier ?? 1,
+          );
+        }
+      });
     };
-    window.addEventListener("resize", handleResize);
+    const resizeObserver = new ResizeObserver(handleResize);
+    resizeObserver.observe(container);
 
     return () => {
       cancelled = true;
-      window.removeEventListener("resize", handleResize);
+      resizeObserver.disconnect();
       // Stop the engine + bridge BEFORE destroying the model so the
       // ``beforeModelUpdate`` listener detaches cleanly while the
       // emitter is still alive.

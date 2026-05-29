@@ -51,10 +51,12 @@ export const desktop = {
    * "is persona visible right now?" state before the first event
    * lands. Returns ``false`` outside of a Tauri webview. */
   isPersonaVisible: () => tauriInvoke<boolean>("is_persona_visible"),
-  /** Resize the persona window. The settings drawer dispatches this
-   * after the user edits the width / height sliders. */
-  setPersonaGeometry: (width: number, height: number) =>
-    tauriInvoke<void>("set_persona_geometry", { width, height }),
+  /** Reset the persona window to its default size and re-center it
+   * on the current monitor. Backs the "Reset window position"
+   * button in the settings drawer; primarily a recovery path for
+   * "I dragged it offscreen" situations. */
+  resetPersonaWindowPosition: () =>
+    tauriInvoke<void>("reset_persona_window_position"),
   /** Toggle whether the persona window stays above other apps. */
   setPersonaAlwaysOnTop: (onTop: boolean) =>
     tauriInvoke<void>("set_persona_always_on_top", { onTop }),

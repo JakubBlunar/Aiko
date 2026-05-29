@@ -72,7 +72,6 @@ def _make_session() -> MagicMock:
     session.context_window_size = 8192
     session.context_window_source = "fallback"
     session.avatar_payload.return_value = {}
-    session.desktop_settings.return_value = {}
     session.needs_onboarding = False
     return session
 
