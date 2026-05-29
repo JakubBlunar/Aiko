@@ -1372,6 +1372,31 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                     />
                   }
                 />
+                {/*
+                 * Opt-in to "talk even when I'm not at the window".
+                 * Default is OFF: typed proactive respects window
+                 * visibility / focus and disarms when every Aiko
+                 * window is hidden or alt-tabbed away. Flipping this
+                 * on bypasses the presence gate so the silence
+                 * timer fires regardless. See
+                 * ``SessionController._is_typed_proactive_eligible``
+                 * for the exact gate.
+                 */}
+                <label className="mt-2 flex items-center gap-2 text-xs text-ink-100/70">
+                  <input
+                    type="checkbox"
+                    checked={settings.proactive?.typed_when_away ?? false}
+                    onChange={(e) =>
+                      void apply({
+                        proactive: { typed_when_away: e.target.checked },
+                      })
+                    }
+                    disabled={
+                      !(settings.proactive?.typed_enabled ?? true)
+                    }
+                  />
+                  Chime in even when I'm not at the window
+                </label>
               </Section>
 
               <Section title="Activity awareness (desktop)">

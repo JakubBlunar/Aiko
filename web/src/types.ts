@@ -64,6 +64,12 @@ export interface AssistantSettings {
     typed_enabled: boolean;
     silence_seconds_typed: number;
     cooldown_seconds_typed: number;
+    /** When ``false`` (default), typed proactive disarms while every
+     * Aiko window is hidden or unfocused. When ``true``, the gate
+     * is skipped and the timer fires regardless of presence. The
+     * voice-mode proactive path ignores presence on purpose so it
+     * is unaffected. */
+    typed_when_away: boolean;
   };
   /** Activity awareness (desktop opt-in). When enabled and running in
    * the Tauri shell, the foreground app name is forwarded to the

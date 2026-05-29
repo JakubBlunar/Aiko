@@ -39,6 +39,7 @@ class _AgentBlock:
     proactive_typed_enabled: bool = True
     proactive_silence_seconds_typed: float = 240.0
     proactive_cooldown_seconds_typed: float = 600.0
+    proactive_typed_when_away: bool = False
     activity_awareness_enabled: bool = False
 
 

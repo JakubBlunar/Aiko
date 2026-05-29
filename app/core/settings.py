@@ -326,6 +326,15 @@ class AgentSettings:
     proactive_typed_enabled: bool = True
     proactive_silence_seconds_typed: float = 240.0  # 4 min
     proactive_cooldown_seconds_typed: float = 600.0  # 10 min
+    # When ``False`` (default) the typed-mode proactive director respects
+    # ``_user_present``: every connected window hidden / blurred -> no
+    # autonomous chime. Flip to ``True`` to opt in to "Aiko can chat
+    # in even when I'm not at the window" — the silence timer fires
+    # regardless of whether any client window is visible. Voice-mode
+    # proactive ignores presence on purpose (mic users are present in
+    # conversation even when away from the screen) so this flag does
+    # not affect it.
+    proactive_typed_when_away: bool = False
     # ── Activity awareness (desktop opt-in) ───────────────────────────
     # When enabled and running inside the Tauri desktop shell, the
     # foreground application name is forwarded over WebSocket so Aiko
@@ -1239,6 +1248,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             ),
             proactive_cooldown_seconds_typed=max(
                 120.0, float(agent_raw.get("proactive_cooldown_seconds_typed", 600.0)),
+            ),
+            proactive_typed_when_away=bool(
+                agent_raw.get("proactive_typed_when_away", False),
             ),
             activity_awareness_enabled=bool(
                 agent_raw.get("activity_awareness_enabled", False),

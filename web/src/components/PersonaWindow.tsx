@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { useMicCapture } from "../hooks/useMicCapture";
+import { usePresenceReporter } from "../hooks/usePresenceReporter";
 import { useAssistantStore } from "../store";
 import { desktop } from "../desktop/commands";
 import type { WsClientCommand } from "../types";
@@ -50,6 +51,14 @@ export function PersonaWindow({ send, sendBytes }: PersonaWindowProps) {
   );
 
   useMicCapture({ sendBytes });
+
+  // Report presence from the persona window too. Without this the
+  // backend's per-client presence fold (see ``_visible_by_client`` in
+  // ``app/web/server.py``) would treat the persona-only sessions as
+  // "never reported" and the boot default would dominate. Each window
+  // ships its own visibility frame; the hub OR-folds them so as long
+  // as *any* window is visible+focused, ``_user_present`` is true.
+  usePresenceReporter({ send });
 
   const connected = connection.status === "connected";
 

@@ -50,6 +50,21 @@ const BACKEND_BOOT_TIMEOUT: Duration = Duration::from_secs(25);
 /// rail when Aiko has been popped out into the floating window.
 const PERSONA_VISIBILITY_EVENT: &str = "persona-visibility";
 
+/// Event fired *immediately* before the main window is hidden via the
+/// X-button close path. The React side of the main webview listens for
+/// it (see ``usePresenceReporter.ts``) and synchronously emits a
+/// ``presence:false`` WS frame, bypassing the 500 ms debounce that
+/// would otherwise lose the race against Windows webview throttling.
+/// Without this, the timeline is:
+///   1. user clicks X
+///   2. ``tauri://blur`` fires -> debounce arms (500 ms)
+///   3. ``main.hide()`` runs -> Chromium freezes the timer queue
+///   4. typed-proactive timer fires while ``_user_present`` is still
+///      ``True`` (last-known-good value).
+/// The event lets step 2 send the frame inline so step 3's freeze is
+/// harmless.
+const PRESENCE_HIDE_EVENT: &str = "presence-hide";
+
 // ── Internal helpers ────────────────────────────────────────────────────
 
 /// Show + focus the persona window AND emit the visibility event so the
@@ -463,9 +478,20 @@ fn wire_persona_close_to_hide(app: &AppHandle) {
 fn wire_main_close_to_hide(app: &AppHandle) {
     if let Some(main) = app.get_webview_window(MAIN_LABEL) {
         let main_clone = main.clone();
+        let app_clone = app.clone();
         main.on_window_event(move |event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
+                // Tell the React tree it has one synchronous shot to
+                // flush ``presence:false`` over the WS *before* the
+                // OS hides the webview and Chromium freezes any
+                // pending debounce timers. ``emit_to`` targets just
+                // the main window so the persona window's reporter
+                // (which is still alive and visible) doesn't also
+                // overwrite its own state.
+                if let Err(err) = app_clone.emit_to(MAIN_LABEL, PRESENCE_HIDE_EVENT, ()) {
+                    eprintln!("[aiko] failed to emit presence-hide: {err}");
+                }
                 let _ = main_clone.hide();
             }
         });
