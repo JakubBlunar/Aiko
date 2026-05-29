@@ -10,7 +10,6 @@ import type {
   Belief,
   BeliefsResponse,
   ChatMessage,
-  DesktopSettings,
   Identity,
   Memory,
   MemoriesResponse,
@@ -21,7 +20,6 @@ import type {
   MemoryOrder,
   MemoryUpdatePatch,
   MetricsResponse,
-  PersonaWindowSettings,
   RagDocument,
   SessionRow,
   SharedMoment,
@@ -452,12 +450,5 @@ export const api = {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ user_display_name }),
-    }),
-  getDesktop: () => jsonFetch<DesktopSettings>("/api/desktop"),
-  patchPersonaWindow: (patch: Partial<PersonaWindowSettings>) =>
-    jsonFetch<DesktopSettings>("/api/desktop/persona-window", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(patch),
     }),
 };

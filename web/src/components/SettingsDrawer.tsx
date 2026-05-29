@@ -16,7 +16,6 @@ import type {
   MemoryOrder,
   MemoryTier,
   MetricsResponse,
-  PersonaWindowSettings,
   RagDocument,
   SharedMoment,
   TogetherSummary,
@@ -129,11 +128,10 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
   const [avatarBusy, setAvatarBusy] = useState(false);
   const [avatarError, setAvatarError] = useState<string | null>(null);
 
-  const personaWindow = useAssistantStore(
-    (s) => s.desktop?.persona_window ?? null,
+  const personaAlwaysOnTop = useAssistantStore((s) => s.personaAlwaysOnTop);
+  const setPersonaAlwaysOnTop = useAssistantStore(
+    (s) => s.setPersonaAlwaysOnTop,
   );
-  const setPersonaWindow = useAssistantStore((s) => s.setPersonaWindow);
-  const [personaBusy, setPersonaBusy] = useState(false);
   const [personaError, setPersonaError] = useState<string | null>(null);
   const tauri = isTauri();
 
@@ -835,18 +833,41 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
     }
   };
 
-  const onPatchPersonaWindow = async (
-    patch: Partial<PersonaWindowSettings>,
-  ) => {
-    setPersonaBusy(true);
+  const onPatchPersonaWindow = async (always_on_top: boolean) => {
     setPersonaError(null);
+    setPersonaAlwaysOnTop(always_on_top);
     try {
-      const next = await api.patchPersonaWindow(patch);
-      setPersonaWindow(next.persona_window);
+      // Tauri-only: the floating window doesn't exist in the
+      // browser, so we silently no-op there. The toggle is still
+      // recorded in localStorage so the next desktop launch picks
+      // it up.
+      const result = await desktopCommands.setPersonaAlwaysOnTop(
+        always_on_top,
+      );
+      if (result === null && tauri) {
+        // ``null`` means the bridge declined (window missing or
+        // capability denied). Surface a hint so the user isn't
+        // confused by a checkbox that "did nothing".
+        setPersonaError(
+          "Could not toggle always-on-top. Try opening the persona window first.",
+        );
+      }
     } catch (err) {
       setPersonaError(String(err));
-    } finally {
-      setPersonaBusy(false);
+    }
+  };
+
+  const onResetPersonaWindow = async () => {
+    setPersonaError(null);
+    try {
+      const result = await desktopCommands.resetPersonaWindowPosition();
+      if (result === null && tauri) {
+        setPersonaError(
+          "Could not reset window. Open the persona window first.",
+        );
+      }
+    } catch (err) {
+      setPersonaError(String(err));
     }
   };
 
@@ -1766,104 +1787,62 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                     ) : null}
                     <p className="text-[11px] text-ink-100/50">
                       Floating, frameless window that shows just the avatar
-                      plus a mic toggle and one-line composer. Settings persist
-                      across restarts; the controls work in the browser too,
-                      but the actual window only opens in the Tauri desktop
-                      shell.
+                      plus a mic toggle and one-line composer. Position and
+                      size are remembered automatically by the desktop
+                      shell -- drag and resize the window itself instead of
+                      using sliders here. The browser build ignores this
+                      section entirely (no floating window exists outside
+                      Tauri).
                     </p>
-                    <div className="space-y-1.5">
-                      <p className="text-[11px] uppercase tracking-wide text-ink-100/50">
-                        Width — {personaWindow?.width ?? 320}px
-                      </p>
-                      <input
-                        type="range"
-                        min={220}
-                        max={800}
-                        step={10}
-                        value={personaWindow?.width ?? 320}
-                        onChange={(event) => {
-                          const v = Number(event.target.value);
-                          setPersonaWindow({ width: v });
-                        }}
-                        onPointerUp={(event) => {
-                          void onPatchPersonaWindow({
-                            width: Number(
-                              (event.target as HTMLInputElement).value,
-                            ),
-                          });
-                        }}
-                        onKeyUp={(event) => {
-                          void onPatchPersonaWindow({
-                            width: Number(
-                              (event.target as HTMLInputElement).value,
-                            ),
-                          });
-                        }}
-                        disabled={personaBusy}
-                        className="w-full accent-ink-400"
-                        aria-label="Persona window width"
-                      />
-                    </div>
-                    <div className="space-y-1.5">
-                      <p className="text-[11px] uppercase tracking-wide text-ink-100/50">
-                        Height — {personaWindow?.height ?? 480}px
-                      </p>
-                      <input
-                        type="range"
-                        min={280}
-                        max={1024}
-                        step={10}
-                        value={personaWindow?.height ?? 480}
-                        onChange={(event) => {
-                          const v = Number(event.target.value);
-                          setPersonaWindow({ height: v });
-                        }}
-                        onPointerUp={(event) => {
-                          void onPatchPersonaWindow({
-                            height: Number(
-                              (event.target as HTMLInputElement).value,
-                            ),
-                          });
-                        }}
-                        onKeyUp={(event) => {
-                          void onPatchPersonaWindow({
-                            height: Number(
-                              (event.target as HTMLInputElement).value,
-                            ),
-                          });
-                        }}
-                        disabled={personaBusy}
-                        className="w-full accent-ink-400"
-                        aria-label="Persona window height"
-                      />
-                    </div>
-                    <label className="flex items-center gap-2 text-[12px] text-ink-100/80">
+                    <label
+                      className={`flex items-center gap-2 text-[12px] ${
+                        tauri ? "text-ink-100/80" : "text-ink-100/40"
+                      }`}
+                      title={
+                        tauri
+                          ? "Keep the persona window above other apps"
+                          : "Only available in the Tauri desktop shell"
+                      }
+                    >
                       <input
                         type="checkbox"
-                        checked={personaWindow?.always_on_top ?? true}
+                        checked={personaAlwaysOnTop}
                         onChange={(event) =>
-                          void onPatchPersonaWindow({
-                            always_on_top: event.target.checked,
-                          })
+                          void onPatchPersonaWindow(event.target.checked)
                         }
-                        disabled={personaBusy}
-                        className="accent-ink-400"
+                        disabled={!tauri}
+                        className="accent-ink-400 disabled:cursor-not-allowed"
                       />
                       Always on top
                     </label>
-                    <button
-                      type="button"
-                      onClick={() => void desktopCommands.openPersona()}
-                      disabled={!tauri}
-                      title={
-                        tauri
-                          ? "Open the floating persona window"
-                          : "Persona window is only available in the Tauri desktop shell"
-                      }
-                      className="rounded-md border border-white/10 px-3 py-1.5 text-xs text-ink-100/80 hover:border-pink-400 hover:text-pink-100 disabled:cursor-not-allowed disabled:opacity-40"
-                    >
-                      Open persona window
-                    </button>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void desktopCommands.openPersona()}
+                        disabled={!tauri}
+                        title={
+                          tauri
+                            ? "Open the floating persona window"
+                            : "Persona window is only available in the Tauri desktop shell"
+                        }
+                        className="rounded-md border border-white/10 px-3 py-1.5 text-xs text-ink-100/80 hover:border-pink-400 hover:text-pink-100 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        Open persona window
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void onResetPersonaWindow()}
+                        disabled={!tauri}
+                        title={
+                          tauri
+                            ? "Snap the persona window back to the default size, centered on this monitor"
+                            : "Only available in the Tauri desktop shell"
+                        }
+                        className="rounded-md border border-white/10 px-3 py-1.5 text-xs text-ink-100/80 hover:border-amber-400 hover:text-amber-100 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        Reset window position
+                      </button>
+                    </div>
                   </Section>
                 </>
               ) : null}

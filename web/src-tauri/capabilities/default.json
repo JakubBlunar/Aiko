@@ -16,6 +16,7 @@
     "core:window:allow-start-dragging",
     "core:webview:default",
     "core:event:default",
-    "core:tray:default"
+    "core:tray:default",
+    "window-state:default"
   ]
 }

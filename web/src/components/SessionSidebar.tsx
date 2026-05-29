@@ -16,6 +16,110 @@ interface SessionSidebarProps {
    * style + label the toggle button. ``false`` when not in a Tauri
    * shell. */
   personaWindowVisible?: boolean;
+  /** When ``true``, the sidebar collapses to a 56px icon rail. Toggled
+   * via the chevron button in the expanded header (and the chevron in
+   * the collapsed rail). The state is owned by the store so it
+   * survives reloads and toolbar interactions outside this component. */
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
+}
+
+// ── Inline icons ────────────────────────────────────────────────────
+//
+// 16x16 stroke-only glyphs to avoid pulling in a 60kb icon library
+// for ~5 sprites. ``currentColor`` so the colors flow from Tailwind
+// utilities. Kept private to this file -- if a second component
+// needs them, lift them into a shared module.
+
+interface IconProps {
+  className?: string;
+}
+
+function ChevronLeftIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M10 3 L5 8 L10 13" />
+    </svg>
+  );
+}
+
+function ChevronRightIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M6 3 L11 8 L6 13" />
+    </svg>
+  );
+}
+
+function PlusIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M8 3 V13 M3 8 H13" />
+    </svg>
+  );
+}
+
+function PersonaIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.4}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="8" cy="6" r="2.6" />
+      <path d="M3 13.5 C3.5 10.8 5.5 10 8 10 C10.5 10 12.5 10.8 13 13.5" />
+    </svg>
+  );
+}
+
+function SettingsIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.4}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="8" cy="8" r="2.2" />
+      <path d="M8 1.5 V3.4 M8 12.6 V14.5 M14.5 8 H12.6 M3.4 8 H1.5 M12.6 3.4 L11.3 4.7 M4.7 11.3 L3.4 12.6 M12.6 12.6 L11.3 11.3 M4.7 4.7 L3.4 3.4" />
+    </svg>
+  );
 }
 
 function formatRelative(iso: string | null): string {
@@ -45,6 +149,8 @@ export function SessionSidebar({
   onOpenSettings,
   onTogglePersona,
   personaWindowVisible = false,
+  collapsed,
+  onToggleCollapsed,
 }: SessionSidebarProps) {
   const sessionKey = useAssistantStore((s) => s.sessionKey);
   const setMessages = useAssistantStore((s) => s.setMessages);
@@ -131,6 +237,73 @@ export function SessionSidebar({
     send({ type: "clear" });
   };
 
+  // ── Collapsed rail ────────────────────────────────────────────────
+  //
+  // 56px-wide icon rail with the four most useful actions stacked
+  // vertically: expand, new session, persona toggle (Tauri only),
+  // settings. Conversation list is hidden in this mode -- the user
+  // can expand to switch sessions. The same DOM root keeps Tailwind
+  // transitions trivial if we ever want to animate the collapse.
+  if (collapsed) {
+    return (
+      <aside className="flex h-full w-14 shrink-0 flex-col items-center gap-2 border-r border-white/5 bg-black/30 py-3">
+        <button
+          type="button"
+          onClick={onToggleCollapsed}
+          title="Expand sidebar"
+          aria-label="Expand sidebar"
+          className="flex h-9 w-9 items-center justify-center rounded-md border border-white/10 text-ink-100/70 transition hover:border-ink-400 hover:text-ink-100"
+        >
+          <ChevronRightIcon className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          onClick={handleNew}
+          title="New session"
+          aria-label="New session"
+          className="flex h-9 w-9 items-center justify-center rounded-md bg-ink-500 text-white transition hover:bg-ink-400"
+        >
+          <PlusIcon className="h-4 w-4" />
+        </button>
+        {onTogglePersona ? (
+          <button
+            type="button"
+            onClick={onTogglePersona}
+            title={
+              personaWindowVisible
+                ? "Hide detached persona window"
+                : "Open detached persona window"
+            }
+            aria-label={
+              personaWindowVisible
+                ? "Hide detached persona window"
+                : "Open detached persona window"
+            }
+            aria-pressed={personaWindowVisible}
+            className={`flex h-9 w-9 items-center justify-center rounded-md border transition ${
+              personaWindowVisible
+                ? "border-pink-400/70 bg-pink-500/15 text-pink-100 hover:bg-pink-500/25"
+                : "border-white/10 text-ink-100/70 hover:border-pink-400 hover:text-pink-100"
+            }`}
+          >
+            <PersonaIcon className="h-4 w-4" />
+          </button>
+        ) : null}
+        <div className="mt-auto">
+          <button
+            type="button"
+            onClick={onOpenSettings}
+            title="Settings"
+            aria-label="Settings"
+            className="flex h-9 w-9 items-center justify-center rounded-md border border-white/10 text-ink-100/70 transition hover:border-ink-400 hover:text-ink-100"
+          >
+            <SettingsIcon className="h-4 w-4" />
+          </button>
+        </div>
+      </aside>
+    );
+  }
+
   return (
     <aside className="flex h-full w-72 shrink-0 flex-col border-r border-white/5 bg-black/30">
       <div className="border-b border-white/5 px-4 py-4">
@@ -164,6 +337,15 @@ export function SessionSidebar({
               className="rounded-md border border-white/10 px-2 py-1 text-xs text-ink-100/70 hover:border-ink-400 hover:text-ink-100"
             >
               Settings
+            </button>
+            <button
+              type="button"
+              onClick={onToggleCollapsed}
+              title="Collapse sidebar"
+              aria-label="Collapse sidebar"
+              className="flex h-7 w-7 items-center justify-center rounded-md border border-white/10 text-ink-100/70 transition hover:border-ink-400 hover:text-ink-100"
+            >
+              <ChevronLeftIcon className="h-3.5 w-3.5" />
             </button>
           </div>
         </div>

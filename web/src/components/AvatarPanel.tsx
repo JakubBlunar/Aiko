@@ -17,6 +17,7 @@ export function AvatarPanel() {
   const voiceMode = useAssistantStore((s) => s.voiceMode);
   const avatar = useAssistantStore((s) => s.avatar);
   const connectionStatus = useAssistantStore((s) => s.connection.status);
+  const panelWidth = useAssistantStore((s) => s.personaPanelWidth);
 
   // Until we've heard from the backend at least once we don't actually
   // know whether the avatar bundle is missing — show a friendlier
@@ -30,7 +31,10 @@ export function AvatarPanel() {
     !avatar && connectionStatus !== "connected";
 
   return (
-    <aside className="hidden h-full w-[440px] shrink-0 flex-col items-center border-l border-white/5 bg-gradient-to-b from-white/[0.04] to-transparent px-4 py-6 lg:flex">
+    <aside
+      style={{ width: panelWidth }}
+      className="hidden h-full shrink-0 flex-col items-center border-l border-white/5 bg-gradient-to-b from-white/[0.04] to-transparent px-4 py-6 lg:flex"
+    >
       <div className="text-xs uppercase tracking-[0.2em] text-ink-100/40">
         Aiko
       </div>

@@ -19,11 +19,21 @@ use std::time::{Duration, Instant};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, LogicalSize, Manager, WindowEvent,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, WindowEvent,
 };
 
 const MAIN_LABEL: &str = "main";
 const PERSONA_LABEL: &str = "persona";
+
+/// Defaults for the persona window's logical geometry. Mirrors
+/// ``tauri.conf.json``; if the conf entry ever drifts, both values
+/// have to move together (we don't read the manifest at runtime
+/// because it isn't exposed via a stable API). Used by
+/// :func:`reset_persona_window_position` so the user can recover
+/// from "I dragged it offscreen" without rooting around in the
+/// plugin's saved-state file.
+const PERSONA_DEFAULT_W: f64 = 320.0;
+const PERSONA_DEFAULT_H: f64 = 480.0;
 
 /// Where the FastAPI backend listens. Mirrors ``config/default.json`` and
 /// the dev-mode Vite proxy targets.
@@ -87,16 +97,49 @@ fn is_persona_visible(app: AppHandle) -> bool {
         .unwrap_or(false)
 }
 
-/// Resize the persona window. Called from the persona webview itself
-/// after a `desktop_settings_changed` WS event lands; the source of truth
-/// stays in the Python backend's `config/user.json`.
+/// Snap the persona window back to its default size and a centered
+/// position. Called from the settings drawer's "Reset window
+/// position" button so the user can recover from accidentally
+/// dragging the persona offscreen (or onto a now-disconnected
+/// monitor) without manually editing the plugin's saved-state file.
+///
+/// Centering is done against the window's *current* monitor: with
+/// multi-monitor setups, this means the window pops back to the
+/// middle of whichever screen it's currently on. If we can't
+/// resolve a monitor (rare; mostly on freshly-spawned hidden
+/// windows) we fall back to (0, 0) which is good enough -- the
+/// user is invoking this *because* they want it visible, so the
+/// next-frame ``show()`` will land somewhere recoverable.
 #[tauri::command]
-fn set_persona_geometry(app: AppHandle, width: u32, height: u32) -> Result<(), String> {
+fn reset_persona_window_position(app: AppHandle) -> Result<(), String> {
     let window = app
         .get_webview_window(PERSONA_LABEL)
         .ok_or_else(|| "persona window not found".to_string())?;
     window
-        .set_size(LogicalSize::new(width as f64, height as f64))
+        .set_size(LogicalSize::new(PERSONA_DEFAULT_W, PERSONA_DEFAULT_H))
+        .map_err(|err| err.to_string())?;
+    let monitor = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten());
+    let position = if let Some(monitor) = monitor {
+        let scale = monitor.scale_factor();
+        let mon_pos = monitor.position();
+        let mon_size = monitor.size();
+        let logical_w = mon_size.width as f64 / scale;
+        let logical_h = mon_size.height as f64 / scale;
+        let logical_x = mon_pos.x as f64 / scale;
+        let logical_y = mon_pos.y as f64 / scale;
+        LogicalPosition::new(
+            logical_x + (logical_w - PERSONA_DEFAULT_W) / 2.0,
+            logical_y + (logical_h - PERSONA_DEFAULT_H) / 2.0,
+        )
+    } else {
+        LogicalPosition::new(0.0, 0.0)
+    };
+    window
+        .set_position(position)
         .map_err(|err| err.to_string())
 }
 
@@ -265,12 +308,29 @@ pub fn run() {
             open_persona,
             close_persona,
             is_persona_visible,
-            set_persona_geometry,
+            reset_persona_window_position,
             set_persona_always_on_top,
             get_active_app,
             ensure_backend_running,
         ])
         .setup(|app| {
+            // Persist position + size for every window across launches.
+            // Default ``StateFlags`` also restore maximized + fullscreen
+            // states; we deliberately keep it down to POSITION + SIZE so
+            // the persona window doesn't accidentally come back
+            // maximized after the user used the OS shortcut once. Gated
+            // behind ``cfg(desktop)`` because the plugin doesn't apply
+            // to mobile (and the dependency is gated similarly in
+            // ``Cargo.toml``).
+            #[cfg(desktop)]
+            {
+                use tauri_plugin_window_state::{Builder as WindowStateBuilder, StateFlags};
+                app.handle().plugin(
+                    WindowStateBuilder::default()
+                        .with_state_flags(StateFlags::POSITION | StateFlags::SIZE)
+                        .build(),
+                )?;
+            }
             install_tray(app.handle())?;
             wire_main_close_to_hide(app.handle());
             wire_persona_close_to_hide(app.handle());

@@ -302,19 +302,6 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
             "accessory_state": dict(settings.avatar.accessory_state or {}),
         }
         self._avatar_settings_listeners: list[Callable[[dict[str, Any]], None]] = []
-        # ── Tauri shell knobs (Phase B / desktop) ────────────────────────
-        # Runtime cache for the persona-window geometry. Mirrors the
-        # avatar pattern: load from settings, clamp on every patch,
-        # broadcast a WS event on change so any open shell window can
-        # react. Browser-only deployments simply ignore the broadcasts.
-        self._desktop_settings_runtime = {
-            "persona_window": {
-                "width": int(settings.desktop.persona_window.width),
-                "height": int(settings.desktop.persona_window.height),
-                "always_on_top": bool(settings.desktop.persona_window.always_on_top),
-            }
-        }
-        self._desktop_settings_listeners: list[Callable[[dict[str, Any]], None]] = []
         self._avatar_overlay_listeners: list[Callable[[dict[str, Any]], None]] = []
         self._avatar_motion_listeners: list[Callable[[dict[str, Any]], None]] = []
         # LLM-driven sticky outfit override. Set when the assistant says

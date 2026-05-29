@@ -237,43 +237,6 @@ def _load_accessory_state(raw: Any) -> dict[str, str | bool]:
     return out
 
 
-# Persona-window geometry clamps. The lower bounds are picked so the
-# avatar still has at least a thumbnail's worth of pixels to render
-# into; the upper bounds prevent absurd values (e.g. someone hand-edits
-# ``user.json`` to request a 5000x5000 floating window) from being
-# blindly accepted. The same clamps run on every code path that touches
-# the values: load-time in ``load_settings`` and runtime in
-# ``SessionController.update_desktop_settings``.
-PERSONA_WINDOW_MIN_WIDTH: int = 220
-PERSONA_WINDOW_MAX_WIDTH: int = 800
-PERSONA_WINDOW_MIN_HEIGHT: int = 280
-PERSONA_WINDOW_MAX_HEIGHT: int = 1024
-
-
-def clamp_persona_window_width(value: Any, *, fallback: int = 320) -> int:
-    """Coerce + clamp a persona-window width into the allowed range.
-
-    Accepts anything Pythonic that can be cast to int (str, float,
-    json.loads-friendly numerics). Returns ``fallback`` for inputs we
-    can't parse, so a malformed config never raises during load.
-    """
-    try:
-        coerced = int(value)
-    except (TypeError, ValueError):
-        coerced = int(fallback)
-    return max(PERSONA_WINDOW_MIN_WIDTH, min(PERSONA_WINDOW_MAX_WIDTH, coerced))
-
-
-def clamp_persona_window_height(value: Any, *, fallback: int = 480) -> int:
-    """Coerce + clamp a persona-window height. Mirrors
-    :func:`clamp_persona_window_width`."""
-    try:
-        coerced = int(value)
-    except (TypeError, ValueError):
-        coerced = int(fallback)
-    return max(PERSONA_WINDOW_MIN_HEIGHT, min(PERSONA_WINDOW_MAX_HEIGHT, coerced))
-
-
 # ── Identity (first-run onboarding) ─────────────────────────────────────
 
 # Sentinel used when no display name is configured yet. We intentionally
@@ -940,37 +903,6 @@ class ToolsSettings:
 
 
 @dataclass(slots=True)
-class PersonaWindowSettings:
-    """Tauri persona-window geometry knobs.
-
-    Persisted in ``config/user.json`` so a window resize survives an app
-    restart. Both clamps are enforced on load and again in
-    ``SessionController.update_desktop_settings`` so an out-of-range value
-    coming from anywhere (config file, REST PATCH) is funneled to the
-    nearest valid one rather than crashing.
-    """
-
-    width: int = 320
-    height: int = 480
-    always_on_top: bool = True
-
-
-@dataclass(slots=True)
-class DesktopSettings:
-    """Settings only the Tauri desktop shell consumes.
-
-    Browser-only deployments leave these untouched. The frontend reads
-    the same values out of the WS ``hello`` snapshot regardless of
-    runtime so a browser tab can preview the configured persona size
-    without doing anything with it.
-    """
-
-    persona_window: PersonaWindowSettings = field(
-        default_factory=PersonaWindowSettings
-    )
-
-
-@dataclass(slots=True)
 class AppSettings:
     assistant: AssistantSettings
     ollama: OllamaSettings
@@ -986,7 +918,6 @@ class AppSettings:
     tools: ToolsSettings = field(default_factory=ToolsSettings)
     endpointing: EndpointingSettings = field(default_factory=EndpointingSettings)
     avatar: AvatarSettings = field(default_factory=AvatarSettings)
-    desktop: DesktopSettings = field(default_factory=DesktopSettings)
 
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "default.json"
@@ -1256,8 +1187,6 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
     tools_raw = raw.get("tools", {}) or {}
     endpointing_raw = raw.get("endpointing", {}) or {}
     avatar_raw = raw.get("avatar", {}) or {}
-    desktop_raw = raw.get("desktop", {}) or {}
-    persona_window_raw = (desktop_raw.get("persona_window", {}) or {}) if isinstance(desktop_raw, dict) else {}
 
     return AppSettings(
         assistant=AssistantSettings(
@@ -1774,18 +1703,5 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             ),
             expressiveness=max(0.0, min(1.5, float(avatar_raw.get("expressiveness", 1.0) or 1.0))),
             accessory_state=_load_accessory_state(avatar_raw.get("accessory_state")),
-        ),
-        desktop=DesktopSettings(
-            persona_window=PersonaWindowSettings(
-                width=clamp_persona_window_width(
-                    persona_window_raw.get("width", 320)
-                ),
-                height=clamp_persona_window_height(
-                    persona_window_raw.get("height", 480)
-                ),
-                always_on_top=bool(
-                    persona_window_raw.get("always_on_top", True)
-                ),
-            ),
         ),
     )
