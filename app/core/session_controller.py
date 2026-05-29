@@ -1091,6 +1091,7 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
             belief_gaps=self._render_belief_gaps_block,
             novelty=self._render_novelty_block,
             stagnation=self._render_stagnation_block,
+            curiosity_seeds=self._render_curiosity_seeds_block,
             grounding_line=self._render_grounding_line,
         )
         self._prompt_assembler.set_pinned_self_memories_provider(
@@ -1365,6 +1366,117 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
                             exc_info=True,
                         )
                         self._idle_curiosity = None
+
+                # K9: TopicGraph + CuriositySeedWorker. The graph is a
+                # zero-cost wrapper around the in-process memory mirror;
+                # the worker registers as an idle tick that proposes
+                # "topics we haven't touched yet" using the graph as
+                # the "we already discussed that" filter. Both are
+                # opt-out via ``agent.topic_graph_enabled`` /
+                # ``agent.curiosity_seed_enabled``. Failures here are
+                # non-fatal: the rest of the app keeps working without
+                # the seed surface.
+                self._topic_graph = None
+                self._curiosity_seed_worker = None
+                if (
+                    self._memory_store is not None
+                    and self._embedder is not None
+                    and bool(
+                        getattr(
+                            settings.agent, "topic_graph_enabled", True,
+                        )
+                    )
+                ):
+                    try:
+                        from app.core.topic_graph import TopicGraph
+
+                        self._topic_graph = TopicGraph(
+                            self._memory_store,
+                            similarity=0.55,
+                            min_cluster_size=3,
+                            filter_threshold=float(
+                                getattr(
+                                    settings.agent,
+                                    "topic_graph_filter_threshold",
+                                    0.65,
+                                )
+                            ),
+                        )
+                    except Exception:
+                        log.warning(
+                            "TopicGraph init failed", exc_info=True,
+                        )
+                        self._topic_graph = None
+
+                if (
+                    self._topic_graph is not None
+                    and self._fact_check_cancel is not None
+                    and bool(
+                        getattr(
+                            settings.agent, "curiosity_seed_enabled", True,
+                        )
+                    )
+                ):
+                    try:
+                        from app.core.curiosity_seed_worker import (
+                            CuriositySeedWorker,
+                        )
+
+                        persona_path_seed = (
+                            Path(__file__).resolve().parents[2]
+                            / "data" / "persona" / "aiko_companion.txt"
+                        )
+
+                        def _persona_provider() -> str:
+                            try:
+                                return persona_path_seed.read_text(
+                                    encoding="utf-8",
+                                )
+                            except OSError:
+                                return ""
+
+                        def _summary_provider() -> str:
+                            try:
+                                row = self._chat_db.get_latest_summary(
+                                    self.session_key,
+                                )
+                                return (row.summary if row is not None else "") or ""
+                            except Exception:
+                                return ""
+
+                        def _assistant_name_provider() -> str:
+                            return (
+                                self._fact_check_assistant_name() or "Aiko"
+                            )
+
+                        self._curiosity_seed_worker = CuriositySeedWorker(
+                            memory_store=self._memory_store,
+                            topic_graph=self._topic_graph,
+                            embedder=self._embedder,
+                            ollama=self._ollama,
+                            chat_model=self._effective_chat_model,
+                            cancel_event=self._fact_check_cancel,
+                            agent_settings=settings.agent,
+                            memory_settings=self._memory_settings,
+                            persona_provider=_persona_provider,
+                            rolling_summary_provider=_summary_provider,
+                            user_display_name_provider=(
+                                lambda: self.user_display_name
+                            ),
+                            assistant_display_name_provider=(
+                                _assistant_name_provider
+                            ),
+                            notify_memory_added=self._notify_memory_added,
+                        )
+                        self._idle_scheduler.register(
+                            self._curiosity_seed_worker,
+                        )
+                    except Exception:
+                        log.warning(
+                            "CuriositySeedWorker boot failed",
+                            exc_info=True,
+                        )
+                        self._curiosity_seed_worker = None
 
                 # Aiko's living garden — plant stage promotion + visiting
                 # the garden during idle daylight windows. Both workers
@@ -3844,6 +3956,168 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
             log.debug("topic stagnation block render failed", exc_info=True)
             return ""
 
+    def _render_curiosity_seeds_block(self) -> str:
+        """K9: surface up to two active "quiet curiosity" seeds.
+
+        Reads the in-memory mirror via
+        :meth:`MemoryStore.iter_by_kind`; no per-turn LLM, no
+        embedder. Picks the oldest unconsumed seeds (oldest first
+        gives every seed a fair shot at being mentioned) and renders
+        them as a short "Quiet curiosity (only if a soft pivot lands
+        naturally):" bullet list. Empty when the worker is disabled,
+        when no seeds exist yet, or when every seed is already
+        ``consumed_at``.
+        """
+        if not bool(
+            getattr(self._settings.agent, "curiosity_seed_enabled", True)
+        ):
+            return ""
+        memory = getattr(self, "_memory_store", None)
+        if memory is None:
+            return ""
+        try:
+            seeds = memory.iter_by_kind("curiosity_seed")
+        except Exception:
+            log.debug("curiosity_seed iter failed", exc_info=True)
+            return ""
+        if not seeds:
+            return ""
+        active: list[Any] = []
+        for seed in seeds:
+            metadata = seed.metadata or {}
+            if metadata.get("consumed_at"):
+                continue
+            if seed.tier == "archive":
+                continue
+            active.append(seed)
+        if not active:
+            return ""
+        active.sort(key=lambda m: m.created_at or "")
+        rendered: list[str] = []
+        for seed in active[:2]:
+            metadata = seed.metadata or {}
+            topic = (metadata.get("topic") or seed.content or "").strip()
+            if not topic:
+                continue
+            if len(topic) > 120:
+                topic = topic[:119].rstrip(",;: ") + "…"
+            rendered.append(f"- {topic}")
+        if not rendered:
+            return ""
+        header = "Quiet curiosity (only if a soft pivot lands naturally):"
+        return header + "\n" + "\n".join(rendered)
+
+    def _resolve_curiosity_seeds(  # noqa: C901
+        self,
+        *,
+        user_text: str,
+        assistant_text: str,
+    ) -> None:
+        """K9: stamp ``consumed_at`` on any seed the turn drifted onto.
+
+        Embeds the combined ``user_text + assistant_text`` once and
+        cosines it against every active seed's stored embedding. Any
+        seed scoring above
+        ``agent.curiosity_seed_resolve_threshold`` (default 0.50) is
+        marked consumed and demoted to ``archive`` so it stops
+        eating the inner-life slot and no longer surfaces as a
+        proactive candidate.
+
+        No-op when the worker is disabled, when no active seeds
+        exist, or when the embedder isn't available -- stays cheap
+        on the cold path.
+        """
+        if not bool(
+            getattr(self._settings.agent, "curiosity_seed_enabled", True)
+        ):
+            return
+        memory = getattr(self, "_memory_store", None)
+        embedder = getattr(self, "_embedder", None)
+        if memory is None or embedder is None:
+            return
+        try:
+            seeds = memory.iter_by_kind("curiosity_seed")
+        except Exception:
+            return
+        if not seeds:
+            return
+        active = [
+            seed for seed in seeds
+            if not (seed.metadata or {}).get("consumed_at")
+            and seed.tier != "archive"
+            and seed.embedding is not None
+            and seed.embedding.size > 0
+        ]
+        if not active:
+            return
+        combined = " ".join(
+            part for part in (user_text or "", assistant_text or "")
+            if part and part.strip()
+        ).strip()
+        if not combined or len(combined) < 4:
+            return
+        try:
+            turn_vec = embedder.embed(combined)
+        except Exception:
+            log.debug(
+                "curiosity_seed resolve: embed failed", exc_info=True,
+            )
+            return
+        if turn_vec is None or turn_vec.size == 0:
+            return
+        threshold = float(
+            getattr(
+                self._settings.agent,
+                "curiosity_seed_resolve_threshold",
+                0.50,
+            )
+        )
+        from datetime import datetime, timezone
+        now_iso = datetime.now(timezone.utc).isoformat()
+        for seed in active:
+            try:
+                sim = float((turn_vec * seed.embedding).sum())
+            except Exception:
+                continue
+            if sim < threshold:
+                continue
+            try:
+                memory.update(
+                    seed.id,
+                    metadata={
+                        "consumed_at": now_iso,
+                        "consumed_similarity": round(sim, 4),
+                    },
+                    metadata_merge=True,
+                    tier="archive",
+                )
+            except Exception:
+                log.debug(
+                    "curiosity_seed mark consumed failed (id=%s)",
+                    seed.id,
+                    exc_info=True,
+                )
+                continue
+            log.info(
+                "curiosity_seed resolved: id=%s sim=%.2f topic=%r",
+                seed.id,
+                sim,
+                ((seed.metadata or {}).get("topic")
+                 or seed.content or "")[:80],
+            )
+            try:
+                fresh = memory.get(seed.id)
+            except Exception:
+                fresh = None
+            if fresh is not None and self._notify_memory_updated is not None:
+                try:
+                    self._notify_memory_updated(fresh.to_dict())
+                except Exception:
+                    log.debug(
+                        "curiosity_seed notify_updated failed",
+                        exc_info=True,
+                    )
+
     def _build_grounding_context(self) -> "Any":
         """Assemble the K16 grounding-line slots from live state.
 
@@ -5019,6 +5293,17 @@ class SessionController(AvatarMixin, MemoryFacadeMixin, WorldMixin):
             self._mark_revived_memories(assistant_text=assistant_text)
         except Exception:
             log.debug("memory revival mark failed", exc_info=True)
+
+        # K9: auto-resolve any curiosity seed the conversation just
+        # touched. One embed call + N dot products (N <= max_active);
+        # cheap enough to land on the post-turn hot path.
+        try:
+            self._resolve_curiosity_seeds(
+                user_text=user_text,
+                assistant_text=assistant_text,
+            )
+        except Exception:
+            log.debug("curiosity seed auto-resolve failed", exc_info=True)
 
         # Phase 2c: schedule a reflection during TTS playback.
         worker = getattr(self, "_reflection_worker", None)

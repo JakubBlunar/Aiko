@@ -59,6 +59,11 @@ VALID_SOURCE_KINDS: tuple[str, ...] = (
     # after a long-enough gap. Behaves like ``mixed`` but lets us track
     # the metric and apply a longer default TTL.
     "resume",
+    # K9 personality backlog: curiosity-seed proactive line. The seed
+    # already carries a fully-rendered ``metadata.prompt_text`` so the
+    # weaver short-circuits the LLM step and uses it verbatim. Tagged
+    # so the typed-mode proactive director can label it correctly.
+    "curiosity_seed",
 )
 
 
@@ -282,6 +287,7 @@ class NarrativeWeaver:
             "from_promise": 0,
             "from_reflection": 0,
             "from_agenda": 0,
+            "from_curiosity_seed": 0,
         }
 
     def stats(self) -> dict[str, int]:
@@ -486,6 +492,39 @@ class NarrativeWeaver:
                 )
                 if len(out) >= self._max_candidates * 2:
                     break
+            # K9: curiosity_seed candidates. Distinct read path because
+            # ``list_top`` ranks by salience+freshness against everyday
+            # surfaces; seeds live in scratchpad with a deliberately
+            # modest salience so they wouldn't normally bubble up.
+            try:
+                seeds = memory.iter_by_kind("curiosity_seed")
+            except Exception:
+                seeds = []
+            for seed in seeds:
+                metadata = seed.metadata or {}
+                if metadata.get("consumed_at"):
+                    continue
+                if seed.tier == "archive":
+                    continue
+                if (seed.use_count or 0) >= 2:
+                    # The seed already surfaced once or twice; let the
+                    # auto-resolve path retire it instead of risking a
+                    # third "off-topic, but..." in a row.
+                    continue
+                prompt_text = (metadata.get("prompt_text") or "").strip()
+                if not prompt_text:
+                    continue
+                out.append(
+                    _Candidate(
+                        kind="curiosity_seed",
+                        source_id=str(seed.id),
+                        text=prompt_text,
+                        # Seeds get a small base weight so they
+                        # compete with active-thread candidates but
+                        # don't dominate them on a busy session.
+                        salience=max(0.4, float(seed.salience) + 0.1),
+                    )
+                )
         agenda = self._agenda
         if agenda is not None:
             try:
@@ -513,6 +552,17 @@ class NarrativeWeaver:
             return candidates[0]
 
     def _weave(self, candidate: _Candidate) -> str | None:
+        # K9: curiosity-seed candidates already carry a fully-rendered
+        # ``prompt_text`` from the seed worker (the LLM ran once at
+        # seed-generation time; no point asking the LLM to paraphrase
+        # it again). Skip the weave entirely and use the seed's text
+        # verbatim, falling back to the candidate-text -> fallback
+        # path on the off chance the seed's ``prompt_text`` was empty.
+        if candidate.kind == "curiosity_seed":
+            text = (candidate.text or "").strip()
+            if text:
+                return _clean_weave_output(text) or text
+            return _fallback_phrasing(candidate)
         if self._ollama is None:
             return _fallback_phrasing(candidate)
         try:
@@ -570,6 +620,11 @@ _FALLBACK_FORMATS: dict[str, tuple[str, ...]] = {
     "agenda": (
         "Speaking of {x} — anything new on that?",
         "How's {x} going?",
+    ),
+    "curiosity_seed": (
+        # The seed already carries a fully-formed prompt; the
+        # fallback only fires if ``prompt_text`` was somehow empty.
+        "Off-topic, but I've been quietly wondering about {x}.",
     ),
 }
 

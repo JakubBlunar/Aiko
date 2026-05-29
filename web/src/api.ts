@@ -172,6 +172,19 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(answer !== undefined ? { answer } : {}),
     }),
+  // ── Curiosity seeds (K9) ─────────────────────────────────────────
+  /**
+   * Trigger one CuriositySeedWorker.run() on the server. Used by the
+   * Memory tab "Regenerate now" button so a tester can confirm the
+   * worker's output without waiting for the next idle tick. The
+   * returned ``result`` object contains the worker's run summary
+   * (``wrote``, ``checked``, etc.).
+   */
+  runCuriositySeedWorker: () =>
+    jsonFetch<{ result: Record<string, unknown> }>(
+      "/api/curiosity-seeds/run",
+      { method: "POST" },
+    ),
   // ── Memory conflicts (F5) ────────────────────────────────────────
   listMemoryConflicts: (
     options: {

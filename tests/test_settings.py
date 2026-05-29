@@ -91,5 +91,90 @@ class AvatarExpressivenessLoaderTests(unittest.TestCase):
         self.assertAlmostEqual(result.avatar.expressiveness, 0.6)
 
 
+class CuriositySeedSettingsTests(unittest.TestCase):
+    """K9: new agent + memory knobs default-load from missing config keys."""
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(self, agent_extra: dict | None = None, memory_extra: dict | None = None) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(json.loads(default_path.read_text(encoding="utf-8")))
+        # Strip the new K9 keys to verify the defaults kick in.
+        for k in (
+            "topic_graph_enabled",
+            "curiosity_seed_enabled",
+            "curiosity_seed_max_active",
+            "curiosity_seed_max_per_run",
+            "curiosity_seed_min_novelty",
+            "curiosity_seed_resolve_threshold",
+            "topic_graph_filter_threshold",
+        ):
+            cfg.get("agent", {}).pop(k, None)
+        cfg.get("memory", {}).pop("curiosity_seed_interval_seconds", None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        if memory_extra is not None:
+            cfg["memory"] = {**cfg.get("memory", {}), **memory_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults_load_when_keys_missing(self) -> None:
+        path = self._write_config()
+        result = load_settings(config_path=path)
+        self.assertTrue(result.agent.topic_graph_enabled)
+        self.assertTrue(result.agent.curiosity_seed_enabled)
+        self.assertEqual(result.agent.curiosity_seed_max_active, 6)
+        self.assertEqual(result.agent.curiosity_seed_max_per_run, 2)
+        self.assertAlmostEqual(result.agent.curiosity_seed_min_novelty, 0.85)
+        self.assertAlmostEqual(
+            result.agent.curiosity_seed_resolve_threshold, 0.50,
+        )
+        self.assertAlmostEqual(
+            result.agent.topic_graph_filter_threshold, 0.65,
+        )
+        self.assertEqual(result.memory.curiosity_seed_interval_seconds, 3600)
+
+    def test_overrides_round_trip(self) -> None:
+        path = self._write_config(
+            agent_extra={
+                "curiosity_seed_max_active": 12,
+                "curiosity_seed_min_novelty": 0.9,
+            },
+            memory_extra={"curiosity_seed_interval_seconds": 1800},
+        )
+        result = load_settings(config_path=path)
+        self.assertEqual(result.agent.curiosity_seed_max_active, 12)
+        self.assertAlmostEqual(result.agent.curiosity_seed_min_novelty, 0.9)
+        self.assertEqual(result.memory.curiosity_seed_interval_seconds, 1800)
+
+    def test_clamps_out_of_range_thresholds(self) -> None:
+        path = self._write_config(
+            agent_extra={
+                "curiosity_seed_min_novelty": 99.0,
+                "curiosity_seed_resolve_threshold": -1.0,
+                "topic_graph_filter_threshold": 1.5,
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertAlmostEqual(result.agent.curiosity_seed_min_novelty, 1.0)
+        self.assertAlmostEqual(
+            result.agent.curiosity_seed_resolve_threshold, 0.0,
+        )
+        self.assertAlmostEqual(
+            result.agent.topic_graph_filter_threshold, 1.0,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -73,6 +73,13 @@
     "belief_worker_per_day_cap": 20,
     "novelty_detection_enabled": true,
     "topic_stagnation_enabled": true,
+    "topic_graph_enabled": true,
+    "curiosity_seed_enabled": true,
+    "curiosity_seed_max_active": 6,
+    "curiosity_seed_max_per_run": 2,
+    "curiosity_seed_min_novelty": 0.85,
+    "curiosity_seed_resolve_threshold": 0.50,
+    "topic_graph_filter_threshold": 0.65,
     "grounding_line_mode": "off"
   },
   "audio": {
@@ -168,6 +175,7 @@
     "stagnation_strong_threshold": 0.10,
     "stagnation_cooldown_turns": 4,
     "stagnation_post_novelty_suppression_turns": 3,
+    "curiosity_seed_interval_seconds": 3600,
     "idle_worker_wake_seconds": 60.0,
     "idle_worker_quiet_threshold_seconds": 30,
     "idle_worker_tick_budget_ms": 3000,

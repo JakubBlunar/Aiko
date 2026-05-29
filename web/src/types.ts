@@ -179,7 +179,10 @@ export type MemoryKind =
   | "reflection"
   | "promise"
   | "catchphrase"
-  | "shared_moment";
+  | "shared_moment"
+  | "knowledge_gap"
+  | "curiosity_finding"
+  | "curiosity_seed";
 
 export const MEMORY_KINDS: readonly MemoryKind[] = [
   "fact",
@@ -194,6 +197,9 @@ export const MEMORY_KINDS: readonly MemoryKind[] = [
   "open_question",
   "catchphrase",
   "shared_moment",
+  "knowledge_gap",
+  "curiosity_finding",
+  "curiosity_seed",
 ];
 
 export type MemoryOrder = "recent" | "top";
