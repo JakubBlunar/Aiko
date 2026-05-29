@@ -607,6 +607,14 @@ class PromptAssembler:
         # first so K18 can read its ``last_distance`` / ``last_band``
         # off the K6 detector. Dropped in aggressive mode.
         self._stagnation_provider: Callable[[str], str] | None = None
+        # K9 personality backlog: "Quiet curiosity" inner-life bullet
+        # listing 1-2 active curiosity seeds (topics Aiko has been
+        # quietly wondering about that haven't come up yet). Cheap
+        # mirror walk + provider-side rotation; no per-turn LLM. The
+        # block is suppressed in aggressive mode along with novelty /
+        # stagnation so the budget stays focused on the user's
+        # message. Empty when no active seeds exist.
+        self._curiosity_seeds_provider: Callable[[], str] | None = None
         # K16 unified ambient grounding line. One paragraph that fuses
         # circadian/world/activity/affect/relationship/user_state/
         # ambient_noise into a single continuous-awareness sentence at
@@ -738,6 +746,7 @@ class PromptAssembler:
         belief_gaps: Callable[[], str] | None = None,
         novelty: Callable[[str], str] | None = None,
         stagnation: Callable[[str], str] | None = None,
+        curiosity_seeds: Callable[[], str] | None = None,
         grounding_line: Callable[[], str] | None = None,
     ) -> None:
         """Register optional inner-life block providers.
@@ -792,6 +801,8 @@ class PromptAssembler:
             self._novelty_provider = novelty
         if stagnation is not None:
             self._stagnation_provider = stagnation
+        if curiosity_seeds is not None:
+            self._curiosity_seeds_provider = curiosity_seeds
         if grounding_line is not None:
             self._grounding_line_provider = grounding_line
 
@@ -1260,6 +1271,22 @@ class PromptAssembler:
                     log.debug("stagnation provider raised", exc_info=True)
                     stagnation_block = ""
 
+        # K9: "Quiet curiosity" bullet — topics Aiko has been quietly
+        # wondering about that haven't come up yet. Sits between the
+        # stagnation cue and the knowledge-gap cue so the three
+        # inner-life surfaces ("we've been circling", "I'm wondering",
+        # "I'm curious about") cluster together. Empty on cold-start
+        # / when the seed worker hasn't written anything yet.
+        # Dropped in aggressive mode -- the budget should focus on
+        # the user's message, not on cued asides.
+        curiosity_seeds_block = ""
+        if not aggressive and self._curiosity_seeds_provider is not None:
+            curiosity_seeds_block = _safe_provider(
+                self._curiosity_seeds_provider,
+                timing_sink=provider_ms,
+                timing_name="curiosity_seeds",
+            )
+
         # K16: unified ambient grounding line. Always built (the
         # provider itself short-circuits to ``""`` when the mode is
         # ``off``); the suppression of the granular ambient blocks
@@ -1402,6 +1429,14 @@ class PromptAssembler:
             # warmup, cooldown, post-novelty window, or above-
             # threshold mean).
             system_parts.append(stagnation_block)
+        if curiosity_seeds_block:
+            # K9: "Quiet curiosity" — at-most-two topics Aiko has
+            # been wondering about that haven't come up yet. Sits
+            # right after the stagnation cue and before the
+            # knowledge-gap "wondering about" line so the three
+            # "things on Aiko's mind" surfaces cluster together.
+            # Empty until the seed worker has written something.
+            system_parts.append(curiosity_seeds_block)
         if knowledge_gaps_block:
             # F2: surface one "wondering about" bullet right after
             # agenda. Keeps the "things on Aiko's mind" cluster

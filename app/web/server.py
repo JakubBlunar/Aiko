@@ -1245,6 +1245,28 @@ def create_web_app(session: "SessionController") -> FastAPI:
             raise HTTPException(404, "knowledge gap not found")
         return JSONResponse({"gap": snapshot})
 
+    # ── REST: curiosity seeds (K9) ───────────────────────────────────
+
+    @app.post("/api/curiosity-seeds/run")
+    async def run_curiosity_seed_worker() -> JSONResponse:
+        """Force a single ``CuriositySeedWorker.run()`` and return the result.
+
+        Used by the Memory tab "Regenerate now" button so a tester
+        can verify the worker's output without waiting for the next
+        idle window. Mirrors the cooperative shape of the other
+        on-demand worker hooks: the call runs synchronously inside
+        the request handler since the worker is already designed to
+        be quick (one LLM call + a handful of embeds).
+        """
+        worker = getattr(session, "_curiosity_seed_worker", None)
+        if worker is None:
+            raise HTTPException(503, "curiosity seed worker unavailable")
+        try:
+            result = worker.run()
+        except Exception as exc:
+            raise HTTPException(500, f"worker run failed: {exc}") from exc
+        return JSONResponse({"result": result or {}})
+
     # ── REST: memory conflicts (F5) ──────────────────────────────────
 
     @app.get("/api/memory-conflicts")

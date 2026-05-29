@@ -468,6 +468,55 @@ class AgentSettings:
     # to focus on K6 alone. Leaving it on with conservative
     # thresholds is the intended default.
     topic_stagnation_enabled: bool = True
+    # ── K9 personality backlog: topic graph + curiosity seeds ─────────
+    # Master switch for the in-process topic graph wrapper around
+    # :attr:`MemoryStore._mirror`. Disabling skips both the seed
+    # worker's "have we discussed this already?" filter AND the
+    # eventual Memory-tab cluster panel; the rest of the app keeps
+    # functioning unchanged. Cheap on its own (rebuilds from the
+    # existing in-memory mirror; no embedding work).
+    topic_graph_enabled: bool = True
+    # Master switch for
+    # :class:`app.core.curiosity_seed_worker.CuriositySeedWorker`.
+    # When ``False`` the worker never registers its idle tick and
+    # the seed surfacing path (inner-life bullet + NarrativeWeaver
+    # candidate) silently produces empty output. Default ON because
+    # the worker is the headline behaviour change of K9.
+    curiosity_seed_enabled: bool = True
+    # Cap on how many active (un-consumed) seeds the worker keeps
+    # alive at once. ``is_ready`` short-circuits when the count is
+    # at the cap so a fast-talking session can't pile up forty
+    # never-mentioned seeds. Two seeds is a normal active steady
+    # state; six is the headroom for "user only chats on weekends".
+    curiosity_seed_max_active: int = 6
+    # Cap on how many candidates the worker writes per successful
+    # tick. The LLM proposes up to 5; this is the post-filter cap on
+    # how many of the survivors actually become memories. Keeping
+    # it at 2 keeps the inner-life bullet list readable.
+    curiosity_seed_max_per_run: int = 2
+    # Novelty floor against existing seeds: a candidate whose cosine
+    # to ANY active seed >= this is rejected (would be a near-
+    # duplicate). Lower = more eager to write; higher = stricter.
+    # 0.85 lines up with the dedupe threshold used by the rest of
+    # the memory store.
+    curiosity_seed_min_novelty: float = 0.85
+    # Cosine match threshold for the post-turn auto-resolve hook.
+    # When (current user_text + assistant_text) cosines this high
+    # against a seed embedding the seed is marked consumed and
+    # demoted to archive tier. Lower than the graph filter on
+    # purpose -- partial / oblique mentions should still count, the
+    # alternative is a seed that hangs around forever once the
+    # conversation drifts past it.
+    curiosity_seed_resolve_threshold: float = 0.50
+    # Cosine threshold consumed by
+    # :meth:`app.core.topic_graph.TopicGraph.is_close_to_any_cluster`
+    # when the seed worker filters LLM candidates. Anything cosine-
+    # close to any existing memory at or above this is rejected as
+    # "we've already covered that." Default 0.65 sits between the
+    # 0.55 single-link clustering threshold and the 0.85 dedupe
+    # threshold so the filter catches "same topic, different angle"
+    # without rejecting "adjacent but new" candidates.
+    topic_graph_filter_threshold: float = 0.65
     # ── K16. Unified ambient grounding line ───────────────────────────
     # The grounding line is one paragraph at the top of the system
     # prompt that fuses the seven "ambient" inner-life signals
@@ -755,6 +804,12 @@ class MemorySettings:
     # rate-cap gives the worker room to chip away at a backlog without
     # hammering the search engine.
     idle_curiosity_interval_seconds: int = 1800
+    # K9: curiosity-seed worker cadence. One LLM call + a handful of
+    # embeddings per tick, so an hour between successful runs is
+    # plenty -- the worker also ``is_ready=False``s when the seed
+    # store is at ``curiosity_seed_max_active`` so the cadence is a
+    # ceiling, not a floor.
+    curiosity_seed_interval_seconds: int = 3600
     # F5: conflicting-memory detector cadence. The all-pairs cosine
     # scan is cheap (NumPy on the in-memory mirror) but the heuristic
     # gate + occasional LLM call adds up, so once an hour is plenty.
@@ -1312,6 +1367,40 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             topic_stagnation_enabled=bool(
                 agent_raw.get("topic_stagnation_enabled", True),
             ),
+            topic_graph_enabled=bool(
+                agent_raw.get("topic_graph_enabled", True),
+            ),
+            curiosity_seed_enabled=bool(
+                agent_raw.get("curiosity_seed_enabled", True),
+            ),
+            curiosity_seed_max_active=max(
+                1, int(agent_raw.get("curiosity_seed_max_active", 6)),
+            ),
+            curiosity_seed_max_per_run=max(
+                1, int(agent_raw.get("curiosity_seed_max_per_run", 2)),
+            ),
+            curiosity_seed_min_novelty=max(
+                0.0,
+                min(1.0, float(agent_raw.get("curiosity_seed_min_novelty", 0.85))),
+            ),
+            curiosity_seed_resolve_threshold=max(
+                0.0,
+                min(
+                    1.0,
+                    float(agent_raw.get(
+                        "curiosity_seed_resolve_threshold", 0.50,
+                    )),
+                ),
+            ),
+            topic_graph_filter_threshold=max(
+                0.0,
+                min(
+                    1.0,
+                    float(agent_raw.get(
+                        "topic_graph_filter_threshold", 0.65,
+                    )),
+                ),
+            ),
             grounding_line_mode=_parse_grounding_line_mode(
                 agent_raw.get("grounding_line_mode", "off"),
             ),
@@ -1511,6 +1600,10 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             idle_curiosity_interval_seconds=max(
                 60,
                 int(memory_raw.get("idle_curiosity_interval_seconds", 1800)),
+            ),
+            curiosity_seed_interval_seconds=max(
+                60,
+                int(memory_raw.get("curiosity_seed_interval_seconds", 3600)),
             ),
             conflict_detector_interval_seconds=max(
                 60,

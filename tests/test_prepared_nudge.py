@@ -301,5 +301,95 @@ class NarrativeWeaverTests(unittest.TestCase):
             f.close()
 
 
+class CuriositySeedSourceTests(unittest.TestCase):
+    """K9: NarrativeWeaver picks up ``curiosity_seed`` memories.
+
+    Seeds carry a fully-rendered ``metadata.prompt_text``; the weaver
+    uses that verbatim and tags the resulting nudge with
+    ``source_kind='curiosity_seed'`` so the proactive director can
+    label it correctly.
+    """
+
+    def test_seed_becomes_prepared_nudge(self):
+        f = _Fixture()
+        try:
+            # Insert a single curiosity_seed; nothing else competes.
+            f.memory.add(
+                "your favourite tea ritual",
+                "curiosity_seed",
+                _emb(7),
+                salience=0.5,
+                tier="scratchpad",
+                metadata={
+                    "topic": "your favourite tea ritual",
+                    "prompt_text": (
+                        "Off-topic, but I've been wondering "
+                        "what your perfect tea moment looks like."
+                    ),
+                    "source": "llm",
+                    "generated_at": "2026-01-01T00:00:00+00:00",
+                    "consumed_at": None,
+                    "candidate_score": 0.42,
+                },
+            )
+            ollama = _FakeOllama()
+            # ``every_n_turns=1`` so the weaver runs immediately.
+            weaver = NarrativeWeaver(
+                ollama=ollama,
+                store=f.store,
+                memory_store=f.memory,
+                agenda_store=None,
+                model="m",
+                every_n_turns=1,
+                rng=random.Random(0),
+            )
+            weaver.notify_user_turn()
+            result = weaver.maybe_run("u1")
+            self.assertIsNotNone(result)
+            assert result is not None
+            self.assertEqual(result.source_kind, "curiosity_seed")
+            # Seed bypasses the LLM weave so the prompt_text comes
+            # through verbatim (modulo trim).
+            self.assertIn("tea moment", result.text)
+            # No LLM call should have happened — the curiosity_seed
+            # branch short-circuits ``_weave``.
+            self.assertEqual(ollama.calls, [])
+            self.assertEqual(
+                weaver.stats().get("from_curiosity_seed"), 1,
+            )
+        finally:
+            f.close()
+
+    def test_consumed_seed_is_skipped(self):
+        f = _Fixture()
+        try:
+            # Mark the seed already consumed -> shouldn't surface.
+            f.memory.add(
+                "tea ritual",
+                "curiosity_seed",
+                _emb(8),
+                salience=0.5,
+                tier="scratchpad",
+                metadata={
+                    "topic": "tea ritual",
+                    "prompt_text": "p",
+                    "consumed_at": "2026-01-05T00:00:00+00:00",
+                },
+            )
+            ollama = _FakeOllama()
+            weaver = NarrativeWeaver(
+                ollama=ollama,
+                store=f.store,
+                memory_store=f.memory,
+                agenda_store=None,
+                model="m",
+                every_n_turns=1,
+            )
+            weaver.notify_user_turn()
+            self.assertIsNone(weaver.maybe_run("u1"))
+        finally:
+            f.close()
+
+
 if __name__ == "__main__":
     unittest.main()
