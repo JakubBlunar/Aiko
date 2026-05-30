@@ -857,6 +857,15 @@ class AgentSettings:
     # fields). See [`app/core/calibration_detector.py`](calibration_detector.py).
     calibration_detection_enabled: bool = True
 
+    # ── K24: sensory anchoring layer ──────────────────────────────────
+    # Master switch for the adaptive per-arc cadence that
+    # occasionally surfaces a "small physical beat available" cue.
+    # Off → ``_render_sensory_anchor_block`` short-circuits and no
+    # beats are ever offered to Aiko. Knob detail lives on
+    # :class:`MemorySettings` (``sensory_anchor_*`` fields). See
+    # [`app/core/sensory_anchor.py`](sensory_anchor.py).
+    sensory_anchor_enabled: bool = True
+
     # ── Resume opener (Phase 2a) ──────────────────────────────────────
     # When the time since the last assistant turn exceeds this many
     # hours, controller bootstrap schedules a one-shot NarrativeWeaver
@@ -1120,6 +1129,36 @@ class MemorySettings:
     # at the cost of memory + storage; lower → coarser, more global
     # behaviour.
     calibration_max_topic_slots: int = 8
+    # ── K24 personality backlog: sensory anchoring layer ─────────────
+    # Adaptive per-arc cadence layer that occasionally surfaces a
+    # "small physical beat available" cue so Aiko substitutes a
+    # sensory detail for an emotional statement. State is in-memory
+    # on the controller (no DB, no persistence). See
+    # :mod:`app.core.sensory_anchor`.
+    #
+    # Global minimum cooldown between beats; the per-arc cooldown
+    # adds on top via ``max(arc_min, min_turn_gap)`` so this is a
+    # *floor*, not a ceiling. Raise to make beats rarer overall;
+    # the per-arc table still drives the band shape.
+    sensory_anchor_min_turn_gap: int = 4
+    # Multiplier on the per-arc probability. ``1.0`` = ship as
+    # designed; ``< 1.0`` = rarer (e.g. ``0.5`` halves every band);
+    # ``> 1.0`` = more often (e.g. ``2.0`` would push ``support``'s
+    # 0.45 probability up against the 1.0 clamp). Clamped
+    # ``[0.0, 2.0]`` so a buggy user.json can't accidentally
+    # silence the feature entirely or push the dice into "always
+    # fire" territory.
+    sensory_anchor_probability_scale: float = 1.0
+    # No-repeat ring size. After firing on the tea pot, the same
+    # slug stays out of the candidate pool until ``max_recent``
+    # other items have fired (or the deque overflows). Lower →
+    # more repetition tolerance; higher → more variety required.
+    sensory_anchor_max_recent_items: int = 4
+    # Hard cap on how many room items the selector considers per
+    # tick. The world is small today (~10 items per location), but
+    # this protects future "100-item garden" scenarios from a
+    # quadratic blow-up in the weighted sample step.
+    sensory_anchor_max_window_items: int = 6
     # ── Background workers (schema v8) ───────────────────────────────
     # Worker intervals in seconds. Both workers are idempotent: running
     # more often is safe but wastes a little CPU. Drop to ~60 for
@@ -2074,6 +2113,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             calibration_detection_enabled=bool(
                 agent_raw.get("calibration_detection_enabled", True),
             ),
+            sensory_anchor_enabled=bool(
+                agent_raw.get("sensory_anchor_enabled", True),
+            ),
             resume_opener_min_hours=max(0.0, float(agent_raw.get("resume_opener_min_hours", 4.0))),
             resume_opener_ttl_seconds=max(60.0, float(agent_raw.get("resume_opener_ttl_seconds", 1800.0))),
             dream_worker_enabled=bool(agent_raw.get("dream_worker_enabled", True)),
@@ -2315,6 +2357,28 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             ),
             calibration_max_topic_slots=max(
                 1, int(memory_raw.get("calibration_max_topic_slots", 8)),
+            ),
+            sensory_anchor_min_turn_gap=max(
+                1, int(memory_raw.get("sensory_anchor_min_turn_gap", 4)),
+            ),
+            sensory_anchor_probability_scale=max(
+                0.0,
+                min(
+                    2.0,
+                    float(
+                        memory_raw.get(
+                            "sensory_anchor_probability_scale", 1.0,
+                        )
+                    ),
+                ),
+            ),
+            sensory_anchor_max_recent_items=max(
+                1,
+                int(memory_raw.get("sensory_anchor_max_recent_items", 4)),
+            ),
+            sensory_anchor_max_window_items=max(
+                1,
+                int(memory_raw.get("sensory_anchor_max_window_items", 6)),
             ),
             decay_max_catchup_days=max(
                 1.0, float(memory_raw.get("decay_max_catchup_days", 30.0))

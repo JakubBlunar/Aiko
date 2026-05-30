@@ -1226,6 +1226,7 @@ class SessionController(
             belief_gaps=self._render_belief_gaps_block,
             clarification=self._render_clarification_block,
             calibration=self._render_calibration_block,
+            sensory_anchor=self._render_sensory_anchor_block,
             rupture=self._render_rupture_block,
             absence_curiosity=self._render_absence_curiosity_block,
             mood_shell=self._render_mood_shell_block,
@@ -2258,6 +2259,34 @@ class SessionController(
                 "CalibrationStore init failed", exc_info=True,
             )
             self._calibration_store = None
+
+        # K24: sensory anchoring cadence. Per-controller state
+        # holder for the "small physical beat available" cue. No
+        # persistence -- the in-memory cooldown counter resets on
+        # restart, worst case = one extra beat in the first quiet
+        # window post-boot. Gated by ``agent.sensory_anchor_enabled``;
+        # provider short-circuits to ``""`` when the cadence is None.
+        self._sensory_anchor_cadence = None
+        if bool(
+            getattr(settings.agent, "sensory_anchor_enabled", True)
+        ):
+            try:
+                from app.core.sensory_anchor import SensoryAnchorCadence
+
+                self._sensory_anchor_cadence = SensoryAnchorCadence(
+                    max_recent=int(
+                        getattr(
+                            settings.memory,
+                            "sensory_anchor_max_recent_items",
+                            4,
+                        )
+                    ),
+                )
+            except Exception:
+                log.warning(
+                    "SensoryAnchorCadence init failed", exc_info=True,
+                )
+                self._sensory_anchor_cadence = None
 
         # K14: implicit engagement tracker. Reuses the K13 rolling word-
         # count window via ``recent_word_counts()`` so we don't pay a

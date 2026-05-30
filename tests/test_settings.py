@@ -422,5 +422,113 @@ class CalibrationDetectorSettingsTests(unittest.TestCase):
         self.assertEqual(result.memory.calibration_max_topic_slots, 1)
 
 
+class SensoryAnchorSettingsTests(unittest.TestCase):
+    """K24: agent master switch + 4 memory knobs round-trip with clamps."""
+
+    _SA_AGENT_KEYS = ("sensory_anchor_enabled",)
+    _SA_MEMORY_KEYS = (
+        "sensory_anchor_min_turn_gap",
+        "sensory_anchor_probability_scale",
+        "sensory_anchor_max_recent_items",
+        "sensory_anchor_max_window_items",
+    )
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(
+        self,
+        agent_extra: dict | None = None,
+        memory_extra: dict | None = None,
+        strip_keys: bool = True,
+    ) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(
+            json.loads(default_path.read_text(encoding="utf-8"))
+        )
+        if strip_keys:
+            for k in self._SA_AGENT_KEYS:
+                cfg.get("agent", {}).pop(k, None)
+            for k in self._SA_MEMORY_KEYS:
+                cfg.get("memory", {}).pop(k, None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        if memory_extra is not None:
+            cfg["memory"] = {**cfg.get("memory", {}), **memory_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults_load_when_keys_missing(self) -> None:
+        path = self._write_config()
+        result = load_settings(config_path=path)
+        self.assertTrue(result.agent.sensory_anchor_enabled)
+        self.assertEqual(result.memory.sensory_anchor_min_turn_gap, 4)
+        self.assertAlmostEqual(
+            result.memory.sensory_anchor_probability_scale, 1.0,
+        )
+        self.assertEqual(result.memory.sensory_anchor_max_recent_items, 4)
+        self.assertEqual(result.memory.sensory_anchor_max_window_items, 6)
+
+    def test_overrides_round_trip(self) -> None:
+        path = self._write_config(
+            agent_extra={"sensory_anchor_enabled": False},
+            memory_extra={
+                "sensory_anchor_min_turn_gap": 12,
+                "sensory_anchor_probability_scale": 0.5,
+                "sensory_anchor_max_recent_items": 8,
+                "sensory_anchor_max_window_items": 24,
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.sensory_anchor_enabled)
+        self.assertEqual(result.memory.sensory_anchor_min_turn_gap, 12)
+        self.assertAlmostEqual(
+            result.memory.sensory_anchor_probability_scale, 0.5,
+        )
+        self.assertEqual(result.memory.sensory_anchor_max_recent_items, 8)
+        self.assertEqual(result.memory.sensory_anchor_max_window_items, 24)
+
+    def test_clamps_out_of_range_values(self) -> None:
+        # ``probability_scale`` is the only knob with both a floor
+        # (0.0) and a ceiling (2.0); the three int knobs have a
+        # min-1 floor and no ceiling. Verify the parser holds.
+        path = self._write_config(
+            memory_extra={
+                "sensory_anchor_min_turn_gap": 0,             # min 1
+                "sensory_anchor_probability_scale": -1.0,     # min 0.0
+                "sensory_anchor_max_recent_items": -5,        # min 1
+                "sensory_anchor_max_window_items": 0,         # min 1
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertEqual(result.memory.sensory_anchor_min_turn_gap, 1)
+        self.assertAlmostEqual(
+            result.memory.sensory_anchor_probability_scale, 0.0,
+        )
+        self.assertEqual(result.memory.sensory_anchor_max_recent_items, 1)
+        self.assertEqual(result.memory.sensory_anchor_max_window_items, 1)
+
+        # Now hammer the ceiling on the probability scale.
+        path = self._write_config(
+            memory_extra={
+                "sensory_anchor_probability_scale": 999.0,    # max 2.0
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertAlmostEqual(
+            result.memory.sensory_anchor_probability_scale, 2.0,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -602,6 +602,12 @@ class PromptAssembler:
         # Not one-shot: the state persists across turns and decays
         # toward baseline lazily on each read.
         self._calibration_provider: Callable[[], str] | None = None
+        # K24 — sensory anchoring layer. Adaptive per-arc cadence;
+        # the provider returns a one-line "small physical beat
+        # available" cue when the cooldown is clear AND the dice
+        # cooperate. NOT one-shot from the assembler's POV: state
+        # lives on the controller's :class:`SensoryAnchorCadence`.
+        self._sensory_anchor_provider: Callable[[], str] | None = None
         # K8 — affect-rupture one-shot. Sibling of the clarification
         # provider above; same one-shot contract.
         self._rupture_provider: Callable[[], str] | None = None
@@ -805,6 +811,7 @@ class PromptAssembler:
         belief_gaps: Callable[[], str] | None = None,
         clarification: Callable[[], str] | None = None,
         calibration: Callable[[], str] | None = None,
+        sensory_anchor: Callable[[], str] | None = None,
         rupture: Callable[[], str] | None = None,
         absence_curiosity: Callable[[], str] | None = None,
         mood_shell: Callable[[], str] | None = None,
@@ -869,6 +876,8 @@ class PromptAssembler:
             self._clarification_provider = clarification
         if calibration is not None:
             self._calibration_provider = calibration
+        if sensory_anchor is not None:
+            self._sensory_anchor_provider = sensory_anchor
         if rupture is not None:
             self._rupture_provider = rupture
         if absence_curiosity is not None:
@@ -1358,6 +1367,28 @@ class PromptAssembler:
                     log.debug("calibration provider raised", exc_info=True)
                     calibration_block = ""
 
+        # K24 — sensory anchoring layer. Adaptive per-arc cadence
+        # that occasionally surfaces a "small physical beat
+        # available" cue so Aiko can substitute a sensory detail
+        # for an emotional statement. Resolved here so the
+        # ``system_parts`` ordering stays explicit; placement is
+        # *after* world_block / activity_block in the assembled
+        # prompt (the body beat is texture on top of the room
+        # location). Gated on aggressive mode: when context is
+        # tight the body beat is a graceful skip.
+        sensory_anchor_block = ""
+        if self._sensory_anchor_provider is not None and not aggressive:
+            with _timed_phase(provider_ms, "sensory_anchor"):
+                try:
+                    sensory_anchor_block = (
+                        self._sensory_anchor_provider() or ""
+                    )
+                except Exception:
+                    log.debug(
+                        "sensory_anchor provider raised", exc_info=True,
+                    )
+                    sensory_anchor_block = ""
+
         # K8 — affect-rupture one-shot. Sibling of the clarification
         # provider; same one-shot contract, same not-gated-on-
         # aggressive policy (a "their mood just dipped" cue is
@@ -1722,6 +1753,17 @@ class PromptAssembler:
         # doing) sit next to each other in the system prompt.
         if activity_block:
             system_parts.append(activity_block)
+        if sensory_anchor_block:
+            # K24: sensory anchor sits right after the ambient
+            # awareness cluster (world + activity). The body beat
+            # is texture on top of the room location -- it tells
+            # Aiko "you could touch the {item}" while the world
+            # block grounds where she is. Intentionally NOT added
+            # to the K16 grounding-line suppression matrix above:
+            # the fused grounding paragraph never mentions specific
+            # items + verb classes, so the cue is always additive
+            # rather than redundant.
+            system_parts.append(sensory_anchor_block)
         if catchphrase_block:
             system_parts.append(catchphrase_block)
         if vocal_tone_block:

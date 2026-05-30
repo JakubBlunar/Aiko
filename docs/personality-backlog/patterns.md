@@ -225,24 +225,8 @@ went quiet on you — pull back, don't push more").
 
 ## K24. Sensory anchoring layer
 
-Aiko has a fully-stocked room (cookies, tea pot, blanket, retro
-keyboard, photo of Jacob) but she almost never references it as
-sensory experience inside a reply. The `world` inner-life
-provider grounds *where* she is, not *what she's doing with her
-hands*. A small cadence layer would occasionally substitute a
-sensory detail for an emotional statement — "I'm pulling the
-blanket tighter while you talk about it" instead of "I hear you"
-— picking from a rate-limited rotation of items currently in the
-room and a verb table (`holding`, `setting down`, `wrapping`,
-`picking up`). Rate-limited so it never becomes a tic. Pairs
-naturally with the K16 grounding-line consolidation: when in
-`replace` mode the sensory detail can ride the same paragraph;
-when in `off`/`split` it surfaces as a one-line "small physical
-beat" cue. Key files:
-[`app/core/world_store.py`](../../app/core/world_store.py)
-(reader for "items currently visible"), new
-`app/core/sensory_anchor.py` (rate-limit + verb table + cue
-emit), persona block consumer.
+**Shipped** — adaptive per-arc cadence + posture-kind matrix.
+See [`shipped.md` → K24](shipped.md#k24-sensory-anchoring-layer--adaptive-per-arc-cadence--posture-kind-matrix).
 
 ---
 

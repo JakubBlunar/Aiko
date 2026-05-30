@@ -1378,5 +1378,122 @@ class SpeechGrammarAddendumTests(unittest.TestCase):
         self.assertIn("never quote the system line", addendum_lower)
 
 
+class SensoryAnchorProviderTests(unittest.TestCase):
+    """K24 ``sensory_anchor`` provider tests.
+
+    The cue is additive on top of ambient awareness (world +
+    activity), so it survives K16 ``replace`` mode -- the fused
+    grounding paragraph never mentions specific items + verb
+    classes, so there's no risk of redundancy. It IS dropped
+    under ``aggressive=True`` because the body beat is texture,
+    not steering-critical content.
+    """
+
+    _CUE = (
+        "Small physical beat available: the tea pot is right here. "
+        "If a body anchor would land naturally this reply, "
+        "you could pick it up -- otherwise let it pass."
+    )
+
+    def test_sensory_anchor_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="sn1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                sensory_anchor=lambda: self._CUE,
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "sn1",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertIn(
+                "Small physical beat available", messages[0]["content"],
+            )
+
+    def test_empty_provider_drops_block(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="sn2", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(sensory_anchor=lambda: "")
+            messages, _ = assembler.assemble_with_budget(
+                "sn2",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertNotIn(
+                "Small physical beat available", messages[0]["content"],
+            )
+
+    def test_sensory_anchor_survives_k16_replace_mode(self) -> None:
+        # K24 explicitly NOT added to the K16 suppression matrix.
+        # The fused grounding paragraph never enumerates items +
+        # verb classes, so the body beat is texture on top, not a
+        # redundant restatement.
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="sn3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                sensory_anchor=lambda: self._CUE,
+                grounding_line=lambda: (
+                    "It's Sunday morning. Jacob's reading upbeat."
+                ),
+                world=lambda: "World: at the desk.",
+                activity=lambda: "Jacob is in Cursor.",
+            )
+            assembler.set_grounding_line_mode("replace")
+            messages, _ = assembler.assemble_with_budget(
+                "sn3",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            # World + activity are subsumed by the grounding line,
+            # but the sensory anchor survives.
+            content = messages[0]["content"]
+            self.assertNotIn("World: at the desk.", content)
+            self.assertIn("Small physical beat available", content)
+
+    def test_sensory_anchor_dropped_under_aggressive(self) -> None:
+        # When budget is tight (``aggressive=True``), body texture
+        # is the first thing to go. Mirror the K20 calibration
+        # block's behaviour here -- the body beat is not steering-
+        # critical, just texture.
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="sn4", role="user", content="hi", token_count=2,
+            )
+            calls: list[str] = []
+
+            def provider() -> str:
+                calls.append("called")
+                return self._CUE
+
+            assembler.set_inner_life_providers(sensory_anchor=provider)
+            messages, _ = assembler.assemble_with_budget(
+                "sn4",
+                "x",
+                context_window=4096,
+                response_budget=256,
+                aggressive=True,
+            )
+            self.assertNotIn(
+                "Small physical beat available", messages[0]["content"],
+            )
+            # And the provider must not have been called -- the
+            # block is gated *before* the provider runs to save the
+            # cooldown-arming side effect.
+            self.assertEqual(calls, [])
+
+
 if __name__ == "__main__":
     unittest.main()
