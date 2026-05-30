@@ -593,6 +593,31 @@ class PostTurnMixin:
             except Exception:
                 log.debug("dialogue_act tagger failed", exc_info=True)
 
+        # K17 — clarification-repair detector. Regex-only, runs inline
+        # right after the dialogue_act tagger so its result lands in
+        # the same "what was the shape of this turn" cluster. Stashes
+        # a one-shot result on the controller; the next turn's
+        # prompt assembler renders it via the inner-life provider.
+        # Disabled-path: the detector returns ``None`` when the
+        # setting is off, so the slot stays empty and the provider
+        # short-circuits.
+        if bool(
+            getattr(self._settings.agent, "clarification_repair_enabled", True)
+        ):
+            try:
+                from app.core import clarification_detector
+
+                clarification_result = clarification_detector.detect(user_text)
+                if clarification_result is not None:
+                    self._pending_clarification = clarification_result
+                    log.info(
+                        "K17 clarification: band=%s evidence=%r",
+                        clarification_result.band,
+                        clarification_result.evidence,
+                    )
+            except Exception:
+                log.debug("clarification detector raised", exc_info=True)
+
         # Phase 4a: inline [[agenda:...]] tags in raw assistant output.
         agenda_store = getattr(self, "_agenda_store", None)
         if agenda_store is not None and raw_assistant_text:

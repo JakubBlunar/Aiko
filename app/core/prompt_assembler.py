@@ -591,6 +591,10 @@ class PromptAssembler:
         # work itself, so we can safely call it on every turn. Dropped
         # in aggressive mode.
         self._belief_gaps_provider: Callable[[], str] | None = None
+        # K17 — clarification-repair one-shot. The post-turn detector
+        # stashes a result on the controller; this provider renders
+        # it on the very next turn and clears the slot.
+        self._clarification_provider: Callable[[], str] | None = None
         # K6 personality backlog: surprise/novelty signal. Takes the
         # current ``user_text`` (like the F2 knowledge-gap provider)
         # because the detector compares the live turn embedding to a
@@ -765,6 +769,7 @@ class PromptAssembler:
         axes: Callable[[], str] | None = None,
         knowledge_gaps: Callable[[str], str] | None = None,
         belief_gaps: Callable[[], str] | None = None,
+        clarification: Callable[[], str] | None = None,
         novelty: Callable[[str], str] | None = None,
         stagnation: Callable[[str], str] | None = None,
         style_pattern: Callable[[], str] | None = None,
@@ -820,6 +825,8 @@ class PromptAssembler:
             self._knowledge_gaps_provider = knowledge_gaps
         if belief_gaps is not None:
             self._belief_gaps_provider = belief_gaps
+        if clarification is not None:
+            self._clarification_provider = clarification
         if novelty is not None:
             self._novelty_provider = novelty
         if stagnation is not None:
@@ -1267,6 +1274,23 @@ class PromptAssembler:
                     log.debug("belief gaps provider raised", exc_info=True)
                     belief_gaps_block = ""
 
+        # K17 — clarification-repair one-shot. Same shape as the K2
+        # belief-gap provider: stateless from the assembler's POV, the
+        # post-turn detector stashes a result and the inner-life
+        # provider clears the slot on the read here. Resolved before
+        # rendering so the system_parts ordering stays explicit.
+        # NOT gated on aggressive mode -- a "you missed his point"
+        # cue is exactly the kind of thing aggressive mode wants to
+        # keep, since it directly steers the next reply.
+        clarification_block = ""
+        if self._clarification_provider is not None:
+            with _timed_phase(provider_ms, "clarification"):
+                try:
+                    clarification_block = self._clarification_provider() or ""
+                except Exception:
+                    log.debug("clarification provider raised", exc_info=True)
+                    clarification_block = ""
+
         # K6: per-turn surprise/novelty signal. Same shape as the F2
         # knowledge-gap provider (takes ``user_text``), since the
         # detector scores the live utterance against a rolling
@@ -1482,6 +1506,14 @@ class PromptAssembler:
             # Same "things on Aiko's mind" cluster -- belief gaps are
             # the affective sibling of knowledge gaps.
             system_parts.append(belief_gaps_block)
+        if clarification_block:
+            # K17: clarification-repair beats every other noticing cue
+            # because it's the loudest signal in the room ("you missed
+            # the point"). Goes right after belief_gaps so all the
+            # "noticing cues" cluster together and lands above novelty
+            # / stagnation / style_pattern -- if she missed the point
+            # she should re-read first, react second.
+            system_parts.append(clarification_block)
         if novelty_block:
             # K6: surface the "Heads-up: Jacob just brought up
             # something new" line right after belief_gaps so reaction

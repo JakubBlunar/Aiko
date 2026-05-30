@@ -1166,6 +1166,7 @@ class SessionController(
             axes=self._render_axes_block,
             knowledge_gaps=self._render_knowledge_gaps_block,
             belief_gaps=self._render_belief_gaps_block,
+            clarification=self._render_clarification_block,
             novelty=self._render_novelty_block,
             stagnation=self._render_stagnation_block,
             style_pattern=self._render_style_pattern_block,
@@ -1871,6 +1872,12 @@ class SessionController(
         # Cached gap list produced by the post-turn detector for the
         # NEXT turn's inner-life provider. Cleared after each render.
         self._pending_belief_gaps: list[Any] = []
+        # K17 — one-shot clarification-repair slot. Filled by
+        # ``post_turn_mixin._post_turn_inner_life`` when the detector
+        # fires; consumed and cleared by
+        # ``inner_life_providers_mixin._render_clarification_block``
+        # on the next turn so the cue appears exactly once.
+        self._pending_clarification: Any = None
         if (
             self._chat_db is not None
             and bool(getattr(settings.agent, "belief_tracking_enabled", True))
