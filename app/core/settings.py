@@ -846,6 +846,17 @@ class AgentSettings:
     # [`app/core/callback_detector.py`](callback_detector.py).
     callback_detector_enabled: bool = True
 
+    # ── K20: metacognitive calibration detector ────────────────────────
+    # Master switch for the post-turn classifier that detects
+    # Jacob's calibration signal toward Aiko's claims (pushback /
+    # softening / affirmation) and writes per-user
+    # CalibrationState. Off → no new calibration updates; the
+    # inner-life provider also goes silent because
+    # ``_render_calibration_block`` short-circuits on this flag. Knob
+    # detail lives on :class:`MemorySettings` (``calibration_*``
+    # fields). See [`app/core/calibration_detector.py`](calibration_detector.py).
+    calibration_detection_enabled: bool = True
+
     # ── Resume opener (Phase 2a) ──────────────────────────────────────
     # When the time since the last assistant turn exceeds this many
     # hours, controller bootstrap schedules a one-shot NarrativeWeaver
@@ -1061,6 +1072,54 @@ class MemorySettings:
     # have its revival_score nudge it toward salience=1.0 over the
     # promotion worker's next sweeps.
     callback_revival_bump: float = 0.10
+    # ── K20 personality backlog: metacognitive calibration ───────────
+    # Tracks Jacob's calibration signal toward Aiko's claims (pushback /
+    # softening rephrase / affirmation) into a per-user
+    # CalibrationState (global scalar + bounded ring of topic slots).
+    # Surfaced as a one-line hedge cue on the next turn when the
+    # global score sits below ``calibration_global_low_threshold`` or
+    # a topic slot sits below ``calibration_topic_low_threshold``.
+    # K20 deliberately does NOT touch RAG retrieval scores -- F3
+    # already owns per-memory accuracy hedging. K20 is the per-user /
+    # per-topic register tilt on top of it. See
+    # :mod:`app.core.calibration_detector` and
+    # :mod:`app.core.calibration_store`.
+    #
+    # Baseline score the global + topic slots decay toward in the
+    # absence of new signals. ``0.80`` reads as "neutral-positive"
+    # (Aiko speaks confidently by default); lowering it makes Aiko
+    # more reflexively hedgy.
+    calibration_baseline: float = 0.80
+    # Render thresholds for the inner-life cue. The global cue fires
+    # only when ``global_score < calibration_global_low_threshold``;
+    # the topic cue (which wins on tie) fires when any topic slot is
+    # below ``calibration_topic_low_threshold``. Lower → cue is
+    # rarer; higher → cue fires more readily.
+    calibration_global_low_threshold: float = 0.55
+    calibration_topic_low_threshold: float = 0.50
+    # Exponential half-life in days for the drift toward baseline.
+    # Topic slots decay slower (multiplier in
+    # ``calibration_detector.decay``) so a learned topic stance
+    # outlives a general bad day. Higher → calibration persists
+    # longer; lower → faster recovery to baseline.
+    calibration_half_life_days: float = 5.0
+    # Cosine similarity floor between an incoming assistant_vec and
+    # an existing topic centroid for the slot to absorb the signal
+    # (rather than allocating a new slot). Higher → narrower topics,
+    # more slots; lower → broader topics, fewer slots.
+    calibration_topic_merge_threshold: float = 0.78
+    # Cosine similarity floor between user_vec and the prior
+    # assistant_vec for the softening detector to fire (the
+    # hedge-token regex must also match -- both conditions are AND).
+    # Higher → only near-paraphrases fire; lower → looser cosine
+    # gate (raises false positives, the regex stays the safety net).
+    calibration_softening_threshold: float = 0.70
+    # Hard cap on the topic-slot ring. Eviction prefers the slot
+    # whose ``abs(score - baseline)`` is smallest AND whose
+    # ``last_signal_at`` is oldest. Higher → finer topic resolution
+    # at the cost of memory + storage; lower → coarser, more global
+    # behaviour.
+    calibration_max_topic_slots: int = 8
     # ── Background workers (schema v8) ───────────────────────────────
     # Worker intervals in seconds. Both workers are idempotent: running
     # more often is safe but wastes a little CPU. Drop to ~60 for
@@ -2012,6 +2071,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             callback_detector_enabled=bool(
                 agent_raw.get("callback_detector_enabled", True),
             ),
+            calibration_detection_enabled=bool(
+                agent_raw.get("calibration_detection_enabled", True),
+            ),
             resume_opener_min_hours=max(0.0, float(agent_raw.get("resume_opener_min_hours", 4.0))),
             resume_opener_ttl_seconds=max(60.0, float(agent_raw.get("resume_opener_ttl_seconds", 1800.0))),
             dream_worker_enabled=bool(agent_raw.get("dream_worker_enabled", True)),
@@ -2195,6 +2257,64 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                     1.0,
                     float(memory_raw.get("callback_revival_bump", 0.10)),
                 ),
+            ),
+            calibration_baseline=max(
+                0.0,
+                min(
+                    1.0,
+                    float(memory_raw.get("calibration_baseline", 0.80)),
+                ),
+            ),
+            calibration_global_low_threshold=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get(
+                            "calibration_global_low_threshold", 0.55,
+                        )
+                    ),
+                ),
+            ),
+            calibration_topic_low_threshold=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get(
+                            "calibration_topic_low_threshold", 0.50,
+                        )
+                    ),
+                ),
+            ),
+            calibration_half_life_days=max(
+                0.1,
+                float(memory_raw.get("calibration_half_life_days", 5.0)),
+            ),
+            calibration_topic_merge_threshold=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get(
+                            "calibration_topic_merge_threshold", 0.78,
+                        )
+                    ),
+                ),
+            ),
+            calibration_softening_threshold=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get(
+                            "calibration_softening_threshold", 0.70,
+                        )
+                    ),
+                ),
+            ),
+            calibration_max_topic_slots=max(
+                1, int(memory_raw.get("calibration_max_topic_slots", 8)),
             ),
             decay_max_catchup_days=max(
                 1.0, float(memory_raw.get("decay_max_catchup_days", 30.0))

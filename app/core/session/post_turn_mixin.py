@@ -490,6 +490,11 @@ class PostTurnMixin:
                 from datetime import datetime, timezone
 
                 turn_vec = self._embedder.embed(assistant_text)
+                # Stash for downstream consumers (K20 reads it as the
+                # "claim Jacob is reacting to" centroid on the next
+                # turn; carry-forward happens at the end of K20's
+                # block below).
+                self._last_assistant_vec = turn_vec
                 now = datetime.now(timezone.utc)
                 hits = callback_detector.detect(
                     assistant_vec=turn_vec,
@@ -547,6 +552,136 @@ class PostTurnMixin:
                     )
             except Exception:
                 log.debug("callback detector raised", exc_info=True)
+
+        # K20 — metacognitive calibration. Post-turn pass that
+        # classifies Jacob's last message into a calibration signal
+        # (pushback_strong / pushback_mild / softening / affirmation)
+        # and adjusts the per-user CalibrationState. The detector is
+        # write-only here -- the inner-life provider on the *next*
+        # turn reads the state and renders a one-line hedge cue when
+        # warranted. Posture: verbal hedging only; no RAG retrieval
+        # penalty (F3 owns that lane).
+        #
+        # The softening detector wants user_vec + the prior turn's
+        # assistant_vec to gate on cosine + hedge-token AND. We
+        # always embed user_text fresh here (~1-5ms warm) -- there's
+        # no shared embed to steal because K6 runs at prompt-assembly
+        # time, not post-turn. The prior_assistant_vec comes from
+        # ``self._prior_assistant_vec`` (set at the bottom of this
+        # block on the previous turn).
+        calibration_store = getattr(self, "_calibration_store", None)
+        if (
+            bool(
+                getattr(
+                    self._settings.agent,
+                    "calibration_detection_enabled",
+                    True,
+                )
+            )
+            and user_text
+            and calibration_store is not None
+            and self._embedder is not None
+        ):
+            try:
+                from app.core import calibration_detector
+                from datetime import datetime, timezone
+
+                prior_assistant_vec = getattr(
+                    self, "_prior_assistant_vec", None,
+                )
+                # Embed user_text only when the softening detector
+                # could fire (we have a prior assistant vec to
+                # compare against); otherwise skip the embed to save
+                # the round-trip -- pushback / affirmation regex
+                # paths don't need user_vec.
+                user_vec = None
+                if prior_assistant_vec is not None:
+                    try:
+                        user_vec = self._embedder.embed(user_text)
+                    except Exception:
+                        log.debug(
+                            "calibration: user_text embed failed",
+                            exc_info=True,
+                        )
+                        user_vec = None
+
+                signal = calibration_detector.detect(
+                    user_text=user_text,
+                    user_vec=user_vec,
+                    prior_assistant_vec=prior_assistant_vec,
+                    softening_cosine_threshold=float(
+                        getattr(
+                            self._memory_settings,
+                            "calibration_softening_threshold",
+                            0.70,
+                        )
+                    ),
+                )
+                if signal is not None:
+                    now_cal = datetime.now(timezone.utc)
+                    state = calibration_store.get(self._user_id)
+                    # Decay before applying so the delta lands on a
+                    # current snapshot rather than a stale one.
+                    state = calibration_detector.decay(
+                        state,
+                        now=now_cal,
+                        half_life_days=float(
+                            getattr(
+                                self._memory_settings,
+                                "calibration_half_life_days",
+                                5.0,
+                            )
+                        ),
+                        baseline=float(
+                            getattr(
+                                self._memory_settings,
+                                "calibration_baseline",
+                                0.80,
+                            )
+                        ),
+                    )
+                    # Topic centroid = the *prior* assistant vec --
+                    # that's the claim Jacob is doubting, not Aiko's
+                    # response to the doubt.
+                    state = calibration_detector.apply_signal(
+                        state,
+                        signal=signal,
+                        assistant_vec=prior_assistant_vec,
+                        now=now_cal,
+                        topic_merge_threshold=float(
+                            getattr(
+                                self._memory_settings,
+                                "calibration_topic_merge_threshold",
+                                0.78,
+                            )
+                        ),
+                        max_topic_slots=int(
+                            getattr(
+                                self._memory_settings,
+                                "calibration_max_topic_slots",
+                                8,
+                            )
+                        ),
+                        baseline=float(
+                            getattr(
+                                self._memory_settings,
+                                "calibration_baseline",
+                                0.80,
+                            )
+                        ),
+                    )
+                    calibration_store.upsert(self._user_id, state)
+            except Exception:
+                log.debug("calibration detector raised", exc_info=True)
+
+        # Carry the just-emitted assistant vec forward so the next
+        # turn's K20 detector can read it as the "claim Jacob is
+        # reacting to". Runs unconditionally so the carry-forward
+        # works even when K20 itself is disabled mid-session; the
+        # variable is just dead state in that case.
+        last_assistant_vec = getattr(self, "_last_assistant_vec", None)
+        if last_assistant_vec is not None:
+            self._prior_assistant_vec = last_assistant_vec
 
         # Anti-rut layer: feed the AikoStylePatternTracker the
         # *stripped* spoken text (``assistant_text``, not

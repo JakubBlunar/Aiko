@@ -121,7 +121,8 @@
     "clarification_repair_enabled": true,
     "rupture_repair_enabled": true,
     "rupture_valence_drop_threshold": 0.12,
-    "callback_detector_enabled": true
+    "callback_detector_enabled": true,
+    "calibration_detection_enabled": true
   },
   "audio": {
     "sample_rate": 16000,
@@ -202,6 +203,13 @@
     "callback_cooldown_hours": 24,
     "callback_salience_bump": 0.05,
     "callback_revival_bump": 0.10,
+    "calibration_baseline": 0.80,
+    "calibration_global_low_threshold": 0.55,
+    "calibration_topic_low_threshold": 0.50,
+    "calibration_half_life_days": 5.0,
+    "calibration_topic_merge_threshold": 0.78,
+    "calibration_softening_threshold": 0.70,
+    "calibration_max_topic_slots": 8,
     "promotion_worker_interval_seconds": 3600,
     "decay_worker_interval_seconds": 3600,
     "conflict_detector_interval_seconds": 3600,

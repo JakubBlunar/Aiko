@@ -596,6 +596,12 @@ class PromptAssembler:
         # stashes a result on the controller; this provider renders
         # it on the very next turn and clears the slot.
         self._clarification_provider: Callable[[], str] | None = None
+        # K20 — metacognitive calibration. Reads the persisted
+        # per-user CalibrationState and renders a one-line hedge cue
+        # when global / topic scores have dropped below threshold.
+        # Not one-shot: the state persists across turns and decays
+        # toward baseline lazily on each read.
+        self._calibration_provider: Callable[[], str] | None = None
         # K8 — affect-rupture one-shot. Sibling of the clarification
         # provider above; same one-shot contract.
         self._rupture_provider: Callable[[], str] | None = None
@@ -798,6 +804,7 @@ class PromptAssembler:
         knowledge_gaps: Callable[[str], str] | None = None,
         belief_gaps: Callable[[], str] | None = None,
         clarification: Callable[[], str] | None = None,
+        calibration: Callable[[], str] | None = None,
         rupture: Callable[[], str] | None = None,
         absence_curiosity: Callable[[], str] | None = None,
         mood_shell: Callable[[], str] | None = None,
@@ -860,6 +867,8 @@ class PromptAssembler:
             self._belief_gaps_provider = belief_gaps
         if clarification is not None:
             self._clarification_provider = clarification
+        if calibration is not None:
+            self._calibration_provider = calibration
         if rupture is not None:
             self._rupture_provider = rupture
         if absence_curiosity is not None:
@@ -1333,6 +1342,22 @@ class PromptAssembler:
                     log.debug("clarification provider raised", exc_info=True)
                     clarification_block = ""
 
+        # K20 — metacognitive calibration. Sibling of the
+        # clarification provider above; renders a hedge cue when the
+        # per-user CalibrationState has dropped below threshold.
+        # NOT gated on aggressive mode -- a "Jacob's been double-
+        # checking you" cue is steering-critical (it tilts the
+        # whole turn's register) and exactly the kind of thing
+        # aggressive mode wants to keep.
+        calibration_block = ""
+        if self._calibration_provider is not None:
+            with _timed_phase(provider_ms, "calibration"):
+                try:
+                    calibration_block = self._calibration_provider() or ""
+                except Exception:
+                    log.debug("calibration provider raised", exc_info=True)
+                    calibration_block = ""
+
         # K8 — affect-rupture one-shot. Sibling of the clarification
         # provider; same one-shot contract, same not-gated-on-
         # aggressive policy (a "their mood just dipped" cue is
@@ -1632,6 +1657,13 @@ class PromptAssembler:
             # / stagnation / style_pattern -- if she missed the point
             # she should re-read first, react second.
             system_parts.append(clarification_block)
+        if calibration_block:
+            # K20: metacognitive calibration sits right after K17 in
+            # the noticing-Jacob cluster. K17 = "you misread him";
+            # K20 = "he doesn't trust your claim". Both steer the
+            # next reply (clarification asks Aiko to re-read; K20
+            # asks her to hedge), so they belong together.
+            system_parts.append(calibration_block)
         if rupture_block:
             # K8: affect-rupture sits right after K17 so the "noticing
             # cues" cluster together at the top of the reaction-

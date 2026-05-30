@@ -41,15 +41,8 @@ Shipped — see [`shipped.md`](shipped.md) "K7. Forgetting protocol
 
 ## K8. Affect rupture-and-repair detector
 
-When `affect_state` shows Jacob's mood drop right after Aiko's last
-turn, flag that turn as a candidate "rupture" so Aiko can softly
-repair on the next turn rather than ploughing on. Cheap to bolt onto
-the existing affect log: a small worker compares pre / post deltas
-and writes a `rupture_candidate` row that the next turn's prompt can
-surface. Key files:
-[`app/core/affect_state.py`](../../app/core/affect_state.py),
-new `app/core/rupture_detector.py` (or fold into the existing affect
-state), persona rule for the gentle-repair beat.
+Shipped — see [`shipped.md`](shipped.md) "K8. Affect rupture-and-repair
+— \"their mood just dipped\"".
 
 ---
 
@@ -109,15 +102,8 @@ temporal scaffolding is in. Key files:
 
 ## K13. Stylometric mirror
 
-Light persistent analysis of Jacob's typing style (sentence length,
-slang, emoji frequency, formality) into a `style_signal` field on
-`UserProfile`. Aiko's existing in-context mirroring becomes anchored
-across days rather than reset every session, so she stays calibrated
-even when the recent history window doesn't cover yesterday. Key
-files: new `app/core/style_signal.py` (rolling stats over the last N
-user messages), [`app/core/user_profile.py`](../../app/core/user_profile.py)
-(new `style_signal` field — bucketed: terse / chatty / formal /
-casual / etc.), persona block consumer.
+Shipped — see [`shipped.md`](shipped.md) "K13. Stylometric mirror
+(Jacob-side typing register)".
 
 ---
 
@@ -186,20 +172,8 @@ optionally `UserProfile` seed fields.
 
 ## K20. Metacognitive calibration
 
-F3 tracks how confident *Aiko* is in each memory. Nothing tracks
-how confident *Jacob* is in Aiko's answers. When he follow-up-
-fact-checks her, says "are you sure?", or rephrases a claim back
-softer, that's a signal her authority is shaky on the topic. A
-calibration state per user (or per memory cluster) lets her
-hedge verbally when Jacob is treating her as tentative — softer
-than F3's per-fact confidence, broader than K2's belief gaps.
-Key files: new `calibration_state` table or
-[`UserProfile`](../../app/core/user_profile.py) field,
-post-turn heuristic worker that inspects the last user message
-for "are you sure" / "actually" / "wait" patterns,
-inner-life provider that surfaces the live calibration as a
-one-line nudge ("Jacob's been double-checking you on tech topics
-lately — hedge").
+Shipped — see [`shipped.md`](shipped.md) "K20. Metacognitive
+calibration — per-user trust scalar + topic slots".
 
 ---
 
