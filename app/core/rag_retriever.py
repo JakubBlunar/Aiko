@@ -530,6 +530,11 @@ class RagRetriever:
                                 # missing so callers stay safe.
                                 tier = getattr(mem, "tier", "long_term")
                                 h.score += _MEMORY_TIER_OFFSET.get(tier, 0.0)
+                                # K7 — stamp the tier on the hit so
+                                # ``format_block`` can render a
+                                # "(faded)" suffix for archive-tier
+                                # rows without a second join.
+                                h.memory_tier = tier
                                 # Schema v9: confidence penalty. Same
                                 # join path as the tier offset above;
                                 # low-confidence hits are demoted (never
@@ -809,6 +814,18 @@ class RagRetriever:
                 # sees it.
                 if kind == "curiosity_finding":
                     suffix_tags.append("(curiosity)")
+                # K7 — Forgetting protocol. Archive-tier rows are
+                # cold history that survived the score offset only
+                # because the cosine match was strong. Tag them so
+                # the persona reads them as fuzzy / half-remembered
+                # ("I think you mentioned this once, ages ago — am
+                # I remembering right?") rather than as fresh
+                # current facts. Sits next to "(uncertain)" so the
+                # two cues compose: a low-confidence archive hit
+                # reads as "(uncertain) (faded)" — both reasons to
+                # hedge.
+                if getattr(hit, "memory_tier", None) == "archive":
+                    suffix_tags.append("(faded)")
                 suffix = (" " + " ".join(suffix_tags)) if suffix_tags else ""
                 # Schema v10: append the temporal time-tag (e.g.
                 # "(yesterday)", "(planned for tonight 20:00)",
