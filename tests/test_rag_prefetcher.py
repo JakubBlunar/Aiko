@@ -52,7 +52,11 @@ class _FakeRetriever:
         return [f"hit-for:{query_text}"]
 
     @staticmethod
-    def format_block(hits, *, user_display_name: str = "the user") -> str:
+    def format_block(
+        hits, *, user_display_name: str = "the user", **_kwargs,
+    ) -> str:
+        # K7: tolerate the new fade-hedge kwargs the prefetcher now
+        # threads through; the stub doesn't care about them.
         if not hits:
             return ""
         return "BLOCK:" + "|".join(str(h) for h in hits)

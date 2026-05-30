@@ -28,6 +28,11 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable, Iterable
 
+from app.core.rag_retriever import (
+    _FADED_DEFAULT_IDLE_DAYS,
+    _FADED_DEFAULT_SALIENCE_THRESHOLD,
+)
+
 if TYPE_CHECKING:
     from app.core.rag_retriever import RagRetriever
     from app.core.rag_store import RagHit
@@ -211,7 +216,19 @@ class RagPrefetcher:
                 except Exception:
                     name = "the user"
             block = self._retriever.format_block(
-                hits, user_display_name=name,
+                hits,
+                user_display_name=name,
+                fade_hedge_enabled=getattr(
+                    self._retriever, "_fade_hedge_enabled", True,
+                ),
+                faded_salience_threshold=getattr(
+                    self._retriever,
+                    "_faded_salience_threshold",
+                    _FADED_DEFAULT_SALIENCE_THRESHOLD,
+                ),
+                faded_idle_days=getattr(
+                    self._retriever, "_faded_idle_days", _FADED_DEFAULT_IDLE_DAYS,
+                ),
             )
         except Exception:
             log.debug("rag prefetch retrieval failed", exc_info=True)

@@ -43,6 +43,7 @@ exists to keep them in lock-step.
 | Live2D model scale | `avatar.scale_multiplier` | `1.0` |
 | Switch the unified grounding line on/off | `agent.grounding_line_mode` | `"off"` (`"replace"` / `"split"` / `"off"`) |
 | Master switch for Aiko's long-term goals | `agent.goals_enabled` | `true` |
+| Hedge old / decayed memories with "(faded)" suffix | `memory.fade_hedge_enabled` | `true` |
 | Master memory switch | `memory.enabled` | `true` |
 | RAG recall depth per turn | `memory.top_k` | `6` |
 | Long-term memory cap | `memory.max_memories` | `5000` |
@@ -408,6 +409,14 @@ Long-term memory: cross-session vector store of durable facts, plus the tiered (
 - `memory.scratchpad_cap` *(int, `1000`, min `50`)* — hard cap on scratchpad rows.
 - `memory.archive_cap` *(int, `10000`, min `50`)* — hard cap on archive rows.
 - `memory.decay_max_catchup_days` *(float, `30.0`, min `1`)* — safety clamp: even if the app was offline for months, a single decay tick won't apply more than this many days' worth at once.
+
+### K7 — forgetting protocol
+
+Renders a `(faded)` suffix on the RAG memory block for old / decayed rows so the persona reads them as half-remembered instead of as crisp current facts. Fires for archive-tier rows AND for long_term rows that have decayed in place (low salience AND idle for a while). Implementation lives in `_is_faded_memory` inside [`app/core/rag_retriever.py`](../app/core/rag_retriever.py); the persona rule that turns the suffix into a soft hedge lives in [`data/persona/aiko_companion.txt`](../data/persona/aiko_companion.txt).
+
+- `memory.fade_hedge_enabled` *(bool, `true`)* — master switch. Off → no `(faded)` suffix ever, including archive-tier rows. Use when you want Aiko to speak from memory without ever hedging "I think you said this once, ages ago…".
+- `memory.faded_salience_threshold` *(float, `0.20`, clamped `[0, 1]`)* — salience floor for a long_term row to register as faded. Higher → more aggressive hedging on lukewarm memories; lower → only very faded rows hedge. Strict `<` semantics — a row sitting exactly on the threshold does NOT fade. Archive-tier rows ignore this and always fade when the master switch is on.
+- `memory.faded_idle_days` *(int, `30`, min `1`)* — minimum days since `last_used_at` (or `created_at` if the row has never been touched) before a low-salience long_term row picks up `(faded)`. Strict `>` semantics: a row idle for exactly 30 days does NOT fade. Higher → only very stale rows hedge; lower → more aggressive hedging.
 
 ### Memory background workers
 

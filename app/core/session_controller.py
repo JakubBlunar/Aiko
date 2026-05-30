@@ -489,6 +489,17 @@ class SessionController(
                             chat_db=self._chat_db,
                             arc_state_provider=_arc_state_provider,
                             dialogue_act_provider=_dialogue_act_provider,
+                            fade_hedge_enabled=getattr(
+                                self._memory_settings, "fade_hedge_enabled", True,
+                            ),
+                            faded_salience_threshold=getattr(
+                                self._memory_settings,
+                                "faded_salience_threshold",
+                                0.20,
+                            ),
+                            faded_idle_days=getattr(
+                                self._memory_settings, "faded_idle_days", 30,
+                            ),
                         )
                     except Exception:
                         log.warning("RagRetriever failed to init", exc_info=True)

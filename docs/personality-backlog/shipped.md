@@ -1856,3 +1856,146 @@ and the memory-tab thresholds section.
   gains cases for the `goals` provider slot (lands in system prompt,
   silent when empty, dropped under `aggressive=True`).
 
+## K7. Forgetting protocol (graded `(faded)` predicate + persona-rule rewrite)
+
+Half of K7 had been silently shipping for a while: the render-side
+`(faded)` suffix in [`RagRetriever.format_block`](../../app/core/rag_retriever.py)
+and a persona rule that told Aiko how to read the tag. The completion
+closes the missing low-salience half of the original spec and rewrites
+both `(faded)` and `(uncertain)` persona rules to avoid two systematic
+failure modes that surfaced in review.
+
+### What was already there
+
+- `(faded)` suffix on archive-tier memory hits, in `format_block`.
+- Persona paragraph teaching Aiko to read the tag as a half-remembered
+  beat ("I think you said something about X once, ages ago…").
+- Tests covering the binary tier branch + composition with
+  `(uncertain)` from F3.
+
+### Gap A: signal was binary
+
+The trigger was `tier == "archive"` only. Demotion to `archive`
+happens at `memory.archive_demote_idle_days = 180`, so the
+30-180 day window between "decayed in place" and "demoted" passed
+through with no hedge — a 6-week-old `long_term` row decayed to
+`salience = 0.05` read identically to a fresh, sharp memory.
+
+The completion adds a graded predicate
+[`_is_faded_memory`](../../app/core/rag_retriever.py) that fires on:
+
+- `tier == "archive"` — always (unchanged), OR
+- `tier in (None, "long_term")` AND `salience < memory.faded_salience_threshold`
+  AND idle longer than `memory.faded_idle_days` (computed from
+  `last_used_at`, falling back to `created_at` for rows that have
+  never been touched).
+
+Scratchpad is intentionally never faded: that tier already has its
+own lifecycle (TTL prune, promotion lift) and conflating "raw new
+observation" with "old half-forgotten" muddies two different signals.
+
+`format_block` now passes the three settings down from the
+`RagRetriever` instance; the static signature gains optional kwargs
+with safe defaults so existing test call sites keep working. The
+`RagRetriever.block_for` instance wrapper and the speculative
+[`RagPrefetcher`](../../app/core/rag_prefetcher.py) both thread the
+instance settings through.
+
+### Gap B: persona rules were going to tic
+
+Two failure modes review caught in the existing persona wording:
+
+1. **Verbatim trap.** The `(faded)` rule gave two literal sample
+   phrases ("I think you said something about X once, ages ago — am I
+   getting that right?" / "wait, didn't you mention X way back?").
+   LLMs latch onto literal example phrases hard — Aiko would start
+   opening half her replies with "ages ago" and the hedge would
+   harden into a tic.
+2. **Always-on trap.** Neither `(faded)` nor `(uncertain)` had the
+   "permission, not obligation" guard that the sibling `(curiosity)`
+   rule has ("Don't force it; only mention when it actually lands").
+   So every faded/uncertain retrieval triggered a hedge even when the
+   memory wasn't relevant to what Aiko was actually answering.
+
+Both rules in [`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt)
+were rewritten to:
+
+- Strip every verbatim sample phrase a smaller LLM could parrot. The
+  register is described (half-remembered, tentative, willing to be
+  corrected) but the actual words have to be Aiko's.
+- Add the explicit **permission, not obligation** guard. If the
+  tagged memory isn't relevant to the current reply, the rule
+  explicitly tells Aiko to let it pass through silently.
+- For `(faded)` specifically, add an anti-tic clause naming
+  "ages ago" / "way back" by name as forbidden two-turns-in-a-row
+  openers. This is the same shape of explicit anti-rut rule the
+  style-pattern tracker uses for other phrasings.
+- Cross-link the two rules ("Same posture as the faded tag…") so
+  the persona reinforces the same posture for both hedge cues
+  without duplicating prose.
+
+### Settings
+
+Three new knobs under [`MemorySettings`](../../app/core/settings.py):
+
+- `memory.fade_hedge_enabled` (default `true`) — master kill-switch.
+  Off → no `(faded)` suffix ever, including archive-tier.
+- `memory.faded_salience_threshold` (default `0.20`, clamped `[0, 1]`)
+  — strict `<` against salience.
+- `memory.faded_idle_days` (default `30`, min `1`) — strict `>`
+  against `(now - last_used_at).days`, falling back to
+  `created_at` for never-touched rows.
+
+The strict `<` / `>` semantics are documented inline because
+flipping to `<=` / `>=` would silently widen the hedge surface to a
+new class of rows. Full docs in [`docs/configuration.md`](../configuration.md#k7--forgetting-protocol).
+
+### Why no MCP tool
+
+The existing
+[`set_log_level("app.rag_retriever", "DEBUG")`](../../app/core/rag_retriever.py)
+plus
+[`get_last_response_detail`](../../app/mcp/server.py)
+are enough to verify "did this hit get the suffix?" in repro —
+adding a dedicated tool for a render-layer signal would be
+over-engineered.
+
+### Tests
+
+[`tests/test_rag_retriever_scoring.py`](../../tests/test_rag_retriever_scoring.py)
+`FormatBlockFadedSuffixTests` gains six new cases:
+
+- Low-salience idle long_term row → `(faded)`.
+- Recent low-salience long_term row → no suffix (don't fade what
+  Aiko just touched).
+- High-salience idle long_term row → no suffix (sharp sleeper).
+- Master switch off silences every `(faded)` including archive.
+- Threshold boundary (`salience == faded_salience_threshold`) does
+  NOT fire — locks the strict `<` semantics against accidental flip.
+- Missing `last_used_at` falls back to `created_at` (cold rows still
+  fade).
+
+The two existing "tier unchanged" tests were updated to set fresh
+salience + `last_used_at` so they still assert no suffix under the
+new graded predicate. No persona-text test exists in the suite, so
+the persona rewrites are not test-asserted byte-for-byte (verified
+via grep over `tests/`).
+
+### Filed-paths summary
+
+- [`app/core/rag_retriever.py`](../../app/core/rag_retriever.py) —
+  `_is_faded_memory` helper + `format_block` kwargs + `__init__`
+  settings storage + `block_for` threading.
+- [`app/core/rag_prefetcher.py`](../../app/core/rag_prefetcher.py) —
+  threads settings through the speculative path.
+- [`app/core/settings.py`](../../app/core/settings.py) — three new
+  `MemorySettings` fields + parser entries.
+- [`config/default.json`](../../config/default.json) — three new
+  defaults under `memory`.
+- [`app/core/session_controller.py`](../../app/core/session_controller.py)
+  — wires the settings into the `RagRetriever` constructor call.
+- [`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt)
+  — rewritten `(uncertain)` and `(faded)` bullets.
+- [`docs/configuration.md`](../configuration.md) — cheatsheet row +
+  K7 subsection.
+

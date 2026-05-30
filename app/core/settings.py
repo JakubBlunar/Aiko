@@ -975,6 +975,36 @@ class MemorySettings:
     # for months, decay won't try to apply more than this many days'
     # worth at once. Keeps the per-call magnitude bounded.
     decay_max_catchup_days: float = 30.0
+    # ── K7 personality backlog: forgetting protocol ───────────────────
+    # Master switch for the ``(faded)`` suffix appended by
+    # :func:`app.core.rag_retriever._is_faded_memory`. Flipping ``False``
+    # disables every fade hedge — including the archive-tier suffix that
+    # was the original K7 implementation — so users who'd rather Aiko
+    # speak from memory without ever hedging "I think you said this
+    # once, ages ago…" get a single clean kill switch. Default ON
+    # because the persona rule already gates the hedge on "only when
+    # the memory is actually load-bearing for your reply", so the
+    # cosmetic cost of leaving it on is small.
+    fade_hedge_enabled: bool = True
+    # Salience floor for a long_term row to register as faded. Together
+    # with ``faded_idle_days`` below, this picks up the
+    # "decayed-in-place" window between freshly written and demoted-to-
+    # archive. With the long_term decay rate of 0.02/day a fresh
+    # salience-0.5 row hits the 0.20 threshold around day 15; combined
+    # with the 30-day idle floor, only rows that genuinely haven't
+    # surfaced in over a month qualify. Higher → only the very faded
+    # rows hedge; lower → more aggressive hedging on lukewarm memories.
+    # Archive-tier rows ignore this threshold and always fade (when
+    # ``fade_hedge_enabled`` is on).
+    faded_salience_threshold: float = 0.20
+    # Minimum days since ``last_used_at`` (or ``created_at`` if a row
+    # has never been touched) before a low-salience long_term row picks
+    # up the ``(faded)`` suffix. The strict ``>`` semantics means a row
+    # idle for exactly 30 days does NOT fade — that one-day buffer
+    # prevents a row Aiko mentioned a month ago to the day from
+    # flipping to hedged on the anniversary. Higher → only very stale
+    # rows fade; lower → more aggressive hedging.
+    faded_idle_days: int = 30
     # ── Background workers (schema v8) ───────────────────────────────
     # Worker intervals in seconds. Both workers are idempotent: running
     # more often is safe but wastes a little CPU. Drop to ~60 for
@@ -2062,6 +2092,19 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             ),
             scratchpad_cap=max(50, int(memory_raw.get("scratchpad_cap", 1000))),
             archive_cap=max(50, int(memory_raw.get("archive_cap", 10000))),
+            fade_hedge_enabled=bool(
+                memory_raw.get("fade_hedge_enabled", True),
+            ),
+            faded_salience_threshold=max(
+                0.0,
+                min(
+                    1.0,
+                    float(memory_raw.get("faded_salience_threshold", 0.20)),
+                ),
+            ),
+            faded_idle_days=max(
+                1, int(memory_raw.get("faded_idle_days", 30)),
+            ),
             decay_max_catchup_days=max(
                 1.0, float(memory_raw.get("decay_max_catchup_days", 30.0))
             ),
