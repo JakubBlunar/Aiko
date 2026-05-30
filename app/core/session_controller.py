@@ -2443,6 +2443,29 @@ class SessionController(
         # (registered above).
         self.add_backchannel_listener(self._emit_backchannel_motion)
 
+        # K1 follow-up — first-run onboarding goal seed. Two entry
+        # paths converge on ``_seed_onboarding_goal_if_first_time``:
+        #
+        # 1. **Backfill** (this call here): if the user already has a
+        #    display name set (returning user / migrated profile) and
+        #    the ``goals.onboarding_goal_seeded`` kv_meta row is
+        #    absent, drop the curated goal in now. Idempotent — on
+        #    every subsequent boot the kv_meta gate skips.
+        # 2. **Identity listener** (registered below): the first
+        #    time ``update_user_display_name`` lands a real name,
+        #    fire the seed automatically. The ``needs_onboarding``
+        #    gate inside the method means the listener is a no-op
+        #    until the name is actually set.
+        try:
+            self._seed_onboarding_goal_if_first_time()
+        except Exception:
+            log.debug(
+                "onboarding-goal backfill failed", exc_info=True,
+            )
+        self.add_identity_listener(
+            lambda _new_name: self._seed_onboarding_goal_if_first_time(),
+        )
+
     # ── State ─────────────────────────────────────────────────────────
 
     @property
@@ -2499,6 +2522,54 @@ class SessionController(
             except Exception:
                 log.debug("identity listener raised", exc_info=True)
         return cleaned
+
+    def _seed_onboarding_goal_if_first_time(
+        self, *, force: bool = False,
+    ):
+        """K1 follow-up: seed the curated "get to know {user_name}" goal.
+
+        Idempotent via the ``goals.onboarding_goal_seeded`` row in
+        ``kv_meta`` — the second call (and every call after) is a
+        no-op unless ``force=True``. Gated additionally on
+        ``not needs_onboarding`` so a user who hasn't typed their
+        name yet doesn't get a goal that says "Get to know friend";
+        the identity-listener path will fire it the moment they do.
+
+        Called from two places:
+
+        - ``SessionController.__init__`` (backfill for existing
+          users coming back after the feature ships).
+        - The identity listener registered against
+          ``update_user_display_name`` — fires automatically on
+          first name set.
+
+        Defensive: returns ``None`` on any failure, never raises.
+        Logged via :mod:`app.onboarding_goal` so the call is
+        traceable end-to-end without a fresh logger here.
+        """
+        if not force and self.needs_onboarding:
+            log.debug(
+                "onboarding-goal: needs_onboarding=True; deferring seed",
+            )
+            return None
+        if self._goal_store is None or self._memory_store is None:
+            log.debug(
+                "onboarding-goal: stores not initialised; deferring seed",
+            )
+            return None
+        try:
+            from app.core.onboarding_goal import seed_onboarding_goal
+
+            return seed_onboarding_goal(
+                goal_store=self._goal_store,
+                memory_store=self._memory_store,
+                chat_db=self._chat_db,
+                user_display_name=self.user_display_name,
+                force=force,
+            )
+        except Exception:
+            log.warning("onboarding-goal seed raised", exc_info=True)
+            return None
 
     def add_identity_listener(self, callback: Callable[[str], None]) -> None:
         """Register a callback fired after ``update_user_display_name``.

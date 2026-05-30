@@ -1323,6 +1323,51 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
         except Exception as exc:
             return f"force_sensory_anchor raised: {exc}"
 
+    @mcp.tool()
+    def force_seed_onboarding_goal() -> str:
+        """K1 follow-up — re-seed the curated "get to know" goal.
+
+        Bypasses the ``goals.onboarding_goal_seeded`` kv_meta gate
+        and re-runs the seed. Useful for end-to-end testing the
+        prompt placement + reflection cadence without nuking
+        ``data/chat_sessions.db``. Cosine dedupe in
+        :class:`MemoryStore` may collapse the second insert into
+        the existing row (returns ``None``); the kv_meta flag
+        stays set in that case.
+
+        Returns JSON with the seeded memory id + summary preview,
+        or an explanatory message if the seed was a no-op.
+        """
+        try:
+            mem = session._seed_onboarding_goal_if_first_time(force=True)
+        except Exception as exc:
+            return f"force_seed_onboarding_goal raised: {exc}"
+        if mem is None:
+            return json.dumps(
+                {
+                    "fired": False,
+                    "reason": (
+                        "add_goal returned None — likely cosine dedupe "
+                        "against an existing goal, or no_embedder. The "
+                        "kv_meta flag is set anyway to prevent retries."
+                    ),
+                },
+            )
+        return json.dumps(
+            {
+                "fired": True,
+                "memory_id": int(getattr(mem, "id", -1) or -1),
+                "pinned": bool(getattr(mem, "pinned", False)),
+                "source": (getattr(mem, "metadata", {}) or {}).get(
+                    "source",
+                ),
+                "summary_preview": str(
+                    getattr(mem, "content", "")
+                )[:200],
+            },
+            indent=2,
+        )
+
     # ── Resources ────────────────────────────────────────────────────
 
     @mcp.resource("assistant://history")

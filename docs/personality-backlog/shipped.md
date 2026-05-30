@@ -1856,6 +1856,99 @@ and the memory-tab thresholds section.
   gains cases for the `goals` provider slot (lands in system prompt,
   silent when empty, dropped under `aggressive=True`).
 
+### K1 follow-up — first-run onboarding goal seed
+
+Aiko's first long-term goal shouldn't be a coin-flip of whatever
+the LLM bootstrap proposes against an empty persona. When the user
+completes onboarding (sets their `user_display_name` for the first
+time via `PUT /api/settings/identity`), the controller seeds exactly
+one curated, **pinned** goal:
+
+> Get to know {user_name}. Pay attention to what they care about —
+> what they're building lately, what wears them down, what makes
+> them laugh, the rhythms of their weeks. Not by interrogating, but
+> by noticing across many small turns. This goal never finishes;
+> the point is to keep listening.
+
+That single seeded row **tripwires the LLM bootstrap**:
+`GoalWorker._run_bootstrap` short-circuits when
+`GoalStore.has_any_active()` is `True`, so the existing empty-store
+bootstrap pass never fires. Aiko picks up additional goals
+organically through `[[goal:...]]` self-tags during real
+conversation instead of from a cold-start LLM proposal that has no
+signal to work with.
+
+#### Decision flow
+
+```mermaid
+flowchart TD
+    A["User completes onboarding<br/>PUT /api/settings/identity"] --> B["session.update_user_display_name()"]
+    B --> C["identity_listeners fire (one is _seed_onboarding_goal_if_first_time)"]
+    C --> D{"needs_onboarding == False<br/>AND kv_meta flag unset?"}
+    D -->|no| E["No-op<br/>(either already seeded, or name still empty)"]
+    D -->|yes| F["GoalStore.add_goal(<br/>summary=curated, source='onboarding_seed')"]
+    F --> G["MemoryStore.set_pinned(memory_id, True)"]
+    G --> H["chat_db.kv_set('goals.onboarding_goal_seeded', now())"]
+    H --> I["WS 'memory_added' broadcast<br/>UI Memory + Goals tabs update"]
+    
+    J["Backfill path:<br/>SessionController.__init__"] --> D
+```
+
+The two entry paths converge on the same idempotent gate so the
+seed runs exactly once across (a) the boot of an existing user whose
+name was already set before this feature shipped, and (b) the first
+onboarding completion of a brand-new user.
+
+#### Design choices
+
+- **Pinned by default.** Pinned rows survive `prune_overflow` AND
+  don't count against `memory.goal_max_active=5`, so the durable
+  "get to know" goal never crowds out the active ring as Aiko
+  collects new goals from conversation.
+- **`metadata.source="onboarding_seed"`.** Distinguishable from
+  `self_tag` / `worker_bootstrap` / manual REST writes in
+  introspection, tests, and the Memory drawer.
+- **One-shot via `kv_meta`.** Once
+  `goals.onboarding_goal_seeded` is set, the seed never re-fires —
+  even if Jacob deletes the goal afterwards. User agency over the
+  goal ring wins over guaranteed presence.
+- **Reflection cadence unchanged.** `GoalWorker._run_reflection`
+  picks the seeded goal up on its hourly tick like any other goal
+  and writes `goal_progress` notes against it. The seeded goal
+  doesn't get special-cased downstream.
+- **Neutral pronouns.** "What *they* care about", consistent with
+  the persona file's existing register.
+- **No new settings.** Hardcoded wording (editable in-place via the
+  Memory drawer if Jacob wants to refine the framing later).
+
+#### MCP debug tool
+
+- `force_seed_onboarding_goal()` — bypasses the `kv_meta` gate and
+  re-runs the seed with `force=True`. Cosine dedupe in
+  `MemoryStore.add` may collapse the second insert (returns
+  `fired: False` with an explanatory reason); the `kv_meta` flag
+  stays set in that case to prevent retries. Use it to validate
+  the prompt block + reflection cadence on a "fresh" goal without
+  nuking `data/chat_sessions.db`.
+
+#### File-paths summary
+
+- [`app/core/onboarding_goal.py`](../../app/core/onboarding_goal.py)
+  — new pure module: `_ONBOARDING_GOAL_KV_KEY`,
+  `_ONBOARDING_GOAL_TEMPLATE`, `seed_onboarding_goal()`,
+  `is_onboarding_goal_seeded()`. No state, no embedder, no LLM call.
+- [`app/core/session_controller.py`](../../app/core/session_controller.py)
+  — `_seed_onboarding_goal_if_first_time()` method; backfill call
+  + identity-listener registration at the end of `__init__`.
+- [`app/mcp/server.py`](../../app/mcp/server.py)
+  — `force_seed_onboarding_goal()` debug tool right after
+  `force_sensory_anchor`.
+- [`tests/test_onboarding_goal.py`](../../tests/test_onboarding_goal.py)
+  — six unit tests: pinned + correct source on first call, no-op
+  on second call, kv_meta flag written, empty-name fallback to
+  `friend`, `force=True` bypasses the gate, pinned seed survives
+  `prune_overflow` with `max_active=2`.
+
 ## K7. Forgetting protocol (graded `(faded)` predicate + persona-rule rewrite)
 
 Half of K7 had been silently shipping for a while: the render-side
