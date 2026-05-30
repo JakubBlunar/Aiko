@@ -1406,3 +1406,131 @@ idempotency, warm-from-history vs sequential equivalence, persistence
 round-trip including malformed-row handling, the `StyleSignalStore`
 SQLite UPSERT round-trip, the no-settings-stub path, and the render
 copy / empty-cases.
+
+---
+
+## K7 + K17 + K8. Noticing-and-repair (forgetting / clarification / rupture)
+
+Three small detectors, each independently revertable, that together
+make Aiko sound less like a "perfect-recall, perfect-comprehension,
+perfectly-attuned" assistant and more like a person who notices when
+she's missed a beat.
+
+### K7. Forgetting protocol — `(faded)` suffix
+
+Stamps `memory_tier` on
+[`RagHit`](../../app/core/rag_store.py) during retrieval (joined from
+the SQLite mirror where the score offset is already applied), then
+[`RagRetriever.format_block`](../../app/core/rag_retriever.py)
+appends `(faded)` next to `(uncertain)` / `(curiosity)` for any hit
+whose tier is `archive`. The persona "Memory" section reads the
+suffix as a soft hedge ("I think you said something about X once,
+ages ago — am I getting that right?") rather than a flat assertion.
+Composes with the existing low-confidence cue: an archived shaky
+claim now reads as `(uncertain) (faded)`, two reasons to hedge.
+Tests in
+[`tests/test_rag_retriever_scoring.py`](../../tests/test_rag_retriever_scoring.py)
+cover all four tier buckets plus the compose-with-`(uncertain)`
+ordering.
+
+### K17. Clarification-repair — "you missed his last point"
+
+New [`app/core/clarification_detector.py`](../../app/core/clarification_detector.py).
+Per-turn regex classifier with two bands:
+
+- **`strong`** — explicit corrections like "no that's not what I
+  meant", "you misunderstood", "I meant X not Y", "wait no", "that's
+  not it", "missing the point". The user is visibly steering.
+- **`mild`** — softer confusion: "huh?", "wait what", "what do you
+  mean", "I don't follow", "I'm confused", "doesn't make sense".
+
+False-positive guardrails: bare "no" doesn't fire (no structural
+context), "uh huh" doesn't fire (the `huh` pattern requires a `?`),
+"I meant well" doesn't fire (the "I meant X not Y" pattern requires
+an actual `not`). The detector returns a
+`ClarificationResult(band, evidence)` where `evidence` is the
+matched phrase (capped at 80 chars) so the LLM cue can quote what
+tripped the detector.
+
+[`PostTurnMixin._post_turn_inner_life`](../../app/core/session/post_turn_mixin.py)
+runs the regex right after the K4 dialogue-act tagger and stashes a
+hit on `SessionController._pending_clarification`.
+[`InnerLifeProvidersMixin._render_clarification_block`](../../app/core/session/inner_life_providers_mixin.py)
+consumes the slot on the next turn and clears it — sticky cues are
+worse than missing cues here, so a render exception still resets.
+[`PromptAssembler`](../../app/core/prompt_assembler.py) gets a new
+`clarification` provider slot whose block lands in `system_parts`
+right after `belief_gaps_block` and above novelty / stagnation /
+style_pattern; if she missed the point, she should re-read first
+and react second. NOT gated on aggressive mode (a "you missed his
+point" cue is exactly what aggressive mode wants to keep).
+
+### K8. Affect rupture-and-repair — "their mood just dipped"
+
+New [`app/core/affect_rupture_detector.py`](../../app/core/affect_rupture_detector.py).
+Cheapest possible detector: subtract two scalars and reaction-
+filter. Computes `prior_valence - current_valence` from the
+existing pre/post snapshots
+[`PostTurnMixin._post_turn_inner_life`](../../app/core/session/post_turn_mixin.py)
+already takes around `AffectUpdater.apply_turn`. Fires when:
+
+1. The drop exceeds `rupture_valence_drop_threshold` (default 0.12 —
+   the `AffectUpdater._ALPHA = 0.35` smoothing means a per-turn
+   change of ≥0.12 is a real shift, not noise), AND
+2. Aiko's last reaction was *not* in `DEFAULT_EXCLUDED_REACTIONS`
+   (`concerned`, `gentle`, `sad`, `calm`, `thoughtful`, `quiet`).
+   These are reactions to *existing* bad news, where a valence drop
+   is the user's pre-existing state surfacing — not a beat that
+   landed wrong. Filtering them prevents the false-positive loop
+   where Aiko apologises for being empathetic.
+
+Same one-shot pattern as K17 / K2: detector → `_pending_rupture`
+slot → next-turn provider clears. The block lands in `system_parts`
+right after `clarification_block` so all the noticing cues cluster
+together; if both fire on the same turn (a confused user whose
+mood also dipped), K17 tells Aiko what to fix while K8 tells her
+how to soften.
+
+### Persona
+
+Single new "When you missed the beat" section in
+[`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt),
+positioned right after "Style patterns I'm in" so all the
+"Heads-up: ..." cue families cluster in the same neighbourhood. Three
+flavours covered (strong K17 / mild K17 / K8) with a shared anti-
+spiral rail: "don't narrate the cue, don't say 'the system told me
+you're upset', and don't loop on the apology". K7's hedge rule
+lives in the existing Memory section right next to the
+`(uncertain)` rule.
+
+### Settings
+
+All three layers gate on
+[`AgentSettings`](../../app/core/settings.py): `clarification_repair_enabled`
+(default `true`), `rupture_repair_enabled` (default `true`),
+`rupture_valence_drop_threshold` (default `0.12`). K7 has no
+toggle — it's a render-layer addition that costs zero on rows
+that aren't archive-tier. Mirrored in
+[`config/default.json`](../../config/default.json).
+
+### Tests
+
+- [`tests/test_rag_retriever_scoring.py`](../../tests/test_rag_retriever_scoring.py)
+  +5 K7 cases (24/24 pass; 95/95 across the surrounding rag/memory
+  suites).
+- [`tests/test_clarification_detector.py`](../../tests/test_clarification_detector.py)
+  30 cases covering 10 strong patterns, 7 mild patterns, 7 false-
+  positive guardrails, strong-beats-mild composition, evidence trim,
+  and the render output for both bands.
+- [`tests/test_affect_rupture_detector.py`](../../tests/test_affect_rupture_detector.py)
+  22 cases covering 5 firing scenarios, 7 excluded-reaction
+  guardrails (incl. uppercased / custom override), 7 no-fire
+  cases (no drop / drop-below-threshold / None inputs / zero-or-
+  negative threshold disable), the default excluded-set sanity
+  check, and render copy.
+
+Full pytest run: 1879/1880 pass; the single failure is the pre-
+existing `test_knowledge_gap_extractor.TestPickRelevant` flake
+(deterministic-embedder hash collision under full-suite parallel
+hash randomisation; passes in isolation).
+

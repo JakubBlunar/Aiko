@@ -103,7 +103,9 @@
     "style_signal_emoji_threshold": 0.05,
     "style_signal_slang_threshold": 0.15,
     "style_signal_question_threshold": 0.40,
-    "clarification_repair_enabled": true
+    "clarification_repair_enabled": true,
+    "rupture_repair_enabled": true,
+    "rupture_valence_drop_threshold": 0.12
   },
   "audio": {
     "sample_rate": 16000,

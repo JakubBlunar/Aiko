@@ -1167,6 +1167,7 @@ class SessionController(
             knowledge_gaps=self._render_knowledge_gaps_block,
             belief_gaps=self._render_belief_gaps_block,
             clarification=self._render_clarification_block,
+            rupture=self._render_rupture_block,
             novelty=self._render_novelty_block,
             stagnation=self._render_stagnation_block,
             style_pattern=self._render_style_pattern_block,
@@ -1878,6 +1879,9 @@ class SessionController(
         # ``inner_life_providers_mixin._render_clarification_block``
         # on the next turn so the cue appears exactly once.
         self._pending_clarification: Any = None
+        # K8 — one-shot affect-rupture slot. Same shape as above:
+        # post-turn detector fills, next-turn provider clears.
+        self._pending_rupture: Any = None
         if (
             self._chat_db is not None
             and bool(getattr(settings.agent, "belief_tracking_enabled", True))
