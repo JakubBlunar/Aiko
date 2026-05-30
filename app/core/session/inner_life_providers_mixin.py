@@ -423,6 +423,38 @@ class InnerLifeProvidersMixin:
             "Don't repeat the question."
         )
 
+    def _render_clarification_block(self) -> str:
+        """K17: surface a one-shot clarification-repair cue.
+
+        The detector runs inline from ``_post_turn_inner_life`` and
+        stashes any hit into ``self._pending_clarification``. We
+        consume the slot here (clearing it after the read) so the
+        cue appears in exactly one prompt -- the very next turn
+        after the user signalled "you missed it". After that Aiko
+        either fixed it (good) or didn't (and the user will re-fire
+        the trigger anyway), so a sticky cue would just spam.
+        """
+        if not bool(
+            getattr(self._settings.agent, "clarification_repair_enabled", True)
+        ):
+            return ""
+        result = getattr(self, "_pending_clarification", None)
+        if result is None:
+            return ""
+        # Clear before rendering so a render exception still resets
+        # the slot -- sticky cues are worse than missing cues here.
+        self._pending_clarification = None
+        try:
+            from app.core.clarification_detector import render_inner_life_block
+
+            return render_inner_life_block(
+                result,
+                user_display_name=self.user_display_name,
+            )
+        except Exception:
+            log.debug("clarification render failed", exc_info=True)
+            return ""
+
     def _render_novelty_block(self, user_text: str) -> str:
         """K6: surface a one-line surprise/novelty signal for this turn.
 

@@ -723,6 +723,18 @@ class AgentSettings:
     style_signal_slang_threshold: float = 0.15
     style_signal_question_threshold: float = 0.40
 
+    # ── K17: clarification-repair detector ────────────────────────────
+    # Per-turn regex classifier that fires when Jacob signals he was
+    # misunderstood ("no that's not what I meant", "huh?", "wait
+    # what"). The post-turn flow stashes a one-shot result and the
+    # next-turn inner-life provider renders a "Heads-up: you missed
+    # his last point" cue so Aiko re-reads, owns it, and answers
+    # what was actually asked. No LLM cold path; the regex hot path
+    # is the whole detector. Two bands -- ``strong`` (explicit
+    # correction) vs ``mild`` (soft confusion). See
+    # [`app/core/clarification_detector.py`](clarification_detector.py).
+    clarification_repair_enabled: bool = True
+
     # ── Resume opener (Phase 2a) ──────────────────────────────────────
     # When the time since the last assistant turn exceeds this many
     # hours, controller bootstrap schedules a one-shot NarrativeWeaver
@@ -1686,6 +1698,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                         )
                     ),
                 ),
+            ),
+            clarification_repair_enabled=bool(
+                agent_raw.get("clarification_repair_enabled", True),
             ),
             resume_opener_min_hours=max(0.0, float(agent_raw.get("resume_opener_min_hours", 4.0))),
             resume_opener_ttl_seconds=max(60.0, float(agent_raw.get("resume_opener_ttl_seconds", 1800.0))),
