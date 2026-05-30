@@ -143,6 +143,38 @@ class TestUpdater(unittest.TestCase):
             s = updater.apply_turn("jacob", user_text="thank you for listening")
             self.assertGreater(s.closeness, 0.0)
 
+    def test_positive_engagement_delta_nudges_closeness(self) -> None:
+        with _TempStore() as (_db, store):
+            updater = RelationshipAxesUpdater(store)
+            s = updater.apply_turn(
+                "jacob", engagement_delta=0.03,
+            )
+            self.assertGreater(s.closeness, 0.0)
+            # Sub-axis cap; ≤ 0.04 (the tracker's own clamp).
+            self.assertLessEqual(s.closeness, 0.04 + 1e-9)
+
+    def test_negative_engagement_delta_nudges_closeness_down(
+        self,
+    ) -> None:
+        with _TempStore() as (_db, store):
+            updater = RelationshipAxesUpdater(store)
+            s = updater.apply_turn(
+                "jacob", engagement_delta=-0.03,
+            )
+            self.assertLess(s.closeness, 0.0)
+
+    def test_engagement_delta_capped_by_max_delta(self) -> None:
+        with _TempStore() as (_db, store):
+            updater = RelationshipAxesUpdater(store)
+            # Combining a milestone + a max engagement_delta should
+            # still respect the global per-axis _MAX_DELTA = 0.08 cap.
+            s = updater.apply_turn(
+                "jacob",
+                milestone="first_week",   # +0.08 closeness
+                engagement_delta=0.04,    # tracker's own cap
+            )
+            self.assertLessEqual(s.closeness, 0.08 + 1e-6)
+
     def test_per_turn_delta_is_capped(self) -> None:
         with _TempStore() as (_db, store):
             updater = RelationshipAxesUpdater(store)

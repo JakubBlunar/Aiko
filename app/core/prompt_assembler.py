@@ -598,6 +598,19 @@ class PromptAssembler:
         # K8 — affect-rupture one-shot. Sibling of the clarification
         # provider above; same one-shot contract.
         self._rupture_provider: Callable[[], str] | None = None
+        # K14 typed-mode absence-curiosity one-shot. Same shape as the
+        # K8 rupture provider: post-turn engagement tracker stashes a
+        # pending absence duration on the controller when a typed gap
+        # lands in the configured band; this provider renders the cue
+        # on the very next turn and clears the slot.
+        self._absence_curiosity_provider: Callable[[], str] | None = None
+        # K5 mood-shell tilt. NOT one-shot -- derived fresh every turn
+        # from current affect / relationship axes / pending moments,
+        # so the renderer is stateless from the assembler's POV.
+        # Returns ``""`` when nothing notable crosses the gate. Part
+        # of the K16 ``replace`` suppression set because it folds
+        # affect colour into a single tonal line.
+        self._mood_shell_provider: Callable[[], str] | None = None
         # K6 personality backlog: surprise/novelty signal. Takes the
         # current ``user_text`` (like the F2 knowledge-gap provider)
         # because the detector compares the live turn embedding to a
@@ -774,6 +787,8 @@ class PromptAssembler:
         belief_gaps: Callable[[], str] | None = None,
         clarification: Callable[[], str] | None = None,
         rupture: Callable[[], str] | None = None,
+        absence_curiosity: Callable[[], str] | None = None,
+        mood_shell: Callable[[], str] | None = None,
         novelty: Callable[[str], str] | None = None,
         stagnation: Callable[[str], str] | None = None,
         style_pattern: Callable[[], str] | None = None,
@@ -833,6 +848,10 @@ class PromptAssembler:
             self._clarification_provider = clarification
         if rupture is not None:
             self._rupture_provider = rupture
+        if absence_curiosity is not None:
+            self._absence_curiosity_provider = absence_curiosity
+        if mood_shell is not None:
+            self._mood_shell_provider = mood_shell
         if novelty is not None:
             self._novelty_provider = novelty
         if stagnation is not None:
@@ -1310,6 +1329,43 @@ class PromptAssembler:
                     log.debug("rupture provider raised", exc_info=True)
                     rupture_block = ""
 
+        # K14 typed-mode absence-curiosity one-shot. Empty on most
+        # turns (only fires when the post-turn tracker stashed an
+        # absence_seconds in the configured band). NOT gated on
+        # aggressive mode -- this cue is the entire point of K14
+        # typed-mode, and dropping it would silently break the
+        # behaviour Jacob signed off on.
+        absence_curiosity_block = ""
+        if (
+            getattr(self, "_absence_curiosity_provider", None) is not None
+        ):
+            with _timed_phase(provider_ms, "absence_curiosity"):
+                try:
+                    absence_curiosity_block = (
+                        self._absence_curiosity_provider() or ""
+                    )
+                except Exception:
+                    log.debug(
+                        "absence curiosity provider raised", exc_info=True,
+                    )
+                    absence_curiosity_block = ""
+
+        # K5 mood-shell tilt. Stateless: derives a one-line emotional
+        # directive from current affect + relationship axes + pending
+        # moments every turn, returns "" when nothing is notable. NOT
+        # gated on aggressive mode (a tonal cue is exactly what
+        # aggressive mode wants to keep). Part of the K16 ``replace``
+        # suppression set so a unified grounding line doesn't fight
+        # with the mood-shell line.
+        mood_shell_block = ""
+        if getattr(self, "_mood_shell_provider", None) is not None:
+            with _timed_phase(provider_ms, "mood_shell"):
+                try:
+                    mood_shell_block = self._mood_shell_provider() or ""
+                except Exception:
+                    log.debug("mood shell provider raised", exc_info=True)
+                    mood_shell_block = ""
+
         # K6: per-turn surprise/novelty signal. Same shape as the F2
         # knowledge-gap provider (takes ``user_text``), since the
         # detector scores the live utterance against a rolling
@@ -1422,6 +1478,13 @@ class PromptAssembler:
                 mood_hint = ""
                 relationship_block = ""
                 user_state_block = ""
+                # K5 mood-shell folds affect colour into a single tonal
+                # line, which is exactly what the K16 unified grounding
+                # line replaces. Drop it in ``replace`` mode so the two
+                # don't double-up; keep it in ``split`` because the
+                # mood-shell line lives in the "trend / phase" cluster
+                # that ``split`` preserves.
+                mood_shell_block = ""
 
         # Alexia bundle: capability lookup is *not* a string provider —
         # it returns the raw flags so we can build the overlay /
@@ -1501,6 +1564,15 @@ class PromptAssembler:
             system_parts.append(anniversary_block)
         if axes_block:
             system_parts.append(axes_block)
+        if mood_shell_block:
+            # K5 mood-shell tilt: one-line emotional directive (e.g.
+            # "Lean affectionate and steady; let warmth show.") sits
+            # right after the axes block because it derives FROM the
+            # axes + affect colour the assistant just read. Empty on
+            # most turns (silenced unless something crosses the gate)
+            # and dropped in K16 ``replace`` mode (the unified
+            # grounding line subsumes it).
+            system_parts.append(mood_shell_block)
         if petname_block:
             system_parts.append(petname_block)
         if profile_block:
@@ -1541,6 +1613,14 @@ class PromptAssembler:
             # clarification cue tells Aiko what to fix while the
             # rupture cue tells her how to soften.
             system_parts.append(rupture_block)
+        if absence_curiosity_block:
+            # K14 typed-mode: "Jacob was away for a few hours before
+            # this message" sits right next to the other reaction-
+            # shaping cues so the welcome-back framing lives in the
+            # same cluster as the rupture / clarification beats. Same
+            # one-shot policy: appears exactly once per qualifying
+            # gap.
+            system_parts.append(absence_curiosity_block)
         if novelty_block:
             # K6: surface the "Heads-up: Jacob just brought up
             # something new" line right after belief_gaps so reaction

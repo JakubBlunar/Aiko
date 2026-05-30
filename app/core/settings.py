@@ -723,6 +723,53 @@ class AgentSettings:
     style_signal_slang_threshold: float = 0.15
     style_signal_question_threshold: float = 0.40
 
+    # ── K14: implicit engagement signals (latency + length) ──────────
+    # Per-turn detector that scores Jacob's reply latency + message
+    # length against rolling baselines and routes the signal to two
+    # consumers:
+    #   * voice mode → ``closeness_delta`` folded into the
+    #     relationship-axes updater (snappy replies nudge closeness up;
+    #     long voice gaps + curt messages nudge it down)
+    #   * typed mode → ``absence_seconds`` band feeds a one-shot
+    #     "absence-curiosity" inner-life cue on the NEXT user turn,
+    #     and a label of ``"abandoned"`` suppresses the typed
+    #     proactive nudge (mirrors the K4 vent gate).
+    # Typed latency is deliberately NOT fed into closeness drift -- per
+    # the project's design note, a typed pause is thinking time, not
+    # disengagement. The latency window is voice-only; the length
+    # window is shared with the K13 stylometric mirror via its
+    # ``recent_word_counts()`` method (no duplicate buffer).
+    # See [`app/core/engagement_tracker.py`](engagement_tracker.py).
+    engagement_tracker_enabled: bool = True
+    engagement_window: int = 12
+    engagement_warmup_min: int = 6
+    engagement_latency_z_strong_drop: float = 1.5
+    engagement_length_z_strong_drop: float = -1.0
+    engagement_closeness_delta_max: float = 0.04
+    engagement_absence_curiosity_enabled: bool = True
+    engagement_absence_curiosity_min_seconds: float = 1800.0
+    # When ``True`` (default), the typed-proactive eligibility check
+    # treats an ``"abandoned"`` engagement label as a hard reason to
+    # skip the silence-break nudge. Set to ``False`` to ignore the
+    # engagement label on the proactive path (the typed nudge then
+    # falls back to the legacy cooldown / presence / vent gates only).
+    engagement_proactive_gate: bool = True
+
+    # ── K5: mood shell tilt ──────────────────────────────────────────
+    # Per-turn one-line emotional directive derived from the live
+    # :class:`AffectState` (valence + arousal) and
+    # :class:`RelationshipAxesState` (closeness/humor/trust/comfort).
+    # NOT a topic suggestion -- a tonal register cue that colours
+    # delivery only (pacing, word choice, sentence length, warmth).
+    # Returns ``""`` on the common turn; only fires when affect is
+    # off-baseline AND/OR a relationship axis crosses
+    # ``mood_shell_axis_threshold`` (default 0.5, mirrors the existing
+    # ``relationship_axes._NOTABLE_THRESHOLD``). Part of the K16
+    # ``replace`` suppression set (the unified grounding line folds
+    # the same surface area). See [`app/core/mood_shell.py`](mood_shell.py).
+    mood_shell_enabled: bool = True
+    mood_shell_axis_threshold: float = 0.5
+
     # ── K17: clarification-repair detector ────────────────────────────
     # Per-turn regex classifier that fires when Jacob signals he was
     # misunderstood ("no that's not what I meant", "huh?", "wait
@@ -1712,6 +1759,67 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                         agent_raw.get(
                             "style_signal_question_threshold", 0.40,
                         )
+                    ),
+                ),
+            ),
+            engagement_tracker_enabled=bool(
+                agent_raw.get("engagement_tracker_enabled", True),
+            ),
+            engagement_window=max(
+                2, int(agent_raw.get("engagement_window", 12)),
+            ),
+            engagement_warmup_min=max(
+                2, int(agent_raw.get("engagement_warmup_min", 6)),
+            ),
+            engagement_latency_z_strong_drop=max(
+                0.1,
+                float(
+                    agent_raw.get("engagement_latency_z_strong_drop", 1.5),
+                ),
+            ),
+            engagement_length_z_strong_drop=min(
+                -0.1,
+                float(
+                    agent_raw.get("engagement_length_z_strong_drop", -1.0),
+                ),
+            ),
+            engagement_closeness_delta_max=max(
+                0.0,
+                min(
+                    0.08,
+                    float(
+                        agent_raw.get(
+                            "engagement_closeness_delta_max", 0.04,
+                        )
+                    ),
+                ),
+            ),
+            engagement_absence_curiosity_enabled=bool(
+                agent_raw.get(
+                    "engagement_absence_curiosity_enabled", True,
+                ),
+            ),
+            engagement_absence_curiosity_min_seconds=max(
+                60.0,
+                float(
+                    agent_raw.get(
+                        "engagement_absence_curiosity_min_seconds",
+                        1800.0,
+                    )
+                ),
+            ),
+            engagement_proactive_gate=bool(
+                agent_raw.get("engagement_proactive_gate", True),
+            ),
+            mood_shell_enabled=bool(
+                agent_raw.get("mood_shell_enabled", True),
+            ),
+            mood_shell_axis_threshold=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        agent_raw.get("mood_shell_axis_threshold", 0.5),
                     ),
                 ),
             ),

@@ -983,6 +983,52 @@ class PostTurnMixin:
             except Exception:
                 log.debug("belief gap detector raised", exc_info=True)
 
+        # K14: implicit engagement signal. Runs *before* the axes
+        # updater so the closeness_delta can ride in the same
+        # ``apply_turn`` call. Also stashes the label (consumed by the
+        # typed-proactive eligibility predicate) and the absence_seconds
+        # band (consumed by the next turn's absence-curiosity provider).
+        # The tracker reads K13's rolling word-count window via the
+        # provider wired at construction time, so the K13 record_turn
+        # block above runs first by design (post-turn order matters).
+        engagement_delta = 0.0
+        engagement_tracker = getattr(self, "_engagement_tracker", None)
+        if (
+            engagement_tracker is not None
+            and bool(getattr(self._settings.agent, "engagement_tracker_enabled", True))
+        ):
+            try:
+                latency_seconds = self._compute_user_reply_latency_seconds(
+                    user_message_id=user_message_id,
+                )
+                word_count = len((user_text or "").split()) or 0
+                engagement = engagement_tracker.record_turn(
+                    mode=getattr(self, "_last_turn_mode", "typed"),
+                    latency_seconds=latency_seconds,
+                    user_word_count=word_count,
+                )
+                engagement_delta = float(engagement.closeness_delta)
+                self._last_engagement_label = engagement.label
+                self._pending_absence_seconds = engagement.absence_seconds
+                log.info(
+                    "engagement: mode=%s label=%s delta=%+.4f "
+                    "latency_s=%s length_z=%s warmed=%s",
+                    engagement.mode,
+                    engagement.label,
+                    engagement.closeness_delta,
+                    (
+                        f"{engagement.latency_seconds:.2f}"
+                        if engagement.latency_seconds is not None else "-"
+                    ),
+                    (
+                        f"{engagement.length_z:+.2f}"
+                        if engagement.length_z is not None else "-"
+                    ),
+                    engagement.warmed,
+                )
+            except Exception:
+                log.debug("engagement tracker raised", exc_info=True)
+
         # Apply per-turn drift to the relationship axes. Cheap (no LLM).
         axes_updater = getattr(self, "_relationship_axes_updater", None)
         if (
@@ -1005,6 +1051,7 @@ class PostTurnMixin:
                     gift_received=bool(self._last_turn_gift_received),
                     promise_kept=bool(self._last_turn_promise_kept),
                     user_text=user_text,
+                    engagement_delta=engagement_delta,
                 )
                 # Reset per-turn flags now that they've been consumed.
                 self._last_turn_gift_received = False

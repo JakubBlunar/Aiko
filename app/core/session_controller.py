@@ -1168,6 +1168,8 @@ class SessionController(
             belief_gaps=self._render_belief_gaps_block,
             clarification=self._render_clarification_block,
             rupture=self._render_rupture_block,
+            absence_curiosity=self._render_absence_curiosity_block,
+            mood_shell=self._render_mood_shell_block,
             novelty=self._render_novelty_block,
             stagnation=self._render_stagnation_block,
             style_pattern=self._render_style_pattern_block,
@@ -2077,6 +2079,40 @@ class SessionController(
                 self._style_signal_analyzer = None
                 self._style_signal_store = None
 
+        # K14: implicit engagement tracker. Reuses the K13 rolling word-
+        # count window via ``recent_word_counts()`` so we don't pay a
+        # second buffer. ``None`` when the master toggle is off; the
+        # post-turn pipeline gates on the attribute being non-None.
+        self._engagement_tracker = None
+        if bool(
+            getattr(settings.agent, "engagement_tracker_enabled", True)
+        ):
+            try:
+                from app.core.engagement_tracker import EngagementTracker
+
+                word_count_provider = None
+                analyzer = self._style_signal_analyzer
+                if analyzer is not None:
+                    word_count_provider = analyzer.recent_word_counts
+                self._engagement_tracker = EngagementTracker(
+                    agent_settings=settings.agent,
+                    word_count_window_provider=word_count_provider,
+                )
+            except Exception:
+                log.warning(
+                    "EngagementTracker init failed", exc_info=True,
+                )
+                self._engagement_tracker = None
+        # K14 per-turn state: read by ``_post_turn_inner_life`` to
+        # compute reply latency, the typed-proactive eligibility
+        # predicate to skip nudging an abandoned conversation, and the
+        # absence-curiosity inner-life provider. Bookended by the
+        # ``chat_once_streaming`` entry (stashes ``_last_turn_mode``)
+        # and the post-turn pipeline (stashes label + absence).
+        self._last_turn_mode: str = "typed"
+        self._last_engagement_label: str = "neutral"
+        self._pending_absence_seconds: float | None = None
+
         self._proactive = ProactiveDirector(
             self._ollama,
             self._chat_db,
@@ -2794,6 +2830,15 @@ class SessionController(
             getattr(agent, "proactive_typed_when_away", False)
         ):
             return False
+        # K14: skip the typed nudge when the last turn read as
+        # ``"abandoned"`` (steep latency *and* curt message). The
+        # absence-curiosity inner-life cue on the *next* user turn
+        # handles this case more gracefully than a proactive ping
+        # would; firing here would compound the "Aiko is talking past
+        # me" signal. Cleared by the next non-abandoned scoring.
+        if bool(getattr(agent, "engagement_proactive_gate", True)):
+            if getattr(self, "_last_engagement_label", "neutral") == "abandoned":
+                return False
         return True
 
     def _arm_typed_silence_timer(self) -> None:
@@ -3311,6 +3356,12 @@ class SessionController(
         cleaned = sanitize_user_text(user_text or "")
         if not cleaned:
             return ""
+        # K14: stash the turn's mode so ``_post_turn_inner_life`` can
+        # route the engagement signal correctly (voice: latency feeds
+        # closeness drift; typed: latency feeds absence-curiosity).
+        # ``mode`` defaults to ``"typed"`` upstream so we never see an
+        # empty string here, but normalise defensively.
+        self._last_turn_mode = (mode or "typed").strip().lower() or "typed"
         # Schema v8: refresh the activity timestamp so the idle worker
         # scheduler defers background sweeps while the user is actively
         # chatting (typed turns also count; voice paths touch the gate
@@ -3618,6 +3669,53 @@ class SessionController(
             if len(out) >= limit:
                 break
         return out
+
+    def _compute_user_reply_latency_seconds(
+        self, *, user_message_id: int | None,
+    ) -> float | None:
+        """K14: seconds between the prior assistant reply and this user
+        message, or ``None`` when the gap can't be measured.
+
+        Reasons we return ``None``: no ``user_message_id`` (live merge
+        path that resumed an existing row), no prior assistant message
+        in the session, or unparseable timestamps. The caller treats
+        ``None`` as "no signal this turn" so a cold-start session
+        doesn't fire a phantom engagement delta.
+        """
+        if user_message_id is None:
+            return None
+        try:
+            rows = self._chat_db.get_messages(self.session_key)
+        except Exception:
+            return None
+        if not rows:
+            return None
+        from datetime import datetime, timezone
+
+        prev_assistant_at: str | None = None
+        user_created_at: str | None = None
+        for row in rows:
+            if int(getattr(row, "id", -1)) == int(user_message_id):
+                user_created_at = getattr(row, "created_at", None)
+                break
+            if (row.role or "").lower() == "assistant":
+                prev_assistant_at = getattr(row, "created_at", None)
+        if not user_created_at or not prev_assistant_at:
+            return None
+        try:
+            u_ts = datetime.fromisoformat(
+                str(user_created_at).replace("Z", "+00:00"),
+            )
+            a_ts = datetime.fromisoformat(
+                str(prev_assistant_at).replace("Z", "+00:00"),
+            )
+        except Exception:
+            return None
+        if u_ts.tzinfo is None:
+            u_ts = u_ts.replace(tzinfo=timezone.utc)
+        if a_ts.tzinfo is None:
+            a_ts = a_ts.replace(tzinfo=timezone.utc)
+        return max(0.0, (u_ts - a_ts).total_seconds())
 
     def _last_assistant_age_hours(self) -> float | None:
         """Return how many hours ago the last assistant message was

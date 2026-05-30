@@ -1534,3 +1534,162 @@ existing `test_knowledge_gap_extractor.TestPickRelevant` flake
 (deterministic-embedder hash collision under full-suite parallel
 hash randomisation; passes in isolation).
 
+## K14. Implicit engagement signals (latency + length)
+
+New [`app/core/engagement_tracker.py`](../../app/core/engagement_tracker.py).
+Per-turn detector that scores Jacob's reply latency + message length
+against rolling baselines and routes the signal to two consumers
+depending on which mode the turn ran in:
+
+- **Voice mode**: latency + length contribute to a small
+  `closeness_delta` that rides into
+  [`RelationshipAxesUpdater.apply_turn`](../../app/core/relationship_axes.py)
+  via the new `engagement_delta` kwarg (clamped to
+  `engagement_closeness_delta_max=0.04` so the reaction-tag /
+  moment-vibe / milestone channels still dominate inside the existing
+  `_MAX_DELTA=0.08` per-axis cap).
+- **Typed mode**: latency is intentionally **NOT** consumed as
+  engagement — per Jacob's design feedback, a typed pause is thinking
+  time, not disengagement. Length is the only signal that participates
+  in the per-turn `closeness_delta`. Latency instead populates
+  `absence_seconds` when the gap lands in the configured band
+  (`engagement_absence_curiosity_min_seconds` ≤ gap <
+  `resume_opener_min_hours × 3600`, default 30 min – 4 h), which feeds
+  the one-shot **absence-curiosity** inner-life cue on the next user
+  turn (Aiko welcomes them back warmly without commenting on the
+  gap). A typed turn whose label scores as `"abandoned"` (steep
+  latency *and* curt message — only possible when voice mode mixed in)
+  also suppresses the typed proactive nudge via a new gate in
+  [`SessionController._is_typed_proactive_eligible`](../../app/core/session_controller.py).
+
+Latency baseline lives in a small `collections.deque` (voice-only —
+typed turns never touch the latency window); length baseline is
+shared with K13's stylometric mirror via the new
+`StyleSignalAnalyzer.recent_word_counts()` method so we don't pay a
+second rolling buffer. The tracker is constructed once in
+`SessionController.__init__` and called from the post-turn pipeline
+[`PostTurnMixin._post_turn_inner_life`](../../app/core/session/post_turn_mixin.py)
+*after* the K13 `record_user_turn` (so the K13 window is current)
+and *before* the axes updater (so `closeness_delta` rides in the
+same `apply_turn` call).
+
+Each turn emits one structured INFO log line for the
+[`app.engagement`](../../app/core/engagement_tracker.py) logger
+(grep-friendly via `tail_logs(module_contains="engagement")`):
+
+```
+engagement: mode=live label=engaged delta=+0.0231 latency_s=2.10 length_z=+1.45 warmed=True
+```
+
+Plus a new persona section "When they've been away a while (typed
+mode)" in [`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt)
+teaching the receive shape (welcome warmth, never "where were you?").
+
+### Settings (all live under `agent.*`)
+
+`engagement_tracker_enabled` (default `true`), `engagement_window`
+(`12`), `engagement_warmup_min` (`6`),
+`engagement_latency_z_strong_drop` (`1.5`),
+`engagement_length_z_strong_drop` (`-1.0`),
+`engagement_closeness_delta_max` (`0.04`),
+`engagement_absence_curiosity_enabled` (`true`),
+`engagement_absence_curiosity_min_seconds` (`1800.0`),
+`engagement_proactive_gate` (`true`). Full docs in
+[`docs/configuration.md`](../configuration.md#k14--implicit-engagement-signals-latency--length).
+
+### MCP
+
+`get_engagement_state()` returns the most recent `EngagementResult`,
+the voice latency window snapshot, the cached `_last_engagement_label`
+and `_pending_absence_seconds` slots, and the live mood-shell tilt
+(see K5 below). Useful for chasing "why didn't the absence cue fire?"
+reports.
+
+### Tests
+
+- [`tests/test_engagement_tracker.py`](../../tests/test_engagement_tracker.py)
+  20 cases covering cold-start warmup, voice vs typed mode routing,
+  per-turn delta cap, label banding, latency-window maintenance, and
+  the absence-curiosity band edges (in / out / above resume
+  threshold / disabled-setting / voice-mode never populates).
+- [`tests/test_relationship_axes.py`](../../tests/test_relationship_axes.py)
+  +3 cases for `engagement_delta` (positive nudges closeness up,
+  negative nudges down, combined with milestone respects the global
+  `_MAX_DELTA` cap).
+- [`tests/test_session_controller_typed_proactive.py`](../../tests/test_session_controller_typed_proactive.py)
+  +3 cases for the new abandoned-label gate (blocks eligibility, other
+  labels pass through, setting-off ignores the label).
+- [`tests/test_style_signal.py`](../../tests/test_style_signal.py)
+  +1 case for the new `recent_word_counts()` exposure.
+- [`tests/test_prompt_assembler.py`](../../tests/test_prompt_assembler.py)
+  +3 cases for the absence-curiosity provider (lands in system prompt,
+  silent when empty, survives aggressive mode).
+
+## K5. Mood shell tilt (only-when-notable)
+
+New [`app/core/mood_shell.py`](../../app/core/mood_shell.py). Per-turn
+one-line emotional directive derived from the live
+[`AffectState`](../../app/core/affect_state.py) (valence + arousal)
+and [`RelationshipAxesState`](../../app/core/relationship_axes.py)
+(closeness / humor / trust / comfort). Output reads like a stage
+direction — *"Lean affectionate and unhurried; let warmth show."* /
+*"Stay playful and quick; the room is laughing."* / *"Slow your
+tempo; let the words land before pushing forward."* — and colours
+Aiko's delivery (pacing, sentence length, warmth, word choice)
+**without** dictating content.
+
+The pure-function `derive_mood_shell(affect, axes)` bands the
+valence/arousal grid into eight cells (`pos_high` / `pos_mid` /
+`pos_low` / `neg_high` / `neg_mid` / `neg_low` / `neu_high` /
+`neu_low` — the neutral-mid cell is intentionally absent, that's
+"default Aiko") and picks a dominant relationship axis (the axis with
+the largest absolute value crossing
+`mood_shell_axis_threshold=0.5`, mirroring the existing
+`relationship_axes._NOTABLE_THRESHOLD`). A static `_TILT_RULES` table
+maps `(band, axis_or_None)` → `(tilt_name, line)`; first match wins,
+with `(band, None)` fallback rules below the `(band, axis)` rules.
+Returns `None` on the common turn (neutral-mid affect or no notable
+axis crossing AND no useful fallback band) so the block is empty
+most of the time.
+
+Surfaces through a new `mood_shell` inner-life provider on
+[`PromptAssembler`](../../app/core/prompt_assembler.py), registered
+alongside the existing `relationship` / `axes` / `arc` cluster. Lands
+in `system_parts` right after the `axes_block` because mood-shell
+derives FROM the same axes the assistant just read. Part of the K16
+`replace` suppression set (the unified grounding line subsumes the
+same tonal surface area); kept active in `split` and `off` modes.
+Persona guidance lives in the new "Tone shell" section of
+[`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt),
+which explicitly teaches Aiko: never quote the line, never narrate
+it, never apologise for shifting tone — the shell is hers to inhabit,
+not theirs to read about.
+
+### Settings
+
+`agent.mood_shell_enabled` (default `true`),
+`agent.mood_shell_axis_threshold` (default `0.5`, clamped `[0, 1]`).
+Full docs in [`docs/configuration.md`](../configuration.md#k5--mood-shell-tilt).
+
+### MCP
+
+Folded into the same `get_engagement_state()` tool as K14: the
+returned JSON carries a `mood_shell` block with `tilt`, `line`,
+`contributors` (which inputs fired the rule), and `rendered`
+(`Tone shell: ...`) — or `null` when nothing notable crosses.
+
+### Tests
+
+- [`tests/test_mood_shell.py`](../../tests/test_mood_shell.py)
+  14 cases covering band classification (neutral-mid returns None,
+  no-affect returns None, disabled flag returns None), dominant-axis
+  selection (below-threshold ignored, largest-absolute wins,
+  `require_axis=True` short-circuits), tilt rule lookup priority for
+  all eight affect bands, and the rendered `Tone shell:` block.
+- [`tests/test_prompt_assembler.py`](../../tests/test_prompt_assembler.py)
+  +4 cases for the mood_shell provider (lands in system prompt, silent
+  when empty, dropped under K16 `replace` mode, survives K16 `split`
+  mode).
+
+Full pytest run after K5+K14: 1971/1971 pass.
+
