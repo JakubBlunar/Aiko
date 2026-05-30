@@ -1,0 +1,109 @@
+---
+description: Document configuration values whenever app/core/settings.py or config/default.json changes
+globs: app/core/settings.py,config/default.json,docs/configuration.md
+alwaysApply: false
+---
+
+# Configuration changes must stay documented
+
+When you add, remove, or change the meaning of a config value in
+`app/core/settings.py` or `config/default.json`, you MUST also update
+[`docs/configuration.md`](../../docs/configuration.md) so the
+human-facing reference stays in sync.
+
+That doc is the user's mental map of "which knob affects what about
+Aiko". Drift here is expensive — there are ~200 config values and
+nobody can hold them in their head.
+
+## Required edits per change
+
+For every config field added or modified:
+
+1. **Inline comment in `settings.py`** — one or two short paragraphs
+   directly above the field declaration explaining:
+   - What the field controls (component, behaviour)
+   - What "tuning up" vs "tuning down" actually does to Aiko
+   - Cross-reference to the implementation file when relevant
+2. **Default in `config/default.json`** — only when the value should be
+   user-tunable from the JSON. Pure-internal defaults stay in
+   `settings.py` only.
+3. **Parser clamp / fallback in `load_settings()`** — every new JSON
+   key needs a `max(...)` / `min(...)` / `bool(...)` / typed-cast
+   wrapper so a hand-edited config can't crash boot.
+4. **Entry in `docs/configuration.md`** — under the section that
+   matches the field's behavioural area (Proactive / Memory /
+   Inner-life signals / Avatar / …). Use the canonical one-line
+   format:
+   `` - `section.key_name` *(type, default[, clamp])* — what it does. Higher → effect on Aiko. Lower → effect on Aiko. ``
+5. **Cheatsheet update at top of the doc** — only when the new field
+   is something a user would actually want to tune from the UI /
+   `user.json`. Hidden tuning knobs (interval seconds, internal
+   thresholds, EMA windows) don't need a cheatsheet row.
+
+## When NOT to update
+
+- Pure rename of a field that keeps the behaviour and JSON shape —
+  update the inline comment + the doc entry's `key_name` together,
+  but don't reshuffle the doc's structure.
+- Tightening a parser clamp (e.g. `max(0.0, ...)`) — no doc change
+  needed if the visible behaviour and bounds documented in the doc
+  are still accurate.
+- Pure-internal dataclass fields that are NOT exposed as JSON config
+  (no `default.json` entry, no `load_settings()` parsing). These can
+  still be documented if useful, but it's optional.
+
+## Format example
+
+In `settings.py`:
+
+```python
+# K8: affect rupture-and-repair detector. Fires when {user}'s
+# valence drops by more than this between pre/post-turn snapshots
+# AND Aiko's prior reaction wasn't already empathetic. Higher
+# threshold = the cue fires less often (only on big mood swings);
+# lower = fires on subtler dips. Default 0.12 sits above the
+# AffectUpdater smoothing-noise floor.
+rupture_valence_drop_threshold: float = 0.12
+```
+
+In `docs/configuration.md`:
+
+```
+- `agent.rupture_valence_drop_threshold` *(float, `0.12`, clamped `[0, 2]`)* —
+  minimum valence drop that counts as a rupture. Higher → fires only on big
+  mood swings. Lower → fires on subtler dips.
+```
+
+## Validation
+
+After every change, scan `docs/configuration.md` for the new / changed
+field name. If it's not there, the change is incomplete. Quick
+one-liner that catches every dataclass field not yet mentioned in the
+doc (accepts both bare `` `field` `` and qualified `` `section.field` ``
+forms):
+
+```python
+import re
+src = open("app/core/settings.py", encoding="utf-8").read()
+doc = open("docs/configuration.md", encoding="utf-8").read()
+classes = re.split(r"\n@dataclass[^\n]*\nclass\s+(\w+):\n", src)
+missing = []
+for i in range(1, len(classes), 2):
+    body = classes[i + 1].split("\n@dataclass")[0]
+    for line in body.splitlines():
+        m = re.match(r"^    ([a-z_][a-z0-9_]*)\s*:\s*\S", line)
+        if not m:
+            continue
+        f = m.group(1)
+        if f"`{f}`" in doc:
+            continue
+        if re.search(r"`[a-z_]+\." + re.escape(f) + r"`", doc):
+            continue
+        missing.append(f"{classes[i]}.{f}")
+print("MISSING:", missing or "(none)")
+```
+
+A clean `(none)` confirms coverage. Anything in the list is either a
+genuinely-missing field or — rarely — a local variable inside a
+non-dataclass helper that happens to live between two `@dataclass`
+blocks; in that case ignore it.

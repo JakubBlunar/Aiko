@@ -234,5 +234,35 @@ class TypedWhenAwayFlagTests(unittest.TestCase):
         self.assertFalse(controller._is_typed_proactive_eligible())
 
 
+class EngagementAbandonedGateTests(unittest.TestCase):
+    """K14: the typed-proactive eligibility predicate skips firing
+    when the last turn read as ``"abandoned"`` so the absence-curiosity
+    cue on the next user turn handles it more gracefully."""
+
+    def test_abandoned_label_blocks_eligibility(self) -> None:
+        controller, _ = _make_controller()
+        # Sanity: defaults are eligible.
+        self.assertTrue(controller._is_typed_proactive_eligible())
+        # Abandoned label flips the gate closed.
+        controller._last_engagement_label = "abandoned"
+        self.assertFalse(controller._is_typed_proactive_eligible())
+
+    def test_non_abandoned_labels_pass(self) -> None:
+        controller, _ = _make_controller()
+        for label in ("neutral", "engaged", "disengaged"):
+            controller._last_engagement_label = label
+            self.assertTrue(
+                controller._is_typed_proactive_eligible(),
+                f"label {label!r} unexpectedly blocked eligibility",
+            )
+
+    def test_gate_setting_off_ignores_label(self) -> None:
+        controller, _ = _make_controller()
+        controller._settings.agent.engagement_proactive_gate = False
+        controller._last_engagement_label = "abandoned"
+        # Gate disabled → abandoned label no longer blocks.
+        self.assertTrue(controller._is_typed_proactive_eligible())
+
+
 if __name__ == "__main__":
     unittest.main()

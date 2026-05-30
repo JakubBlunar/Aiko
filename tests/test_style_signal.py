@@ -236,6 +236,19 @@ class WindowRollTests(unittest.TestCase):
             analyzer.record_user_turn(f"turn number {i}")
         self.assertEqual(analyzer.window_size(), 5)
 
+    def test_recent_word_counts_exposes_window(self) -> None:
+        # K14 consumes this method; assert the order + lengths line up
+        # with the rolling buffer.
+        analyzer = _build(style_signal_window=4)
+        analyzer.record_user_turn("one")            # 1 word
+        analyzer.record_user_turn("one two")        # 2 words
+        analyzer.record_user_turn("one two three")  # 3 words
+        counts = analyzer.recent_word_counts()
+        self.assertEqual(counts, [1, 2, 3])
+        # Mutating the returned list must not affect the analyzer.
+        counts.append(999)
+        self.assertEqual(analyzer.recent_word_counts(), [1, 2, 3])
+
 
 # ── cross-session warm ──────────────────────────────────────────────
 

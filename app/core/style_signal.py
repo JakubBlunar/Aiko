@@ -320,6 +320,16 @@ class StyleSignalAnalyzer:
     def is_warmed(self) -> bool:
         return self._warmed
 
+    def recent_word_counts(self) -> list[int]:
+        """Return the rolling list of recent user-message word counts.
+
+        Exposes K13's window to other detectors so they don't duplicate
+        the rolling buffer (K14 consumes this to z-score per-turn
+        length). Returns a copy; mutating it has no effect on the
+        analyzer.
+        """
+        return [int(f.word_count) for f in self._window]
+
     # ── internals ────────────────────────────────────────────────────
 
     def _setting(self, name: str, default: Any) -> Any:

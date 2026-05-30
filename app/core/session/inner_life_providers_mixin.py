@@ -455,6 +455,64 @@ class InnerLifeProvidersMixin:
             log.debug("clarification render failed", exc_info=True)
             return ""
 
+    def _render_absence_curiosity_block(self) -> str:
+        """K14 typed-mode: surface a one-shot absence-curiosity cue.
+
+        Reads ``self._pending_absence_seconds`` (set by the post-turn
+        engagement tracker when the typed gap landed in the
+        absence-curiosity band) and renders a short line nudging Aiko
+        toward warm curiosity about where the user has been. One-shot:
+        the slot is cleared on read so the cue appears exactly once.
+
+        Empty string when the master switch is off, when no absence
+        result is pending, or when the duration falls outside the
+        configured band (defensive double-check against settings that
+        flipped between turns).
+        """
+        if not bool(
+            getattr(
+                self._settings.agent,
+                "engagement_absence_curiosity_enabled",
+                True,
+            )
+        ):
+            return ""
+        seconds = getattr(self, "_pending_absence_seconds", None)
+        if seconds is None:
+            return ""
+        self._pending_absence_seconds = None
+        try:
+            seconds_f = float(seconds)
+        except (TypeError, ValueError):
+            return ""
+        if seconds_f <= 0.0:
+            return ""
+
+        # Friendly duration string. Bands picked so a 32-min gap reads
+        # as "about half an hour", a 95-min gap as "an hour and a
+        # half", and a 3h gap as "a few hours" -- all sound natural
+        # in conversation, none cite the raw value.
+        if seconds_f < 60.0 * 45:
+            duration = "about half an hour"
+        elif seconds_f < 60.0 * 75:
+            duration = "an hour or so"
+        elif seconds_f < 60.0 * 105:
+            duration = "an hour and a half"
+        elif seconds_f < 60.0 * 60 * 2.5:
+            duration = "a couple of hours"
+        else:
+            duration = "a few hours"
+
+        name = self.user_display_name or "the user"
+        return (
+            f"Absence-curiosity: {name} was away for {duration} before "
+            "this message. Welcome them back as if they just stepped "
+            "into the room with you -- be lightly curious about what "
+            "they were up to if it feels natural, but DON'T announce "
+            "the gap or make them feel like they owe you an "
+            "explanation. The cue is curiosity, not absence-anxiety."
+        )
+
     def _render_rupture_block(self) -> str:
         """K8: surface a one-shot affect-rupture cue.
 
@@ -905,6 +963,55 @@ class InnerLifeProvidersMixin:
             return render_anniversary_block(match)
         except Exception:
             log.debug("anniversary render failed", exc_info=True)
+            return ""
+
+    def _render_mood_shell_block(self) -> str:
+        """K5: one-line tonal directive derived from affect + axes.
+
+        Stateless: every call reads the live :class:`AffectState` and
+        :class:`RelationshipAxesState` and feeds them through
+        :func:`derive_mood_shell`. Returns ``""`` on the common turn
+        (neutral affect or no notable axis crossing). Cheap (~tens of
+        microseconds); safe on the hot path.
+        """
+        if not bool(
+            getattr(self._settings.agent, "mood_shell_enabled", True)
+        ):
+            return ""
+        try:
+            from app.core.mood_shell import (
+                derive_mood_shell,
+                render_mood_shell_block,
+            )
+
+            affect = None
+            try:
+                affect = self._affect_store.get(self._user_id)
+            except Exception:
+                log.debug("mood shell: affect lookup failed", exc_info=True)
+            axes = None
+            store = getattr(self, "_relationship_axes_store", None)
+            if store is not None:
+                try:
+                    axes = store.get(self._user_id)
+                except Exception:
+                    log.debug("mood shell: axes lookup failed", exc_info=True)
+            threshold = float(
+                getattr(
+                    self._settings.agent,
+                    "mood_shell_axis_threshold",
+                    0.5,
+                )
+            )
+            shell = derive_mood_shell(
+                affect=affect,
+                axes=axes,
+                axis_notable_threshold=threshold,
+                enabled=True,
+            )
+            return render_mood_shell_block(shell)
+        except Exception:
+            log.debug("mood shell render failed", exc_info=True)
             return ""
 
     def _render_axes_block(self) -> str:

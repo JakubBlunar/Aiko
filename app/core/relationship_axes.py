@@ -241,8 +241,18 @@ class RelationshipAxesUpdater:
         gift_received: bool = False,
         promise_kept: bool = False,
         user_text: str = "",
+        engagement_delta: float = 0.0,
     ) -> RelationshipAxesState:
-        """Apply per-event drift and persist. Returns the new state."""
+        """Apply per-event drift and persist. Returns the new state.
+
+        ``engagement_delta`` is the K14 implicit-engagement contribution
+        (short snappy replies + above-baseline length nudge it up;
+        long voice gaps + below-baseline length nudge it down). The
+        tracker pre-clamps it to its own per-turn cap so we just
+        accumulate the value into the ``closeness`` axis here; the
+        existing ``_MAX_DELTA`` clamp still applies to the final sum so
+        a reaction-tag stack plus engagement can't blow past 0.08.
+        """
         state = self._store.get(user_id)
         deltas: dict[str, float] = {
             "closeness": 0.0,
@@ -289,6 +299,13 @@ class RelationshipAxesUpdater:
                     deltas["closeness"] -= 0.02
                     deltas["comfort"] -= 0.02
                     break
+
+        # K14: implicit engagement signal. Tracker pre-clamps to its
+        # own configurable cap (default 0.04); the per-axis ``_MAX_DELTA``
+        # below still saturates the sum so a hot reaction-tag turn plus
+        # engagement can't push closeness past 0.08 in a single turn.
+        if engagement_delta:
+            deltas["closeness"] += float(engagement_delta)
 
         # Cap each axis's per-turn delta so a wild reaction-tag stack
         # doesn't spike anything by more than _MAX_DELTA.

@@ -477,6 +477,169 @@ class AxesBlockProviderTests(unittest.TestCase):
             self.assertNotIn("How the relationship feels", messages[0]["content"])
 
 
+class AbsenceCuriosityProviderTests(unittest.TestCase):
+    """K14 typed-mode absence-curiosity provider lands in the system
+    prompt and survives aggressive context-mode (welcome-back cues
+    are too important to drop)."""
+
+    def test_absence_curiosity_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="abs1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                absence_curiosity=lambda: (
+                    "Absence-curiosity: Jacob was away for a few hours."
+                ),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "abs1",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertIn(
+                "Absence-curiosity", messages[0]["content"],
+            )
+
+    def test_absence_curiosity_silent_when_empty(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="abs2", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                absence_curiosity=lambda: "",
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "abs2",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertNotIn(
+                "Absence-curiosity", messages[0]["content"],
+            )
+
+    def test_absence_curiosity_survives_aggressive_mode(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="abs3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                absence_curiosity=lambda: (
+                    "Absence-curiosity: Jacob was away for a few hours."
+                ),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "abs3",
+                "x",
+                context_window=4096,
+                response_budget=256,
+                aggressive=True,
+            )
+            # NOT in the aggressive-drop set (welcome-back cues are
+            # critical signal).
+            self.assertIn(
+                "Absence-curiosity", messages[0]["content"],
+            )
+
+
+class MoodShellProviderTests(unittest.TestCase):
+    """K5 mood-shell tilt: lands in the system prompt, survives
+    ``aggressive=True`` (tonal cue is exactly what aggressive mode
+    wants), and is dropped by the K16 ``replace`` grounding mode."""
+
+    def test_mood_shell_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="ms1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                mood_shell=lambda: (
+                    "Tone shell: Lean affectionate and unhurried; "
+                    "let warmth show."
+                ),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "ms1",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertIn(
+                "Tone shell", messages[0]["content"],
+            )
+
+    def test_mood_shell_silent_when_empty(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="ms2", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(mood_shell=lambda: "")
+            messages, _ = assembler.assemble_with_budget(
+                "ms2",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertNotIn(
+                "Tone shell", messages[0]["content"],
+            )
+
+    def test_mood_shell_dropped_under_k16_replace_mode(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="ms3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                mood_shell=lambda: "Tone shell: Soft and at-home.",
+                grounding_line=lambda: (
+                    "It's Sunday morning. Jacob's reading upbeat."
+                ),
+            )
+            assembler.set_grounding_line_mode("replace")
+            messages, _ = assembler.assemble_with_budget(
+                "ms3",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            # K16 replace mode subsumes the mood-shell surface area.
+            self.assertNotIn(
+                "Tone shell", messages[0]["content"],
+            )
+
+    def test_mood_shell_survives_k16_split_mode(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="ms4", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                mood_shell=lambda: "Tone shell: Soft and at-home.",
+                grounding_line=lambda: (
+                    "It's Sunday morning. Jacob's reading upbeat."
+                ),
+            )
+            assembler.set_grounding_line_mode("split")
+            messages, _ = assembler.assemble_with_budget(
+                "ms4",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            # K16 split mode keeps trend/phase cues including mood-shell.
+            self.assertIn(
+                "Tone shell", messages[0]["content"],
+            )
+
+
 class NoveltyBlockProviderTests(unittest.TestCase):
     """K6 novelty provider lands in the system prompt, is dropped under
     ``aggressive=True``, and receives the current ``user_text``."""

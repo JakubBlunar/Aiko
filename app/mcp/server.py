@@ -831,6 +831,109 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
         return json.dumps(result or {}, indent=2, default=str)
 
     @mcp.tool()
+    def get_engagement_state() -> str:
+        """Inspect the K14 engagement tracker + K5 mood shell tilt.
+
+        Returns the most recent ``EngagementResult`` (mode, label,
+        closeness_delta, latency_seconds, length_z, latency_z, warmed,
+        absence_seconds), the current voice latency window snapshot,
+        the cached ``_last_engagement_label`` (consumed by the typed-
+        proactive eligibility gate), any pending ``absence_seconds``
+        slot (consumed by the next-turn absence-curiosity provider),
+        and the live mood-shell tilt derived from the current
+        ``AffectState`` + ``RelationshipAxesState`` (tilt name + line
+        + contributors, or ``null`` when nothing notable crosses the
+        gate).
+
+        Useful when iterating on engagement thresholds, mood-shell
+        rules, or chasing a "why didn't the absence-curiosity cue
+        fire?" report. JSON output; safe to call any time.
+        """
+        out: dict[str, Any] = {
+            "engagement_enabled": bool(
+                getattr(
+                    session._settings.agent,
+                    "engagement_tracker_enabled",
+                    True,
+                )
+            ),
+            "mood_shell_enabled": bool(
+                getattr(
+                    session._settings.agent, "mood_shell_enabled", True,
+                )
+            ),
+            "last_turn_mode": getattr(session, "_last_turn_mode", None),
+            "last_engagement_label": getattr(
+                session, "_last_engagement_label", None,
+            ),
+            "pending_absence_seconds": getattr(
+                session, "_pending_absence_seconds", None,
+            ),
+        }
+        tracker = getattr(session, "_engagement_tracker", None)
+        if tracker is not None:
+            try:
+                result = tracker.last_result
+                if result is not None:
+                    out["last_result"] = {
+                        "mode": result.mode,
+                        "label": result.label,
+                        "closeness_delta": result.closeness_delta,
+                        "latency_seconds": result.latency_seconds,
+                        "latency_z": result.latency_z,
+                        "length_z": result.length_z,
+                        "absence_seconds": result.absence_seconds,
+                        "warmed": result.warmed,
+                    }
+                out["latency_window"] = tracker.latency_window_snapshot()
+            except Exception as exc:  # pragma: no cover -- diag tool
+                out["tracker_error"] = str(exc)
+        else:
+            out["tracker_error"] = "engagement tracker not constructed"
+        try:
+            from app.core.mood_shell import (
+                derive_mood_shell,
+                render_mood_shell_block,
+            )
+
+            affect = None
+            try:
+                affect = session._affect_store.get(session._user_id)
+            except Exception:
+                affect = None
+            axes = None
+            store = getattr(session, "_relationship_axes_store", None)
+            if store is not None:
+                try:
+                    axes = store.get(session._user_id)
+                except Exception:
+                    axes = None
+            threshold = float(
+                getattr(
+                    session._settings.agent,
+                    "mood_shell_axis_threshold",
+                    0.5,
+                )
+            )
+            shell = derive_mood_shell(
+                affect=affect,
+                axes=axes,
+                axis_notable_threshold=threshold,
+            )
+            if shell is None:
+                out["mood_shell"] = None
+            else:
+                out["mood_shell"] = {
+                    "tilt": shell.tilt,
+                    "line": shell.line,
+                    "contributors": list(shell.contributors),
+                    "rendered": render_mood_shell_block(shell),
+                }
+        except Exception as exc:  # pragma: no cover -- diag tool
+            out["mood_shell_error"] = str(exc)
+        return json.dumps(out, indent=2, default=str)
+
+    @mcp.tool()
     def force_decay_sweep() -> str:
         """Run the MemoryDecayWorker once, ignoring its interval gate.
 
