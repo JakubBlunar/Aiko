@@ -34,16 +34,8 @@ Shipped — see [`shipped.md`](shipped.md) "K5. Mood shell tilt
 
 ## K7. Forgetting protocol
 
-Formalize a "I don't remember that as well anymore" gracenote when
-retrieving low-salience or archive-tier memories. The tier system
-already does the work; the verbal hedge isn't first-class yet. Pairs
-naturally with the `(uncertain)` and `(curiosity)` suffixes added by
-F3 / G3 — add a `(faded)` suffix for archive-tier hits and a persona
-rule that turns it into a soft hedge rather than a flat omission.
-Key files:
-[`app/core/rag_retriever.py`](../../app/core/rag_retriever.py)
-`format_block`, [`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt)
-Memory section.
+Shipped — see [`shipped.md`](shipped.md) "K7. Forgetting protocol
+(graded `(faded)` predicate + persona-rule rewrite)".
 
 ---
 

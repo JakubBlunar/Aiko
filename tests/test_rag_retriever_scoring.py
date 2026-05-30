@@ -610,13 +610,17 @@ class FormatBlockFadedSuffixTests(unittest.TestCase):
         self.assertIn("(faded)", block)
 
     def test_long_term_tier_unchanged(self) -> None:
+        # K7 graded predicate: a fresh long_term row with healthy
+        # salience and a recent ``last_used_at`` must NOT pick up the
+        # suffix even though the tier check alone wouldn't have fired.
         hit = RagHit(
             source="memory",
             score=0.6,
             record=_memory_record(
                 record_id="21",
                 content="active long-term fact",
-                last_used_at=None,
+                last_used_at=_iso_hours_ago(2),
+                salience=0.6,
             ),
             memory_tier="long_term",
         )
@@ -624,13 +628,16 @@ class FormatBlockFadedSuffixTests(unittest.TestCase):
         self.assertNotIn("(faded)", block)
 
     def test_scratchpad_tier_unchanged(self) -> None:
+        # Scratchpad never fades regardless of salience or idle days --
+        # its own lifecycle (TTL + promotion) handles those rows.
         hit = RagHit(
             source="memory",
             score=0.6,
             record=_memory_record(
                 record_id="22",
                 content="recently captured note",
-                last_used_at=None,
+                last_used_at=_iso_hours_ago(24 * 90),
+                salience=0.05,
             ),
             memory_tier="scratchpad",
         )
@@ -673,10 +680,146 @@ class FormatBlockFadedSuffixTests(unittest.TestCase):
         block = RagRetriever.format_block([hit], user_display_name="Friend")
         self.assertIn("(uncertain)", block)
         self.assertIn("(faded)", block)
-        # Confidence cue reads first.
         self.assertLess(
             block.index("(uncertain)"), block.index("(faded)")
         )
+
+    def test_low_salience_idle_long_term_gets_suffix(self) -> None:
+        # K7 completion: a long_term row that has decayed in place
+        # (salience below threshold AND idle > 30 days) picks up the
+        # suffix even though the tier is not archive. This is the
+        # gap the original binary K7 left open.
+        hit = RagHit(
+            source="memory",
+            score=0.6,
+            record=_memory_record(
+                record_id="30",
+                content="six-week-old offhand mention",
+                last_used_at=_iso_hours_ago(24 * 45),
+                salience=0.10,
+            ),
+            memory_tier="long_term",
+        )
+        block = RagRetriever.format_block([hit], user_display_name="Friend")
+        self.assertIn("(faded)", block)
+
+    def test_recent_low_salience_long_term_unchanged(self) -> None:
+        # Salience is low but the row was used yesterday. Don't fade
+        # rows Aiko just mentioned -- they're fresh in context.
+        hit = RagHit(
+            source="memory",
+            score=0.6,
+            record=_memory_record(
+                record_id="31",
+                content="recently revived low-salience row",
+                last_used_at=_iso_hours_ago(24),
+                salience=0.10,
+            ),
+            memory_tier="long_term",
+        )
+        block = RagRetriever.format_block([hit], user_display_name="Friend")
+        self.assertNotIn("(faded)", block)
+
+    def test_high_salience_idle_long_term_unchanged(self) -> None:
+        # Idle for a long time but salience is high (e.g. a pinned or
+        # frequently-revived row that decayed slowly). High salience
+        # wins -- the memory is still sharp.
+        hit = RagHit(
+            source="memory",
+            score=0.6,
+            record=_memory_record(
+                record_id="32",
+                content="high-salience sleeper",
+                last_used_at=_iso_hours_ago(24 * 200),
+                salience=0.80,
+            ),
+            memory_tier="long_term",
+        )
+        block = RagRetriever.format_block([hit], user_display_name="Friend")
+        self.assertNotIn("(faded)", block)
+
+    def test_master_switch_off_disables_all_faded(self) -> None:
+        # K7 kill switch: ``fade_hedge_enabled=False`` silences every
+        # ``(faded)`` suffix, including the archive-tier case that was
+        # the original behaviour. Single clean "I want sharp memories
+        # only" toggle.
+        archive_hit = RagHit(
+            source="memory",
+            score=0.6,
+            record=_memory_record(
+                record_id="33",
+                content="archived memory",
+                last_used_at=_iso_hours_ago(24 * 200),
+            ),
+            memory_tier="archive",
+        )
+        long_term_hit = RagHit(
+            source="memory",
+            score=0.6,
+            record=_memory_record(
+                record_id="34",
+                content="decayed long_term memory",
+                last_used_at=_iso_hours_ago(24 * 60),
+                salience=0.05,
+            ),
+            memory_tier="long_term",
+        )
+        block = RagRetriever.format_block(
+            [archive_hit, long_term_hit],
+            user_display_name="Friend",
+            fade_hedge_enabled=False,
+        )
+        self.assertNotIn("(faded)", block)
+
+    def test_threshold_boundary_exact_does_not_fire(self) -> None:
+        # Predicate uses strict ``<`` against the salience threshold,
+        # so a row sitting exactly on the boundary does NOT fade.
+        # Documenting this so future tuning never accidentally flips
+        # the comparison to ``<=`` and starts hedging a class of
+        # memories the user didn't ask to silence.
+        hit = RagHit(
+            source="memory",
+            score=0.6,
+            record=_memory_record(
+                record_id="35",
+                content="exactly at threshold",
+                last_used_at=_iso_hours_ago(24 * 60),
+                salience=0.20,
+            ),
+            memory_tier="long_term",
+        )
+        block = RagRetriever.format_block(
+            [hit],
+            user_display_name="Friend",
+            faded_salience_threshold=0.20,
+        )
+        self.assertNotIn("(faded)", block)
+
+    def test_missing_last_used_at_falls_back_to_created_at(self) -> None:
+        # A row written long ago but never re-surfaced has
+        # ``last_used_at == None``; the predicate must still fade it
+        # based on ``created_at`` so cold rows don't escape the hedge
+        # just because nobody touched them.
+        old_created = _iso_hours_ago(24 * 60)
+        record = MemoryRecord(
+            id="36",
+            content="never-touched old memory",
+            kind="fact",
+            salience=0.10,
+            source_session=None,
+            source_message_id=None,
+            created_at=old_created,
+            last_used_at=None,
+            use_count=0,
+        )
+        hit = RagHit(
+            source="memory",
+            score=0.6,
+            record=record,
+            memory_tier="long_term",
+        )
+        block = RagRetriever.format_block([hit], user_display_name="Friend")
+        self.assertIn("(faded)", block)
 
 
 if __name__ == "__main__":

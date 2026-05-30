@@ -123,6 +123,69 @@ _RAG_ARC_BOOST = 0.03
 _RAG_DIALOGUE_ACT_BOOST = 0.03
 _RAG_ALIGNMENT_BOOST_CAP = 0.05
 
+# K7 — Forgetting protocol defaults. The original implementation only
+# fired ``(faded)`` for ``tier=="archive"`` rows; this completion adds a
+# graded predicate so long_term rows that have decayed in place
+# (``salience`` below the threshold AND idle longer than ``idle_days``)
+# also pick up the suffix. The 30-180 day window between "decayed" and
+# "demoted to archive" was passing through with no hedge.
+#
+# Defaults are quiet on purpose: with the long_term decay rate of
+# 0.02/day, a fresh ``salience=0.5`` row hits the 0.20 threshold around
+# day 15; combined with the 30-day idle floor, only rows that genuinely
+# haven't surfaced in over a month qualify. The master switch
+# ``fade_hedge_enabled`` disables every ``(faded)`` suffix (including
+# archive) for users who want sharp memories only.
+_FADED_DEFAULT_SALIENCE_THRESHOLD = 0.20
+_FADED_DEFAULT_IDLE_DAYS = 30
+
+
+def _is_faded_memory(
+    *,
+    tier: str | None,
+    salience: float | None,
+    last_used_at: str | None,
+    created_at: str | None,
+    now: datetime,
+    salience_threshold: float,
+    idle_days: int,
+) -> bool:
+    """K7 graded fade predicate.
+
+    Returns ``True`` when the row should pick up the ``(faded)``
+    suffix. Two cases:
+
+    - ``tier == "archive"`` — always faded (cold history that survived
+      the score offset because the cosine match was strong).
+    - ``tier == "long_term"`` (or missing) AND salience below the
+      threshold AND last touched longer than ``idle_days`` ago — the
+      slow-decay-in-place case.
+
+    Scratchpad never fades: that tier has its own lifecycle
+    (``scratchpad_ttl_days`` prunes; promotion lifts the warm ones)
+    and conflating "raw new observation" with "old half-forgotten"
+    muddies two different signals.
+    """
+    if tier == "archive":
+        return True
+    if tier not in (None, "long_term"):
+        return False
+    if salience is None:
+        return False
+    if float(salience) >= float(salience_threshold):
+        return False
+    ts = last_used_at or created_at
+    if not ts:
+        return False
+    try:
+        last = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return False
+    # ``timedelta.days`` floors, so a strict ``>`` reads correctly:
+    # "more than N days idle" means at least N+1 calendar days.
+    return (now - last).days > int(idle_days)
+
+
 # K1 — per-hit boost for memories that semantically align with one of
 # Aiko's active long-term goals (cosine >= ``_RAG_GOAL_ALIGNMENT_THRESHOLD``).
 # Same posture as the arc / dialogue-act boosts: small enough to nudge
@@ -418,6 +481,9 @@ class RagRetriever:
         arc_state_provider: "Callable[[], ArcState | None] | None" = None,
         dialogue_act_provider: "Callable[[str], str | None] | None" = None,
         goal_store: "GoalStore | None" = None,
+        fade_hedge_enabled: bool = True,
+        faded_salience_threshold: float = _FADED_DEFAULT_SALIENCE_THRESHOLD,
+        faded_idle_days: int = _FADED_DEFAULT_IDLE_DAYS,
     ) -> None:
         self._store = store
         self._embedder = embedder
@@ -452,6 +518,16 @@ class RagRetriever:
         # hits is bounded by ``per_source_top_k``. ``None`` keeps the
         # legacy retriever behaviour for tests and lean deployments.
         self._goal_store = goal_store
+        # K7 — Forgetting protocol settings. ``fade_hedge_enabled``
+        # is the master kill-switch; off disables every ``(faded)``
+        # suffix (including archive). The threshold + idle-days
+        # define the graded predicate for long_term rows that have
+        # decayed in place. See :func:`_is_faded_memory`.
+        self._fade_hedge_enabled = bool(fade_hedge_enabled)
+        self._faded_salience_threshold = max(
+            0.0, min(1.0, float(faded_salience_threshold)),
+        )
+        self._faded_idle_days = max(1, int(faded_idle_days))
         # Schema v8 — IDs of memories surfaced in the last
         # :meth:`retrieve` call. ``SessionController._post_turn_inner_life``
         # reads this snapshot to run the keyword-overlap revival check
@@ -849,6 +925,9 @@ class RagRetriever:
         hits: list[RagHit],
         *,
         user_display_name: str = "the user",
+        fade_hedge_enabled: bool = True,
+        faded_salience_threshold: float = _FADED_DEFAULT_SALIENCE_THRESHOLD,
+        faded_idle_days: int = _FADED_DEFAULT_IDLE_DAYS,
     ) -> str:
         """Render hits into a system-prompt-ready block.
 
@@ -859,6 +938,12 @@ class RagRetriever:
             ``kind == "self"``.
           - "Snippets you remembered from past chats:" -- message hits.
           - "From your notes:" -- document hits.
+
+        K7 — ``fade_hedge_enabled`` / ``faded_salience_threshold`` /
+        ``faded_idle_days`` control the ``(faded)`` suffix. Defaults
+        preserve the original archive-only behaviour with the graded
+        long_term predicate enabled; flip ``fade_hedge_enabled=False``
+        to silence every fade hedge including archive.
         """
         if not hits:
             return ""
@@ -890,17 +975,25 @@ class RagRetriever:
                 # sees it.
                 if kind == "curiosity_finding":
                     suffix_tags.append("(curiosity)")
-                # K7 — Forgetting protocol. Archive-tier rows are
-                # cold history that survived the score offset only
-                # because the cosine match was strong. Tag them so
-                # the persona reads them as fuzzy / half-remembered
-                # ("I think you mentioned this once, ages ago — am
-                # I remembering right?") rather than as fresh
-                # current facts. Sits next to "(uncertain)" so the
-                # two cues compose: a low-confidence archive hit
-                # reads as "(uncertain) (faded)" — both reasons to
-                # hedge.
-                if getattr(hit, "memory_tier", None) == "archive":
+                # K7 — Forgetting protocol. Graded fade predicate
+                # covers both archive-tier rows (cold history) AND
+                # long_term rows that have decayed in place
+                # (salience below threshold AND idle longer than
+                # ``faded_idle_days``). The 30-180 day window between
+                # "decayed" and "archive demoted" used to pass
+                # through with no hedge — closing that gap is what
+                # the K7 completion adds. The ``fade_hedge_enabled``
+                # master switch lets a user disable every fade
+                # suffix (including archive) for a sharper feel.
+                if fade_hedge_enabled and _is_faded_memory(
+                    tier=getattr(hit, "memory_tier", None),
+                    salience=getattr(hit.record, "salience", None),
+                    last_used_at=getattr(hit.record, "last_used_at", None),
+                    created_at=getattr(hit.record, "created_at", None),
+                    now=now,
+                    salience_threshold=faded_salience_threshold,
+                    idle_days=faded_idle_days,
+                ):
                     suffix_tags.append("(faded)")
                 suffix = (" " + " ".join(suffix_tags)) if suffix_tags else ""
                 # Schema v10: append the temporal time-tag (e.g.
@@ -962,7 +1055,13 @@ class RagRetriever:
             recent_turns=recent_turns,
             exclude_session_id=exclude_session_id,
         )
-        return self.format_block(hits, user_display_name=user_display_name)
+        return self.format_block(
+            hits,
+            user_display_name=user_display_name,
+            fade_hedge_enabled=self._fade_hedge_enabled,
+            faded_salience_threshold=self._faded_salience_threshold,
+            faded_idle_days=self._faded_idle_days,
+        )
 
     # ── internals ───────────────────────────────────────────────────────
 
