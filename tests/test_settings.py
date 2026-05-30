@@ -285,5 +285,142 @@ class CallbackDetectorSettingsTests(unittest.TestCase):
         self.assertAlmostEqual(result.memory.callback_revival_bump, 1.0)
 
 
+class CalibrationDetectorSettingsTests(unittest.TestCase):
+    """K20: agent master switch + 7 memory knobs round-trip with clamps."""
+
+    _CAL_AGENT_KEYS = ("calibration_detection_enabled",)
+    _CAL_MEMORY_KEYS = (
+        "calibration_baseline",
+        "calibration_global_low_threshold",
+        "calibration_topic_low_threshold",
+        "calibration_half_life_days",
+        "calibration_topic_merge_threshold",
+        "calibration_softening_threshold",
+        "calibration_max_topic_slots",
+    )
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(
+        self,
+        agent_extra: dict | None = None,
+        memory_extra: dict | None = None,
+        strip_keys: bool = True,
+    ) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(
+            json.loads(default_path.read_text(encoding="utf-8"))
+        )
+        if strip_keys:
+            for k in self._CAL_AGENT_KEYS:
+                cfg.get("agent", {}).pop(k, None)
+            for k in self._CAL_MEMORY_KEYS:
+                cfg.get("memory", {}).pop(k, None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        if memory_extra is not None:
+            cfg["memory"] = {**cfg.get("memory", {}), **memory_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults_load_when_keys_missing(self) -> None:
+        path = self._write_config()
+        result = load_settings(config_path=path)
+        self.assertTrue(result.agent.calibration_detection_enabled)
+        self.assertAlmostEqual(result.memory.calibration_baseline, 0.80)
+        self.assertAlmostEqual(
+            result.memory.calibration_global_low_threshold, 0.55,
+        )
+        self.assertAlmostEqual(
+            result.memory.calibration_topic_low_threshold, 0.50,
+        )
+        self.assertAlmostEqual(result.memory.calibration_half_life_days, 5.0)
+        self.assertAlmostEqual(
+            result.memory.calibration_topic_merge_threshold, 0.78,
+        )
+        self.assertAlmostEqual(
+            result.memory.calibration_softening_threshold, 0.70,
+        )
+        self.assertEqual(result.memory.calibration_max_topic_slots, 8)
+
+    def test_overrides_round_trip(self) -> None:
+        path = self._write_config(
+            agent_extra={"calibration_detection_enabled": False},
+            memory_extra={
+                "calibration_baseline": 0.65,
+                "calibration_global_low_threshold": 0.40,
+                "calibration_topic_low_threshold": 0.35,
+                "calibration_half_life_days": 14.0,
+                "calibration_topic_merge_threshold": 0.85,
+                "calibration_softening_threshold": 0.60,
+                "calibration_max_topic_slots": 12,
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.calibration_detection_enabled)
+        self.assertAlmostEqual(result.memory.calibration_baseline, 0.65)
+        self.assertAlmostEqual(
+            result.memory.calibration_global_low_threshold, 0.40,
+        )
+        self.assertAlmostEqual(
+            result.memory.calibration_topic_low_threshold, 0.35,
+        )
+        self.assertAlmostEqual(
+            result.memory.calibration_half_life_days, 14.0,
+        )
+        self.assertAlmostEqual(
+            result.memory.calibration_topic_merge_threshold, 0.85,
+        )
+        self.assertAlmostEqual(
+            result.memory.calibration_softening_threshold, 0.60,
+        )
+        self.assertEqual(result.memory.calibration_max_topic_slots, 12)
+
+    def test_clamps_out_of_range_values(self) -> None:
+        # Each numeric knob has a documented floor / ceiling. Verify
+        # the parser enforces them so a buggy user.json can't push
+        # the detector into a degenerate state.
+        path = self._write_config(
+            memory_extra={
+                "calibration_baseline": 5.0,                    # max 1.0
+                "calibration_global_low_threshold": -0.5,       # min 0.0
+                "calibration_topic_low_threshold": 9.0,         # max 1.0
+                "calibration_half_life_days": -10.0,            # min 0.1
+                "calibration_topic_merge_threshold": -1.0,      # min 0.0
+                "calibration_softening_threshold": 50.0,        # max 1.0
+                "calibration_max_topic_slots": 0,               # min 1
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertAlmostEqual(result.memory.calibration_baseline, 1.0)
+        self.assertAlmostEqual(
+            result.memory.calibration_global_low_threshold, 0.0,
+        )
+        self.assertAlmostEqual(
+            result.memory.calibration_topic_low_threshold, 1.0,
+        )
+        self.assertAlmostEqual(
+            result.memory.calibration_half_life_days, 0.1,
+        )
+        self.assertAlmostEqual(
+            result.memory.calibration_topic_merge_threshold, 0.0,
+        )
+        self.assertAlmostEqual(
+            result.memory.calibration_softening_threshold, 1.0,
+        )
+        self.assertEqual(result.memory.calibration_max_topic_slots, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

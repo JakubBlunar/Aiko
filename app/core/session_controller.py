@@ -1225,6 +1225,7 @@ class SessionController(
             knowledge_gaps=self._render_knowledge_gaps_block,
             belief_gaps=self._render_belief_gaps_block,
             clarification=self._render_clarification_block,
+            calibration=self._render_calibration_block,
             rupture=self._render_rupture_block,
             absence_curiosity=self._render_absence_curiosity_block,
             mood_shell=self._render_mood_shell_block,
@@ -2225,6 +2226,38 @@ class SessionController(
                 )
                 self._style_signal_analyzer = None
                 self._style_signal_store = None
+
+        # K20: metacognitive calibration store. Holds per-user
+        # CalibrationState (global score + bounded topic slots) so
+        # decay survives restart. Constructed unconditionally
+        # (read-side bonus stays available even when the detector's
+        # write side is disabled) -- production code reads the state
+        # baseline from the configured ``calibration_baseline``.
+        self._calibration_store = None
+        # Cache slots for the K20 softening detector + topic centroid.
+        # ``_last_assistant_vec`` is set by K22's wire-in when it
+        # embeds the just-emitted reply; ``_prior_assistant_vec`` is
+        # carried forward by K20's wire-in to the next turn so the
+        # softening detector can compare the next user message
+        # against the claim that triggered the pushback.
+        self._last_assistant_vec = None
+        self._prior_assistant_vec = None
+        try:
+            from app.core.calibration_store import CalibrationStore
+
+            self._calibration_store = CalibrationStore(
+                self._chat_db,
+                baseline=float(
+                    getattr(
+                        settings.memory, "calibration_baseline", 0.80,
+                    )
+                ),
+            )
+        except Exception:
+            log.warning(
+                "CalibrationStore init failed", exc_info=True,
+            )
+            self._calibration_store = None
 
         # K14: implicit engagement tracker. Reuses the K13 rolling word-
         # count window via ``recent_word_counts()`` so we don't pay a

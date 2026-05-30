@@ -1072,6 +1072,102 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"force_decay_sweep raised: {exc}"
         return json.dumps(result or {}, indent=2, default=str)
 
+    @mcp.tool()
+    def get_calibration_state() -> str:
+        """K20 — dump the per-user CalibrationState as JSON.
+
+        Returns the current ``global_score``, ``last_updated_at``,
+        and per-topic-slot detail (score, last_signal_at,
+        signal_count -- the centroid array is summarised to a
+        ``dim``/``norm`` pair rather than dumped to keep the response
+        readable). Reads the same lazy decay path the inner-life
+        provider uses so the snapshot reflects the live state Aiko
+        would see on her next turn.
+        """
+        store = getattr(session, "_calibration_store", None)
+        if store is None:
+            return json.dumps(
+                {"error": "CalibrationStore not initialised"},
+            )
+        try:
+            from app.core import calibration_detector
+            from datetime import datetime, timezone
+            import numpy as np
+
+            state = store.get(session._user_id)
+            state = calibration_detector.decay(
+                state,
+                now=datetime.now(timezone.utc),
+                half_life_days=float(
+                    getattr(
+                        session._memory_settings,
+                        "calibration_half_life_days",
+                        5.0,
+                    )
+                ),
+                baseline=float(
+                    getattr(
+                        session._memory_settings,
+                        "calibration_baseline",
+                        0.80,
+                    )
+                ),
+            )
+            payload = {
+                "user_id": session._user_id,
+                "global_score": round(state.global_score, 4),
+                "last_updated_at": (
+                    state.last_updated_at.isoformat()
+                    if state.last_updated_at is not None
+                    else None
+                ),
+                "baseline": float(
+                    getattr(
+                        session._memory_settings,
+                        "calibration_baseline",
+                        0.80,
+                    )
+                ),
+                "topics": [
+                    {
+                        "score": round(slot.score, 4),
+                        "last_signal_at": slot.last_signal_at.isoformat(),
+                        "signal_count": int(slot.signal_count),
+                        "centroid_dim": int(slot.centroid.size),
+                        "centroid_norm": round(
+                            float(np.linalg.norm(slot.centroid)), 4,
+                        ),
+                    }
+                    for slot in state.topics
+                ],
+            }
+            return json.dumps(payload, indent=2, default=str)
+        except Exception as exc:
+            return f"get_calibration_state raised: {exc}"
+
+    @mcp.tool()
+    def reset_calibration() -> str:
+        """K20 — wipe the per-user CalibrationState row.
+
+        After this call ``get_calibration_state`` returns a fresh
+        baseline state (global_score = ``calibration_baseline``,
+        no topics). Useful when end-to-end-testing the post-turn
+        wire-in: hand-inject a state via the SQLite REPL or via
+        upsert, observe Aiko's hedging behaviour, then reset.
+        """
+        store = getattr(session, "_calibration_store", None)
+        if store is None:
+            return json.dumps(
+                {"error": "CalibrationStore not initialised"},
+            )
+        try:
+            store.reset(session._user_id)
+            return json.dumps(
+                {"reset": True, "user_id": session._user_id},
+            )
+        except Exception as exc:
+            return f"reset_calibration raised: {exc}"
+
     # ── Resources ────────────────────────────────────────────────────
 
     @mcp.resource("assistant://history")

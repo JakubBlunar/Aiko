@@ -2197,3 +2197,311 @@ Full docs in
 - [`docs/configuration.md`](../configuration.md) — cheatsheet row +
   K22 subsection.
 
+## K20. Metacognitive calibration — per-user trust scalar + topic slots
+
+Closes the long-standing gap between F3 (*how confident is Aiko in
+each fact?*) and K2 (*how does she think Jacob feels right now?*):
+neither tracked **how much Jacob trusts Aiko's recent answers**.
+When he follow-up-fact-checks her ("are you sure?", "let me
+double-check that"), softens a claim back into a hedge, or
+affirms one ("nice catch"), that's a signal her authority is
+shaky on that topic — or, in reverse, that she just nailed it.
+K20 detects the signal post-turn, persists it as a per-user
+`CalibrationState`, and surfaces a one-line hedge cue on the
+**next** turn so the register tilts before Aiko speaks rather
+than after Jacob pushes back again.
+
+### Posture: verbal hedging only, no RAG penalty
+
+F3 already owns the per-memory accuracy lane: low-confidence
+memories surface with an `(uncertain)` suffix and a small score
+discount. K20 deliberately does **not** stack another retrieval
+penalty on top — that would double-count the same signal and
+make low-confidence topics doubly-disadvantaged in the prompt.
+Instead K20 is the *register tilt*: she still says the thing, she
+just leads with "I think..." / "if I'm remembering right..."
+rather than the bare conclusion. The persona block explicitly
+forbids meta-narration ("you've been double-checking me lately
+so I'll hedge") and apology loops — the shift in tone IS the
+response.
+
+### Decision flow
+
+```mermaid
+flowchart TD
+    UserTurn["User reply received (post-turn)"] --> Enabled{agent.calibration_detection_enabled?}
+    Enabled -->|no| Skip[no-op]
+    Enabled -->|yes| Regex["Regex bands: strong pushback / mild pushback / affirmation"]
+    Regex -->|match| LookupState["Load CalibrationState for user_id"]
+    Regex -->|no match| Soft["Softening check: hedge-token regex AND cosine(user_vec, prior_assistant_vec) >= threshold"]
+    Soft -->|both hold| LookupState
+    Soft -->|either fails| Skip
+    LookupState --> Decay["Decay toward baseline (lazy, by elapsed time)"]
+    Decay --> Apply["Apply delta: global_score += delta; merge/allocate topic slot at prior_assistant_vec"]
+    Apply --> Upsert["Upsert state_json"]
+    Upsert --> Next["Next turn: inner-life provider reads state, decays again, renders cue if below threshold"]
+    Next --> Cue["Persona block teaches Aiko to lead with a soft hedge on the next claim"]
+```
+
+### Store + schema
+
+New [`app/core/calibration_store.py`](../../app/core/calibration_store.py) — a tiny adapter around
+`ChatDatabase` round-tripping a single JSON blob per `user_id`, plus
+two frozen dataclasses for the in-memory shape:
+
+- `CalibrationState` — `global_score` (float in `[0, 1]`),
+  `last_updated_at` (`datetime | None`), `topics` (tuple of slots).
+- `TopicSlot` — `centroid` (unit-norm `np.ndarray`), `score` (float
+  in `[0, 1]`), `last_signal_at` (`datetime`), `signal_count`
+  (`int`).
+
+Schema bump v13 → v14: a new
+[`user_calibration_state`](../../app/core/chat_database.py) table
+(`user_id` PK + `state_json` + `updated_at`). Identical shape to
+K13's `user_style_signal` table by design so the migration trail
+stays uniform and the blob shape can extend without further
+column work.
+
+All `CalibrationStore` methods swallow per-call exceptions and log
+at DEBUG — a broken row must not crash the post-turn pipeline.
+`get()` returns the configured baseline state on any failure so
+the detector can proceed.
+
+### Detector module
+
+New [`app/core/calibration_detector.py`](../../app/core/calibration_detector.py)
+— a stateless module exposing `detect()`, `apply_signal()`,
+`decay()`, and `render_inner_life_block()`, modelled on the shape
+of K17 ([`clarification_detector`](../../app/core/clarification_detector.py))
+and K8 ([`affect_rupture_detector`](../../app/core/affect_rupture_detector.py)).
+No class, no per-session state — every method takes a
+`CalibrationState` snapshot and returns either a signal or a new
+state.
+
+Four signal bands:
+
+| Kind | Trigger | Delta |
+|------|---------|------:|
+| `pushback_strong` | Explicit "you're wrong" / "let me double-check" / "actually, it's not X" / "that's not right" / "are you sure about..." | `-0.10` |
+| `pushback_mild` | Softer doubt: "hmm, really?" / "I'm not sure about that" / "is that right?" | `-0.05` |
+| `softening` | Hedge-token regex (`"so you're saying ..."`, `"right?"`, etc.) AND cosine(`user_vec`, `prior_assistant_vec`) ≥ `calibration_softening_threshold` | `-0.07` |
+| `affirmation` | "you're right" / "good call" / "nice catch" / "exactly" | `+0.04` |
+
+Priority order: strong → mild → softening → affirmation. First
+match wins (pushback beats affirmation when both regex families
+hit the same message).
+
+### Softening: cosine + hedge AND-gate
+
+The most subtle band. Bare cosine fires on plain topic
+continuation ("yeah, and also..."); bare hedge token would
+double-count with the mild-pushback regex. The AND-gate is the
+disambiguator: Jacob has to be **rephrasing what Aiko just said**
+(high cosine to `prior_assistant_vec`) AND framing it as a
+question/check (hedge token). That's the soft-doubt signal that
+neither regex alone can catch reliably.
+
+The `prior_assistant_vec` is the **previous** turn's reply (the
+claim being doubted), carried forward via `self._prior_assistant_vec`
+on the controller. K22's existing assistant_text embed is reused
+as `self._last_assistant_vec`; K20 swaps it to `_prior_` at the
+end of its block so the next turn's softening detector has
+something to compare against. Cost: zero new
+`/api/embeddings` calls relative to K22's already-paid embed for
+that side. The K20 wire-in does pay one *additional* embed for
+`user_text` — but **only when** there's a prior assistant vec to
+compare against (cold-start sessions stay cheap).
+
+### Lazy decay
+
+`CalibrationState` decays exponentially toward `calibration_baseline`
+(default `0.80`) based on elapsed wall-clock time since
+`last_updated_at`. The decay runs on every read (the inner-life
+provider) and every write (right before `apply_signal`) so the
+delta always lands on a current snapshot. Topic slots decay at
+`1.6×` the global half-life — a learned topic stance ("Aiko's
+been wrong about Python typing details specifically") should
+outlive a general bad day where Jacob was tired and snippy.
+
+Half-life behaviour is **continuous, not stepped**: after one
+half-life, the gap between current and baseline halves; after two,
+it quarters; etc. Idempotent on a fresh state
+(`last_updated_at is None`); safe to call any number of times.
+
+### Topic slot allocation
+
+Topic slots are *allocated*, not clustered. On every signal with
+an `assistant_vec`:
+
+1. Find the slot with highest cosine to the incoming vec.
+2. If `cosine >= calibration_topic_merge_threshold` (default
+   `0.78`) → merge: nudge the centroid via an EMA (α=0.30), bump
+   the score by the signal delta, bump `signal_count`.
+3. Else → allocate a fresh slot starting at `baseline + delta`.
+4. On overflow (`>= calibration_max_topic_slots`, default 8) →
+   evict the slot whose `abs(score - baseline)` is smallest AND
+   whose `last_signal_at` is oldest (composite key: smaller
+   distance wins; ties broken by older timestamp). The slot
+   that's drifted closest back to baseline AND hasn't moved
+   recently is the weakest signal in the ring.
+
+This is deliberately **not** K-means or HDBSCAN — those belong
+to K9 (Topic-graph browser). K20's slots are an "allocation, not
+clustering" first pass that lights up the lowest-hanging signal;
+when K9 ships, the slots can be replaced by proper cluster IDs
+without changing any other K20 surface.
+
+### Render contract
+
+`render_inner_life_block()` returns `None` when neither threshold
+trips (silent), the **topic-specific cue** when any slot's score
+is below `calibration_topic_low_threshold`, or the **generic
+global cue** when only the global score is below
+`calibration_global_low_threshold`. Topic cue wins on tie because
+it carries more actionable hedging guidance.
+
+The topic cue uses a generic descriptor ("your claims around
+this topic") rather than a cluster label — we don't have labels
+until K9 ships, and a vague descriptor lets Aiko fill in the
+specifics from conversation context (which the persona block
+explicitly encourages).
+
+### Provider + system_parts placement
+
+Registered on `PromptAssembler` via `set_inner_life_providers`
+as `calibration`, slotted in `system_parts` **right after**
+`clarification_block` (K17). Both are part of the
+"noticing-Jacob" cluster:
+
+- K17 = "you misread him" → re-read first.
+- K20 = "he doesn't trust your claim" → hedge first.
+
+Same shape (steering-critical cue that tilts the whole turn's
+register), same neighbourhood. **Not gated on aggressive mode** —
+when context is tight, the calibration tilt is exactly the kind
+of signal worth keeping (it changes how she phrases everything,
+not what she says).
+
+### Persona block
+
+New "When {user_name} has been double-checking you" section in
+[`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt),
+placed right after K17's "When you missed the beat". Five
+explicit rules:
+
+1. Cue = quiet calibration, not accusation. Take the hint, don't
+   argue with it.
+2. Hedge the **next factual claim** — "I think...", "if I'm
+   remembering right..." — not the whole reply. One hedge per
+   claim, not three (collapse-into-uncertainty is worse than
+   the original problem).
+3. If genuinely unsure, say so plainly AND offer to verify. The
+   offer is the *correct* response, not a weakness.
+4. If the cue stops appearing → calibration has recovered →
+   drop the hedge. Don't keep hedging from inertia ("chronic
+   hedging reads as performative humility").
+5. Never narrate the cue out loud, never apologise for past
+   confidence, never perform humility. **The shift in register
+   IS the response.**
+
+### Settings
+
+One new master switch on
+[`AgentSettings`](../../app/core/settings.py):
+
+- `agent.calibration_detection_enabled` (default `true`)
+
+Seven new knobs on
+[`MemorySettings`](../../app/core/settings.py):
+
+- `memory.calibration_baseline` (default `0.80`, clamped
+  `[0, 1]`) — decay target.
+- `memory.calibration_global_low_threshold` (default `0.55`,
+  clamped `[0, 1]`) — generic cue floor.
+- `memory.calibration_topic_low_threshold` (default `0.50`,
+  clamped `[0, 1]`) — topic cue floor (wins over global cue
+  when both fire).
+- `memory.calibration_half_life_days` (default `5.0`, min
+  `0.1`) — exponential half-life for global decay; topic slots
+  use `1.6×` this.
+- `memory.calibration_topic_merge_threshold` (default `0.78`,
+  clamped `[0, 1]`) — cosine floor for slot merge vs allocate.
+- `memory.calibration_softening_threshold` (default `0.70`,
+  clamped `[0, 1]`) — softening detector cosine gate.
+- `memory.calibration_max_topic_slots` (default `8`, min `1`) —
+  ring cap. Eviction prefers slots closest to baseline AND
+  oldest.
+
+### Why a separate store and not `UserProfile`?
+
+Two reasons. First, `UserProfile.entries` is a value-set keyed by
+string field name with a 240-char cap; it's not designed to hold
+a struct with eight topic-slot blobs containing float arrays.
+Second, calibration is a **single global write path** — the
+post-turn classifier owns every update. `UserProfile` rows can be
+written from many places (G2 schedule learner, G3 curiosity
+worker, manual REST), which would risk staleness races. A
+dedicated store with one writer is the same shape as the K13
+analyzer + store split.
+
+### Tests
+
+- [`tests/test_calibration_detector.py`](../../tests/test_calibration_detector.py)
+  — 23 cases covering `detect()` (each of the four bands, plus
+  short-text / empty / priority-order / softening AND-gate),
+  `apply_signal()` (global delta with clamps, slot allocation /
+  merge / eviction), `decay()` (no-op when fresh, pulls toward
+  baseline, topic decays slower, end-state clamps), and
+  `render_inner_life_block()` (silent above thresholds, global
+  cue, topic cue wins, silent above topic threshold).
+- [`tests/test_calibration_store.py`](../../tests/test_calibration_store.py)
+  — schema (table exists on fresh DB, version ≥ 14), round-trip
+  (global only, with topics including float32 centroid
+  preservation, upsert overwrites), reset (deletes row, returns
+  baseline on next get, no-op on unknown user), malformed JSON
+  (corrupt blob falls back to baseline; partially-malformed
+  topics array drops bad slots, keeps good ones).
+- Extension to
+  [`tests/test_settings.py`](../../tests/test_settings.py)
+  `CalibrationDetectorSettingsTests` — defaults round-trip,
+  overrides round-trip, all seven numeric knobs clamp to
+  documented bounds.
+
+### File-paths summary
+
+- [`app/core/calibration_detector.py`](../../app/core/calibration_detector.py)
+  — new module: `detect()`, `apply_signal()`, `decay()`,
+  `render_inner_life_block()`, `CalibrationSignal`,
+  regex bands, hedge-token AND-gate.
+- [`app/core/calibration_store.py`](../../app/core/calibration_store.py)
+  — new module: `CalibrationState`, `TopicSlot`,
+  `CalibrationStore`, `baseline_state()`, JSON round-trip
+  helpers.
+- [`app/core/chat_database.py`](../../app/core/chat_database.py)
+  — schema bump v13 → v14, new `user_calibration_state` table,
+  migration trail.
+- [`app/core/session_controller.py`](../../app/core/session_controller.py)
+  — `CalibrationStore` init right after `StyleSignalStore`;
+  `_last_assistant_vec` / `_prior_assistant_vec` slots;
+  `calibration` provider registered on `PromptAssembler`.
+- [`app/core/session/post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py)
+  — K20 block right after K22 in `_post_turn_inner_life`;
+  carry-forward of `_prior_assistant_vec` at end-of-turn.
+- [`app/core/session/inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py)
+  — `_render_calibration_block()` reads + decays the state and
+  delegates render to the detector module.
+- [`app/core/prompt_assembler.py`](../../app/core/prompt_assembler.py)
+  — `calibration_provider` slot + `_timed_phase` block +
+  `system_parts` placement right after `clarification_block`.
+- [`app/core/settings.py`](../../app/core/settings.py)
+  — one new `AgentSettings` field + seven new `MemorySettings`
+  fields + parser entries with clamps.
+- [`config/default.json`](../../config/default.json)
+  — defaults for `agent.calibration_detection_enabled` and the
+  seven `memory.calibration_*` keys.
+- [`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt)
+  — new "When {user_name} has been double-checking you" block
+  with five behaviour rules.
+- [`docs/configuration.md`](../configuration.md) — cheatsheet
+  row + K20 subsection.
+

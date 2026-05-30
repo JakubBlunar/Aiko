@@ -533,6 +533,77 @@ class InnerLifeProvidersMixin:
             log.debug("clarification render failed", exc_info=True)
             return ""
 
+    def _render_calibration_block(self) -> str:
+        """K20: surface a one-line calibration hedge cue.
+
+        Reads the per-user :class:`CalibrationState`, applies lazy
+        decay so the snapshot is current, and renders a hedge cue
+        when the global score sits below the configured threshold OR
+        a topic slot sits below the topic threshold. Topic-specific
+        cue wins when both fire.
+
+        Returns ``""`` (empty -- not ``None``) when the master switch
+        is off, the store is unavailable, or the state hasn't dropped
+        below either threshold. Empty strings are dropped by the
+        prompt assembler, so the cue family is silent by default.
+        """
+        if not bool(
+            getattr(
+                self._settings.agent,
+                "calibration_detection_enabled",
+                True,
+            )
+        ):
+            return ""
+        store = getattr(self, "_calibration_store", None)
+        if store is None:
+            return ""
+        try:
+            from app.core import calibration_detector
+            from datetime import datetime, timezone
+
+            state = store.get(self._user_id)
+            state = calibration_detector.decay(
+                state,
+                now=datetime.now(timezone.utc),
+                half_life_days=float(
+                    getattr(
+                        self._memory_settings,
+                        "calibration_half_life_days",
+                        5.0,
+                    )
+                ),
+                baseline=float(
+                    getattr(
+                        self._memory_settings,
+                        "calibration_baseline",
+                        0.80,
+                    )
+                ),
+            )
+            block = calibration_detector.render_inner_life_block(
+                state,
+                user_display_name=self.user_display_name,
+                global_threshold=float(
+                    getattr(
+                        self._memory_settings,
+                        "calibration_global_low_threshold",
+                        0.55,
+                    )
+                ),
+                topic_threshold=float(
+                    getattr(
+                        self._memory_settings,
+                        "calibration_topic_low_threshold",
+                        0.50,
+                    )
+                ),
+            )
+            return block or ""
+        except Exception:
+            log.debug("calibration render failed", exc_info=True)
+            return ""
+
     def _render_absence_curiosity_block(self) -> str:
         """K14 typed-mode: surface a one-shot absence-curiosity cue.
 

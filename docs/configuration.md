@@ -45,6 +45,7 @@ exists to keep them in lock-step.
 | Master switch for Aiko's long-term goals | `agent.goals_enabled` | `true` |
 | Hedge old / decayed memories with "(faded)" suffix | `memory.fade_hedge_enabled` | `true` |
 | Reinforce "Aiko remembered" beats (callback detector) | `agent.callback_detector_enabled` | `true` |
+| Notice when {user_name} double-checks Aiko's claims (calibration) | `agent.calibration_detection_enabled` | `true` |
 | Master memory switch | `memory.enabled` | `true` |
 | RAG recall depth per turn | `memory.top_k` | `6` |
 | Long-term memory cap | `memory.max_memories` | `5000` |
@@ -430,6 +431,19 @@ Post-turn cosine pass between Aiko's reply and older eligible memories. Hits sta
 - `memory.callback_cooldown_hours` *(int, `24`, min `1`)* — per-row cooldown after a successful callback. A memory called back less than this ago stays silent on subsequent matches.
 - `memory.callback_salience_bump` *(float, `0.05`, clamped `[0, 0.5]`)* — salience added to each hit at record time. Store clamps the result to `[0, 1]`. Drives the compounding loop alongside the read-side bonus.
 - `memory.callback_revival_bump` *(float, `0.10`, clamped `[0, 1]`)* — revival_score added to each hit. Acts as a tier-promotion signal: a long_term row that keeps getting called back will trend toward salience=1.0 over the promotion worker's sweeps.
+
+### K20 — metacognitive calibration
+
+Post-turn classifier that detects whether `{user_name}` pushed back on / softened / affirmed Aiko's last claim, and adjusts a per-user `CalibrationState` (a global trust scalar in `[0, 1]` plus a bounded ring of topic slots). The state is read by an inner-life provider on the **next** turn — when the global score sits below `calibration_global_low_threshold` or any topic slot is below `calibration_topic_low_threshold`, Aiko sees a one-line "you've been double-checking me lately — hedge the next claim" cue. The state decays exponentially toward `calibration_baseline` so a tense afternoon doesn't sour the whole week. Implementation lives in [`app/core/calibration_detector.py`](../app/core/calibration_detector.py) and [`app/core/calibration_store.py`](../app/core/calibration_store.py); persona guidance is in the **"When {user_name} has been double-checking you"** block of [`data/persona/aiko_companion.txt`](../data/persona/aiko_companion.txt). K20 deliberately does **not** touch RAG retrieval scores — F3 (`memory.confidence` + `(uncertain)` suffix) already owns the per-memory accuracy lane. K20 is the *per-user / per-topic register tilt* on top of it.
+
+- `agent.calibration_detection_enabled` *(bool, `true`)* — master switch for the post-turn classifier AND the inner-life cue. Off → no new state updates AND `_render_calibration_block` returns empty so the cue goes silent. Earned state on disk is preserved.
+- `memory.calibration_baseline` *(float, `0.80`, clamped `[0, 1]`)* — score the global + topic slots decay toward in the absence of new signals. `0.80` reads as "neutral-positive" (Aiko speaks confidently by default). Lower → more reflexively hedgy after any pushback; higher → trust recovers more aggressively between sessions.
+- `memory.calibration_global_low_threshold` *(float, `0.55`, clamped `[0, 1]`)* — global score floor for the generic cue. The cue fires only when `global_score < threshold`. Lower → cue is rarer (only after sustained pushback); higher → fires more readily on any drop.
+- `memory.calibration_topic_low_threshold` *(float, `0.50`, clamped `[0, 1]`)* — per-topic score floor for the topic-specific cue. The topic cue wins over the global cue when both fire because it carries more actionable hedging guidance.
+- `memory.calibration_half_life_days` *(float, `5.0`, min `0.1`)* — exponential half-life for the drift toward baseline. After this many days, the gap between current score and baseline halves. Topic slots use a longer half-life internally (`1.6×` global) so a learned topic stance outlives a general bad day. Higher → calibration sticks longer; lower → faster recovery.
+- `memory.calibration_topic_merge_threshold` *(float, `0.78`, clamped `[0, 1]`)* — cosine similarity floor between an incoming `assistant_vec` and an existing topic centroid for the slot to absorb the signal (rather than allocate a new slot). Higher → narrower topics, more slots; lower → broader topics, fewer slots.
+- `memory.calibration_softening_threshold` *(float, `0.70`, clamped `[0, 1]`)* — cosine floor between `user_vec` and the **prior** turn's `assistant_vec` for the softening detector to fire. Pairs with the hedge-token regex in an AND-gate: both must hold. Lower → looser gate (catches more rephrases at the cost of false positives); higher → only near-paraphrases trigger.
+- `memory.calibration_max_topic_slots` *(int, `8`, min `1`)* — hard cap on the topic-slot ring. On overflow the slot whose `abs(score - baseline)` is smallest AND whose `last_signal_at` is oldest is evicted (the weakest signal that hasn't moved recently). Higher → finer topic resolution at the cost of memory / JSON size; lower → coarser, more global behaviour.
 
 ### Memory background workers
 

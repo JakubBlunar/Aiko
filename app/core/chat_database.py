@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_SCHEMA_VERSION = 13
+_SCHEMA_VERSION = 14
 
 _CREATE_TABLES = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -337,6 +337,18 @@ CREATE TABLE IF NOT EXISTS user_style_signal (
     signal_json TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+-- K20 metacognitive calibration: per-user JSON blob holding the
+-- global calibration scalar plus a bounded ring of topic slots
+-- (centroid + score + last_signal_at + signal_count). Persisted so
+-- the decay clock advances across restarts. Schema is intentionally
+-- generic so the payload shape can extend without a column
+-- migration. See app/core/calibration_store.py for the blob shape.
+CREATE TABLE IF NOT EXISTS user_calibration_state (
+    user_id TEXT PRIMARY KEY,
+    state_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 # Tables that existed in earlier schemas but are no longer used.
@@ -642,6 +654,13 @@ class ChatDatabase:
                 conn.execute(stmt)
             except sqlite3.OperationalError:
                 pass
+        # v13 -> v14: K20 metacognitive calibration.
+        # ``user_calibration_state`` holds a per-user JSON blob with the
+        # global calibration scalar and a bounded ring of topic slots
+        # (centroid + score + last_signal_at + signal_count). The
+        # ``CREATE TABLE IF NOT EXISTS`` block above already creates the
+        # table on upgrade -- there's nothing to ALTER. The migration
+        # entry exists for the audit trail.
         conn.execute("UPDATE schema_version SET version = ?", (_SCHEMA_VERSION,))
         conn.commit()
 

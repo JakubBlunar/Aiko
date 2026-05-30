@@ -72,7 +72,7 @@ K9 topic-graph browser · K10 persona regression tests ·
 K11 counterfactual cache · K12 calendar-linked anticipation ·
 K15 self-disclosure / vulnerability budget ·
 K19 cold-start companion onboarding ·
-K20 metacognitive calibration · K21 fresh-eyes thread re-summary ·
+K21 fresh-eyes thread re-summary ·
 K23 subtle misattunement detection ·
 K24 sensory anchoring layer · K25 memory confidence time-decay ·
 K26 Aiko-side voice evolution.
@@ -81,7 +81,8 @@ K26 Aiko-side voice evolution.
 K5 mood-shell tilt, K6 novelty detector, K7 forgetting protocol,
 K8 affect rupture-and-repair, K13 stylometric mirror,
 K14 implicit engagement signals, K16 unified ambient grounding line,
-K17 clarification-repair, K18 topic stagnation, and K22 callback /
+K17 clarification-repair, K18 topic stagnation,
+K20 metacognitive calibration, and K22 callback /
 inside-joke detector have shipped — see [`shipped.md`](shipped.md).)
 
 ### P. Performance + observability — [`perf.md`](perf.md)
