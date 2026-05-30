@@ -94,7 +94,15 @@
     "style_tracker_question_rate_threshold": 0.75,
     "style_tracker_avg_questions_threshold": 1.5,
     "style_tracker_length_avg_threshold": 50.0,
-    "style_tracker_cue_cooldown_turns": 5
+    "style_tracker_cue_cooldown_turns": 5,
+    "style_signal_enabled": true,
+    "style_signal_window": 30,
+    "style_signal_warmup_min": 8,
+    "style_signal_terse_threshold": 0.55,
+    "style_signal_formal_threshold": 0.55,
+    "style_signal_emoji_threshold": 0.05,
+    "style_signal_slang_threshold": 0.15,
+    "style_signal_question_threshold": 0.40
   },
   "audio": {
     "sample_rate": 16000,

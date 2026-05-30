@@ -439,6 +439,46 @@ class PostTurnMixin:
                     exc_info=True,
                 )
 
+        # K13 stylometric mirror: feed the user_text into the
+        # analyzer and persist the updated window. Lazy cross-session
+        # warmup happens on the very first record call, only if the
+        # persisted blob didn't already populate the window (fresh
+        # install). Per-turn cost is a few regex scans + a deque
+        # append + a SQLite UPSERT of a small JSON blob.
+        analyzer = getattr(self, "_style_signal_analyzer", None)
+        if analyzer is not None and user_text:
+            try:
+                warmed = bool(getattr(self, "_style_signal_warmed", False))
+                if not warmed and analyzer.window_size() == 0:
+                    try:
+                        recent = self._chat_db.get_messages(
+                            self.session_key, limit=60,
+                        )
+                        history = [
+                            (row.role, row.content) for row in recent
+                        ]
+                        analyzer.warm_from_history(history)
+                    except Exception:
+                        log.debug(
+                            "style signal warm-from-history failed",
+                            exc_info=True,
+                        )
+                    self._style_signal_warmed = True
+                analyzer.record_user_turn(user_text)
+                store = getattr(self, "_style_signal_store", None)
+                if store is not None:
+                    try:
+                        store.upsert(self._user_id, analyzer.to_dict())
+                    except Exception:
+                        log.debug(
+                            "style signal upsert failed", exc_info=True,
+                        )
+            except Exception:
+                log.debug(
+                    "style signal record_user_turn failed",
+                    exc_info=True,
+                )
+
         # Phase 2c: schedule a reflection during TTS playback.
         worker = getattr(self, "_reflection_worker", None)
         if worker is not None:

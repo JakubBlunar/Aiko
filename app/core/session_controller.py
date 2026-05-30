@@ -1169,6 +1169,7 @@ class SessionController(
             novelty=self._render_novelty_block,
             stagnation=self._render_stagnation_block,
             style_pattern=self._render_style_pattern_block,
+            style_signal=self._render_style_signal_block,
             curiosity_seeds=self._render_curiosity_seeds_block,
             grounding_line=self._render_grounding_line,
         )
@@ -2023,6 +2024,47 @@ class SessionController(
                     "AikoStylePatternTracker init failed", exc_info=True,
                 )
                 self._aiko_style_tracker = None
+
+        # K13 stylometric mirror: tracks Jacob's writing style across
+        # recent user turns. Persisted via a tiny JSON-blob table so
+        # the rolling window survives restart; warmed lazily on first
+        # invocation if the persisted blob is missing or empty (one
+        # cheap scan over the latest user messages from chat_db).
+        self._style_signal_analyzer = None
+        self._style_signal_store = None
+        self._style_signal_warmed = False
+        if bool(
+            getattr(settings.agent, "style_signal_enabled", True)
+        ):
+            try:
+                from app.core.style_signal import (
+                    StyleSignalAnalyzer,
+                    StyleSignalStore,
+                )
+
+                self._style_signal_analyzer = StyleSignalAnalyzer(
+                    agent_settings=settings.agent,
+                )
+                self._style_signal_store = StyleSignalStore(self._chat_db)
+                # Restore from persistence eagerly (cheap one-row read);
+                # cross-session warm from chat history happens lazily on
+                # the first post-turn record so a brand-new install
+                # warms naturally instead of doing a full DB scan at
+                # boot.
+                try:
+                    blob = self._style_signal_store.load(self._user_id)
+                    if blob:
+                        self._style_signal_analyzer.from_dict(blob)
+                except Exception:
+                    log.debug(
+                        "style_signal initial load failed", exc_info=True,
+                    )
+            except Exception:
+                log.warning(
+                    "StyleSignalAnalyzer init failed", exc_info=True,
+                )
+                self._style_signal_analyzer = None
+                self._style_signal_store = None
 
         self._proactive = ProactiveDirector(
             self._ollama,

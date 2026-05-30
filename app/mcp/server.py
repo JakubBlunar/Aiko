@@ -691,6 +691,66 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
         return json.dumps(payload, indent=2, default=str)
 
     @mcp.tool()
+    def get_style_signal() -> str:
+        """K13: return the live stylometric mirror snapshot for the user.
+
+        Surfaces what the :class:`StyleSignalAnalyzer` currently sees
+        across recent user turns -- per-axis means (terseness,
+        formality, emoji density, slang density, question rate),
+        the bucketed labels that would render in the prompt, the
+        rolling window size, and a "warmed" flag indicating whether
+        cross-session warmup has run yet.
+
+        Returns ``{"enabled": false}`` when the analyzer is disabled
+        in settings or hasn't been instantiated. Returns a snapshot
+        with ``signal=null`` (and ``rendered=""``) while the window
+        is still in warmup.
+        """
+        analyzer = getattr(session, "_style_signal_analyzer", None)
+        if analyzer is None:
+            return json.dumps({"enabled": False})
+        try:
+            signal = analyzer.current_signal()
+        except Exception as exc:
+            return json.dumps({"error": f"current_signal raised: {exc}"})
+        rendered = ""
+        labels: list[str] = []
+        signal_payload: Any = None
+        if signal is not None:
+            try:
+                labels = analyzer.labels_for_signal(signal)
+            except Exception:
+                labels = []
+            signal_payload = {
+                "terseness": round(float(signal.terseness), 3),
+                "formality": round(float(signal.formality), 3),
+                "emoji_density": round(float(signal.emoji_density), 3),
+                "slang_density": round(float(signal.slang_density), 3),
+                "question_rate": round(float(signal.question_rate), 3),
+                "window_size": int(signal.window_size),
+            }
+            try:
+                from app.core.style_signal import render_inner_life_block
+
+                display_name = getattr(session, "user_display_name", "Jacob")
+                rendered = render_inner_life_block(
+                    signal,
+                    labels,
+                    user_display_name=display_name,
+                )
+            except Exception:
+                rendered = ""
+        payload = {
+            "enabled": True,
+            "warmed": bool(analyzer.is_warmed()),
+            "window_size": int(analyzer.window_size()),
+            "signal": signal_payload,
+            "labels": labels,
+            "rendered": rendered,
+        }
+        return json.dumps(payload, indent=2, default=str)
+
+    @mcp.tool()
     def inspect_idle_workers() -> str:
         """Return per-worker run state from the IdleWorkerScheduler.
 

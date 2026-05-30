@@ -616,6 +616,18 @@ class PromptAssembler:
         # in the system prompt. Dropped in aggressive mode like the
         # other style cues.
         self._style_pattern_provider: Callable[[], str] | None = None
+        # K13 stylometric mirror: tracks Jacob's *own* writing style
+        # (terseness / formality / emoji / slang / question rate)
+        # across recent user turns and surfaces a one-line "How
+        # Jacob writes lately: ..." directive so Aiko's register
+        # stays calibrated across days. Pair of the anti-rut tracker
+        # (which is the Aiko-side half). No args; the post-turn
+        # pipeline updates the analyzer state. Unlike K6/K18 this
+        # block is *always* rendered (including aggressive mode)
+        # because register is the first thing the budget should
+        # preserve. Returns "" during warmup or when every axis is
+        # default.
+        self._style_signal_provider: Callable[[], str] | None = None
         # K9 personality backlog: "Quiet curiosity" inner-life bullet
         # listing 1-2 active curiosity seeds (topics Aiko has been
         # quietly wondering about that haven't come up yet). Cheap
@@ -756,6 +768,7 @@ class PromptAssembler:
         novelty: Callable[[str], str] | None = None,
         stagnation: Callable[[str], str] | None = None,
         style_pattern: Callable[[], str] | None = None,
+        style_signal: Callable[[], str] | None = None,
         curiosity_seeds: Callable[[], str] | None = None,
         grounding_line: Callable[[], str] | None = None,
     ) -> None:
@@ -813,6 +826,8 @@ class PromptAssembler:
             self._stagnation_provider = stagnation
         if style_pattern is not None:
             self._style_pattern_provider = style_pattern
+        if style_signal is not None:
+            self._style_signal_provider = style_signal
         if curiosity_seeds is not None:
             self._curiosity_seeds_provider = curiosity_seeds
         if grounding_line is not None:
@@ -1298,6 +1313,23 @@ class PromptAssembler:
                     log.debug("style_pattern provider raised", exc_info=True)
                     style_pattern_block = ""
 
+        # K13: stylometric mirror. One short "How Jacob writes lately"
+        # line that shapes Aiko's register across days. Unlike the
+        # K6/K18/anti-rut cues this block is intentionally NOT gated
+        # on ``aggressive`` -- if the budget is tight, register is
+        # still the first thing we want to preserve. The provider
+        # already returns "" during warmup or when every axis is
+        # default, so the line costs zero on the common new-user /
+        # neutral-register turn.
+        style_signal_block = ""
+        if self._style_signal_provider is not None:
+            with _timed_phase(provider_ms, "style_signal"):
+                try:
+                    style_signal_block = self._style_signal_provider() or ""
+                except Exception:
+                    log.debug("style_signal provider raised", exc_info=True)
+                    style_signal_block = ""
+
         # K9: "Quiet curiosity" bullet — topics Aiko has been quietly
         # wondering about that haven't come up yet. Sits between the
         # stagnation cue and the knowledge-gap cue so the three
@@ -1430,6 +1462,14 @@ class PromptAssembler:
             system_parts.append(petname_block)
         if profile_block:
             system_parts.append(profile_block)
+        if style_signal_block:
+            # K13: "How Jacob writes lately: terse, casual, asks back
+            # often." Sits next to the profile/relationship cluster
+            # since it's a stable user fact, not a per-turn cue. NOT
+            # gated on aggressive (register shaping is a budget
+            # priority). Empty during warmup or when every axis is
+            # default.
+            system_parts.append(style_signal_block)
         if user_state_block:
             system_parts.append(user_state_block)
         if arc_block:

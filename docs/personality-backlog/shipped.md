@@ -1321,3 +1321,88 @@ so we measure spoken content, not raw model output. Tests:
 firing, the priority order (opener > question > length), per-band
 cooldown rotation, the no-settings-stub path, and the render copy for
 each band.
+
+---
+
+## K13. Stylometric mirror (Jacob-side typing register)
+
+The user-side half of the two-sided style loop. The anti-rut layer
+(above) measures Aiko's own style and tells her to *vary*; K13
+measures Jacob's style and tells her *which way* to vary. The
+persona has always said "match their register" -- before this layer
+that was only ever observed in the live ~10-turn history window so
+the register reset every session. K13 anchors it persistently across
+days. New file:
+[`app/core/style_signal.py`](../../app/core/style_signal.py).
+
+Five-axis rolling-window analyzer mirroring K6/K18 -- pure deque
+plus a few regex scans, no embedder, no LLM. Each axis is normalised
+to ``[0, 1]`` per turn and averaged across the window:
+
+* **terseness** -- `1.0 / (1.0 + words / 8.0)` (smooth saturating
+  function, high = terse, low = chatty)
+* **formality** -- starts capital + ends with sentence-final
+  punctuation, half-credit each
+* **emoji density** -- emojis-per-word, capped at 1.0 (regex covers
+  the common Unicode pictograph ranges)
+* **slang density** -- closed-list casual markers per word
+  (yeah/lol/idk/wanna/gonna/...) lower-cased, word-boundary matched
+* **question rate** -- 1.0 when the turn ends with `?`, else 0.0
+
+Bucketed labels (`terse` / `chatty` / `formal` / `casual` /
+`emoji-heavy` / `slang-heavy` / `asks back often`) feed the prompt
+block:
+
+```
+How Jacob writes lately: terse, casual, asks back often, slang-heavy.
+```
+
+Empty during warmup (< 8 user turns recorded) or when every axis
+sits in the deadzone -- which is the no-signal default, so the
+block costs zero on a neutral-register speaker. Unlike the K6/K18/
+anti-rut cues this block is **always rendered**, including in
+aggressive-mode budget pressure -- register shaping is the first
+thing aggressive mode wants to preserve.
+
+Persistence is a single JSON blob keyed by `user_id` in a new
+`user_style_signal` table (`CREATE TABLE IF NOT EXISTS` migration --
+no column changes needed to extend the schema later). Mirrors the
+[`UserProfileStore`](../../app/core/user_profile.py) pattern via the
+new [`StyleSignalStore`](../../app/core/style_signal.py). On boot
+[`SessionController`](../../app/core/session_controller.py) eagerly
+loads the persisted blob so the rolling window survives restart;
+the lazy `warm_from_history` runs on the very first post-turn record
+only when the persisted blob was empty (fresh install) so we don't
+do a DB scan when we already have state.
+
+Wiring follows the K6/K18 idiom:
+[`InnerLifeProvidersMixin._render_style_signal_block`](../../app/core/session/inner_life_providers_mixin.py)
+reads `analyzer.current_signal()` + `analyzer.labels_for_signal()` and
+renders the line; the new `style_signal` slot on
+[`PromptAssembler.set_inner_life_providers`](../../app/core/prompt_assembler.py)
+clusters the block right after `profile_block` (it's a stable user
+fact, not a per-turn cue);
+[`PostTurnMixin._post_turn_inner_life`](../../app/core/session/post_turn_mixin.py)
+feeds `analyzer.record_user_turn(user_text)` and UPSERTs the blob
+each turn. Persona pairing -- new "How they write" subsection in
+[`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt)
+explains the cue (terse/chatty/casual/formal/slang/emoji/question)
+and the match-don't-narrate rule; sits next to "Reading {user_name}"
+since they're sibling concepts (live affect cue vs stable typing
+register). All thresholds live on
+[`AgentSettings`](../../app/core/settings.py) (`style_signal_*`) and
+in [`config/default.json`](../../config/default.json).
+
+Optional debug tool: a new
+[`get_style_signal()`](../../app/mcp/server.py) MCP tool returns the
+live snapshot (per-axis means, current labels, rendered string,
+warmup state, window size) for live inspection during testing.
+
+Tests:
+[`tests/test_style_signal.py`](../../tests/test_style_signal.py) (35
+cases) covers per-axis feature extraction, bucketing edges (deadzone,
+at-threshold), warmup gate, window roll, cross-session warm
+idempotency, warm-from-history vs sequential equivalence, persistence
+round-trip including malformed-row handling, the `StyleSignalStore`
+SQLite UPSERT round-trip, the no-settings-stub path, and the render
+copy / empty-cases.
