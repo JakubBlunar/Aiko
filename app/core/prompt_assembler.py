@@ -607,6 +607,15 @@ class PromptAssembler:
         # first so K18 can read its ``last_distance`` / ``last_band``
         # off the K6 detector. Dropped in aggressive mode.
         self._stagnation_provider: Callable[[str], str] | None = None
+        # Anti-rut layer: AikoStylePatternTracker watches Aiko's *own*
+        # recent assistant turns and emits an opener / question /
+        # length "Heads-up" cue when one of the bands trips. Provider
+        # takes no args (the post-turn pipeline already pushed the
+        # stripped reply into the tracker on the previous turn).
+        # Sibling of K6/K18 in voice and shape; clusters next to them
+        # in the system prompt. Dropped in aggressive mode like the
+        # other style cues.
+        self._style_pattern_provider: Callable[[], str] | None = None
         # K9 personality backlog: "Quiet curiosity" inner-life bullet
         # listing 1-2 active curiosity seeds (topics Aiko has been
         # quietly wondering about that haven't come up yet). Cheap
@@ -746,6 +755,7 @@ class PromptAssembler:
         belief_gaps: Callable[[], str] | None = None,
         novelty: Callable[[str], str] | None = None,
         stagnation: Callable[[str], str] | None = None,
+        style_pattern: Callable[[], str] | None = None,
         curiosity_seeds: Callable[[], str] | None = None,
         grounding_line: Callable[[], str] | None = None,
     ) -> None:
@@ -801,6 +811,8 @@ class PromptAssembler:
             self._novelty_provider = novelty
         if stagnation is not None:
             self._stagnation_provider = stagnation
+        if style_pattern is not None:
+            self._style_pattern_provider = style_pattern
         if curiosity_seeds is not None:
             self._curiosity_seeds_provider = curiosity_seeds
         if grounding_line is not None:
@@ -1271,6 +1283,21 @@ class PromptAssembler:
                     log.debug("stagnation provider raised", exc_info=True)
                     stagnation_block = ""
 
+        # Anti-rut layer: AikoStylePatternTracker. Watches Aiko's
+        # *own* recent assistant turns and emits an opener / question
+        # / length "Heads-up" cue when she ruts. No args -- the
+        # post-turn pipeline already fed the previous reply's
+        # stripped text into the tracker. Same dropping discipline
+        # as K6/K18 (aggressive mode skips it).
+        style_pattern_block = ""
+        if not aggressive and self._style_pattern_provider is not None:
+            with _timed_phase(provider_ms, "style_pattern"):
+                try:
+                    style_pattern_block = self._style_pattern_provider() or ""
+                except Exception:
+                    log.debug("style_pattern provider raised", exc_info=True)
+                    style_pattern_block = ""
+
         # K9: "Quiet curiosity" bullet — topics Aiko has been quietly
         # wondering about that haven't come up yet. Sits between the
         # stagnation cue and the knowledge-gap cue so the three
@@ -1429,6 +1456,14 @@ class PromptAssembler:
             # warmup, cooldown, post-novelty window, or above-
             # threshold mean).
             system_parts.append(stagnation_block)
+        if style_pattern_block:
+            # Anti-rut layer: a "Heads-up: your last few replies have
+            # all opened with..." / "...all ended on a question" /
+            # "...have been running long" line. Sits next to the
+            # K6/K18 cues since it's the same shape (a noticing cue
+            # Aiko reads and silently corrects on this turn). Empty
+            # on the common no-rut turn.
+            system_parts.append(style_pattern_block)
         if curiosity_seeds_block:
             # K9: "Quiet curiosity" — at-most-two topics Aiko has
             # been wondering about that haven't come up yet. Sits

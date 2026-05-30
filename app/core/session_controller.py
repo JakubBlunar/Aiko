@@ -590,7 +590,25 @@ class SessionController(
             self._prosody = ProsodyDispatcher(
                 self._tts.enqueue,
                 enabled=bool(settings.agent.cadence_enabled),
+                earcon_auto_sprinkle=bool(
+                    getattr(settings.agent, "earcon_auto_sprinkle", True),
+                ),
             )
+            # Layer 2: real timed pauses. Wire the queue-side
+            # silence provider so the cadence dispatcher's
+            # ``ProsodyParams.pause_*_ms`` produce actual silent PCM
+            # gaps instead of just punctuation rewrites.
+            try:
+                self._prosody.set_silence_provider(self._tts.enqueue_silence)
+            except Exception:
+                log.debug("silence provider wire failed", exc_info=True)
+            # Layer 4: auto-sprinkle soft breath / sigh on opener
+            # sentences of sad turns. Same earcon path the LLM uses
+            # for inline ``[[breath]]`` etc. — just driven by cadence.
+            try:
+                self._prosody.set_earcon_provider(self._tts.enqueue_earcon)
+            except Exception:
+                log.debug("earcon provider wire failed", exc_info=True)
         except Exception:
             log.warning("ProsodyDispatcher init failed", exc_info=True)
             self._prosody = None
@@ -1150,6 +1168,7 @@ class SessionController(
             belief_gaps=self._render_belief_gaps_block,
             novelty=self._render_novelty_block,
             stagnation=self._render_stagnation_block,
+            style_pattern=self._render_style_pattern_block,
             curiosity_seeds=self._render_curiosity_seeds_block,
             grounding_line=self._render_grounding_line,
         )
@@ -1425,6 +1444,49 @@ class SessionController(
                             exc_info=True,
                         )
                         self._idle_curiosity = None
+
+                # F2.1: IdleGapResolver. Closes ``knowledge_gap`` rows
+                # whose answer is already living in the memory store as
+                # a ``preference`` / ``fact`` / etc. Without this, the
+                # gap-injection block re-asks the same question every
+                # time the topic recurs because nothing else marks
+                # such gaps resolved (F1 only resolves via fresh web
+                # search). Failure is non-fatal — the journal stays
+                # readable, gaps just won't auto-close.
+                self._idle_gap_resolver = None
+                if (
+                    self._memory_store is not None
+                    and self._knowledge_gap_store is not None
+                    and bool(
+                        getattr(
+                            settings.agent, "gap_resolver_enabled", True,
+                        )
+                    )
+                ):
+                    try:
+                        from app.core.idle_gap_resolver import (
+                            IdleGapResolver,
+                        )
+
+                        self._idle_gap_resolver = IdleGapResolver(
+                            memory_store=self._memory_store,
+                            gap_store=self._knowledge_gap_store,
+                            agent_settings=settings.agent,
+                            memory_settings=self._memory_settings,
+                            cancel_event=self._fact_check_cancel,
+                            notify_memory_updated=(
+                                self._notify_memory_updated
+                            ),
+                        )
+                        self._idle_scheduler.register(
+                            self._idle_gap_resolver,
+                        )
+                    except Exception:
+                        log.warning(
+                            "IdleGapResolver boot failed",
+                            exc_info=True,
+                        )
+                        self._idle_gap_resolver = None
 
                 # K9: TopicGraph + CuriositySeedWorker. The graph is a
                 # zero-cost wrapper around the in-process memory mirror;
@@ -1936,6 +1998,31 @@ class SessionController(
                     "TopicStagnationDetector init failed", exc_info=True,
                 )
                 self._topic_stagnation_detector = None
+
+        # Anti-rut layer: AikoStylePatternTracker watches Aiko's *own*
+        # recent assistant turns for opener / question / length ruts
+        # and surfaces a soft "Heads-up" inner-life cue when one of
+        # the bands trips. Sibling architecture to K6/K18; cheap pure
+        # rolling-window detector (no embedder, no LLM). Per-band
+        # cooldowns plus the in-prompt cue let the rut self-correct
+        # over a few turns instead of recurring forever.
+        self._aiko_style_tracker = None
+        if bool(
+            getattr(settings.agent, "style_tracker_enabled", True)
+        ):
+            try:
+                from app.core.aiko_style_tracker import (
+                    AikoStylePatternTracker,
+                )
+
+                self._aiko_style_tracker = AikoStylePatternTracker(
+                    agent_settings=settings.agent,
+                )
+            except Exception:
+                log.warning(
+                    "AikoStylePatternTracker init failed", exc_info=True,
+                )
+                self._aiko_style_tracker = None
 
         self._proactive = ProactiveDirector(
             self._ollama,
@@ -4260,6 +4347,50 @@ class SessionController(
                 set_length(length_scale)
             except Exception:
                 log.debug("tts engine rejected length scale", exc_info=True)
+        # Layer 1c gate: opt-in per-reaction temperature deltas.
+        # Default OFF -- Pocket-TTS is sensitive enough to temperature
+        # excursions that even small per-reaction deltas can introduce
+        # pitch / timbre artefacts on the active voice. The user
+        # opts in via ``agent.tts_runtime_temp_enabled`` once a
+        # voice has been validated.
+        runtime_temp_enabled = bool(
+            getattr(self._settings.agent, "tts_runtime_temp_enabled", False),
+        )
+        set_runtime_temp = getattr(
+            self._tts_engine, "set_runtime_temp_enabled", None,
+        )
+        if callable(set_runtime_temp):
+            try:
+                set_runtime_temp(runtime_temp_enabled)
+            except Exception:
+                log.debug(
+                    "tts engine rejected runtime temp toggle",
+                    exc_info=True,
+                )
+        # Layer 5 gate: opt-in per-reaction speed jitter.
+        # Default OFF -- Pocket-TTS scales playback ``sample_rate`` to
+        # change speed, which couples speed and pitch. With per-
+        # reaction sub-caps active, that pitch couples to the affect
+        # channel and the user perceives "her voice keeps changing"
+        # between sentences. The user opts in via
+        # ``agent.tts_runtime_speed_enabled`` once a voice has been
+        # validated.
+        runtime_speed_enabled = bool(
+            getattr(
+                self._settings.agent, "tts_runtime_speed_enabled", False,
+            ),
+        )
+        set_runtime_speed = getattr(
+            self._tts_engine, "set_runtime_speed_enabled", None,
+        )
+        if callable(set_runtime_speed):
+            try:
+                set_runtime_speed(runtime_speed_enabled)
+            except Exception:
+                log.debug(
+                    "tts engine rejected runtime speed toggle",
+                    exc_info=True,
+                )
 
     def _trace(self, stage: str, message: str) -> None:
         from datetime import datetime, timezone

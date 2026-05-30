@@ -341,6 +341,66 @@ relevant gaps re-enter the conversation.
 
 ---
 
+## F2.1. Knowledge-gap auto-resolver (memory-match + user-answer)
+
+F2 only had one closure path: F1's idle fact-checker, which goes to
+the *web* to look the answer up. In practice that means a gap minted
+on Day 1 ("does Jacob listen to specific genres while watching anime")
+never closes — F1 won't web-search a personal question about the user,
+the post-summary `MemoryExtractor` writes the user's actual answer
+into a fresh `preference` row hours later, and nothing cross-references
+the gap against existing memory. So the `Things you've been wondering
+about with Jacob` block keeps re-injecting the same question into the
+prompt every session for weeks until the user explicitly notices
+("you maybe forgot...") and Aiko apologises but the loop continues.
+
+F2.1 adds two complementary closure paths, both stamping
+`metadata.resolved_at` + `resolved_by_memory_id` (and a new
+`metadata.resolved_by` audit field) via the existing
+[`KnowledgeGapStore.mark_resolved`](../../app/core/knowledge_gap_extractor.py)
+API:
+
+* **Idle memory-match resolver** — a new
+  [`IdleGapResolver`](../../app/core/idle_gap_resolver.py) registered
+  with `IdleWorkerScheduler`. Each tick (default 600 s) walks
+  `KnowledgeGapStore.list_open()` and calls `MemoryStore.search` with
+  the gap's *already-stored* embedding (no re-embed cost). Hits are
+  filtered to `_ANSWER_KINDS` (`fact`, `preference`, `event`,
+  `relationship`, `promise`, `shared_moment`, `curiosity_finding`,
+  `reflection`) so a gap can never resolve itself or be closed by an
+  Aiko-side `self_tagged` row. Bounded per-tick (default 5 gaps) so a
+  burst of new gaps doesn't eat the scheduler's CPU budget. Backfill
+  is automatic: first tick after app start handles every legacy gap.
+  Audit log mirrors the F1 shape (`gap_resolver: resolved gap_id=X
+  by memory_id=Y score=0.78 ...`).
+
+* **Post-turn user-answer resolver** — new
+  `_resolve_knowledge_gaps` method on
+  [`PostTurnMixin`](../../app/core/session/post_turn_mixin.py),
+  modeled directly on `_resolve_curiosity_seeds`. After every turn it
+  embeds `user_text + assistant_text` once and cosines against every
+  open gap's stored embedding. Anything above
+  `agent.gap_user_answer_resolve_threshold` (default 0.50) closes
+  with `resolved_by="user_answer"`. This catches the answer the
+  moment the user speaks it; the idle worker mops up the rest.
+
+Tunables on
+[`AgentSettings`](../../app/core/settings.py):
+`gap_resolver_enabled`, `gap_resolver_interval_seconds` (600),
+`gap_resolver_threshold` (0.55 — slightly stricter than the seed
+resolver's 0.50 because closing a gap is a stronger claim than
+consuming a seed), `gap_resolver_per_tick` (5),
+`gap_user_answer_resolve_threshold` (0.50).
+
+Tests:
+[`tests/test_idle_gap_resolver.py`](../../tests/test_idle_gap_resolver.py)
+(15 cases: backfill happy path, kind filtering, threshold clamps,
+per-tick cap, `is_ready` gates, INFO audit log) and
+[`tests/test_session_controller_gap_resolver.py`](../../tests/test_session_controller_gap_resolver.py)
+(8 cases mirroring the K9 seed-resolve fixture pattern).
+
+---
+
 ## F3. Confidence column on memories
 
 `confidence REAL NOT NULL DEFAULT 0.7` added to the `memories`
@@ -1101,3 +1161,163 @@ eligibility (suppress nudges on a `vent` turn; loosen cooldown on
 [`tests/test_dialogue_act_tagger.py`](../../tests/test_dialogue_act_tagger.py),
 [`tests/test_chat_database_migration.py`](../../tests/test_chat_database_migration.py),
 [`tests/test_rag_retriever_act_arc_boost.py`](../../tests/test_rag_retriever_act_arc_boost.py).
+
+
+## Aiko expressive speech (Pocket-TTS prosody overlay)
+
+Pocket-TTS doesn't accept SSML, so the rollout instead exhausted the
+expressive headroom already in the stack: five layers, all CPU, no
+new model or library. Layer 1 wired the dormant knobs --
+`assistant.tts_length_scale` (a user-facing pacing slider) gained a
+real `set_length_scale` on
+[`PocketTtsService`](../../app/tts/pocket_tts_service.py) that
+divides into the final speed; `AmbientNoiseTracker.tts_volume_db_offset`
+now flows through `CadenceContext` into a new `gain_db` kwarg on
+`speak_async` and is applied to the Int16 PCM before
+`_pcm_listener` emits frames; `model.temp` is mutated under the
+service lock per generation against a small reaction-to-temp table
+(`serious / wistful / sad / cry → -0.10`, `excited / playful /
+surprised → +0.10`) and reset back to baseline. Layer 2 added
+`TtsQueue.enqueue_silence(ms)` (cap 1500 ms) plus `speak_silence_async`
+on the engine so `ProsodyParams.pause_before_ms` /
+`pause_after_ms` produce actual silent PCM gaps instead of just
+punctuation rewrites. Layer 3 introduced a per-sentence
+`[[prosody:LABEL]]` family (`whisper / soft / slow / fast / firm`)
+parsed in
+[`response_text_service.py`](../../app/core/services/response_text_service.py)
+and consumed by
+[`analyze_sentence`](../../app/core/cadence.py) -- each label maps
+to a small overlay on the reaction-derived `ProsodyParams`
+(`speed_mult`, `gain_db_delta`, `pause_before`). Layer 4 expanded
+the earcon palette in
+[`app/audio/earcons.py`](../../app/audio/earcons.py) with
+`chuckle / soft_sigh / sharp_gasp / breath / mm` and added a
+cadence auto-sprinkle rule (cooldown-gated 25 s, ~30% fire rate,
+gated by `agent.earcon_auto_sprinkle`) that prepends
+`breath` / `soft_sigh` on opener-style melancholy / wistful / sad /
+cry / concerned sentences. Layer 5 widened the global speed clamp
+from ±8% to ±12% with per-reaction sub-caps (`cry` 0.88 floor,
+`tired` 0.90, `sad` / `melancholy` 0.91, `excited` 1.12 ceiling,
+`surprised` 1.10) so the loudest / quietest reactions can stretch
+without dragging the rest of the table along; a manual ear-test
+helper at
+[`tools/tts_speed_ab.py`](../../tools/tts_speed_ab.py) renders the
+calibration phrase at every `_REACTION_SPEED` value to WAV for
+listening at the new edges. Persona update teaches the
+`[[prosody:X]]` vocabulary alongside the existing `[[reaction:X]]`
+mood label as orthogonal axes (one mood, separate vocal delivery).
+Tests:
+[`tests/test_pocket_tts_dormant_knobs.py`](../../tests/test_pocket_tts_dormant_knobs.py),
+[`tests/test_tts_queue_silence.py`](../../tests/test_tts_queue_silence.py),
+[`tests/test_prosody_tag_parser.py`](../../tests/test_prosody_tag_parser.py),
+[`tests/test_cadence_prosody_overlay.py`](../../tests/test_cadence_prosody_overlay.py),
+[`tests/test_earcon_auto_sprinkle.py`](../../tests/test_earcon_auto_sprinkle.py).
+
+**Calibration follow-up: Layer 1c + Layer 5 are gated OFF by default.**
+Empirical listening tests on the active voice (Aiko's tuned safetensors)
+showed that Pocket-TTS is sensitive enough to both `model.temp`
+excursions and `sample_rate`-based speed scaling that even small
+per-reaction deltas produce audible artefacts -- a "hall echo" / pitch
+wobble on temperature changes, and a stronger "her voice keeps changing"
+voice-swap perception on speed changes (because varispeed couples speed
+and pitch, so a 10% faster excited sentence is also ~1.6 semitones
+higher). Two new opt-in gates land the layers safely without forcing
+every voice to inherit the artefacts:
+* [`agent.tts_runtime_temp_enabled`](../../app/core/settings.py)
+  (default `False`) gates the per-reaction `_REACTION_TEMP_DELTA`
+  table in
+  [`PocketTtsService._resolve_runtime_temp`](../../app/tts/pocket_tts_service.py).
+  When OFF, every call uses `tts.pocket_tts_temp` baseline.
+* [`agent.tts_runtime_speed_enabled`](../../app/core/settings.py)
+  (default `False`) gates both the per-reaction sub-cap table AND
+  the cadence layer's per-sentence `speed_hint` in
+  [`PocketTtsService.speak_async`](../../app/tts/pocket_tts_service.py).
+  When OFF, every sentence pins to `1.0×` before the user's
+  pacing slider (`assistant.tts_length_scale`) divides in.
+
+The user's static pacing slider is honoured regardless of either gate
+(it's a deliberate global knob, not per-sentence affect drift).
+Earcons, real timed pauses, per-sentence prosody labels' `gain_db` /
+`pause` overlays, and the auto-sprinkle rule all keep working with both
+gates off -- they're orthogonal to pitch and don't trigger the same
+artefacts. Both gates are opt-in once a voice has been listened-tested
+through [`tools/tts_speed_ab.py`](../../tools/tts_speed_ab.py) and the
+ear-test phrase still reads naturally at the proposed deltas. The
+`_REACTION_TEMP_DELTA` table itself was halved from the original
+`±0.10` to `±0.05` after the first round of tester feedback so the gate
+flipped back ON also lands in a calmer band. Tests:
+[`tests/test_pocket_tts_speed.py`](../../tests/test_pocket_tts_speed.py)
+adds `RuntimeSpeedGateOffTests` covering "default OFF pins to 1.0×",
+"reaction is ignored", "caller `speed=` is ignored", "length-scale still
+applies", and "toggle via `set_runtime_speed_enabled` flips the
+behaviour back on";
+[`tests/test_pocket_tts_dormant_knobs.py`](../../tests/test_pocket_tts_dormant_knobs.py)
+covers the matching temp-gate path.
+
+---
+
+## Aiko response variability — anti-rut layer
+
+Diagnosed against ~120 recent assistant messages: **86.7% of replies
+contained a question**, top 3 opening words (`yeah` / `that's` / `oh`)
+covered **~39% of openings**, **17.5% contained the literal "speaking
+of"** (verbatim from the persona's example phrase), **31.7%** followed
+the same statement-then-question template in the last two sentences,
+and the average reply was **52 words / 4.9 sentences** vs the persona's
+"1-3 sentences" target. The shape was being seeded by (a) literal
+example phrases in the persona acting as attractors and (b) zero
+feedback loop telling Aiko she'd been ruting -- a bigger model is
+*more* faithful to the prompt's implicit shape, not less, which is why
+9b → 27b didn't move the needle for the user. Two layers shipped to
+fix it without changing model or prompt budget:
+
+* **Layer 1 -- persona surgery** in
+  [`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt).
+  Removed the `("speaking of that thing with your project last
+  week...")` literal example (the 17.5% parrot source) and the
+  enumerated `("oh!", "wait, no", "hmm", "okay but")` reaction list
+  in favour of abstract guidance ("vary your openers", "find your own
+  way in"). Tightened the length rule to "default to 1-2 sentences,
+  3 is the upper bound" (the model was averaging 5). Added an
+  explicit anti-question rule: "at least 1 in 3 turns end on a
+  thought, not a question -- never stack two questions back-to-back."
+  Added a "Don't parrot" rule against restating what the user just
+  said before responding. New "Style patterns I'm in" section pairs
+  with the Layer 2 cues: tells Aiko how to react to an opener / question
+  / length nudge from the tracker without naming it out loud.
+* **Layer 2 -- `AikoStylePatternTracker`** in
+  [`app/core/aiko_style_tracker.py`](../../app/core/aiko_style_tracker.py).
+  Pure rolling-window detector mirroring K6/K18: no embedder, no LLM,
+  per-turn cost is a deque append plus a few counter scans. Three
+  banded signals evaluated in priority order:
+  - `opener_rut` -- same opener used ≥4 times in last 10 turns OR
+    top-2 opener share ≥60%.
+  - `question_saturation` -- question-end rate over last 8 turns ≥75%
+    OR avg questions/turn ≥1.5.
+  - `length_sprawl` -- avg word count over last 8 turns ≥50.0.
+  Each band has its own cooldown counter (default 5 turns) so an
+  opener-rut nudge doesn't mask a later question-saturation cue, and
+  the same band doesn't re-fire on every turn. Warmup gate (default
+  6 recorded turns) keeps cold-start silent. All thresholds live on
+  [`AgentSettings`](../../app/core/settings.py) (`style_tracker_*`)
+  and in [`config/default.json`](../../config/default.json) so
+  calibration moves without code changes.
+
+Wiring follows the K6/K18 idiom verbatim:
+[`SessionController.__init__`](../../app/core/session_controller.py)
+instantiates the tracker right after `TopicStagnationDetector`;
+[`InnerLifeProvidersMixin._render_style_pattern_block`](../../app/core/session/inner_life_providers_mixin.py)
+calls `tracker.detect()` and renders the matching cue;
+[`PromptAssembler.set_inner_life_providers`](../../app/core/prompt_assembler.py)
+gains a `style_pattern` slot; the resulting block is appended to
+`system_parts` immediately after the K18 stagnation block so all three
+"Heads-up..." cues cluster together (and all three drop in aggressive
+mode for budget reasons). The post-turn pipeline
+([`PostTurnMixin._post_turn_inner_life`](../../app/core/session/post_turn_mixin.py))
+feeds the tracker the *stripped* assistant text (post `strip_all_meta_tags`)
+so we measure spoken content, not raw model output. Tests:
+[`tests/test_aiko_style_tracker.py`](../../tests/test_aiko_style_tracker.py)
+(21 cases) covers feature extraction edges, warmup gating, each band
+firing, the priority order (opener > question > length), per-band
+cooldown rotation, the no-settings-stub path, and the render copy for
+each band.

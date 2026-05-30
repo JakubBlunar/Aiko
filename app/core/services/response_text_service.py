@@ -255,6 +255,12 @@ def strip_correction_for_tts(text: str) -> str:
 # to re-thread the parser later.
 STAGE_DIRECTION_KINDS: tuple[str, ...] = (
     "laugh", "sigh", "gasp", "hum", "tsk",
+    # Layer 4: expanded palette (chuckle / soft_sigh / sharp_gasp /
+    # breath / mm). The synth recipes live in :mod:`app.audio.earcons`;
+    # the cadence layer auto-sprinkles ``breath`` / ``soft_sigh`` on
+    # opening melancholy / wistful / sad sentences but the LLM can
+    # still emit any of them inline via ``[[chuckle]]`` etc.
+    "chuckle", "soft_sigh", "sharp_gasp", "breath", "mm",
 )
 _STAGE_DIRECTION_PATTERN = re.compile(
     r"\[\[(" + "|".join(STAGE_DIRECTION_KINDS) + r")\]\]",
@@ -285,6 +291,72 @@ _MOMENT_OPEN_TAIL_PATTERN = re.compile(
     r"\[\[moment:[^\]]*\Z",
     flags=re.IGNORECASE,
 )
+
+# Layer 3 (expressive speech): [[prosody:NAME]] — per-sentence vocal
+# delivery tag, orthogonal to [[reaction:X]] (mood label) and the
+# stage-direction earcons. Five values for v1: ``whisper``, ``soft``,
+# ``slow``, ``fast``, ``firm``. Each maps to a small overlay applied
+# by :class:`app.core.cadence.ProsodyDispatcher` (speed multiplier +
+# gain dB + sometimes a pause hint). Leading position in the
+# sentence wins; trailing tags are still stripped from chat / TTS by
+# :func:`strip_all_meta_tags` so a misplaced tag never leaks audio.
+PROSODY_TAG_VALUES: tuple[str, ...] = (
+    "whisper", "soft", "slow", "fast", "firm",
+)
+_PROSODY_TAG_PATTERN = re.compile(
+    r"\[\[prosody:(?P<label>[a-z_]+)\]\]",
+    flags=re.IGNORECASE,
+)
+_PROSODY_LEADING_PATTERN = re.compile(
+    r"^\s*\[\[prosody:(?P<label>[a-z_]+)\]\]\s*",
+    flags=re.IGNORECASE,
+)
+_PROSODY_OPEN_TAIL_PATTERN = re.compile(
+    r"\[\[prosody:[^\]]*\Z",
+    flags=re.IGNORECASE,
+)
+
+
+def parse_prosody_tag(text: str) -> str | None:
+    """Return the leading ``[[prosody:LABEL]]`` value (if any).
+
+    The cadence dispatcher consumes this as a per-sentence overlay
+    on top of the reaction-derived ``ProsodyParams``. Single-valued
+    per sentence -- a sentence can carry at most one prosody tag,
+    and only when the tag is at the *start* of the sentence (a
+    middle-of-the-sentence tag still gets stripped by
+    :func:`strip_all_meta_tags` but doesn't drive prosody, mirroring
+    the leading-tag idiom of :func:`parse_reaction_at_start`).
+
+    Returns the lowercased label when valid, else ``None``.
+    """
+    source = str(text or "")
+    match = _PROSODY_LEADING_PATTERN.match(source)
+    if not match:
+        return None
+    label = (match.group("label") or "").strip().lower()
+    if not label or label not in PROSODY_TAG_VALUES:
+        return None
+    return label
+
+
+def consume_leading_prosody_tag(text: str) -> tuple[str | None, str]:
+    """Strip the leading ``[[prosody:LABEL]]`` from ``text``.
+
+    Returns ``(label_or_None, remainder)``. Used by the cadence
+    dispatcher: consume the leading tag, route it through the
+    overlay table, then dispatch the remainder as the spoken
+    sentence. A non-leading or malformed tag returns
+    ``(None, text)`` and is dropped only by
+    :func:`strip_all_meta_tags` later in the pipeline.
+    """
+    label = parse_prosody_tag(text)
+    if label is None:
+        return None, str(text or "")
+    source = str(text or "")
+    rest = _PROSODY_LEADING_PATTERN.sub("", source, count=1)
+    return label, rest
+
 
 # H1: [[arc:NAME]] — Aiko's optional self-tag of the conversation arc
 # (one of the six values in :data:`app.core.conversation_arc.VALID_ARCS`).
@@ -591,6 +663,13 @@ def strip_all_meta_tags(text: str) -> str:
     # H1: same treatment for [[arc:NAME]] self-tags.
     s = _ARC_TAG_PATTERN.sub("", s)
     s = _ARC_OPEN_TAIL_PATTERN.sub("", s)
+    # Layer 3: per-sentence [[prosody:LABEL]] vocal-delivery tags.
+    # The leading tag at sentence start has already been consumed by
+    # :func:`consume_leading_prosody_tag` upstream and routed into the
+    # cadence overlay; this strip catches misplaced / trailing tags
+    # so they don't reach TTS or the chat transcript.
+    s = _PROSODY_TAG_PATTERN.sub("", s)
+    s = _PROSODY_OPEN_TAIL_PATTERN.sub("", s)
     # F2: same treatment for [[gap:topic:question]].
     s = _GAP_TAG_PATTERN.sub("", s)
     s = _GAP_OPEN_TAIL_PATTERN.sub("", s)
@@ -681,6 +760,11 @@ _META_OPENERS = (
     "[[gasp]]",
     "[[hum]]",
     "[[tsk]]",
+    "[[chuckle]]",
+    "[[soft_sigh]]",
+    "[[sharp_gasp]]",
+    "[[breath]]",
+    "[[mm]]",
     "[[correct]]",
     "[[/correct]]",
     "[[overlay:",
@@ -691,6 +775,7 @@ _META_OPENERS = (
     "[[gap:",
     "[[conflict:",
     "[[predict:",
+    "[[prosody:",
 )
 
 
@@ -724,6 +809,8 @@ def _looks_like_partial_opener(suffix: str) -> bool:
     if lowered.startswith("[[gap:") and "]]" not in lowered:
         return True
     if lowered.startswith("[[conflict:") and "]]" not in lowered:
+        return True
+    if lowered.startswith("[[prosody:") and "]]" not in lowered:
         return True
     # Mid-tag like ``[[d`` / ``[[de`` / ``[[s`` etc.
     if lowered.startswith("[["):

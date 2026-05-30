@@ -56,12 +56,16 @@ class TtsQueue:
         self._earcon_player = earcon_player
         self._lock = threading.Lock()
         # Each pending entry is a tuple whose first element is the
-        # *kind* of chunk ("text" | "earcon"), enabling a single
-        # serialised pipeline that interleaves both. For "text" the
-        # rest of the tuple is (content, reaction, speed). For "earcon"
-        # only the kind name is meaningful (content holds the earcon
-        # name, reaction/speed are ignored).
-        self._pending: list[tuple[str, str, str | None, float | None]] = []
+        # *kind* of chunk ("text" | "earcon" | "silence"), enabling a
+        # single serialised pipeline that interleaves all three. For
+        # "text" the rest of the tuple is (content, reaction, speed,
+        # gain_db). For "earcon" only the kind name is meaningful
+        # (content holds the earcon name, the other slots are unused).
+        # For "silence" ``content`` is the duration in milliseconds
+        # (string) and the other slots are unused.
+        self._pending: list[
+            tuple[str, str, str | None, float | None, float]
+        ] = []
         self._playing = False
         self._session_started_at: float | None = None
         self._chunks_played = 0
@@ -84,6 +88,8 @@ class TtsQueue:
         text: str,
         reaction: str | None = None,
         speed: float | None = None,
+        *,
+        gain_db: float = 0.0,
     ) -> None:
         """Queue ``text`` for spoken playback (sanitised internally).
 
@@ -91,14 +97,63 @@ class TtsQueue:
         backend uses its reaction-derived default
         (:meth:`PocketTtsService.reaction_to_speed`); when provided the
         backend clamps it to its own safe range.
+
+        ``gain_db`` (Layer 1b / Layer 3) is a per-chunk dB offset
+        forwarded straight to ``speak_async``. Positive boosts;
+        negative attenuates. Backends that don't accept the kwarg
+        gracefully ignore it via the ``TypeError`` rungs in
+        :meth:`_start_chunk`.
         """
         if not self._enabled:
             return
         cleaned = prepare_tts_text((text or "").strip())
         if not cleaned:
             return
+        try:
+            gain_value = float(gain_db)
+        except (TypeError, ValueError):
+            gain_value = 0.0
         with self._lock:
-            self._pending.append(("text", cleaned, reaction, speed))
+            self._pending.append(
+                ("text", cleaned, reaction, speed, gain_value),
+            )
+            if self._playing:
+                return
+            self._playing = True
+            chunk = self._pending.pop(0)
+        self._dispatch(chunk)
+
+    # Layer 2: real timed pauses. The cadence layer already produces
+    # ``ProsodyParams.pause_before_ms`` / ``pause_after_ms`` but the
+    # legacy implementation only rewrote punctuation (an ``…`` instead
+    # of a ``.``). This path emits actual silent PCM frames so a
+    # "let me think... about that" beat lands as a real wall-clock gap.
+    # Capped to keep a runaway pause from holding the queue forever.
+    _SILENCE_MAX_MS: int = 1500
+
+    def enqueue_silence(self, ms: int) -> None:
+        """Queue ``ms`` milliseconds of silent playback at the current tail.
+
+        Behaves like :meth:`enqueue_earcon` -- serial with text and
+        earcon items, advances the queue once the silence completes.
+        Backends that don't support ``speak_silence_async`` fall back
+        to a wall-clock sleep so the queue still paces correctly. Use
+        this instead of rewriting punctuation when the cadence layer
+        wants a real pause.
+        """
+        if not self._enabled:
+            return
+        try:
+            duration = int(ms)
+        except (TypeError, ValueError):
+            return
+        if duration <= 0:
+            return
+        duration = min(self._SILENCE_MAX_MS, duration)
+        with self._lock:
+            self._pending.append(
+                ("silence", str(duration), None, None, 0.0),
+            )
             if self._playing:
                 return
             self._playing = True
@@ -120,7 +175,9 @@ class TtsQueue:
             return
         cleaned_kind = (kind or "").strip().lower()
         with self._lock:
-            self._pending.append(("earcon", cleaned_kind, None, None))
+            self._pending.append(
+                ("earcon", cleaned_kind, None, None, 0.0),
+            )
             if self._playing:
                 return
             self._playing = True
@@ -147,7 +204,7 @@ class TtsQueue:
     # ── internal ──────────────────────────────────────────────────────────
 
     def _on_chunk_done(self) -> None:
-        next_chunk: tuple[str, str, str | None, float | None] | None = None
+        next_chunk: tuple[str, str, str | None, float | None, float] | None = None
         with self._lock:
             self._playing = False
             self._chunks_played += 1
@@ -161,13 +218,52 @@ class TtsQueue:
 
     def _dispatch(
         self,
-        chunk: tuple[str, str, str | None, float | None],
+        chunk: tuple[str, str, str | None, float | None, float],
     ) -> None:
-        kind, content, reaction, speed = chunk
+        kind, content, reaction, speed, gain_db = chunk
         if kind == "earcon":
             self._start_earcon(content)
             return
-        self._start_chunk(content, reaction, speed)
+        if kind == "silence":
+            try:
+                duration_ms = int(content)
+            except (TypeError, ValueError):
+                duration_ms = 0
+            self._start_silence(duration_ms)
+            return
+        self._start_chunk(content, reaction, speed, gain_db=gain_db)
+
+    def _start_silence(self, ms: int) -> None:
+        """Layer 2: emit ``ms`` of silent PCM via the engine, then
+        advance the queue. Engines without ``speak_silence_async``
+        fall back to a daemon thread that sleeps and fires
+        ``_on_chunk_done`` -- preserves queue ordering even on bare
+        backends.
+        """
+        if ms <= 0:
+            self._on_chunk_done()
+            return
+        self._notify("start", {"text": "", "reaction": "silence", "ms": ms})
+        speak_silence = getattr(self._tts, "speak_silence_async", None)
+        if callable(speak_silence):
+            try:
+                speak_silence(int(ms), on_done=self._on_chunk_done)
+                return
+            except Exception:
+                log.debug("tts speak_silence_async failed", exc_info=True)
+        # Fall back to a wall-clock sleep so timing still lines up.
+
+        def _sleep_worker() -> None:
+            try:
+                time.sleep(int(ms) / 1000.0)
+            finally:
+                self._on_chunk_done()
+
+        threading.Thread(
+            target=_sleep_worker,
+            daemon=True,
+            name="tts-silence-fallback",
+        ).start()
 
     def _start_earcon(self, kind: str) -> None:
         """Play a stage-direction earcon synchronously on a worker
@@ -197,6 +293,8 @@ class TtsQueue:
         text: str,
         reaction: str | None,
         speed: float | None = None,
+        *,
+        gain_db: float = 0.0,
     ) -> None:
         # Spawn lookahead synth for the *next* chunk if the backend supports
         # offline generation — keeps latency low across multi-sentence
@@ -207,7 +305,7 @@ class TtsQueue:
             peek = self._pending[0] if self._pending else None
         if peek is not None and peek[0] == "text" and callable(generate):
             r2s = getattr(self._tts, "reaction_to_speed", None)
-            _, peek_text, peek_reaction, peek_speed = peek
+            _, peek_text, peek_reaction, peek_speed, _peek_gain = peek
             speed_for_lookahead = peek_speed if peek_speed is not None else (
                 r2s(peek_reaction) if callable(r2s) else 1.0
             )
@@ -223,8 +321,20 @@ class TtsQueue:
         try:
             # Backends that accept ``speed`` get the per-chunk override;
             # legacy backends (no kwarg) are called without it and fall
-            # back to their reaction-derived speed. The two TypeError
-            # rungs let us walk back gracefully.
+            # back to their reaction-derived speed. The TypeError rungs
+            # walk back gracefully across (gain_db?) -> (speed?) -> bare.
+            try:
+                self._tts.speak_async(
+                    text,
+                    reaction=reaction,
+                    on_done=self._on_chunk_done,
+                    on_amplitude=amplitude_cb,
+                    speed=speed,
+                    gain_db=float(gain_db),
+                )
+                return
+            except TypeError:
+                pass
             try:
                 self._tts.speak_async(
                     text,
@@ -233,20 +343,22 @@ class TtsQueue:
                     on_amplitude=amplitude_cb,
                     speed=speed,
                 )
+                return
             except TypeError:
-                try:
-                    self._tts.speak_async(
-                        text,
-                        reaction=reaction,
-                        on_done=self._on_chunk_done,
-                        on_amplitude=amplitude_cb,
-                    )
-                except TypeError:
-                    self._tts.speak_async(
-                        text,
-                        reaction=reaction,
-                        on_done=self._on_chunk_done,
-                    )
+                pass
+            try:
+                self._tts.speak_async(
+                    text,
+                    reaction=reaction,
+                    on_done=self._on_chunk_done,
+                    on_amplitude=amplitude_cb,
+                )
+            except TypeError:
+                self._tts.speak_async(
+                    text,
+                    reaction=reaction,
+                    on_done=self._on_chunk_done,
+                )
         except Exception as exc:
             log.warning("tts speak_async failed: %s", exc)
             with self._lock:

@@ -105,12 +105,113 @@ def _stage_tsk() -> "np.ndarray":
     return noise
 
 
+# ── Layer 4: expanded palette ──────────────────────────────────────────
+
+
+def _stage_chuckle() -> "np.ndarray":
+    """A two-burst lighter laugh, smaller pitch range than ``laugh``.
+
+    Sits at lower amplitude (0.13 vs laugh's 0.18) and trims to two
+    pulses so it lands as an aside / amused-but-not-laughing-out-loud
+    beat -- the difference between ``[[laugh]]`` (3 staccato bursts at
+    ~340/380/360 Hz) and ``[[chuckle]]`` (2 bursts at 320/350 Hz).
+    """
+    bursts = []
+    for f in (320.0, 350.0):
+        chunk = _generate_tone(f, 0.06, 0.13)
+        gap = np.zeros(int(_SAMPLE_RATE * 0.05), dtype=np.float32)
+        bursts.extend([chunk, gap])
+    return np.concatenate(bursts)
+
+
+def _stage_soft_sigh() -> "np.ndarray":
+    """A slower, lower-pitched sigh than the existing ``sigh`` earcon.
+
+    Glides from 220 Hz down to 140 Hz over 0.7 s with a softer
+    envelope (peak 0.11 vs 0.16) so it reads as a gentle exhale
+    rather than the wistful drag of the regular sigh.
+    """
+    duration = 0.70
+    n = int(_SAMPLE_RATE * duration)
+    t = np.linspace(0, duration, n, endpoint=False)
+    freq = 220.0 - 80.0 * (t / duration)
+    phase = 2.0 * np.pi * np.cumsum(freq) / _SAMPLE_RATE
+    wave = np.sin(phase) * 0.11
+    envelope = np.linspace(0.3, 1.0, n // 4)
+    decay = np.linspace(1.0, 0.0, n - len(envelope))
+    env = np.concatenate([envelope, decay])
+    return (wave * env).astype(np.float32)
+
+
+def _stage_sharp_gasp() -> "np.ndarray":
+    """A fast inhale-noise burst -- sharper than the regular ``gasp``.
+
+    Adds a noise component on top of the rising tone to read as an
+    actual breath intake rather than a clean tone glide. Shorter
+    (0.13 s) and louder (peak 0.24).
+    """
+    duration = 0.13
+    n = int(_SAMPLE_RATE * duration)
+    t = np.linspace(0, duration, n, endpoint=False)
+    freq = 280.0 + 320.0 * (t / duration)  # 280 -> 600 Hz
+    phase = 2.0 * np.pi * np.cumsum(freq) / _SAMPLE_RATE
+    rng = np.random.default_rng(11)
+    noise = rng.standard_normal(n).astype(np.float32) * 0.06
+    wave = (np.sin(phase) * 0.18 + noise) * 0.95
+    fade = int(_SAMPLE_RATE * 0.008)
+    if fade > 0 and len(wave) > 2 * fade:
+        wave[:fade] *= np.linspace(0, 1, fade)
+        wave[-fade:] *= np.linspace(1, 0, fade)
+    return wave.astype(np.float32)
+
+
+def _stage_breath() -> "np.ndarray":
+    """A quiet inhale before something hard to say.
+
+    Pure breath noise with a soft attack and decay -- meant to land
+    on the auto-sprinkle path (cadence rule prepends this on the
+    first sentence of a melancholy / wistful / sad turn). Peak at
+    0.07 so it stays in the "background texture" register; a louder
+    breath would compete with the actual word that follows.
+    """
+    duration = 0.35
+    n = int(_SAMPLE_RATE * duration)
+    rng = np.random.default_rng(7)
+    noise = rng.standard_normal(n).astype(np.float32) * 0.07
+    # Lowpass-ish smoothing via a simple moving average so it sounds
+    # like breath rather than radio static.
+    window = max(8, int(_SAMPLE_RATE * 0.002))
+    kernel = np.ones(window, dtype=np.float32) / float(window)
+    smoothed = np.convolve(noise, kernel, mode="same")
+    envelope = np.linspace(0.2, 1.0, n // 3)
+    decay = np.linspace(1.0, 0.0, n - len(envelope))
+    env = np.concatenate([envelope, decay])
+    return (smoothed * env).astype(np.float32)
+
+
+def _stage_mm() -> "np.ndarray":
+    """A thoughtful low-pitched ``mm`` / ``mmm`` hum.
+
+    Lower than the existing ``hum`` (175 Hz vs 220 Hz) and a hair
+    longer (0.55 s vs 0.45 s) so it lands as a "let me think about
+    that" beat instead of an acknowledgement.
+    """
+    return _generate_tone(175.0, 0.55, 0.13)
+
+
 _STAGE_BUILDERS: dict[str, "callable"] = {
     "laugh": _stage_laugh,
     "sigh": _stage_sigh,
     "gasp": _stage_gasp,
     "hum": _stage_hum,
     "tsk": _stage_tsk,
+    # Layer 4 additions: lighter / softer / sharper variants and two
+    # new background-texture earcons (breath, mm).
+    "chuckle": _stage_chuckle,
+    "soft_sigh": _stage_soft_sigh,
+    "sharp_gasp": _stage_sharp_gasp,
+    "breath": _stage_breath,
+    "mm": _stage_mm,
 }
 
 
