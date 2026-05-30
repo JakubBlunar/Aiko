@@ -13,16 +13,34 @@ This module sits between ``TurnRunner.on_tts_chunk`` and
     trailing ellipsis -> wistful).
   * ``analyze_sentence`` produces a small :class:`ProsodyParams` record:
     *speed* (multiplier hint for the engine, also surfaced as a reaction
-    nudge), *pause_after* in ms, and an optional *prefix* (a tiny
-    interjection like "Hmm," that is enqueued as a separate ultra-short
-    chunk).
+    nudge), *gain_db* (linear PCM offset), *pause_before / pause_after*
+    in ms, and an optional *prefix* (a tiny interjection like "Hmm,"
+    that is enqueued as a separate ultra-short chunk).
   * ``ProsodyDispatcher`` is the concrete glue. It owns the underlying
     ``enqueue`` callable and any RNG state, and exposes the same
     ``(text, reaction)`` shape that ``TurnRunner`` already calls.
 
-We deliberately stay text-only — no SSML, no ad-hoc engine knobs.
-Backends decide how much to honor the reaction nudge; the structure is
-identical even on engines that ignore everything.
+Three orthogonal axes feed expressive speech:
+
+  * **Reaction** -- mood label (``[[reaction:X]]`` or sentence-level
+    derivation). Drives Live2D expression and a small reaction-to-speed
+    multiplier on the TTS engine.
+  * **Prosody** -- per-sentence vocal delivery
+    (``[[prosody:whisper|soft|slow|fast|firm]]``). Layered on top of
+    the reaction-derived ``ProsodyParams`` via ``_apply_prosody_overlay``
+    so a sad sentence can still be whispered, an excited one can still
+    be slow. Orthogonal to mood; applies to the single sentence that
+    opens with the tag.
+  * **Earcons** -- non-speech audio (``[[laugh]]``, ``[[soft_sigh]]``,
+    ``[[breath]]``, ...) spliced into the spoken stream by
+    ``TurnRunner._dispatch_chunk_with_earcons`` and the cadence
+    auto-sprinkle rule (Layer 4) that prepends ``breath`` / ``soft_sigh``
+    on opener-style sad sentences.
+
+We still deliberately stay text-only at the dispatcher level — no SSML,
+no ad-hoc engine knobs. Each axis maps onto something Pocket-TTS can
+honor (speed, samplerate-only pitch shift, PCM gain, silent PCM frame,
+earcon splice).
 """
 from __future__ import annotations
 
@@ -32,6 +50,7 @@ import re
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from time import monotonic as _monotonic
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -44,7 +63,18 @@ log = logging.getLogger("app.cadence")
 
 @dataclass(slots=True)
 class ProsodyParams:
-    """Per-chunk prosody hints. Pure values; the dispatcher applies them."""
+    """Per-chunk prosody hints. Pure values; the dispatcher applies them.
+
+    The reaction / pause / prefix / speed_hint fields are the original
+    Phase 5b shape. The Layer 1b / Layer 3 expressive-speech rollout
+    adds:
+
+      * ``gain_db`` -- linear dB offset applied to the Int16 PCM at
+        emit time. Negative attenuates (whisper, soft, ambient
+        noise compensation = 0); positive boosts (firm prosody).
+      * ``prosody_label`` -- the originating ``[[prosody:X]]`` tag, if
+        any. Logged for debugging; downstream consumers ignore it.
+    """
 
     reaction: str = "neutral"
     pause_before_ms: int = 0
@@ -52,6 +82,8 @@ class ProsodyParams:
     prefix_text: str = ""
     prefix_reaction: str = ""
     speed_hint: float = 1.0
+    gain_db: float = 0.0
+    prosody_label: str = ""
     rationale: str = ""
 
 
@@ -70,7 +102,63 @@ class CadenceContext:
     # below 1.0 (down to 0.96) when the room is loud so listeners
     # have more time per word against the background.
     ambient_noise_speed: float = 1.0
+    # Layer 1b: ambient-noise volume offset (dB). 0.0 in quiet rooms,
+    # +0.8 / +1.5 in noisy / very-noisy rooms. Applied to the PCM
+    # gain alongside any prosody-tag attenuation in
+    # :meth:`ProsodyDispatcher._apply` so a noisy room boosts and a
+    # ``[[prosody:whisper]]`` attenuates -- the two stack additively.
+    ambient_volume_db_offset: float = 0.0
     rng: random.Random = field(default_factory=random.Random)
+
+
+# Layer 3 overlay table: per-sentence ``[[prosody:LABEL]]`` to a small
+# adjustment over the reaction-derived ``ProsodyParams``. Each entry is
+# a ``(speed_mult, gain_db_delta, pause_before_ms)`` triple. The cadence
+# layer keeps the reaction (mood label) intact -- only delivery axes
+# move. Values are intentionally small so a misplaced tag never lands
+# as a noticeable artefact; the persona instruction asks the LLM to
+# emit one at most per turn for moments that matter.
+_PROSODY_OVERLAYS: dict[str, tuple[float, float, int]] = {
+    "whisper": (0.97, -6.0, 0),
+    "soft":    (0.98, -3.0, 0),
+    "slow":    (0.95,  0.0, 0),
+    "fast":    (1.05,  0.0, 0),
+    "firm":    (0.99, +2.0, 80),
+}
+
+
+def _apply_prosody_overlay(
+    base: ProsodyParams,
+    label: str | None,
+) -> ProsodyParams:
+    """Return ``base`` with the overlay for ``label`` folded in.
+
+    Unknown / missing labels return ``base`` untouched. Speed
+    overlays multiply the existing ``speed_hint``; gain overlays
+    add to the existing ``gain_db``; pause overlays max with the
+    existing ``pause_before_ms``. The overlay never lowers a
+    pause that was already higher.
+    """
+    if not label:
+        return base
+    overlay = _PROSODY_OVERLAYS.get(label.strip().lower())
+    if overlay is None:
+        return base
+    speed_mult, gain_delta, pause_before = overlay
+    return ProsodyParams(
+        reaction=base.reaction,
+        pause_before_ms=max(int(base.pause_before_ms), int(pause_before)),
+        pause_after_ms=int(base.pause_after_ms),
+        prefix_text=base.prefix_text,
+        prefix_reaction=base.prefix_reaction,
+        speed_hint=float(round(base.speed_hint * speed_mult, 4)),
+        gain_db=float(base.gain_db + gain_delta),
+        prosody_label=str(label).strip().lower(),
+        rationale=(
+            f"{base.rationale} +prosody={label} "
+            f"speed*={speed_mult} gain+={gain_delta:+.1f}dB"
+        ).strip(),
+    )
 
 
 # ── per-sentence sentiment & shape ──────────────────────────────────────
@@ -190,28 +278,62 @@ def _speed_hint(reaction: str, ctx: CadenceContext) -> float:
 
 
 def analyze_sentence(text: str, ctx: CadenceContext) -> ProsodyParams:
-    """Pure analyzer: text + context -> ProsodyParams (no side effects)."""
+    """Pure analyzer: text + context -> ProsodyParams (no side effects).
+
+    Layer 3: a leading ``[[prosody:LABEL]]`` tag on ``text`` is
+    consumed here so the rest of the analyzer reasons about the
+    spoken sentence only. The overlay is applied at the end of the
+    function via :func:`_apply_prosody_overlay`. A tag that isn't at
+    the very start is left for :func:`strip_all_meta_tags` to
+    quietly drop -- middle-of-the-sentence tags don't drive prosody
+    by design (mirrors the leading-tag idiom of
+    :func:`parse_reaction_at_start`).
+    """
     cleaned = (text or "").strip()
     if not cleaned:
         return ProsodyParams(reaction=ctx.base_reaction or "neutral")
+    # Consume the leading prosody tag (if any) before the rest of
+    # the analysis runs against the spoken text. Local import keeps
+    # the cadence module from importing the response_text_service
+    # at top level (avoids the historical circular-import landmine).
+    from app.core.services.response_text_service import (
+        consume_leading_prosody_tag,
+    )
+
+    prosody_label, cleaned = consume_leading_prosody_tag(cleaned)
+    cleaned = cleaned.strip()
+    if not cleaned:
+        return ProsodyParams(
+            reaction=ctx.base_reaction or "neutral",
+            prosody_label=prosody_label or "",
+        )
     reaction = derive_sentence_reaction(cleaned, ctx.base_reaction)
     pause_before, pause_after = _pause_for_sentence(cleaned, ctx)
     prefix_text, prefix_reaction = _maybe_prefix(cleaned, ctx)
     speed = _speed_hint(reaction, ctx)
+    # Layer 1b: ambient-noise gain compensation feeds straight through.
+    # Prosody-tag attenuation (Layer 3) stacks additively on top of
+    # this default at the dispatcher level.
+    try:
+        gain_db = float(ctx.ambient_volume_db_offset)
+    except (TypeError, ValueError):
+        gain_db = 0.0
     rationale = (
         f"reaction={reaction} pause_before={pause_before}ms "
         f"pause_after={pause_after}ms prefix={'yes' if prefix_text else 'no'} "
-        f"speed={speed}"
+        f"speed={speed} gain_db={gain_db:+.2f}"
     )
-    return ProsodyParams(
+    base = ProsodyParams(
         reaction=reaction,
         pause_before_ms=pause_before,
         pause_after_ms=pause_after,
         prefix_text=prefix_text,
         prefix_reaction=prefix_reaction,
         speed_hint=speed,
+        gain_db=gain_db,
         rationale=rationale,
     )
+    return _apply_prosody_overlay(base, prosody_label)
 
 
 # ── dispatcher ──────────────────────────────────────────────────────────
@@ -240,17 +362,35 @@ class ProsodyDispatcher:
         *,
         rng: random.Random | None = None,
         enabled: bool = True,
+        earcon_auto_sprinkle: bool = True,
     ) -> None:
         self._enqueue = enqueue
         self._rng = rng or random.Random()
         self._enabled = bool(enabled)
         self._context_provider: Callable[[], CadenceContext] | None = None
+        # Layer 2: queue-side silence injector. Wired by
+        # :class:`SessionController` to ``TtsQueue.enqueue_silence``.
+        # Stays ``None`` in tests / legacy embeds; ``_enqueue_silence``
+        # is a noop in that case so the dispatcher still produces the
+        # same text + speed output as before.
+        self._silence_provider: Callable[[int], None] | None = None
+        # Layer 4: queue-side earcon injector and the auto-sprinkle
+        # gate. ``_earcon_provider`` is wired by
+        # :class:`SessionController` to ``TtsQueue.enqueue_earcon``
+        # so cadence can prepend a ``breath`` or ``soft_sigh`` to
+        # the first sentence of a melancholy / wistful / sad turn.
+        # ``_auto_sprinkle`` is the user-facing on/off; cooldown
+        # tracking keeps a long heart-to-heart from wheezing.
+        self._earcon_provider: Callable[[str], None] | None = None
+        self._auto_sprinkle = bool(earcon_auto_sprinkle)
+        self._auto_sprinkle_last: float = 0.0
         self._lock = threading.Lock()
         self._stats = {
             "chunks": 0,
             "prefixes": 0,
             "reactions_changed": 0,
             "pauses_added": 0,
+            "auto_earcons": 0,
         }
 
     def set_enabled(self, enabled: bool) -> None:
@@ -275,6 +415,19 @@ class ProsodyDispatcher:
             return
         ctx = self._build_context(reaction or "neutral")
         params = analyze_sentence(cleaned, ctx)
+        # Layer 3: drop the leading ``[[prosody:LABEL]]`` from the text
+        # we're about to enqueue so the catch-all strip in
+        # ``prepare_tts_text`` doesn't have to do it. Trailing /
+        # mid-sentence tags still fall through to the catch-all.
+        if params.prosody_label:
+            from app.core.services.response_text_service import (
+                consume_leading_prosody_tag,
+            )
+
+            _, cleaned = consume_leading_prosody_tag(cleaned)
+            cleaned = cleaned.strip()
+            if not cleaned:
+                return
         self._apply(cleaned, reaction or "neutral", params)
 
     def analyze(self, text: str, reaction: str = "neutral") -> ProsodyParams:
@@ -314,6 +467,11 @@ class ProsodyDispatcher:
                 self._stats["reactions_changed"] += 1
             if params.pause_after_ms or params.pause_before_ms:
                 self._stats["pauses_added"] += 1
+        # Layer 4: auto-sprinkle a soft breath / sigh ahead of the
+        # spoken text on melancholy / wistful / sad / cry openers.
+        # The earcon plays through the same queue so the timing is
+        # naturally serial with the sentence that follows.
+        self._maybe_auto_sprinkle(params)
         if params.prefix_text:
             # Prefix interjections ride at the carrier sentence's speed
             # so a "Hmm," doesn't accidentally land at neutral pace
@@ -323,26 +481,140 @@ class ProsodyDispatcher:
                 params.prefix_reaction or params.reaction,
                 params.speed_hint,
             )
+        # Layer 2: real timed pauses. ``_apply_text_pauses`` still
+        # rewrites punctuation as a fallback (engines without an
+        # ``enqueue_silence`` keep getting the same legacy treatment),
+        # but if the underlying queue does support real silence we
+        # also splice an actual silent gap on either side. The
+        # cadence layer already caps ``pause_*_ms`` via heuristics in
+        # :func:`_pause_for_sentence`; ``TtsQueue.enqueue_silence``
+        # additionally clamps to ``_SILENCE_MAX_MS``.
+        if params.pause_before_ms > 0:
+            self._enqueue_silence(int(params.pause_before_ms))
         self._enqueue_with_speed(
             _apply_text_pauses(text, params),
             params.reaction,
             params.speed_hint,
+            gain_db=params.gain_db,
         )
+        if params.pause_after_ms > 0:
+            self._enqueue_silence(int(params.pause_after_ms))
 
     def _enqueue_with_speed(
         self,
         text: str,
         reaction: str | None,
         speed: float,
+        *,
+        gain_db: float = 0.0,
     ) -> None:
         """Forward to the enqueue callable, opportunistically passing
-        ``speed=``. Legacy two-arg enqueues are tolerated via TypeError
+        ``speed=`` (and the new ``gain_db=`` kwarg from Layer 1b /
+        Layer 3). Legacy two-arg enqueues are tolerated via TypeError
         so this dispatcher works against bare ``TtsQueue.enqueue`` and
         any older shim callers may have wired in."""
         try:
-            self._enqueue(text, reaction, speed=float(speed))
+            self._enqueue(
+                text, reaction, speed=float(speed), gain_db=float(gain_db),
+            )
+            return
         except TypeError:
-            self._enqueue(text, reaction)
+            pass
+        try:
+            self._enqueue(text, reaction, speed=float(speed))
+            return
+        except TypeError:
+            pass
+        self._enqueue(text, reaction)
+
+    def set_earcon_provider(
+        self, provider: Callable[[str], None] | None,
+    ) -> None:
+        """Layer 4: install the queue-side ``enqueue_earcon`` callable.
+
+        The dispatcher uses it for auto-sprinkle (a ``breath`` or
+        ``soft_sigh`` on the first sentence of a sad turn) only --
+        the LLM's inline ``[[chuckle]]`` / ``[[breath]]`` / ... still
+        ride the existing earcon path through
+        :meth:`turn_runner.TurnRunner._dispatch_chunk_with_earcons`.
+        """
+        self._earcon_provider = provider
+
+    def set_auto_sprinkle(self, enabled: bool) -> None:
+        self._auto_sprinkle = bool(enabled)
+
+    # Cooldown between auto-sprinkled earcons. 25 s is long enough
+    # that a heart-to-heart conversation gets one breath cue per
+    # opener but doesn't pile up on every sentence; short enough
+    # that two separate sad moments in the same session both land.
+    _AUTO_SPRINKLE_COOLDOWN_SEC: float = 25.0
+    # Probability of actually firing the earcon when the gate is
+    # open. ~0.30 keeps the cue feeling natural rather than
+    # mechanical -- a friend doesn't sigh on every sad sentence.
+    _AUTO_SPRINKLE_PROBABILITY: float = 0.30
+    _AUTO_SPRINKLE_REACTIONS: tuple[str, ...] = (
+        "sad", "melancholy", "wistful", "cry", "concerned",
+    )
+
+    def _maybe_auto_sprinkle(self, params: ProsodyParams) -> None:
+        """Fire a soft breath/sigh earcon ahead of opener-style sad
+        sentences when the gate, cooldown, and RNG say so.
+
+        Skipped silently when:
+          * the user disabled ``agent.earcon_auto_sprinkle``,
+          * no earcon provider is wired (tests, TTS-disabled),
+          * the sentence reaction isn't in the sad family,
+          * we're inside the cooldown from the last auto-sprinkle,
+          * the RNG flips heads (~30% fire rate).
+        """
+        if not self._auto_sprinkle:
+            return
+        provider = self._earcon_provider
+        if provider is None:
+            return
+        if (params.reaction or "").strip().lower() not in self._AUTO_SPRINKLE_REACTIONS:
+            return
+        # Don't compete with a tag the LLM already emitted.
+        if params.prosody_label or params.prefix_text:
+            return
+        now = _monotonic()
+        if now - self._auto_sprinkle_last < self._AUTO_SPRINKLE_COOLDOWN_SEC:
+            return
+        if self._rng.random() >= self._AUTO_SPRINKLE_PROBABILITY:
+            return
+        # Pick the cue: soft_sigh on long pause-after sentences
+        # (likely an opener of a heavier beat); breath otherwise.
+        cue = "soft_sigh" if params.pause_after_ms >= 200 else "breath"
+        try:
+            provider(cue)
+        except Exception:
+            log.debug("auto-sprinkle earcon raised", exc_info=True)
+            return
+        with self._lock:
+            self._stats["auto_earcons"] += 1
+        self._auto_sprinkle_last = now
+
+    def set_silence_provider(
+        self, provider: Callable[[int], None] | None,
+    ) -> None:
+        """Layer 2: install the queue-side ``enqueue_silence`` callable.
+
+        The dispatcher decouples from :class:`TtsQueue` so tests can
+        plug a recorder; ``SessionController`` wires the real one. A
+        ``None`` provider is a noop (legacy behaviour: no real timed
+        pauses, only the punctuation rewrite from
+        :func:`_apply_text_pauses`).
+        """
+        self._silence_provider = provider
+
+    def _enqueue_silence(self, ms: int) -> None:
+        provider = getattr(self, "_silence_provider", None)
+        if provider is None:
+            return
+        try:
+            provider(int(ms))
+        except Exception:
+            log.debug("silence provider raised", exc_info=True)
 
 
 _TRAILING_PUNCT_RE = re.compile(r"[\s\.\?!\,;:]+\Z")

@@ -652,6 +652,55 @@ class AgentSettings:
     # prefixes ("Mm.", "Oh,") and gentle pause-style punctuation tweaks.
     # All hints are text-only — engines that ignore punctuation are safe.
     cadence_enabled: bool = True
+    # Layer 4 (expressive speech): auto-sprinkle ``breath`` / ``soft_sigh``
+    # earcons on the first sentence of a melancholy / wistful / sad
+    # turn. Cooldown-gated inside the cadence layer so a long
+    # heart-to-heart conversation doesn't wheeze. Set to false to
+    # silence all auto-sprinkle behaviour; the LLM can still emit
+    # ``[[breath]]`` / ``[[chuckle]]`` etc. inline regardless.
+    earcon_auto_sprinkle: bool = True
+    # Layer 1c (expressive speech): opt-in gate for runtime per-reaction
+    # ``model.temp`` mutation. Pocket-TTS is sensitive to temperature
+    # excursions away from its tuned baseline -- empirically a delta
+    # of even ±0.05 can introduce pitch / timbre artefacts on some
+    # voices. Default OFF so the engine always uses the configured
+    # ``tts.pocket_tts_temp`` baseline; flip on once you've validated
+    # the deltas in :data:`app.tts.pocket_tts_service._REACTION_TEMP_DELTA`
+    # sound right on the active voice file.
+    tts_runtime_temp_enabled: bool = False
+    # Layer 5 (expressive speech): opt-in gate for per-reaction speed
+    # jitter. Pocket-TTS implements speed by scaling the playback
+    # ``sample_rate``, which couples speed and pitch (a 10% faster
+    # sentence is also ~1.6 semitones higher). With per-reaction
+    # sub-caps active, that pitch couples to the affect channel and
+    # the user perceives "her voice keeps changing" between sentences
+    # -- even if each individual band is small. Default OFF so every
+    # sentence plays at the engine's tuned 1.0× baseline; flip on once
+    # you've listened to the active voice through
+    # ``tools/tts_speed_ab.py`` at the proposed band. The user's
+    # static pacing slider (``assistant.tts_length_scale``) is honoured
+    # regardless of this gate -- it's a deliberate global knob, not
+    # per-sentence affect drift.
+    tts_runtime_speed_enabled: bool = False
+
+    # ── Aiko style-pattern tracker (response-variability anti-rut) ────
+    # Watches Aiko's own recent assistant turns for opener / question /
+    # length ruts and surfaces a soft "Heads-up" inner-life cue when
+    # one of the bands trips. Sibling architecture to the K6 / K18
+    # detectors above; the persona's "Style patterns I'm in" section
+    # pairs with the cues this tracker emits. Defaults are calibrated
+    # to the diagnostic captured against ~120 assistant messages:
+    # opener concentration ~39%, question-end rate ~87%, avg ~52
+    # words / 4.9 sentences. Tune via these knobs without code changes.
+    style_tracker_enabled: bool = True
+    style_tracker_window: int = 12
+    style_tracker_warmup: int = 6
+    style_tracker_opener_count_threshold: int = 4
+    style_tracker_opener_topk_share: float = 0.60
+    style_tracker_question_rate_threshold: float = 0.75
+    style_tracker_avg_questions_threshold: float = 1.5
+    style_tracker_length_avg_threshold: float = 50.0
+    style_tracker_cue_cooldown_turns: int = 5
 
     # ── Resume opener (Phase 2a) ──────────────────────────────────────
     # When the time since the last assistant turn exceeds this many
@@ -687,6 +736,38 @@ class AgentSettings:
     curiosity_worker_min_turns_between: int = 3
     curiosity_worker_min_seconds_between: float = 60.0
     curiosity_worker_max_user_word_count: int = 8
+    # ── F2.1 personality backlog: knowledge-gap memory-match resolver ─
+    # Companion to F1's web-search resolver. F1 closes a gap by going
+    # to look the answer up; this worker closes it by noticing the
+    # answer is already in the memory store (e.g. a ``preference`` row
+    # written by the post-summary extractor after the user answered the
+    # question in chat). Without this the same gap re-injects into the
+    # prompt every session for weeks because nothing else marks it
+    # resolved. See :class:`app.core.idle_gap_resolver.IdleGapResolver`.
+    gap_resolver_enabled: bool = True
+    # Cadence in seconds. The work is pure cosine over the in-memory
+    # mirror, so it's cheap; 10 minutes is a "show up shortly after a
+    # gap was minted" cadence without spamming logs on quiet stretches.
+    gap_resolver_interval_seconds: int = 600
+    # Cosine threshold for "this memory answers this gap." Slightly
+    # stricter than the curiosity-seed resolve threshold (0.50) because
+    # closing a gap is a stronger claim than consuming a seed: a false
+    # positive here means a real open question gets buried, where a
+    # seed false positive just means we skip a topic that came up once.
+    gap_resolver_threshold: float = 0.55
+    # Max gaps the worker resolves per tick. The journal cap is 20 and
+    # the typical steady state is a handful of opens, so 5 per tick
+    # drains a normal backlog within minutes without spiking CPU.
+    gap_resolver_per_tick: int = 5
+    # Cosine threshold for the post-turn user-answer resolver in
+    # :meth:`PostTurnMixin._resolve_knowledge_gaps`. Mirrors the
+    # ``curiosity_seed_resolve_threshold`` shape: the same combined
+    # ``user_text + assistant_text`` embedding is reused, and any open
+    # gap scoring at-or-above this is closed with
+    # ``resolved_by="user_answer"`` in metadata. Lower than the worker
+    # threshold because the post-turn check has stronger context (the
+    # user *just* spoke about the topic) so false positives are rarer.
+    gap_user_answer_resolve_threshold: float = 0.50
 
 
 @dataclass(slots=True)
@@ -1451,6 +1532,76 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             relationship_pulse_min_turns=max(5, int(agent_raw.get("relationship_pulse_min_turns", 30))),
             relationship_pulse_max_tokens=max(80, int(agent_raw.get("relationship_pulse_max_tokens", 256))),
             cadence_enabled=bool(agent_raw.get("cadence_enabled", True)),
+            earcon_auto_sprinkle=bool(
+                agent_raw.get("earcon_auto_sprinkle", True),
+            ),
+            tts_runtime_temp_enabled=bool(
+                agent_raw.get("tts_runtime_temp_enabled", False),
+            ),
+            tts_runtime_speed_enabled=bool(
+                agent_raw.get("tts_runtime_speed_enabled", False),
+            ),
+            style_tracker_enabled=bool(
+                agent_raw.get("style_tracker_enabled", True),
+            ),
+            style_tracker_window=max(
+                2, int(agent_raw.get("style_tracker_window", 12)),
+            ),
+            style_tracker_warmup=max(
+                2, int(agent_raw.get("style_tracker_warmup", 6)),
+            ),
+            style_tracker_opener_count_threshold=max(
+                2,
+                int(
+                    agent_raw.get(
+                        "style_tracker_opener_count_threshold", 4,
+                    )
+                ),
+            ),
+            style_tracker_opener_topk_share=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        agent_raw.get(
+                            "style_tracker_opener_topk_share", 0.60,
+                        )
+                    ),
+                ),
+            ),
+            style_tracker_question_rate_threshold=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        agent_raw.get(
+                            "style_tracker_question_rate_threshold", 0.75,
+                        )
+                    ),
+                ),
+            ),
+            style_tracker_avg_questions_threshold=max(
+                0.0,
+                float(
+                    agent_raw.get(
+                        "style_tracker_avg_questions_threshold", 1.5,
+                    )
+                ),
+            ),
+            style_tracker_length_avg_threshold=max(
+                1.0,
+                float(
+                    agent_raw.get(
+                        "style_tracker_length_avg_threshold", 50.0,
+                    )
+                ),
+            ),
+            style_tracker_cue_cooldown_turns=max(
+                0,
+                int(
+                    agent_raw.get("style_tracker_cue_cooldown_turns", 5)
+                ),
+            ),
             resume_opener_min_hours=max(0.0, float(agent_raw.get("resume_opener_min_hours", 4.0))),
             resume_opener_ttl_seconds=max(60.0, float(agent_raw.get("resume_opener_ttl_seconds", 1800.0))),
             dream_worker_enabled=bool(agent_raw.get("dream_worker_enabled", True)),
@@ -1478,6 +1629,34 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             ),
             curiosity_worker_max_user_word_count=max(
                 1, int(agent_raw.get("curiosity_worker_max_user_word_count", 8)),
+            ),
+            gap_resolver_enabled=bool(
+                agent_raw.get("gap_resolver_enabled", True),
+            ),
+            gap_resolver_interval_seconds=max(
+                30,
+                int(agent_raw.get("gap_resolver_interval_seconds", 600)),
+            ),
+            gap_resolver_threshold=max(
+                0.0,
+                min(
+                    1.0,
+                    float(agent_raw.get("gap_resolver_threshold", 0.55)),
+                ),
+            ),
+            gap_resolver_per_tick=max(
+                1, int(agent_raw.get("gap_resolver_per_tick", 5)),
+            ),
+            gap_user_answer_resolve_threshold=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        agent_raw.get(
+                            "gap_user_answer_resolve_threshold", 0.50,
+                        )
+                    ),
+                ),
             ),
         ),
         logging=LoggingSettings(

@@ -618,6 +618,79 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
         return json.dumps(payload, indent=2, default=str)
 
     @mcp.tool()
+    def find_memories_by_content(
+        query: str,
+        *,
+        kind: str = "",
+        limit: int = 30,
+    ) -> str:
+        """Substring-search the memory store by content (case-insensitive).
+
+        Diagnostic complement to ``inspect_memory_tiers`` — that tool
+        only samples the top rows per tier, so it can't surface a
+        specific topic. Use this when investigating "did Aiko store /
+        retrieve / resolve memory X about topic Y?". Filter by ``kind``
+        (e.g. ``knowledge_gap`` / ``open_question`` / ``preference``)
+        to narrow further.
+
+        Returns each match's id, kind, tier, salience, use_count,
+        ``metadata.resolved_at`` (when relevant), and a 160-char
+        content preview. Bounded by ``limit`` (default 30) so a
+        common substring like "the" doesn't dump the whole store.
+        """
+        store = getattr(session, "_memory_store", None)
+        if store is None:
+            return json.dumps({"enabled": False})
+        q = (query or "").strip().lower()
+        if not q:
+            return json.dumps({
+                "error": "query is required (non-empty substring)",
+            })
+        kind_norm = (kind or "").strip().lower() or None
+        try:
+            mirror = getattr(store, "_mirror", None)
+            rows = list(mirror.values()) if mirror is not None else []
+        except Exception as exc:
+            return f"mirror access failed: {exc}"
+        hits: list[dict[str, Any]] = []
+        for mem in rows:
+            content = (mem.content or "")
+            if q not in content.lower():
+                continue
+            if kind_norm is not None and mem.kind != kind_norm:
+                continue
+            meta = mem.metadata or {}
+            row: dict[str, Any] = {
+                "id": int(mem.id),
+                "kind": mem.kind,
+                "tier": mem.tier,
+                "salience": round(float(mem.salience), 3),
+                "use_count": int(mem.use_count),
+                "pinned": bool(mem.pinned),
+                "created_at": str(mem.created_at),
+                "content": content[:160],
+            }
+            audit_keys = (
+                "resolved_at",
+                "resolved_by",
+                "resolved_by_memory_id",
+                "consumed_at",
+                "topic",
+            )
+            audit = {k: meta[k] for k in audit_keys if k in meta}
+            if audit:
+                row["metadata"] = audit
+            hits.append(row)
+        hits.sort(key=lambda r: r["created_at"], reverse=True)
+        payload = {
+            "query": q,
+            "kind_filter": kind_norm,
+            "match_count": len(hits),
+            "matches": hits[: max(1, int(limit))],
+        }
+        return json.dumps(payload, indent=2, default=str)
+
+    @mcp.tool()
     def inspect_idle_workers() -> str:
         """Return per-worker run state from the IdleWorkerScheduler.
 

@@ -81,9 +81,98 @@ _REACTION_SPEED: dict[str, float] = {
 }
 
 # Hard caps applied AFTER any caller-supplied speed, so a runaway
-# cadence multiplier can't push us into uncanny territory.
-_SPEED_MIN = 0.92
-_SPEED_MAX = 1.08
+# cadence multiplier can't push us into uncanny territory. The base
+# floor and ceiling are widened slightly from the historic ±8% to
+# ±12% so the loudest / quietest reactions can stretch further; the
+# per-reaction sub-cap table below pins each reaction back to a
+# safe band so only the ones that actually want the extra room
+# (cry, tired, sad, excited, surprised) get to use it.
+_SPEED_MIN = 0.88
+_SPEED_MAX = 1.12
+
+# Per-reaction sub-caps. A reaction that isn't listed falls back to
+# the historic ±8% band ``[0.92, 1.08]`` -- the same envelope the
+# samplerate-only pitch shift was originally tuned against. Only the
+# entries below get to use the wider outer band.
+_REACTION_SPEED_CAPS: dict[str, tuple[float, float]] = {
+    # Lower-end stretch: sob / strained / drained delivery. ``cry``
+    # already sat at the old floor, ``tired`` and ``sad`` /
+    # ``melancholy`` had no headroom to drop further when the
+    # context piled on (drowsy circadian, noisy room).
+    "cry":        (0.88, 1.00),
+    "tired":      (0.90, 1.00),
+    "sad":        (0.91, 1.00),
+    "melancholy": (0.91, 1.00),
+    # Upper-end stretch: a genuine "!" beat and surprise reaction
+    # both want to outrun the regular cheerful band by a hair.
+    "excited":    (1.00, 1.12),
+    "surprised":  (1.00, 1.10),
+}
+
+
+def _resolve_speed_caps(reaction: str | None) -> tuple[float, float]:
+    """Return the ``(min, max)`` clamp for ``reaction``.
+
+    Falls back to the legacy ±8% envelope when the reaction has no
+    explicit override. Used by :meth:`PocketTtsService.speak_async`
+    and the ``tools/tts_speed_ab.py`` ear-test helper.
+    """
+    if not (reaction or "").strip():
+        return 0.92, 1.08
+    return _REACTION_SPEED_CAPS.get(
+        (reaction or "").strip().lower(),
+        (0.92, 1.08),
+    )
+
+
+# Layer 1c: per-reaction temperature deltas applied on top of the
+# settings baseline -- ONLY when ``_runtime_temp_enabled`` is true
+# (gated by ``agent.tts_runtime_temp_enabled``, default OFF). A
+# flatter temp produces more deliberate / choked delivery; a livelier
+# temp introduces more variation in the acoustic stream. Reactions
+# outside this table inherit the baseline unchanged.
+#
+# IMPORTANT: keep these deltas TINY. Pocket-TTS is sensitive enough
+# to temperature that a ±0.10 swing can introduce pitch / timbre
+# artefacts on some voices (a "hall echo" / chipmunk feel was
+# reported on the original ±0.10 table). The current values are the
+# halved-down version -- raise back gradually only after listening
+# to the active voice through ``tools/tts_speed_ab.py`` at the
+# proposed deltas. The combined value is clamped to ``[0.3, 1.2]``
+# inside :meth:`_resolve_runtime_temp` so a stacked reaction-plus-
+# manual override can't drive the model into noise / pure-silence
+# territory.
+_REACTION_TEMP_DELTA: dict[str, float] = {
+    # Flatter delivery for serious / heavy beats.
+    "serious":    -0.05,
+    "wistful":    -0.05,
+    "sad":        -0.05,
+    "melancholy": -0.05,
+    "cry":        -0.05,
+    "tired":      -0.04,
+    "concerned":  -0.03,
+    # Livelier delivery for high-arousal beats.
+    "excited":    +0.05,
+    "playful":    +0.05,
+    "surprised":  +0.05,
+    "amused":     +0.03,
+    "cheerful":   +0.03,
+}
+
+# Hard floor / ceiling on the runtime temperature so a misbehaving
+# reaction map can never drive the model into noise.
+_TEMP_MIN = 0.30
+_TEMP_MAX = 1.20
+
+# Hard caps on the user-facing pacing slider. The slider feeds
+# :meth:`PocketTtsService.set_length_scale`; values outside this
+# band are clamped silently. The band is narrower than ``[0.65, 1.35]``
+# in :class:`AssistantSettings` because the pacing slider stacks
+# multiplicatively with reaction speed AND the cadence layer's
+# per-sentence ``speed_hint``, so a 0.65 slider would routinely
+# blow past the per-reaction floor and chip into chipmunk territory.
+_LENGTH_SCALE_MIN = 0.85
+_LENGTH_SCALE_MAX = 1.15
 
 
 class PocketTtsService:
@@ -108,6 +197,41 @@ class PocketTtsService:
         self._cache_lock = threading.Lock()
         self._pcm_listener: PcmListener | None = pcm_listener
         self._clip_end_listener: PcmEndListener | None = clip_end_listener
+        # Layer 1a: global pacing knob fed by ``assistant.tts_length_scale``.
+        # ``set_length_scale`` clamps this to ``[_LENGTH_SCALE_MIN,
+        # _LENGTH_SCALE_MAX]`` and ``speak_async`` divides the requested
+        # speed by it (length_scale > 1.0 = slower; < 1.0 = faster).
+        self._length_scale: float = 1.0
+        # Layer 1c: per-call temperature override. Pocket-TTS reads
+        # ``model.temp`` at every ``generate_audio`` call so we can
+        # mutate it under ``self._lock`` immediately before each
+        # generation and reset back to ``_temp_baseline`` after.
+        # Gated by :meth:`set_runtime_temp_enabled` -- default OFF so
+        # the engine sticks to the configured baseline on every call.
+        # Pocket-TTS is sensitive enough to temperature that even a
+        # ±0.05 excursion can introduce pitch artefacts on some
+        # voices; the user-facing ``agent.tts_runtime_temp_enabled``
+        # setting flips it on once a voice has been validated.
+        self._temp_baseline: float = float(
+            getattr(settings, "pocket_tts_temp", 0.7) or 0.7
+        )
+        self._runtime_temp_enabled: bool = False
+        # Layer 5 gate: per-reaction speed sub-caps + cadence-supplied
+        # ``speed_hint`` are silenced unless this is flipped on. Default
+        # OFF so every sentence plays at the engine's tuned 1.0×
+        # baseline. Pocket-TTS implements speed by scaling the playback
+        # ``sample_rate`` -- a varispeed effect that couples speed and
+        # pitch (10% faster ≈ 1.6 semitones higher). With per-reaction
+        # caps active, that pitch-couples to the affect channel and
+        # the user perceives "her voice keeps changing" between
+        # sentences. The user-facing
+        # ``agent.tts_runtime_speed_enabled`` flips it back on once a
+        # voice has been validated to handle the band gracefully. The
+        # user's pacing slider (``assistant.tts_length_scale``) is
+        # always honoured regardless of this gate -- it's a
+        # deliberate, static, user-controlled knob, not per-sentence
+        # affect drift.
+        self._runtime_speed_enabled: bool = False
 
         if TTSModel is not None and np is not None:
             threading.Thread(target=self._load_model, daemon=True, name="pocket-tts-load").start()
@@ -269,6 +393,112 @@ class PocketTtsService:
             return 1.0
         return _REACTION_SPEED.get((reaction or "").strip().lower(), 1.0)
 
+    # Layer 1a: pacing slider. Wired from
+    # :meth:`SessionController._apply_assistant_preferences` so the
+    # ``assistant.tts_length_scale`` setting actually changes playback
+    # rate at runtime instead of silently doing nothing.
+    def set_length_scale(self, scale: float) -> None:
+        """Set the global pacing multiplier.
+
+        Values > 1.0 slow speech down; values < 1.0 speed it up.
+        Clamped to ``[_LENGTH_SCALE_MIN, _LENGTH_SCALE_MAX]``. The
+        scale is divided into the requested speed at synthesis time
+        so it stacks multiplicatively with the per-reaction baseline
+        and the cadence layer's per-sentence ``speed_hint``.
+        """
+        try:
+            value = float(scale)
+        except (TypeError, ValueError):
+            value = 1.0
+        if value <= 0.0:
+            value = 1.0
+        self._length_scale = max(
+            _LENGTH_SCALE_MIN, min(_LENGTH_SCALE_MAX, value),
+        )
+
+    def get_length_scale(self) -> float:
+        return self._length_scale
+
+    def set_runtime_temp_enabled(self, enabled: bool) -> None:
+        """Layer 1c gate: enable or disable per-reaction ``model.temp`` mutation.
+
+        Default is ``False`` (disabled) -- the engine stays on the
+        configured baseline temperature on every call. Wired from
+        :meth:`SessionController._apply_assistant_preferences` so the
+        ``agent.tts_runtime_temp_enabled`` setting takes effect at
+        startup and on subsequent settings reloads. An explicit
+        ``temp=`` kwarg on :meth:`speak_async` still overrides the
+        baseline regardless of this gate -- the gate only governs
+        whether the per-reaction *delta* table is applied.
+        """
+        self._runtime_temp_enabled = bool(enabled)
+
+    def get_runtime_temp_enabled(self) -> bool:
+        return self._runtime_temp_enabled
+
+    def set_runtime_speed_enabled(self, enabled: bool) -> None:
+        """Layer 5 gate: enable or disable per-reaction speed jitter.
+
+        Default ``False``. When OFF, :meth:`speak_async` ignores both
+        the cadence layer's ``speed_hint`` AND the per-reaction
+        sub-cap table, pinning every sentence to ``1.0×`` before the
+        user's :attr:`_length_scale` is applied. Pocket-TTS implements
+        speed via ``sample_rate`` scaling, so per-sentence speed
+        variation also pitches the voice -- with the gate on it
+        sounds like the model swapped voices between sentences. The
+        gate flips back on through ``agent.tts_runtime_speed_enabled``
+        once a voice has been listened-tested through
+        ``tools/tts_speed_ab.py`` at the proposed band.
+        """
+        self._runtime_speed_enabled = bool(enabled)
+
+    def get_runtime_speed_enabled(self) -> bool:
+        return self._runtime_speed_enabled
+
+    @staticmethod
+    def _gain_db_to_factor(gain_db: float) -> float:
+        """Convert a dB offset to an Int16 sample multiplier.
+
+        Clamped to ``[-12, +6]`` dB so a runaway caller can never
+        scale samples enough to clip the entire clip into noise (the
+        PCM step ``np.clip(..., -1.0, 1.0)`` already saturates loud
+        peaks; this clamp keeps quiet clips from being amplified into
+        a wall of noise either).
+        """
+        try:
+            value = float(gain_db)
+        except (TypeError, ValueError):
+            return 1.0
+        value = max(-12.0, min(6.0, value))
+        if abs(value) < 1e-3:
+            return 1.0
+        return float(10.0 ** (value / 20.0))
+
+    def _resolve_runtime_temp(
+        self, reaction: str | None, override: float | None,
+    ) -> float:
+        """Combine baseline temp + per-reaction delta + caller override.
+
+        Caller override wins when supplied; otherwise -- and only
+        when :attr:`_runtime_temp_enabled` is true -- we apply the
+        :data:`_REACTION_TEMP_DELTA` adjustment on top of the
+        baseline. With the gate off (the default) the baseline is
+        returned untouched. Always clamped to ``[_TEMP_MIN, _TEMP_MAX]``.
+        """
+        if override is not None:
+            try:
+                value = float(override)
+            except (TypeError, ValueError):
+                value = self._temp_baseline
+        elif self._runtime_temp_enabled:
+            delta = _REACTION_TEMP_DELTA.get(
+                (reaction or "").strip().lower(), 0.0,
+            )
+            value = self._temp_baseline + float(delta)
+        else:
+            value = self._temp_baseline
+        return max(_TEMP_MIN, min(_TEMP_MAX, value))
+
     def speak_async(
         self,
         text: str,
@@ -277,38 +507,188 @@ class PocketTtsService:
         on_amplitude: Callable[[float], None] | None = None,
         *,
         speed: float | None = None,
+        gain_db: float = 0.0,
+        temp: float | None = None,
     ) -> None:
         """Synthesise and play ``text``.
 
         ``speed`` (when provided) overrides the reaction-derived
         baseline so the cadence layer can apply per-sentence nudges on
-        top of the per-reaction default. Final value is clamped to
-        ``[_SPEED_MIN, _SPEED_MAX]`` to avoid pitch artefacts.
+        top of the per-reaction default. Final value is clamped to the
+        per-reaction sub-cap from :func:`_resolve_speed_caps` (and the
+        global ``[_SPEED_MIN, _SPEED_MAX]`` envelope), then divided by
+        :attr:`_length_scale` so the user's pacing slider stacks
+        multiplicatively.
+
+        ``gain_db`` (Layer 1b / Layer 3) is a small dB offset applied
+        to the Int16 PCM samples just before the listener emits them.
+        ``+`` boosts (e.g. ``firm``); ``-`` attenuates (e.g.
+        ``whisper`` / ambient-noise compensation). Clamped to
+        ``[-12, +6]`` dB.
+
+        ``temp`` (Layer 1c) overrides the per-reaction temperature
+        delta. ``None`` uses the reaction-derived value; an explicit
+        float pins generation stochasticity for this one call.
         """
         if not self._settings.enabled or not (text or "").strip():
             return
         self._stop_requested.clear()
-        if speed is None:
-            final_speed = self.reaction_to_speed(reaction)
+        if not self._runtime_speed_enabled:
+            # Gate OFF (default): pin every sentence to 1.0× before
+            # length-scale. Per-reaction sub-caps and any caller-
+            # supplied ``speed=`` from the cadence layer are ignored
+            # so the voice stays at the engine's tuned baseline pitch
+            # across the whole reply. The user's pacing slider
+            # (``_length_scale``) still applies below.
+            final_speed = 1.0
         else:
-            try:
-                final_speed = float(speed)
-            except (TypeError, ValueError):
+            if speed is None:
                 final_speed = self.reaction_to_speed(reaction)
+            else:
+                try:
+                    final_speed = float(speed)
+                except (TypeError, ValueError):
+                    final_speed = self.reaction_to_speed(reaction)
+            # Per-reaction sub-cap first, then the global outer envelope.
+            sub_min, sub_max = _resolve_speed_caps(reaction)
+            final_speed = max(sub_min, min(sub_max, final_speed))
+            final_speed = max(_SPEED_MIN, min(_SPEED_MAX, final_speed))
+        # Length-scale stacks AFTER the reaction clamp so a slow user
+        # pacing setting doesn't fight the per-reaction floor (cry
+        # already sits near 0.92; dividing by 1.10 lands at ~0.84,
+        # which is below ``_SPEED_MIN`` -- the final clamp below
+        # catches that case so we never produce unsafe values).
+        if abs(self._length_scale - 1.0) > 1e-3:
+            final_speed = final_speed / self._length_scale
         final_speed = max(_SPEED_MIN, min(_SPEED_MAX, final_speed))
+        gain_factor = self._gain_db_to_factor(gain_db)
+        runtime_temp = self._resolve_runtime_temp(reaction, temp)
         self._speech_thread = threading.Thread(
             target=self._speak_worker,
-            args=(text.strip(), on_done, final_speed, on_amplitude),
+            args=(
+                text.strip(),
+                on_done,
+                final_speed,
+                on_amplitude,
+                gain_factor,
+                runtime_temp,
+            ),
             daemon=True,
         )
         self._speech_thread.start()
 
-    def _cache_key(self, text: str, speed: float) -> str:
-        return f"{text}||{speed:.3f}"
+    def speak_silence_async(
+        self,
+        ms: int,
+        on_done: Callable[[], None] | None = None,
+    ) -> None:
+        """Layer 2: emit ``ms`` milliseconds of silent PCM.
 
-    def generate_audio(self, text: str, speed: float = 1.0) -> tuple | None:
-        """Generate audio, returning (numpy_array, sample_rate) or None."""
-        key = self._cache_key(text, speed)
+        Used by :class:`TtsQueue.enqueue_silence` to splice real timed
+        gaps between text chunks (vs the legacy ellipsis-rewrite trick
+        in ``_apply_text_pauses``). Cap is enforced upstream
+        (``TtsQueue`` clamps to 1500 ms); we just guard against
+        zero / negative values here.
+        """
+        if not self._settings.enabled or ms is None:
+            self._fire_silence_done(on_done)
+            return
+        try:
+            duration_ms = int(ms)
+        except (TypeError, ValueError):
+            duration_ms = 0
+        if duration_ms <= 0:
+            self._fire_silence_done(on_done)
+            return
+        self._stop_requested.clear()
+        self._speech_thread = threading.Thread(
+            target=self._silence_worker,
+            args=(duration_ms, on_done),
+            daemon=True,
+            name="pocket-tts-silence",
+        )
+        self._speech_thread.start()
+
+    def _silence_worker(
+        self,
+        duration_ms: int,
+        on_done: Callable[[], None] | None,
+    ) -> None:
+        sample_rate = 24000
+        with self._lock:
+            model = self._model
+        if model is not None:
+            try:
+                sample_rate = int(model.sample_rate)
+            except Exception:
+                sample_rate = 24000
+        try:
+            n_samples = max(1, int(sample_rate * duration_ms / 1000.0))
+            # Deadline-based wait: the queue advances when ``on_done``
+            # fires, so the total wall-clock between enqueue_silence
+            # and the next text chunk MUST equal ``duration_ms``. The
+            # original implementation called ``_emit_pcm`` (which
+            # paces frames in real-time after a 5-chunk pre-roll) and
+            # then ALSO slept for the full duration, doubling the
+            # gap on long pauses (e.g. 600 ms requested -> ~950 ms
+            # actual). The user reported "big echo / hall feel" on
+            # multi-sentence replies; this was the underlying timing
+            # bug. Now we record the start, run ``_emit_pcm`` (which
+            # may itself take some of the budget), and wait out only
+            # the *remaining* slice up to the deadline.
+            emit_t0 = time.monotonic()
+            if np is not None:
+                silence = np.zeros(n_samples, dtype=np.float32)
+                self._emit_pcm(silence, sample_rate)
+            deadline = emit_t0 + (duration_ms / 1000.0)
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    break
+                if self._stop_requested.wait(timeout=min(remaining, 0.05)):
+                    break
+        except Exception:
+            log.debug("silence emission failed", exc_info=True)
+        finally:
+            self._fire_silence_done(on_done)
+
+    @staticmethod
+    def _fire_silence_done(on_done: Callable[[], None] | None) -> None:
+        if on_done is None:
+            return
+        try:
+            on_done()
+        except Exception:
+            pass
+
+    def _cache_key(self, text: str, speed: float, temp: float = 0.0) -> str:
+        # ``temp`` participates in the cache key only when a non-default
+        # value is in effect (Layer 1c per-reaction delta or caller
+        # override). Stays out of the key for the bulk of calls so the
+        # baseline cache hit rate doesn't regress.
+        if abs(temp - self._temp_baseline) < 1e-3:
+            return f"{text}||{speed:.3f}"
+        return f"{text}||{speed:.3f}||t{temp:.3f}"
+
+    def generate_audio(
+        self,
+        text: str,
+        speed: float = 1.0,
+        *,
+        temp: float | None = None,
+    ) -> tuple | None:
+        """Generate audio, returning (numpy_array, sample_rate) or None.
+
+        Layer 1c: ``temp`` (when provided) is applied to ``model.temp``
+        for the duration of this generation under :attr:`_lock`, then
+        the baseline value is restored. A ``None`` ``temp`` keeps the
+        baseline in place — the path the lookahead synthesiser takes
+        when it doesn't know the reaction yet.
+        """
+        runtime_temp = (
+            float(temp) if temp is not None else self._temp_baseline
+        )
+        key = self._cache_key(text, speed, runtime_temp)
         with self._cache_lock:
             cached = self._audio_cache.get(key)
             if cached is not None:
@@ -319,10 +699,25 @@ class PocketTtsService:
         with self._lock:
             model = self._model
             voice_state = self._voice_state
-        if model is None or voice_state is None or np is None:
-            return None
-
-        audio_tensor = model.generate_audio(voice_state, text, copy_state=True)
+            if model is None or voice_state is None or np is None:
+                return None
+            prior_temp = float(getattr(model, "temp", self._temp_baseline))
+            temp_changed = abs(runtime_temp - prior_temp) > 1e-3
+            if temp_changed:
+                try:
+                    model.temp = runtime_temp
+                except Exception:
+                    temp_changed = False
+            try:
+                audio_tensor = model.generate_audio(
+                    voice_state, text, copy_state=True,
+                )
+            finally:
+                if temp_changed:
+                    try:
+                        model.temp = prior_temp
+                    except Exception:
+                        pass
         audio_data = audio_tensor.numpy().astype(np.float32)
         if audio_data.size == 0:
             return None
@@ -342,23 +737,36 @@ class PocketTtsService:
         on_done: Callable[[], None] | None = None,
         speed: float = 1.0,
         on_amplitude: Callable[[float], None] | None = None,
+        gain_factor: float = 1.0,
+        runtime_temp: float | None = None,
     ) -> None:
         amplitude_thread: threading.Thread | None = None
         amplitude_stop = threading.Event()
         chunk_chars = len(text)
         gen_t0 = time.monotonic()
         log.debug(
-            "TTS enqueue: chunk_chars=%d speed=%.2f", chunk_chars, speed,
+            "TTS enqueue: chunk_chars=%d speed=%.2f gain=%.2fx temp=%.2f",
+            chunk_chars,
+            speed,
+            float(gain_factor),
+            float(runtime_temp if runtime_temp is not None else self._temp_baseline),
         )
         played_ms = 0.0
         playback_duration_s = 0.0
         try:
-            result = self.generate_audio(text, speed)
+            result = self.generate_audio(text, speed, temp=runtime_temp)
             if result is None or self._stop_requested.is_set():
                 return
             audio_data, sample_rate = result
             with self._cache_lock:
-                self._audio_cache.pop(self._cache_key(text, speed), None)
+                self._audio_cache.pop(
+                    self._cache_key(
+                        text,
+                        speed,
+                        runtime_temp if runtime_temp is not None else self._temp_baseline,
+                    ),
+                    None,
+                )
 
             silence = np.zeros(int(sample_rate * 0.15), dtype=np.float32)
             audio_data = np.concatenate([audio_data, silence])
@@ -387,7 +795,7 @@ class PocketTtsService:
                 )
                 amplitude_thread.start()
 
-            self._emit_pcm(audio_data, playback_rate)
+            self._emit_pcm(audio_data, playback_rate, gain_factor=gain_factor)
 
             # ``_emit_pcm`` returns the moment the bytes leave the WS;
             # the actual playback on the client takes
@@ -445,13 +853,27 @@ class PocketTtsService:
     # that the avatar render thread doesn't stutter.
     _PRE_ROLL_CHUNKS: int = 5
 
-    def _emit_pcm(self, audio: "np.ndarray", sample_rate: int) -> None:
+    def _emit_pcm(
+        self,
+        audio: "np.ndarray",
+        sample_rate: int,
+        *,
+        gain_factor: float = 1.0,
+    ) -> None:
         """Push the synthesised clip out through ``pcm_listener``.
 
         Audio arrives as float32 in roughly ``[-1, 1]``. We convert to
         Int16 LE in 50 ms slices and call the listener once per slice;
         an empty bytes payload follows so the client knows the clip is
         finished and can flush its scheduler.
+
+        Layer 1b / Layer 3: ``gain_factor`` (default 1.0) is a linear
+        sample multiplier applied before the float-to-Int16 conversion.
+        Values < 1.0 attenuate (whisper / soft prosody / quiet rooms);
+        values > 1.0 boost (firm prosody / noisy rooms). The
+        ``np.clip(..., -1.0, 1.0)`` saturation below already handles
+        peaks for boosts; the caller is expected to keep ``gain_factor``
+        inside the range produced by :meth:`_gain_db_to_factor`.
 
         After an initial pre-roll of :attr:`_PRE_ROLL_CHUNKS` slices,
         the rest of the chunks are paced at real-time wall-clock so
@@ -488,7 +910,14 @@ class PocketTtsService:
         # client only needs to know the effective sample rate.
         chunk_samples = max(1, int(sample_rate * self._EMIT_CHUNK_SECONDS))
         total = flat.size
-        scaled = np.clip(flat, -1.0, 1.0) * 32767.0
+        # Apply the gain factor BEFORE the saturation clip so a +6 dB
+        # boost lifts quiet samples without smearing the peaks beyond
+        # the safe range. ``flat * gain_factor`` is implicit by the
+        # multiply below (np broadcast); fold it into the pre-clip step.
+        if abs(float(gain_factor) - 1.0) > 1e-3:
+            scaled = np.clip(flat * float(gain_factor), -1.0, 1.0) * 32767.0
+        else:
+            scaled = np.clip(flat, -1.0, 1.0) * 32767.0
         # Astype rounds toward zero — use ``.round()`` first so the
         # quietest samples don't all collapse to zero asymmetrically.
         pcm16 = scaled.round().astype(np.int16, copy=False)

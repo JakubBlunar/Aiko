@@ -88,12 +88,16 @@ forgotten.
   cloud voice would let users pick a different timbre / language without
   swapping the whole pipeline. The `TtsEngine` protocol in
   [`app/tts/base.py`](../../app/tts/base.py) is the extension point.
-- **SSML prosody for emotional speech.** Pocket-TTS supports speed +
-  pitch but not full SSML; the prosody dispatcher in
-  [`app/core/cadence.py`](../../app/core/cadence.py) does what it can
-  with per-sentence reaction overrides. A real SSML pass — emphasis on
-  key words, micro-pauses tied to commas, pitch contour for excitement
-  — would be a much bigger expression bump than a new voice file.
+- **SSML prosody for emotional speech.** _Shipped_ — see the
+  "Aiko expressive speech (Pocket-TTS prosody overlay)" entry in
+  [`shipped.md`](shipped.md). Pocket-TTS still doesn't accept SSML
+  natively, so the rollout instead wired the dormant knobs
+  (`tts_length_scale`, ambient volume gain, runtime temperature),
+  added real timed pauses, introduced a per-sentence
+  `[[prosody:whisper|soft|slow|fast|firm]]` markup family, expanded
+  the earcon palette (chuckle / soft_sigh / sharp_gasp / breath /
+  mm) with auto-sprinkle on sad openers, and widened the speed
+  clamp to ±12% with per-reaction sub-caps. All CPU, no new model.
 - **Barge-in enabled by default for Live mode.** Currently
   `audio.barge_in_enabled: false` in [`config/default.json`](../../config/default.json).
   The plumbing is there in [`app/core/live_session.py`](../../app/core/live_session.py);

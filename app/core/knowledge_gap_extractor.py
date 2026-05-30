@@ -212,11 +212,20 @@ class KnowledgeGapStore:
         gap_id: int,
         *,
         answer_memory_id: int | None,
+        resolved_by: str | None = None,
+        similarity: float | None = None,
     ) -> bool:
         """Stamp ``resolved_at`` on the gap row.
 
         The companion answer memory (if any) is identified by
         ``answer_memory_id`` so the UI / fact-checker can backlink.
+        ``resolved_by`` is a free-form audit string identifying which
+        path closed the gap (``"fact_checker"`` for F1, ``"memory_match"``
+        for the F2.1 idle resolver, ``"user_answer"`` for the post-turn
+        path). ``similarity`` is the cosine score that triggered the
+        match, when applicable. Both are optional and merge into
+        existing metadata so older callers stay backward compatible.
+
         Returns True if the row was updated, False otherwise (e.g.
         the id no longer exists).
         """
@@ -226,6 +235,13 @@ class KnowledgeGapStore:
         meta: dict[str, Any] = {"resolved_at": _now_iso()}
         if answer_memory_id is not None:
             meta["resolved_by_memory_id"] = int(answer_memory_id)
+        if resolved_by:
+            meta["resolved_by"] = str(resolved_by).strip()
+        if similarity is not None:
+            try:
+                meta["resolved_similarity"] = round(float(similarity), 4)
+            except (TypeError, ValueError):
+                pass
         try:
             self._memory_store.update(
                 int(gap_id),

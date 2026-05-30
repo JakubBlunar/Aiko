@@ -142,6 +142,117 @@ class PostTurnMixin:
                         exc_info=True,
                     )
 
+    # ── F2.1: post-turn user-answer gap resolver ─────────────────────
+
+    def _resolve_knowledge_gaps(  # noqa: C901
+        self,
+        *,
+        user_text: str,
+        assistant_text: str,
+    ) -> None:
+        """F2.1: stamp ``resolved_at`` on any open gap the turn answered.
+
+        Mirrors :meth:`_resolve_curiosity_seeds` but for
+        ``knowledge_gap`` rows. Embeds the combined ``user_text +
+        assistant_text`` once and cosines it against every open gap's
+        stored embedding. Any gap scoring above
+        ``agent.gap_user_answer_resolve_threshold`` (default 0.50) is
+        marked resolved with ``metadata.resolved_by="user_answer"``.
+
+        Why pair this with the idle :class:`IdleGapResolver`:
+          * **This path** catches the answer the moment the user
+            speaks it — the gap closes within one turn of being asked.
+          * **The worker path** mops up gaps whose answer arrives via
+            the post-summary ``MemoryExtractor`` (which writes a
+            fresh ``preference`` / ``fact`` row hours later).
+
+        No-op when the gap store is missing, when no gaps are open,
+        or when the embedder isn't available — stays cheap on the
+        cold path.
+        """
+        gap_store = getattr(self, "_knowledge_gap_store", None)
+        embedder = getattr(self, "_embedder", None)
+        if gap_store is None or embedder is None:
+            return
+        try:
+            open_gaps = gap_store.list_open()
+        except Exception:
+            return
+        active = [
+            gap for gap in open_gaps
+            if gap.embedding is not None and gap.embedding.size > 0
+        ]
+        if not active:
+            return
+        combined = " ".join(
+            part for part in (user_text or "", assistant_text or "")
+            if part and part.strip()
+        ).strip()
+        if not combined or len(combined) < 4:
+            return
+        try:
+            turn_vec = embedder.embed(combined)
+        except Exception:
+            log.debug(
+                "knowledge_gap resolve: embed failed", exc_info=True,
+            )
+            return
+        if turn_vec is None or turn_vec.size == 0:
+            return
+        threshold = float(
+            getattr(
+                self._settings.agent,
+                "gap_user_answer_resolve_threshold",
+                0.50,
+            )
+        )
+        for gap in active:
+            try:
+                sim = float((turn_vec * gap.embedding).sum())
+            except Exception:
+                continue
+            if sim < threshold:
+                continue
+            try:
+                ok = gap_store.mark_resolved(
+                    int(gap.id),
+                    answer_memory_id=None,
+                    resolved_by="user_answer",
+                    similarity=sim,
+                )
+            except Exception:
+                log.debug(
+                    "knowledge_gap mark_resolved failed (id=%s)",
+                    gap.id,
+                    exc_info=True,
+                )
+                continue
+            if not ok:
+                continue
+            log.info(
+                "knowledge_gap resolved: id=%s sim=%.2f topic=%r gap=%r",
+                gap.id,
+                sim,
+                ((gap.metadata or {}).get("topic")
+                 or "")[:40],
+                (gap.content or "")[:80],
+            )
+            try:
+                fresh = self._memory_store.get(int(gap.id))
+            except Exception:
+                fresh = None
+            if (
+                fresh is not None
+                and self._notify_memory_updated is not None
+            ):
+                try:
+                    self._notify_memory_updated(fresh.to_dict())
+                except Exception:
+                    log.debug(
+                        "knowledge_gap notify_updated failed",
+                        exc_info=True,
+                    )
+
     # ── Schema v8 revival detection (E2) ────────────────────────────
 
     # Tiny stopword list scoped to the revival overlap check. We only
@@ -297,6 +408,36 @@ class PostTurnMixin:
             )
         except Exception:
             log.debug("curiosity seed auto-resolve failed", exc_info=True)
+
+        # F2.1: auto-resolve any open knowledge_gap the user just
+        # answered. Same shape as the seed resolver above; reuses the
+        # combined user+assistant embedding budget (one embed per turn
+        # total whether seeds and gaps both run or only one does).
+        try:
+            self._resolve_knowledge_gaps(
+                user_text=user_text,
+                assistant_text=assistant_text,
+            )
+        except Exception:
+            log.debug(
+                "knowledge_gap auto-resolve failed", exc_info=True,
+            )
+
+        # Anti-rut layer: feed the AikoStylePatternTracker the
+        # *stripped* spoken text (``assistant_text``, not
+        # ``raw_assistant_text``) so we measure what the user heard,
+        # not the raw model output with meta tags. Per-turn cost is a
+        # deque append plus three short scans; the next turn's prompt
+        # may carry an opener / question / length cue if a band trips.
+        tracker = getattr(self, "_aiko_style_tracker", None)
+        if tracker is not None and assistant_text:
+            try:
+                tracker.record_turn(assistant_text)
+            except Exception:
+                log.debug(
+                    "aiko style tracker record_turn failed",
+                    exc_info=True,
+                )
 
         # Phase 2c: schedule a reflection during TTS playback.
         worker = getattr(self, "_reflection_worker", None)

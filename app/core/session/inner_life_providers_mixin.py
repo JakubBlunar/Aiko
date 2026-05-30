@@ -229,12 +229,24 @@ class InnerLifeProvidersMixin:
         # Phase 4b: ambient-noise speed multiplier. Default 1.0 (quiet
         # room); the EMA tracker returns a slightly lower value when
         # the room is loud so spoken cadence slows a hair.
+        # Layer 1b: same tracker also exposes a small dB volume
+        # nudge (0.0 in quiet rooms, up to +1.5 dB in very-noisy
+        # rooms). Plumbed into the gain pipeline by
+        # ``analyze_sentence`` / ``ProsodyDispatcher._apply``.
         tracker = getattr(self, "_ambient_noise", None)
         if tracker is not None:
             try:
                 ctx.ambient_noise_speed = float(tracker.tts_speed_multiplier())
             except Exception:
                 log.debug("cadence ambient-noise lookup failed", exc_info=True)
+            try:
+                ctx.ambient_volume_db_offset = float(
+                    tracker.tts_volume_db_offset()
+                )
+            except Exception:
+                log.debug(
+                    "cadence ambient-volume lookup failed", exc_info=True,
+                )
         return ctx
 
     def _render_user_profile_block(self) -> str:
@@ -495,6 +507,39 @@ class InnerLifeProvidersMixin:
             )
         except Exception:
             log.debug("topic stagnation block render failed", exc_info=True)
+            return ""
+
+    def _render_style_pattern_block(self) -> str:
+        """Anti-rut layer: surface a one-line style nudge for Aiko.
+
+        The :class:`AikoStylePatternTracker` has been fed the previous
+        turn's stripped reply by the post-turn pipeline. Here we just
+        ask it what it sees -- opener-rut, question-saturation, or
+        length-sprawl -- and render the matching cue. Empty string
+        when the tracker is disabled, in warmup, in cooldown, or no
+        band tripped, which is the common case so the block disappears
+        entirely on most turns.
+        """
+        if not bool(
+            getattr(self._settings.agent, "style_tracker_enabled", True)
+        ):
+            return ""
+        tracker = getattr(self, "_aiko_style_tracker", None)
+        if tracker is None:
+            return ""
+        try:
+            result = tracker.detect()
+        except Exception:
+            log.debug("aiko style tracker raised", exc_info=True)
+            return ""
+        if result is None:
+            return ""
+        try:
+            from app.core.aiko_style_tracker import render_inner_life_block
+
+            return render_inner_life_block(result)
+        except Exception:
+            log.debug("aiko style block render failed", exc_info=True)
             return ""
 
     def _render_curiosity_seeds_block(self) -> str:
