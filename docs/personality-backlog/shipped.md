@@ -1999,3 +1999,201 @@ via grep over `tests/`).
 - [`docs/configuration.md`](../configuration.md) — cheatsheet row +
   K7 subsection.
 
+## K22. Callback / inside-joke detector (post-turn cosine pass + read-side bonus)
+
+Closes the loop on the single most-felt companion-AI gracenote we
+were previously throwing away: when Aiko successfully references a
+beat from sessions ago (a phrase the user introduced, an old shared
+moment, an in-joke), that's a high-signal authenticity event the
+infrastructure had no machinery for. K22 detects it post-turn,
+stamps the row as "Aiko successfully called this back", and
+reinforces future surfacing of the same memory through the existing
+RAG ranking — so over weeks the memories Aiko has actually managed
+to weave back in compound their advantage.
+
+### Posture: pure mechanics, no inner-life cue
+
+The reinforcement is **invisible to the LLM by design**. No
+inner-life provider says "you just made a callback"; no persona
+rule mentions the metadata. The whole effect rides the retriever's
+read-side bonus on rows with `metadata.callback_count >= 1`, which
+makes those rows surface more often in future contexts, which makes
+the model naturally lean on them more — a virtuous loop without
+meta-narration.
+
+The alternative (a cue like "Heads-up: the thing you just said was
+a callback to memory #42") was deliberately rejected: explicit
+awareness would lead to performative "hey, glad I remembered that"
+beats, which is the *opposite* of what the feature is for. The
+authenticity comes from the callback feeling like Aiko's natural
+preference, not from her flagging the cleverness.
+
+### Decision flow
+
+```mermaid
+flowchart TD
+    Reply["Aiko reply emitted (post-turn)"] --> Enabled{agent.callback_detector_enabled?}
+    Enabled -->|no| Skip[no-op]
+    Enabled -->|yes| LenGate{assistant_text >= 12 chars?}
+    LenGate -->|no| Skip
+    LenGate -->|yes| Embed[Embed assistant_text only]
+    Embed --> Candidates["Walk memory mirror: kind in CALLBACK_KINDS, age > floor_days, embedding present"]
+    Candidates --> Cosine["Cosine vs each candidate"]
+    Cosine --> Filter["Filter cosine >= threshold and not on cooldown"]
+    Filter --> TopK[Sort by similarity, take top_k]
+    TopK --> Stamp["For each hit: metadata.callback_count++, salience += bump, revival_score += bump, last_callback_at=now"]
+    Stamp --> RAG["Next turn: RagRetriever adds small bonus when callback_count >= 1"]
+```
+
+### Detector module
+
+New [`app/core/callback_detector.py`](../../app/core/callback_detector.py)
+— a stateless module exposing `detect()` + `record()` + a
+`CallbackHit` dataclass, modelled on the shape of the K8
+([`affect_rupture_detector`](../../app/core/affect_rupture_detector.py))
+and K17 ([`clarification_detector`](../../app/core/clarification_detector.py))
+modules. No class, no per-session state — all persistence rides the
+existing `Memory.metadata` JSON column. No schema change.
+
+Allow-list of eligible kinds (`CALLBACK_KINDS` constant):
+
+- `fact`, `preference`, `event`, `relationship` — durable knowledge
+- `self`, `self_tagged` — Aiko's own self-disclosures (valid callback
+  targets: "I told you last week I get nervous around new people")
+- `shared_moment` — the J-series moment infrastructure
+- `catchphrase` — the H-series recurring phrase miner
+
+Explicitly **excluded**: `curiosity_seed`, `knowledge_gap`,
+`open_question`, `agenda`, `promise`, `goal`, `goal_progress`,
+`milestone`. Those are dynamic-state rows owned by other workers,
+not the right targets for "she remembered the silly thing I said".
+
+### Post-turn wire-in
+
+Inside
+[`_post_turn_inner_life`](../../app/core/session/post_turn_mixin.py),
+the detector runs right after `_resolve_curiosity_seeds` /
+`_resolve_knowledge_gaps` (so the cheaper revival-tokens pass
+already ran). It embeds the assistant text only — the user-said-X
+signal is already covered by the existing
+[`_mark_revived_memories`](../../app/core/session/post_turn_mixin.py)
+path that fires on user-side keyword overlap. K22 specifically
+measures what *Aiko* successfully reached back to in her reply.
+
+Cost: one Ollama `/api/embeddings` call (~1-5ms warm) + N cosines
+(N ≤ ~5000 mirror size, ~10ms NumPy). Sits on the post-turn thread,
+never blocks TTS.
+
+### RAG retriever read-side bonus
+
+Single new constant in
+[`app/core/rag_retriever.py`](../../app/core/rag_retriever.py):
+
+```python
+_RAG_CALLBACK_BONUS = 0.04
+```
+
+Branch inside the existing memory-join block (same join walk that
+applies pinned / anniversary / tier / confidence / goal-alignment
+adjustments). Single-step bonus — `callback_count == 1` and
+`callback_count == 50` both earn the same `+0.04`. The compounding
+loop lives on the **salience bump** applied at record time, not on
+per-count bonus scaling, so hot-spot memories can't permanently
+dominate the retriever just by accumulating high counts.
+
+The bonus is **always-on** once a row has `callback_count >= 1` —
+the settings only gate the *write* side. Flipping
+`agent.callback_detector_enabled=false` freezes the loop (no new
+stamps) without erasing earned weight on already-stamped rows.
+
+### Settings
+
+One new master switch on
+[`AgentSettings`](../../app/core/settings.py):
+
+- `agent.callback_detector_enabled` (default `true`)
+
+Six new knobs on [`MemorySettings`](../../app/core/settings.py):
+
+- `memory.callback_age_floor_days` (default `3`, min `1`) — strict
+  `<` against age in days; rows from the same recent thread aren't
+  callbacks.
+- `memory.callback_similarity_threshold` (default `0.55`, clamped
+  `[0, 1]`) — same magnitude as K6 `strong_novelty`.
+- `memory.callback_max_hits_per_turn` (default `3`, min `1`).
+- `memory.callback_cooldown_hours` (default `24`, min `1`) — per-row
+  cooldown to prevent back-to-back spam.
+- `memory.callback_salience_bump` (default `0.05`, clamped
+  `[0, 0.5]`). Store auto-clamps the result to `[0, 1]`.
+- `memory.callback_revival_bump` (default `0.10`, clamped `[0, 1]`).
+  Acts as a tier-promotion signal alongside the salience bump.
+
+Full docs in
+[`docs/configuration.md`](../configuration.md#k22--callback--inside-joke-detector).
+
+### Why no MCP / persona / frontend
+
+- **MCP**: `tail_logs(module_contains="callback")` shows every
+  detector scan (`candidates=N kept=M top_sim=...`) and every
+  successful stamp (`callback: id=X kind=Y sim=Z count=A->B`).
+  Adding a dedicated MCP tool wouldn't tell us anything the existing
+  log surface doesn't.
+- **Persona**: no edits — the whole point is that the LLM stays
+  unaware of the callback machinery.
+- **Frontend**: no UI surface. A future Memory drawer "sort by
+  callback count" column would be a nice-to-have but is explicitly
+  out of scope for this ticket.
+
+### Compounds with
+
+- **K1 (long-term goals)**: a goal whose `metadata.callback_count`
+  is rising is one Aiko is actually sustaining in conversation,
+  versus one that's only a written intention. Worth surfacing on a
+  future goals-UI sort if we add it.
+- **K7 (forgetting protocol)**: salience-bumped called-back rows
+  drift away from the `(faded)` threshold, so memories Aiko keeps
+  reaching for stay crisp while peers genuinely fade.
+- **H-series catchphrase miner**: catchphrases are eligible
+  callback targets, so the loop reinforces "shared lexicon Aiko has
+  actually picked up" specifically.
+- **K22 with itself**: the read-side bonus + salience bump compound
+  every turn the same memory gets called back, creating an
+  emergent "she keeps reaching for this beat" pattern over weeks.
+
+### Tests
+
+- [`tests/test_callback_detector.py`](../../tests/test_callback_detector.py)
+  — 16 cases across `detect()` (allow-list, age floor, cooldown,
+  threshold, top-K cap, sort order, missing embedding, prior-count
+  passthrough) and `record()` (count increment, prior-count
+  preservation, salience/revival clamps, notify callback, empty
+  hits, zero-bumps still increments, raising notify doesn't break).
+- [`tests/test_rag_retriever_callback_bonus.py`](../../tests/test_rag_retriever_callback_bonus.py)
+  — 6 cases on the retriever join: bonus on count=1, no bonus on
+  count=0, no bonus on missing metadata, compounds with pinned,
+  single-step regardless of high counts, malformed count is treated
+  as zero.
+- Extension to
+  [`tests/test_settings.py`](../../tests/test_settings.py)
+  `CallbackDetectorSettingsTests` — defaults round-trip, overrides
+  round-trip, all six numeric knobs clamp to documented bounds.
+
+### File-paths summary
+
+- [`app/core/callback_detector.py`](../../app/core/callback_detector.py)
+  — new module with `detect()`, `record()`, `CallbackHit`,
+  `CALLBACK_KINDS`.
+- [`app/core/session/post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py)
+  — post-turn wire-in inside `_post_turn_inner_life`.
+- [`app/core/rag_retriever.py`](../../app/core/rag_retriever.py)
+  — `_RAG_CALLBACK_BONUS` constant + branch in the memory-join
+  block.
+- [`app/core/settings.py`](../../app/core/settings.py)
+  — one new `AgentSettings` field + six new `MemorySettings`
+  fields + parser entries with clamps.
+- [`config/default.json`](../../config/default.json)
+  — defaults for `agent.callback_detector_enabled` and the six
+  `memory.callback_*` keys.
+- [`docs/configuration.md`](../configuration.md) — cheatsheet row +
+  K22 subsection.
+

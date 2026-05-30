@@ -223,25 +223,8 @@ a metadata field on the latest summary).
 
 ## K22. Callback / inside-joke detector
 
-We mine recurring phrases (`CatchphraseMiner`) and we surface
-"running jokes" in an inner-life block, but nothing closes the
-loop: when Aiko *successfully* references a beat from three
-sessions ago — a specific phrase Jacob used, an old shared
-moment, an in-joke — that's a high-signal authenticity event we
-currently throw away. A post-turn cosine pass between Aiko's
-just-emitted reply and any memory older than `N` days could
-detect successful callbacks: if the reply hits cosine ≥ 0.55 on
-a moment / catchphrase / older user-tagged memory, salience-boost
-the referenced row and stamp a `metadata.callback_count` so the
-RAG retriever can prefer "memories Aiko has actually managed to
-weave back in" over equally-relevant but never-cited ones.
-Compounds with K1 (long-term goals — a goal whose callback count
-is rising is one she's actually sustaining). Key files: new
-`app/core/callback_detector.py`,
-[`app/core/rag_retriever.py`](../../app/core/rag_retriever.py)
-(small score bonus on `callback_count > 0`),
-[`app/core/memory_store.py`](../../app/core/memory_store.py)
-(metadata field).
+Shipped — see [`shipped.md`](shipped.md) "K22. Callback /
+inside-joke detector (post-turn cosine pass + read-side bonus)".
 
 ---
 

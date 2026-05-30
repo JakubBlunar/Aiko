@@ -120,7 +120,8 @@
     "mood_shell_axis_threshold": 0.5,
     "clarification_repair_enabled": true,
     "rupture_repair_enabled": true,
-    "rupture_valence_drop_threshold": 0.12
+    "rupture_valence_drop_threshold": 0.12,
+    "callback_detector_enabled": true
   },
   "audio": {
     "sample_rate": 16000,
@@ -195,6 +196,12 @@
     "fade_hedge_enabled": true,
     "faded_salience_threshold": 0.20,
     "faded_idle_days": 30,
+    "callback_age_floor_days": 3,
+    "callback_similarity_threshold": 0.55,
+    "callback_max_hits_per_turn": 3,
+    "callback_cooldown_hours": 24,
+    "callback_salience_bump": 0.05,
+    "callback_revival_bump": 0.10,
     "promotion_worker_interval_seconds": 3600,
     "decay_worker_interval_seconds": 3600,
     "conflict_detector_interval_seconds": 3600,
