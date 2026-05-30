@@ -735,6 +735,22 @@ class AgentSettings:
     # [`app/core/clarification_detector.py`](clarification_detector.py).
     clarification_repair_enabled: bool = True
 
+    # ── K8: affect rupture-and-repair ─────────────────────────────────
+    # Per-turn detector that fires when {user_name}'s valence drops
+    # by more than ``rupture_valence_drop_threshold`` between the
+    # pre-turn affect snapshot and the post-turn AffectUpdater
+    # result, *and* Aiko's just-emitted reaction wasn't already an
+    # empathetic one (concerned/gentle/sad/calm -- those would
+    # trigger false positives because Aiko was responding to
+    # existing bad news, not causing it). The post-turn flow
+    # stashes a one-shot result on the controller; the next turn's
+    # inner-life provider renders a "Heads-up: their mood just
+    # dipped right after your last reply" cue so Aiko softens and
+    # checks in once. See
+    # [`app/core/affect_rupture_detector.py`](affect_rupture_detector.py).
+    rupture_repair_enabled: bool = True
+    rupture_valence_drop_threshold: float = 0.12
+
     # ── Resume opener (Phase 2a) ──────────────────────────────────────
     # When the time since the last assistant turn exceeds this many
     # hours, controller bootstrap schedules a one-shot NarrativeWeaver
@@ -1701,6 +1717,20 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             ),
             clarification_repair_enabled=bool(
                 agent_raw.get("clarification_repair_enabled", True),
+            ),
+            rupture_repair_enabled=bool(
+                agent_raw.get("rupture_repair_enabled", True),
+            ),
+            rupture_valence_drop_threshold=max(
+                0.0,
+                min(
+                    2.0,
+                    float(
+                        agent_raw.get(
+                            "rupture_valence_drop_threshold", 0.12,
+                        )
+                    ),
+                ),
             ),
             resume_opener_min_hours=max(0.0, float(agent_raw.get("resume_opener_min_hours", 4.0))),
             resume_opener_ttl_seconds=max(60.0, float(agent_raw.get("resume_opener_ttl_seconds", 1800.0))),

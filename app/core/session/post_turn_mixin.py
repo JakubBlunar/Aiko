@@ -380,6 +380,48 @@ class PostTurnMixin:
         except Exception:
             log.debug("affect updater failed", exc_info=True)
             return
+
+        # K8 — affect rupture-and-repair detection. The cheapest
+        # possible cue: subtract two valence scalars and reaction-
+        # filter. Runs immediately after the AffectUpdater so we
+        # have both ``affect_before`` (pre-turn) and ``state``
+        # (post-turn) in scope. One-shot slot on the controller is
+        # consumed by the next turn's inner-life provider.
+        if (
+            affect_before is not None
+            and bool(
+                getattr(self._settings.agent, "rupture_repair_enabled", True)
+            )
+        ):
+            try:
+                from app.core import affect_rupture_detector
+
+                threshold = float(
+                    getattr(
+                        self._settings.agent,
+                        "rupture_valence_drop_threshold",
+                        0.12,
+                    )
+                )
+                rupture_result = affect_rupture_detector.detect(
+                    prior_valence=affect_before.valence,
+                    current_valence=state.valence,
+                    prior_reaction=reaction,
+                    threshold=threshold,
+                )
+                if rupture_result is not None:
+                    self._pending_rupture = rupture_result
+                    log.info(
+                        "K8 rupture: drop=%.3f prior_reaction=%r "
+                        "(prior=%.3f -> current=%.3f)",
+                        rupture_result.valence_drop,
+                        rupture_result.prior_reaction,
+                        rupture_result.prior_valence,
+                        rupture_result.current_valence,
+                    )
+            except Exception:
+                log.debug("rupture detector raised", exc_info=True)
+
         self._notify_mood_state({
             "label": state.mood_label,
             "intensity": float(state.mood_intensity),

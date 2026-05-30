@@ -68,17 +68,17 @@ earn a G-letter; several (K1, K8, K10, K14, K21) are worker-shaped.
 ### K. Patterns to explore — [`patterns.md`](patterns.md)
 
 K1 long-term goals · K4 dialogue-act tagging · K5 mood-shell tilt ·
-K7 forgetting protocol · K8 affect rupture-and-repair ·
 K9 topic-graph browser · K10 persona regression tests ·
 K11 counterfactual cache · K12 calendar-linked anticipation ·
-K13 stylometric mirror · K14 implicit engagement signals ·
+K14 implicit engagement signals ·
 K15 self-disclosure / vulnerability budget ·
-K17 clarification-repair ·
 K19 cold-start companion onboarding ·
 K20 metacognitive calibration · K21 fresh-eyes thread re-summary.
 
 (K2 theory-of-mind, K3 routine awareness, K6 novelty detector,
-K16 unified ambient grounding line, and K18 topic stagnation have
+K7 forgetting protocol, K8 affect rupture-and-repair,
+K13 stylometric mirror, K16 unified ambient grounding line,
+K17 clarification-repair, and K18 topic stagnation have
 shipped — see [`shipped.md`](shipped.md).)
 
 ### P. Performance + observability — [`perf.md`](perf.md)

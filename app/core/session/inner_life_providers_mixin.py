@@ -455,6 +455,36 @@ class InnerLifeProvidersMixin:
             log.debug("clarification render failed", exc_info=True)
             return ""
 
+    def _render_rupture_block(self) -> str:
+        """K8: surface a one-shot affect-rupture cue.
+
+        Same one-shot contract as :meth:`_render_clarification_block`
+        and :meth:`_render_belief_gaps_block` -- the post-turn
+        detector stashes a result on the controller; we render it
+        once and clear the slot. Affect-rupture is *not* a sticky
+        cue: if Aiko softens and Jacob's mood recovers next turn,
+        re-firing would be patronising. If it doesn't recover, the
+        next-turn delta will fire the detector again organically.
+        """
+        if not bool(
+            getattr(self._settings.agent, "rupture_repair_enabled", True)
+        ):
+            return ""
+        result = getattr(self, "_pending_rupture", None)
+        if result is None:
+            return ""
+        self._pending_rupture = None
+        try:
+            from app.core.affect_rupture_detector import render_inner_life_block
+
+            return render_inner_life_block(
+                result,
+                user_display_name=self.user_display_name,
+            )
+        except Exception:
+            log.debug("rupture render failed", exc_info=True)
+            return ""
+
     def _render_novelty_block(self, user_text: str) -> str:
         """K6: surface a one-line surprise/novelty signal for this turn.
 

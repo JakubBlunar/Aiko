@@ -595,6 +595,9 @@ class PromptAssembler:
         # stashes a result on the controller; this provider renders
         # it on the very next turn and clears the slot.
         self._clarification_provider: Callable[[], str] | None = None
+        # K8 — affect-rupture one-shot. Sibling of the clarification
+        # provider above; same one-shot contract.
+        self._rupture_provider: Callable[[], str] | None = None
         # K6 personality backlog: surprise/novelty signal. Takes the
         # current ``user_text`` (like the F2 knowledge-gap provider)
         # because the detector compares the live turn embedding to a
@@ -770,6 +773,7 @@ class PromptAssembler:
         knowledge_gaps: Callable[[str], str] | None = None,
         belief_gaps: Callable[[], str] | None = None,
         clarification: Callable[[], str] | None = None,
+        rupture: Callable[[], str] | None = None,
         novelty: Callable[[str], str] | None = None,
         stagnation: Callable[[str], str] | None = None,
         style_pattern: Callable[[], str] | None = None,
@@ -827,6 +831,8 @@ class PromptAssembler:
             self._belief_gaps_provider = belief_gaps
         if clarification is not None:
             self._clarification_provider = clarification
+        if rupture is not None:
+            self._rupture_provider = rupture
         if novelty is not None:
             self._novelty_provider = novelty
         if stagnation is not None:
@@ -1291,6 +1297,19 @@ class PromptAssembler:
                     log.debug("clarification provider raised", exc_info=True)
                     clarification_block = ""
 
+        # K8 — affect-rupture one-shot. Sibling of the clarification
+        # provider; same one-shot contract, same not-gated-on-
+        # aggressive policy (a "their mood just dipped" cue is
+        # critical signal Aiko needs to soften the next reply).
+        rupture_block = ""
+        if self._rupture_provider is not None:
+            with _timed_phase(provider_ms, "rupture"):
+                try:
+                    rupture_block = self._rupture_provider() or ""
+                except Exception:
+                    log.debug("rupture provider raised", exc_info=True)
+                    rupture_block = ""
+
         # K6: per-turn surprise/novelty signal. Same shape as the F2
         # knowledge-gap provider (takes ``user_text``), since the
         # detector scores the live utterance against a rolling
@@ -1514,6 +1533,14 @@ class PromptAssembler:
             # / stagnation / style_pattern -- if she missed the point
             # she should re-read first, react second.
             system_parts.append(clarification_block)
+        if rupture_block:
+            # K8: affect-rupture sits right after K17 so the "noticing
+            # cues" cluster together at the top of the reaction-
+            # shaping section. If both fire on the same turn (a
+            # confused user whose mood also dropped), the
+            # clarification cue tells Aiko what to fix while the
+            # rupture cue tells her how to soften.
+            system_parts.append(rupture_block)
         if novelty_block:
             # K6: surface the "Heads-up: Jacob just brought up
             # something new" line right after belief_gaps so reaction
