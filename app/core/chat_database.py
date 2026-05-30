@@ -324,6 +324,19 @@ CREATE TABLE IF NOT EXISTS beliefs (
 CREATE INDEX IF NOT EXISTS idx_beliefs_status ON beliefs(status);
 CREATE INDEX IF NOT EXISTS idx_beliefs_topic ON beliefs(topic);
 CREATE INDEX IF NOT EXISTS idx_beliefs_user_kind ON beliefs(user_id, kind);
+
+-- K13 stylometric mirror: a single JSON blob per user holding the
+-- rolling-window style features (terseness, formality, emoji density,
+-- slang density, question rate). Persisted so the analyzer survives
+-- restart with the window already populated; the alternative is to
+-- always re-warm from past user messages each boot. Schema is
+-- intentionally generic so we can extend the JSON shape without a
+-- column migration.
+CREATE TABLE IF NOT EXISTS user_style_signal (
+    user_id TEXT PRIMARY KEY,
+    signal_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 # Tables that existed in earlier schemas but are no longer used.

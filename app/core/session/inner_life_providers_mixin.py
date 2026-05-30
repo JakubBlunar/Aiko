@@ -542,6 +542,51 @@ class InnerLifeProvidersMixin:
             log.debug("aiko style block render failed", exc_info=True)
             return ""
 
+    def _render_style_signal_block(self) -> str:
+        """K13: surface the one-line "How <name> writes lately" cue.
+
+        Reads the rolling-window snapshot from
+        :class:`StyleSignalAnalyzer` (which the post-turn pipeline
+        has been feeding user turns), buckets each axis against the
+        configured thresholds, and renders the labels into a single
+        short line. Returns ``""`` when the analyzer is disabled, in
+        warmup, or when every axis sits in the default mid-band --
+        which is the common no-signal case so the block costs zero on
+        a neutral-register speaker.
+        """
+        if not bool(
+            getattr(self._settings.agent, "style_signal_enabled", True)
+        ):
+            return ""
+        analyzer = getattr(self, "_style_signal_analyzer", None)
+        if analyzer is None:
+            return ""
+        try:
+            signal = analyzer.current_signal()
+        except Exception:
+            log.debug("style signal analyzer raised", exc_info=True)
+            return ""
+        if signal is None:
+            return ""
+        try:
+            labels = analyzer.labels_for_signal(signal)
+        except Exception:
+            log.debug("style signal labels failed", exc_info=True)
+            return ""
+        if not labels:
+            return ""
+        try:
+            from app.core.style_signal import render_inner_life_block
+
+            return render_inner_life_block(
+                signal,
+                labels,
+                user_display_name=self.user_display_name,
+            )
+        except Exception:
+            log.debug("style signal block render failed", exc_info=True)
+            return ""
+
     def _render_curiosity_seeds_block(self) -> str:
         """K9: surface up to two active "quiet curiosity" seeds.
 

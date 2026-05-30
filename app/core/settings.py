@@ -702,6 +702,27 @@ class AgentSettings:
     style_tracker_length_avg_threshold: float = 50.0
     style_tracker_cue_cooldown_turns: int = 5
 
+    # ── K13: stylometric mirror (Jacob-side stylometry) ───────────────
+    # Tracks Jacob's writing style across recent user turns and emits
+    # a one-line "How Jacob writes lately: terse, casual, asks back
+    # often" directive so Aiko's register stays calibrated even when
+    # the recent history window doesn't cover yesterday. Five axes:
+    # terseness / formality / emoji / slang / question rate. Pure
+    # rolling-window analyzer (no embedder, no LLM); persisted via a
+    # tiny ``user_style_signal`` JSON-blob table so the window
+    # survives restart. Unlike the K6/K18/anti-rut cues this block is
+    # ALWAYS rendered (including aggressive mode) because it shapes
+    # register, which is the first thing aggressive mode wants to
+    # preserve. See [`app/core/style_signal.py`](style_signal.py).
+    style_signal_enabled: bool = True
+    style_signal_window: int = 30
+    style_signal_warmup_min: int = 8
+    style_signal_terse_threshold: float = 0.55
+    style_signal_formal_threshold: float = 0.55
+    style_signal_emoji_threshold: float = 0.05
+    style_signal_slang_threshold: float = 0.15
+    style_signal_question_threshold: float = 0.40
+
     # ── Resume opener (Phase 2a) ──────────────────────────────────────
     # When the time since the last assistant turn exceeds this many
     # hours, controller bootstrap schedules a one-shot NarrativeWeaver
@@ -1600,6 +1621,70 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                 0,
                 int(
                     agent_raw.get("style_tracker_cue_cooldown_turns", 5)
+                ),
+            ),
+            style_signal_enabled=bool(
+                agent_raw.get("style_signal_enabled", True),
+            ),
+            style_signal_window=max(
+                2, int(agent_raw.get("style_signal_window", 30)),
+            ),
+            style_signal_warmup_min=max(
+                2, int(agent_raw.get("style_signal_warmup_min", 8)),
+            ),
+            style_signal_terse_threshold=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        agent_raw.get(
+                            "style_signal_terse_threshold", 0.55,
+                        )
+                    ),
+                ),
+            ),
+            style_signal_formal_threshold=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        agent_raw.get(
+                            "style_signal_formal_threshold", 0.55,
+                        )
+                    ),
+                ),
+            ),
+            style_signal_emoji_threshold=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        agent_raw.get(
+                            "style_signal_emoji_threshold", 0.05,
+                        )
+                    ),
+                ),
+            ),
+            style_signal_slang_threshold=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        agent_raw.get(
+                            "style_signal_slang_threshold", 0.15,
+                        )
+                    ),
+                ),
+            ),
+            style_signal_question_threshold=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        agent_raw.get(
+                            "style_signal_question_threshold", 0.40,
+                        )
+                    ),
                 ),
             ),
             resume_opener_min_hours=max(0.0, float(agent_raw.get("resume_opener_min_hours", 4.0))),
