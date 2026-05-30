@@ -1168,6 +1168,161 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
         except Exception as exc:
             return f"reset_calibration raised: {exc}"
 
+    @mcp.tool()
+    def get_sensory_anchor_state() -> str:
+        """K24 — dump the in-memory :class:`SensoryAnchorCadence` snapshot.
+
+        Returns a JSON dict with ``cooldown_remaining``,
+        ``recent_slugs``, ``last_arc_seen``, ``last_fired_slug``,
+        ``last_fired_verb_class``, ``fire_count``, ``tick_count``,
+        plus a ``rendered_preview`` from a forced beat (if eligible)
+        so you can see what cue would surface *right now* without
+        burning the cooldown. Use ``force_sensory_anchor`` to
+        actually fire one for end-to-end testing.
+        """
+        cadence = getattr(session, "_sensory_anchor_cadence", None)
+        if cadence is None:
+            return json.dumps(
+                {"error": "SensoryAnchorCadence not initialised"},
+            )
+        try:
+            snapshot = cadence.to_debug_dict()
+            # Preview: read the current room without arming the
+            # cooldown. Same gates the real provider uses, just no
+            # state mutation.
+            world_store = getattr(session, "_world_store", None)
+            preview: str | None = None
+            posture: str | None = None
+            arc: str | None = None
+            item_count = 0
+            if world_store is not None:
+                try:
+                    state = world_store.get_state()
+                    posture = (state.posture or "").strip().lower()
+                    items = world_store.list_items(
+                        location_id=state.location_id,
+                    )
+                    item_count = len(items)
+                    arc_store = getattr(session, "_arc_store", None)
+                    if arc_store is not None:
+                        try:
+                            arc_state = arc_store.get_or_default(
+                                session._user_id,
+                            )
+                            arc = arc_state.arc
+                        except Exception:
+                            arc = None
+                    from app.core import sensory_anchor as sa
+
+                    beat = sa.pick_beat(
+                        posture=posture or "sitting",
+                        items=items,
+                        arc=arc or "casual_check_in",
+                        recent_slugs=tuple(snapshot["recent_slugs"]),
+                    )
+                    preview = sa.render_inner_life_block(
+                        beat,
+                        user_display_name=session.user_display_name,
+                    ) or None
+                except Exception:
+                    preview = None
+            return json.dumps(
+                {
+                    **snapshot,
+                    "current_posture": posture,
+                    "current_arc": arc,
+                    "current_item_count": item_count,
+                    "rendered_preview": preview,
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"get_sensory_anchor_state raised: {exc}"
+
+    @mcp.tool()
+    def force_sensory_anchor() -> str:
+        """K24 — bypass cooldown + dice gate and emit one beat.
+
+        Useful for testing the persona block end-to-end without
+        waiting on the arc-weighted probability roll. Pushes the
+        slug into the no-repeat ring and arms the cooldown as if
+        the beat had fired naturally, so subsequent normal ticks
+        behave as expected. Returns the rendered cue or an error
+        message.
+        """
+        cadence = getattr(session, "_sensory_anchor_cadence", None)
+        if cadence is None:
+            return json.dumps(
+                {"error": "SensoryAnchorCadence not initialised"},
+            )
+        world_store = getattr(session, "_world_store", None)
+        if world_store is None:
+            return json.dumps(
+                {"error": "WorldStore not initialised"},
+            )
+        try:
+            state = world_store.get_state()
+            posture = (state.posture or "").strip().lower()
+            if not posture:
+                return json.dumps({"error": "no posture set"})
+            items = world_store.list_items(location_id=state.location_id)
+            arc_store = getattr(session, "_arc_store", None)
+            arc = "casual_check_in"
+            if arc_store is not None:
+                try:
+                    arc = arc_store.get_or_default(session._user_id).arc
+                except Exception:
+                    pass
+            from app.core import sensory_anchor as sa
+
+            beat = sa.pick_beat(
+                posture=posture,
+                items=items,
+                arc=arc,
+                recent_slugs=tuple(cadence.to_debug_dict()["recent_slugs"]),
+            )
+            if beat is None:
+                return json.dumps(
+                    {
+                        "error": "no eligible beat (empty pool, "
+                                 "all items in ring, or posture-kind "
+                                 "matrix empty)",
+                    },
+                )
+            # Mirror the side effects of a normal fire.
+            cooldown = max(
+                int(sa._ARC_WEIGHTS.get(arc, sa._DEFAULT_ARC_WEIGHT)[1]),
+                int(
+                    getattr(
+                        session._settings.memory,
+                        "sensory_anchor_min_turn_gap",
+                        4,
+                    )
+                ),
+            )
+            cadence._cooldown_remaining = cooldown
+            cadence._recent_slugs.append(beat.item_slug)
+            cadence._last_fired_slug = beat.item_slug
+            cadence._last_fired_verb_class = beat.verb_class
+            cadence._fire_count += 1
+            rendered = sa.render_inner_life_block(
+                beat, user_display_name=session.user_display_name,
+            )
+            return json.dumps(
+                {
+                    "fired": True,
+                    "item_slug": beat.item_slug,
+                    "verb_class": beat.verb_class,
+                    "arc": arc,
+                    "posture": posture,
+                    "cooldown_armed": cooldown,
+                    "rendered": rendered,
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_sensory_anchor raised: {exc}"
+
     # ── Resources ────────────────────────────────────────────────────
 
     @mcp.resource("assistant://history")

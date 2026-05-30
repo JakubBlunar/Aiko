@@ -604,6 +604,100 @@ class InnerLifeProvidersMixin:
             log.debug("calibration render failed", exc_info=True)
             return ""
 
+    def _render_sensory_anchor_block(self) -> str:
+        """K24: surface a "small physical beat available" cue.
+
+        Reads :class:`RoomState` + nearby items from
+        :class:`WorldStore`, the live conversation arc from
+        :class:`ArcStore`, and ticks the per-controller
+        :class:`SensoryAnchorCadence`. The cadence handles the
+        cooldown counter, arc-weighted probability roll,
+        posture-kind compatibility filter, and no-repeat ring; we
+        just feed it world state.
+
+        Returns ``""`` (empty -- not ``None``) when the master
+        switch is off, the cadence is unavailable, the world store
+        is missing, or the cadence chooses not to fire (silent
+        turn). Empty strings are dropped by the prompt assembler,
+        so the cue family is silent by default.
+        """
+        if not bool(
+            getattr(
+                self._settings.agent, "sensory_anchor_enabled", True,
+            )
+        ):
+            return ""
+        cadence = getattr(self, "_sensory_anchor_cadence", None)
+        if cadence is None:
+            return ""
+        world_store = getattr(self, "_world_store", None)
+        if world_store is None:
+            return ""
+        try:
+            from app.core import sensory_anchor
+
+            room_state = world_store.get_state()
+            posture = (room_state.posture or "").strip().lower()
+            if not posture:
+                return ""
+            # Pull room items only -- carried items (location_id
+            # IS NULL in the schema) are intentionally excluded so
+            # "items she has at her current location" stays clean
+            # and the no-repeat ring tracks position-aware beats.
+            items = world_store.list_items(
+                location_id=room_state.location_id,
+            )
+            if not items:
+                return ""
+            arc_state = None
+            arc_store = getattr(self, "_arc_store", None)
+            if arc_store is not None:
+                try:
+                    arc_state = arc_store.get_or_default(self._user_id)
+                except Exception:
+                    log.debug(
+                        "sensory_anchor: arc fetch failed", exc_info=True,
+                    )
+                    arc_state = None
+            arc = (
+                arc_state.arc if arc_state is not None
+                else "casual_check_in"
+            )
+            beat = cadence.tick(
+                posture=posture,
+                items=items,
+                arc=arc,
+                min_turn_gap=int(
+                    getattr(
+                        self._memory_settings,
+                        "sensory_anchor_min_turn_gap",
+                        4,
+                    )
+                ),
+                probability_scale=float(
+                    getattr(
+                        self._memory_settings,
+                        "sensory_anchor_probability_scale",
+                        1.0,
+                    )
+                ),
+                max_window=int(
+                    getattr(
+                        self._memory_settings,
+                        "sensory_anchor_max_window_items",
+                        6,
+                    )
+                ),
+            )
+            if beat is None:
+                return ""
+            return sensory_anchor.render_inner_life_block(
+                beat, user_display_name=self.user_display_name,
+            )
+        except Exception:
+            log.debug("sensory_anchor render failed", exc_info=True)
+            return ""
+
     def _render_absence_curiosity_block(self) -> str:
         """K14 typed-mode: surface a one-shot absence-curiosity cue.
 

@@ -2505,3 +2505,189 @@ analyzer + store split.
 - [`docs/configuration.md`](../configuration.md) — cheatsheet
   row + K20 subsection.
 
+## K24. Sensory anchoring layer — adaptive per-arc cadence + posture-kind matrix
+
+Aiko's room has been fully seeded for a while — items, posture,
+activity, location — but **none of it surfaced in her actual voice**.
+The `world` provider grounds *where* she is; the `activity` provider
+says *what* she's doing in the abstract ("tinkering", "reading").
+What was missing was her *body in the reply*: picking up the tea
+pot, tucking the blanket tighter, thumbing through a book. K24
+closes that gap with the smallest module that turns an existing
+fully-built world into something Jacob can *feel*.
+
+The cue is **permission, not prescription**: when the cadence fires,
+Aiko's system prompt picks up a one-liner like
+
+> Small physical beat available: the tea pot is right here. If a
+> body anchor would land naturally this reply, you could set it
+> down — otherwise let it pass.
+
+The persona block teaches her to use it only when a sensory detail
+would *replace* an emotional statement that would otherwise feel
+limp ("I'm wrapping the blanket tighter while you talk about it"
+instead of "I hear you"). One beat per reply, never narrate the
+room as if Jacob can see it, and if the cue is absent on a given
+turn, don't reach for one.
+
+### Decision flow
+
+```mermaid
+flowchart TD
+    Turn["Turn assemble starts"] --> Enabled{agent.sensory_anchor_enabled?}
+    Enabled -->|no| EmptyA["return empty block"]
+    Enabled -->|yes| Cooldown{cooldown_remaining > 0?}
+    Cooldown -->|yes| Decrement["decrement, return empty"]
+    Cooldown -->|no| Arc["Read live arc from ArcStore"]
+    Arc --> Probe["Lookup arc weights: probability + min_gap"]
+    Probe --> Roll{"RNG < probability * probability_scale?"}
+    Roll -->|no| EmptyB["return empty"]
+    Roll -->|yes| Items["Read room items + posture from WorldStore"]
+    Items --> Filter["Filter: posture-compatible kinds, not in no-repeat ring"]
+    Filter -->|empty| EmptyC["return empty"]
+    Filter -->|non-empty| Pick["Pick item by quantity-weighted RNG"]
+    Pick --> Render["Render cue: 'You could {hint} — otherwise let it pass.'"]
+    Render --> Arm["Arm cooldown = max(arc_min, min_turn_gap); push slug into ring"]
+```
+
+### Arc weights table (hardcoded in `_ARC_WEIGHTS`)
+
+| Arc | Probability | Min cooldown |
+|---|---:|---:|
+| `support` | 0.45 | 4 turns |
+| `reflection` | 0.45 | 4 turns |
+| `casual_check_in` | 0.25 | 6 turns |
+| `playful` | 0.25 | 6 turns |
+| `silly` | 0.10 | 8 turns |
+| `planning` | 0.05 | 12 turns |
+| *(unknown arc)* | 0.20 | 8 turns |
+
+The table is **not** a setting — `memory.sensory_anchor_probability_scale`
+provides global tuning without inverting the per-arc shape. We
+deliberately want `support` and `reflection` to be the loudest
+sensory turns (those are exactly when a body anchor lands hardest)
+and `planning` to be near-silent (focused, momentum-wanting turns
+don't want texture).
+
+### Posture-kind matrix (`_POSTURE_KIND_VERBS`)
+
+The static matrix encodes posture × `Item.kind` physics only — can
+Aiko's body reach this category of object from this posture. Empty
+tuples are dropped silently (no reach / no affordance). `furniture`
+is excluded across the board (the room *is* the furniture; you
+don't pick up a bed). `plant` + `seed` are only reachable from
+`sitting` / `standing` / `leaning`. Below is a condensed map; see
+[`app/core/sensory_anchor.py`](../../app/core/sensory_anchor.py)
+for the full table.
+
+| Posture | Reachable kinds | Sample verb classes |
+|---|---|---|
+| `lying` | food, book, toy, keepsake, decor, other | `nibbling`, `thumbing_through`, `hugging`, `wrapping_in` |
+| `sitting` | all but furniture | `picking_up`, `setting_down`, `tapping`, `pulling_closer` |
+| `standing` | all incl. furniture (lean) + plant | `picking_up`, `leaning_against`, `watering`, `straightening` |
+| `curled_up` | food, book, toy, keepsake, decor, other | `hugging`, `burrowing_into`, `wrapped_in`, `tucked_with` |
+| `leaning` | food, book, gadget, furniture, keepsake, decor, plant | `picking_up`, `tapping`, `leaning_toward`, `watering` |
+
+Each verb-class slug maps to a single human-readable hint via
+`_VERB_CLASS_HINT` (e.g. `picking_up` → "pick it up"). The render
+emits **one** hint; Aiko's voice picks the actual word ("cradling",
+"uncurling around", "tracing the rim of"). The hint is direction,
+not script.
+
+### Activity-gating intentionally deferred
+
+`RoomState.activity` is NOT consulted — the static matrix only
+encodes posture × kind physics. Activity-vetoing (`napping`
+should suppress all beats; `snacking` + `food` is redundant) is
+left to Aiko's persona rule "use it only if it lands" until we
+observe enough fired beats to know whether the redundancy edge
+cases actually feel wrong. If they do, an `_ACTIVITY_BLOCKERS`
+set + optional same-activity-kind dedupe can be added in a
+follow-up; neither requires changing the public surface of
+`pick_beat()`, so the deferral is safe.
+
+### K16 non-suppression decision
+
+K24 is **not** added to the K16 grounding-line suppression matrix.
+The fused grounding paragraph says "It's Sunday morning. Jacob's
+reading upbeat. In your apartment at the desk, you're sitting,
+working." — it never mentions specific items + verb classes. K24
+says "you could pick up the tea pot, or let the cue pass." The
+two are *additive*: K16 grounds Aiko in the moment, K24 gives her
+a body inside that moment. There is no risk of double-stating the
+same fact, so the cue rides through `replace` and `split` modes
+unchanged. (It IS dropped under `aggressive=True` like every
+other texture block — body anchors are the first thing to go when
+the budget is tight.)
+
+### State model: in-memory, no persistence
+
+A single per-controller `SensoryAnchorCadence` holds:
+
+- `_cooldown_remaining: int` — turn counter (mirrors K6 / K18 rings).
+- `_recent_slugs: collections.deque[str]` (default `maxlen=4`) — no-repeat ring.
+- Introspection counters (`fire_count`, `tick_count`, `last_arc_seen`, etc.)
+  exposed via `to_debug_dict()` for the MCP debug tools.
+
+On restart the cooldown counter and ring reset to empty — worst
+case is one extra beat in the first quiet window post-boot, which
+is fine. We chose this over a schema table because the state has
+no value across sessions: the room is what matters, not the recent
+history of *which* item Aiko touched.
+
+### MCP debug tools
+
+- `get_sensory_anchor_state()` — dumps the `to_debug_dict()`
+  snapshot plus a `rendered_preview` (what cue would surface *right
+  now* without arming the cooldown). Useful for verifying the
+  no-repeat ring is working and the posture-kind filter is finding
+  items in the current room.
+- `force_sensory_anchor()` — bypasses cooldown + dice gate and
+  emits one beat with full side effects (cooldown armed, slug
+  pushed into ring). End-to-end test path: flip arc to `support`,
+  hit `force_sensory_anchor`, send a message, observe whether
+  Aiko's reply actually picks up the tea pot or whether the cue
+  reads as performance.
+
+### File-paths summary
+
+- [`app/core/sensory_anchor.py`](../../app/core/sensory_anchor.py)
+  — new module: `_ARC_WEIGHTS` + `_POSTURE_KIND_VERBS` +
+  `_VERB_CLASS_HINT` + `SensoryBeat` + `pick_beat()` +
+  `render_inner_life_block()` + `SensoryAnchorCadence` class.
+- [`app/core/session_controller.py`](../../app/core/session_controller.py)
+  — `SensoryAnchorCadence` init right after `CalibrationStore`;
+  `sensory_anchor=self._render_sensory_anchor_block` registered
+  on `PromptAssembler`.
+- [`app/core/session/inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py)
+  — `_render_sensory_anchor_block()` reads `RoomState` + items
+  + live arc and delegates to the module's `tick()`.
+- [`app/core/prompt_assembler.py`](../../app/core/prompt_assembler.py)
+  — `sensory_anchor` provider slot + `_timed_phase("sensory_anchor")`
+  block + `system_parts` placement right after `activity_block`.
+- [`app/core/settings.py`](../../app/core/settings.py)
+  — `AgentSettings.sensory_anchor_enabled` + four `MemorySettings`
+  knobs (`sensory_anchor_min_turn_gap`, `_probability_scale`,
+  `_max_recent_items`, `_max_window_items`) with parser clamps.
+- [`config/default.json`](../../config/default.json)
+  — defaults for the master switch + four memory knobs.
+- [`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt)
+  — new "Small physical beats" section right after the grounding
+  paragraph; five rules in the K20-style voice.
+- [`app/mcp/server.py`](../../app/mcp/server.py)
+  — `get_sensory_anchor_state` + `force_sensory_anchor` debug
+  tools right after `reset_calibration`.
+- [`tests/test_sensory_anchor.py`](../../tests/test_sensory_anchor.py)
+  — 18 unit tests across posture-kind matrix, no-repeat ring,
+  cooldown decrement, arc-weighted probability, quantity
+  weighting, render output, and arc-weights table sanity.
+- [`tests/test_prompt_assembler.py`](../../tests/test_prompt_assembler.py)
+  — `SensoryAnchorProviderTests` covering the new provider slot,
+  empty-string suppression, K16 `replace` non-suppression, and
+  aggressive-mode drop.
+- [`tests/test_settings.py`](../../tests/test_settings.py)
+  — `SensoryAnchorSettingsTests` for the master switch + four
+  knobs (defaults, overrides, clamps).
+- [`docs/configuration.md`](../configuration.md) — cheatsheet
+  row + dedicated "K24 — sensory anchoring layer" subsection.
+
