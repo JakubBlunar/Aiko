@@ -835,6 +835,17 @@ class AgentSettings:
     rupture_repair_enabled: bool = True
     rupture_valence_drop_threshold: float = 0.12
 
+    # ── K22: callback / inside-joke detector ──────────────────────────
+    # Master switch for the post-turn cosine pass that detects when
+    # Aiko's reply semantically reaches back to an older eligible
+    # memory and stamps ``metadata.callback_count``. Off → no rows
+    # gain new callback stamps. The retriever's read-side bonus on
+    # rows already stamped stays on either way, so flipping this off
+    # freezes the loop without losing earned weight. Knob detail
+    # lives on :class:`MemorySettings` (``callback_*`` fields). See
+    # [`app/core/callback_detector.py`](callback_detector.py).
+    callback_detector_enabled: bool = True
+
     # ── Resume opener (Phase 2a) ──────────────────────────────────────
     # When the time since the last assistant turn exceeds this many
     # hours, controller bootstrap schedules a one-shot NarrativeWeaver
@@ -1005,6 +1016,51 @@ class MemorySettings:
     # flipping to hedged on the anniversary. Higher → only very stale
     # rows fade; lower → more aggressive hedging.
     faded_idle_days: int = 30
+    # ── K22 personality backlog: callback / inside-joke detector ─────
+    # Post-turn cosine pass between Aiko's reply and older eligible
+    # memories. Hits stamp ``metadata.callback_count`` and bump
+    # ``salience`` + ``revival_score`` so the retriever's read-side
+    # bonus (``_RAG_CALLBACK_BONUS``) prefers memories Aiko has
+    # actually managed to weave back into a reply over equally-
+    # relevant siblings that have never been cited. The reinforcement
+    # is invisible to the LLM by design — see :mod:`app.core.callback_detector`.
+    #
+    # Minimum days since ``created_at`` before a memory is eligible to
+    # be counted as a callback target. Lower than this and the row is
+    # treated as "still part of the current thread", not a callback.
+    # Default 3 days roughly maps to "this isn't the same session and
+    # the memory has had time to settle". Higher → only very-old
+    # rows qualify; lower → easier callbacks.
+    callback_age_floor_days: int = 3
+    # Cosine similarity floor for the assistant-reply embedding vs a
+    # candidate memory's embedding. ``0.55`` is the same conservative
+    # threshold K6 uses for ``strong_novelty`` — high enough that
+    # generic word overlap doesn't trip it but loose enough that
+    # paraphrased callbacks still register. Clamped to ``[0, 1]``.
+    callback_similarity_threshold: float = 0.55
+    # Maximum number of memories stamped as called-back on a single
+    # turn. One reply rarely references more than a handful of beats,
+    # so the cap prevents a single high-similarity sentence from
+    # blanket-bumping every near-duplicate row.
+    callback_max_hits_per_turn: int = 3
+    # Per-row cooldown in hours. A memory called back less than this
+    # ago stays silent on subsequent matches so back-to-back replies
+    # on a similar topic don't spam the same row. Higher → callbacks
+    # cluster less; lower → faster compounding on a recent thread.
+    callback_cooldown_hours: int = 24
+    # Salience bump applied to each called-back row at record time.
+    # The store clamps the result to ``[0, 1]`` so already-pinned /
+    # high-salience rows simply stay at the ceiling. Higher → louder
+    # compounding via the retriever's salience-aware base score;
+    # lower → only the read-side ``_RAG_CALLBACK_BONUS`` drives the
+    # preference.
+    callback_salience_bump: float = 0.05
+    # Revival-score bump applied to each called-back row at record
+    # time. The store clamps to ``[0, 1]``. Acts as a tier-promotion
+    # signal: a long_term row that keeps getting called back will
+    # have its revival_score nudge it toward salience=1.0 over the
+    # promotion worker's next sweeps.
+    callback_revival_bump: float = 0.10
     # ── Background workers (schema v8) ───────────────────────────────
     # Worker intervals in seconds. Both workers are idempotent: running
     # more often is safe but wastes a little CPU. Drop to ~60 for
@@ -1953,6 +2009,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                     ),
                 ),
             ),
+            callback_detector_enabled=bool(
+                agent_raw.get("callback_detector_enabled", True),
+            ),
             resume_opener_min_hours=max(0.0, float(agent_raw.get("resume_opener_min_hours", 4.0))),
             resume_opener_ttl_seconds=max(60.0, float(agent_raw.get("resume_opener_ttl_seconds", 1800.0))),
             dream_worker_enabled=bool(agent_raw.get("dream_worker_enabled", True)),
@@ -2104,6 +2163,38 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             ),
             faded_idle_days=max(
                 1, int(memory_raw.get("faded_idle_days", 30)),
+            ),
+            callback_age_floor_days=max(
+                1, int(memory_raw.get("callback_age_floor_days", 3)),
+            ),
+            callback_similarity_threshold=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get("callback_similarity_threshold", 0.55)
+                    ),
+                ),
+            ),
+            callback_max_hits_per_turn=max(
+                1, int(memory_raw.get("callback_max_hits_per_turn", 3)),
+            ),
+            callback_cooldown_hours=max(
+                1, int(memory_raw.get("callback_cooldown_hours", 24)),
+            ),
+            callback_salience_bump=max(
+                0.0,
+                min(
+                    0.5,
+                    float(memory_raw.get("callback_salience_bump", 0.05)),
+                ),
+            ),
+            callback_revival_bump=max(
+                0.0,
+                min(
+                    1.0,
+                    float(memory_raw.get("callback_revival_bump", 0.10)),
+                ),
             ),
             decay_max_catchup_days=max(
                 1.0, float(memory_raw.get("decay_max_catchup_days", 30.0))

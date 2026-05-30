@@ -176,5 +176,114 @@ class CuriositySeedSettingsTests(unittest.TestCase):
         )
 
 
+class CallbackDetectorSettingsTests(unittest.TestCase):
+    """K22: agent master switch + 6 memory knobs round-trip with clamps."""
+
+    _CALLBACK_AGENT_KEYS = ("callback_detector_enabled",)
+    _CALLBACK_MEMORY_KEYS = (
+        "callback_age_floor_days",
+        "callback_similarity_threshold",
+        "callback_max_hits_per_turn",
+        "callback_cooldown_hours",
+        "callback_salience_bump",
+        "callback_revival_bump",
+    )
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(
+        self,
+        agent_extra: dict | None = None,
+        memory_extra: dict | None = None,
+        strip_keys: bool = True,
+    ) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(
+            json.loads(default_path.read_text(encoding="utf-8"))
+        )
+        if strip_keys:
+            for k in self._CALLBACK_AGENT_KEYS:
+                cfg.get("agent", {}).pop(k, None)
+            for k in self._CALLBACK_MEMORY_KEYS:
+                cfg.get("memory", {}).pop(k, None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        if memory_extra is not None:
+            cfg["memory"] = {**cfg.get("memory", {}), **memory_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults_load_when_keys_missing(self) -> None:
+        path = self._write_config()
+        result = load_settings(config_path=path)
+        self.assertTrue(result.agent.callback_detector_enabled)
+        self.assertEqual(result.memory.callback_age_floor_days, 3)
+        self.assertAlmostEqual(
+            result.memory.callback_similarity_threshold, 0.55,
+        )
+        self.assertEqual(result.memory.callback_max_hits_per_turn, 3)
+        self.assertEqual(result.memory.callback_cooldown_hours, 24)
+        self.assertAlmostEqual(result.memory.callback_salience_bump, 0.05)
+        self.assertAlmostEqual(result.memory.callback_revival_bump, 0.10)
+
+    def test_overrides_round_trip(self) -> None:
+        path = self._write_config(
+            agent_extra={"callback_detector_enabled": False},
+            memory_extra={
+                "callback_age_floor_days": 7,
+                "callback_similarity_threshold": 0.70,
+                "callback_max_hits_per_turn": 5,
+                "callback_cooldown_hours": 48,
+                "callback_salience_bump": 0.08,
+                "callback_revival_bump": 0.20,
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.callback_detector_enabled)
+        self.assertEqual(result.memory.callback_age_floor_days, 7)
+        self.assertAlmostEqual(
+            result.memory.callback_similarity_threshold, 0.70,
+        )
+        self.assertEqual(result.memory.callback_max_hits_per_turn, 5)
+        self.assertEqual(result.memory.callback_cooldown_hours, 48)
+        self.assertAlmostEqual(result.memory.callback_salience_bump, 0.08)
+        self.assertAlmostEqual(result.memory.callback_revival_bump, 0.20)
+
+    def test_clamps_out_of_range_values(self) -> None:
+        # Each numeric knob has a documented floor / ceiling. Verify
+        # the parser enforces them so a buggy user.json can't push
+        # the detector into a degenerate state.
+        path = self._write_config(
+            memory_extra={
+                "callback_age_floor_days": 0,            # min 1
+                "callback_similarity_threshold": 99.0,    # max 1.0
+                "callback_max_hits_per_turn": 0,         # min 1
+                "callback_cooldown_hours": 0,            # min 1
+                "callback_salience_bump": -5.0,          # min 0.0
+                "callback_revival_bump": 2.0,            # max 1.0
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertEqual(result.memory.callback_age_floor_days, 1)
+        self.assertAlmostEqual(
+            result.memory.callback_similarity_threshold, 1.0,
+        )
+        self.assertEqual(result.memory.callback_max_hits_per_turn, 1)
+        self.assertEqual(result.memory.callback_cooldown_hours, 1)
+        self.assertAlmostEqual(result.memory.callback_salience_bump, 0.0)
+        self.assertAlmostEqual(result.memory.callback_revival_bump, 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()

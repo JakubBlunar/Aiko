@@ -44,6 +44,7 @@ exists to keep them in lock-step.
 | Switch the unified grounding line on/off | `agent.grounding_line_mode` | `"off"` (`"replace"` / `"split"` / `"off"`) |
 | Master switch for Aiko's long-term goals | `agent.goals_enabled` | `true` |
 | Hedge old / decayed memories with "(faded)" suffix | `memory.fade_hedge_enabled` | `true` |
+| Reinforce "Aiko remembered" beats (callback detector) | `agent.callback_detector_enabled` | `true` |
 | Master memory switch | `memory.enabled` | `true` |
 | RAG recall depth per turn | `memory.top_k` | `6` |
 | Long-term memory cap | `memory.max_memories` | `5000` |
@@ -417,6 +418,18 @@ Renders a `(faded)` suffix on the RAG memory block for old / decayed rows so the
 - `memory.fade_hedge_enabled` *(bool, `true`)* — master switch. Off → no `(faded)` suffix ever, including archive-tier rows. Use when you want Aiko to speak from memory without ever hedging "I think you said this once, ages ago…".
 - `memory.faded_salience_threshold` *(float, `0.20`, clamped `[0, 1]`)* — salience floor for a long_term row to register as faded. Higher → more aggressive hedging on lukewarm memories; lower → only very faded rows hedge. Strict `<` semantics — a row sitting exactly on the threshold does NOT fade. Archive-tier rows ignore this and always fade when the master switch is on.
 - `memory.faded_idle_days` *(int, `30`, min `1`)* — minimum days since `last_used_at` (or `created_at` if the row has never been touched) before a low-salience long_term row picks up `(faded)`. Strict `>` semantics: a row idle for exactly 30 days does NOT fade. Higher → only very stale rows hedge; lower → more aggressive hedging.
+
+### K22 — callback / inside-joke detector
+
+Post-turn cosine pass between Aiko's reply and older eligible memories. Hits stamp `metadata.callback_count` and bump `salience` + `revival_score` so the retriever's read-side bonus (`_RAG_CALLBACK_BONUS`) prefers memories Aiko has actually managed to weave back into a reply over equally-relevant siblings that have never been cited. The reinforcement is **invisible to the LLM by design** — explicit awareness would lead to meta-narration ("hey, glad I remembered that thing"); the point is for the callback to feel organic. Implementation lives in [`app/core/callback_detector.py`](../app/core/callback_detector.py); the RAG read-side bonus lives in [`app/core/rag_retriever.py`](../app/core/rag_retriever.py). The master switch [`agent.callback_detector_enabled`](#k22--callback--inside-joke-detector) only gates the *write* side — once a memory has `callback_count >= 1`, the read-side bonus stays on even if the user later disables the detector.
+
+- `agent.callback_detector_enabled` *(bool, `true`)* — master switch for the post-turn cosine pass. Off → no new callback stamps. Earned weight on already-stamped rows is preserved.
+- `memory.callback_age_floor_days` *(int, `3`, min `1`)* — minimum days since `created_at` before a memory is eligible to be counted as a callback target. Lower than this and the row is treated as part of the current thread, not a callback. Higher → only very-old rows qualify.
+- `memory.callback_similarity_threshold` *(float, `0.55`, clamped `[0, 1]`)* — cosine similarity floor against the assistant-reply embedding. Same magnitude as K6 `strong_novelty`. Higher → only paraphrases-of-paraphrases trigger; lower → easier (but noisier) callbacks.
+- `memory.callback_max_hits_per_turn` *(int, `3`, min `1`)* — maximum rows stamped on a single turn. Prevents a high-similarity sentence from blanket-bumping every near-duplicate row.
+- `memory.callback_cooldown_hours` *(int, `24`, min `1`)* — per-row cooldown after a successful callback. A memory called back less than this ago stays silent on subsequent matches.
+- `memory.callback_salience_bump` *(float, `0.05`, clamped `[0, 0.5]`)* — salience added to each hit at record time. Store clamps the result to `[0, 1]`. Drives the compounding loop alongside the read-side bonus.
+- `memory.callback_revival_bump` *(float, `0.10`, clamped `[0, 1]`)* — revival_score added to each hit. Acts as a tier-promotion signal: a long_term row that keeps getting called back will trend toward salience=1.0 over the promotion worker's sweeps.
 
 ### Memory background workers
 

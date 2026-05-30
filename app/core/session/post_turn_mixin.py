@@ -465,6 +465,89 @@ class PostTurnMixin:
                 "knowledge_gap auto-resolve failed", exc_info=True,
             )
 
+        # K22 — callback / inside-joke detector. Post-turn cosine pass
+        # between Aiko's reply and older eligible memories; hits stamp
+        # ``metadata.callback_count`` + bump salience/revival_score so
+        # the retriever's read-side bonus prefers memories Aiko has
+        # actually managed to weave back in. Pure mechanics, no inner-
+        # life cue — the reinforcement is invisible to the LLM by
+        # design. Embeds assistant_text only (the user-said-this signal
+        # is already covered by the revival path above; K22 measures
+        # what *Aiko* successfully reached back to).
+        if (
+            bool(
+                getattr(
+                    self._settings.agent, "callback_detector_enabled", True,
+                )
+            )
+            and assistant_text
+            and len(assistant_text) >= 12
+            and self._memory_store is not None
+            and self._embedder is not None
+        ):
+            try:
+                from app.core import callback_detector
+                from datetime import datetime, timezone
+
+                turn_vec = self._embedder.embed(assistant_text)
+                now = datetime.now(timezone.utc)
+                hits = callback_detector.detect(
+                    assistant_vec=turn_vec,
+                    memory_store=self._memory_store,
+                    now=now,
+                    threshold=float(
+                        getattr(
+                            self._memory_settings,
+                            "callback_similarity_threshold",
+                            0.55,
+                        )
+                    ),
+                    age_floor_days=int(
+                        getattr(
+                            self._memory_settings,
+                            "callback_age_floor_days",
+                            3,
+                        )
+                    ),
+                    cooldown_hours=int(
+                        getattr(
+                            self._memory_settings,
+                            "callback_cooldown_hours",
+                            24,
+                        )
+                    ),
+                    top_k=int(
+                        getattr(
+                            self._memory_settings,
+                            "callback_max_hits_per_turn",
+                            3,
+                        )
+                    ),
+                )
+                if hits:
+                    callback_detector.record(
+                        memory_store=self._memory_store,
+                        hits=hits,
+                        salience_bump=float(
+                            getattr(
+                                self._memory_settings,
+                                "callback_salience_bump",
+                                0.05,
+                            )
+                        ),
+                        revival_bump=float(
+                            getattr(
+                                self._memory_settings,
+                                "callback_revival_bump",
+                                0.10,
+                            )
+                        ),
+                        now=now,
+                        notify_memory_updated=self._notify_memory_updated,
+                    )
+            except Exception:
+                log.debug("callback detector raised", exc_info=True)
+
         # Anti-rut layer: feed the AikoStylePatternTracker the
         # *stripped* spoken text (``assistant_text``, not
         # ``raw_assistant_text``) so we measure what the user heard,

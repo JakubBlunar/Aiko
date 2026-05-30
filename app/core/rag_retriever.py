@@ -195,6 +195,19 @@ def _is_faded_memory(
 _RAG_GOAL_ALIGNMENT_BOOST = 0.04
 _RAG_GOAL_ALIGNMENT_THRESHOLD = 0.55
 
+# K22 — per-hit boost for memories that Aiko has actually managed to
+# weave back into a reply (``metadata.callback_count >= 1``). Same
+# posture as the pinned / anniversary / goal-alignment bonuses: small
+# enough to nudge ordering on near-ties without ever moving a weak
+# match past a strong one. Single-step (no per-count scaling) because
+# the salience bump applied at callback-record time already provides
+# the compounding effect; doing it again here would double-count and
+# let "hot-spot" memories permanently dominate the retriever. Bonus
+# is always-on once a row has been stamped — the settings only gate
+# the *write* side (the post-turn detector); read-side bonuses
+# survive even if the user later disables the detector.
+_RAG_CALLBACK_BONUS = 0.04
+
 
 def _confidence_penalty(confidence: float | None) -> float:
     """Return a non-positive penalty for low-confidence memory hits.
@@ -701,6 +714,33 @@ class RagRetriever:
                                             "rag retriever: goal-alignment cosine raised",
                                             exc_info=True,
                                         )
+                                # K22 — callback bonus. Memories that
+                                # Aiko has successfully wound back
+                                # into a reply (cosine >= threshold
+                                # in :mod:`app.core.callback_detector`)
+                                # carry a positive
+                                # ``metadata.callback_count``. A
+                                # single-step bonus surfaces them
+                                # ahead of equally-relevant siblings
+                                # so the next reply naturally reaches
+                                # for them again. Per-count scaling
+                                # is intentionally absent: the
+                                # compounding loop lives on the
+                                # salience bump applied at
+                                # record-time, which the retriever
+                                # already factors in via tier
+                                # offsets + RagStore's salience-
+                                # aware base score.
+                                mem_meta = getattr(mem, "metadata", None)
+                                if mem_meta:
+                                    try:
+                                        cb_count = int(
+                                            mem_meta.get("callback_count", 0)
+                                        )
+                                    except (TypeError, ValueError):
+                                        cb_count = 0
+                                    if cb_count >= 1:
+                                        h.score += _RAG_CALLBACK_BONUS
                                 # Schema v10: stamp the temporal
                                 # fields onto the hit so format_block
                                 # can render the time-tag suffix
