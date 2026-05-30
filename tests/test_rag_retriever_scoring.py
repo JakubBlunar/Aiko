@@ -589,5 +589,95 @@ class FormatBlockUncertaintySuffixTests(unittest.TestCase):
         self.assertNotIn("(uncertain)", block)
 
 
+class FormatBlockFadedSuffixTests(unittest.TestCase):
+    """K7 — ``RagRetriever.format_block`` appends ``(faded)`` to lines
+    whose hit's ``memory_tier`` is ``"archive"``. Pure render-layer
+    test mirroring the ``(uncertain)`` suite above.
+    """
+
+    def test_archive_tier_line_gets_suffix(self) -> None:
+        hit = RagHit(
+            source="memory",
+            score=0.6,
+            record=_memory_record(
+                record_id="20",
+                content="thing they mentioned years ago",
+                last_used_at=None,
+            ),
+            memory_tier="archive",
+        )
+        block = RagRetriever.format_block([hit], user_display_name="Friend")
+        self.assertIn("(faded)", block)
+
+    def test_long_term_tier_unchanged(self) -> None:
+        hit = RagHit(
+            source="memory",
+            score=0.6,
+            record=_memory_record(
+                record_id="21",
+                content="active long-term fact",
+                last_used_at=None,
+            ),
+            memory_tier="long_term",
+        )
+        block = RagRetriever.format_block([hit], user_display_name="Friend")
+        self.assertNotIn("(faded)", block)
+
+    def test_scratchpad_tier_unchanged(self) -> None:
+        hit = RagHit(
+            source="memory",
+            score=0.6,
+            record=_memory_record(
+                record_id="22",
+                content="recently captured note",
+                last_used_at=None,
+            ),
+            memory_tier="scratchpad",
+        )
+        block = RagRetriever.format_block([hit], user_display_name="Friend")
+        self.assertNotIn("(faded)", block)
+
+    def test_missing_tier_unchanged(self) -> None:
+        # Defensive — pre-K7 hits or non-memory hits will not have the
+        # ``memory_tier`` field stamped; format_block must not crash
+        # and must not append the suffix.
+        hit = RagHit(
+            source="memory",
+            score=0.6,
+            record=_memory_record(
+                record_id="23",
+                content="unjoined memory",
+                last_used_at=None,
+            ),
+            memory_tier=None,
+        )
+        block = RagRetriever.format_block([hit], user_display_name="Friend")
+        self.assertNotIn("(faded)", block)
+
+    def test_archive_with_low_confidence_stacks_both_suffixes(self) -> None:
+        # K7 + Schema v9 compose: a low-confidence archive hit reads
+        # as "(uncertain) (faded)" — both reasons to hedge surface
+        # together. Order matters because the persona reads them
+        # left-to-right; "(uncertain)" lands before "(faded)".
+        hit = RagHit(
+            source="memory",
+            score=0.6,
+            record=_memory_record(
+                record_id="24",
+                content="old shaky claim",
+                last_used_at=None,
+            ),
+            confidence=0.3,
+            memory_tier="archive",
+        )
+        block = RagRetriever.format_block([hit], user_display_name="Friend")
+        self.assertIn("(uncertain)", block)
+        self.assertIn("(faded)", block)
+        # Confidence cue reads first.
+        self.assertLess(
+            block.index("(uncertain)"), block.index("(faded)")
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
