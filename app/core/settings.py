@@ -517,6 +517,43 @@ class AgentSettings:
     # threshold so the filter catches "same topic, different angle"
     # without rejecting "adjacent but new" candidates.
     topic_graph_filter_threshold: float = 0.65
+    # ── K1 personality backlog: Aiko's long-term goals ────────────────
+    # Master switch for the K1 system: goal store + worker + persona +
+    # tools + RAG bonus. Flipping ``False`` keeps the SQLite rows
+    # intact (so goals survive between toggles), unregisters the
+    # ``GoalWorker`` idle tick, silences the "Aiko's quiet long-term
+    # goals" inner-life block via the renderer's gate, and stops the
+    # ``[[goal:...]]`` self-tag from persisting new rows. The four
+    # agent tools (``add_goal`` / ``update_goal_progress`` /
+    # ``archive_goal`` / ``list_goals``) are independently gated by
+    # ``tools.goals`` below — disabling the master switch leaves the
+    # tools wired but they raise immediately because the store skips
+    # initialisation. Default ON because the worker only bootstraps
+    # once per cold install (single LLM call) and the reflection tick
+    # is rate-capped to ``goal_worker_per_*_cap`` below.
+    goals_enabled: bool = True
+    # Cold-start bootstrap controls whether the ``GoalWorker`` is
+    # allowed to fire its initial "propose ~3 goals from persona +
+    # rolling summary" LLM call when the store is empty. Flip ``False``
+    # if you'd rather seed goals manually via the Memory tab and never
+    # let the worker propose its own. The reflection path is
+    # unaffected -- once at least one active goal exists, the
+    # bootstrap branch is never entered. Default ON so a fresh install
+    # arrives with a small set of goals already in place.
+    goal_worker_bootstrap_enabled: bool = True
+    # Hourly + daily caps on LLM calls the GoalWorker may issue, both
+    # the bootstrap pass and per-goal reflection ticks combined.
+    # Dedicated :class:`app.core.fact_check_rate_limiter.FactCheckRateLimiter`
+    # with ``state_key='goal_worker.rate_state'``. The hourly cap of
+    # 3 lines up with the worker's hourly tick cadence with two extra
+    # slots for manual ``force_run`` calls; the daily cap of 12 lets
+    # Aiko reflect on each of the five active goals twice a day with
+    # headroom for the bootstrap pass on day one. Set both to 0 to
+    # disable autonomous calls entirely without unregistering the
+    # worker (e.g. when you want only the ``[[goal:...]]`` self-tag
+    # and the in-turn tools to write goals).
+    goal_worker_per_hour_cap: int = 3
+    goal_worker_per_day_cap: int = 12
     # ── K16. Unified ambient grounding line ───────────────────────────
     # The grounding line is one paragraph at the top of the system
     # prompt that fuses the seven "ambient" inner-life signals
@@ -987,6 +1024,33 @@ class MemorySettings:
     # store is at ``curiosity_seed_max_active`` so the cadence is a
     # ceiling, not a floor.
     curiosity_seed_interval_seconds: int = 3600
+    # K1: cap on simultaneously-active long-term goals Aiko carries.
+    # When :meth:`GoalStore.add_goal` would push past the cap, the
+    # oldest un-pinned active goal is archived (its progress history
+    # is preserved). Five lines up with the "carrying ~5 things" feel
+    # the persona block suggests; bumping past ~7 makes the prompt
+    # bullet list noisy and the worker spread thin across too many
+    # reflection candidates. Pinned goals do not count against the
+    # cap; archived goals never do.
+    goal_max_active: int = 5
+    # K1: per-goal cap on retained reflection (``goal_progress``)
+    # rows. Once the cap is hit the oldest progress row on that goal
+    # is pruned each time a new one is appended. The most recent
+    # entry is also mirrored into the parent goal's
+    # ``metadata.last_progress_note`` so the prompt block stays cheap
+    # to render. 12 is roughly two weeks of one-reflection-per-day
+    # cadence; lower it for a tighter context budget, raise it for a
+    # richer audit trail in the Memory tab.
+    goal_max_progress_per_goal: int = 12
+    # K1: goal worker tick cadence. The worker's
+    # ``is_ready`` predicate fires no more than once per this
+    # interval, and the reflection path picks the oldest-touched
+    # active goal each turn. One hour gives every active goal a
+    # daily-ish reflection at the default ``goal_max_active=5``
+    # without ever queueing two ticks in a row. Lower it for a
+    # tester loop (e.g. 60 seconds to watch the reflection arrive
+    # within a minute); raise it for a calmer cadence.
+    goal_reflection_interval_seconds: int = 3600
     # F5: conflicting-memory detector cadence. The all-pairs cosine
     # scan is cheap (NumPy on the in-memory mirror) but the heuristic
     # gate + occasional LLM call adds up, so once an hour is plenty.
@@ -1141,6 +1205,13 @@ class ToolsSettings:
     # Aiko's room: small set of tools that let her look around / move /
     # consume cookies. See :mod:`app.llm.tools.world`.
     world: bool = True
+    # K1 long-term goals: ``add_goal`` / ``update_goal_progress`` /
+    # ``archive_goal`` / ``list_goals``. Independent from
+    # ``agent.goals_enabled``: flipping the master switch ``False`` skips
+    # store + worker + prompt block but leaves the tool registry path
+    # untouched (the tools themselves no-op because the store is unset).
+    # See :mod:`app.llm.tools.goals`.
+    goals: bool = True
 
 
 @dataclass(slots=True)
@@ -1580,6 +1651,18 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             ),
             grounding_line_mode=_parse_grounding_line_mode(
                 agent_raw.get("grounding_line_mode", "off"),
+            ),
+            goals_enabled=bool(
+                agent_raw.get("goals_enabled", True),
+            ),
+            goal_worker_bootstrap_enabled=bool(
+                agent_raw.get("goal_worker_bootstrap_enabled", True),
+            ),
+            goal_worker_per_hour_cap=max(
+                0, int(agent_raw.get("goal_worker_per_hour_cap", 3)),
+            ),
+            goal_worker_per_day_cap=max(
+                0, int(agent_raw.get("goal_worker_per_day_cap", 12)),
             ),
             shared_moments_enabled=bool(
                 agent_raw.get("shared_moments_enabled", True),
@@ -2022,6 +2105,16 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                 60,
                 int(memory_raw.get("curiosity_seed_interval_seconds", 3600)),
             ),
+            goal_max_active=max(
+                1, int(memory_raw.get("goal_max_active", 5)),
+            ),
+            goal_max_progress_per_goal=max(
+                1, int(memory_raw.get("goal_max_progress_per_goal", 12)),
+            ),
+            goal_reflection_interval_seconds=max(
+                60,
+                int(memory_raw.get("goal_reflection_interval_seconds", 3600)),
+            ),
             conflict_detector_interval_seconds=max(
                 60,
                 int(
@@ -2186,6 +2279,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             recall=bool(tools_raw.get("recall", True)),
             web_search=bool(tools_raw.get("web_search", True)),
             world=bool(tools_raw.get("world", True)),
+            goals=bool(tools_raw.get("goals", True)),
         ),
         endpointing=EndpointingSettings(
             enabled=bool(endpointing_raw.get("enabled", True)),

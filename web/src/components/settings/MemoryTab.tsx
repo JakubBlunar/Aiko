@@ -6,6 +6,7 @@ import { KnowledgeGapsPanel } from "./memory/KnowledgeGapsPanel";
 import { MemoryConflictsPanel } from "./memory/MemoryConflictsPanel";
 import { BeliefsPanel } from "./memory/BeliefsPanel";
 import { CuriositySeedsPanel } from "./memory/CuriositySeedsPanel";
+import { GoalsPanel } from "./memory/GoalsPanel";
 import { FactCheckerStatusFooter } from "./memory/FactCheckerStatusFooter";
 
 export interface MemoryDraft {
@@ -555,6 +556,8 @@ export function MemoryTab({
       <BeliefsPanel />
 
       <CuriositySeedsPanel />
+
+      <GoalsPanel />
 
       <FactCheckerStatusFooter />
     </Section>

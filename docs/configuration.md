@@ -42,6 +42,7 @@ exists to keep them in lock-step.
 | Live2D outfit override | `avatar.auto_outfit` | `"auto"` |
 | Live2D model scale | `avatar.scale_multiplier` | `1.0` |
 | Switch the unified grounding line on/off | `agent.grounding_line_mode` | `"off"` (`"replace"` / `"split"` / `"off"`) |
+| Master switch for Aiko's long-term goals | `agent.goals_enabled` | `true` |
 | Master memory switch | `memory.enabled` | `true` |
 | RAG recall depth per turn | `memory.top_k` | `6` |
 | Long-term memory cap | `memory.max_memories` | `5000` |
@@ -353,6 +354,15 @@ Companion to F1: F1 closes a gap by searching the web; this worker closes it by 
 - `agent.gap_resolver_per_tick` *(int, `5`, min `1`)* — max gaps the worker resolves per tick.
 - `agent.gap_user_answer_resolve_threshold` *(float, `0.50`, clamped `[0, 1]`)* — cosine threshold for the post-turn resolver that closes gaps from the **current** user reply (reuses the user+assistant combined embedding). Lower than the worker threshold because post-turn context is stronger.
 
+### K1 — Aiko's long-term goals
+
+Persistent first-person goals Aiko quietly carries across sessions. Stored as `goal` / `goal_progress` memory rows; surfaced in the prompt as an inner-life block, declared via the `[[goal:summary]]` self-tag, and the four `add_goal` / `update_goal_progress` / `archive_goal` / `list_goals` agent tools. The `GoalWorker` idle worker handles cold-start bootstrap + periodic reflection.
+
+- `agent.goals_enabled` *(bool, `true`)* — master switch for the whole K1 system. Off → no store init, no worker, no prompt block, no self-tag persistence. Existing rows stay in SQLite (safe to toggle). The four agent tools below are independently gated.
+- `agent.goal_worker_bootstrap_enabled` *(bool, `true`)* — controls whether the worker's "propose ~3 goals from persona + rolling summary" LLM call runs when the store is empty. Off → seed goals manually via the Memory tab. Reflection path is unaffected.
+- `agent.goal_worker_per_hour_cap` *(int, `3`, min `0`)* — hourly LLM call cap for the `GoalWorker` (bootstrap + reflection combined). `0` disables autonomous calls entirely without unregistering the worker.
+- `agent.goal_worker_per_day_cap` *(int, `12`, min `0`)* — daily LLM call cap. With the default `goal_max_active=5`, 12 lets every goal reflect twice a day with headroom for the one-shot bootstrap pass.
+
 ### K16 — unified ambient grounding line
 
 Optional fusion of seven "ambient" inner-life signals (circadian, world, activity-awareness, affect/mood, relationship-pulse, user-state, ambient-noise) into a single continuous-awareness paragraph at the top of the system prompt.
@@ -409,6 +419,7 @@ Long-term memory: cross-session vector store of durable facts, plus the tiered (
 - `memory.curiosity_seed_interval_seconds` *(int, `3600`, min `60`)* — K9 curiosity-seed-worker cadence (a ceiling, not a floor — it short-circuits at `curiosity_seed_max_active`).
 - `memory.conflict_detector_interval_seconds` *(int, `3600`, min `60`)* — F5 conflict-detector cadence.
 - `memory.belief_worker_interval_seconds` *(int, `3600`, min `60`)* — K2 belief-inference-worker cadence.
+- `memory.goal_reflection_interval_seconds` *(int, `3600`, min `60`)* — K1 `GoalWorker` cadence. Once an hour gives every goal a daily-ish reflection at the default `goal_max_active=5`. Drop to ~60 for an active testing loop; raise for a calmer cadence.
 
 ### F5 — conflict detector thresholds
 
@@ -432,6 +443,13 @@ Long-term memory: cross-session vector store of durable facts, plus the tiered (
 - `memory.belief_recent_window_hours` *(int, `24`, min `1`)* — window for mood-pass predictions. Older mood beliefs age out via the stale sweep instead. Opinion beliefs have no recency window.
 - `memory.belief_stale_after_days` *(int, `90`, min `1`)* — active beliefs untouched for this many days flip to `stale`.
 - `memory.belief_max_active_per_user` *(int, `200`, min `10`)* — hard ceiling on `active` beliefs. The worker prunes lowest-confidence + oldest down to this cap each tick.
+
+### K1 — long-term goal lifecycle
+
+Caps and per-goal limits for the goal store. Together with the `agent.goal_worker_*` knobs and the `goal_reflection_interval_seconds` cadence above, these bound the size of the active goals block in the prompt and the reflection history kept per goal.
+
+- `memory.goal_max_active` *(int, `5`, min `1`)* — cap on simultaneously-active goals. Adding a new goal past the cap archives the oldest un-pinned active one (history preserved). Higher → richer goals block, more prompt tokens; lower → tighter focus. Pinned goals don't count against the cap.
+- `memory.goal_max_progress_per_goal` *(int, `12`, min `1`)* — per-goal cap on retained reflection (`goal_progress`) rows. New entries past the cap evict the oldest. The most recent note is mirrored into the parent goal's metadata so prompt rendering stays cheap. ~12 ≈ two weeks of daily reflections.
 
 ### K6 — novelty thresholds
 
@@ -528,6 +546,7 @@ Agent tool registry switches. Each toggles a single tool; `tools.enabled = false
 - `tools.recall` *(bool, `true`)* — explicit memory-recall tool (in addition to automatic RAG).
 - `tools.web_search` *(bool, `true`)* — DuckDuckGo-backed web search tool.
 - `tools.world` *(bool, `true`)* — Aiko's room tools (`look_around`, `move_to`, `change_posture`, `inspect_item`, `consume_item`). Off → her room is still alive in the world store but she can't act on it.
+- `tools.goals` *(bool, `true`)* — K1 goal tools (`list_goals`, `add_goal`, `update_goal_progress`, `archive_goal`). Off → Aiko's prompt block + worker still surface goals but she can't *act* on them mid-turn. Independent from `agent.goals_enabled`: if the master switch is off the tools are wired but no-op because the store is unset.
 
 ---
 

@@ -439,6 +439,125 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"list_promises failed: {exc}"
 
     @mcp.tool()
+    def get_goals_state() -> str:
+        """Return Aiko's long-term goal store snapshot (K1).
+
+        Surfaces every active and archived goal with its summary,
+        ``reflection_count``, ``last_reflected_at``, ``last_progress_note``,
+        and source. Includes a ``next_reflection_candidate`` slot
+        showing which goal the worker would pick on the next
+        reflection tick (oldest-touched active goal). Useful for
+        verifying the bootstrap pass landed, watching the per-goal
+        reflection history grow without paging through the Memory tab,
+        and confirming the worker's pick order.
+        """
+        try:
+            store = getattr(session, "_goal_store", None)
+            if store is None:
+                return json.dumps(
+                    {"enabled": False, "reason": "goal store unavailable"},
+                    indent=2,
+                )
+            active = store.list_active()
+            agent_cfg = getattr(session._settings, "agent", None)
+            memory_cfg = getattr(session._settings, "memory", None)
+            payload: dict[str, Any] = {
+                "enabled": True,
+                "settings": {
+                    "goals_enabled": bool(
+                        getattr(agent_cfg, "goals_enabled", True),
+                    ),
+                    "bootstrap_enabled": bool(
+                        getattr(
+                            agent_cfg, "goal_worker_bootstrap_enabled", True,
+                        ),
+                    ),
+                    "per_hour_cap": int(
+                        getattr(agent_cfg, "goal_worker_per_hour_cap", 3),
+                    ),
+                    "per_day_cap": int(
+                        getattr(agent_cfg, "goal_worker_per_day_cap", 12),
+                    ),
+                    "max_active": int(
+                        getattr(memory_cfg, "goal_max_active", 5),
+                    ),
+                    "max_progress_per_goal": int(
+                        getattr(
+                            memory_cfg, "goal_max_progress_per_goal", 12,
+                        ),
+                    ),
+                    "reflection_interval_seconds": int(
+                        getattr(
+                            memory_cfg,
+                            "goal_reflection_interval_seconds",
+                            3600,
+                        ),
+                    ),
+                },
+                "active_count": len(active),
+                "goals": [],
+            }
+            for goal in active:
+                meta = goal.metadata or {}
+                progress = store.list_progress(int(goal.id))
+                payload["goals"].append({
+                    "id": int(goal.id),
+                    "summary": meta.get("summary") or goal.content,
+                    "source": meta.get("source"),
+                    "created_at": goal.created_at,
+                    "last_reflected_at": meta.get("last_reflected_at"),
+                    "reflection_count": int(
+                        meta.get("reflection_count", 0) or 0,
+                    ),
+                    "last_progress_note": meta.get("last_progress_note"),
+                    "pinned": bool(getattr(goal, "pinned", False)),
+                    "tier": getattr(goal, "tier", "long_term"),
+                    "progress_rows": len(progress),
+                })
+            try:
+                candidate = store.pick_for_reflection()
+                if candidate is not None:
+                    cmeta = candidate.metadata or {}
+                    payload["next_reflection_candidate"] = {
+                        "id": int(candidate.id),
+                        "summary": cmeta.get("summary") or candidate.content,
+                        "last_reflected_at": cmeta.get("last_reflected_at"),
+                    }
+                else:
+                    payload["next_reflection_candidate"] = None
+            except Exception:
+                payload["next_reflection_candidate"] = None
+            worker = getattr(session, "_goal_worker", None)
+            payload["worker_registered"] = worker is not None
+            return json.dumps(payload, indent=2, default=str)
+        except Exception as exc:
+            return f"get_goals_state failed: {exc}"
+
+    @mcp.tool()
+    def force_goal_worker() -> str:
+        """Run :class:`GoalWorker` once, bypassing the idle/interval gate.
+
+        Returns the worker's result dict (bootstrap branch keys
+        ``checked`` / ``wrote`` / ``memory_ids`` when the ring is
+        cold, or reflection branch ``goal_id`` / ``progress_id`` /
+        ``note`` once at least one goal exists). The rate limiter is
+        still consulted, so calling this repeatedly will start
+        returning ``{"skipped": true, "reason": "rate_limited"}``
+        once the per-hour cap is reached.
+        """
+        try:
+            worker = getattr(session, "_goal_worker", None)
+            if worker is None:
+                return json.dumps(
+                    {"enabled": False, "reason": "goal worker unavailable"},
+                    indent=2,
+                )
+            result = worker.run()
+            return json.dumps(result or {}, indent=2, default=str)
+        except Exception as exc:
+            return f"force_goal_worker failed: {exc}"
+
+    @mcp.tool()
     def get_relationship_state() -> str:
         """Return relationship phase + counters (Phase 3b)."""
         try:

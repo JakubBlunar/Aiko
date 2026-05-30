@@ -1693,3 +1693,166 @@ returned JSON carries a `mood_shell` block with `tilt`, `line`,
 
 Full pytest run after K5+K14: 1971/1971 pass.
 
+## K1. Long-term goals tracker (goal + goal_progress kinds, GoalStore + GoalWorker)
+
+Aiko now carries her own sustained long-term goals across sessions —
+the things she wants to grow into / explore / get better at — distinct
+from the agenda (TODOs the user gave her) and from one-shot self-
+memories. Two new memory kinds (`goal` + `goal_progress`) on the
+existing tier ladder, a dedicated facade
+[`GoalStore`](../../app/core/goal_store.py), an idle worker
+[`GoalWorker`](../../app/core/goal_worker.py) that bootstraps the
+initial ring and reflects on goals during quiet windows, an inner-life
+prompt block, an inline `[[goal:summary]]` self-tag, four agent tools,
+a small RAG goal-alignment bonus, and a Memory-tab panel.
+
+### Storage
+
+`MemoryStore.VALID_KINDS` gains `goal` and `goal_progress`. A `goal`
+row carries `{summary, added_at, last_reflected_at, last_reflection_id,
+last_progress_note, reflection_count, archived_at, source}` in
+`metadata`; a `goal_progress` row carries `{goal_id, note, noted_at,
+source}` and the goal row's `last_progress_note` field is mirror-
+updated on every successful reflection so prompt rendering stays cheap
+to one SQLite read. Goals are always seeded onto the `long_term` tier
+(never `scratchpad`) so they survive the decay sweep. `GoalStore`
+enforces the per-user `goal_max_active` cap by archiving the oldest
+un-pinned active goal on overflow (history preserved); progress rows
+are capped per-goal via `goal_max_progress_per_goal` with FIFO
+eviction.
+
+### Worker
+
+`GoalWorker` registers with the existing
+[`IdleWorkerScheduler`](../../app/core/idle_worker_scheduler.py) and
+runs at the configured cadence (default hourly). Two branches in
+`run()`:
+
+- **Bootstrap** — when `goal_store.has_any_active()` returns `False`,
+  the worker fires a single LLM call against the persona file +
+  rolling summary asking for ~3 candidate goals and writes the
+  survivors to the store with `source='worker_bootstrap'`. Gated by
+  `agent.goal_worker_bootstrap_enabled`; flip off to seed manually.
+- **Reflection** — picks the oldest-touched active goal via
+  `GoalStore.pick_for_reflection()`, loads its existing reflection
+  history, and fires a single LLM call asking for one short fresh
+  reflection note. Writes the note as a `goal_progress` row and
+  mirrors it into the parent goal's `metadata.last_progress_note`.
+
+Both branches are rate-limited via a dedicated
+[`FactCheckRateLimiter`](../../app/core/fact_check_rate_limiter.py)
+with `state_key='goal_worker.rate_state'` so a chatty session can't
+blow past `agent.goal_worker_per_hour_cap` / `_per_day_cap`. The
+cancel event is the same shared `fact_check_cancel` flag used by F1
+and the belief worker so a graceful shutdown stops the in-flight
+LLM call cleanly.
+
+### Prompt block
+
+A new `goals` inner-life provider on
+[`PromptAssembler`](../../app/core/prompt_assembler.py) renders the
+active goals as an "Aiko's quiet long-term goals" bullet list with an
+optional `(recent: ...)` sub-line under the most-recently-reflected
+goal. Lands in `system_parts` right after `agenda_block` and before
+`belief_gaps_block`, clustering with the other inward-facing context
+beats. Dropped in the assembler's `aggressive` (token-pressure) mode
+the same way agenda + belief_gaps are. Persona guidance ("Your quiet
+long-term goals" in
+[`aiko_companion.txt`](../../data/persona/aiko_companion.txt))
+explicitly teaches Aiko: this is private context, never recite the
+header, weave references in as first-person asides at most once per
+conversation, let unwanted goals drift rather than "closing" them.
+
+### Self-tag fast path
+
+Aiko can declare a new long-term goal mid-turn with the inline
+`[[goal:short summary]]` tag. Parsed in
+[`response_text_service.py`](../../app/core/services/response_text_service.py)
+(stripped from chat + TTS), extracted in
+[`session/post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py)
+and dispatched to `GoalStore.add_goal(source='self_tag')`. Logged as
+`K1 self-flag: aiko declared N goal(s)` for grep-friendly tracing.
+
+### Agent tools
+
+Four tools registered by `SessionController.rebuild_tool_registry`
+under the `tools.goals` switch (see
+[`app/llm/tools/goals.py`](../../app/llm/tools/goals.py)):
+
+- `list_goals` — read-only, returns active goals with their ids.
+- `add_goal` — alternative path to the self-tag for when the LLM
+  prefers a tool call.
+- `update_goal_progress` — appends a reflection note to a specific
+  goal (when the conversation surfaces it).
+- `archive_goal` — retires a goal (history preserved).
+
+### RAG bonus
+
+[`RagRetriever`](../../app/core/rag_retriever.py) gains a small
+`_RAG_GOAL_ALIGNMENT_BOOST=+0.04` applied to memory hits whose
+embedding cosines above `_RAG_GOAL_ALIGNMENT_THRESHOLD=0.55` against
+any active goal vector. Skips the goal / goal_progress rows themselves
+so the cosine signal doesn't compound on top of the bonus. `set_goal_store`
+allows the wiring to happen after the retriever is constructed (the
+goal store is built later in the boot sequence).
+
+### REST + frontend
+
+- `POST /api/goals/run` triggers one `GoalWorker.run()` (cooperative
+  with the rate limiter).
+- The Memory tab's new "Long-term goals" sub-panel
+  ([`GoalsPanel.tsx`](../../web/src/components/settings/memory/GoalsPanel.tsx))
+  lists active goals with their most recent reflection note, exposes a
+  "show archived" toggle, and a "reflect now" button hitting the REST
+  endpoint.
+- `MEMORY_KINDS` (`web/src/types.ts`) gains `goal` + `goal_progress`
+  so the existing kind filter in the Memory tab works against the new
+  rows.
+
+### MCP
+
+Two new debug tools in [`app/mcp/server.py`](../../app/mcp/server.py):
+
+- `get_goals_state()` — full snapshot: settings (caps + cadence),
+  every active goal with its `reflection_count` / `last_reflected_at`
+  / `last_progress_note` / `progress_rows` count, plus the
+  `next_reflection_candidate` slot showing which goal the worker
+  would pick next.
+- `force_goal_worker()` — bypasses the idle/interval gate but still
+  consults the rate limiter.
+
+### Settings
+
+- `agent.goals_enabled` (default `true`), `agent.goal_worker_bootstrap_enabled`
+  (default `true`), `agent.goal_worker_per_hour_cap` (default `3`),
+  `agent.goal_worker_per_day_cap` (default `12`).
+- `memory.goal_max_active` (default `5`), `memory.goal_max_progress_per_goal`
+  (default `12`), `memory.goal_reflection_interval_seconds` (default `3600`).
+- `tools.goals` (default `true`).
+
+Full docs in [`docs/configuration.md`](../configuration.md#k1--aikos-long-term-goals)
+and the memory-tab thresholds section.
+
+### Tests
+
+- [`tests/test_goal_store.py`](../../tests/test_goal_store.py) — tag
+  extraction, add/archive/unarchive lifecycle, summary updates,
+  overflow archiving (with pinned-immunity), per-goal progress
+  pruning, reflection picking by oldest-touched, `pick_relevant`
+  cosine, and `active_goal_vectors`.
+- [`tests/test_goal_worker.py`](../../tests/test_goal_worker.py) —
+  cold-start bootstrap path, reflection path, rate-limiter
+  integration, `is_ready` predicate, cancellation handling, disabled
+  flag short-circuit.
+- [`tests/test_goal_tools.py`](../../tests/test_goal_tools.py) — each
+  of the four agent tools' happy + error paths, plus the
+  `build_goal_tools` factory order.
+- [`tests/test_rag_retriever_goal_alignment.py`](../../tests/test_rag_retriever_goal_alignment.py) —
+  aligned hit gets the bonus, unaligned hit doesn't, goal rows are
+  excluded from compounding, missing goal store disables the bonus.
+- [`tests/test_response_text_service.py`](../../tests/test_response_text_service.py)
+  gains `GoalTagTests` for the `[[goal:...]]` parser.
+- [`tests/test_prompt_assembler.py`](../../tests/test_prompt_assembler.py)
+  gains cases for the `goals` provider slot (lands in system prompt,
+  silent when empty, dropped under `aggressive=True`).
+

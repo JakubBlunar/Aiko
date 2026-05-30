@@ -514,6 +514,7 @@ class _StaticSlices:
     relationship_block: str
     arc_block: str
     agenda_block: str
+    goals_block: str
     built_at: float
 
 
@@ -611,6 +612,16 @@ class PromptAssembler:
         # of the K16 ``replace`` suppression set because it folds
         # affect colour into a single tonal line.
         self._mood_shell_provider: Callable[[], str] | None = None
+        # K1 personality backlog: "Aiko's quiet long-term goals" inner-life
+        # bullet listing up to ``goals_max_rendered`` active goals plus the
+        # most recent reflection note when one fits. Cheap mirror walk via
+        # :class:`GoalStore`; no per-turn LLM. The block clusters with
+        # ``agenda_block`` and the other "things Aiko is carrying" cues
+        # in the system prompt. Dropped in aggressive mode along with
+        # ``agenda`` so the budget stays focused on the user's message
+        # under tight contexts. Empty until the worker bootstrap (or a
+        # user / self-tag write) lands the first goal.
+        self._goals_provider: Callable[[], str] | None = None
         # K6 personality backlog: surprise/novelty signal. Takes the
         # current ``user_text`` (like the F2 knowledge-gap provider)
         # because the detector compares the live turn embedding to a
@@ -772,6 +783,7 @@ class PromptAssembler:
         arc: Callable[[], str] | None = None,
         narrative: Callable[[], str] | None = None,
         agenda: Callable[[], str] | None = None,
+        goals: Callable[[], str] | None = None,
         vocal_tone: Callable[[], str] | None = None,
         catchphrase: Callable[[], str] | None = None,
         petname: Callable[[], str] | None = None,
@@ -818,6 +830,8 @@ class PromptAssembler:
             self._narrative_provider = narrative
         if agenda is not None:
             self._agenda_provider = agenda
+        if goals is not None:
+            self._goals_provider = goals
         if vocal_tone is not None:
             self._vocal_tone_provider = vocal_tone
         if catchphrase is not None:
@@ -997,6 +1011,7 @@ class PromptAssembler:
         relationship_block = _safe_provider(self._relationship_provider)
         arc_block = _safe_provider(self._arc_provider)
         agenda_block = "" if aggressive else _safe_provider(self._agenda_provider)
+        goals_block = "" if aggressive else _safe_provider(self._goals_provider)
         cache_key = self._compute_static_cache_key(
             session_key, history_msgs, recent_window, aggressive,
         )
@@ -1016,6 +1031,7 @@ class PromptAssembler:
             relationship_block=relationship_block,
             arc_block=arc_block,
             agenda_block=agenda_block,
+            goals_block=goals_block,
             built_at=time.monotonic(),
         )
 
@@ -1163,6 +1179,7 @@ class PromptAssembler:
         relationship_block = slices.relationship_block
         arc_block = slices.arc_block
         agenda_block = slices.agenda_block
+        goals_block = slices.goals_block
 
         memory_block = ""
         rag_prefetch_event = "skip"
@@ -1591,6 +1608,16 @@ class PromptAssembler:
             system_parts.append(arc_block)
         if agenda_block:
             system_parts.append(agenda_block)
+        if goals_block:
+            # K1: "Aiko's quiet long-term goals." One short bullet
+            # block listing 1-3 active goals plus the latest progress
+            # note when there's room. Lands immediately after agenda
+            # so the "things Aiko is carrying" cluster reads as
+            # "follow-ups for you (agenda) -> what she's been
+            # working on herself (goals)". Empty until the worker
+            # bootstrap or a manual write seeds the ring; dropped
+            # in aggressive mode alongside agenda.
+            system_parts.append(goals_block)
         if belief_gaps_block:
             # K2: surface up to two "your read on X doesn't match the
             # room" lines right alongside the knowledge-gap block.

@@ -182,7 +182,9 @@ export type MemoryKind =
   | "shared_moment"
   | "knowledge_gap"
   | "curiosity_finding"
-  | "curiosity_seed";
+  | "curiosity_seed"
+  | "goal"
+  | "goal_progress";
 
 export const MEMORY_KINDS: readonly MemoryKind[] = [
   "fact",
@@ -200,6 +202,8 @@ export const MEMORY_KINDS: readonly MemoryKind[] = [
   "knowledge_gap",
   "curiosity_finding",
   "curiosity_seed",
+  "goal",
+  "goal_progress",
 ];
 
 export type MemoryOrder = "recent" | "top";

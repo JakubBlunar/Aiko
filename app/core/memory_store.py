@@ -148,6 +148,32 @@ VALID_KINDS = {
     # resolves (``consumed_at`` stamped, tier demoted to archive)
     # once the conversation cosine-matches the seed.
     "curiosity_seed",
+    # K1 personality backlog — Aiko's own long-term personal goals
+    # (the things she wants to grow into / explore / become better
+    # at over time). Distinct from ``agenda`` (short-term follow-ups
+    # about the user) and ``self`` (one-shot self-memories). Written
+    # by the ``[[goal:summary]]`` self-tag (``GoalStore.add_goal``),
+    # the cold-start bootstrap inside :class:`GoalWorker`, manual
+    # REST/UI/MCP/tool adds, and seeded onto durable long_term tier.
+    # Carries ``{summary, added_at, last_reflected_at,
+    # last_reflection_id, last_progress_note, reflection_count,
+    # archived_at, source}`` in the ``metadata`` JSON column.
+    # Surfaced as an inner-life "Aiko's quiet long-term goals" block
+    # in the prompt assembler and rewards goal-aligned RAG hits with
+    # a small score bonus. Archived rows (``metadata.archived_at``
+    # set, ``tier=archive``) are kept for audit but excluded from
+    # the active prompt block.
+    "goal",
+    # K1 personality backlog — a single reflection moment Aiko had
+    # about one of her goals (worker tick or self-tag). Owned by
+    # :class:`GoalStore`; carries ``{goal_id, note, noted_at, source}``
+    # in the ``metadata`` JSON column. Kept on the ``long_term``
+    # tier (capped per-goal via :meth:`GoalStore.prune_progress`)
+    # so the history survives across decay sweeps. The most recent
+    # entry's text is mirrored into the parent goal's
+    # ``metadata.last_progress_note`` so prompt assembly can render
+    # one line without scanning the progress tail.
+    "goal_progress",
 }
 
 

@@ -81,6 +81,10 @@
     "curiosity_seed_resolve_threshold": 0.50,
     "topic_graph_filter_threshold": 0.65,
     "grounding_line_mode": "off",
+    "goals_enabled": true,
+    "goal_worker_bootstrap_enabled": true,
+    "goal_worker_per_hour_cap": 3,
+    "goal_worker_per_day_cap": 12,
     "gap_resolver_enabled": true,
     "gap_resolver_interval_seconds": 30,
     "gap_resolver_threshold": 0.55,
@@ -217,6 +221,9 @@
     "stagnation_cooldown_turns": 3,
     "stagnation_post_novelty_suppression_turns": 3,
     "curiosity_seed_interval_seconds": 3600,
+    "goal_max_active": 5,
+    "goal_max_progress_per_goal": 12,
+    "goal_reflection_interval_seconds": 3600,
     "idle_worker_wake_seconds": 30,
     "idle_worker_quiet_threshold_seconds": 20,
     "idle_worker_tick_budget_ms": 6000,
@@ -227,7 +234,8 @@
     "get_time": true,
     "recall": true,
     "web_search": true,
-    "world": true
+    "world": true,
+    "goals": true
   },
   "endpointing": {
     "enabled": true,

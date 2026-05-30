@@ -185,6 +185,11 @@ export const api = {
       "/api/curiosity-seeds/run",
       { method: "POST" },
     ),
+  runGoalWorker: () =>
+    jsonFetch<{ result: Record<string, unknown> }>(
+      "/api/goals/run",
+      { method: "POST" },
+    ),
   // ── Memory conflicts (F5) ────────────────────────────────────────
   listMemoryConflicts: (
     options: {

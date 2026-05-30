@@ -640,6 +640,106 @@ class MoodShellProviderTests(unittest.TestCase):
             )
 
 
+class GoalsProviderTests(unittest.TestCase):
+    """K1 ``goals`` provider: lands in the system prompt next to agenda,
+    survives the K16 ``replace`` mode (goals are durable state, not
+    ambient awareness), and is dropped under ``aggressive=True`` like
+    its sibling ``agenda`` block."""
+
+    def test_goals_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="goals1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                goals=lambda: (
+                    "Aiko's quiet long-term goals:\n"
+                    "- learn russian alphabet slowly\n"
+                    "- practice jazz piano daily"
+                ),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "goals1",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertIn(
+                "quiet long-term goals", messages[0]["content"],
+            )
+            self.assertIn("russian alphabet", messages[0]["content"])
+
+    def test_goals_silent_when_empty(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="goals2", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(goals=lambda: "")
+            messages, _ = assembler.assemble_with_budget(
+                "goals2",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertNotIn(
+                "quiet long-term goals", messages[0]["content"],
+            )
+
+    def test_goals_dropped_under_aggressive_mode(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="goals3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                goals=lambda: (
+                    "Aiko's quiet long-term goals:\n"
+                    "- learn russian alphabet"
+                ),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "goals3",
+                "x",
+                context_window=4096,
+                response_budget=256,
+                aggressive=True,
+            )
+            # Aggressive mode drops the goals block alongside the agenda
+            # block so the budget stays on the user's message.
+            self.assertNotIn(
+                "quiet long-term goals", messages[0]["content"],
+            )
+
+    def test_goals_block_survives_k16_replace_mode(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="goals4", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                goals=lambda: (
+                    "Aiko's quiet long-term goals:\n"
+                    "- learn russian alphabet"
+                ),
+                grounding_line=lambda: (
+                    "It's Sunday morning. Jacob's reading upbeat."
+                ),
+            )
+            assembler.set_grounding_line_mode("replace")
+            messages, _ = assembler.assemble_with_budget(
+                "goals4",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            # K16 replace subsumes ambient state, NOT durable goals.
+            self.assertIn(
+                "quiet long-term goals", messages[0]["content"],
+            )
+
+
 class NoveltyBlockProviderTests(unittest.TestCase):
     """K6 novelty provider lands in the system prompt, is dropped under
     ``aggressive=True``, and receives the current ``user_text``."""
