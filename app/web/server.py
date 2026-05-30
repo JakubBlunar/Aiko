@@ -1267,6 +1267,29 @@ def create_web_app(session: "SessionController") -> FastAPI:
             raise HTTPException(500, f"worker run failed: {exc}") from exc
         return JSONResponse({"result": result or {}})
 
+    # ── REST: long-term goals (K1) ───────────────────────────────────
+
+    @app.post("/api/goals/run")
+    async def run_goal_worker() -> JSONResponse:
+        """Force a single ``GoalWorker.run()`` and return the result.
+
+        Mirrors the cooperative shape of ``/api/curiosity-seeds/run``: the
+        Memory tab's "Regenerate now" / "Reflect now" button posts here so
+        a tester can verify the worker's output (bootstrap on a cold ring,
+        or one reflection note on an existing goal) without waiting for
+        the next idle tick. Bypasses the idle-window gate but still
+        respects the worker's own rate limiter, so calling this in a
+        loop won't blow past ``agent.goal_worker_per_*_cap``.
+        """
+        worker = getattr(session, "_goal_worker", None)
+        if worker is None:
+            raise HTTPException(503, "goal worker unavailable")
+        try:
+            result = worker.run()
+        except Exception as exc:
+            raise HTTPException(500, f"worker run failed: {exc}") from exc
+        return JSONResponse({"result": result or {}})
+
     # ── REST: memory conflicts (F5) ──────────────────────────────────
 
     @app.get("/api/memory-conflicts")

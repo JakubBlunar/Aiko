@@ -405,6 +405,23 @@ _CONFLICT_OPEN_TAIL_PATTERN = re.compile(
     flags=re.IGNORECASE,
 )
 
+# K1 personality backlog: [[goal:summary]] — Aiko self-tag declaring
+# one of her own long-term personal goals (something she wants to grow
+# into / explore / become better at). Single colon, body is a short
+# free-text summary (4-200 chars, no square brackets / newlines).
+# Stripped from chat / TTS the same way as ``[[gap:...]]``. The
+# SessionController dispatch (``_post_turn_inner_life``) hands every
+# extracted tag to :meth:`app.core.goal_store.GoalStore.add_goal`.
+_GOAL_TAG_PATTERN = re.compile(
+    r"\[\[goal:([^\[\]\n]{4,200}?)\]\]",
+    flags=re.IGNORECASE,
+)
+_GOAL_OPEN_TAIL_PATTERN = re.compile(
+    r"\[\[goal:[^\]]*\Z",
+    flags=re.IGNORECASE,
+)
+
+
 # K2 personality backlog: [[predict:kind:topic:state:confidence]] —
 # Aiko self-tag for a theory-of-mind prediction about the user
 # ("I think Jacob is excited about the tokyo trip"). The grammar
@@ -544,6 +561,30 @@ def parse_arc_tags(text: str) -> list[str]:
     return out
 
 
+def extract_goal_tags(text: str) -> list[str]:
+    """Return the trimmed body of every ``[[goal:summary]]`` tag in ``text``.
+
+    Duplicates within a single text (case-insensitive) are collapsed
+    so a repeated tag inside the same reply doesn't flood the goal
+    journal. Empty / malformed tags are silently skipped.
+    """
+    source = str(text or "")
+    if not source:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for m in _GOAL_TAG_PATTERN.finditer(source):
+        body = (m.group(1) or "").strip()
+        if not body:
+            continue
+        key = body.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(body)
+    return out
+
+
 def extract_conflict_tags(text: str) -> list[str]:
     """Return the body of every well-formed ``[[conflict:reason]]`` tag.
 
@@ -676,6 +717,13 @@ def strip_all_meta_tags(text: str) -> str:
     # F5: same treatment for [[conflict:reason]] self-tags.
     s = _CONFLICT_TAG_PATTERN.sub("", s)
     s = _CONFLICT_OPEN_TAIL_PATTERN.sub("", s)
+    # K1: same treatment for [[goal:summary]] self-tags. The body is
+    # extracted upstream by :func:`extract_goal_tags` and dispatched
+    # in ``_post_turn_inner_life``; the strip here makes the tag
+    # invisible to chat / TTS regardless of whether the side-channel
+    # ran.
+    s = _GOAL_TAG_PATTERN.sub("", s)
+    s = _GOAL_OPEN_TAIL_PATTERN.sub("", s)
     # K2: same treatment for [[predict:kind:topic:state:confidence]].
     s = _PREDICT_TAG_PATTERN.sub("", s)
     s = _PREDICT_OPEN_TAIL_PATTERN.sub("", s)
@@ -776,6 +824,7 @@ _META_OPENERS = (
     "[[conflict:",
     "[[predict:",
     "[[prosody:",
+    "[[goal:",
 )
 
 
@@ -811,6 +860,8 @@ def _looks_like_partial_opener(suffix: str) -> bool:
     if lowered.startswith("[[conflict:") and "]]" not in lowered:
         return True
     if lowered.startswith("[[prosody:") and "]]" not in lowered:
+        return True
+    if lowered.startswith("[[goal:") and "]]" not in lowered:
         return True
     # Mid-tag like ``[[d`` / ``[[de`` / ``[[s`` etc.
     if lowered.startswith("[["):

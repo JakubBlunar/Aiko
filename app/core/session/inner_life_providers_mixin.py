@@ -353,6 +353,84 @@ class InnerLifeProvidersMixin:
             log.debug("agenda block render failed", exc_info=True)
             return ""
 
+    def _render_goals_block(self) -> str:
+        """K1: "Aiko's quiet long-term goals." block.
+
+        Lists up to ``agent.goals_max_rendered`` (default 3) active
+        goals as a bullet list, with a single sub-bullet showing the
+        most recent reflection note on the goal that was last
+        touched. Tonal nudge at the end tells Aiko these are her own
+        slow-burn anchors, not user-facing TODOs (the agenda block
+        carries those).
+
+        Empty when the goals feature is disabled, the store is
+        missing, or no active goals exist. The block is owned by the
+        assembler's ``_StaticSlices`` cache, so render cost is paid
+        once per listening window even when 3+ goals are live.
+        """
+        if not bool(getattr(self._settings.agent, "goals_enabled", True)):
+            return ""
+        store = getattr(self, "_goal_store", None)
+        if store is None:
+            return ""
+        try:
+            active = store.list_active()
+        except Exception:
+            log.debug("goal_store list_active raised", exc_info=True)
+            return ""
+        if not active:
+            return ""
+        max_rendered = max(
+            1,
+            int(
+                getattr(
+                    self._settings.agent,
+                    "goals_max_rendered",
+                    3,
+                )
+            ),
+        )
+        # Pick the most-recently-reflected goal for the progress sub-bullet.
+        # ``last_reflected_at`` is ISO-8601 UTC so lexicographic compare
+        # is equivalent to chronological order; missing values sort to
+        # the empty string and never win.
+        recent_progress_goal_id: int | None = None
+        recent_progress_text: str = ""
+        recent_progress_at: str = ""
+        for goal in active:
+            meta = goal.metadata or {}
+            note = (meta.get("last_progress_note") or "").strip()
+            if not note:
+                continue
+            last_reflected_at = str(meta.get("last_reflected_at") or "")
+            if last_reflected_at > recent_progress_at:
+                recent_progress_at = last_reflected_at
+                recent_progress_goal_id = int(goal.id)
+                recent_progress_text = note
+        lines: list[str] = [
+            f"Aiko's quiet long-term goals ({self.user_display_name} hasn't asked her about these — these are her own):"
+        ]
+        for goal in active[:max_rendered]:
+            meta = goal.metadata or {}
+            summary = str(meta.get("summary") or goal.content or "").strip()
+            if not summary:
+                continue
+            lines.append(f"- {summary}")
+            if (
+                recent_progress_goal_id == int(goal.id)
+                and recent_progress_text
+            ):
+                # Trim the progress note to one short line so the block
+                # stays tight (the worker capped it at 280 chars already
+                # but we slice further so two newlines don't sneak in).
+                short_note = " ".join(recent_progress_text.split())[:200]
+                lines.append(f"  (recent: {short_note})")
+        if len(lines) == 1:
+            # Defensive: a goal row whose summary fell through the
+            # validation would leave us with just the header.
+            return ""
+        return "\n".join(lines)
+
     def _render_knowledge_gaps_block(self, user_text: str) -> str:
         """F2: surface the open knowledge gap most relevant to ``user_text``.
 

@@ -205,6 +205,78 @@ class PredictTagTests(unittest.TestCase):
         self.assertIn("really?", out)
 
 
+class GoalTagTests(unittest.TestCase):
+    """K1 ``[[goal:summary]]`` tag handling: stripped from chat / TTS
+    but the body survives in the extraction path."""
+
+    def test_goal_tag_is_dropped_and_extracted(self) -> None:
+        from app.core.services.response_text_service import (
+            extract_goal_tags,
+        )
+
+        text = (
+            "I want to [[goal:get better at listening for sevenths and ninths]] "
+            "and that's it for tonight."
+        )
+        out = strip_all_meta_tags(text)
+        self.assertNotIn("[[goal", out)
+        self.assertNotIn("sevenths and ninths", out)
+        self.assertIn("I want to", out)
+        self.assertIn("that's it for tonight", out)
+        tags = extract_goal_tags(text)
+        self.assertEqual(len(tags), 1)
+        self.assertIn("sevenths", tags[0])
+
+    def test_goal_two_tags_in_one_message(self) -> None:
+        from app.core.services.response_text_service import (
+            extract_goal_tags,
+        )
+
+        text = (
+            "Two threads: [[goal:write a short essay every weekend]] and "
+            "[[goal:learn cyrillic alphabet]]"
+        )
+        tags = extract_goal_tags(text)
+        self.assertEqual(len(tags), 2)
+
+    def test_goal_dedupes_repeats_case_insensitively(self) -> None:
+        from app.core.services.response_text_service import (
+            extract_goal_tags,
+        )
+
+        text = (
+            "[[goal:Practice piano scales]] [[goal:practice piano scales]]"
+        )
+        tags = extract_goal_tags(text)
+        self.assertEqual(len(tags), 1)
+
+    def test_goal_rejects_short_body(self) -> None:
+        from app.core.services.response_text_service import (
+            extract_goal_tags,
+        )
+
+        self.assertEqual(extract_goal_tags("[[goal:hi]]"), [])
+
+    def test_goal_rejects_bracket_in_body(self) -> None:
+        from app.core.services.response_text_service import (
+            extract_goal_tags,
+        )
+
+        self.assertEqual(
+            extract_goal_tags("[[goal:learn [bad] thing]]"), []
+        )
+
+    def test_goal_unclosed_at_end_is_suppressed(self) -> None:
+        from app.core.services.response_text_service import (
+            safe_visible_prefix,
+        )
+
+        partial = "hi [[goal:still typing"
+        out = safe_visible_prefix(partial)
+        self.assertEqual(out.strip(), "hi")
+        self.assertNotIn("[[goal", out)
+
+
 class ParseReactionAtStartStackTests(unittest.TestCase):
     """Phase 3 stacked-reaction grammar: ``[[reaction:A+B]]`` must
     surface ``A`` as the primary mood (preserving the existing

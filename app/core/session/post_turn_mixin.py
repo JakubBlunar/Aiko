@@ -943,6 +943,66 @@ class PostTurnMixin:
                     "predict-tag inline extraction failed", exc_info=True,
                 )
 
+        # K1: inline [[goal:summary]] self-tag. Aiko declares one of
+        # her own long-term goals mid-turn; we hand each unique body
+        # to :meth:`GoalStore.add_goal` so it becomes a ``goal``
+        # memory row with ``source='self_tag'``. Cap enforcement
+        # (max_active + archive-on-overflow) lives inside the store,
+        # so a chatty turn that emits five tags cannot blow the ring
+        # past its budget.
+        goal_store = getattr(self, "_goal_store", None)
+        if (
+            goal_store is not None
+            and raw_assistant_text
+            and bool(getattr(self._settings.agent, "goals_enabled", True))
+        ):
+            try:
+                from app.core.services.response_text_service import (
+                    extract_goal_tags,
+                )
+
+                summaries = extract_goal_tags(raw_assistant_text)
+                if summaries:
+                    log.info(
+                        "K1 self-flag: aiko declared %d goal(s)",
+                        len(summaries),
+                    )
+                    for summary in summaries:
+                        try:
+                            mem = goal_store.add_goal(
+                                summary=summary,
+                                source="self_tag",
+                                source_session=self.session_key,
+                                source_turn_id=assistant_message_id,
+                            )
+                            if mem is not None:
+                                log.info(
+                                    "K1 goal from tag: id=%s summary=%r",
+                                    mem.id,
+                                    (mem.metadata or {}).get(
+                                        "summary", mem.content
+                                    )[:120],
+                                )
+                                if self._notify_memory_added is not None:
+                                    try:
+                                        self._notify_memory_added(
+                                            mem.to_dict()
+                                        )
+                                    except Exception:
+                                        log.debug(
+                                            "K1 notify_memory_added raised",
+                                            exc_info=True,
+                                        )
+                        except Exception:
+                            log.debug(
+                                "K1 add_goal from tag raised",
+                                exc_info=True,
+                            )
+            except Exception:
+                log.debug(
+                    "goal-tag inline extraction failed", exc_info=True,
+                )
+
         # K2: post-turn gap detector pass. Compares active mood
         # beliefs against the live affect read and active opinion
         # beliefs against the user's most recent message. Surfaced

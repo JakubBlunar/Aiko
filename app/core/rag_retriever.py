@@ -31,11 +31,14 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Sequence
 
+import numpy as np
+
 from app.core.rag_store import RagHit
 
 if TYPE_CHECKING:
     from app.core.chat_database import ChatDatabase
     from app.core.conversation_arc import ArcState
+    from app.core.goal_store import GoalStore
     from app.core.memory_store import MemoryStore
     from app.core.rag_store import RagStore
     from app.llm.embedder import Embedder
@@ -119,6 +122,15 @@ _MEMORY_CONFIDENCE_PENALTY_MAX = 0.15
 _RAG_ARC_BOOST = 0.03
 _RAG_DIALOGUE_ACT_BOOST = 0.03
 _RAG_ALIGNMENT_BOOST_CAP = 0.05
+
+# K1 — per-hit boost for memories that semantically align with one of
+# Aiko's active long-term goals (cosine >= ``_RAG_GOAL_ALIGNMENT_THRESHOLD``).
+# Same posture as the arc / dialogue-act boosts: small enough to nudge
+# ordering on near-ties without ever moving a weak match past a strong
+# one. We only apply it once per hit, so a hit aligned with two goals
+# still gets just the single bonus.
+_RAG_GOAL_ALIGNMENT_BOOST = 0.04
+_RAG_GOAL_ALIGNMENT_THRESHOLD = 0.55
 
 
 def _confidence_penalty(confidence: float | None) -> float:
@@ -405,6 +417,7 @@ class RagRetriever:
         chat_db: "ChatDatabase | None" = None,
         arc_state_provider: "Callable[[], ArcState | None] | None" = None,
         dialogue_act_provider: "Callable[[str], str | None] | None" = None,
+        goal_store: "GoalStore | None" = None,
     ) -> None:
         self._store = store
         self._embedder = embedder
@@ -430,6 +443,15 @@ class RagRetriever:
         self._chat_db = chat_db
         self._arc_state_provider = arc_state_provider
         self._dialogue_act_provider = dialogue_act_provider
+        # K1 — optional :class:`GoalStore` handle. When set, ``retrieve``
+        # pulls the active-goal vector list once per call and applies
+        # ``_RAG_GOAL_ALIGNMENT_BOOST`` to any hit whose own embedding
+        # cosine-aligns with one of them above
+        # ``_RAG_GOAL_ALIGNMENT_THRESHOLD``. Cost is O(num_goals × hits)
+        # cosines — negligible since num_goals is capped at ~5 and
+        # hits is bounded by ``per_source_top_k``. ``None`` keeps the
+        # legacy retriever behaviour for tests and lean deployments.
+        self._goal_store = goal_store
         # Schema v8 — IDs of memories surfaced in the last
         # :meth:`retrieve` call. ``SessionController._post_turn_inner_life``
         # reads this snapshot to run the keyword-overlap revival check
@@ -440,6 +462,15 @@ class RagRetriever:
     @property
     def top_k(self) -> int:
         return self._top_k
+
+    def set_goal_store(self, store: "GoalStore | None") -> None:
+        """Attach (or detach) the K1 :class:`GoalStore` after construction.
+
+        SessionController builds the retriever before the goal store
+        exists, so we wire the dependency in a second pass. Passing
+        ``None`` cleanly disables the goal-alignment bonus.
+        """
+        self._goal_store = store
 
     def update_settings(
         self,
@@ -484,6 +515,21 @@ class RagRetriever:
         except Exception:
             log.debug("rag retriever: embed failed", exc_info=True)
             return []
+
+        # K1 — pre-fetch active goal vectors once per retrieval call so
+        # the per-hit alignment cosine check below is a cheap O(num_goals)
+        # dot product. The goal vectors are unit-normalised by
+        # ``MemoryStore.add`` so the dot product equals cosine directly.
+        goal_vectors: list[np.ndarray] = []
+        if self._goal_store is not None:
+            try:
+                goal_vectors = list(self._goal_store.active_goal_vectors())
+            except Exception:
+                log.debug(
+                    "rag retriever: goal_store active vectors failed",
+                    exc_info=True,
+                )
+                goal_vectors = []
 
         merged: list[RagHit] = []
         try:
@@ -549,6 +595,36 @@ class RagRetriever:
                                 h.score += _confidence_penalty(mem_confidence)
                                 if mem_confidence is not None:
                                     h.confidence = float(mem_confidence)
+                                # K1 — small goal-alignment nudge.
+                                # Walks the pre-fetched active goal
+                                # vectors against ``mem.embedding``
+                                # (already unit-normalised by
+                                # MemoryStore.add). Skip goal /
+                                # goal_progress hits themselves so
+                                # the bonus doesn't compound on top
+                                # of the cosine score those rows
+                                # already win on. One bonus per hit
+                                # max — early-exit on the first
+                                # goal that aligns.
+                                if (
+                                    goal_vectors
+                                    and mem.kind not in ("goal", "goal_progress")
+                                    and mem.embedding is not None
+                                ):
+                                    try:
+                                        mem_arr = np.asarray(
+                                            mem.embedding, dtype=np.float32,
+                                        )
+                                        for gv in goal_vectors:
+                                            sim = float((mem_arr * gv).sum())
+                                            if sim >= _RAG_GOAL_ALIGNMENT_THRESHOLD:
+                                                h.score += _RAG_GOAL_ALIGNMENT_BOOST
+                                                break
+                                    except Exception:
+                                        log.debug(
+                                            "rag retriever: goal-alignment cosine raised",
+                                            exc_info=True,
+                                        )
                                 # Schema v10: stamp the temporal
                                 # fields onto the hit so format_block
                                 # can render the time-tag suffix

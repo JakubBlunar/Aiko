@@ -1038,6 +1038,52 @@ class SessionController(
                 log.warning("KnowledgeGapStore init failed", exc_info=True)
                 self._knowledge_gap_store = None
 
+        # K1 personality backlog: long-term goals journal. Cheap —
+        # pure self-tag parsing + a dedicated MemoryStore wrapper,
+        # the LLM-driven reflection runs out-of-band in
+        # :class:`GoalWorker`. Wired whenever long-term memory is
+        # available so the [[goal:...]] extraction path always has
+        # somewhere to write, even when the worker is disabled.
+        self._goal_store = None
+        if (
+            self._memory_store is not None
+            and self._embedder is not None
+        ):
+            try:
+                from app.core.goal_store import GoalStore
+
+                self._goal_store = GoalStore(
+                    memory_store=self._memory_store,
+                    embedder=self._embedder,
+                    max_active=int(getattr(
+                        settings.memory, "goal_max_active", 5,
+                    )),
+                    max_progress_per_goal=int(getattr(
+                        settings.memory,
+                        "goal_max_progress_per_goal",
+                        12,
+                    )),
+                )
+            except Exception:
+                log.warning("GoalStore init failed", exc_info=True)
+                self._goal_store = None
+            # K1: tell the RAG retriever about the goal store so its
+            # per-hit goal-alignment bonus has the active vectors to
+            # check against. The retriever was constructed earlier in
+            # the bootstrap; this hooks the dependency up after both
+            # exist (the retriever's setter is None-safe).
+            if (
+                self._goal_store is not None
+                and getattr(self, "_rag_retriever", None) is not None
+                and hasattr(self._rag_retriever, "set_goal_store")
+            ):
+                try:
+                    self._rag_retriever.set_goal_store(self._goal_store)
+                except Exception:
+                    log.debug(
+                        "RagRetriever set_goal_store failed", exc_info=True,
+                    )
+
         # F1 personality backlog: persistent claim queue + cancellation
         # event. The queue is enqueued from the ``_notify_memory_added``
         # path so every memory write site automatically feeds it. The
@@ -1151,6 +1197,7 @@ class SessionController(
             user_state=self._render_user_state_block,
             relationship=self._render_relationship_block,
             agenda=self._render_agenda_block,
+            goals=self._render_goals_block,
             arc=self._render_arc_block,
             narrative=self._render_narrative_block,
             vocal_tone=self._render_vocal_tone_block,
@@ -1603,6 +1650,95 @@ class SessionController(
                             exc_info=True,
                         )
                         self._curiosity_seed_worker = None
+
+                # K1: GoalWorker. Cold-start bootstrap when the ring
+                # is empty, reflection ticks otherwise. Each LLM call
+                # passes through a dedicated FactCheckRateLimiter so
+                # the worker's daily budget stays independent of F1's.
+                # Failures here only drop autonomous reflection; the
+                # self-tag write path and agent tools still work
+                # against ``self._goal_store``.
+                self._goal_worker = None
+                self._goal_worker_rate_limiter = None
+                if (
+                    self._goal_store is not None
+                    and self._fact_check_cancel is not None
+                    and bool(getattr(settings.agent, "goals_enabled", True))
+                ):
+                    try:
+                        from app.core.fact_check_rate_limiter import (
+                            FactCheckRateLimiter,
+                        )
+                        from app.core.goal_worker import GoalWorker
+
+                        self._goal_worker_rate_limiter = FactCheckRateLimiter(
+                            self._chat_db,
+                            per_hour_cap=int(getattr(
+                                settings.agent,
+                                "goal_worker_per_hour_cap",
+                                3,
+                            )),
+                            per_day_cap=int(getattr(
+                                settings.agent,
+                                "goal_worker_per_day_cap",
+                                12,
+                            )),
+                            state_key="goal_worker.rate_state",
+                        )
+
+                        persona_path_goal = (
+                            Path(__file__).resolve().parents[2]
+                            / "data" / "persona" / "aiko_companion.txt"
+                        )
+
+                        def _persona_provider_goal() -> str:
+                            try:
+                                return persona_path_goal.read_text(
+                                    encoding="utf-8",
+                                )
+                            except OSError:
+                                return ""
+
+                        def _summary_provider_goal() -> str:
+                            try:
+                                row = self._chat_db.get_latest_summary(
+                                    self.session_key,
+                                )
+                                return (row.summary if row is not None else "") or ""
+                            except Exception:
+                                return ""
+
+                        def _assistant_name_provider_goal() -> str:
+                            return (
+                                self._fact_check_assistant_name() or "Aiko"
+                            )
+
+                        self._goal_worker = GoalWorker(
+                            goal_store=self._goal_store,
+                            ollama=self._ollama,
+                            chat_model=self._effective_chat_model,
+                            cancel_event=self._fact_check_cancel,
+                            agent_settings=settings.agent,
+                            memory_settings=self._memory_settings,
+                            rate_limiter=self._goal_worker_rate_limiter,
+                            persona_provider=_persona_provider_goal,
+                            rolling_summary_provider=_summary_provider_goal,
+                            user_display_name_provider=(
+                                lambda: self.user_display_name
+                            ),
+                            assistant_display_name_provider=(
+                                _assistant_name_provider_goal
+                            ),
+                            notify_memory_added=self._notify_memory_added,
+                            notify_memory_updated=self._notify_memory_updated,
+                        )
+                        self._idle_scheduler.register(self._goal_worker)
+                    except Exception:
+                        log.warning(
+                            "GoalWorker boot failed", exc_info=True,
+                        )
+                        self._goal_worker = None
+                        self._goal_worker_rate_limiter = None
 
                 # Aiko's living garden — plant stage promotion + visiting
                 # the garden during idle daylight windows. Both workers
@@ -3086,6 +3222,21 @@ class SessionController(
                         registry.register(tool)
                 except Exception:
                     log.warning("world tools failed to register", exc_info=True)
+            # K1: goal tools (list_goals / add_goal / update_goal_progress
+            # / archive_goal). Gated on ``tools.goals`` (default True)
+            # and skipped silently when the goal store didn't wire
+            # (no embedder / memory disabled).
+            if (
+                getattr(tools_cfg, "goals", True)
+                and getattr(self, "_goal_store", None) is not None
+            ):
+                try:
+                    from app.llm.tools.goals import build_goal_tools
+
+                    for tool in build_goal_tools(self):
+                        registry.register(tool)
+                except Exception:
+                    log.warning("goal tools failed to register", exc_info=True)
         except Exception:
             log.warning("tool registry build failed", exc_info=True)
         self._tool_registry = registry

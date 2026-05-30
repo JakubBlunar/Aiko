@@ -13,16 +13,8 @@ plumbing; later K-numbers introduce more new shape).
 
 ## K1. Long-term goals tracker
 
-Aiko maintains 1-3 sustained personal goals (e.g. "learn more about
-Jacob's hometown", "write more poetry") in a new `goal` memory kind,
-distinct from `open_question` (one-shot factual). A worker periodically
-reflects progress and writes a `goal_progress` note linked back to the
-goal. Different shape from G3: G3 is "looked it up, done"; goals are
-"I keep coming back to this." Key files:
-[`app/core/memory_store.py`](../../app/core/memory_store.py)
-(`VALID_KINDS` extension), new `app/core/goal_worker.py`,
-[`app/core/rag_retriever.py`](../../app/core/rag_retriever.py)
-(boost goal-aligned hits when the topic matches).
+Shipped — see [`shipped.md`](shipped.md) "K1. Long-term goals tracker
+(goal + goal_progress kinds, GoalStore + GoalWorker)".
 
 ---
 
