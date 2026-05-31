@@ -48,6 +48,7 @@ exists to keep them in lock-step.
 | Notice when {user_name} double-checks Aiko's claims (calibration) | `agent.calibration_detection_enabled` | `true` |
 | Let Aiko occasionally touch the room (sensory anchoring) | `agent.sensory_anchor_enabled` | `true` |
 | Pull back when {user} goes quiet (K23 misattunement) | `agent.misattunement_detection_enabled` | `true` |
+| Hedge old claims with time-language (K25 confidence decay) | `agent.confidence_time_decay_enabled` | `true` |
 | Wall-clock prefixes on chat history (K-time1) | `agent.history_age_prefix_enabled` | `true` |
 | Master memory switch | `memory.enabled` | `true` |
 | RAG recall depth per turn | `memory.top_k` | `6` |
@@ -398,6 +399,34 @@ Either trigger fires the same cue ("pull back, lighter, drop the agenda, no apol
 - `agent.misattunement_cooldown_turns` *(int, `3`, min `0`)* — turns of cooldown after a fire. Decremented by 1 on every provider call regardless of trigger state; armed back to this value whenever the detector fires. `0` disables the cooldown entirely (every eligible turn fires); higher values keep the cue rare. The conditions for the trigger can persist across consecutive turns when {user} is genuinely busy, so the cooldown is the main protection against the cue stacking.
 
 Verification: enable INFO logging on `app.misattunement_detector` and watch for `misattunement-detector: trigger=… prev_aiko=… this_user=… novelty_band=… cooldown_set=…`. The MCP tools `get_misattunement_state()` and `force_misattunement()` cover end-to-end repro without waiting for an organic trigger. Tests: `tests/test_misattunement_detector.py`, `tests/test_misattunement_provider.py`, `MisattunementProviderTests` in `tests/test_prompt_assembler.py`, `MisattunementSettingsTests` in `tests/test_settings.py`.
+
+### K25 — memory confidence time-decay
+
+Read-side time-decay on memory confidence with a new `(distant)` suffix that's distinct from `(uncertain)` and `(faded)`. No schema change, no decay-writer — each retrieval recomputes `effective_confidence = stored * max(floor, 1 - days_since_created / horizon_days)` and stamps the row with `(distant)` when the result drops below the threshold. Pinned rows bypass.
+
+Three independent suffix predicates layer cleanly:
+
+- `(uncertain)` — **stored** confidence is low (the F1 fact-checker flagged it, or the source was shaky at write time). Persona hedge: "I think", "if I'm remembering right".
+- `(distant)` — **raw age** has decayed an otherwise-fine claim. The memory is still active, just old. Persona hedge: "a while back", "don't quote me on the date".
+- `(faded)` — **tier + idle** signal: K7 says the row is archived or has decayed in place. Persona hedge: "ages ago", "I might be wrong".
+
+All three can stack on the same row. Order in the rendered prompt: `(uncertain) (distant) (faded)`. The LLM reads source-doubt first, then time-doubt, then cold-history.
+
+Default behaviour at `horizon_days=365, floor=0.3, distant_threshold=0.5`:
+
+| Scenario | When `(distant)` fires |
+|---|---|
+| Default-confidence claim (0.7) | ~104 days old |
+| High-confidence claim (0.9) | ~165 days old |
+| Self-tagged claim (0.85) | ~150 days old |
+| Pinned row (any confidence) | Never (bypassed) |
+
+- `agent.confidence_time_decay_enabled` *(bool, `true`)* — master switch. Off → no row gets the `(distant)` suffix; the score-side `_confidence_penalty` still reads stored confidence (we're suffix-only, not ranking-side), K7 `(faded)` still fires, `(uncertain)` still fires.
+- `memory.confidence_decay_horizon_days` *(int, `365`, min `1`)* — days at which the decay multiplier reaches `floor`. Raise (e.g. `730`) for slower decay — only very old claims hedge; lower (e.g. `90`) for aggressive hedging where even three-month-old claims read as "a while back".
+- `memory.confidence_decay_floor` *(float, `0.3`, range `[0, 1]`)* — minimum multiplier the decay can reach. With `floor=0.3`, an old default-confidence (0.7) claim decays to `0.7 * 0.3 = 0.21` and stays there forever. A `floor` of `0` would let very old claims decay to zero (still rendered, just always hedged); a `floor` of `1.0` disables decay entirely (same effect as flipping the master switch off, but the predicate still runs).
+- `memory.confidence_decay_distant_threshold` *(float, `0.5`, range `[0, 1]`)* — effective-confidence value below which the `(distant)` suffix fires. Mirrors the existing `0.5` cutoff used for `(uncertain)`. Lower → only very-decayed claims hedge; higher → more hedging across the board.
+
+Verification: call MCP `get_confidence_decay_state(limit=20)` to see which memories would currently render with which suffix. Tweak `user.json`, restart, call again — the row's `effective_confidence` should shift and the `distant` flag should flip predictably. Tests: `tests/test_confidence_decay.py`, `FormatBlockDistantSuffixTests` in `tests/test_rag_retriever_scoring.py`, `ConfidenceDecaySettingsTests` in `tests/test_settings.py`.
 
 ### K-time1 — wall-clock prefixes on chat history
 

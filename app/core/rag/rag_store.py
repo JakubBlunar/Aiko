@@ -172,6 +172,13 @@ class RagHit:
     # ``archive``-tier rows. ``None`` for non-memory hits or when the
     # join did not resolve.
     memory_tier: str | None = None
+    # K25 — pinned flag joined from the SQLite mirror so the
+    # ``(distant)`` time-decay suffix can bypass user-trusted rows
+    # without re-reading SQLite. ``None`` for non-memory hits or when
+    # the join did not resolve (treated as "not pinned" by the
+    # downstream predicate, since the helper only fires on an explicit
+    # truthy ``pinned``).
+    memory_pinned: bool | None = None
 
     @property
     def text(self) -> str:

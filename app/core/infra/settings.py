@@ -889,6 +889,20 @@ class AgentSettings:
     misattunement_pivot_max_user_words: int = 8
     misattunement_cooldown_turns: int = 3
 
+    # ── K25: memory confidence time-decay ─────────────────────────────
+    # Master switch for the ``(distant)`` suffix the RAG retriever
+    # stamps on age-decayed memory rows. The three numeric knobs that
+    # govern the decay formula and threshold live on
+    # :class:`MemorySettings` (``confidence_decay_horizon_days``,
+    # ``confidence_decay_floor``, ``confidence_decay_distant_threshold``)
+    # because they describe a memory-store concept; only the on/off
+    # gate lives here so it sits alongside the rest of the per-feature
+    # master switches. Flipping ``False`` disables the ``(distant)``
+    # suffix entirely — ``_confidence_penalty`` still reads stored
+    # confidence for the score offset, K7 ``(faded)`` still fires,
+    # ``(uncertain)`` still fires.
+    confidence_time_decay_enabled: bool = True
+
     # ── K22: callback / inside-joke detector ──────────────────────────
     # Master switch for the post-turn cosine pass that detects when
     # Aiko's reply semantically reaches back to an older eligible
@@ -1090,6 +1104,40 @@ class MemorySettings:
     # flipping to hedged on the anniversary. Higher → only very stale
     # rows fade; lower → more aggressive hedging.
     faded_idle_days: int = 30
+    # ── K25: memory confidence time-decay ─────────────────────────────
+    # Read-side time-decay on memory confidence. Pure derived value at
+    # ``format_block`` time — no schema change, no decay-writer. Each
+    # retrieval recomputes ``effective_confidence = stored * max(floor,
+    # 1 - days_since_created / horizon_days)``. Pinned rows bypass
+    # (return stored as-is) since a pin reads as "the user explicitly
+    # trusts this row". When ``effective_confidence`` falls below
+    # ``confidence_decay_distant_threshold``, the retriever stamps the
+    # row with ``(distant)`` — a third suffix distinct from
+    # ``(uncertain)`` (low stored value) and ``(faded)`` (K7 tier +
+    # idle). The persona maps each tag to a different verbal hedge:
+    # ``(distant)`` → "a while back", "don't quote me" (time-flavoured),
+    # ``(uncertain)`` → "I think", "if I'm remembering right"
+    # (source-doubt), ``(faded)`` → "ages ago", "I might be wrong"
+    # (cold-history). See
+    # [`app/core/rag/rag_retriever.py`](../rag/rag_retriever.py)
+    # ``_is_distant_memory``. Master switch lives on
+    # :class:`AgentSettings` as ``confidence_time_decay_enabled``.
+    #
+    # Tuning rules:
+    # * ``horizon_days`` — days at which the multiplier reaches
+    #   ``floor``. Higher → slower decay, the hedge fires later in a
+    #   memory's life.
+    # * ``floor`` — minimum decay multiplier. Below ~0.1 the floor
+    #   stops mattering (an old row's effective value is already
+    #   below the threshold anyway); above ~0.5 the hedge effectively
+    #   never fires on default-confidence rows.
+    # * ``distant_threshold`` — effective confidence value below
+    #   which the suffix fires. Mirrors the existing 0.5 cutoff used
+    #   for ``(uncertain)``. Lower → only very-decayed claims hedge;
+    #   higher → more hedging.
+    confidence_decay_horizon_days: int = 365
+    confidence_decay_floor: float = 0.3
+    confidence_decay_distant_threshold: float = 0.5
     # ── K22 personality backlog: callback / inside-joke detector ─────
     # Post-turn cosine pass between Aiko's reply and older eligible
     # memories. Hits stamp ``metadata.callback_count`` and bump
@@ -2199,6 +2247,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                     )
                 ),
             ),
+            confidence_time_decay_enabled=bool(
+                agent_raw.get("confidence_time_decay_enabled", True),
+            ),
             callback_detector_enabled=bool(
                 agent_raw.get("callback_detector_enabled", True),
             ),
@@ -2359,6 +2410,27 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             ),
             faded_idle_days=max(
                 1, int(memory_raw.get("faded_idle_days", 30)),
+            ),
+            confidence_decay_horizon_days=max(
+                1, int(memory_raw.get("confidence_decay_horizon_days", 365)),
+            ),
+            confidence_decay_floor=max(
+                0.0,
+                min(
+                    1.0,
+                    float(memory_raw.get("confidence_decay_floor", 0.3)),
+                ),
+            ),
+            confidence_decay_distant_threshold=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get(
+                            "confidence_decay_distant_threshold", 0.5,
+                        )
+                    ),
+                ),
             ),
             callback_age_floor_days=max(
                 1, int(memory_raw.get("callback_age_floor_days", 3)),

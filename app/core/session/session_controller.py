@@ -500,6 +500,28 @@ class SessionController(
                             faded_idle_days=getattr(
                                 self._memory_settings, "faded_idle_days", 30,
                             ),
+                            confidence_time_decay_enabled=bool(
+                                getattr(
+                                    self._settings.agent,
+                                    "confidence_time_decay_enabled",
+                                    True,
+                                )
+                            ),
+                            confidence_decay_horizon_days=getattr(
+                                self._memory_settings,
+                                "confidence_decay_horizon_days",
+                                365,
+                            ),
+                            confidence_decay_floor=getattr(
+                                self._memory_settings,
+                                "confidence_decay_floor",
+                                0.3,
+                            ),
+                            confidence_decay_distant_threshold=getattr(
+                                self._memory_settings,
+                                "confidence_decay_distant_threshold",
+                                0.5,
+                            ),
                         )
                     except Exception:
                         log.warning("RagRetriever failed to init", exc_info=True)

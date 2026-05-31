@@ -1425,6 +1425,158 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"force_misattunement raised: {exc}"
 
     @mcp.tool()
+    def get_confidence_decay_state(limit: int = 20) -> str:
+        """K25 — preview which memory rows would currently render
+        with the ``(distant)`` suffix.
+
+        Returns a JSON dict with:
+
+        - ``enabled``: master switch state from :class:`AgentSettings`.
+        - ``settings``: the three numeric knobs (``horizon_days``,
+          ``floor``, ``distant_threshold``) so user.json overrides
+          are visible immediately.
+        - ``rows``: top-``limit`` memory rows (most recently used
+          first) with ``id``, ``kind``, ``stored_confidence``,
+          ``age_days``, ``effective_confidence``, ``pinned``, and
+          predicate flags ``distant`` / ``uncertain`` so you can
+          eyeball which rows would gain which suffix.
+
+        Pinned rows are included with ``distant=False`` (bypassed)
+        so you can confirm pinning is working as intended. This tool
+        is the tuning loop for K25: tweak ``user.json``, restart,
+        call this, see what would surface differently.
+        """
+        store = getattr(session, "_memory_store", None)
+        if store is None:
+            return json.dumps({"enabled": False, "error": "no memory_store"})
+        try:
+            from datetime import datetime, timezone
+
+            from app.core.rag.rag_retriever import (
+                _compute_effective_confidence,
+                _is_distant_memory,
+            )
+        except Exception as exc:
+            return f"get_confidence_decay_state import failed: {exc}"
+        try:
+            agent = session._settings.agent
+            mem_settings = session._settings.memory
+            enabled = bool(
+                getattr(agent, "confidence_time_decay_enabled", True),
+            )
+            horizon_days = max(
+                1,
+                int(
+                    getattr(
+                        mem_settings, "confidence_decay_horizon_days", 365,
+                    )
+                ),
+            )
+            floor = max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        getattr(
+                            mem_settings, "confidence_decay_floor", 0.3,
+                        )
+                    ),
+                ),
+            )
+            threshold = max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        getattr(
+                            mem_settings,
+                            "confidence_decay_distant_threshold",
+                            0.5,
+                        )
+                    ),
+                ),
+            )
+            mirror = getattr(store, "_mirror", None)
+            rows_iter = list(mirror.values()) if mirror is not None else []
+            # Sort most-recently-used first so the preview shows
+            # actively-retrieved rows -- the ones that actually
+            # surface in real turns.
+            rows_iter.sort(
+                key=lambda m: (m.last_used_at or m.created_at or ""),
+                reverse=True,
+            )
+            now = datetime.now(timezone.utc)
+            rows: list[dict[str, Any]] = []
+            cap = max(1, int(limit))
+            for mem in rows_iter[:cap]:
+                stored = float(getattr(mem, "confidence", 0.0) or 0.0)
+                pinned = bool(getattr(mem, "pinned", False))
+                created_at = getattr(mem, "created_at", None)
+                age_days: float | None = None
+                if created_at:
+                    try:
+                        created = datetime.fromisoformat(
+                            str(created_at).replace("Z", "+00:00")
+                        )
+                        age_days = max(
+                            0.0,
+                            (now - created).total_seconds() / 86400.0,
+                        )
+                    except Exception:
+                        age_days = None
+                effective = (
+                    _compute_effective_confidence(
+                        stored,
+                        age_days=age_days,
+                        horizon_days=horizon_days,
+                        floor=floor,
+                    )
+                    if age_days is not None
+                    else stored
+                )
+                distant = _is_distant_memory(
+                    stored_confidence=stored,
+                    created_at=created_at,
+                    now=now,
+                    horizon_days=horizon_days,
+                    floor=floor,
+                    threshold=threshold,
+                    pinned=pinned,
+                )
+                rows.append(
+                    {
+                        "id": int(mem.id),
+                        "kind": mem.kind,
+                        "tier": getattr(mem, "tier", "long_term"),
+                        "pinned": pinned,
+                        "stored_confidence": round(stored, 4),
+                        "age_days": (
+                            round(age_days, 2) if age_days is not None else None
+                        ),
+                        "effective_confidence": round(float(effective), 4),
+                        "distant": bool(distant and enabled),
+                        "uncertain": stored < 0.5,
+                        "content_preview": (mem.content or "")[:80],
+                    }
+                )
+            return json.dumps(
+                {
+                    "enabled": enabled,
+                    "settings": {
+                        "horizon_days": horizon_days,
+                        "floor": floor,
+                        "distant_threshold": threshold,
+                    },
+                    "rows": rows,
+                    "total_rows": len(rows_iter),
+                    "shown": len(rows),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"get_confidence_decay_state raised: {exc}"
+
+    @mcp.tool()
     def force_seed_onboarding_goal() -> str:
         """K1 follow-up — re-seed the curated "get to know" goal.
 

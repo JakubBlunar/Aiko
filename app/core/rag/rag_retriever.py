@@ -186,6 +186,101 @@ def _is_faded_memory(
     return (now - last).days > int(idle_days)
 
 
+# ── K25: memory confidence time-decay ─────────────────────────────────
+# Read-side time-decay on memory confidence with the new ``(distant)``
+# suffix. Distinct from ``(uncertain)`` (which means "stored value is
+# already low — claim quality was shaky at write time") and from
+# ``(faded)`` (which means "low salience AND idle, so tier/use have
+# decayed it"). K25's signal is **raw age**: a 6-month-old default-
+# confidence claim that's been used recently is still actively
+# retrieved, but Aiko should hedge with time-language ("a while back",
+# "don't quote me") rather than quote it as if it were yesterday.
+#
+# Pure read-side derivation -- no schema change, no decay-writer.
+# Each retrieval recomputes ``effective = stored * max(floor, 1 -
+# days_since_created / horizon_days)``. Pinned rows bypass (return
+# stored as-is) since pin == "user explicitly trusts this".
+#
+# Defaults at ``horizon_days=365, floor=0.3, threshold=0.5``:
+#
+# * default-confidence (0.7) memory hits the threshold at ~104 days
+# * high-confidence (0.9) memory hits the threshold at ~165 days
+# * pinned rows (>=0.9) never trigger regardless of age
+#
+# The storage column ``memories.confidence`` is left untouched —
+# ``_confidence_penalty``, ``MemoryConflictWorker`` and
+# ``BeliefGapDetector`` all keep reading the raw stored value.
+_CONFIDENCE_DECAY_DEFAULT_HORIZON_DAYS = 365
+_CONFIDENCE_DECAY_DEFAULT_FLOOR = 0.3
+_CONFIDENCE_DECAY_DEFAULT_THRESHOLD = 0.5
+
+
+def _compute_effective_confidence(
+    stored: float,
+    *,
+    age_days: float,
+    horizon_days: int,
+    floor: float,
+) -> float:
+    """Linear-with-floor time decay on a stored confidence value.
+
+    Multiplier ramps from ``1.0`` at age ``0`` down to ``floor`` at
+    ``horizon_days``, and clamps at ``floor`` thereafter. The returned
+    value is clamped to ``[0.0, 1.0]`` so downstream comparisons stay
+    well-behaved regardless of how the caller stored its value.
+
+    ``horizon_days <= 0`` short-circuits to the raw stored value so an
+    accidentally-zero config never raises ZeroDivisionError. ``floor``
+    is treated literally — a negative floor decays past zero (clamped),
+    a floor of ``1.0`` disables decay entirely.
+    """
+    if horizon_days <= 0:
+        return max(0.0, min(1.0, float(stored)))
+    multiplier = max(float(floor), 1.0 - float(age_days) / float(horizon_days))
+    return max(0.0, min(1.0, float(stored) * multiplier))
+
+
+def _is_distant_memory(
+    *,
+    stored_confidence: float | None,
+    created_at: str | None,
+    now: datetime,
+    horizon_days: int,
+    floor: float,
+    threshold: float,
+    pinned: bool,
+) -> bool:
+    """K25 ``(distant)`` predicate.
+
+    Returns ``True`` when the row's ``effective_confidence`` (after
+    age-based decay) falls below ``threshold``. Returns ``False`` —
+    no signal — when any of:
+
+    - ``pinned`` is True (user explicitly trusts this row)
+    - ``stored_confidence`` is None (cold-start / corrupted row)
+    - ``created_at`` is None or unparseable (no age data to work with)
+
+    Mirrors the defensive shape of :func:`_is_faded_memory`: every
+    failure mode returns ``False`` rather than raising, since a single
+    bad row should never poison the whole RAG render.
+    """
+    if pinned or stored_confidence is None or created_at is None:
+        return False
+    try:
+        created = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return False
+    age_seconds = (now - created).total_seconds()
+    age_days = max(0.0, age_seconds / 86400.0)
+    effective = _compute_effective_confidence(
+        float(stored_confidence),
+        age_days=age_days,
+        horizon_days=horizon_days,
+        floor=floor,
+    )
+    return effective < float(threshold)
+
+
 # K1 — per-hit boost for memories that semantically align with one of
 # Aiko's active long-term goals (cosine >= ``_RAG_GOAL_ALIGNMENT_THRESHOLD``).
 # Same posture as the arc / dialogue-act boosts: small enough to nudge
@@ -497,6 +592,10 @@ class RagRetriever:
         fade_hedge_enabled: bool = True,
         faded_salience_threshold: float = _FADED_DEFAULT_SALIENCE_THRESHOLD,
         faded_idle_days: int = _FADED_DEFAULT_IDLE_DAYS,
+        confidence_time_decay_enabled: bool = True,
+        confidence_decay_horizon_days: int = _CONFIDENCE_DECAY_DEFAULT_HORIZON_DAYS,
+        confidence_decay_floor: float = _CONFIDENCE_DECAY_DEFAULT_FLOOR,
+        confidence_decay_distant_threshold: float = _CONFIDENCE_DECAY_DEFAULT_THRESHOLD,
     ) -> None:
         self._store = store
         self._embedder = embedder
@@ -541,6 +640,26 @@ class RagRetriever:
             0.0, min(1.0, float(faded_salience_threshold)),
         )
         self._faded_idle_days = max(1, int(faded_idle_days))
+        # K25 — time-decay on memory confidence. Settings are clamped
+        # here as the second line of defence (the parser in
+        # :func:`app.core.infra.settings.load_settings` is the first)
+        # so a tester instantiating the retriever directly with
+        # out-of-range values still gets a sane runtime. ``horizon_days``
+        # at 0 would zero-divide in :func:`_compute_effective_confidence`
+        # — the floor at 1 keeps the math safe; the helper itself also
+        # short-circuits defensively, so this is belt-and-suspenders.
+        self._confidence_time_decay_enabled = bool(
+            confidence_time_decay_enabled,
+        )
+        self._confidence_decay_horizon_days = max(
+            1, int(confidence_decay_horizon_days),
+        )
+        self._confidence_decay_floor = max(
+            0.0, min(1.0, float(confidence_decay_floor)),
+        )
+        self._confidence_decay_distant_threshold = max(
+            0.0, min(1.0, float(confidence_decay_distant_threshold)),
+        )
         # Schema v8 — IDs of memories surfaced in the last
         # :meth:`retrieve` call. ``SessionController._post_turn_inner_life``
         # reads this snapshot to run the keyword-overlap revival check
@@ -684,6 +803,18 @@ class RagRetriever:
                                 h.score += _confidence_penalty(mem_confidence)
                                 if mem_confidence is not None:
                                     h.confidence = float(mem_confidence)
+                                # K25 — stamp the pinned flag on the
+                                # hit so the ``(distant)`` time-decay
+                                # suffix can bypass user-trusted rows
+                                # in ``format_block`` without a second
+                                # SQLite roundtrip. Pinned rows are
+                                # also already coerced to confidence
+                                # >= 0.9 by ``set_pinned`` but we
+                                # honour the flag explicitly rather
+                                # than relying on the floor.
+                                h.memory_pinned = bool(
+                                    getattr(mem, "pinned", False)
+                                )
                                 # K1 — small goal-alignment nudge.
                                 # Walks the pre-fetched active goal
                                 # vectors against ``mem.embedding``
@@ -968,6 +1099,10 @@ class RagRetriever:
         fade_hedge_enabled: bool = True,
         faded_salience_threshold: float = _FADED_DEFAULT_SALIENCE_THRESHOLD,
         faded_idle_days: int = _FADED_DEFAULT_IDLE_DAYS,
+        confidence_time_decay_enabled: bool = True,
+        confidence_decay_horizon_days: int = _CONFIDENCE_DECAY_DEFAULT_HORIZON_DAYS,
+        confidence_decay_floor: float = _CONFIDENCE_DECAY_DEFAULT_FLOOR,
+        confidence_decay_distant_threshold: float = _CONFIDENCE_DECAY_DEFAULT_THRESHOLD,
     ) -> str:
         """Render hits into a system-prompt-ready block.
 
@@ -984,6 +1119,14 @@ class RagRetriever:
         preserve the original archive-only behaviour with the graded
         long_term predicate enabled; flip ``fade_hedge_enabled=False``
         to silence every fade hedge including archive.
+
+        K25 — ``confidence_time_decay_enabled`` plus the three
+        ``confidence_decay_*`` knobs control the ``(distant)`` suffix.
+        Computes ``effective_confidence = stored * max(floor, 1 -
+        days_since_created / horizon_days)`` and stamps the row when
+        the result drops below ``distant_threshold``. Pinned rows
+        bypass. Disabled-by-default-but-on-here master switch lets a
+        user kill the suffix without disabling K7.
         """
         if not hits:
             return ""
@@ -1008,6 +1151,26 @@ class RagRetriever:
                 confidence = getattr(hit, "confidence", None)
                 if confidence is not None and float(confidence) < 0.5:
                     suffix_tags.append("(uncertain)")
+                # K25 — append "(distant)" when the row's effective
+                # confidence (after age-based decay) drops below the
+                # threshold. Distinct from "(uncertain)" — that's the
+                # "stored value was already low" hedge; "(distant)" is
+                # the "raw age" hedge for actively-used rows whose
+                # stored confidence is fine but they're old enough that
+                # Aiko shouldn't quote them as if they were yesterday.
+                # Pinned rows bypass via the helper. Order: lands
+                # after "(uncertain)" so when both stack the LLM reads
+                # the stored-doubt cue first, then the time cue.
+                if confidence_time_decay_enabled and _is_distant_memory(
+                    stored_confidence=confidence,
+                    created_at=getattr(hit.record, "created_at", None),
+                    now=now,
+                    horizon_days=confidence_decay_horizon_days,
+                    floor=confidence_decay_floor,
+                    threshold=confidence_decay_distant_threshold,
+                    pinned=bool(getattr(hit, "memory_pinned", False)),
+                ):
+                    suffix_tags.append("(distant)")
                 # G3: append "(curiosity)" so the persona rule can
                 # surface findings as "I was reading about X — turns
                 # out…" rather than reciting them as bare facts. The
@@ -1101,6 +1264,10 @@ class RagRetriever:
             fade_hedge_enabled=self._fade_hedge_enabled,
             faded_salience_threshold=self._faded_salience_threshold,
             faded_idle_days=self._faded_idle_days,
+            confidence_time_decay_enabled=self._confidence_time_decay_enabled,
+            confidence_decay_horizon_days=self._confidence_decay_horizon_days,
+            confidence_decay_floor=self._confidence_decay_floor,
+            confidence_decay_distant_threshold=self._confidence_decay_distant_threshold,
         )
 
     # ── internals ───────────────────────────────────────────────────────

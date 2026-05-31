@@ -127,6 +127,7 @@
     "misattunement_shrink_max_user_words": 8,
     "misattunement_pivot_max_user_words": 8,
     "misattunement_cooldown_turns": 3,
+    "confidence_time_decay_enabled": true,
     "callback_detector_enabled": true,
     "calibration_detection_enabled": true,
     "sensory_anchor_enabled": true
@@ -204,6 +205,9 @@
     "fade_hedge_enabled": true,
     "faded_salience_threshold": 0.20,
     "faded_idle_days": 30,
+    "confidence_decay_horizon_days": 365,
+    "confidence_decay_floor": 0.3,
+    "confidence_decay_distant_threshold": 0.5,
     "callback_age_floor_days": 3,
     "callback_similarity_threshold": 0.55,
     "callback_max_hits_per_turn": 3,

@@ -2933,3 +2933,87 @@ To trace without forcing: `set_log_level("app.misattunement_detector", "INFO")`,
 - [`docs/personality-backlog/patterns.md`](patterns.md) — K23 section body replaced with a `**Shipped**` pointer.
 - [`AGENTS.md`](../../AGENTS.md) — debugging-table row for "Aiko keeps pushing when {user} goes quiet".
 
+## K25. Memory confidence time-decay
+
+F3 stamps a `confidence` float on each memory at write time; `RagRetriever.format_block` already picks `(uncertain)` when `confidence < 0.5`; K7 stamps `(faded)` when a `long_term` row decays in place. The gap K25 closes: a 6-month-old default-confidence (0.7) claim that's actively retrieved (used recently, healthy salience, not archived) renders with **no hedge at all** — Aiko quotes "your favourite Thai place" with the same conviction as something said yesterday. K7's tier-and-salience gate doesn't catch it because the row is still warm; `(uncertain)` doesn't catch it because the stored value is fine.
+
+K25 fixes this with **raw age** as a third orthogonal signal. Pure read-side derivation — no schema change, no decay-writer. Each retrieval recomputes `effective_confidence = stored * max(floor, 1 - days_since_created / horizon_days)` and stamps the row with the new `(distant)` suffix when the result drops below the threshold. The storage column meaning stays intact: `_confidence_penalty` keeps reading the raw value for the ranking offset, the `MemoryConflictWorker` and `BeliefGapDetector` keep reading raw confidence — K25 only changes the rendered suffix.
+
+### Decision flow
+
+```mermaid
+flowchart LR
+    H[hit at format_block] --> A{stored_confidence}
+    A -- "< 0.5" --> AA["(uncertain)"]
+    A -- ">= 0.5" --> B{effective = stored * max floor, 1 - days/horizon}
+    B -- "< distant_threshold AND not pinned" --> BB["(distant)"]
+    B -- ">= threshold or pinned" --> C[no time hedge]
+    H --> D{K7 _is_faded_memory<br/>tier + salience + idle}
+    D -- yes --> DD["(faded)"]
+    D -- no --> E[no fade hedge]
+    AA --> F[suffix line]
+    BB --> F
+    DD --> F
+    C --> F
+    E --> F
+```
+
+All three signals can stack on the same row. The suffix builder emits them in source-doubt → time-doubt → cold-history order: `(uncertain) (distant) (faded)`. The persona block teaches Aiko a distinct verbal hedge for each — "I think" / "if I'm remembering right" for `(uncertain)`, "a while back" / "don't quote me on the date" for `(distant)`, "ages ago" / "I might be wrong" for `(faded)` — and explicitly tells her to vary phrasing turn-to-turn so the hedges don't harden into a tic.
+
+### Default behaviour
+
+At `horizon_days=365, floor=0.3, distant_threshold=0.5`:
+
+| stored_confidence | Age at which `(distant)` fires |
+|---|---|
+| 0.7 (default) | ~104 days |
+| 0.85 (self-tagged) | ~150 days |
+| 0.9 (high-confidence) | ~165 days |
+| 0.95 (pinned-floor) | ~190 days |
+| Pinned row (any) | Never (bypassed) |
+
+The decay is linear from age 0 down to `floor` at `horizon_days`, and clamps at `floor` thereafter — so a 10-year-old default-confidence claim still renders with `effective = 0.7 * 0.3 = 0.21`, well into `(distant)` territory but not at zero. That keeps the row in the retrieval pool with an appropriate hedge rather than dropping it entirely.
+
+### Architecture
+
+- **Helpers** [`app/core/rag/rag_retriever.py`](../../app/core/rag/rag_retriever.py) — two module-level functions next to `_is_faded_memory`:
+  - `_compute_effective_confidence(stored, *, age_days, horizon_days, floor)` — pure math. Linear ramp from `1.0` at age 0 down to `floor` at `horizon_days`; clamps result to `[0, 1]`. `horizon_days <= 0` short-circuits to stored (defensive against zero-divide).
+  - `_is_distant_memory(*, stored_confidence, created_at, now, horizon_days, floor, threshold, pinned)` — predicate. Returns `False` defensively when `pinned`, `stored_confidence is None`, or `created_at` is None/malformed. Otherwise computes the effective value and compares against `threshold`.
+- **`RagHit.memory_pinned`** [`app/core/rag/rag_store.py`](../../app/core/rag/rag_store.py) — new optional field on the hit dataclass stamped at the SQLite join (next to the existing `memory_tier` and `confidence` stamps) so the suffix helper can bypass pinned rows without a second round-trip.
+- **Settings**:
+  - [`AgentSettings.confidence_time_decay_enabled: bool = True`](../../app/core/infra/settings.py) — master switch. Off disables only the `(distant)` suffix; `_confidence_penalty` and K7 `(faded)` continue to work.
+  - `MemorySettings.confidence_decay_horizon_days: int = 365` (clamped at `max(1, ...)` to avoid zero-divide)
+  - `MemorySettings.confidence_decay_floor: float = 0.3` (clamped to `[0, 1]`)
+  - `MemorySettings.confidence_decay_distant_threshold: float = 0.5` (clamped to `[0, 1]`)
+- **`format_block` wiring** — the `(distant)` block sits between `(uncertain)` and `(faded)` in the suffix builder. Tag ordering in the final rendered prompt mirrors source-doubt → time-doubt → cold-history.
+- **Persona** — extended the existing `(uncertain)` / `(faded)` block in [`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt) with a new bullet for `(distant)`: teaches the time-flavoured hedge phrasing, explicitly distinguishes from `(uncertain)` (shaky source) and `(faded)` (barely-touched cold history), and includes the same anti-tic and anti-apology-spiral rails as the other two blocks.
+
+### MCP-debuggable
+
+One new tool: **`get_confidence_decay_state(limit: int = 20)`** on [`app/mcp/server.py`](../../app/mcp/server.py). Returns the top-`limit` memories ordered by `last_used_at` (most-recently-active first) with `id`, `kind`, `tier`, `pinned`, `stored_confidence`, `age_days`, `effective_confidence`, and the two predicate flags (`distant`, `uncertain`) so the tuning loop is "tweak `user.json`, restart, call this, see which rows would surface differently".
+
+End-to-end repro flow:
+
+1. Call `get_confidence_decay_state(limit=50)`. Find a row with `age_days > 150` and `stored_confidence >= 0.7`.
+2. Confirm its `effective_confidence < 0.5` and `distant=True`.
+3. Send Aiko a message that should retrieve it. Confirm her reply hedges with time-language ("a while back", "I think you mentioned ages ago", "don't quote me on the exact date") rather than quoting the row as fresh.
+4. To verify the bypass: pin the row via the Memory drawer. Re-run step 1 → same row should show `pinned=true` and `distant=false` despite the same age.
+
+### Files
+
+- [`app/core/rag/rag_retriever.py`](../../app/core/rag/rag_retriever.py) — `_compute_effective_confidence` + `_is_distant_memory` helpers; constructor reads + clamps the four new settings; `format_block` static method gains the four new kwargs and the `(distant)` tag block; `assemble` plumbs the new fields through to `format_block`; the SQLite-join stamps `h.memory_pinned`.
+- [`app/core/rag/rag_store.py`](../../app/core/rag/rag_store.py) — `RagHit.memory_pinned: bool | None = None` field.
+- [`app/core/rag/rag_prefetcher.py`](../../app/core/rag/rag_prefetcher.py) — extended its `format_block` invocation to pass the four new K25 settings (read off the retriever's `_confidence_*` private fields).
+- [`app/core/infra/settings.py`](../../app/core/infra/settings.py) — `AgentSettings.confidence_time_decay_enabled` + three `MemorySettings.confidence_decay_*` fields with inline-comment context; matching parser entries in `load_settings`.
+- [`app/core/session/session_controller.py`](../../app/core/session/session_controller.py) — threads the four new settings into the `RagRetriever(...)` constructor call alongside the existing K7 fade settings.
+- [`config/default.json`](../../config/default.json) — four new keys (one under `agent`, three under `memory`).
+- [`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt) — new `(distant)` bullet in the existing suffix-tag persona block, with the time-flavoured hedge phrasing and the anti-tic / anti-apology rails.
+- [`app/mcp/server.py`](../../app/mcp/server.py) — `get_confidence_decay_state` MCP debug tool.
+- [`tests/test_confidence_decay.py`](../../tests/test_confidence_decay.py) — 22 helper-level tests covering the formula (zero-age, half-horizon, full-horizon, beyond-horizon, floor-one disable, horizon-zero defensive short-circuit, unit-interval clamp), the predicate (default vs high stored confidence at various ages, pinned bypass, `None`/malformed-`created_at` defensive returns, Zulu-suffix parsing, threshold boundary, threshold override stricter+looser, horizon override).
+- [`tests/test_rag_retriever_scoring.py`](../../tests/test_rag_retriever_scoring.py) — `FormatBlockDistantSuffixTests` covering fire on aged default confidence, no-fire on recent memory, pinned bypass, master-switch disable, stacking with `(uncertain)` + ordering, stacking with `(faded)` + ordering, all-three stack + ordering, horizon-override aggressive mode.
+- [`tests/test_settings.py`](../../tests/test_settings.py) — `ConfidenceDecaySettingsTests`: defaults, overrides round-trip, `horizon_days` floor-at-1 clamp, `floor` and `threshold` `[0, 1]` clamps.
+- [`docs/configuration.md`](../configuration.md) — cheatsheet row + dedicated "K25 — memory confidence time-decay" subsection covering the three suffixes, their persona hedges, the formula, default-behaviour table, and tuning guidance.
+- [`docs/personality-backlog/patterns.md`](patterns.md) — K25 section body replaced with a `**Shipped**` pointer.
+- [`docs/personality-backlog/index.md`](index.md) — K25 moved from active to the shipped list.
+- [`AGENTS.md`](../../AGENTS.md) — debugging-table row for "Aiko quotes a 6-month-old claim as if it were yesterday".
+
