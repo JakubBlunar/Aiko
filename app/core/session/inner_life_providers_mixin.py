@@ -786,6 +786,158 @@ class InnerLifeProvidersMixin:
             log.debug("rupture render failed", exc_info=True)
             return ""
 
+    def _render_misattunement_block(self, user_text: str) -> str:
+        """K23: surface a per-turn ``mild_disengagement`` cue.
+
+        Provider-time (not post-turn stash) so the cue lands on the
+        SAME turn that's about to reply to the disengaging message --
+        pulling back IS the next reply, not the one after. Reads:
+
+        * Last assistant ``MessageRow`` from chat history (for the
+          shrink trigger's ``prev_aiko_words`` input).
+        * K6 :class:`NoveltyDetector` ``last_band`` / ``last_distance``
+          for the pivot trigger. K6's provider always runs *earlier*
+          in the assembly chain (its ``novelty`` block lands above
+          the ``misattunement`` slot in ``system_parts``), so the
+          fields are already populated for this turn.
+
+        Decrements the cooldown counter by 1 on every call regardless
+        of trigger state -- otherwise a long-running session of
+        regular replies would never let an old fire expire. On a
+        hit, arms the cooldown to
+        ``agent.misattunement_cooldown_turns``.
+        """
+        if not bool(
+            getattr(self._settings.agent, "misattunement_detection_enabled", True)
+        ):
+            return ""
+        try:
+            from app.core.affect import misattunement_detector
+        except Exception:
+            log.debug("misattunement detector import failed", exc_info=True)
+            return ""
+
+        # Decrement cooldown first so a quiet turn always whittles the
+        # counter down -- otherwise a session that never trips a
+        # trigger would keep a stale armed cooldown forever.
+        current_cooldown = max(0, int(getattr(self, "_misattunement_cooldown", 0)))
+        if current_cooldown > 0:
+            self._misattunement_cooldown = current_cooldown - 1
+
+        # MCP-debug bypass: force_misattunement() sets a one-shot flag
+        # that ignores the (newly-decremented) cooldown for this call.
+        # Cleared whether we fire or not so the bypass is strictly
+        # one-turn.
+        force_next = bool(
+            getattr(self, "_misattunement_force_next", False)
+        )
+        if force_next:
+            self._misattunement_force_next = False
+            cooldown_for_detect = 0
+        else:
+            cooldown_for_detect = self._misattunement_cooldown
+
+        user_words = len((user_text or "").split())
+        if user_words <= 0:
+            return ""
+
+        # Last assistant reply word count -- scan the last few rows
+        # (oldest-first window) backwards for the most recent
+        # ``role == "assistant"``. ``None`` when no prior assistant
+        # turn (cold-start session) so the shrink trigger no-ops; the
+        # pivot trigger can still fire on K6 alone.
+        prev_aiko_words: int | None = None
+        try:
+            recent = self._chat_db.get_messages(self.session_key, limit=6)
+            for row in reversed(recent):
+                if row.role == "assistant" and (row.content or "").strip():
+                    prev_aiko_words = len(row.content.split())
+                    break
+        except Exception:
+            log.debug("misattunement: chat_db read failed", exc_info=True)
+            prev_aiko_words = None
+
+        novelty_band: str | None = None
+        novelty_distance: float | None = None
+        detector = getattr(self, "_novelty_detector", None)
+        if detector is not None:
+            try:
+                novelty_band = getattr(detector, "last_band", None)
+                novelty_distance = getattr(detector, "last_distance", None)
+            except Exception:
+                log.debug("misattunement: novelty read failed", exc_info=True)
+
+        agent_settings = self._settings.agent
+        try:
+            result = misattunement_detector.detect(
+                prev_aiko_words=prev_aiko_words,
+                this_user_words=user_words,
+                novelty_band=novelty_band,
+                novelty_distance=novelty_distance,
+                cooldown_remaining=cooldown_for_detect,
+                shrink_min_prev_words=int(
+                    getattr(
+                        agent_settings,
+                        "misattunement_shrink_min_prev_words",
+                        misattunement_detector.DEFAULT_SHRINK_MIN_PREV_WORDS,
+                    )
+                ),
+                shrink_max_user_words=int(
+                    getattr(
+                        agent_settings,
+                        "misattunement_shrink_max_user_words",
+                        misattunement_detector.DEFAULT_SHRINK_MAX_USER_WORDS,
+                    )
+                ),
+                pivot_max_user_words=int(
+                    getattr(
+                        agent_settings,
+                        "misattunement_pivot_max_user_words",
+                        misattunement_detector.DEFAULT_PIVOT_MAX_USER_WORDS,
+                    )
+                ),
+            )
+        except Exception:
+            log.debug("misattunement detector raised", exc_info=True)
+            return ""
+
+        if result is None:
+            return ""
+
+        # Arm cooldown for next N turns and stash diagnostics for the
+        # MCP debug tool / per-fire log line.
+        cooldown_turns = max(
+            0,
+            int(getattr(agent_settings, "misattunement_cooldown_turns", 3)),
+        )
+        self._misattunement_cooldown = cooldown_turns
+        self._last_misattunement_trigger = result.trigger
+        try:
+            self._last_misattunement_fire_turn = (
+                self._chat_db.get_message_count(self.session_key)
+            )
+        except Exception:
+            self._last_misattunement_fire_turn = None
+
+        log.info(
+            "misattunement-detector: trigger=%s prev_aiko=%d this_user=%d "
+            "novelty_band=%s cooldown_set=%d",
+            result.trigger,
+            result.prev_aiko_words,
+            result.this_user_words,
+            novelty_band or "-",
+            cooldown_turns,
+        )
+
+        try:
+            return misattunement_detector.render_inner_life_block(
+                result,
+                user_display_name=self.user_display_name,
+            )
+        except Exception:
+            log.debug("misattunement render failed", exc_info=True)
+            return ""
+
     def _render_novelty_block(self, user_text: str) -> str:
         """K6: surface a one-line surprise/novelty signal for this turn.
 

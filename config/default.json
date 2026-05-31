@@ -122,6 +122,11 @@
     "clarification_repair_enabled": true,
     "rupture_repair_enabled": true,
     "rupture_valence_drop_threshold": 0.12,
+    "misattunement_detection_enabled": true,
+    "misattunement_shrink_min_prev_words": 30,
+    "misattunement_shrink_max_user_words": 8,
+    "misattunement_pivot_max_user_words": 8,
+    "misattunement_cooldown_turns": 3,
     "callback_detector_enabled": true,
     "calibration_detection_enabled": true,
     "sensory_anchor_enabled": true

@@ -1231,6 +1231,7 @@ class SessionController(
             calibration=self._render_calibration_block,
             sensory_anchor=self._render_sensory_anchor_block,
             rupture=self._render_rupture_block,
+            misattunement=self._render_misattunement_block,
             absence_curiosity=self._render_absence_curiosity_block,
             mood_shell=self._render_mood_shell_block,
             novelty=self._render_novelty_block,
@@ -2036,6 +2037,18 @@ class SessionController(
         # K8 — one-shot affect-rupture slot. Same shape as above:
         # post-turn detector fills, next-turn provider clears.
         self._pending_rupture: Any = None
+        # K23 — misattunement detector state. Unlike K8/K17 the
+        # detector runs provider-time (same-turn reaction), so we
+        # only need a cooldown counter -- no pending-result slot.
+        # Decremented by ``_render_misattunement_block`` each call;
+        # armed to ``misattunement_cooldown_turns`` when ``detect()``
+        # returns a hit. ``_last_misattunement_*`` fields are
+        # diagnostic-only (read by the MCP debug tool); no behaviour
+        # depends on them.
+        self._misattunement_cooldown: int = 0
+        self._misattunement_force_next: bool = False
+        self._last_misattunement_trigger: str | None = None
+        self._last_misattunement_fire_turn: int | None = None
         if (
             self._chat_db is not None
             and bool(getattr(settings.agent, "belief_tracking_enabled", True))

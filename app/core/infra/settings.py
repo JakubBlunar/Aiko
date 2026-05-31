@@ -858,6 +858,37 @@ class AgentSettings:
     rupture_repair_enabled: bool = True
     rupture_valence_drop_threshold: float = 0.12
 
+    # ── K23: subtle misattunement detection ──────────────────────────
+    # Per-turn detector that fires ``mild_disengagement`` when {user}
+    # goes very short or pivots topics right after a substantial Aiko
+    # reply. Sits in the gap between K17 (explicit "that's not what I
+    # meant" regex) and K14 (multi-turn engagement aggregate). The
+    # cue lands on the SAME turn that's about to reply -- pulling
+    # back IS the next response.
+    #
+    # Two trigger paths, both gated by the cooldown:
+    #
+    # 1. ``shrink``: ``prev_aiko_words >= shrink_min_prev_words``
+    #    AND ``this_user_words <= shrink_max_user_words``. A one-word
+    #    reply after a 60-word answer reads as "you went quiet".
+    # 2. ``pivot``: K6 :class:`NoveltyDetector` band is
+    #    ``strong_novelty`` AND ``this_user_words <=
+    #    pivot_max_user_words``. A short pivot away without engaging
+    #    Aiko's last point.
+    #
+    # Cooldown lives on :class:`SessionController` and counts down
+    # one per turn regardless of trigger state. Default ``3`` keeps
+    # the cue from stacking across consecutive disengaged turns
+    # (the conditions can persist when {user} is genuinely busy).
+    #
+    # See
+    # [`app/core/affect/misattunement_detector.py`](../affect/misattunement_detector.py).
+    misattunement_detection_enabled: bool = True
+    misattunement_shrink_min_prev_words: int = 30
+    misattunement_shrink_max_user_words: int = 8
+    misattunement_pivot_max_user_words: int = 8
+    misattunement_cooldown_turns: int = 3
+
     # ── K22: callback / inside-joke detector ──────────────────────────
     # Master switch for the post-turn cosine pass that detects when
     # Aiko's reply semantically reaches back to an older eligible
@@ -2131,6 +2162,41 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                             "rupture_valence_drop_threshold", 0.12,
                         )
                     ),
+                ),
+            ),
+            misattunement_detection_enabled=bool(
+                agent_raw.get("misattunement_detection_enabled", True),
+            ),
+            misattunement_shrink_min_prev_words=max(
+                0,
+                int(
+                    agent_raw.get(
+                        "misattunement_shrink_min_prev_words", 30,
+                    )
+                ),
+            ),
+            misattunement_shrink_max_user_words=max(
+                0,
+                int(
+                    agent_raw.get(
+                        "misattunement_shrink_max_user_words", 8,
+                    )
+                ),
+            ),
+            misattunement_pivot_max_user_words=max(
+                0,
+                int(
+                    agent_raw.get(
+                        "misattunement_pivot_max_user_words", 8,
+                    )
+                ),
+            ),
+            misattunement_cooldown_turns=max(
+                0,
+                int(
+                    agent_raw.get(
+                        "misattunement_cooldown_turns", 3,
+                    )
                 ),
             ),
             callback_detector_enabled=bool(

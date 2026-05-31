@@ -617,6 +617,13 @@ class PromptAssembler:
         # K8 — affect-rupture one-shot. Sibling of the clarification
         # provider above; same one-shot contract.
         self._rupture_provider: Callable[[], str] | None = None
+        # K23 — subtle misattunement detector. Per-turn detector that
+        # fires ``mild_disengagement`` when {user} goes very short or
+        # pivots topics right after a substantial Aiko reply. Unlike
+        # the K8/K17 one-shots, this provider takes ``user_text`` and
+        # runs the detector itself on every call -- cooldown lives on
+        # the controller, not in a pending slot.
+        self._misattunement_provider: Callable[[str], str] | None = None
         # K14 typed-mode absence-curiosity one-shot. Same shape as the
         # K8 rupture provider: post-turn engagement tracker stashes a
         # pending absence duration on the controller when a typed gap
@@ -819,6 +826,7 @@ class PromptAssembler:
         calibration: Callable[[], str] | None = None,
         sensory_anchor: Callable[[], str] | None = None,
         rupture: Callable[[], str] | None = None,
+        misattunement: Callable[[str], str] | None = None,
         absence_curiosity: Callable[[], str] | None = None,
         mood_shell: Callable[[], str] | None = None,
         novelty: Callable[[str], str] | None = None,
@@ -886,6 +894,8 @@ class PromptAssembler:
             self._sensory_anchor_provider = sensory_anchor
         if rupture is not None:
             self._rupture_provider = rupture
+        if misattunement is not None:
+            self._misattunement_provider = misattunement
         if absence_curiosity is not None:
             self._absence_curiosity_provider = absence_curiosity
         if mood_shell is not None:
@@ -1408,6 +1418,23 @@ class PromptAssembler:
                     log.debug("rupture provider raised", exc_info=True)
                     rupture_block = ""
 
+        # K23 — subtle misattunement detector. Per-turn detector
+        # reading the last assistant reply length, this user message
+        # length, and K6's last_band. Empty on most turns (cooldown +
+        # narrow trigger gates). Not gated on aggressive mode -- the
+        # "pull back, lighter" instruction is exactly the kind of
+        # steering an aggressive turn benefits from.
+        misattunement_block = ""
+        if (
+            getattr(self, "_misattunement_provider", None) is not None
+        ):
+            with _timed_phase(provider_ms, "misattunement"):
+                try:
+                    misattunement_block = self._misattunement_provider(user_text) or ""
+                except Exception:
+                    log.debug("misattunement provider raised", exc_info=True)
+                    misattunement_block = ""
+
         # K14 typed-mode absence-curiosity one-shot. Empty on most
         # turns (only fires when the post-turn tracker stashed an
         # absence_seconds in the configured band). NOT gated on
@@ -1709,6 +1736,17 @@ class PromptAssembler:
             # clarification cue tells Aiko what to fix while the
             # rupture cue tells her how to soften.
             system_parts.append(rupture_block)
+        if misattunement_block:
+            # K23: subtle-misattunement sits in the same noticing-Jacob
+            # cluster as K17/K20/K8. K17 = "you misread him"; K20 =
+            # "he doesn't trust your claim"; K8 = "his mood dipped";
+            # K23 = "he went quiet on you / pivoted away". All four
+            # steer the next reply (re-read / hedge / soften / pull
+            # back) and benefit from being in the same paragraph of
+            # the prompt. NOT in the K16 suppression set -- the
+            # fused grounding line never carries misattunement
+            # signal, so K23 is purely additive on top.
+            system_parts.append(misattunement_block)
         if absence_curiosity_block:
             # K14 typed-mode: "Jacob was away for a few hours before
             # this message" sits right next to the other reaction-

@@ -73,7 +73,6 @@ K11 counterfactual cache · K12 calendar-linked anticipation ·
 K15 self-disclosure / vulnerability budget ·
 K19 cold-start companion onboarding ·
 K21 fresh-eyes thread re-summary ·
-K23 subtle misattunement detection ·
 K25 memory confidence time-decay ·
 K26 Aiko-side voice evolution.
 
@@ -83,8 +82,9 @@ K8 affect rupture-and-repair, K13 stylometric mirror,
 K14 implicit engagement signals, K16 unified ambient grounding line,
 K17 clarification-repair, K18 topic stagnation,
 K20 metacognitive calibration, K22 callback /
-inside-joke detector, and K24 sensory anchoring layer
-have shipped — see [`shipped.md`](shipped.md).)
+inside-joke detector, K23 subtle misattunement detection,
+and K24 sensory anchoring layer have shipped —
+see [`shipped.md`](shipped.md).)
 
 ### P. Performance + observability — [`perf.md`](perf.md)
 

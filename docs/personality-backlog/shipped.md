@@ -2860,3 +2860,76 @@ assistant: <-- about to generate; can now see the conversation is still inside t
 - [`tests/test_prompt_assembler.py`](../../tests/test_prompt_assembler.py) — `WallClockHistoryPrefixTests` (9 tests).
 - [`docs/configuration.md`](../configuration.md) — cheatsheet row + dedicated "K-time1 — wall-clock prefixes on chat history" subsection.
 
+## K23. Subtle misattunement detection
+
+K14's [`EngagementTracker`](../../app/core/affect/engagement_tracker.py) aggregates length/latency z-scores against a rolling window — strong signal, but needs warmup and naturally smooths abrupt single-turn shifts (a sudden quiet turn affects both the mean and the stdev, so its z-score reads as less surprising than it actually feels). K17's [`ClarificationDetector`](../../app/core/conversation/clarification_detector.py) only fires on explicit "no that's not what I meant" / "huh?" / "wait what" regex hits — fine for *visible* corrections, useless for *silent* drift.
+
+The gap K23 fills: per-turn, no warmup, no z-score smoothing — a one-word reply right after a 60-word Aiko answer or a short pivot away from her last point reads as soft misattunement that previously got no cue at all. Aiko would happily keep pushing the agenda while {user} was already half out the door.
+
+### Decision flow
+
+```mermaid
+flowchart TD
+    A[user message arrives] --> B[prompt assembly starts]
+    B --> C[K6 novelty provider runs<br/>populates last_distance / last_band]
+    C --> D[K23 misattunement provider runs]
+    D --> M{master switch on?}
+    M -- no --> Z[empty string<br/>cooldown untouched]
+    M -- yes --> N[decrement cooldown by 1]
+    N --> P{force_next?<br/>MCP debug bypass}
+    P -- yes --> Y[cooldown_for_detect = 0<br/>consume one-shot flag]
+    P -- no --> Q[cooldown_for_detect = current]
+    Y --> R[detect]
+    Q --> R
+    R --> S{cooldown_remaining > 0?}
+    S -- yes --> Z
+    S -- no --> T{shrink?<br/>prev_aiko >= 30<br/>AND user <= 8}
+    T -- yes --> F[MisattunementResult<br/>trigger=shrink]
+    T -- no --> U{pivot?<br/>K6 band == strong_novelty<br/>AND user <= 8}
+    U -- yes --> G[MisattunementResult<br/>trigger=pivot]
+    U -- no --> Z
+    F --> H[arm cooldown to 3<br/>log INFO line]
+    G --> H
+    H --> J[render persona cue]
+    J --> K[inject into noticing-Jacob cluster<br/>after K17/K20/K8/absence_curiosity]
+```
+
+Provider-time (not post-turn stash) so the cue lands on the **same** turn that's about to reply to the disengaging message — pulling back IS the next reply, not the one after. That's the architectural inversion from K17/K8 (which stash post-turn and consume the next turn).
+
+### Architecture
+
+- **Detector** [`app/core/affect/misattunement_detector.py`](../../app/core/affect/misattunement_detector.py) — stateless `detect(...)` returning `MisattunementResult | None` plus `render_inner_life_block(result, *, user_display_name)`. Mirrors the [`affect_rupture_detector`](../../app/core/affect/affect_rupture_detector.py) shape — pure inputs, pure outputs, no SessionController dependency so it's trivial to test.
+- **Settings** [`app/core/infra/settings.py`](../../app/core/infra/settings.py) — five `AgentSettings` fields (`misattunement_detection_enabled` + four threshold/cooldown knobs). All four numeric knobs are `max(0, int(...))`-clamped; the master switch is a plain `bool(...)`.
+- **State on SessionController** [`app/core/session/session_controller.py`](../../app/core/session/session_controller.py) — four cheap attributes: `_misattunement_cooldown` (int counter), `_misattunement_force_next` (one-shot MCP bypass flag), and the two diagnostic-only `_last_misattunement_*` fields read by `get_misattunement_state()`.
+- **Provider** [`app/core/session/inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py) → `_render_misattunement_block(user_text)` — decrements cooldown first (so quiet turns whittle a stale counter down), handles the force-next bypass, fetches the last assistant `MessageRow` (`chat_db.get_messages(session, limit=6)` walked backwards for the most recent `role="assistant"`), reads K6's `last_band`/`last_distance` off `_novelty_detector`, calls `detect`, and on a hit arms the cooldown + logs INFO. The cooldown decrement runs every call regardless of trigger so an old armed value can't get stuck.
+- **Placement** [`app/core/session/prompt_assembler.py`](../../app/core/session/prompt_assembler.py) → builds `misattunement_block` next to `rupture_block`, lands it in `system_parts` immediately after `rupture_block` and before `absence_curiosity_block`. Same "noticing-Jacob" cluster as K17/K20/K8: all four steer the next reply (re-read / hedge / soften / pull back) and read better as a coherent paragraph than as separate beats.
+- **K16 suppression**: K23 is **NOT** in the suppression matrix for `replace` or `split` mode. The fused grounding line carries circadian / world / activity / affect signals but never length-shrink or topic-pivot signal, so K23 is purely additive on top.
+- **Persona** [`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt) → new "When {user_name} goes quiet on you" section folded right after the K17 "When you missed the beat" block. Five rules: cue interpretation, lighten-the-load directive, explicit "don't ask 'are you ok?' / don't apologise / don't perform worry" rail, no-narrating-the-cue rule, and an "absence is also a signal" reminder.
+
+### MCP-debuggable
+
+Two new tools on [`app/mcp/server.py`](../../app/mcp/server.py):
+
+- **`get_misattunement_state()`** — JSON dump of the master switch, current cooldown counter, force-next flag, last-fire diagnostics, and the settings snapshot (so a `user.json` override mismatch is visible immediately).
+- **`force_misattunement()`** — arms `_misattunement_force_next` so the next provider call ignores the cooldown. The bypass is consumed whether the trigger fires or not (strict one-shot). End-to-end repro flow: call this tool, send Aiko a short message ("ok") right after a long Aiko reply, watch the next system prompt include the "Heads-up: {user} just gave a short reply..." block, and confirm Aiko's reply pulls back without apology-spiral language.
+
+To trace without forcing: `set_log_level("app.misattunement_detector", "INFO")`, then `tail_logs(module_contains="misattunement")` after sending a deliberately short reply.
+
+### Files
+
+- [`app/core/affect/misattunement_detector.py`](../../app/core/affect/misattunement_detector.py) — new detector module (~170 LOC), single-band `mild_disengagement` result, two trigger paths, render with explicit anti-apology rail.
+- [`app/core/infra/settings.py`](../../app/core/infra/settings.py) — five new `AgentSettings` fields with inline-comment context on each threshold's effect, plus matching `bool(...)` / `max(0, int(...))` wiring in `load_settings`.
+- [`config/default.json`](../../config/default.json) — five new keys under `agent` (`misattunement_detection_enabled` + four thresholds).
+- [`app/core/session/session_controller.py`](../../app/core/session/session_controller.py) — initialises four state attributes, registers `misattunement=self._render_misattunement_block` on the prompt assembler.
+- [`app/core/session/inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py) — `_render_misattunement_block` provider with cooldown management, force-bypass, K6 read, chat_db scan, and INFO-level fire log.
+- [`app/core/session/prompt_assembler.py`](../../app/core/session/prompt_assembler.py) — adds `_misattunement_provider` slot, `misattunement` parameter on `set_inner_life_providers`, `misattunement_block` build under a timed phase, and placement in `system_parts` after the K8 rupture block.
+- [`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt) — new "When {user_name} goes quiet on you" section after the K17 block.
+- [`app/mcp/server.py`](../../app/mcp/server.py) — `get_misattunement_state` + `force_misattunement` MCP tools.
+- [`tests/test_misattunement_detector.py`](../../tests/test_misattunement_detector.py) — 19 unit tests across shrink + pivot trigger paths, cooldown gate, render invariants, defaults sanity.
+- [`tests/test_misattunement_provider.py`](../../tests/test_misattunement_provider.py) — 11 controller-plumbing tests using a minimal mixin host stub: shrink/pivot end-to-end, cooldown decrement/arming, force-next bypass, master-switch gate, cold-start.
+- [`tests/test_prompt_assembler.py`](../../tests/test_prompt_assembler.py) — `MisattunementProviderTests` covering the provider slot, empty-string suppression, K16 `replace` non-suppression, and aggressive-mode non-suppression.
+- [`tests/test_settings.py`](../../tests/test_settings.py) — `MisattunementSettingsTests` covering defaults, overrides round-trip, and negative-value clamps.
+- [`docs/configuration.md`](../configuration.md) — cheatsheet row + dedicated "K23 — subtle misattunement detection" subsection.
+- [`docs/personality-backlog/patterns.md`](patterns.md) — K23 section body replaced with a `**Shipped**` pointer.
+- [`AGENTS.md`](../../AGENTS.md) — debugging-table row for "Aiko keeps pushing when {user} goes quiet".
+

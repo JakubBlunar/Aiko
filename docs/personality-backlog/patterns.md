@@ -204,22 +204,9 @@ inside-joke detector (post-turn cosine pass + read-side bonus)".
 
 ## K23. Subtle misattunement detection
 
-Sits between K17 (semantic repair — fires on *explicit* "no
-that's not what I meant" signals) and K14 (implicit engagement —
-aggregates latency / length / abandonment across turns). The
-gap: when Jacob fires a one-word reply right after a long Aiko
-reply, or pivots topics without acknowledging her last point,
-or his next turn shrinks 60% in length without anger, that's a
-soft misattunement signal she has no machinery for today. K17
-won't catch it (no regex hit); K14 won't catch it for a few
-turns (it's per-aggregate). A per-turn heuristic running on
-`(prev_aiko_reply_len, this_user_reply_len, topic_continuity)`
-could emit a `mild_disengagement` cue that nudges the next turn
-toward "shorter, more attentive, ask one thing." Key files: new
-`app/core/misattunement_detector.py`, post-turn hook in
-[`app/core/session/session_controller.py`](../../app/core/session/session_controller.py)
-`_post_turn_inner_life`, persona block consumer ("Heads-up: he
-went quiet on you — pull back, don't push more").
+**Shipped** — per-turn provider-time detector with shrink + pivot
+triggers, cooldown, and MCP-debuggable bypass. See
+[`shipped.md` → K23](shipped.md#k23-subtle-misattunement-detection).
 
 ---
 

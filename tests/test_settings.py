@@ -530,5 +530,93 @@ class SensoryAnchorSettingsTests(unittest.TestCase):
         )
 
 
+class MisattunementSettingsTests(unittest.TestCase):
+    """K23: agent master switch + 4 threshold knobs round-trip with clamps."""
+
+    _M_AGENT_KEYS = (
+        "misattunement_detection_enabled",
+        "misattunement_shrink_min_prev_words",
+        "misattunement_shrink_max_user_words",
+        "misattunement_pivot_max_user_words",
+        "misattunement_cooldown_turns",
+    )
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(
+        self,
+        agent_extra: dict | None = None,
+        strip_keys: bool = True,
+    ) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(
+            json.loads(default_path.read_text(encoding="utf-8"))
+        )
+        if strip_keys:
+            for k in self._M_AGENT_KEYS:
+                cfg.get("agent", {}).pop(k, None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults_load_when_keys_missing(self) -> None:
+        path = self._write_config()
+        result = load_settings(config_path=path)
+        self.assertTrue(result.agent.misattunement_detection_enabled)
+        self.assertEqual(result.agent.misattunement_shrink_min_prev_words, 30)
+        self.assertEqual(result.agent.misattunement_shrink_max_user_words, 8)
+        self.assertEqual(result.agent.misattunement_pivot_max_user_words, 8)
+        self.assertEqual(result.agent.misattunement_cooldown_turns, 3)
+
+    def test_overrides_round_trip(self) -> None:
+        path = self._write_config(
+            agent_extra={
+                "misattunement_detection_enabled": False,
+                "misattunement_shrink_min_prev_words": 50,
+                "misattunement_shrink_max_user_words": 5,
+                "misattunement_pivot_max_user_words": 4,
+                "misattunement_cooldown_turns": 5,
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.misattunement_detection_enabled)
+        self.assertEqual(result.agent.misattunement_shrink_min_prev_words, 50)
+        self.assertEqual(result.agent.misattunement_shrink_max_user_words, 5)
+        self.assertEqual(result.agent.misattunement_pivot_max_user_words, 4)
+        self.assertEqual(result.agent.misattunement_cooldown_turns, 5)
+
+    def test_clamps_negative_to_zero(self) -> None:
+        # All four int knobs have a ``max(0, int(...))`` floor; a
+        # negative value clamps to 0 (which effectively disables
+        # that gate -- shrink with prev_words >= 0 always satisfies
+        # the floor, but ``this_user_words <= 0`` is itself blocked
+        # by the ``user_words <= 0`` short-circuit in detect()).
+        path = self._write_config(
+            agent_extra={
+                "misattunement_shrink_min_prev_words": -10,
+                "misattunement_shrink_max_user_words": -1,
+                "misattunement_pivot_max_user_words": -1,
+                "misattunement_cooldown_turns": -7,
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertEqual(result.agent.misattunement_shrink_min_prev_words, 0)
+        self.assertEqual(result.agent.misattunement_shrink_max_user_words, 0)
+        self.assertEqual(result.agent.misattunement_pivot_max_user_words, 0)
+        self.assertEqual(result.agent.misattunement_cooldown_turns, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
