@@ -8,14 +8,14 @@ from tempfile import TemporaryDirectory
 
 import numpy as np
 
-from app.core.chat_database import ChatDatabase
-from app.core.memory_consolidator import (
+from app.core.infra.chat_database import ChatDatabase
+from app.core.memory.memory_consolidator import (
     MemoryConsolidator,
     _clean_merge_output,
     _cluster_memories,
     _split_survivor,
 )
-from app.core.memory_store import Memory, MemoryStore
+from app.core.memory.memory_store import Memory, MemoryStore
 
 
 def _make_memory(

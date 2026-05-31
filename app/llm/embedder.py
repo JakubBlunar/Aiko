@@ -1,6 +1,6 @@
 """Thin wrapper around Ollama's ``/api/embeddings`` endpoint.
 
-Used by :mod:`app.core.memory_store` and :mod:`app.core.memory_retriever` to
+Used by :mod:`app.core.memory.memory_store` and :mod:`app.core.memory.memory_retriever` to
 turn arbitrary text into a vector for cosine similarity. The model name is
 controlled by :attr:`OllamaSettings.embedding_model` (default
 ``qwen3-embedding:0.6b`` -- already wired through ``config/default.json``).
@@ -29,7 +29,7 @@ from typing import Iterable
 import numpy as np
 import requests
 
-from app.core.settings import OllamaSettings
+from app.core.infra.settings import OllamaSettings
 
 
 log = logging.getLogger("app.embedder")

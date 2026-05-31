@@ -1,4 +1,4 @@
-"""Tests for :mod:`app.core.memory_conflict_worker`."""
+"""Tests for :mod:`app.core.memory.memory_conflict_worker`."""
 from __future__ import annotations
 
 import json
@@ -12,15 +12,15 @@ from typing import Any, Iterable
 
 import numpy as np
 
-from app.core.chat_database import ChatDatabase
-from app.core.fact_check_rate_limiter import FactCheckRateLimiter
-from app.core.memory_conflict_store import (
+from app.core.infra.chat_database import ChatDatabase
+from app.core.memory.fact_check_rate_limiter import FactCheckRateLimiter
+from app.core.memory.memory_conflict_store import (
     MemoryConflictStore,
     STATUS_AUTO_RESOLVED,
     STATUS_OPEN,
 )
-from app.core.memory_conflict_worker import MemoryConflictWorker
-from app.core.memory_store import MemoryStore
+from app.core.memory.memory_conflict_worker import MemoryConflictWorker
+from app.core.memory.memory_store import MemoryStore
 
 
 # ── tiny stubs ─────────────────────────────────────────────────────────

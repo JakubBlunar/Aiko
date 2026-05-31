@@ -17,7 +17,7 @@ from app.core.services.response_text_service import (
     strip_all_meta_tags,
     strip_correction_for_tts,
 )
-from app.core.session_text_utils import prepare_tts_text
+from app.core.session.session_text_utils import prepare_tts_text
 
 
 class StripAllMetaTagsCorrectionTests(unittest.TestCase):

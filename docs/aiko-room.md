@@ -15,7 +15,7 @@ and how to extend it.
 ## Data model
 
 Three SQLite tables, created at schema v6 by
-[`app/core/chat_database.py`](../app/core/chat_database.py):
+[`app/core/infra/chat_database.py`](../app/core/infra/chat_database.py):
 
 ```
 world_locations  (id, slug, name, description, position)
@@ -33,7 +33,7 @@ world_state      (id=1 singleton, location_id, posture, activity,
   assistant.
 - All vocabulary is whitelisted. Invalid `kind` / `posture` /
   `activity` values are clamped to defaults rather than raising — see
-  [`app/core/world_store.py`](../app/core/world_store.py)
+  [`app/core/world/world_store.py`](../app/core/world/world_store.py)
   `VALID_KINDS` / `VALID_POSTURES` / `VALID_ACTIVITIES`.
 
 Pinning, RAG mirroring, and decay are intentionally **not** duplicated
@@ -100,7 +100,7 @@ from turning every reply into a travelogue.
 
 The block lands between `agenda_block` and `catchphrase_block` in the
 system prompt (see `assemble_with_budget` in
-[`app/core/prompt_assembler.py`](../app/core/prompt_assembler.py)).
+[`app/core/session/prompt_assembler.py`](../app/core/session/prompt_assembler.py)).
 
 ---
 
@@ -221,7 +221,7 @@ API helpers live in [`web/src/api.ts`](../web/src/api.ts):
 ### Adding a new posture / activity
 
 Edit `VALID_POSTURES` / `VALID_ACTIVITIES` in
-[`app/core/world_store.py`](../app/core/world_store.py) and add the
+[`app/core/world/world_store.py`](../app/core/world/world_store.py) and add the
 matching entry to `WORLD_POSTURES` / `WORLD_ACTIVITIES` in
 [`web/src/types.ts`](../web/src/types.ts) so the UI dropdown picks
 it up. No schema migration needed — the column is just `TEXT`.
@@ -281,7 +281,7 @@ world feels alive even without user prompting.
 
 ### Data model
 
-- New item kinds in [`VALID_KINDS`](../app/core/world_store.py):
+- New item kinds in [`VALID_KINDS`](../app/core/world/world_store.py):
   `"plant"` and `"seed"`. (`food` already existed and is reused for
   harvest output — fresh basil, tomatoes, lavender sprigs land in
   the kitchenette as ordinary consumable food items.)
@@ -323,13 +323,13 @@ nearby line — `"(sprout)"`, `"(flowering)"`, or the loud
 ### Background workers
 
 Both workers piggyback on the existing
-[`IdleWorkerScheduler`](../app/core/idle_worker_scheduler.py) so they
+[`IdleWorkerScheduler`](../app/core/proactive/idle_worker_scheduler.py) so they
 share its quiet-window gate (no Live mode, no recent user activity).
 
 | Worker | Interval | Behaviour |
 |---|---|---|
-| [`PlantGrowthWorker`](../app/core/plant_growth_worker.py) | hourly | Walks every `kind == "plant"` item, calls `promote_stage(item)` which advances one step when the stage's `min_age_hours` elapsed and the plant was watered within `_DRY_TOLERANCE_HOURS` (96h). Promotes are broadcast as `world_updated` patches so the UI updates live. |
-| [`GardenVisitWorker`](../app/core/garden_visit_worker.py) | 30 min check, 1.5-3.5h randomised cooldown between visits | Two-phase, single worker. **Outbound**: during daylight (`morning / midday / afternoon / early_morning`), moves her to the garden, waters every plant, auto-harvests any that are mature, stamps a `return_at` timestamp 6 min ahead in `kv_meta`. **Inbound**: when the timestamp elapses, moves her back to `desk`. Silent — no chat message, no proactive nudge. |
+| [`PlantGrowthWorker`](../app/core/world/plant_growth_worker.py) | hourly | Walks every `kind == "plant"` item, calls `promote_stage(item)` which advances one step when the stage's `min_age_hours` elapsed and the plant was watered within `_DRY_TOLERANCE_HOURS` (96h). Promotes are broadcast as `world_updated` patches so the UI updates live. |
+| [`GardenVisitWorker`](../app/core/world/garden_visit_worker.py) | 30 min check, 1.5-3.5h randomised cooldown between visits | Two-phase, single worker. **Outbound**: during daylight (`morning / midday / afternoon / early_morning`), moves her to the garden, waters every plant, auto-harvests any that are mature, stamps a `return_at` timestamp 6 min ahead in `kv_meta`. **Inbound**: when the timestamp elapses, moves her back to `desk`. Silent — no chat message, no proactive nudge. |
 
 ### Tools
 

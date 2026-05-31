@@ -8,11 +8,11 @@ details.
 
 No open G-series items at the moment. New background workers should
 register with the existing
-[`IdleWorkerScheduler`](../../app/core/idle_worker_scheduler.py)
+[`IdleWorkerScheduler`](../../app/core/proactive/idle_worker_scheduler.py)
 rather than spinning up their own threads, and should mirror the
 INFO-level audit logging pattern established by
-[`app/core/idle_fact_checker.py`](../../app/core/idle_fact_checker.py)
-and [`app/core/idle_curiosity_worker.py`](../../app/core/idle_curiosity_worker.py).
+[`app/core/memory/idle_fact_checker.py`](../../app/core/memory/idle_fact_checker.py)
+and [`app/core/proactive/idle_curiosity_worker.py`](../../app/core/proactive/idle_curiosity_worker.py).
 
 For new worker ideas not yet committed to a section letter, see
 [`patterns.md`](patterns.md) — several entries (K1 long-term goals,
@@ -26,7 +26,7 @@ worker.
 
 Trivial cleanup item, parked here so it doesn't get forgotten.
 The schema carries
-[`consolidator_state.last_cluster_index`](../../app/core/memory_consolidator.py)
+[`consolidator_state.last_cluster_index`](../../app/core/memory/memory_consolidator.py)
 but nothing reads it — the comment in the source flags it as
 unused. Either wire incremental clustering (the original intent)
 or drop the column in the next schema bump. Effort: trivial.

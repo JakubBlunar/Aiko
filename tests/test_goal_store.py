@@ -20,12 +20,12 @@ from pathlib import Path
 
 import numpy as np
 
-from app.core.chat_database import ChatDatabase
-from app.core.goal_store import (
+from app.core.infra.chat_database import ChatDatabase
+from app.core.goals.goal_store import (
     GoalStore,
     _MAX_SUMMARY_CHARS,
 )
-from app.core.memory_store import MemoryStore
+from app.core.memory.memory_store import MemoryStore
 from app.core.services.response_text_service import (
     extract_goal_tags,
     strip_all_meta_tags,

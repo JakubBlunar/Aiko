@@ -20,13 +20,13 @@ from pathlib import Path
 
 import numpy as np
 
-from app.core.calibration_store import (
+from app.core.affect.calibration_store import (
     CalibrationState,
     CalibrationStore,
     TopicSlot,
     baseline_state,
 )
-from app.core.chat_database import ChatDatabase
+from app.core.infra.chat_database import ChatDatabase
 
 
 class _TempDB:

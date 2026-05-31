@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from app.core.agenda import (
+from app.core.goals.agenda import (
     AgendaItem,
     AgendaStore,
     AgendaWorker,
@@ -13,7 +13,7 @@ from app.core.agenda import (
     _parse_groom_diff,
     extract_inline_tags,
 )
-from app.core.chat_database import ChatDatabase
+from app.core.infra.chat_database import ChatDatabase
 
 
 class _Fixture:

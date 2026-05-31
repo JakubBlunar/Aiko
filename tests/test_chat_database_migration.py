@@ -16,7 +16,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from app.core.chat_database import ChatDatabase, _SCHEMA_VERSION
+from app.core.infra.chat_database import ChatDatabase, _SCHEMA_VERSION
 
 
 class _Fixture:

@@ -7,9 +7,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock
 
-from app.core.chat_database import ChatDatabase
-from app.core.prepared_nudge import PreparedNudgeStore
-from app.core.proactive_director import (
+from app.core.infra.chat_database import ChatDatabase
+from app.core.proactive.prepared_nudge import PreparedNudgeStore
+from app.core.proactive.proactive_director import (
     ProactiveDirector,
     _PROACTIVE_HINT_TYPED,
 )

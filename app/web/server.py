@@ -32,11 +32,11 @@ from fastapi.staticfiles import StaticFiles
 
 
 if TYPE_CHECKING:
-    from app.core.session_controller import SessionController
+    from app.core.session.session_controller import SessionController
 
-from app.core import crash_logging
-from app.core.live_session import LiveSession
-from app.core.settings import OUTFIT_MODES
+from app.core.infra import crash_logging
+from app.core.session.live_session import LiveSession
+from app.core.infra.settings import OUTFIT_MODES
 from app.web import audio_frames as _frames
 
 

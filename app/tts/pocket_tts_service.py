@@ -17,7 +17,7 @@ from collections.abc import Callable
 from pathlib import Path
 import threading
 
-from app.core.settings import TtsSettings
+from app.core.infra.settings import TtsSettings
 
 
 log = logging.getLogger("app.tts.pocket_tts_service")
@@ -48,7 +48,7 @@ _BUILTIN_VOICES = ["alba", "marius", "javert", "jean", "fantine", "cosette", "ep
 # end. These are the *baseline* per-reaction speeds; the cadence layer
 # can further nudge per-sentence via the ``speed`` kwarg on
 # :meth:`speak_async`. Includes every reaction the affect/cadence
-# pipeline emits (matches ``app.core.affect_state._REACTION_IMPULSE``)
+# pipeline emits (matches ``app.core.affect.affect_state._REACTION_IMPULSE``)
 # so a missing entry here means the LLM produced something we don't
 # recognise — silently falls back to 1.0 via ``.get(..., 1.0)``.
 _REACTION_SPEED: dict[str, float] = {

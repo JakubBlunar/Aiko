@@ -11,9 +11,9 @@ from pathlib import Path
 
 import numpy as np
 
-from app.core.chat_database import ChatDatabase
-from app.core.memory_retriever import MemoryRetriever
-from app.core.memory_store import MemoryStore
+from app.core.infra.chat_database import ChatDatabase
+from app.core.memory.memory_retriever import MemoryRetriever
+from app.core.memory.memory_store import MemoryStore
 
 
 class FakeEmbedder:
@@ -300,7 +300,7 @@ class TestMemoryRetriever(unittest.TestCase):
 
 class TestSelfTaggedExtraction(unittest.TestCase):
     def test_turn_runner_extracts_remember_tags(self) -> None:
-        from app.core.turn_runner import _REMEMBER_TAG_RE
+        from app.core.session.turn_runner import _REMEMBER_TAG_RE
 
         raw = (
             "[[reaction:cheerful]] Hi! [[remember:Jacob just adopted a cat "
@@ -315,7 +315,7 @@ class TestSelfTaggedExtraction(unittest.TestCase):
             embedder = FakeEmbedder()
 
             # Simulate what TurnRunner._extract_self_tagged_memories does.
-            from app.core.turn_runner import _REMEMBER_TAG_RE
+            from app.core.session.turn_runner import _REMEMBER_TAG_RE
 
             raw_text = (
                 "[[reaction:gentle]] Got it.\n"
@@ -341,7 +341,7 @@ class TestSelfTaggedExtraction(unittest.TestCase):
             self.assertAlmostEqual(mem.salience, 0.7, places=2)
 
     def test_self_prefix_marks_kind_self(self) -> None:
-        from app.core.turn_runner import _REMEMBER_TAG_RE
+        from app.core.session.turn_runner import _REMEMBER_TAG_RE
 
         raw = (
             "[[reaction:gentle]] Hmm, true.\n"

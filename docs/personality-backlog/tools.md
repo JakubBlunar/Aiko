@@ -20,10 +20,10 @@ same plumbing.
 - Existing: [`app/llm/tools/builtins.py`](../../app/llm/tools/builtins.py)
   `build_default_registry` — register the new tools, gated on a
   config flag.
-- Existing: [`app/core/proactive_director.py`](../../app/core/proactive_director.py)
+- Existing: [`app/core/proactive/proactive_director.py`](../../app/core/proactive/proactive_director.py)
   — extend `_pick_topic` to surface a due-but-unfired reminder ahead of
   generic nudges.
-- Existing: [`app/core/follow_up_worker.py`](../../app/core/follow_up_worker.py)
+- Existing: [`app/core/proactive/follow_up_worker.py`](../../app/core/proactive/follow_up_worker.py)
   — already nudges on overdue `future_plan` memories; reminders are a
   thin formal cousin.
 

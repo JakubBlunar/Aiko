@@ -24,7 +24,7 @@ import re
 from typing import Iterable, Literal, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from app.core.settings import EndpointingSettings
+    from app.core.infra.settings import EndpointingSettings
 
 
 __all__ = [

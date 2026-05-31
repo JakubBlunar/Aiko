@@ -5,8 +5,8 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from app.core.chat_database import ChatDatabase
-from app.core.user_profile import (
+from app.core.infra.chat_database import ChatDatabase
+from app.core.infra.user_profile import (
     PROFILE_FIELDS,
     UserProfileStore,
     UserProfileWorker,

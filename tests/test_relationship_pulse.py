@@ -8,10 +8,10 @@ from tempfile import TemporaryDirectory
 
 import numpy as np
 
-from app.core.chat_database import ChatDatabase
-from app.core.memory_store import MemoryStore
-from app.core.relationship import RelationshipStore, RelationshipTracker
-from app.core.relationship_pulse import (
+from app.core.infra.chat_database import ChatDatabase
+from app.core.memory.memory_store import MemoryStore
+from app.core.relationship.relationship import RelationshipStore, RelationshipTracker
+from app.core.relationship.relationship_pulse import (
     RelationshipPulseWorker,
     _clean_pulse_output,
 )

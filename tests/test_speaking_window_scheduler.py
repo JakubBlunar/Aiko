@@ -9,7 +9,7 @@ import threading
 import time
 import unittest
 
-from app.core.speaking_window_scheduler import (
+from app.core.voice.speaking_window_scheduler import (
     ScheduledJob,
     SpeakingWindowScheduler,
     StopFlag,

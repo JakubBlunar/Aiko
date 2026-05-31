@@ -3,7 +3,7 @@
 We can't ship reference WAVs cheaply, so the tests synthesise short PCM
 buffers with controlled energy / pitch / pace properties and write them
 out via the standard library ``wave`` module before feeding them to
-:func:`app.core.vocal_tone.analyse_wav`. Each test asserts the bucket
+:func:`app.core.affect.vocal_tone.analyse_wav`. Each test asserts the bucket
 classification, not the raw numbers — the buckets are the only contract
 the prompt and AffectUpdater rely on.
 """
@@ -17,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 
-from app.core.vocal_tone import VocalTone, analyse_wav
+from app.core.affect.vocal_tone import VocalTone, analyse_wav
 
 
 SR = 16000

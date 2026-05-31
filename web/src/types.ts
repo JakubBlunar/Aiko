@@ -520,7 +520,7 @@ export interface OutfitParam {
 }
 
 /** One parameter contribution inside an expression file binding.
- * Mirrors :class:`app.core.avatar_profile.ExpressionParam` and is
+ * Mirrors :class:`app.core.persona.avatar_profile.ExpressionParam` and is
  * consumed by the renderer's ExpressionChannel arousal-scaler so a
  * single ``cheerful`` reaction reads quieter at low arousal. */
 export interface ExpressionParam {
@@ -562,7 +562,7 @@ export interface AvatarSettingsKnobs {
   expressiveness: number;
   /**
    * Outfit selection mode. Mirrors the Python ``OUTFIT_MODES``
-   * allow-list in ``app/core/settings.py`` -- update both sides in
+   * allow-list in ``app/core/infra/settings.py`` -- update both sides in
    * lockstep when adding a new outfit.
    *  - ``auto``           -> circadian-driven (pajamas at night)
    *  - ``day``            -> always day clothes (baseline)
@@ -583,7 +583,7 @@ export interface AvatarSettingsKnobs {
 }
 
 /** Phase 4 accessory states for the ``eye_color`` enum accessory.
- * Mirrors :data:`app.core.settings.EYE_COLOR_STATES` — update both
+ * Mirrors :data:`app.core.infra.settings.EYE_COLOR_STATES` — update both
  * sides in lockstep. */
 export type EyeColorState =
   | "default"

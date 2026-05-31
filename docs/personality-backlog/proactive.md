@@ -16,7 +16,7 @@ forwarded. Worth picking up once we have a privacy story strong enough
 to support it.
 
 **Key files.** [`web/src-tauri/src/lib.rs`](../../web/src-tauri/src/lib.rs)
-`get_active_app`, [`app/core/session_controller.py`](../../app/core/session_controller.py)
+`get_active_app`, [`app/core/session/session_controller.py`](../../app/core/session/session_controller.py)
 `set_user_active_app` + `_render_activity_block`,
 [`web/src/hooks/useActivityReporter.ts`](../../web/src/hooks/useActivityReporter.ts).
 
@@ -41,9 +41,9 @@ Fine for the 80% case but a quick restart in the middle of a typed
 session can re-arm an immediate proactive nudge, which reads weirdly.
 
 **Key files.** [`config/user.json`](../../config/user.json) (alongside
-`last_active_id`), [`app/core/proactive_director.py`](../../app/core/proactive_director.py)
+`last_active_id`), [`app/core/proactive/proactive_director.py`](../../app/core/proactive/proactive_director.py)
 `_last_typed_run_monotonic` plus a `_last_typed_run_iso` mirror,
-[`app/core/session_controller.py`](../../app/core/session_controller.py)
+[`app/core/session/session_controller.py`](../../app/core/session/session_controller.py)
 boot hook that loads the persisted timestamp.
 
 **Sketched approach.** On every successful typed-proactive fire, write
@@ -66,9 +66,9 @@ A "speak typed proactive nudges aloud" knob is cheap to add when the
 use case appears (e.g. Jacob wants ambient audio presence even while
 typing).
 
-**Key files.** [`app/core/proactive_director.py`](../../app/core/proactive_director.py)
+**Key files.** [`app/core/proactive/proactive_director.py`](../../app/core/proactive/proactive_director.py)
 `_run_typed` (currently bypasses the TTS pipeline),
-[`app/core/settings.py`](../../app/core/settings.py) `AgentSettings`
+[`app/core/infra/settings.py`](../../app/core/infra/settings.py) `AgentSettings`
 (new `proactive_typed_speak: bool = False`),
 [`web/src/components/SettingsDrawer.tsx`](../../web/src/components/SettingsDrawer.tsx)
 Proactive section.

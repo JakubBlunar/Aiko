@@ -1,4 +1,4 @@
-"""Tests for :mod:`app.core.topic_graph` (K9 personality backlog).
+"""Tests for :mod:`app.core.conversation.topic_graph` (K9 personality backlog).
 
 The graph is a thin wrapper over the in-memory ``MemoryStore._mirror``
 so the tests build a fake mirror with synthetic two-cluster
@@ -14,7 +14,7 @@ from typing import Any
 
 import numpy as np
 
-from app.core.topic_graph import TopicGraph, _normalise
+from app.core.conversation.topic_graph import TopicGraph, _normalise
 
 
 # ── stub mirror ──────────────────────────────────────────────────────

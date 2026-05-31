@@ -1,5 +1,5 @@
 """Tests for the per-turn correlation id, ring buffer, file handler,
-read_log_file, and module-level overrides exposed by `app.core.crash_logging`.
+read_log_file, and module-level overrides exposed by `app.core.infra.crash_logging`.
 
 These cover the contract documented in AGENTS.md "Debugging via logs" so
 future drift in level discipline or formatter shape is caught here.
@@ -12,8 +12,8 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from app.core import crash_logging
-from app.core.crash_logging import (
+from app.core.infra import crash_logging
+from app.core.infra.crash_logging import (
     LOG_FORMAT,
     _RingBufferHandler,
     _TurnIdFilter,
@@ -22,7 +22,7 @@ from app.core.crash_logging import (
     set_module_level,
     tail,
 )
-from app.core.log_context import (
+from app.core.infra.log_context import (
     get_turn_id,
     reset_turn_id,
     set_turn_id,

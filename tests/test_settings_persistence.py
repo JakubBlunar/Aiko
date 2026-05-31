@@ -1,4 +1,4 @@
-"""Tests for ``app.core.settings.persist_user_overrides``.
+"""Tests for ``app.core.infra.settings.persist_user_overrides``.
 
 The helper is used by ``SessionController`` whenever a user-tunable
 knob (avatar scale, auto-outfit, …) changes at runtime so the value
@@ -13,8 +13,8 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from app.core import settings as settings_mod
-from app.core.settings import persist_user_overrides
+from app.core.infra import settings as settings_mod
+from app.core.infra.settings import persist_user_overrides
 
 
 class PersistUserOverridesTests(unittest.TestCase):

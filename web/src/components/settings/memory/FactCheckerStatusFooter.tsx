@@ -58,7 +58,7 @@ export function FactCheckerStatusFooter() {
             "first-person pronouns, emails, phone numbers, URLs, or " +
             "street addresses never enter the fact-check queue. " +
             "Claims with the user/assistant name embedded are redacted " +
-            "before the web query is sent. See app/core/fact_check_privacy.py."
+            "before the web query is sent. See app/core/memory/fact_check_privacy.py."
           }
         >
           private

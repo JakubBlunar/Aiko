@@ -13,12 +13,12 @@ import sys
 import threading
 import time
 
-from app.core.crash_logging import (
+from app.core.infra.crash_logging import (
     configure_logging_full,
     install_global_exception_hooks,
 )
-from app.core.session_controller import SessionController
-from app.core.settings import load_settings
+from app.core.session.session_controller import SessionController
+from app.core.infra.settings import load_settings
 from app.web.runner import WebServerRunner
 from app.web.server import create_web_app
 

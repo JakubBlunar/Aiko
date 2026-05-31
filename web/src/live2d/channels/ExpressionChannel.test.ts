@@ -1051,7 +1051,7 @@ describe("ExpressionChannel — debug instrumentation", () => {
   });
 });
 
-// Hardcoded mirror of ``REACTIONS`` from ``app/core/reactions.py``.
+// Hardcoded mirror of ``REACTIONS`` from ``app/core/affect/reactions.py``.
 // If the Python source grows a new reaction, this list must grow too
 // AND ``_REACTION_NEIGHBOURS`` must gain a chain for it (see B5
 // cry-cascade safety). Drift on either side will break the parity

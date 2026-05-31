@@ -8,8 +8,8 @@ from pathlib import Path
 
 import numpy as np
 
-from app.core.document_ingestor import DocumentIngestor, _chunk_text
-from app.core.rag_store import RagStore
+from app.core.rag.document_ingestor import DocumentIngestor, _chunk_text
+from app.core.rag.rag_store import RagStore
 
 
 class FakeEmbedder:

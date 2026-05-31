@@ -1,4 +1,4 @@
-"""Tests for P1 + P2 telemetry on :class:`app.core.turn_runner.TurnRunner`.
+"""Tests for P1 + P2 telemetry on :class:`app.core.session.turn_runner.TurnRunner`.
 
 P1 (perf backlog): ``TurnRunner`` wraps each turn in
 ``Embedder.begin_turn`` / ``end_turn`` and stamps the resulting
@@ -24,8 +24,8 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
-from app.core.prompt_assembler import PromptTelemetry
-from app.core.turn_runner import TurnRunner
+from app.core.session.prompt_assembler import PromptTelemetry
+from app.core.session.turn_runner import TurnRunner
 from app.llm.ollama_client import OllamaUsage
 
 

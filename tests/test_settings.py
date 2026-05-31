@@ -1,4 +1,4 @@
-"""Loader-level tests for :mod:`app.core.settings`.
+"""Loader-level tests for :mod:`app.core.infra.settings`.
 
 The full settings stack is exercised across the rest of the test
 suite via the modules that consume it. This file focuses on the
@@ -15,8 +15,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
 
-from app.core import settings as settings_mod
-from app.core.settings import AvatarSettings, load_settings
+from app.core.infra import settings as settings_mod
+from app.core.infra.settings import AvatarSettings, load_settings
 
 
 class AvatarExpressivenessLoaderTests(unittest.TestCase):

@@ -1,5 +1,5 @@
 """Tests for last-active-session restoration in
-:class:`app.core.session_controller.SessionController`.
+:class:`app.core.session.session_controller.SessionController`.
 
 When the user reloads the browser tab or restarts the app, the
 controller should bring them back to the conversation they were
@@ -26,8 +26,8 @@ from typing import Any
 from unittest import mock
 from unittest.mock import MagicMock
 
-from app.core import settings as settings_mod
-from app.core.session_controller import SessionController
+from app.core.infra import settings as settings_mod
+from app.core.session.session_controller import SessionController
 
 
 def _make_controller() -> SessionController:
@@ -203,7 +203,7 @@ class SwitchSessionPersistenceTests(unittest.TestCase):
         controller._session_id = "main"
         controller._clear_merge_buffer = MagicMock()
         with mock.patch(
-            "app.core.session_controller.persist_user_overrides",
+            "app.core.session.session_controller.persist_user_overrides",
             side_effect=OSError("locked"),
         ):
             controller.switch_session("survives")

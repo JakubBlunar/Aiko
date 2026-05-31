@@ -1,4 +1,4 @@
-"""Tests for ``app.core.mood_shell``.
+"""Tests for ``app.core.affect.mood_shell``.
 
 Covers the K5 mood shell tilt: band classification, dominant-axis
 selection (threshold + canonical-order tie-breaking), rule lookup
@@ -11,7 +11,7 @@ from __future__ import annotations
 import unittest
 from dataclasses import dataclass
 
-from app.core.mood_shell import (
+from app.core.affect.mood_shell import (
     MoodShell,
     derive_mood_shell,
     render_mood_shell_block,

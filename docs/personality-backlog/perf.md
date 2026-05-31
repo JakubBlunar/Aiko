@@ -30,8 +30,8 @@ nothing changed since the last turn. A cheaper invalidator would
 let hits actually be cheap.
 
 **Key files.**
-[`app/core/prompt_assembler.py`](../../app/core/prompt_assembler.py),
-[`app/core/chat_database.py`](../../app/core/chat_database.py)
+[`app/core/session/prompt_assembler.py`](../../app/core/session/prompt_assembler.py),
+[`app/core/infra/chat_database.py`](../../app/core/infra/chat_database.py)
 (lightweight `MAX(id)` / `summaries.updated_at` head query).
 
 **Sketched approach.** Cache the `(max_message_id,
@@ -56,8 +56,8 @@ optimisation wave (e.g. async scoring, cross-source de-dupe) much
 easier to reason about.
 
 **Key files.**
-[`app/core/rag_retriever.py`](../../app/core/rag_retriever.py),
-[`app/core/memory_store.py`](../../app/core/memory_store.py)
+[`app/core/rag/rag_retriever.py`](../../app/core/rag/rag_retriever.py),
+[`app/core/memory/memory_store.py`](../../app/core/memory/memory_store.py)
 (`get_many` returning a dict; the in-memory mirror already has
 all the data).
 
@@ -74,9 +74,9 @@ session on the first K6 detect. Multi-month installs will pay
 real wall-time on the first novel turn after a fresh start.
 
 **Key files.**
-[`app/core/rag_store.py`](../../app/core/rag_store.py)
+[`app/core/rag/rag_store.py`](../../app/core/rag/rag_store.py)
 (`list_recent_user_vectors`),
-[`app/core/novelty_detector.py`](../../app/core/novelty_detector.py)
+[`app/core/conversation/novelty_detector.py`](../../app/core/conversation/novelty_detector.py)
 (warmer call site).
 
 **Sketched approach.** Push the role/session-prefix filter into
@@ -100,7 +100,7 @@ pending writes invisibly. There's no MCP surface for queue depth
 not the indexer.
 
 **Key files.**
-[`app/core/message_indexer.py`](../../app/core/message_indexer.py),
+[`app/core/rag/message_indexer.py`](../../app/core/rag/message_indexer.py),
 [`app/mcp/server.py`](../../app/mcp/server.py)
 (new `get_message_indexer_stats` tool),
 AGENTS.md log field table.
@@ -119,8 +119,8 @@ documented in `rag_prefetcher.py` is achievable for typed turns
 just by hooking the composer.
 
 **Key files.**
-[`app/core/rag_prefetcher.py`](../../app/core/rag_prefetcher.py),
-[`app/core/session_controller.py`](../../app/core/session_controller.py)
+[`app/core/rag/rag_prefetcher.py`](../../app/core/rag/rag_prefetcher.py),
+[`app/core/session/session_controller.py`](../../app/core/session/session_controller.py)
 (new `feed_typed_draft` entry point),
 [`web/src/components/ChatView.tsx`](../../web/src/components/ChatView.tsx)
 (debounced WS frame on draft length crossing a threshold).
@@ -178,9 +178,9 @@ installs will full-scan; a tiny `(role, created_at)` index closes
 that out before it bites.
 
 **Key files.**
-[`app/core/chat_database.py`](../../app/core/chat_database.py)
+[`app/core/infra/chat_database.py`](../../app/core/infra/chat_database.py)
 (schema bump + migration),
-[`app/core/schedule_learner.py`](../../app/core/schedule_learner.py)
+[`app/core/infra/schedule_learner.py`](../../app/core/infra/schedule_learner.py)
 (comment update).
 
 **Alternative.** Persist daily/hourly aggregated buckets in
@@ -209,20 +209,20 @@ worker run and forces us to over-provision the cap to avoid real
 truncation.
 
 **Key files.**
-[`app/core/self_image_worker.py`](../../app/core/self_image_worker.py)
+[`app/core/persona/self_image_worker.py`](../../app/core/persona/self_image_worker.py)
 (`_PROMPT`),
-[`app/core/relationship_pulse.py`](../../app/core/relationship_pulse.py)
+[`app/core/relationship/relationship_pulse.py`](../../app/core/relationship/relationship_pulse.py)
 (`_build_pulse_prompt`),
-[`app/core/curiosity_worker.py`](../../app/core/curiosity_worker.py),
-[`app/core/promise_extractor.py`](../../app/core/promise_extractor.py),
-[`app/core/dream_worker.py`](../../app/core/dream_worker.py),
-[`app/core/conversation_arc.py`](../../app/core/conversation_arc.py),
-[`app/core/agenda.py`](../../app/core/agenda.py),
-[`app/core/memory_consolidator.py`](../../app/core/memory_consolidator.py),
-[`app/core/reflection_worker.py`](../../app/core/reflection_worker.py),
-[`app/core/user_profile.py`](../../app/core/user_profile.py),
-[`app/core/shared_moment_extractor.py`](../../app/core/shared_moment_extractor.py),
-[`app/core/prepared_nudge.py`](../../app/core/prepared_nudge.py),
+[`app/core/proactive/curiosity_worker.py`](../../app/core/proactive/curiosity_worker.py),
+[`app/core/memory/promise_extractor.py`](../../app/core/memory/promise_extractor.py),
+[`app/core/proactive/dream_worker.py`](../../app/core/proactive/dream_worker.py),
+[`app/core/conversation/conversation_arc.py`](../../app/core/conversation/conversation_arc.py),
+[`app/core/goals/agenda.py`](../../app/core/goals/agenda.py),
+[`app/core/memory/memory_consolidator.py`](../../app/core/memory/memory_consolidator.py),
+[`app/core/proactive/reflection_worker.py`](../../app/core/proactive/reflection_worker.py),
+[`app/core/infra/user_profile.py`](../../app/core/infra/user_profile.py),
+[`app/core/relationship/shared_moment_extractor.py`](../../app/core/relationship/shared_moment_extractor.py),
+[`app/core/proactive/prepared_nudge.py`](../../app/core/proactive/prepared_nudge.py),
 [`app/llm/ollama_client.py`](../../app/llm/ollama_client.py)
 (maybe a centralized `no_think_hint` helper applied to the user
 message of any background-worker call).

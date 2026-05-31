@@ -15,7 +15,7 @@ from mcp.server.fastmcp import FastMCP
 
 
 if TYPE_CHECKING:
-    from app.core.session_controller import SessionController
+    from app.core.session.session_controller import SessionController
 
 
 log = logging.getLogger("app.mcp.server")
@@ -130,7 +130,7 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
     def get_circadian_state() -> str:
         """Return the current circadian state (Phase 2e)."""
         try:
-            from app.core import circadian as _circ
+            from app.core.affect import circadian as _circ
             state = _circ.compute()
             payload = {
                 "period": state.period,
@@ -620,9 +620,9 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
 
         ``level`` is the minimum severity (DEBUG/INFO/WARNING/ERROR).
         ``module_contains`` filters by logger name substring (e.g.
-        ``"prompt"`` matches ``app.core.prompt_assembler``).
+        ``"prompt"`` matches ``app.core.session.prompt_assembler``).
         """
-        from app.core.crash_logging import tail
+        from app.core.infra.crash_logging import tail
         try:
             lines = tail(n=int(n), level=str(level), module_contains=module_contains)
         except Exception as exc:
@@ -642,7 +642,7 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
         For cross-session investigations beyond the in-process ring's
         ~1000-line window. ``grep`` is a case-insensitive substring.
         """
-        from app.core.crash_logging import read_log_file as _read
+        from app.core.infra.crash_logging import read_log_file as _read
         try:
             collected = _read(lines=int(lines), level=str(level), grep=grep)
         except Exception as exc:
@@ -655,10 +655,10 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
     def set_log_level(module: str, level: str) -> str:
         """Bump a single logger to ``level`` at runtime (until app restart).
 
-        Example: ``set_log_level("app.core.prompt_assembler", "DEBUG")``.
+        Example: ``set_log_level("app.core.session.prompt_assembler", "DEBUG")``.
         Returns the resulting effective level.
         """
-        from app.core.crash_logging import set_module_level
+        from app.core.infra.crash_logging import set_module_level
         try:
             resolved = set_module_level(str(module), str(level))
         except Exception as exc:
@@ -669,7 +669,7 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
     def get_log_config() -> str:
         """Return the active logging configuration: file path, levels, ring size."""
         try:
-            from app.core.crash_logging import (
+            from app.core.infra.crash_logging import (
                 RING_BUFFER_CAPACITY,
                 get_log_file_path,
                 _RING_HANDLER,
@@ -849,7 +849,7 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
                 "window_size": int(signal.window_size),
             }
             try:
-                from app.core.style_signal import render_inner_life_block
+                from app.core.persona.style_signal import render_inner_life_block
 
                 display_name = getattr(session, "user_display_name", "Jacob")
                 rendered = render_inner_life_block(
@@ -1010,7 +1010,7 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
         else:
             out["tracker_error"] = "engagement tracker not constructed"
         try:
-            from app.core.mood_shell import (
+            from app.core.affect.mood_shell import (
                 derive_mood_shell,
                 render_mood_shell_block,
             )
@@ -1090,7 +1090,7 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
                 {"error": "CalibrationStore not initialised"},
             )
         try:
-            from app.core import calibration_detector
+            from app.core.affect import calibration_detector
             from datetime import datetime, timezone
             import numpy as np
 
@@ -1212,7 +1212,7 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
                             arc = arc_state.arc
                         except Exception:
                             arc = None
-                    from app.core import sensory_anchor as sa
+                    from app.core.conversation import sensory_anchor as sa
 
                     beat = sa.pick_beat(
                         posture=posture or "sitting",
@@ -1273,7 +1273,7 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
                     arc = arc_store.get_or_default(session._user_id).arc
                 except Exception:
                     pass
-            from app.core import sensory_anchor as sa
+            from app.core.conversation import sensory_anchor as sa
 
             beat = sa.pick_beat(
                 posture=posture,

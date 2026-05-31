@@ -1,9 +1,9 @@
-"""Table-driven tests for :mod:`app.core.conflict_heuristics`."""
+"""Table-driven tests for :mod:`app.core.memory.conflict_heuristics`."""
 from __future__ import annotations
 
 import unittest
 
-from app.core.conflict_heuristics import (
+from app.core.memory.conflict_heuristics import (
     HEURISTIC_BORDERLINE,
     HEURISTIC_DEFINITE,
     HEURISTIC_NO,

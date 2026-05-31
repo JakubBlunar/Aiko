@@ -1,5 +1,5 @@
 """Tests for the LLM-driven avatar command plumbing in
-:class:`app.core.session_controller.SessionController`.
+:class:`app.core.session.session_controller.SessionController`.
 
 Covers ``_emit_avatar_outfit`` (sticky outfit override with priority
 rules), ``_emit_avatar_motion`` (motion-file dispatch), and the
@@ -16,14 +16,14 @@ from typing import Any
 from unittest import mock
 from unittest.mock import MagicMock
 
-from app.core import settings as settings_mod
-from app.core.avatar_profile import (
+from app.core.infra import settings as settings_mod
+from app.core.persona.avatar_profile import (
     AvatarProfile,
     MotionRef,
     OutfitBinding,
     OutfitParam,
 )
-from app.core.session_controller import (
+from app.core.session.session_controller import (
     SessionController,
     _BackchannelMotionGate,
     _seed_avatar_root_if_empty,
@@ -912,13 +912,13 @@ class SeedAvatarRootTests(unittest.TestCase):
         return source, target
 
     def _patch_repo_root(self, repo: Path):
-        # The helper resolves the repo root via ``Path(__file__).parents[2]``
-        # against ``app/core/session_controller.py``. Stub it to a fake
-        # ``app/core/session_controller.py`` under the temp tree so the
-        # sibling lookup of ``live-2d-models/`` works.
-        from app.core import session_controller as sc
+        # The helper resolves the repo root via ``Path(__file__).parents[3]``
+        # against ``app/core/session/session_controller.py``. Stub it to a
+        # fake ``app/core/session/session_controller.py`` under the temp
+        # tree so the sibling lookup of ``live-2d-models/`` works.
+        from app.core.session import session_controller as sc
 
-        fake = repo / "app" / "core" / "session_controller.py"
+        fake = repo / "app" / "core" / "session" / "session_controller.py"
         fake.parent.mkdir(parents=True, exist_ok=True)
         fake.write_text("# stub", encoding="utf-8")
         return mock.patch.object(sc, "__file__", str(fake))

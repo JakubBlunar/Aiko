@@ -6,9 +6,9 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from app.core.chat_database import ChatDatabase
-from app.core.plant_growth_worker import PlantGrowthWorker
-from app.core.world_store import WorldStore
+from app.core.infra.chat_database import ChatDatabase
+from app.core.world.plant_growth_worker import PlantGrowthWorker
+from app.core.world.world_store import WorldStore
 
 
 class _TempWorld:

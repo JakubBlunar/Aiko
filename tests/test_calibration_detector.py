@@ -23,15 +23,15 @@ from datetime import datetime, timedelta, timezone
 
 import numpy as np
 
-from app.core import calibration_detector
-from app.core.calibration_detector import (
+from app.core.affect import calibration_detector
+from app.core.affect.calibration_detector import (
     CalibrationSignal,
     apply_signal,
     decay,
     detect,
     render_inner_life_block,
 )
-from app.core.calibration_store import (
+from app.core.affect.calibration_store import (
     CalibrationState,
     TopicSlot,
     baseline_state,

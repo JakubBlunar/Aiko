@@ -20,12 +20,12 @@ from tempfile import TemporaryDirectory
 
 import numpy as np
 
-from app.core.catchphrase_miner import (
+from app.core.memory.catchphrase_miner import (
     CatchphraseMiner,
     _harvest_candidates,
 )
-from app.core.chat_database import ChatDatabase
-from app.core.memory_store import MemoryStore
+from app.core.infra.chat_database import ChatDatabase
+from app.core.memory.memory_store import MemoryStore
 
 
 @dataclass

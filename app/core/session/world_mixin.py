@@ -1,6 +1,6 @@
 """World + shared-moments + relationship-axes mixin.
 
-Extracted from :mod:`app.core.session_controller` to keep the controller
+Extracted from :mod:`app.core.session.session_controller` to keep the controller
 shell readable. Covers three loosely-related surfaces that all happen to
 hang off ``SessionController`` because they share the same persistence
 boundaries (``_world_store``, ``_shared_moments_store``,
@@ -23,7 +23,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover - import-cycle guard
-    from app.core.world_store import WorldStore
+    from app.core.world.world_store import WorldStore
 
 
 log = logging.getLogger("app.session")
@@ -336,7 +336,7 @@ class WorldMixin:
             except Exception:
                 rel_state = None
         try:
-            from app.core.relationship import _MILESTONES, phase_for
+            from app.core.relationship.relationship import _MILESTONES, phase_for
         except Exception:
             _MILESTONES = ()  # type: ignore[assignment]
             def phase_for(*_a: Any, **_kw: Any) -> str:  # type: ignore[no-redef]
@@ -359,7 +359,7 @@ class WorldMixin:
             try:
                 from datetime import datetime, timezone
 
-                from app.core.anniversary import pick_anniversary
+                from app.core.relationship.anniversary import pick_anniversary
 
                 match = pick_anniversary(
                     store.iter_all(), now=datetime.now(timezone.utc),

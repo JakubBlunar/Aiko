@@ -1,6 +1,6 @@
 """Inner-life prompt-block providers mixin.
 
-Extracted from :mod:`app.core.session_controller` to keep the controller
+Extracted from :mod:`app.core.session.session_controller` to keep the controller
 shell readable. Covers every per-turn ``_render_*`` block provider that
 the prompt assembler asks for, plus the K16 grounding-context builder,
 the small avatar-capability accessors used by the prompt grammar, and
@@ -15,7 +15,7 @@ State ownership stays in ``SessionController.__init__``; this mixin
 just reads ``self.*``.
 
 NB: tests that previously patched
-``app.core.session_controller.<symbol>`` for any of the moved methods
+``app.core.session.session_controller.<symbol>`` for any of the moved methods
 must patch ``app.core.session.inner_life_providers_mixin.<symbol>``
 instead. The patch must target the module where the symbol is
 *looked up*.
@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from app.core import circadian as _circadian
+from app.core.affect import circadian as _circadian
 
 
 log = logging.getLogger("app.session")
@@ -37,7 +37,7 @@ class InnerLifeProvidersMixin:
     def _render_affect_block(self) -> str:
         """Hot-path: read affect_state and format the ambient block."""
         try:
-            from app.core.affect_state import render_ambient_block
+            from app.core.affect.affect_state import render_ambient_block
             state = self._affect_store.get(self._user_id)
             return render_ambient_block(state)
         except Exception:
@@ -210,7 +210,7 @@ class InnerLifeProvidersMixin:
 
     def _cadence_context(self) -> Any:
         """Phase 5b: build a CadenceContext from the live affect/circadian."""
-        from app.core.cadence import CadenceContext
+        from app.core.voice.cadence import CadenceContext
 
         ctx = CadenceContext()
         try:
@@ -327,7 +327,7 @@ class InnerLifeProvidersMixin:
         try:
             from datetime import datetime, timezone
 
-            from app.core.relationship import render_petname_block
+            from app.core.relationship.relationship import render_petname_block
 
             state = tracker.get(self._user_id)
             return render_petname_block(
@@ -483,7 +483,7 @@ class InnerLifeProvidersMixin:
         if not gaps:
             return ""
         try:
-            from app.core.belief_gap_detector import render_inner_life_block
+            from app.core.relationship.belief_gap_detector import render_inner_life_block
 
             block = render_inner_life_block(gaps, max_lines=2)
         except Exception:
@@ -523,7 +523,7 @@ class InnerLifeProvidersMixin:
         # the slot -- sticky cues are worse than missing cues here.
         self._pending_clarification = None
         try:
-            from app.core.clarification_detector import render_inner_life_block
+            from app.core.conversation.clarification_detector import render_inner_life_block
 
             return render_inner_life_block(
                 result,
@@ -559,7 +559,7 @@ class InnerLifeProvidersMixin:
         if store is None:
             return ""
         try:
-            from app.core import calibration_detector
+            from app.core.affect import calibration_detector
             from datetime import datetime, timezone
 
             state = store.get(self._user_id)
@@ -634,7 +634,7 @@ class InnerLifeProvidersMixin:
         if world_store is None:
             return ""
         try:
-            from app.core import sensory_anchor
+            from app.core.conversation import sensory_anchor
 
             room_state = world_store.get_state()
             posture = (room_state.posture or "").strip().lower()
@@ -776,7 +776,7 @@ class InnerLifeProvidersMixin:
             return ""
         self._pending_rupture = None
         try:
-            from app.core.affect_rupture_detector import render_inner_life_block
+            from app.core.affect.affect_rupture_detector import render_inner_life_block
 
             return render_inner_life_block(
                 result,
@@ -811,7 +811,7 @@ class InnerLifeProvidersMixin:
         if result is None:
             return ""
         try:
-            from app.core.novelty_detector import render_inner_life_block
+            from app.core.conversation.novelty_detector import render_inner_life_block
 
             return render_inner_life_block(result)
         except Exception:
@@ -862,7 +862,7 @@ class InnerLifeProvidersMixin:
         if result is None:
             return ""
         try:
-            from app.core.topic_stagnation import render_inner_life_block
+            from app.core.conversation.topic_stagnation import render_inner_life_block
 
             return render_inner_life_block(
                 result,
@@ -898,7 +898,7 @@ class InnerLifeProvidersMixin:
         if result is None:
             return ""
         try:
-            from app.core.aiko_style_tracker import render_inner_life_block
+            from app.core.persona.aiko_style_tracker import render_inner_life_block
 
             return render_inner_life_block(result)
         except Exception:
@@ -939,7 +939,7 @@ class InnerLifeProvidersMixin:
         if not labels:
             return ""
         try:
-            from app.core.style_signal import render_inner_life_block
+            from app.core.persona.style_signal import render_inner_life_block
 
             return render_inner_life_block(
                 signal,
@@ -1009,8 +1009,8 @@ class InnerLifeProvidersMixin:
         degrade to None slots instead of raising so the prompt still
         renders if one subsystem is sick.
         """
-        from app.core.grounding_line import GroundingContext
-        from app.core.world_store import _OUTDOOR_SLUGS
+        from app.core.conversation.grounding_line import GroundingContext
+        from app.core.world.world_store import _OUTDOOR_SLUGS
 
         ctx = GroundingContext(user_display_name=self.user_display_name)
 
@@ -1069,7 +1069,7 @@ class InnerLifeProvidersMixin:
         if tracker is not None:
             try:
                 from datetime import datetime, timezone
-                from app.core.relationship import _days_since, phase_for
+                from app.core.relationship.relationship import _days_since, phase_for
 
                 rstate = tracker.get(self._user_id)
                 now = datetime.now(timezone.utc)
@@ -1116,7 +1116,7 @@ class InnerLifeProvidersMixin:
             mode = getattr(self._settings.agent, "grounding_line_mode", "off")
             if mode == "off":
                 return ""
-            from app.core.grounding_line import render as _render_line
+            from app.core.conversation.grounding_line import render as _render_line
 
             ctx = self._build_grounding_context()
             if ctx is None:
@@ -1189,7 +1189,7 @@ class InnerLifeProvidersMixin:
         try:
             from datetime import datetime, timezone
 
-            from app.core.anniversary import pick_anniversary, render_anniversary_block
+            from app.core.relationship.anniversary import pick_anniversary, render_anniversary_block
 
             moments = store.iter_all()
             match = pick_anniversary(moments, now=datetime.now(timezone.utc))
@@ -1222,7 +1222,7 @@ class InnerLifeProvidersMixin:
         ):
             return ""
         try:
-            from app.core.mood_shell import (
+            from app.core.affect.mood_shell import (
                 derive_mood_shell,
                 render_mood_shell_block,
             )
@@ -1265,7 +1265,7 @@ class InnerLifeProvidersMixin:
         if store is None:
             return ""
         try:
-            from app.core.relationship_axes import render_axes_block
+            from app.core.relationship.relationship_axes import render_axes_block
 
             state = store.get(self._user_id)
             return render_axes_block(

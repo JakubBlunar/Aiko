@@ -21,8 +21,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
 
-from app.core import settings as settings_mod
-from app.core.settings import (
+from app.core.infra import settings as settings_mod
+from app.core.infra.settings import (
     AppSettings,
     AssistantSettings,
     USER_DISPLAY_NAME_FALLBACK,
@@ -30,7 +30,7 @@ from app.core.settings import (
     load_settings,
     resolve_user_display_name,
 )
-from app.core.session_text_utils import resolve_user_name, speaker_label
+from app.core.session.session_text_utils import resolve_user_name, speaker_label
 
 
 def _make_app_settings(name: str) -> AppSettings:

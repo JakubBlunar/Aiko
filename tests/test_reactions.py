@@ -1,4 +1,4 @@
-"""Tests for ``app.core.reactions`` — vocabulary + semantic fallbacks.
+"""Tests for ``app.core.affect.reactions`` — vocabulary + semantic fallbacks.
 
 This file used to live as ``test_persona_manager_reaction_fallbacks.py``;
 it was renamed when the reaction tables moved out of ``persona_manager``
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import unittest
 
-from app.core.reactions import (
+from app.core.affect.reactions import (
     REACTIONS,
     _REACTION_NEIGHBOURS,
     _REACTION_SYNONYMS,
@@ -344,7 +344,7 @@ class AlexiaPhase5MappingTests(unittest.TestCase):
     are owned by ``reactions.py``."""
 
     def test_alexia_reaction_map_has_phase5_entries(self) -> None:
-        from app.core.avatar_profile import _ALEXIA_REACTION_MAP
+        from app.core.persona.avatar_profile import _ALEXIA_REACTION_MAP
 
         # ``embarrassed`` and ``defiant`` have direct mappings the
         # visual audit identified. ``nervous`` is intentionally

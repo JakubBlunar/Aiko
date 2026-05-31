@@ -5,8 +5,8 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from app.core.chat_database import ChatDatabase
-from app.core.conversation_arc import (
+from app.core.infra.chat_database import ChatDatabase
+from app.core.conversation.conversation_arc import (
     ArcEstimator,
     ArcSmootherWorker,
     ArcStore,
@@ -317,7 +317,7 @@ class ArcSmootherWorkerTests(unittest.TestCase):
 
 class FormatSmoothBlockTests(unittest.TestCase):
     def test_basic_render(self):
-        from app.core.conversation_arc import ArcState
+        from app.core.conversation.conversation_arc import ArcState
 
         state = ArcState(
             user_id="u1",

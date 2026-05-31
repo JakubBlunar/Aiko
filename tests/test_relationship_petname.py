@@ -4,7 +4,7 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from app.core.relationship import (
+from app.core.relationship.relationship import (
     RelationshipState,
     render_petname_block,
 )

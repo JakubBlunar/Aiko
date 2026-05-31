@@ -5,8 +5,8 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from app.core.chat_database import ChatDatabase
-from app.core.user_state import (
+from app.core.infra.chat_database import ChatDatabase
+from app.core.affect.user_state import (
     UserStateEstimator,
     UserStateNow,
     UserStateStore,

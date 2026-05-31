@@ -137,7 +137,7 @@ microphone *input*.
 - `app/web/audio_frames.py` — single source of truth for the wire
   format on the Python side. The TypeScript twin lives in
   `web/src/audio/protocol.ts`.
-- `app/core/settings.py` — `AudioSettings` no longer carries
+- `app/core/infra/settings.py` — `AudioSettings` no longer carries
   `microphone_device` / `output_device` / `live_ptt_*`. `load_settings`
   migrates the old keys out of `user.json` on first run so the file
   stays clean.

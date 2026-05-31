@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from app.core.reflection_worker import (
+from app.core.proactive.reflection_worker import (
     Reflection,
     ReflectionWorker,
     _parse_reflection_payload,

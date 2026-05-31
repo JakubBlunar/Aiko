@@ -9,8 +9,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from app.core.chat_database import ChatDatabase
-from app.core.prompt_assembler import (
+from app.core.infra.chat_database import ChatDatabase
+from app.core.session.prompt_assembler import (
     PromptAssembler,
     PromptTelemetry,
     _SPEECH_GRAMMAR_ADDENDUM,
@@ -1362,7 +1362,7 @@ class SpeechGrammarAddendumTests(unittest.TestCase):
         Aiko should mirror the register instead of ignoring the cue.
         Without this nudge the LLM treats the cues as decoration.
         """
-        from app.core.prompt_assembler import build_speech_grammar_addendum
+        from app.core.session.prompt_assembler import build_speech_grammar_addendum
 
         addendum = build_speech_grammar_addendum("Jacob")
         self.assertIn("Match Jacob's register", addendum)
@@ -1493,6 +1493,223 @@ class SensoryAnchorProviderTests(unittest.TestCase):
             # block is gated *before* the provider runs to save the
             # cooldown-arming side effect.
             self.assertEqual(calls, [])
+
+
+class WallClockHistoryPrefixTests(unittest.TestCase):
+    """K-time1: per-message ``[N min ago]`` prefix on chat history.
+
+    Without these prefixes the LLM has no clock against in-session
+    history and pattern-matches future-tense plans ("visiting my
+    grandparents in half an hour") as completed past events after
+    only a couple of message turns. The prefix supplies the missing
+    anchor. Default ON; toggleable via
+    ``agent.history_age_prefix_enabled``.
+    """
+
+    def _make_row(
+        self,
+        *,
+        role: str = "user",
+        content: str = "hi",
+        created_at: str = "2026-05-31T12:00:00+00:00",
+    ) -> "MessageRow":  # type: ignore[name-defined]
+        from app.core.infra.chat_database import MessageRow
+
+        return MessageRow(
+            id=1,
+            session_id="sn",
+            role=role,
+            content=content,
+            token_count=2,
+            created_at=created_at,
+        )
+
+    def test_format_age_bands(self) -> None:
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime(2026, 5, 31, 13, 32, tzinfo=timezone.utc)
+
+        def fmt(delta: timedelta) -> str:
+            iso = (now - delta).isoformat()
+            return PromptAssembler._format_age(iso, now)
+
+        # Sub-minute -> "just now".
+        self.assertEqual(fmt(timedelta(seconds=0)), "just now")
+        self.assertEqual(fmt(timedelta(seconds=30)), "just now")
+        # 1-59 min -> "N min ago".
+        self.assertEqual(fmt(timedelta(minutes=1)), "1 min ago")
+        self.assertEqual(fmt(timedelta(minutes=2)), "2 min ago")
+        self.assertEqual(fmt(timedelta(minutes=45)), "45 min ago")
+        # Hour+ same day -> "today HH:MM" (UTC anchor in test).
+        same_day = fmt(timedelta(hours=2))
+        self.assertTrue(
+            same_day.startswith("today "),
+            f"expected 'today HH:MM', got {same_day!r}",
+        )
+        # Yesterday -> "yesterday HH:MM".
+        yday = fmt(timedelta(days=1, hours=1))
+        self.assertTrue(
+            yday.startswith("yesterday "),
+            f"expected 'yesterday HH:MM', got {yday!r}",
+        )
+
+    def test_format_age_unparseable_returns_empty(self) -> None:
+        from datetime import datetime, timezone
+
+        now = datetime(2026, 5, 31, 13, 32, tzinfo=timezone.utc)
+        self.assertEqual(PromptAssembler._format_age("", now), "")
+        self.assertEqual(PromptAssembler._format_age("not-iso", now), "")
+        self.assertEqual(PromptAssembler._format_age("   ", now), "")
+
+    def test_format_age_future_timestamp_renders_as_just_now(self) -> None:
+        # Clock-skew defence: writers slightly ahead of readers should
+        # not produce nonsense like "in 3 minutes".
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime(2026, 5, 31, 13, 32, tzinfo=timezone.utc)
+        future_iso = (now + timedelta(minutes=2)).isoformat()
+        self.assertEqual(PromptAssembler._format_age(future_iso, now), "just now")
+
+    def test_fit_history_injects_prefix_when_enabled(self) -> None:
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime(2026, 5, 31, 13, 32, tzinfo=timezone.utc)
+        rows = [
+            self._make_row(
+                role="user",
+                content="I am driving to my grandparents",
+                created_at=(now - timedelta(minutes=5)).isoformat(),
+            ),
+            self._make_row(
+                role="assistant",
+                content="that sounds nice",
+                created_at=(now - timedelta(minutes=4)).isoformat(),
+            ),
+        ]
+        msgs, _, kept, dropped = PromptAssembler._fit_history(
+            rows, budget_tokens=2048, prefix_enabled=True, now=now,
+        )
+        self.assertEqual(kept, 2)
+        self.assertEqual(dropped, 0)
+        self.assertTrue(msgs[0]["content"].startswith("[5 min ago] "))
+        self.assertTrue(msgs[1]["content"].startswith("[4 min ago] "))
+        self.assertIn("driving to my grandparents", msgs[0]["content"])
+
+    def test_fit_history_disabled_leaves_content_untouched(self) -> None:
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime(2026, 5, 31, 13, 32, tzinfo=timezone.utc)
+        original = "byte-identical content"
+        rows = [
+            self._make_row(
+                content=original,
+                created_at=(now - timedelta(minutes=5)).isoformat(),
+            ),
+        ]
+        msgs, _, kept, _ = PromptAssembler._fit_history(
+            rows, budget_tokens=2048, prefix_enabled=False, now=now,
+        )
+        self.assertEqual(kept, 1)
+        self.assertEqual(msgs[0]["content"], original)
+        # Defensive: even with prefix_enabled=False the helper must
+        # not mutate the source MessageRow.
+        self.assertEqual(rows[0].content, original)
+
+    def test_fit_history_unparseable_timestamp_skips_prefix(self) -> None:
+        from datetime import datetime, timezone
+
+        now = datetime(2026, 5, 31, 13, 32, tzinfo=timezone.utc)
+        rows = [
+            self._make_row(content="hello", created_at="not-iso"),
+        ]
+        msgs, _, kept, _ = PromptAssembler._fit_history(
+            rows, budget_tokens=2048, prefix_enabled=True, now=now,
+        )
+        self.assertEqual(kept, 1)
+        # No prefix prepended -- raw content survives.
+        self.assertEqual(msgs[0]["content"], "hello")
+
+    def test_fit_history_prefix_counts_against_budget(self) -> None:
+        # Token accounting must include the prefix, otherwise the
+        # history block can overshoot the budget by ~5 tokens per
+        # kept message.
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime(2026, 5, 31, 13, 32, tzinfo=timezone.utc)
+        row = self._make_row(
+            content="some content here that takes a few tokens",
+            created_at=(now - timedelta(minutes=2)).isoformat(),
+        )
+        _, with_prefix_tokens, _, _ = PromptAssembler._fit_history(
+            [row], budget_tokens=2048, prefix_enabled=True, now=now,
+        )
+        _, without_prefix_tokens, _, _ = PromptAssembler._fit_history(
+            [row], budget_tokens=2048, prefix_enabled=False, now=now,
+        )
+        self.assertGreater(with_prefix_tokens, without_prefix_tokens)
+
+    def test_assembler_default_emits_prefix(self) -> None:
+        # End-to-end smoke through assemble_with_budget: prefix
+        # appears in the rendered history role messages.
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="sn-pref",
+                role="user",
+                content="here is a past user message",
+                token_count=8,
+            )
+            db.add_message(
+                session_id="sn-pref",
+                role="assistant",
+                content="and a past assistant reply",
+                token_count=8,
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "sn-pref",
+                "current user input",
+                context_window=4096,
+                response_budget=256,
+            )
+            # System message + 2 history + the current user message.
+            history_msgs = [m for m in messages if m["role"] != "system"]
+            self.assertEqual(len(history_msgs), 3)
+            # First two carry the bracketed prefix; the current
+            # user input (last message) does not.
+            for hm in history_msgs[:2]:
+                self.assertTrue(
+                    hm["content"].startswith("["),
+                    f"expected wall-clock prefix on history msg, got {hm['content']!r}",
+                )
+            self.assertEqual(history_msgs[-1]["content"], "current user input")
+
+    def test_assembler_toggle_off_drops_prefix(self) -> None:
+        with _TempDb() as db:
+            persona_path = Path("data/persona/aiko_companion.txt")
+            assembler = PromptAssembler(
+                db,
+                persona_path=persona_path,
+                recent_window=20,
+                history_age_prefix_enabled=False,
+            )
+            db.add_message(
+                session_id="sn-off",
+                role="user",
+                content="prior message",
+                token_count=4,
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "sn-off",
+                "now message",
+                context_window=4096,
+                response_budget=256,
+            )
+            history_msgs = [m for m in messages if m["role"] != "system"]
+            # Prior user message must come through byte-identical.
+            self.assertIn("prior message", [m["content"] for m in history_msgs])
+            # Specifically: no bracketed prefix on the prior message.
+            prior = next(m for m in history_msgs if m["content"] != "now message")
+            self.assertFalse(prior["content"].startswith("["))
 
 
 if __name__ == "__main__":

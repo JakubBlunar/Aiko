@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from app.core.settings import TtsSettings
+from app.core.infra.settings import TtsSettings
 from app.tts import pocket_tts_service as pts_module
 from app.tts.pocket_tts_service import (
     PocketTtsService,

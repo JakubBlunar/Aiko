@@ -1,4 +1,4 @@
-"""Tests for :mod:`app.core.memory_conflict_store` and the schema v11 migration."""
+"""Tests for :mod:`app.core.memory.memory_conflict_store` and the schema v11 migration."""
 from __future__ import annotations
 
 import sqlite3
@@ -6,8 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from app.core.chat_database import ChatDatabase
-from app.core.memory_conflict_store import (
+from app.core.infra.chat_database import ChatDatabase
+from app.core.memory.memory_conflict_store import (
     ACTION_DEMOTE,
     ACTION_DELETE,
     FLAGGED_BY_AIKO,
@@ -36,7 +36,7 @@ class SchemaMigrationTests(unittest.TestCase):
         row = conn.execute(
             "SELECT version FROM schema_version LIMIT 1",
         ).fetchone()
-        from app.core.chat_database import _SCHEMA_VERSION
+        from app.core.infra.chat_database import _SCHEMA_VERSION
         self.assertEqual(row[0], _SCHEMA_VERSION)
         # Confirm the memory_conflicts table exists with the right cols.
         cols = {
@@ -106,7 +106,7 @@ class SchemaMigrationTests(unittest.TestCase):
         row = conn.execute(
             "SELECT version FROM schema_version LIMIT 1",
         ).fetchone()
-        from app.core.chat_database import _SCHEMA_VERSION
+        from app.core.infra.chat_database import _SCHEMA_VERSION
         self.assertEqual(row[0], _SCHEMA_VERSION)
         tables = {
             r[0]

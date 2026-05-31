@@ -1,8 +1,8 @@
-"""Memory facade mixin for :class:`app.core.session_controller.SessionController`.
+"""Memory facade mixin for :class:`app.core.session.session_controller.SessionController`.
 
 Houses the thin pass-through methods the UI / REST / MCP layers use to
 read, create, edit, pin, and listen for changes on long-term memory
-rows. The underlying storage is :class:`app.core.memory_store.MemoryStore`;
+rows. The underlying storage is :class:`app.core.memory.memory_store.MemoryStore`;
 this mixin just adapts the call sites that historically lived directly
 on ``SessionController``.
 
@@ -23,8 +23,8 @@ def _now_iso_for_conflict() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 if TYPE_CHECKING:  # pragma: no cover - import-cycle guard
-    from app.core.memory_extractor import MemoryExtractor
-    from app.core.memory_store import MemoryStore
+    from app.core.memory.memory_extractor import MemoryExtractor
+    from app.core.memory.memory_store import MemoryStore
 
 
 log = logging.getLogger("app.session")
@@ -312,7 +312,7 @@ class MemoryFacadeMixin:
         """Pull claims out of ``memory.content`` (or its gap question)
         and append to the fact-check queue.
 
-        The privacy gate (:mod:`app.core.fact_check_privacy`) runs
+        The privacy gate (:mod:`app.core.memory.fact_check_privacy`) runs
         before anything is queued so personal memories never leak to
         the outbound search path. Knowledge-gap questions still go
         through the gate too — most gap questions are public-facing,
@@ -326,7 +326,7 @@ class MemoryFacadeMixin:
         if memory_id is None:
             return
 
-        from app.core.fact_check_privacy import (
+        from app.core.memory.fact_check_privacy import (
             classify_memory_for_fact_check,
             scrub_claim_for_search,
         )
@@ -398,7 +398,7 @@ class MemoryFacadeMixin:
             )
             return
 
-        from app.core.claim_extractor import find_claims
+        from app.core.memory.claim_extractor import find_claims
 
         enqueued = 0
         skipped = 0

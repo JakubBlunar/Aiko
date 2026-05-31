@@ -1,6 +1,6 @@
 """Session controller mixins.
 
-The :class:`app.core.session_controller.SessionController` class became
+The :class:`app.core.session.session_controller.SessionController` class became
 unwieldy (originally ~6300 lines, ~160 methods) and started causing
 editor / IDE heartburn on big edits. To keep individual files small
 and readable without changing any public API, cohesive groups of
@@ -14,13 +14,14 @@ mixins exist purely as physical-file boundaries, not logical
 encapsulation. Do not instantiate them directly; do not move state
 ownership into them.
 
-Public import surface (``from app.core.session_controller import …``)
-is unchanged. Tests that patch ``app.core.session_controller.<symbol>``
-keep working because the module-level imports stay in the shell.
-Tests that patch a symbol *used by a method that has since moved*
-must patch the mixin module instead — the patch must always target
-the module where the symbol is *looked up*. See each mixin's
-docstring for the exact replacement path.
+Public import surface is ``from app.core.session.session_controller import
+SessionController`` (was ``app.core.session_controller`` before the
+``app/core/`` folder reorg). Tests that patch
+``app.core.session.session_controller.<symbol>`` keep working because the
+module-level imports stay in the shell. Tests that patch a symbol *used
+by a method that has since moved* must patch the mixin module instead —
+the patch must always target the module where the symbol is *looked
+up*. See each mixin's docstring for the exact replacement path.
 """
 from __future__ import annotations
 

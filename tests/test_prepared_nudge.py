@@ -7,10 +7,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from app.core.agenda import AgendaStore
-from app.core.chat_database import ChatDatabase
-from app.core.memory_store import Memory, MemoryStore
-from app.core.prepared_nudge import (
+from app.core.goals.agenda import AgendaStore
+from app.core.infra.chat_database import ChatDatabase
+from app.core.memory.memory_store import Memory, MemoryStore
+from app.core.proactive.prepared_nudge import (
     NarrativeWeaver,
     PreparedNudgeStore,
     _clean_weave_output,
@@ -169,7 +169,7 @@ class CleanWeaveOutputTests(unittest.TestCase):
 
 class FallbackPhrasingTests(unittest.TestCase):
     def test_callback_template(self):
-        from app.core.prepared_nudge import _Candidate
+        from app.core.proactive.prepared_nudge import _Candidate
 
         c = _Candidate(kind="callback", source_id="1", text="that book", salience=0.6)
         out = _fallback_phrasing(c)
@@ -178,7 +178,7 @@ class FallbackPhrasingTests(unittest.TestCase):
         self.assertIn("that book", out)
 
     def test_unknown_kind_returns_text(self):
-        from app.core.prepared_nudge import _Candidate
+        from app.core.proactive.prepared_nudge import _Candidate
 
         c = _Candidate(kind="huh", source_id="1", text="some thread", salience=0.6)
         self.assertEqual(_fallback_phrasing(c), "some thread")

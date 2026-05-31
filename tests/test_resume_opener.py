@@ -18,10 +18,10 @@ from tempfile import TemporaryDirectory
 
 import numpy as np
 
-from app.core.agenda import AgendaStore
-from app.core.chat_database import ChatDatabase
-from app.core.memory_store import Memory, MemoryStore
-from app.core.prepared_nudge import (
+from app.core.goals.agenda import AgendaStore
+from app.core.infra.chat_database import ChatDatabase
+from app.core.memory.memory_store import Memory, MemoryStore
+from app.core.proactive.prepared_nudge import (
     NarrativeWeaver,
     PreparedNudgeStore,
     _resume_fallback_from_summary,

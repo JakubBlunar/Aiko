@@ -1,4 +1,4 @@
-"""Tests for ``app.core.engagement_tracker``.
+"""Tests for ``app.core.affect.engagement_tracker``.
 
 Covers the K14 implicit engagement signal: voice vs typed mode
 routing, warmup gating, latency-window maintenance, length-z baseline
@@ -11,7 +11,7 @@ from __future__ import annotations
 import unittest
 from dataclasses import dataclass
 
-from app.core.engagement_tracker import (
+from app.core.affect.engagement_tracker import (
     EngagementResult,
     EngagementTracker,
 )

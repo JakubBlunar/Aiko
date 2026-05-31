@@ -18,13 +18,13 @@ from pathlib import Path
 
 import numpy as np
 
-from app.core.chat_database import ChatDatabase
-from app.core.knowledge_gap_extractor import (
+from app.core.infra.chat_database import ChatDatabase
+from app.core.memory.knowledge_gap_extractor import (
     GapCandidate,
     KnowledgeGapStore,
     extract_inline_tags,
 )
-from app.core.memory_store import MemoryStore
+from app.core.memory.memory_store import MemoryStore
 from app.core.services.response_text_service import strip_all_meta_tags
 
 

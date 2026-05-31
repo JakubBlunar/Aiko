@@ -8,7 +8,7 @@ Mirrors the plan's manual validation step in code:
     row) and ``messages.arc`` (Aiko row) are populated, and
     ``ArcStore`` advances to ``support`` at confidence 0.85.
 
-This exercises the real :mod:`app.core.dialogue_act_tagger` regex hot
+This exercises the real :mod:`app.core.conversation.dialogue_act_tagger` regex hot
 path, the real :func:`parse_arc_tags`, the real :class:`ArcStore`
 self-tag write, and the real :class:`ChatDatabase` column updates --
 the same code paths the running app drives from
@@ -20,9 +20,9 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from app.core.chat_database import ChatDatabase
-from app.core.conversation_arc import ArcStore, VALID_ARCS
-from app.core.dialogue_act_tagger import tag_regex
+from app.core.infra.chat_database import ChatDatabase
+from app.core.conversation.conversation_arc import ArcStore, VALID_ARCS
+from app.core.conversation.dialogue_act_tagger import tag_regex
 from app.core.services.response_text_service import (
     parse_arc_tags,
     strip_all_meta_tags,

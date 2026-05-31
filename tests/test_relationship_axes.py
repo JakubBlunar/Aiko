@@ -1,4 +1,4 @@
-"""Tests for ``app.core.relationship_axes`` — store, decay, updater, rendering."""
+"""Tests for ``app.core.relationship.relationship_axes`` — store, decay, updater, rendering."""
 from __future__ import annotations
 
 import tempfile
@@ -6,8 +6,8 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from app.core.chat_database import ChatDatabase
-from app.core.relationship_axes import (
+from app.core.infra.chat_database import ChatDatabase
+from app.core.relationship.relationship_axes import (
     RelationshipAxesState,
     RelationshipAxesStore,
     RelationshipAxesUpdater,

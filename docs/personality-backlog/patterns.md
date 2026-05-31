@@ -51,11 +51,11 @@ Shipped — see [`shipped.md`](shipped.md) "K8. Affect rupture-and-repair
 Build a lightweight cosine-cluster graph of memories so Aiko can
 notice "this topic touches three threads we've been on" and surface
 connections naturally. Reuses the embeddings already in
-[`app/core/rag_store.py`](../../app/core/rag_store.py); the graph
+[`app/core/rag/rag_store.py`](../../app/core/rag/rag_store.py); the graph
 itself is computed lazily and cached. UI side: a minimal "topic
 graph" sub-tab in the Memory tab that visualises clusters so the user
 can see what Aiko sees. Key files: new
-`app/core/topic_graph.py`, [`app/core/rag_retriever.py`](../../app/core/rag_retriever.py)
+`app/core/conversation/topic_graph.py`, [`app/core/rag/rag_retriever.py`](../../app/core/rag/rag_retriever.py)
 (graph-aware multi-hop retrieval), Memory tab.
 
 ---
@@ -82,7 +82,7 @@ hypothetical and caches it in scratchpad memory, smoothing future
 first responses without needing web access. Bounded queue, cheap LLM
 call, scratchpad-tier so it ages out naturally if unused. Key files:
 new `app/core/counterfactual_worker.py`,
-[`app/core/memory_store.py`](../../app/core/memory_store.py) (new
+[`app/core/memory/memory_store.py`](../../app/core/memory/memory_store.py) (new
 `pre_thought` kind, scratchpad tier).
 
 ---
@@ -94,8 +94,8 @@ Combine H2 (time context) + D1 (reminders) + the temporal-memory
 weight it higher as Friday approaches (e.g. score `+= 0.05` when
 `event_time - now < 48h`). Mostly a retrieval-side change once the
 temporal scaffolding is in. Key files:
-[`app/core/rag_retriever.py`](../../app/core/rag_retriever.py),
-[`app/core/follow_up_worker.py`](../../app/core/follow_up_worker.py)
+[`app/core/rag/rag_retriever.py`](../../app/core/rag/rag_retriever.py),
+[`app/core/proactive/follow_up_worker.py`](../../app/core/proactive/follow_up_worker.py)
 (already nudges on overdue plans — extend to "approaching" plans).
 
 ---
@@ -130,7 +130,7 @@ register. Key files:
 [`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt)
 (soft-cap guidance),
 new inner-life provider exposing the live budget,
-[`app/core/memory_store.py`](../../app/core/memory_store.py)
+[`app/core/memory/memory_store.py`](../../app/core/memory/memory_store.py)
 (`self` kind metadata for depth tier).
 
 ---
@@ -144,7 +144,7 @@ reply, an explicit `huh?` — and triggers a one-turn "let me re-
 read that" beat without waiting for affect drift. Pairs naturally
 with K4 dialogue-act tagging: a `clarification` act on the user's
 last message is the clean signal. Key files: new
-`app/core/clarification_detector.py` (regex + optional dialogue-
+`app/core/conversation/clarification_detector.py` (regex + optional dialogue-
 act fallback), inner-life provider that adds a one-line "Jacob
 just signalled you missed the point — re-read his last two
 messages and say so plainly" hint,
@@ -217,7 +217,7 @@ turns (it's per-aggregate). A per-turn heuristic running on
 could emit a `mild_disengagement` cue that nudges the next turn
 toward "shorter, more attentive, ask one thing." Key files: new
 `app/core/misattunement_detector.py`, post-turn hook in
-[`app/core/session_controller.py`](../../app/core/session_controller.py)
+[`app/core/session/session_controller.py`](../../app/core/session/session_controller.py)
 `_post_turn_inner_life`, persona block consumer ("Heads-up: he
 went quiet on you — pull back, don't push more").
 
@@ -247,9 +247,9 @@ persona rule turns the suffix into a verbal hedge. Pairs
 directly with K7 (forgetting protocol) — K7 hedges by *tier*
 (archive → faded), K25 hedges by *age* even within long_term.
 Key files:
-[`app/core/rag_retriever.py`](../../app/core/rag_retriever.py)
+[`app/core/rag/rag_retriever.py`](../../app/core/rag/rag_retriever.py)
 `format_block` + the existing `(uncertain)` suffix path,
-[`app/core/memory_store.py`](../../app/core/memory_store.py)
+[`app/core/memory/memory_store.py`](../../app/core/memory/memory_store.py)
 (read-side helper, no write).
 
 ---
@@ -269,7 +269,7 @@ so the LLM can lean on them naturally without us hard-coding the
 lexicon. Tiny effect per session, compounding over months — the
 authenticity beat is "she's been around me long enough to talk
 like me a little." Key files:
-[`app/core/catchphrase_miner.py`](../../app/core/catchphrase_miner.py)
+[`app/core/memory/catchphrase_miner.py`](../../app/core/memory/catchphrase_miner.py)
 (extend to track *who* introduced each shared phrase first),
 new `app/core/voice_adoption.py` (slow promotion rule), persona
 block consumer.

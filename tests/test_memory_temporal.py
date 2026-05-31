@@ -34,22 +34,22 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import numpy as np
 
-from app.core.chat_database import ChatDatabase, _SCHEMA_VERSION
-from app.core.memory_decay_worker import MemoryDecayWorker
-from app.core.memory_extractor import (
+from app.core.infra.chat_database import ChatDatabase, _SCHEMA_VERSION
+from app.core.memory.memory_decay_worker import MemoryDecayWorker
+from app.core.memory.memory_extractor import (
     MemoryExtractor,
     _build_system_prompt,
     _derive_relevance_until,
     _parse_iso,
 )
-from app.core.memory_store import (
+from app.core.memory.memory_store import (
     VALID_TEMPORAL_TYPES,
     Memory,
     MemoryStore,
     _coerce_temporal_type,
 )
-from app.core.prepared_nudge import PreparedNudgeStore
-from app.core.rag_retriever import (
+from app.core.proactive.prepared_nudge import PreparedNudgeStore
+from app.core.rag.rag_retriever import (
     RagHit,
     RagRetriever,
     _humanize_future,
@@ -57,8 +57,8 @@ from app.core.rag_retriever import (
     _temporal_filter_drops,
     _temporal_suffix,
 )
-from app.core.rag_store import MemoryRecord
-from app.core.follow_up_worker import FollowUpWorker
+from app.core.rag.rag_store import MemoryRecord
+from app.core.proactive.follow_up_worker import FollowUpWorker
 
 
 class _FakeEmbedder:

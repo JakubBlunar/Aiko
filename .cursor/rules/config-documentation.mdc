@@ -1,13 +1,13 @@
 ---
-description: Document configuration values whenever app/core/settings.py or config/default.json changes
-globs: app/core/settings.py,config/default.json,docs/configuration.md
+description: Document configuration values whenever app/core/infra/settings.py or config/default.json changes
+globs: app/core/infra/settings.py,config/default.json,docs/configuration.md
 alwaysApply: false
 ---
 
 # Configuration changes must stay documented
 
 When you add, remove, or change the meaning of a config value in
-`app/core/settings.py` or `config/default.json`, you MUST also update
+`app/core/infra/settings.py` or `config/default.json`, you MUST also update
 [`docs/configuration.md`](../../docs/configuration.md) so the
 human-facing reference stays in sync.
 
@@ -84,7 +84,7 @@ forms):
 
 ```python
 import re
-src = open("app/core/settings.py", encoding="utf-8").read()
+src = open("app/core/infra/settings.py", encoding="utf-8").read()
 doc = open("docs/configuration.md", encoding="utf-8").read()
 classes = re.split(r"\n@dataclass[^\n]*\nclass\s+(\w+):\n", src)
 missing = []

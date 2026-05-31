@@ -15,7 +15,7 @@ from __future__ import annotations
 import random
 import unittest
 
-from app.core.cadence import (
+from app.core.voice.cadence import (
     CadenceContext,
     ProsodyDispatcher,
     ProsodyParams,
