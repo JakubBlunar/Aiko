@@ -201,7 +201,7 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
         {messages.length === 0 ? (
           <div className="flex-1 overflow-y-auto px-6 py-8">
             <EmptyState booting={connection.status !== "connected"} />
-            {toolActivity.length > 0 && turnInProgress ? (
+            {toolActivity.length > 0 ? (
               <ToolActivityStrip activity={toolActivity} />
             ) : null}
           </div>
@@ -227,7 +227,7 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
             )}
             components={{
               Footer: () =>
-                toolActivity.length > 0 && turnInProgress ? (
+                toolActivity.length > 0 ? (
                   <div className="px-6 pb-8">
                     <ToolActivityStrip activity={toolActivity} />
                   </div>

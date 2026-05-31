@@ -29,6 +29,12 @@ const NOISY_WS_EVENTS = new Set([
 const WS_PATH = "/ws";
 const RECONNECT_DELAY_MS = 1500;
 const PING_INTERVAL_MS = 25_000;
+// How long the tool-activity strip ("aiko is searching her notebook…")
+// lingers in the chat after turn_done fires. Was 0ms (immediate
+// clear) -- users couldn't read the chips fast enough. The next user
+// message cancels the linger early so a fresh turn starts with an
+// empty strip.
+const TOOL_ACTIVITY_LINGER_MS = 12_000;
 
 function resolveWsUrl(): string {
   // In dev, Vite proxies /ws -> backend. In prod we share an origin with
@@ -51,6 +57,11 @@ export function useAssistantSocket(): {
   const reconnectTimeoutRef = useRef<number | null>(null);
   const pingIntervalRef = useRef<number | null>(null);
   const closedByUser = useRef(false);
+  // Pending deferred-clear timer for the tool-activity strip. See
+  // ``TOOL_ACTIVITY_LINGER_MS`` -- nulled out whenever a new user
+  // message arrives (so the next turn starts with a fresh strip) or
+  // when the component unmounts.
+  const toolClearTimerRef = useRef<number | null>(null);
   const audioOutputRef = useRef<AudioOutputManager | null>(null);
   if (audioOutputRef.current === null) {
     audioOutputRef.current = new AudioOutputManager({
@@ -148,6 +159,14 @@ export function useAssistantSocket(): {
           store.pushSystemMessage(evt.content);
         } else if (evt.role === "user") {
           store.appendUserMessage(evt.content);
+          // New user message = new turn boundary. Cancel any pending
+          // tool-activity linger timer from the previous turn and
+          // clear the strip so the next turn's chips render fresh.
+          if (toolClearTimerRef.current !== null) {
+            window.clearTimeout(toolClearTimerRef.current);
+            toolClearTimerRef.current = null;
+          }
+          store.clearToolActivity();
         } else if (evt.role === "assistant" && evt.kind === "proactive") {
           store.appendProactiveMessage(evt.content);
         }
@@ -172,7 +191,17 @@ export function useAssistantSocket(): {
         }
         store.setTurnInProgress(false);
         store.setStatus("");
-        store.clearToolActivity();
+        // Keep the tool-activity strip on screen for a few extra
+        // seconds after the turn ends so the user can actually read
+        // the chips before they vanish. Cancelled early when the next
+        // user message lands (see the "message" case above).
+        if (toolClearTimerRef.current !== null) {
+          window.clearTimeout(toolClearTimerRef.current);
+        }
+        toolClearTimerRef.current = window.setTimeout(() => {
+          toolClearTimerRef.current = null;
+          useAssistantStore.getState().clearToolActivity();
+        }, TOOL_ACTIVITY_LINGER_MS);
         break;
 
       case "metrics_update":
@@ -561,6 +590,10 @@ export function useAssistantSocket(): {
       if (pingIntervalRef.current !== null) {
         window.clearInterval(pingIntervalRef.current);
         pingIntervalRef.current = null;
+      }
+      if (toolClearTimerRef.current !== null) {
+        window.clearTimeout(toolClearTimerRef.current);
+        toolClearTimerRef.current = null;
       }
       socketRef.current?.close();
       socketRef.current = null;

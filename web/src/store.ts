@@ -871,7 +871,11 @@ export const useAssistantStore = create<AssistantState>((set) => ({
     set({ backchannelHint: hint, backchannelAt: Date.now() }),
 
   toasts: [],
-  pushToast: (kind, text, ttlMs = 4500) =>
+  // Default toast lifetime. Bumped from the original 4.5s in 2026-05
+  // because users couldn't read the longer "Aiko remembered: ..." /
+  // memory-merged toasts before they vanished. Callers can still pass
+  // a shorter ttlMs explicitly if a toast should be quick.
+  pushToast: (kind, text, ttlMs = 9000) =>
     set((state) => ({
       toasts: [
         ...state.toasts,
