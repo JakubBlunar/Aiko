@@ -3017,3 +3017,118 @@ End-to-end repro flow:
 - [`docs/personality-backlog/index.md`](index.md) — K25 moved from active to the shipped list.
 - [`AGENTS.md`](../../AGENTS.md) — debugging-table row for "Aiko quotes a 6-month-old claim as if it were yesterday".
 
+## K29. Opinion injection — push back when she has a stance
+
+The persona says "have opinions, disagree when you disagree, share your own take instead of asking them to fill the silence" — but the LLM's RLHF agreeability beats the persona text most turns and Aiko ends up smoothing into agreement even when she has a stored stance that contradicts. K29 closes that gap with a per-turn detector that fires a one-line "Heads-up: you've got a stored stance on this and it actually differs from what {user_name} just said" cue whenever the live user message contradicts one of Aiko's `kind="self"` memories. The cue tilts her register toward owning her preference *as her own* without slipping into contrarianism or moralizing.
+
+### Decision flow
+
+```mermaid
+flowchart LR
+    U[user message] --> L{>= min_user_words?}
+    L -- no --> S0[silent]
+    L -- yes --> P{predicate filter<br/>opinion-shaped stance?}
+    P -- no --> S1[silent]
+    P -- yes --> C{top cosine vs stance<br/>>= min_cosine?}
+    C -- no --> S2[silent]
+    C -- yes --> H{classify_pair<br/>heuristic}
+    H -- "no" --> S3[silent]
+    H -- definite --> FIRE[fire cue]
+    H -- borderline --> R{require_definite?}
+    R -- yes --> S4[silent]
+    R -- no --> RL{rate_limiter.allow?}
+    RL -- no --> S5[silent]
+    RL -- yes --> G{LLM gate verdict}
+    G -- NO/UNRELATED/None --> S6[silent]
+    G -- YES --> FIRE
+```
+
+### Anti-contrarianism layering
+
+The whole feature exists to make the persona's "disagree when you disagree" claim *actually fire* against RLHF agreeability, but the equally-real failure mode is the inverse — Aiko slipping into contrarianism or lecturing. K29 stacks five guardrails before any cue lands:
+
+1. **Predicate filter** (`_has_opinion_shape`). Only `kind="self"` memories whose content matches an opinion-shaped predicate (`I prefer`, `I don't like`, `I love`, `I'd rather`, `I find ... <adj>`, `I'm not a fan of`, `not my favourite`, `make/s me <feel>`, etc.) qualify. Biographical facts (`I was born in Tokyo`, `I live in...`) never trigger the loop.
+2. **Cosine threshold** (`min_cosine=0.55`, matches K22 / K6). The top stance memory's cosine vs the live user message has to clear the floor or no contradiction is claimed.
+3. **Heuristic gate** (re-uses [`conflict_heuristics.classify_pair`](../../app/core/memory/conflict_heuristics.py) from F5). `definite` (clear negation-flip with high content overlap, OR explicit verb-pair antonym hit) fires immediately, no LLM call. Everything else (`borderline` numerical mismatch, OR `no` due to diluted content overlap) routes through the LLM gate.
+4. **LLM YES/NO/UNRELATED gate** on all non-`definite` paths. Rate-limited via a dedicated [`FactCheckRateLimiter`](../../app/core/memory/fact_check_rate_limiter.py) with `state_key="opinion_injection.rate_state"` so its budget can't be eaten by the F5 detector or the K2 belief worker. The prompt is explicitly biased toward `NO` / `UNRELATED` when uncertain (the prompt says "Be strict: prefer NO or UNRELATED when uncertain. We're deliberately conservative to avoid making Aiko contrarian"). The LLM is the real arbiter for verbose-stance contradictions — a stored stance like "I really don't like smoking, it gives me a headache" vs a user claim like "I like smoking, it helps me focus" has too much descriptive context to clear the conservative heuristic's Jaccard threshold on its own, so the LLM is the safety net that actually catches it.
+5. **Cooldown + per-session cap** on the controller. Cooldown=5 turns (longer than K23's 3 because a stance disagreement is a heavier beat than a soft-drift cue). Per-session cap=3 (five fires in one conversation almost certainly means the detector is misfiring; the cap silently suppresses the rest). Cap and cooldown both reset on `switch_session` / `clear_conversation_memory`.
+
+The strictest no-LLM-cost configuration is `agent.opinion_injection_require_definite=true` (Path C). Under this setting only `definite` heuristic verdicts fire — zero LLM cost, zero contrarianism risk, but K29 will only catch tight stance pairs ("I love X" vs "I hate X" / "I like X" vs "I don't like X") with high content-word overlap. Most users want the default (Path B) where the LLM handles the verbose-stance cases.
+
+The persona block ("When you have your own take" in [`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt)) does the second half of the anti-contrarianism work: the cue text steers Aiko toward "share your take, in your own register" with concrete bad/good pairs for the lifestyle (smoking / horror / late-night) failure mode — "ugh, that's not my favourite -- smoke and I don't really get along" rather than "you should quit smoking, it's bad for you". A failure where the detector fires correctly but Aiko lectures Jacob is a persona-block bug, not a detector bug.
+
+The persona block also covers **stance-shift handling**: when Aiko's stored stance no longer fits her current register, she's instructed to own the shift ("I think I used to feel that way, but honestly I've warmed to it lately") rather than rigidly re-stating an outdated opinion or pretending the old note never existed.
+
+### Default behaviour
+
+At the shipped defaults (`min_cosine=0.55`, `min_user_words=4`, `cooldown_turns=5`, `per_session_cap=3`, `per_hour_cap=6`, `per_day_cap=30`, `require_definite=false`):
+
+| Scenario | Outcome |
+|---|---|
+| Stance "I don't like smoking" + user "I like smoking a lot" | `contradiction_definite` (negation flip with high overlap) — fires immediately, no LLM call. |
+| Stance "I love horror" + user "I hate horror movies a lot" | `contradiction_definite` (loves/hates antonym) — fires immediately, no LLM call. |
+| Stance "I really don't like smoking, it gives me a headache" + user "I like smoking, it helps me think clearly" | Cosine ~1.0, but heuristic returns `no` (content overlap diluted by descriptive context). LLM gate runs — should return `YES`, fires `contradiction_borderline`. |
+| Stance "I really don't like smoking, it gives me a headache" + user "I quit smoking last year, it was killing my sleep" | High cosine but the LLM should return `UNRELATED` / `NO` (alignment, not contradiction). Silent. |
+| Stance "I love jogging" + user "I went jogging this morning" | Alignment. Heuristic returns `no`; LLM should return `NO` / `UNRELATED`. Silent. |
+| Stance "I was born in Tokyo" + user "I love Tokyo" | Stance is biographical, predicate filter drops it before cosine — silent. |
+| User "ok" / "yeah" / "lol" | Below `min_user_words=4` — silent (K23 territory). |
+
+### Architecture
+
+- **Pure detector** [`app/core/affect/opinion_injection_detector.py`](../../app/core/affect/opinion_injection_detector.py) — `OpinionInjectionResult` dataclass, `_has_opinion_shape` predicate, `_filter_opinion_memories`, `_top_cosine`, `detect(user_text, user_vec, self_memories, llm_gate, ...)` pure function with no I/O dependencies, `render_inner_life_block(result, user_display_name)`. The detector is trivially testable — the LLM gate is a `Callable[[str, str], str | None]` plug-in, so the unit tests stub it with a Python function.
+- **LLM gate helper** [`app/core/affect/opinion_injection_llm.py`](../../app/core/affect/opinion_injection_llm.py) — small wrapper around `OllamaClient.chat_stream` with the K29-specific YES/NO/UNRELATED prompt. Mirrors F5's `_verify_with_llm` shape so the same Ollama plumbing + cancel-event works without adapter glue.
+- **Provider** [`InnerLifeProvidersMixin._render_opinion_injection_block`](../../app/core/session/inner_life_providers_mixin.py) — wires the cooldown / session cap / force-next / rate-limiter / embedder / memory-store reads together; sibling of `_render_misattunement_block` (same provider-time shape, takes `user_text`, runs the detector itself each call).
+- **Controller state** [`SessionController.__init__`](../../app/core/session/session_controller.py) — five attributes (`_opinion_injection_cooldown`, `_opinion_injection_session_count`, `_opinion_injection_force_next`, `_last_opinion_injection`, `_opinion_injection_rate_limiter`). Per-session count resets on `switch_session` / `clear_conversation_memory`. The `FactCheckRateLimiter` is constructed lazily off the chat_db (gracefully degrades to Path C — definite-only — when the chat_db is unavailable).
+- **Prompt assembler** [`PromptAssembler`](../../app/core/session/prompt_assembler.py) — `_opinion_injection_provider` slot, `opinion_injection` kwarg on `set_inner_life_providers`, `opinion_injection_block` built under a timed phase next to `misattunement`, placed in `system_parts` directly after `misattunement_block` so the "pull back" + "share your take" cluster reads in a consistent order.
+- **NOT in the K16 suppression matrix** — the fused grounding line never carries stance signal, so K29 is purely additive on top in all three K16 modes (`off` / `split` / `replace`).
+- **Settings**:
+  - [`AgentSettings.opinion_injection_enabled: bool = True`](../../app/core/infra/settings.py) — master switch.
+  - `AgentSettings.opinion_injection_require_definite: bool = False` — when `True`, drops the LLM gate entirely (Path C). Zero LLM cost; only `definite` heuristic verdicts fire.
+  - `MemorySettings.opinion_injection_min_cosine: float = 0.55` (clamped to `[0, 1]`).
+  - `MemorySettings.opinion_injection_min_user_words: int = 4` (clamped at `max(0, ...)`).
+  - `MemorySettings.opinion_injection_cooldown_turns: int = 5` (clamped at `max(0, ...)`).
+  - `MemorySettings.opinion_injection_per_session_cap: int = 3` (clamped at `max(0, ...)`; `0` disables the cap, intended as an operator override).
+  - `MemorySettings.opinion_injection_per_hour_cap: int = 6` and `per_day_cap: int = 30` — LLM-gate budgets (clamped at `max(0, ...)`).
+
+### MCP-debuggable
+
+Two new tools in [`app/mcp/server.py`](../../app/mcp/server.py):
+
+- `get_opinion_injection_state()` — dumps the master switch, current cooldown, per-session counter (vs cap), force-next flag, the most recent fire (full diagnostics: trigger / cosine / heuristic / signals / matched stance text / LLM verdict), the LLM rate-limiter budget, and a settings snapshot.
+- `force_opinion_injection()` — arms `_opinion_injection_force_next` so the next provider call bypasses BOTH the cooldown counter AND the per-session cap. Predicate filter / cosine / heuristic gates still apply, so the bypass silently expires when no stance contradicts.
+
+End-to-end repro flow for the smoking scenario:
+
+1. Make sure Aiko has a `kind="self"` stance memory like "I really don't like smoking — it gives me a headache" (manual REST insert through the Memory drawer or a self-tag during a previous chat).
+2. Call `force_opinion_injection`.
+3. Send Aiko: "I like smoking, it helps me think."
+4. Check `tail_logs(module_contains="opinion")` for the per-turn fire line: `opinion-injection fire: trigger=contradiction_definite cosine=... stance_id=... heuristic=definite signals=negation_flip ...`.
+5. Verify Aiko's reply owns her stance ("smoke and I don't really get along") rather than lecturing about health.
+
+End-to-end repro for the alignment-doesn't-fire scenario (regression guard):
+
+1. Same setup as above (stance "I really don't like smoking…").
+2. Send Aiko: "I quit smoking last year — it was killing my sleep."
+3. The user's stance aligns with Aiko's; the heuristic returns `no`, the cue stays silent.
+4. Confirm in the logs: no `opinion-injection fire:` line for that turn, and `get_opinion_injection_state` shows `session_count` unchanged.
+
+### Files
+
+- [`app/core/affect/opinion_injection_detector.py`](../../app/core/affect/opinion_injection_detector.py) — new detector module (~270 LOC), pure-function `detect` + `render_inner_life_block`.
+- [`app/core/affect/opinion_injection_llm.py`](../../app/core/affect/opinion_injection_llm.py) — new LLM YES/NO gate helper (~130 LOC), thin wrapper around `OllamaClient.chat_stream` with the K29-specific prompt.
+- [`app/core/infra/settings.py`](../../app/core/infra/settings.py) — two new `AgentSettings` fields + six new `MemorySettings` fields with inline-comment context on each tunable; matching parser entries with clamps in `load_settings`.
+- [`config/default.json`](../../config/default.json) — two new keys under `agent`, six under `memory`.
+- [`app/core/session/session_controller.py`](../../app/core/session/session_controller.py) — five new state attributes, lazy `FactCheckRateLimiter(state_key="opinion_injection.rate_state")` construction off the chat_db, `opinion_injection=self._render_opinion_injection_block` registration on the prompt assembler, per-session reset hooks on `switch_session` and `clear_conversation_memory`.
+- [`app/core/session/inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py) — `_render_opinion_injection_block` (master switch / cooldown / session cap / force-next / detect-and-arm + INFO log line) and the small `_opinion_injection_llm_verdict` helper that bridges the provider to the LLM module.
+- [`app/core/session/prompt_assembler.py`](../../app/core/session/prompt_assembler.py) — `_opinion_injection_provider` slot, `opinion_injection` kwarg on `set_inner_life_providers`, timed-phase block build, placement in `system_parts` after `misattunement_block`.
+- [`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt) — new "When you have your own take" section after the K23 block with anti-moralizing discipline, concrete bad/good pairs for the lifestyle failure mode, stance-shift handling, and the cue-doesn't-need-narrating rail.
+- [`app/mcp/server.py`](../../app/mcp/server.py) — `get_opinion_injection_state` + `force_opinion_injection` MCP debug tools, including the full smoking-scenario repro recipe in the docstring.
+- [`tests/test_opinion_injection_detector.py`](../../tests/test_opinion_injection_detector.py) — 27 unit tests across the opinion-shape predicate, the length / predicate / cosine / heuristic gates, all LLM-gate branches (YES / NO / None / require_definite skip / gate raise), the empty-memory + null-vec defensive paths, and the render-output invariants (stance quoted, anti-moralizing language, default-name fallback, truncation marker).
+- [`tests/test_opinion_injection_provider.py`](../../tests/test_opinion_injection_provider.py) — 15 controller-plumbing tests using a minimal mixin host stub: master-switch gate, fire arms cooldown + session count + last_result, cooldown decrement / blocking, session cap (block / zero-means-disabled / just-under-threshold), force-next bypasses cooldown and cap (with consume-on-miss), dependency surface (no memory_store / no embedder / empty memories / embedder failure).
+- [`tests/test_prompt_assembler.py`](../../tests/test_prompt_assembler.py) — `OpinionInjectionProviderTests` covering the provider slot, empty-string suppression, the K16 `replace`-mode non-suppression, aggressive-mode non-suppression, user-text forwarding, and the K23-before-K29 ordering invariant.
+- [`tests/test_settings.py`](../../tests/test_settings.py) — `OpinionInjectionSettingsTests`: defaults, overrides round-trip, `min_cosine` `[0, 1]` clamp, integer-knob negative→0 clamps.
+- [`docs/configuration.md`](../configuration.md) — cheatsheet row + dedicated "K29 — opinion injection" subsection with the smoking walkthrough.
+- [`docs/personality-backlog/patterns.md`](patterns.md) — K29 section body replaced with a `**Shipped**` pointer.
+- [`docs/personality-backlog/index.md`](index.md) — K29 moved from active to the shipped list.
+- [`AGENTS.md`](../../AGENTS.md) — debugging-table rows for the two K29-shaped failure modes (Aiko lecturing instead of sharing her own taste; Aiko never disagreeing even when she has a contradicting stance).
+

@@ -624,6 +624,18 @@ class PromptAssembler:
         # runs the detector itself on every call -- cooldown lives on
         # the controller, not in a pending slot.
         self._misattunement_provider: Callable[[str], str] | None = None
+        # K29 — opinion injection detector. Per-turn provider that
+        # fires a one-line cue when {user_name}'s latest message
+        # contradicts one of Aiko's stored ``kind="self"`` stance
+        # memories. Sibling of the K23 misattunement provider: same
+        # provider-time shape, takes ``user_text``, runs the
+        # detector itself on every call -- cooldown + per-session
+        # cap + LLM rate-limiter all live on the controller. The
+        # detector is deliberately conservative (only ``definite``
+        # heuristic verdicts fire immediately; ``borderline`` runs
+        # through an LLM YES/NO gate) so an Aiko with a few stored
+        # stances doesn't slip into contrarianism.
+        self._opinion_injection_provider: Callable[[str], str] | None = None
         # K14 typed-mode absence-curiosity one-shot. Same shape as the
         # K8 rupture provider: post-turn engagement tracker stashes a
         # pending absence duration on the controller when a typed gap
@@ -827,6 +839,7 @@ class PromptAssembler:
         sensory_anchor: Callable[[], str] | None = None,
         rupture: Callable[[], str] | None = None,
         misattunement: Callable[[str], str] | None = None,
+        opinion_injection: Callable[[str], str] | None = None,
         absence_curiosity: Callable[[], str] | None = None,
         mood_shell: Callable[[], str] | None = None,
         novelty: Callable[[str], str] | None = None,
@@ -896,6 +909,8 @@ class PromptAssembler:
             self._rupture_provider = rupture
         if misattunement is not None:
             self._misattunement_provider = misattunement
+        if opinion_injection is not None:
+            self._opinion_injection_provider = opinion_injection
         if absence_curiosity is not None:
             self._absence_curiosity_provider = absence_curiosity
         if mood_shell is not None:
@@ -1435,6 +1450,29 @@ class PromptAssembler:
                     log.debug("misattunement provider raised", exc_info=True)
                     misattunement_block = ""
 
+        # K29 — opinion injection detector. Per-turn detector that
+        # checks the live user message against Aiko's stored
+        # ``kind="self"`` stance memories and fires a "you've got a
+        # different read on this" cue when a real contradiction
+        # lands. Empty on most turns (no stance touched + heuristic
+        # gate + cooldown + per-session cap). Not gated on
+        # aggressive mode -- a steering signal to disagree where it
+        # fits is exactly what tight budgets need.
+        opinion_injection_block = ""
+        if (
+            getattr(self, "_opinion_injection_provider", None) is not None
+        ):
+            with _timed_phase(provider_ms, "opinion_injection"):
+                try:
+                    opinion_injection_block = (
+                        self._opinion_injection_provider(user_text) or ""
+                    )
+                except Exception:
+                    log.debug(
+                        "opinion-injection provider raised", exc_info=True
+                    )
+                    opinion_injection_block = ""
+
         # K14 typed-mode absence-curiosity one-shot. Empty on most
         # turns (only fires when the post-turn tracker stashed an
         # absence_seconds in the configured band). NOT gated on
@@ -1747,6 +1785,17 @@ class PromptAssembler:
             # fused grounding line never carries misattunement
             # signal, so K23 is purely additive on top.
             system_parts.append(misattunement_block)
+        if opinion_injection_block:
+            # K29: stance-contradiction sits in the same "live read on
+            # the user's turn" cluster as K8 / K17 / K23 -- they all
+            # steer the next reply based on something that just
+            # happened (mood dip / misread / pull-back / stored take
+            # contradicts). Lands right after misattunement so the
+            # "pull back" + "share your take" cues never appear in
+            # opposite orders. NOT in the K16 suppression set: the
+            # fused grounding line never carries stance signal so
+            # K29 is purely additive on top.
+            system_parts.append(opinion_injection_block)
         if absence_curiosity_block:
             # K14 typed-mode: "Jacob was away for a few hours before
             # this message" sits right next to the other reaction-

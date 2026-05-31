@@ -1631,6 +1631,170 @@ class MisattunementProviderTests(unittest.TestCase):
             )
 
 
+class OpinionInjectionProviderTests(unittest.TestCase):
+    """K29 ``opinion_injection`` provider tests.
+
+    Per-turn provider that takes ``user_text`` (same shape as K23
+    misattunement / K6 novelty / K18 stagnation). NOT in the K16
+    suppression set -- the fused grounding line never carries
+    stance signal, so the K29 cue is purely additive on top.
+    """
+
+    _CUE = (
+        "Heads-up: you've got a stored stance on this and it actually "
+        "differs from what Jacob just said -- you wrote: 'I don't like "
+        "horror movies'.\nSay your take in your own register -- one "
+        "sentence, your preference, not advice for him."
+    )
+
+    def test_opinion_injection_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="o1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                opinion_injection=lambda _ut: self._CUE,
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "o1",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertIn(
+                "stored stance on this", messages[0]["content"],
+            )
+
+    def test_empty_provider_drops_block(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="o2", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                opinion_injection=lambda _ut: "",
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "o2",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertNotIn(
+                "stored stance on this", messages[0]["content"],
+            )
+
+    def test_provider_receives_user_text(self) -> None:
+        captured: list[str] = []
+
+        def provider(user_text: str) -> str:
+            captured.append(user_text)
+            return ""
+
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="o3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(opinion_injection=provider)
+            assembler.assemble_with_budget(
+                "o3",
+                "I like horror movies a lot",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertEqual(captured, ["I like horror movies a lot"])
+
+    def test_opinion_injection_survives_k16_replace_mode(self) -> None:
+        # K29 is explicitly NOT in the K16 suppression matrix -- the
+        # fused grounding paragraph carries circadian / world /
+        # activity / affect signals but never stance signal, so K29
+        # is additive.
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="o4", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                opinion_injection=lambda _ut: self._CUE,
+                grounding_line=lambda: (
+                    "It's Sunday afternoon. Jacob's reading low-energy."
+                ),
+                world=lambda: "World: at the desk.",
+                activity=lambda: "Jacob is in Cursor.",
+            )
+            assembler.set_grounding_line_mode("replace")
+            messages, _ = assembler.assemble_with_budget(
+                "o4",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertIn(
+                "stored stance on this", messages[0]["content"],
+            )
+
+    def test_opinion_injection_not_dropped_under_aggressive(self) -> None:
+        # Like K8 / K17 / K23, K29 is a steering signal that benefits
+        # the aggressive turn -- "share your take" is exactly the
+        # kind of register-tilt an aggressive turn wants.
+        calls: list[str] = []
+
+        def provider(user_text: str) -> str:
+            calls.append(user_text)
+            return self._CUE
+
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="o5", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(opinion_injection=provider)
+            messages, _ = assembler.assemble_with_budget(
+                "o5",
+                "x",
+                context_window=4096,
+                response_budget=256,
+                aggressive=True,
+            )
+            self.assertEqual(len(calls), 1)
+            self.assertIn(
+                "stored stance on this", messages[0]["content"],
+            )
+
+    def test_opinion_injection_lands_after_misattunement(self) -> None:
+        # When both K23 and K29 fire on the same turn, the K29 cue
+        # must land AFTER the K23 cue so the "pull back" + "share
+        # your take" instructions never appear in opposite orders.
+        # This is the established ordering for the noticing-Jacob
+        # cluster (K17 -> K8 -> K23 -> K29).
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="o6", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                misattunement=lambda _ut: (
+                    "Heads-up: Jacob just gave a short reply after your "
+                    "last full answer.\nPull back this turn."
+                ),
+                opinion_injection=lambda _ut: self._CUE,
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "o6",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            content = messages[0]["content"]
+            misattunement_pos = content.find("just gave a short reply")
+            opinion_pos = content.find("stored stance on this")
+            self.assertGreater(misattunement_pos, -1)
+            self.assertGreater(opinion_pos, -1)
+            self.assertLess(misattunement_pos, opinion_pos)
+
+
 class WallClockHistoryPrefixTests(unittest.TestCase):
     """K-time1: per-message ``[N min ago]`` prefix on chat history.
 

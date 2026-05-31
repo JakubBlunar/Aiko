@@ -738,5 +738,136 @@ class ConfidenceDecaySettingsTests(unittest.TestCase):
         )
 
 
+class OpinionInjectionSettingsTests(unittest.TestCase):
+    """K29: 2 agent flags + 6 memory knobs round-trip with clamps."""
+
+    _OI_AGENT_KEYS = (
+        "opinion_injection_enabled",
+        "opinion_injection_require_definite",
+    )
+    _OI_MEMORY_KEYS = (
+        "opinion_injection_min_cosine",
+        "opinion_injection_min_user_words",
+        "opinion_injection_cooldown_turns",
+        "opinion_injection_per_session_cap",
+        "opinion_injection_per_hour_cap",
+        "opinion_injection_per_day_cap",
+    )
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(
+        self,
+        agent_extra: dict | None = None,
+        memory_extra: dict | None = None,
+        strip_keys: bool = True,
+    ) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(
+            json.loads(default_path.read_text(encoding="utf-8"))
+        )
+        if strip_keys:
+            for k in self._OI_AGENT_KEYS:
+                cfg.get("agent", {}).pop(k, None)
+            for k in self._OI_MEMORY_KEYS:
+                cfg.get("memory", {}).pop(k, None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        if memory_extra is not None:
+            cfg["memory"] = {**cfg.get("memory", {}), **memory_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults_load_when_keys_missing(self) -> None:
+        path = self._write_config()
+        result = load_settings(config_path=path)
+        self.assertTrue(result.agent.opinion_injection_enabled)
+        self.assertFalse(result.agent.opinion_injection_require_definite)
+        self.assertAlmostEqual(
+            result.memory.opinion_injection_min_cosine, 0.55,
+        )
+        self.assertEqual(result.memory.opinion_injection_min_user_words, 4)
+        self.assertEqual(result.memory.opinion_injection_cooldown_turns, 5)
+        self.assertEqual(result.memory.opinion_injection_per_session_cap, 3)
+        self.assertEqual(result.memory.opinion_injection_per_hour_cap, 6)
+        self.assertEqual(result.memory.opinion_injection_per_day_cap, 30)
+
+    def test_overrides_round_trip(self) -> None:
+        path = self._write_config(
+            agent_extra={
+                "opinion_injection_enabled": False,
+                "opinion_injection_require_definite": True,
+            },
+            memory_extra={
+                "opinion_injection_min_cosine": 0.70,
+                "opinion_injection_min_user_words": 6,
+                "opinion_injection_cooldown_turns": 8,
+                "opinion_injection_per_session_cap": 1,
+                "opinion_injection_per_hour_cap": 12,
+                "opinion_injection_per_day_cap": 50,
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.opinion_injection_enabled)
+        self.assertTrue(result.agent.opinion_injection_require_definite)
+        self.assertAlmostEqual(
+            result.memory.opinion_injection_min_cosine, 0.70,
+        )
+        self.assertEqual(result.memory.opinion_injection_min_user_words, 6)
+        self.assertEqual(result.memory.opinion_injection_cooldown_turns, 8)
+        self.assertEqual(result.memory.opinion_injection_per_session_cap, 1)
+        self.assertEqual(result.memory.opinion_injection_per_hour_cap, 12)
+        self.assertEqual(result.memory.opinion_injection_per_day_cap, 50)
+
+    def test_min_cosine_clamps_unit_interval(self) -> None:
+        path = self._write_config(
+            memory_extra={"opinion_injection_min_cosine": -0.4},
+        )
+        result = load_settings(config_path=path)
+        self.assertAlmostEqual(
+            result.memory.opinion_injection_min_cosine, 0.0,
+        )
+        path = self._write_config(
+            memory_extra={"opinion_injection_min_cosine": 5.0},
+        )
+        result = load_settings(config_path=path)
+        self.assertAlmostEqual(
+            result.memory.opinion_injection_min_cosine, 1.0,
+        )
+
+    def test_integer_knobs_clamp_negative_to_zero(self) -> None:
+        # All five integer knobs floor at 0; setting them all to
+        # negative inputs effectively disables the corresponding
+        # gate (per_session_cap=0 means "fire unboundedly per
+        # session" by the provider's interpretation; the other
+        # knobs degrade to similarly-permissive states).
+        path = self._write_config(
+            memory_extra={
+                "opinion_injection_min_user_words": -3,
+                "opinion_injection_cooldown_turns": -10,
+                "opinion_injection_per_session_cap": -1,
+                "opinion_injection_per_hour_cap": -5,
+                "opinion_injection_per_day_cap": -50,
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertEqual(result.memory.opinion_injection_min_user_words, 0)
+        self.assertEqual(result.memory.opinion_injection_cooldown_turns, 0)
+        self.assertEqual(result.memory.opinion_injection_per_session_cap, 0)
+        self.assertEqual(result.memory.opinion_injection_per_hour_cap, 0)
+        self.assertEqual(result.memory.opinion_injection_per_day_cap, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

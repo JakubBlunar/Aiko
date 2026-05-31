@@ -889,6 +889,27 @@ class AgentSettings:
     misattunement_pivot_max_user_words: int = 8
     misattunement_cooldown_turns: int = 3
 
+    # ── K29: opinion injection (push back when she has a stance) ──────
+    # Master switch for the per-turn detector that fires a one-line
+    # cue when {user_name}'s latest message contradicts one of Aiko's
+    # stored ``kind="self"`` stance memories. The whole feature exists
+    # to make the persona's "have opinions, disagree when you
+    # disagree" claim actually fire against LLM RLHF agreeability --
+    # without flipping into contrarianism.
+    #
+    # Anti-contrarianism is layered: only opinion-shaped stance
+    # memories qualify (predicate filter), only ``definite`` heuristic
+    # verdicts and (when budget allows) borderline+LLM-YES verdicts
+    # fire, and a hard per-session cap bounds the worst case. See
+    # [`app/core/affect/opinion_injection_detector.py`](../affect/opinion_injection_detector.py).
+    #
+    # ``require_definite=True`` is the strictest no-LLM-cost
+    # configuration (Path C in the design plan); leave at ``False``
+    # (Path B, the default) for the heuristic + LLM-gated borderline
+    # behaviour.
+    opinion_injection_enabled: bool = True
+    opinion_injection_require_definite: bool = False
+
     # ── K25: memory confidence time-decay ─────────────────────────────
     # Master switch for the ``(distant)`` suffix the RAG retriever
     # stamps on age-decayed memory rows. The three numeric knobs that
@@ -1138,6 +1159,36 @@ class MemorySettings:
     confidence_decay_horizon_days: int = 365
     confidence_decay_floor: float = 0.3
     confidence_decay_distant_threshold: float = 0.5
+    # ── K29 personality backlog: opinion injection numeric knobs ─────
+    # The five numbers governing the K29 detector + caller plumbing.
+    # The on/off / require-definite gates live on :class:`AgentSettings`
+    # alongside the rest of the master switches; the rest of the
+    # tunables describe a memory/retrieval concept so they sit here.
+    #
+    # * ``min_cosine`` — top-cosine floor between the live user
+    #   message and a stance memory's embedding. Default ``0.55``
+    #   matches K22 callback / K6 strong_novelty. Lower → easier
+    #   topical match; higher → only near-exact topical brushes.
+    # * ``min_user_words`` — short messages ("ok", "yeah", "lol")
+    #   are K23 territory and never claim a contradiction. Default
+    #   ``4`` words.
+    # * ``cooldown_turns`` — turns between fires. Longer than K23
+    #   (3 turns) because a stance disagreement is a heavier
+    #   conversational beat than a soft-drift cue. Default ``5``.
+    # * ``per_session_cap`` — hard cap per session. Five
+    #   contradictions in a single session almost certainly means
+    #   the detector is misfiring; the cap silently suppresses
+    #   the rest. Default ``3``.
+    # * ``per_hour_cap`` / ``per_day_cap`` — LLM-gate budgets for
+    #   the borderline path. The detector only spends an LLM call
+    #   when the heuristic says ``borderline`` and the limiter has
+    #   tokens. Matches the F5 conflict-detector defaults.
+    opinion_injection_min_cosine: float = 0.55
+    opinion_injection_min_user_words: int = 4
+    opinion_injection_cooldown_turns: int = 5
+    opinion_injection_per_session_cap: int = 3
+    opinion_injection_per_hour_cap: int = 6
+    opinion_injection_per_day_cap: int = 30
     # ── K22 personality backlog: callback / inside-joke detector ─────
     # Post-turn cosine pass between Aiko's reply and older eligible
     # memories. Hits stamp ``metadata.callback_count`` and bump
@@ -2247,6 +2298,12 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                     )
                 ),
             ),
+            opinion_injection_enabled=bool(
+                agent_raw.get("opinion_injection_enabled", True),
+            ),
+            opinion_injection_require_definite=bool(
+                agent_raw.get("opinion_injection_require_definite", False),
+            ),
             confidence_time_decay_enabled=bool(
                 agent_raw.get("confidence_time_decay_enabled", True),
             ),
@@ -2431,6 +2488,35 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                         )
                     ),
                 ),
+            ),
+            opinion_injection_min_cosine=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get("opinion_injection_min_cosine", 0.55)
+                    ),
+                ),
+            ),
+            opinion_injection_min_user_words=max(
+                0,
+                int(memory_raw.get("opinion_injection_min_user_words", 4)),
+            ),
+            opinion_injection_cooldown_turns=max(
+                0,
+                int(memory_raw.get("opinion_injection_cooldown_turns", 5)),
+            ),
+            opinion_injection_per_session_cap=max(
+                0,
+                int(memory_raw.get("opinion_injection_per_session_cap", 3)),
+            ),
+            opinion_injection_per_hour_cap=max(
+                0,
+                int(memory_raw.get("opinion_injection_per_hour_cap", 6)),
+            ),
+            opinion_injection_per_day_cap=max(
+                0,
+                int(memory_raw.get("opinion_injection_per_day_cap", 30)),
             ),
             callback_age_floor_days=max(
                 1, int(memory_raw.get("callback_age_floor_days", 3)),

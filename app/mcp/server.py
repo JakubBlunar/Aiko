@@ -1425,6 +1425,170 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"force_misattunement raised: {exc}"
 
     @mcp.tool()
+    def get_opinion_injection_state() -> str:
+        """K29 — dump the in-memory opinion-injection detector state.
+
+        Returns a JSON dict with the master switch, current cooldown,
+        per-session counter (vs cap), force-next flag, the most
+        recent fire (full diagnostics: trigger / cosine / heuristic /
+        signals / matched stance text), the LLM rate-limiter budget,
+        and a settings snapshot so you can see what thresholds are
+        actually in force after the user.json overrides land.
+
+        The cooldown counter decrements by one each turn regardless
+        of trigger state -- a value of 0 means the next eligible
+        turn can fire. ``session_count`` resets on session boundary
+        (``switch_session`` / ``clear_conversation_memory``) and
+        caps fires within the current conversation. Use
+        ``force_opinion_injection`` to bypass cooldown + cap on the
+        next turn for end-to-end repro.
+        """
+        try:
+            agent = session._settings.agent
+            memory = session._memory_settings
+            cooldown = int(
+                getattr(session, "_opinion_injection_cooldown", 0) or 0,
+            )
+            session_count = int(
+                getattr(session, "_opinion_injection_session_count", 0) or 0,
+            )
+            last = getattr(session, "_last_opinion_injection", None)
+            last_payload = None
+            if last is not None:
+                last_payload = {
+                    "trigger": getattr(last, "trigger", None),
+                    "cosine": float(getattr(last, "cosine", 0.0)),
+                    "stance_memory_id": int(
+                        getattr(last, "stance_memory_id", -1)
+                    ),
+                    "stance_text": (
+                        (getattr(last, "stance_text", "") or "")[:200]
+                    ),
+                    "heuristic_label": getattr(last, "heuristic_label", None),
+                    "heuristic_signals": list(
+                        getattr(last, "heuristic_signals", []) or []
+                    ),
+                    "llm_verdict": getattr(last, "llm_verdict", None),
+                }
+            rate_limiter = getattr(
+                session, "_opinion_injection_rate_limiter", None
+            )
+            llm_budget = None
+            if rate_limiter is not None:
+                try:
+                    llm_budget = rate_limiter.snapshot()
+                except Exception:
+                    llm_budget = None
+            return json.dumps(
+                {
+                    "enabled": bool(
+                        getattr(agent, "opinion_injection_enabled", True),
+                    ),
+                    "require_definite": bool(
+                        getattr(
+                            agent,
+                            "opinion_injection_require_definite",
+                            False,
+                        ),
+                    ),
+                    "cooldown_remaining": cooldown,
+                    "session_count": session_count,
+                    "session_cap": int(
+                        getattr(
+                            memory, "opinion_injection_per_session_cap", 3,
+                        )
+                    ),
+                    "force_next": bool(
+                        getattr(
+                            session, "_opinion_injection_force_next", False,
+                        ),
+                    ),
+                    "last_fire": last_payload,
+                    "llm_budget": llm_budget,
+                    "settings": {
+                        "min_cosine": float(
+                            getattr(
+                                memory,
+                                "opinion_injection_min_cosine",
+                                0.55,
+                            )
+                        ),
+                        "min_user_words": int(
+                            getattr(
+                                memory,
+                                "opinion_injection_min_user_words",
+                                4,
+                            )
+                        ),
+                        "cooldown_turns": int(
+                            getattr(
+                                memory,
+                                "opinion_injection_cooldown_turns",
+                                5,
+                            )
+                        ),
+                        "per_hour_cap": int(
+                            getattr(
+                                memory,
+                                "opinion_injection_per_hour_cap",
+                                6,
+                            )
+                        ),
+                        "per_day_cap": int(
+                            getattr(
+                                memory,
+                                "opinion_injection_per_day_cap",
+                                30,
+                            )
+                        ),
+                    },
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"get_opinion_injection_state raised: {exc}"
+
+    @mcp.tool()
+    def force_opinion_injection() -> str:
+        """K29 — arm a one-shot bypass on the opinion-injection cooldown + cap.
+
+        Sets ``_opinion_injection_force_next`` so the next call to
+        the provider ignores BOTH the cooldown counter AND the
+        per-session cap. The predicate filter, cosine threshold,
+        and heuristic gate still run -- you can't force-fire a cue
+        when there's no contradicting stance memory or the user
+        message doesn't touch one.
+
+        Repro recipe for the smoking scenario:
+
+        1. Make sure Aiko has a ``kind="self"`` stance memory that
+           reads roughly like "I really don't like smoke -- it
+           gives me a headache." (manual REST insert or a self-
+           tag during a previous chat).
+        2. Call this tool.
+        3. Send Aiko: "I like smoking, it helps me think."
+        4. Check ``tail_logs(module_contains="opinion")`` for
+           ``opinion-injection fire: trigger=contradiction_definite ...``.
+        5. Verify Aiko's reply owns her stance ("smoke and I don't
+           really get along") rather than lecturing about health.
+        """
+        try:
+            session._opinion_injection_force_next = True
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next provider call will ignore the cooldown "
+                        "AND the per-session cap; predicate filter + "
+                        "cosine + heuristic gates still apply"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_opinion_injection raised: {exc}"
+
+    @mcp.tool()
     def get_confidence_decay_state(limit: int = 20) -> str:
         """K25 — preview which memory rows would currently render
         with the ``(distant)`` suffix.
