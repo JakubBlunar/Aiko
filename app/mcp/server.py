@@ -1324,6 +1324,107 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"force_sensory_anchor raised: {exc}"
 
     @mcp.tool()
+    def get_misattunement_state() -> str:
+        """K23 — dump the in-memory misattunement detector state.
+
+        Returns a JSON dict with the master switch, current
+        cooldown counter, the last-fire diagnostic fields, and the
+        settings snapshot (so you can see what thresholds are
+        actually in force after the user.json overrides land). The
+        cooldown counter decrements by one each turn regardless of
+        trigger state -- a value of 0 means the next eligible turn
+        will fire. Use ``force_misattunement`` to bypass the
+        cooldown for the next turn end-to-end.
+        """
+        try:
+            agent = session._settings.agent
+            cooldown = int(
+                getattr(session, "_misattunement_cooldown", 0) or 0,
+            )
+            return json.dumps(
+                {
+                    "enabled": bool(
+                        getattr(agent, "misattunement_detection_enabled", True),
+                    ),
+                    "cooldown_remaining": cooldown,
+                    "force_next": bool(
+                        getattr(session, "_misattunement_force_next", False),
+                    ),
+                    "last_trigger": getattr(
+                        session, "_last_misattunement_trigger", None,
+                    ),
+                    "last_fire_turn": getattr(
+                        session, "_last_misattunement_fire_turn", None,
+                    ),
+                    "settings": {
+                        "shrink_min_prev_words": int(
+                            getattr(
+                                agent,
+                                "misattunement_shrink_min_prev_words",
+                                30,
+                            )
+                        ),
+                        "shrink_max_user_words": int(
+                            getattr(
+                                agent,
+                                "misattunement_shrink_max_user_words",
+                                8,
+                            )
+                        ),
+                        "pivot_max_user_words": int(
+                            getattr(
+                                agent,
+                                "misattunement_pivot_max_user_words",
+                                8,
+                            )
+                        ),
+                        "cooldown_turns": int(
+                            getattr(
+                                agent,
+                                "misattunement_cooldown_turns",
+                                3,
+                            )
+                        ),
+                    },
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"get_misattunement_state raised: {exc}"
+
+    @mcp.tool()
+    def force_misattunement() -> str:
+        """K23 — arm a one-shot bypass on the misattunement cooldown.
+
+        Sets ``_misattunement_force_next`` so the next call to the
+        provider treats ``cooldown_remaining`` as 0 regardless of
+        the actual counter. The bypass is consumed whether the
+        trigger paths fire or not (so a one-shot is strictly
+        one-turn). If the next user message doesn't satisfy either
+        the shrink or the pivot trigger, the bypass simply expires
+        with no cue and the normal cooldown resumes its countdown.
+
+        For an end-to-end repro: call this tool, then send Aiko a
+        short message ("ok" or "yeah") right after a long
+        Aiko reply. The next turn's prompt should include the
+        "Heads-up: {user} just gave a short reply..." block.
+        """
+        try:
+            session._misattunement_force_next = True
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next provider call will ignore the cooldown; "
+                        "send a short user message to land the cue"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_misattunement raised: {exc}"
+
+    @mcp.tool()
     def force_seed_onboarding_goal() -> str:
         """K1 follow-up — re-seed the curated "get to know" goal.
 

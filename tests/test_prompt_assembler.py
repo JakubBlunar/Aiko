@@ -1495,6 +1495,142 @@ class SensoryAnchorProviderTests(unittest.TestCase):
             self.assertEqual(calls, [])
 
 
+class MisattunementProviderTests(unittest.TestCase):
+    """K23 ``misattunement`` provider tests.
+
+    Per-turn provider that takes ``user_text`` (same shape as the
+    K6/K18 novelty/stagnation providers). NOT in the K16 suppression
+    set -- the fused grounding line never carries misattunement
+    signal, so the K23 cue is purely additive on top.
+    """
+
+    _CUE = (
+        "Heads-up: Jacob just gave a short reply after your last full "
+        "answer.\nPull back this turn: shorter reply, lighter weight, "
+        "drop the agenda."
+    )
+
+    def test_misattunement_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="m1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                misattunement=lambda _ut: self._CUE,
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "m1",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertIn(
+                "just gave a short reply", messages[0]["content"],
+            )
+
+    def test_empty_provider_drops_block(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="m2", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                misattunement=lambda _ut: "",
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "m2",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertNotIn(
+                "just gave a short reply", messages[0]["content"],
+            )
+
+    def test_provider_receives_user_text(self) -> None:
+        # Same shape as K6/K18 novelty/stagnation -- the provider
+        # signature takes the current user message so it can read
+        # length / topic-continuity off of it.
+        captured: list[str] = []
+
+        def provider(user_text: str) -> str:
+            captured.append(user_text)
+            return ""
+
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="m3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(misattunement=provider)
+            assembler.assemble_with_budget(
+                "m3",
+                "current user input here",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertEqual(captured, ["current user input here"])
+
+    def test_misattunement_survives_k16_replace_mode(self) -> None:
+        # K23 is explicitly NOT in the K16 suppression matrix --
+        # the fused grounding paragraph carries circadian / world /
+        # activity / affect signals but never length-shrink or
+        # topic-pivot signal, so K23 is additive.
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="m4", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                misattunement=lambda _ut: self._CUE,
+                grounding_line=lambda: (
+                    "It's Sunday afternoon. Jacob's reading low-energy."
+                ),
+                world=lambda: "World: at the desk.",
+                activity=lambda: "Jacob is in Cursor.",
+            )
+            assembler.set_grounding_line_mode("replace")
+            messages, _ = assembler.assemble_with_budget(
+                "m4",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertIn(
+                "just gave a short reply", messages[0]["content"],
+            )
+
+    def test_misattunement_not_dropped_under_aggressive(self) -> None:
+        # Like the K8 rupture and K17 clarification cues, K23 is a
+        # steering signal that benefits the aggressive turn -- pulling
+        # back IS exactly the kind of correction an aggressive turn
+        # wants.
+        calls: list[str] = []
+
+        def provider(user_text: str) -> str:
+            calls.append(user_text)
+            return self._CUE
+
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="m5", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(misattunement=provider)
+            messages, _ = assembler.assemble_with_budget(
+                "m5",
+                "x",
+                context_window=4096,
+                response_budget=256,
+                aggressive=True,
+            )
+            self.assertEqual(len(calls), 1)
+            self.assertIn(
+                "just gave a short reply", messages[0]["content"],
+            )
+
+
 class WallClockHistoryPrefixTests(unittest.TestCase):
     """K-time1: per-message ``[N min ago]`` prefix on chat history.
 

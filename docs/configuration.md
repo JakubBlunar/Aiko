@@ -47,6 +47,7 @@ exists to keep them in lock-step.
 | Reinforce "Aiko remembered" beats (callback detector) | `agent.callback_detector_enabled` | `true` |
 | Notice when {user_name} double-checks Aiko's claims (calibration) | `agent.calibration_detection_enabled` | `true` |
 | Let Aiko occasionally touch the room (sensory anchoring) | `agent.sensory_anchor_enabled` | `true` |
+| Pull back when {user} goes quiet (K23 misattunement) | `agent.misattunement_detection_enabled` | `true` |
 | Wall-clock prefixes on chat history (K-time1) | `agent.history_age_prefix_enabled` | `true` |
 | Master memory switch | `memory.enabled` | `true` |
 | RAG recall depth per turn | `memory.top_k` | `6` |
@@ -378,6 +379,25 @@ Optional fusion of seven "ambient" inner-life signals (circadian, world, activit
   - `"split"` — fused line replaces situational signals (circadian, world, activity, ambient_noise) but **keeps** trend-phrase blocks (affect, mood_hint, relationship, user_state) standalone.
 
   Verification: `provider_ms.grounding_line` in MCP `get_last_response_detail` is non-zero in `replace`/`split`, missing in `off`. Invalid values clamp to `"off"` with a debug log.
+
+### K23 — subtle misattunement detection
+
+Per-turn detector that fires `mild_disengagement` when {user} goes very short or pivots topics right after a substantial Aiko reply. Sits in the gap between K17 (explicit "no that's not what I meant" regex) and K14 (multi-turn engagement aggregate that needs warmup). The cue lands on the **same turn** that's about to reply — pulling back IS the next response.
+
+Two trigger paths, both gated by the cooldown:
+
+1. **Shrink**: `prev_aiko_words >= shrink_min_prev_words` AND `this_user_words <= shrink_max_user_words`. A one-word reply right after a 60-word answer reads as "you went quiet on me".
+2. **Pivot**: K6 [`NoveltyDetector`](../app/core/conversation/novelty_detector.py) flagged the current message as `strong_novelty` AND `this_user_words <= pivot_max_user_words`. A short pivot without engaging Aiko's last point.
+
+Either trigger fires the same cue ("pull back, lighter, drop the agenda, no apologies"); strong-vs-mild banding is intentionally not modelled in the MVP — the cooldown gate keeps the cue rare enough that a single voicing is sufficient.
+
+- `agent.misattunement_detection_enabled` *(bool, `true`)* — master switch. Off → provider short-circuits to empty string and the cooldown counter stops moving (the master switch is checked BEFORE the cooldown decrement, so flipping off doesn't quietly drain any pending counter).
+- `agent.misattunement_shrink_min_prev_words` *(int, `30`, min `0`)* — minimum word count on Aiko's prior assistant reply to consider it "substantial enough that a short user follow-up reads as drift". Raise to 50+ for a stricter "only after long answers" threshold; lower to 15 for a more sensitive cue that fires after medium replies too. `0` effectively makes the shrink path fire on any user reply that's short enough.
+- `agent.misattunement_shrink_max_user_words` *(int, `8`, min `0`)* — maximum word count on the current user message to count as "very short". One-word replies like "ok"/"yeah"/"nice" sit well below this; full short-thoughts ("yeah, that makes sense to me") cross 8 and read as engaged. Lower to 4 for a stricter "literally one-word" gate; raise to 12 to catch slightly longer terse replies.
+- `agent.misattunement_pivot_max_user_words` *(int, `8`, min `0`)* — same shape as the shrink-user cap but for the pivot trigger. Mirrored separately so you can tune them independently (e.g. allow longer pivots to count as drift while keeping the shrink cap tight).
+- `agent.misattunement_cooldown_turns` *(int, `3`, min `0`)* — turns of cooldown after a fire. Decremented by 1 on every provider call regardless of trigger state; armed back to this value whenever the detector fires. `0` disables the cooldown entirely (every eligible turn fires); higher values keep the cue rare. The conditions for the trigger can persist across consecutive turns when {user} is genuinely busy, so the cooldown is the main protection against the cue stacking.
+
+Verification: enable INFO logging on `app.misattunement_detector` and watch for `misattunement-detector: trigger=… prev_aiko=… this_user=… novelty_band=… cooldown_set=…`. The MCP tools `get_misattunement_state()` and `force_misattunement()` cover end-to-end repro without waiting for an organic trigger. Tests: `tests/test_misattunement_detector.py`, `tests/test_misattunement_provider.py`, `MisattunementProviderTests` in `tests/test_prompt_assembler.py`, `MisattunementSettingsTests` in `tests/test_settings.py`.
 
 ### K-time1 — wall-clock prefixes on chat history
 
