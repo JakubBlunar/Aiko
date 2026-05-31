@@ -17,6 +17,7 @@ The module's contract:
 """
 from __future__ import annotations
 
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -38,16 +39,22 @@ class _DeterministicEmbedder:
 
     16-D bag-of-words; differing summaries embed to differing
     vectors, which keeps the cosine-dedupe step happy when several
-    distinct seeded goals coexist in one test.
+    distinct seeded goals coexist in one test. Uses md5 instead of
+    ``hash()`` so the same token always maps to the same slot
+    regardless of ``PYTHONHASHSEED``.
     """
 
     DIM = 16
 
+    @staticmethod
+    def _slot(token: str) -> int:
+        digest = hashlib.md5(token.encode("utf-8")).digest()
+        return int.from_bytes(digest[:4], "little") % _DeterministicEmbedder.DIM
+
     def embed(self, text: str) -> np.ndarray:
         vec = np.zeros(self.DIM, dtype=np.float32)
         for token in text.lower().split():
-            slot = hash(token) % self.DIM
-            vec[slot] += 1.0
+            vec[self._slot(token)] += 1.0
         norm = float(np.linalg.norm(vec))
         if norm > 0.0:
             vec /= norm

@@ -24,6 +24,7 @@ producing chunks; ``run`` returning a JSON string).
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import threading
@@ -50,15 +51,22 @@ from app.core.memory.memory_store import MemoryStore
 class _DeterministicEmbedder:
     """Mirror of the helper used by the F2 tests — keeps related text
     in nearby slots so the gap-resolution path can write an answer.
+
+    Uses md5 instead of ``hash()`` so the same token always maps to the
+    same slot regardless of ``PYTHONHASHSEED``.
     """
 
     DIM = 16
 
+    @staticmethod
+    def _slot(token: str) -> int:
+        digest = hashlib.md5(token.encode("utf-8")).digest()
+        return int.from_bytes(digest[:4], "little") % _DeterministicEmbedder.DIM
+
     def embed(self, text: str) -> np.ndarray:
         vec = np.zeros(self.DIM, dtype=np.float32)
         for token in text.lower().split():
-            slot = hash(token) % self.DIM
-            vec[slot] += 1.0
+            vec[self._slot(token)] += 1.0
         norm = float(np.linalg.norm(vec))
         if norm > 0.0:
             vec /= norm

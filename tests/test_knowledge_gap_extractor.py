@@ -11,6 +11,7 @@ Covers:
 """
 from __future__ import annotations
 
+import hashlib
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -29,17 +30,24 @@ from app.core.services.response_text_service import strip_all_meta_tags
 
 
 class _DeterministicEmbedder:
-    """Returns embeddings stable enough that similar text clusters."""
+    """Token-slot embedder so similar text clusters reliably across runs.
+
+    Uses md5 instead of ``hash()`` so the same token always maps to the
+    same slot regardless of ``PYTHONHASHSEED`` (which is randomised by
+    default, making similar-content tests intermittently flaky).
+    """
 
     DIM = 16
 
+    @staticmethod
+    def _slot(token: str) -> int:
+        digest = hashlib.md5(token.encode("utf-8")).digest()
+        return int.from_bytes(digest[:4], "little") % _DeterministicEmbedder.DIM
+
     def embed(self, text: str) -> np.ndarray:
-        # Encode each token into a slot so related tokens overlap, but
-        # the function stays simple: every word picks its slot via hash.
         vec = np.zeros(self.DIM, dtype=np.float32)
         for token in text.lower().split():
-            slot = hash(token) % self.DIM
-            vec[slot] += 1.0
+            vec[self._slot(token)] += 1.0
         norm = float(np.linalg.norm(vec))
         if norm > 0.0:
             vec /= norm

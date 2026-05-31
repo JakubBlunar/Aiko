@@ -1,6 +1,7 @@
 """Tests for :mod:`app.core.memory.memory_conflict_worker`."""
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import threading
@@ -33,15 +34,23 @@ class _TokenEmbedder:
     tokens is small enough that two sentences sharing N of K tokens
     yield cosine ~= N / K. That lets the tests construct pairs that
     land squarely in the worker's 0.80-0.92 band.
+
+    Uses md5 instead of ``hash()`` so the same token always maps to the
+    same slot regardless of ``PYTHONHASHSEED`` (otherwise the carefully
+    tuned cosine bands flip from run to run).
     """
 
     DIM = 64
 
+    @staticmethod
+    def _slot(token: str) -> int:
+        digest = hashlib.md5(token.encode("utf-8")).digest()
+        return int.from_bytes(digest[:4], "little") % _TokenEmbedder.DIM
+
     def embed(self, text: str) -> np.ndarray:
         vec = np.zeros(self.DIM, dtype=np.float32)
         for token in text.lower().split():
-            slot = hash(token) % self.DIM
-            vec[slot] += 1.0
+            vec[self._slot(token)] += 1.0
         norm = float(np.linalg.norm(vec))
         if norm > 0.0:
             vec /= norm

@@ -1,6 +1,7 @@
 """Tests for :mod:`app.core.relationship.belief_worker`."""
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import threading
@@ -19,12 +20,23 @@ from app.core.memory.fact_check_rate_limiter import FactCheckRateLimiter
 
 
 class _StubEmbedder:
-    """Deterministic 4-dim embedder so tests can assert on the cosine path."""
+    """Deterministic 4-dim embedder so tests can assert on the cosine path.
+
+    Uses md5 instead of ``hash()`` so the same token maps to the same
+    slot across Python runs (``PYTHONHASHSEED`` is randomised by default).
+    """
+
+    DIM = 4
+
+    @staticmethod
+    def _slot(token: str) -> int:
+        digest = hashlib.md5(token.encode("utf-8")).digest()
+        return int.from_bytes(digest[:4], "little") % _StubEmbedder.DIM
 
     def embed(self, text: str) -> np.ndarray:
-        vec = np.zeros(4, dtype=np.float32)
+        vec = np.zeros(self.DIM, dtype=np.float32)
         for token in (text or "").lower().split():
-            vec[hash(token) % 4] += 1.0
+            vec[self._slot(token)] += 1.0
         norm = float(np.linalg.norm(vec))
         if norm > 0.0:
             vec /= norm

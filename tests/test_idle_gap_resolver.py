@@ -38,8 +38,9 @@ class _DeterministicEmbedder:
     """Stable token-slot embedder. Uses md5 instead of ``hash()`` so the
     same string maps to the same slot across Python runs (PYTHONHASHSEED
     is randomized by default, which made similar-content tests flaky in
-    the F2 suite). See ``tests/test_knowledge_gap_extractor.py`` for the
-    older hash-based version that pre-dates this fix.
+    the F2 suite). The same pattern is mirrored across every
+    ``_DeterministicEmbedder`` / ``_StubEmbedder`` / ``_TokenEmbedder``
+    helper in the test suite.
     """
 
     DIM = 16
