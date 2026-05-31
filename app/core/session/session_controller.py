@@ -1254,6 +1254,7 @@ class SessionController(
             sensory_anchor=self._render_sensory_anchor_block,
             rupture=self._render_rupture_block,
             misattunement=self._render_misattunement_block,
+            opinion_injection=self._render_opinion_injection_block,
             absence_curiosity=self._render_absence_curiosity_block,
             mood_shell=self._render_mood_shell_block,
             novelty=self._render_novelty_block,
@@ -2037,6 +2038,46 @@ class SessionController(
                 self._memory_conflict_worker = None
                 self._memory_conflict_rate_limiter = None
 
+        # K29 — opinion-injection rate limiter (LLM YES/NO gate on
+        # borderline-heuristic stance contradictions). Independent
+        # ``state_key`` so the budget can't be exhausted by the F5
+        # conflict detector or the K2 belief worker. Lives off the
+        # same ``FactCheckRateLimiter`` plumbing all three share.
+        # Off-by-default if the chat_db isn't available (in-memory
+        # transient configurations); the detector silently falls
+        # back to Path C (definite-only) in that case via the
+        # caller's ``llm_gate=None`` branch.
+        if self._chat_db is not None:
+            try:
+                from app.core.memory.fact_check_rate_limiter import (
+                    FactCheckRateLimiter,
+                )
+
+                self._opinion_injection_rate_limiter = FactCheckRateLimiter(
+                    self._chat_db,
+                    per_hour_cap=int(
+                        getattr(
+                            self._memory_settings,
+                            "opinion_injection_per_hour_cap",
+                            6,
+                        )
+                    ),
+                    per_day_cap=int(
+                        getattr(
+                            self._memory_settings,
+                            "opinion_injection_per_day_cap",
+                            30,
+                        )
+                    ),
+                    state_key="opinion_injection.rate_state",
+                )
+            except Exception:
+                log.warning(
+                    "OpinionInjection rate limiter init failed",
+                    exc_info=True,
+                )
+                self._opinion_injection_rate_limiter = None
+
         # K2 — theory-of-mind / belief tracking. Always builds the store
         # (the [[predict:...]] tag dispatch + REST endpoints need it
         # even when the worker is disabled), then conditionally builds
@@ -2071,6 +2112,21 @@ class SessionController(
         self._misattunement_force_next: bool = False
         self._last_misattunement_trigger: str | None = None
         self._last_misattunement_fire_turn: int | None = None
+        # K29 — opinion-injection detector state. Same provider-time
+        # shape as K23 (same-turn reaction), with two extra guards
+        # against contrarianism: a per-session cap and an LLM
+        # rate-limiter for the borderline-heuristic path. The
+        # rate-limiter is constructed lazily below once the chat_db
+        # is known; the per-session count resets on session boundary
+        # via ``switch_session`` / ``clear_conversation_memory``.
+        # ``_last_opinion_injection`` carries the most recent
+        # :class:`OpinionInjectionResult` for the MCP debug tool;
+        # behaviour does not depend on it.
+        self._opinion_injection_cooldown: int = 0
+        self._opinion_injection_session_count: int = 0
+        self._opinion_injection_force_next: bool = False
+        self._last_opinion_injection: Any = None
+        self._opinion_injection_rate_limiter = None
         if (
             self._chat_db is not None
             and bool(getattr(settings.agent, "belief_tracking_enabled", True))
@@ -2632,6 +2688,11 @@ class SessionController(
         if not normalized:
             return
         self._session_id = normalized
+        # K29 — reset the per-session opinion-injection count so the
+        # cap applies to the new conversation, not the previous one.
+        # Cooldown survives so a fresh switch doesn't accidentally
+        # re-fire on the same beat that the prior session ended on.
+        self._opinion_injection_session_count = 0
         # Best-effort: a write failure (read-only volume, locked file)
         # must not break the in-memory switch — the user just lands
         # back on whatever was previously persisted on next launch.
@@ -2691,6 +2752,13 @@ class SessionController(
     def clear_conversation_memory(self) -> None:
         self._clear_merge_buffer()
         self._chat_db.clear_messages(self.session_key, full_reset=True)
+        # K29 — wiping the conversation also resets per-session
+        # counters; the cap is about *this conversation*, not the
+        # process lifetime.
+        self._opinion_injection_session_count = 0
+        self._opinion_injection_cooldown = 0
+        self._opinion_injection_force_next = False
+        self._last_opinion_injection = None
 
     def _clear_merge_buffer(self, session_key: str | None = None) -> None:
         """Drop the voice merge buffer (one specific session, or all).

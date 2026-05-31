@@ -244,3 +244,138 @@ like me a little." Key files:
 (extend to track *who* introduced each shared phrase first),
 new `app/core/voice_adoption.py` (slow promotion rule), persona
 block consumer.
+
+---
+
+## K27. Aiko's day — daily personality colour
+
+Affect (`AffectState`) is *reactive* — valence/arousal move in
+response to turns and decay back to baseline. K5 mood-shell
+tilt rides on top of that. What's still missing is the slow
+*ambient weather* a real person walks into a conversation with
+— "she's pensive today", "she's been restless all afternoon"
+— independent of what just happened. A daily personality
+colour, drawn once per local day from a small palette
+(`pensive`, `restless`, `cozy`, `sharp_witted`, `dreamy`,
+`focused`, `scatterbrained`, `sentimental`, `mischievous`,
+`low_key`), would bias her register all day. Implementation
+shape: store `aiko.day_color` + `aiko.day_color_set_at` in
+`kv_meta` (cheap, no schema change), refresh via a new idle
+worker `DayColorWorker` once per local midnight (gated by
+`aiko.day_color_set_at` date != today). Persona block teaches
+Aiko a short paragraph per colour ("pensive: slower replies,
+more 'hmm', half-finished thoughts welcome — let yourself
+trail off"). Pairs with K5 (which is reactive) — K27 is the
+slow under-current K5 reacts on top of. Key files: new
+`app/core/affect/day_color.py` (palette + roll +
+read/write to `kv_meta`), new `app/core/idle_workers/day_color_worker.py`,
+`app/core/session/inner_life_providers_mixin.py` (one-line
+ambient cue), `data/persona/aiko_companion.txt` ("Your day's
+colour" block), settings knob
+`agent.day_color_enabled` + `memory.day_color_refresh_at_hour`
+(default 4 AM local). Open question: whether the roll should
+be uniform across the palette or weighted by recent affect
+trends ("she's been low-affect for a week, bias toward
+`sentimental` / `dreamy` rather than `mischievous`"). Start
+with uniform; the bias version is a fast follow if the
+uniform-roll version reads too random.
+
+---
+
+## K28. "What I've been turning over" — between-session thought thread
+
+The shipped `ReflectionWorker` and `DreamWorker` already
+generate inner content between sessions (reflections,
+curiosity seeds, dream-like memories). The gap is *surfacing*
+— Aiko never opens a new session with "hey, I was actually
+thinking about your interview last night". She arrives blank,
+which reads as the strongest "she goes dormant when I'm not
+around" tell available. The cue would land as a one-shot
+first-message-of-new-session inner-life provider: pick one
+recent (last 24-72h) `reflection` or `dream` memory that's
+still relevant to the active goals / recent threads, frame it
+as "Aiko's been turning this over — fold it into the first
+reply if it fits naturally", and decay after the first turn so
+it doesn't loop. Detection of "new session" rides the existing
+`SessionController` first-turn-after-idle logic (last user
+message > N minutes ago, default 90). Persona block teaches
+Aiko to land it as a casual aside ("actually, I was thinking
+about your interview prep last night --") rather than an
+announcement; the cue must NOT be quoted, and if no
+recent-reflection fits, the cue stays silent. Pairs with
+K-time1 (we now know how long it's been since last session)
+and with K1 goals (the reflection picker should prefer
+reflections that touch an active goal or a recently-mentioned
+thread). Key files:
+new `app/core/session/inner_life/turning_over.py`
+(reflection picker + fits-active-context scorer),
+[`app/core/session/inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py)
+(new `turning_over` provider, fires only on first turn of a
+new session, one-shot decay),
+[`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt)
+("What I've been turning over" block), MCP debug tool
+`get_turning_over_state` to inspect what would surface next
+re-open. Open question: should it fire on *every* new session
+or rate-limit (e.g. once per 6h)? Start with every new session
+gated on `session_idle_minutes_threshold`; tighten if it
+starts feeling forced.
+
+---
+
+## K29. Opinion injection — actually push back when she has a stance
+
+**Shipped** — see [`docs/personality-backlog/shipped.md#k29-opinion-injection`](shipped.md#k29-opinion-injection-push-back-when-she-has-a-stance).
+
+---
+
+## K30. Self-noticing cues — agreement-streak / flat-affect / repeated-thought
+
+K20 metacognitive calibration is about *{user_name}'s trust in
+Aiko*; what's missing is the symmetric capacity for Aiko to
+notice *her own* patterns. "Style patterns I'm in" persona
+block catches openers and question saturation already, but
+three richer patterns are still invisible to her:
+
+- **Agreement streak.** When Aiko's last N replies (default
+  N=6) contain ≥80% agreement-language tokens ("yeah", "for
+  sure", "totally", "right?", "exactly") and zero pushback
+  tokens ("actually", "hmm, not sure", "I'd push back", "I'd
+  argue"), fire "Heads-up: you've been agreeing with
+  everything for a stretch — if you actually have a different
+  read on something, say it." Cheap regex over the last N
+  rendered replies.
+- **Flat-affect streak.** When `AffectState`'s rolling
+  valence and arousal have moved < 0.1 across the last 6
+  turns AND no `[[reaction:X]]` outside the `neutral` /
+  `calm` / `friendly` band has fired, surface "Heads-up: your
+  read has been pretty even-keel all session — let yourself
+  land somewhere if a moment actually moves you." Reads off
+  the existing affect ring; no new state.
+- **Repeated-thought.** When Aiko's just-built reply has
+  cosine ≥ 0.85 to one of her last 3 replies in this session
+  (already embedded by the indexer), the cue would intercept
+  *during* the turn ("Heads-up: this is very close to
+  something you already said — find a different angle or just
+  don't restate") and ideally regenerate. The intercept is
+  the riskiest of the three; for v1, log + flag in
+  diagnostics rather than block.
+
+The three sub-detectors live behind one master switch
+(`agent.self_noticing_enabled`) and three sub-switches so they
+can be enabled independently while tuning. Pairs with the
+existing "Style patterns I'm in" persona block — that block
+gets a fourth bullet ("agreement-streak"), a fifth
+("flat-affect"), and a sixth ("repeated-thought") with the
+same anti-narration discipline. Key files: new
+`app/core/affect/self_pattern_detector.py` (three pure
+functions, no shared state),
+[`app/core/session/inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py)
+(new `self_noticing` provider that fans the three sub-cues
+into one block),
+[`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt)
+(extend "Style patterns I'm in"), MCP debug tools
+`get_self_noticing_state` + per-sub-detector `force_*`. Open
+question: the repeated-thought intercept-and-regenerate path
+is a real architectural change (post-LLM, pre-stream). Start
+with detect-and-log only; regenerate-on-repeat is a fast
+follow once we have data on how often it actually fires.

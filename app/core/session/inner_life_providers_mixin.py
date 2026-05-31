@@ -938,6 +938,246 @@ class InnerLifeProvidersMixin:
             log.debug("misattunement render failed", exc_info=True)
             return ""
 
+    def _render_opinion_injection_block(self, user_text: str) -> str:
+        """K29: surface a per-turn cue when a stored stance contradicts {user}.
+
+        Sibling of :meth:`_render_misattunement_block` -- both are
+        provider-time detectors that fire the cue on the same turn the
+        user message arrives, not the turn after. The anti-
+        contrarianism guardrails are layered:
+
+        * Master switch (``agent.opinion_injection_enabled``) flips
+          the whole feature off without a code change.
+        * Cooldown counter decremented every call; armed on fire.
+          Default 5 turns -- longer than K23's 3 because a stance
+          disagreement is a heavier beat than a soft-drift cue.
+        * Per-session cap (``memory.opinion_injection_per_session_cap``,
+          default 3). Five fires in one session almost certainly
+          means the detector is misfiring; the cap silently
+          suppresses the rest.
+        * Predicate filter on stance memories (lives in the detector
+          module). Only opinion-shaped self-tags qualify, not
+          biographical facts.
+        * Heuristic + LLM gate (lives in the detector module).
+          Only ``definite`` contradictions fire immediately;
+          ``borderline`` requires an LLM YES verdict via the
+          rate-limited ``FactCheckRateLimiter``.
+
+        MCP debug: ``force_opinion_injection`` arms a one-shot
+        ``_opinion_injection_force_next`` that bypasses cooldown +
+        per-session cap (but NOT the predicate filter / cosine /
+        heuristic gates -- a forced bypass on an unrelated message
+        still silently expires when no stance contradicts).
+        """
+        if not bool(
+            getattr(self._settings.agent, "opinion_injection_enabled", True)
+        ):
+            return ""
+        try:
+            from app.core.affect import opinion_injection_detector
+        except Exception:
+            log.debug("opinion-injection import failed", exc_info=True)
+            return ""
+
+        # Decrement cooldown first so a quiet turn always whittles
+        # the counter down; otherwise a session that never trips a
+        # trigger keeps a stale armed cooldown forever.
+        current_cooldown = max(
+            0, int(getattr(self, "_opinion_injection_cooldown", 0))
+        )
+        if current_cooldown > 0:
+            self._opinion_injection_cooldown = current_cooldown - 1
+
+        # MCP-debug bypass: ``force_next`` ignores cooldown + cap for
+        # this one call. Cleared whether we fire or not so the
+        # bypass is strictly one-turn.
+        force_next = bool(
+            getattr(self, "_opinion_injection_force_next", False)
+        )
+        if force_next:
+            self._opinion_injection_force_next = False
+
+        if not force_next:
+            if self._opinion_injection_cooldown > 0:
+                return ""
+            session_cap = max(
+                0,
+                int(
+                    getattr(
+                        self._memory_settings,
+                        "opinion_injection_per_session_cap",
+                        3,
+                    )
+                ),
+            )
+            session_count = int(
+                getattr(self, "_opinion_injection_session_count", 0)
+            )
+            if session_cap > 0 and session_count >= session_cap:
+                return ""
+
+        memory_store = getattr(self, "_memory_store", None)
+        embedder = getattr(self, "_embedder", None)
+        if memory_store is None or embedder is None:
+            return ""
+
+        try:
+            self_memories = list(memory_store.iter_by_kind("self"))
+        except Exception:
+            log.debug("opinion-injection: self memory snapshot failed", exc_info=True)
+            return ""
+        if not self_memories:
+            return ""
+
+        try:
+            user_vec = embedder.embed(user_text or "")
+        except Exception:
+            log.debug("opinion-injection: embedder failed", exc_info=True)
+            return ""
+
+        # Optional LLM gate for the borderline path. ``llm_gate=None``
+        # cleanly skips the LLM branch and degrades to Path C
+        # (definite-only). The detector itself owns the heuristic
+        # call; this lambda only fires when classify_pair returns
+        # ``borderline``.
+        llm_gate = None
+        rate_limiter = getattr(self, "_opinion_injection_rate_limiter", None)
+        ollama_client = getattr(self, "_ollama", None)
+        if (
+            rate_limiter is not None
+            and ollama_client is not None
+            and not bool(
+                getattr(
+                    self._settings.agent,
+                    "opinion_injection_require_definite",
+                    False,
+                )
+            )
+        ):
+            def _gate(user_t: str, stance_t: str) -> str | None:
+                try:
+                    if not rate_limiter.allow():
+                        return None
+                except Exception:
+                    log.debug(
+                        "opinion-injection: rate_limiter raised", exc_info=True
+                    )
+                    return None
+                return self._opinion_injection_llm_verdict(
+                    user_t, stance_t,
+                )
+
+            llm_gate = _gate
+
+        memory_settings = self._memory_settings
+        agent_settings = self._settings.agent
+        try:
+            result = opinion_injection_detector.detect(
+                user_text or "",
+                user_vec=user_vec,
+                self_memories=self_memories,
+                llm_gate=llm_gate,
+                min_cosine=float(
+                    getattr(
+                        memory_settings,
+                        "opinion_injection_min_cosine",
+                        opinion_injection_detector.DEFAULT_MIN_COSINE,
+                    )
+                ),
+                min_user_words=int(
+                    getattr(
+                        memory_settings,
+                        "opinion_injection_min_user_words",
+                        opinion_injection_detector.DEFAULT_MIN_USER_WORDS,
+                    )
+                ),
+                require_definite=bool(
+                    getattr(
+                        agent_settings,
+                        "opinion_injection_require_definite",
+                        False,
+                    )
+                ),
+            )
+        except Exception:
+            log.debug("opinion-injection detector raised", exc_info=True)
+            return ""
+
+        if result is None:
+            return ""
+
+        # Arm cooldown, bump per-session count, stash diagnostics
+        # for the MCP debug tool. ``last_opinion_injection`` is the
+        # full result dataclass so the tool can show heuristic
+        # signals + the matched stance text.
+        cooldown_turns = max(
+            0,
+            int(
+                getattr(
+                    self._memory_settings,
+                    "opinion_injection_cooldown_turns",
+                    5,
+                )
+            ),
+        )
+        self._opinion_injection_cooldown = cooldown_turns
+        self._opinion_injection_session_count = (
+            int(getattr(self, "_opinion_injection_session_count", 0)) + 1
+        )
+        self._last_opinion_injection = result
+
+        log.info(
+            "opinion-injection fire: trigger=%s cosine=%.3f stance_id=%d "
+            "heuristic=%s signals=%s llm_verdict=%s cooldown_set=%d "
+            "session_count=%d",
+            result.trigger,
+            result.cosine,
+            result.stance_memory_id,
+            result.heuristic_label,
+            ",".join(result.heuristic_signals) or "-",
+            result.llm_verdict or "-",
+            cooldown_turns,
+            self._opinion_injection_session_count,
+        )
+
+        try:
+            return opinion_injection_detector.render_inner_life_block(
+                result,
+                user_display_name=self.user_display_name,
+            )
+        except Exception:
+            log.debug("opinion-injection render failed", exc_info=True)
+            return ""
+
+    def _opinion_injection_llm_verdict(
+        self,
+        user_text: str,
+        stance_text: str,
+    ) -> str | None:
+        """One-shot YES/NO/UNRELATED gate for borderline-heuristic stances.
+
+        Mirrors the F5 conflict-detector's ``_verify_with_llm`` (same
+        Ollama call shape, same JSON schema, same parse path) but
+        scoped to the K29 prompt: "does the user's claim contradict
+        Aiko's stored stance". Returns the bare verdict string for
+        the detector; ``None`` on any error / parse failure / cancel.
+        """
+        ollama_client = getattr(self, "_ollama", None)
+        if ollama_client is None:
+            return None
+        try:
+            from app.core.affect import opinion_injection_llm as _llm
+        except Exception:
+            log.debug("opinion-injection llm module missing", exc_info=True)
+            return None
+        return _llm.verify(
+            ollama_client,
+            model=self._effective_chat_model,
+            user_text=user_text,
+            stance_text=stance_text,
+            cancel_event=getattr(self, "_fact_check_cancel", None),
+        )
+
     def _render_novelty_block(self, user_text: str) -> str:
         """K6: surface a one-line surprise/novelty signal for this turn.
 

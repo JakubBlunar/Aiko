@@ -49,6 +49,7 @@ exists to keep them in lock-step.
 | Let Aiko occasionally touch the room (sensory anchoring) | `agent.sensory_anchor_enabled` | `true` |
 | Pull back when {user} goes quiet (K23 misattunement) | `agent.misattunement_detection_enabled` | `true` |
 | Hedge old claims with time-language (K25 confidence decay) | `agent.confidence_time_decay_enabled` | `true` |
+| Push back when she has a stance (K29 opinion injection) | `agent.opinion_injection_enabled` | `true` |
 | Wall-clock prefixes on chat history (K-time1) | `agent.history_age_prefix_enabled` | `true` |
 | Master memory switch | `memory.enabled` | `true` |
 | RAG recall depth per turn | `memory.top_k` | `6` |
@@ -427,6 +428,39 @@ Default behaviour at `horizon_days=365, floor=0.3, distant_threshold=0.5`:
 - `memory.confidence_decay_distant_threshold` *(float, `0.5`, range `[0, 1]`)* — effective-confidence value below which the `(distant)` suffix fires. Mirrors the existing `0.5` cutoff used for `(uncertain)`. Lower → only very-decayed claims hedge; higher → more hedging across the board.
 
 Verification: call MCP `get_confidence_decay_state(limit=20)` to see which memories would currently render with which suffix. Tweak `user.json`, restart, call again — the row's `effective_confidence` should shift and the `distant` flag should flip predictably. Tests: `tests/test_confidence_decay.py`, `FormatBlockDistantSuffixTests` in `tests/test_rag_retriever_scoring.py`, `ConfidenceDecaySettingsTests` in `tests/test_settings.py`.
+
+### K29 — opinion injection (push back when she has a stance)
+
+Per-turn detector that fires a one-line cue when {user_name}'s latest message contradicts one of Aiko's stored `kind="self"` stance memories. The whole feature exists to make the persona's "have opinions, disagree when you disagree" claim actually fire against LLM RLHF agreeability — without flipping into contrarianism or moralizing. The persona block ("When you have your own take" in [`data/persona/aiko_companion.txt`](../data/persona/aiko_companion.txt)) teaches Aiko to *share her preference as her own taste*, never to prescribe behaviour for the user, and includes concrete bad/good pairs for the lifestyle (smoking / horror / late-night) failure mode.
+
+Anti-contrarianism is layered (see [`docs/personality-backlog/shipped.md#k29-opinion-injection`](personality-backlog/shipped.md#k29-opinion-injection-push-back-when-she-has-a-stance) for the full decision flow):
+
+1. **Predicate filter** — only opinion-shaped stance memories qualify (`I prefer`, `I don't like`, `I love`, `I find ... <adj>`, `I'd rather`, etc.). Biographical facts (`I was born in Tokyo`, `I live in...`) never trigger the loop.
+2. **Cosine threshold** — top stance memory's cosine vs the live user message must clear `min_cosine`.
+3. **Heuristic gate** — re-uses F5's [`conflict_heuristics.classify_pair`](../app/core/memory/conflict_heuristics.py); `definite` (clear negation-flip or antonym hit on focused phrasing) fires immediately, no LLM call.
+4. **LLM YES/NO/UNRELATED gate** — on every non-`definite` path (verbose-stance contradictions that don't clear the heuristic's Jaccard threshold are *exactly* the cases the LLM should catch). Rate-limited via [`FactCheckRateLimiter`](../app/core/memory/fact_check_rate_limiter.py) (`state_key="opinion_injection.rate_state"`). The prompt is explicitly biased toward `NO` / `UNRELATED` when uncertain. Disabling the LLM path entirely (`agent.opinion_injection_require_definite=true`) restricts K29 to the cheap heuristic-only path (Path C); the default Path B uses the LLM as the real arbiter.
+5. **Cooldown + per-session cap** — cooldown=5 turns between fires; session cap=3 (silent suppression beyond the cap). Both reset on `switch_session` / `clear_conversation_memory`.
+
+Smoking walkthrough (the canonical lifestyle-stance failure mode the persona block was built around):
+
+1. Aiko has a stored stance memory: "I really don't like smoking, it gives me a headache" (`kind="self"`).
+2. {user_name} says: "I like smoking, helps me think."
+3. Predicate filter → opinion-shaped ✓. Cosine top match clears 0.55 ✓. `classify_pair` returns `definite` via negation-flip ✓. Cue fires.
+4. Aiko's prompt now contains the cue, and the persona block tells her to share her take in her own register ("ugh, that's not my favourite — smoke and I don't really get along") rather than lecturing ("you should quit, it's bad for you").
+
+If {user_name} instead said "I quit smoking last year — it was killing my sleep", the stance aligns with Aiko's, `classify_pair` returns `no`, and the cue stays silent. The cap and cooldown also reset to bound the worst-case (a detector that misfires can't dominate a conversation).
+
+Settings:
+
+- `agent.opinion_injection_enabled` *(bool, `true`)* — master switch. Off → provider short-circuits to empty string and the cooldown counter stops moving (checked BEFORE the decrement so flipping off doesn't quietly drain a pending counter).
+- `agent.opinion_injection_require_definite` *(bool, `false`)* — when `true`, drops the LLM gate entirely (Path C: definite-only). Zero LLM cost; only clear negation-flip / antonym hits fire. Useful for slow LLMs or as a temporary measure when the borderline path keeps surfacing false positives.
+- `memory.opinion_injection_min_cosine` *(float, `0.55`, range `[0, 1]`)* — top-cosine floor between the live user message and a stance memory's embedding. Higher (e.g. `0.65`) → only near-exact topical brushes count; lower (e.g. `0.45`) → easier topical match (more recall, more noise).
+- `memory.opinion_injection_min_user_words` *(int, `4`, min `0`)* — short messages ("ok", "yeah", "lol") never claim a contradiction (they're K23 territory). Set to `0` to disable the length gate.
+- `memory.opinion_injection_cooldown_turns` *(int, `5`, min `0`)* — turns of cooldown after a fire. Longer than K23's 3 because a stance disagreement is a heavier beat than a soft-drift cue. `0` disables.
+- `memory.opinion_injection_per_session_cap` *(int, `3`, min `0`)* — hard cap on fires per session. Five fires in one conversation almost certainly means the detector is misfiring; the cap silently suppresses the rest. `0` disables the cap (operator override; the cooldown still applies).
+- `memory.opinion_injection_per_hour_cap` *(int, `6`, min `0`)* and `memory.opinion_injection_per_day_cap` *(int, `30`, min `0`)* — LLM-gate budgets for the borderline path. Independent from F5's conflict-detector budget (different `state_key`). Setting either to `0` disables the LLM gate (effectively `require_definite=true`).
+
+Verification: enable INFO logging on `app.session` and watch for `opinion-injection fire: trigger=… cosine=… stance_id=… heuristic=… signals=… llm_verdict=… cooldown_set=… session_count=…` on every fire. The MCP tools `get_opinion_injection_state()` and `force_opinion_injection()` cover end-to-end repro without waiting for an organic trigger; the `get_opinion_injection_state` payload includes the rate-limiter snapshot, the last-fire diagnostics, and the live settings snapshot so the tuning loop is "tweak `user.json`, restart, call the tool, see how the rendered cue would change". Tests: `tests/test_opinion_injection_detector.py`, `tests/test_opinion_injection_provider.py`, `OpinionInjectionProviderTests` in `tests/test_prompt_assembler.py`, `OpinionInjectionSettingsTests` in `tests/test_settings.py`.
 
 ### K-time1 — wall-clock prefixes on chat history
 
