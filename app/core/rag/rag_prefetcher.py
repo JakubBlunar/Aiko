@@ -29,6 +29,9 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable, Iterable
 
 from app.core.rag.rag_retriever import (
+    _CONFIDENCE_DECAY_DEFAULT_FLOOR,
+    _CONFIDENCE_DECAY_DEFAULT_HORIZON_DAYS,
+    _CONFIDENCE_DECAY_DEFAULT_THRESHOLD,
     _FADED_DEFAULT_IDLE_DAYS,
     _FADED_DEFAULT_SALIENCE_THRESHOLD,
 )
@@ -228,6 +231,26 @@ class RagPrefetcher:
                 ),
                 faded_idle_days=getattr(
                     self._retriever, "_faded_idle_days", _FADED_DEFAULT_IDLE_DAYS,
+                ),
+                confidence_time_decay_enabled=getattr(
+                    self._retriever,
+                    "_confidence_time_decay_enabled",
+                    True,
+                ),
+                confidence_decay_horizon_days=getattr(
+                    self._retriever,
+                    "_confidence_decay_horizon_days",
+                    _CONFIDENCE_DECAY_DEFAULT_HORIZON_DAYS,
+                ),
+                confidence_decay_floor=getattr(
+                    self._retriever,
+                    "_confidence_decay_floor",
+                    _CONFIDENCE_DECAY_DEFAULT_FLOOR,
+                ),
+                confidence_decay_distant_threshold=getattr(
+                    self._retriever,
+                    "_confidence_decay_distant_threshold",
+                    _CONFIDENCE_DECAY_DEFAULT_THRESHOLD,
                 ),
             )
         except Exception:

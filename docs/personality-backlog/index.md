@@ -73,7 +73,6 @@ K11 counterfactual cache · K12 calendar-linked anticipation ·
 K15 self-disclosure / vulnerability budget ·
 K19 cold-start companion onboarding ·
 K21 fresh-eyes thread re-summary ·
-K25 memory confidence time-decay ·
 K26 Aiko-side voice evolution.
 
 (K1 long-term goals, K2 theory-of-mind, K3 routine awareness,
@@ -83,7 +82,8 @@ K14 implicit engagement signals, K16 unified ambient grounding line,
 K17 clarification-repair, K18 topic stagnation,
 K20 metacognitive calibration, K22 callback /
 inside-joke detector, K23 subtle misattunement detection,
-and K24 sensory anchoring layer have shipped —
+K24 sensory anchoring layer, and
+K25 memory confidence time-decay have shipped —
 see [`shipped.md`](shipped.md).)
 
 ### P. Performance + observability — [`perf.md`](perf.md)

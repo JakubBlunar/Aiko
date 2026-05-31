@@ -618,5 +618,125 @@ class MisattunementSettingsTests(unittest.TestCase):
         self.assertEqual(result.agent.misattunement_cooldown_turns, 0)
 
 
+class ConfidenceDecaySettingsTests(unittest.TestCase):
+    """K25: agent master switch + 3 memory knobs round-trip with clamps."""
+
+    _CD_AGENT_KEYS = ("confidence_time_decay_enabled",)
+    _CD_MEMORY_KEYS = (
+        "confidence_decay_horizon_days",
+        "confidence_decay_floor",
+        "confidence_decay_distant_threshold",
+    )
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(
+        self,
+        agent_extra: dict | None = None,
+        memory_extra: dict | None = None,
+        strip_keys: bool = True,
+    ) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(
+            json.loads(default_path.read_text(encoding="utf-8"))
+        )
+        if strip_keys:
+            for k in self._CD_AGENT_KEYS:
+                cfg.get("agent", {}).pop(k, None)
+            for k in self._CD_MEMORY_KEYS:
+                cfg.get("memory", {}).pop(k, None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        if memory_extra is not None:
+            cfg["memory"] = {**cfg.get("memory", {}), **memory_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults_load_when_keys_missing(self) -> None:
+        path = self._write_config()
+        result = load_settings(config_path=path)
+        self.assertTrue(result.agent.confidence_time_decay_enabled)
+        self.assertEqual(result.memory.confidence_decay_horizon_days, 365)
+        self.assertAlmostEqual(result.memory.confidence_decay_floor, 0.3)
+        self.assertAlmostEqual(
+            result.memory.confidence_decay_distant_threshold, 0.5,
+        )
+
+    def test_overrides_round_trip(self) -> None:
+        path = self._write_config(
+            agent_extra={"confidence_time_decay_enabled": False},
+            memory_extra={
+                "confidence_decay_horizon_days": 90,
+                "confidence_decay_floor": 0.1,
+                "confidence_decay_distant_threshold": 0.4,
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.confidence_time_decay_enabled)
+        self.assertEqual(result.memory.confidence_decay_horizon_days, 90)
+        self.assertAlmostEqual(result.memory.confidence_decay_floor, 0.1)
+        self.assertAlmostEqual(
+            result.memory.confidence_decay_distant_threshold, 0.4,
+        )
+
+    def test_horizon_days_clamped_to_one(self) -> None:
+        # horizon_days <= 0 would zero-divide in the helper. Parser
+        # floors at 1.
+        path = self._write_config(
+            memory_extra={
+                "confidence_decay_horizon_days": 0,
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertEqual(result.memory.confidence_decay_horizon_days, 1)
+
+        # Negative inputs clamp to 1 too.
+        path = self._write_config(
+            memory_extra={
+                "confidence_decay_horizon_days": -50,
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertEqual(result.memory.confidence_decay_horizon_days, 1)
+
+    def test_floor_and_threshold_clamp_unit_interval(self) -> None:
+        # Both float knobs sit in [0, 1] with the standard parser
+        # clamp pattern.
+        path = self._write_config(
+            memory_extra={
+                "confidence_decay_floor": -0.5,
+                "confidence_decay_distant_threshold": -0.2,
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertAlmostEqual(result.memory.confidence_decay_floor, 0.0)
+        self.assertAlmostEqual(
+            result.memory.confidence_decay_distant_threshold, 0.0,
+        )
+
+        path = self._write_config(
+            memory_extra={
+                "confidence_decay_floor": 5.0,
+                "confidence_decay_distant_threshold": 99.0,
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertAlmostEqual(result.memory.confidence_decay_floor, 1.0)
+        self.assertAlmostEqual(
+            result.memory.confidence_decay_distant_threshold, 1.0,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

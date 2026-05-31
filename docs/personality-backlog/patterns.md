@@ -219,25 +219,9 @@ See [`shipped.md` → K24](shipped.md#k24-sensory-anchoring-layer--adaptive-per-
 
 ## K25. Memory confidence time-decay
 
-F3 stamps a confidence float on each memory at write time, and
-the conflict detector / belief gap detector both read it, but
-nothing decays confidence over time. A claim Jacob made 90 days
-ago is just as confidently rendered as one from yesterday — and
-that's exactly when Aiko should hedge ("I think you mentioned
-something about Thai food a while back? Don't quote me on that").
-Cheap to bolt on: a derived
-`effective_confidence = stored_confidence * max(0.3, 1 - days_since_observed / 365)`
-read at retrieval time (no schema change, no migration). The RAG
-retriever picks `(uncertain)` / `(faded)` / no-suffix tiers off
-the derived value rather than the stored one, and a small
-persona rule turns the suffix into a verbal hedge. Pairs
-directly with K7 (forgetting protocol) — K7 hedges by *tier*
-(archive → faded), K25 hedges by *age* even within long_term.
-Key files:
-[`app/core/rag/rag_retriever.py`](../../app/core/rag/rag_retriever.py)
-`format_block` + the existing `(uncertain)` suffix path,
-[`app/core/memory/memory_store.py`](../../app/core/memory/memory_store.py)
-(read-side helper, no write).
+**Shipped** — read-side `effective_confidence` with a new
+`(distant)` suffix distinct from `(uncertain)` and `(faded)`. See
+[`shipped.md` → K25](shipped.md#k25-memory-confidence-time-decay).
 
 ---
 

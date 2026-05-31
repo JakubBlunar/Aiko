@@ -50,6 +50,7 @@ def _memory_record(
     use_count: int = 0,
     kind: str = "fact",
     salience: float = 0.5,
+    created_at: str | None = None,
 ) -> MemoryRecord:
     return MemoryRecord(
         id=record_id,
@@ -58,7 +59,7 @@ def _memory_record(
         salience=salience,
         source_session=None,
         source_message_id=None,
-        created_at=_iso_hours_ago(48),  # arbitrary; not under test
+        created_at=created_at or _iso_hours_ago(48),
         last_used_at=last_used_at,
         use_count=use_count,
     )
@@ -820,6 +821,202 @@ class FormatBlockFadedSuffixTests(unittest.TestCase):
         )
         block = RagRetriever.format_block([hit], user_display_name="Friend")
         self.assertIn("(faded)", block)
+
+
+class FormatBlockDistantSuffixTests(unittest.TestCase):
+    """K25 — ``RagRetriever.format_block`` appends ``(distant)`` to
+    lines whose effective confidence (after age-based decay) drops
+    below the threshold. Pure render-layer test mirroring the
+    ``(uncertain)`` / ``(faded)`` suites.
+    """
+
+    def _old_created_at(self, days: float) -> str:
+        return _iso_hours_ago(24 * float(days))
+
+    def test_default_confidence_aged_180_days_gets_suffix(self) -> None:
+        # stored=0.7, age=180 days, horizon=365, floor=0.3
+        # effective = 0.7 * (1 - 180/365) = 0.355 < 0.5 -> distant.
+        hit = RagHit(
+            source="memory",
+            score=0.6,
+            record=_memory_record(
+                record_id="40",
+                content="something they brought up a while back",
+                last_used_at=None,
+                created_at=self._old_created_at(180),
+            ),
+            confidence=0.7,
+            memory_tier="long_term",
+            memory_pinned=False,
+        )
+        block = RagRetriever.format_block([hit], user_display_name="Friend")
+        self.assertIn("(distant)", block)
+
+    def test_recent_memory_unchanged(self) -> None:
+        # stored=0.7, age=10 days -> effective 0.68 > 0.5 -> not distant.
+        hit = RagHit(
+            source="memory",
+            score=0.6,
+            record=_memory_record(
+                record_id="41",
+                content="something they brought up yesterday",
+                last_used_at=None,
+                created_at=self._old_created_at(10),
+            ),
+            confidence=0.7,
+            memory_tier="long_term",
+            memory_pinned=False,
+        )
+        block = RagRetriever.format_block([hit], user_display_name="Friend")
+        self.assertNotIn("(distant)", block)
+
+    def test_pinned_old_memory_bypasses(self) -> None:
+        # Even at 2-year age + low confidence, a pinned row gets
+        # no ``(distant)`` suffix because pin reads as user trust.
+        hit = RagHit(
+            source="memory",
+            score=0.6,
+            record=_memory_record(
+                record_id="42",
+                content="pinned ancient memory",
+                last_used_at=None,
+                created_at=self._old_created_at(365 * 2),
+            ),
+            confidence=0.95,
+            memory_tier="long_term",
+            memory_pinned=True,
+        )
+        block = RagRetriever.format_block([hit], user_display_name="Friend")
+        self.assertNotIn("(distant)", block)
+
+    def test_disabled_by_master_switch(self) -> None:
+        # Same old high-confidence row, master switch off -> no suffix.
+        hit = RagHit(
+            source="memory",
+            score=0.6,
+            record=_memory_record(
+                record_id="43",
+                content="old fact",
+                last_used_at=None,
+                created_at=self._old_created_at(300),
+            ),
+            confidence=0.7,
+            memory_tier="long_term",
+            memory_pinned=False,
+        )
+        block = RagRetriever.format_block(
+            [hit],
+            user_display_name="Friend",
+            confidence_time_decay_enabled=False,
+        )
+        self.assertNotIn("(distant)", block)
+
+    def test_stacks_with_uncertain_when_low_stored_and_old(self) -> None:
+        # stored=0.4 (already < 0.5 -> uncertain) AND age=300 days
+        # (effective 0.4 * 0.178 = 0.071 < 0.5 -> distant). Order is
+        # "(uncertain) (distant)" since K25 sits between (uncertain)
+        # and (faded) in the suffix builder.
+        hit = RagHit(
+            source="memory",
+            score=0.6,
+            record=_memory_record(
+                record_id="44",
+                content="shaky old recollection",
+                last_used_at=None,
+                created_at=self._old_created_at(300),
+            ),
+            confidence=0.4,
+            memory_tier="long_term",
+            memory_pinned=False,
+        )
+        block = RagRetriever.format_block([hit], user_display_name="Friend")
+        self.assertIn("(uncertain)", block)
+        self.assertIn("(distant)", block)
+        self.assertLess(
+            block.index("(uncertain)"), block.index("(distant)")
+        )
+
+    def test_stacks_with_faded_when_archive_and_old(self) -> None:
+        # Archive tier always fades; this row is also old enough to
+        # be distant. Both suffixes land; order is "(distant) (faded)".
+        hit = RagHit(
+            source="memory",
+            score=0.6,
+            record=_memory_record(
+                record_id="45",
+                content="archived ancient claim",
+                last_used_at=None,
+                created_at=self._old_created_at(400),
+                salience=0.05,
+            ),
+            confidence=0.7,
+            memory_tier="archive",
+            memory_pinned=False,
+        )
+        block = RagRetriever.format_block([hit], user_display_name="Friend")
+        self.assertIn("(distant)", block)
+        self.assertIn("(faded)", block)
+        self.assertLess(
+            block.index("(distant)"), block.index("(faded)")
+        )
+
+    def test_all_three_stack_in_order(self) -> None:
+        # The full pile-up: shaky source (uncertain) + old age
+        # (distant) + archive tier (faded). All three should appear
+        # in order: (uncertain) (distant) (faded).
+        hit = RagHit(
+            source="memory",
+            score=0.6,
+            record=_memory_record(
+                record_id="46",
+                content="ancient shaky archived fact",
+                last_used_at=None,
+                created_at=self._old_created_at(400),
+                salience=0.05,
+            ),
+            confidence=0.3,
+            memory_tier="archive",
+            memory_pinned=False,
+        )
+        block = RagRetriever.format_block([hit], user_display_name="Friend")
+        self.assertIn("(uncertain)", block)
+        self.assertIn("(distant)", block)
+        self.assertIn("(faded)", block)
+        u, d, f = (
+            block.index("(uncertain)"),
+            block.index("(distant)"),
+            block.index("(faded)"),
+        )
+        self.assertLess(u, d)
+        self.assertLess(d, f)
+
+    def test_horizon_override_changes_threshold_age(self) -> None:
+        # horizon=90 -> 60-day-old default-confidence row already fires.
+        hit = RagHit(
+            source="memory",
+            score=0.6,
+            record=_memory_record(
+                record_id="47",
+                content="two-month-old default-confidence claim",
+                last_used_at=None,
+                created_at=self._old_created_at(60),
+            ),
+            confidence=0.7,
+            memory_tier="long_term",
+            memory_pinned=False,
+        )
+        # Default horizon (365) -> not distant at 60 days.
+        baseline = RagRetriever.format_block(
+            [hit], user_display_name="Friend",
+        )
+        self.assertNotIn("(distant)", baseline)
+        # Aggressive horizon (90) -> distant at 60 days.
+        aggressive = RagRetriever.format_block(
+            [hit],
+            user_display_name="Friend",
+            confidence_decay_horizon_days=90,
+        )
+        self.assertIn("(distant)", aggressive)
 
 
 if __name__ == "__main__":
