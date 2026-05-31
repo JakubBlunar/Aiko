@@ -1,5 +1,5 @@
 """Tests for the end-of-stream mood fallback in
-:class:`app.core.turn_runner.TurnRunner`.
+:class:`app.core.session.turn_runner.TurnRunner`.
 
 When the LLM forgets to emit ``[[reaction:X]]`` at the head of its
 reply, the streaming branch's ``mood is not None`` gate suppressed
@@ -24,8 +24,8 @@ import unittest
 from typing import Any
 from unittest.mock import MagicMock
 
-from app.core.prompt_assembler import PromptTelemetry
-from app.core.turn_runner import TurnResult, TurnRunner
+from app.core.session.prompt_assembler import PromptTelemetry
+from app.core.session.turn_runner import TurnResult, TurnRunner
 from app.llm.ollama_client import OllamaUsage
 
 

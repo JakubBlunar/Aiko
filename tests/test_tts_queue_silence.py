@@ -17,7 +17,7 @@ import time
 import unittest
 from typing import Any
 
-from app.core.tts_queue import TtsQueue
+from app.core.voice.tts_queue import TtsQueue
 
 
 class _FakeEngineFull:
@@ -151,7 +151,7 @@ class PocketSilenceWorkerTimingTests(unittest.TestCase):
         from unittest.mock import patch
         import time as _time
 
-        from app.core.settings import TtsSettings
+        from app.core.infra.settings import TtsSettings
         from app.tts import pocket_tts_service as pts_module
         from app.tts.pocket_tts_service import PocketTtsService
 

@@ -26,7 +26,7 @@ import unittest
 import numpy as np
 
 from app.audio.client_mic_source import ClientMicSource
-from app.core.settings import AudioSettings
+from app.core.infra.settings import AudioSettings
 
 
 SAMPLE_RATE = 16000

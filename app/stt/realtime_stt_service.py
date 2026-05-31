@@ -8,7 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from app.core.settings import AudioSettings, SttSettings
+from app.core.infra.settings import AudioSettings, SttSettings
 
 
 log = logging.getLogger("app.stt.realtime_stt_service")

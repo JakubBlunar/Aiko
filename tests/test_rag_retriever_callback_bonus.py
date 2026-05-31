@@ -20,16 +20,16 @@ from typing import Any
 
 import numpy as np
 
-from app.core.chat_database import ChatDatabase
-from app.core.memory_store import MemoryStore
-from app.core.rag_retriever import (
+from app.core.infra.chat_database import ChatDatabase
+from app.core.memory.memory_store import MemoryStore
+from app.core.rag.rag_retriever import (
     RagRetriever,
     _MEMORY_PINNED_BONUS,
     _MEMORY_PRIOR,
     _MEMORY_TIER_OFFSET,
     _RAG_CALLBACK_BONUS,
 )
-from app.core.rag_store import MemoryRecord, RagHit
+from app.core.rag.rag_store import MemoryRecord, RagHit
 
 
 class _DeterministicEmbedder:

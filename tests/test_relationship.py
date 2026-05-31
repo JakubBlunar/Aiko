@@ -6,8 +6,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from app.core.chat_database import ChatDatabase
-from app.core.relationship import (
+from app.core.infra.chat_database import ChatDatabase
+from app.core.relationship.relationship import (
     RelationshipState,
     RelationshipStore,
     RelationshipTracker,

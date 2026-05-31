@@ -14,14 +14,14 @@ from typing import Any
 
 import numpy as np
 
-from app.core.rag_retriever import (
+from app.core.rag.rag_retriever import (
     RagRetriever,
     _MEMORY_PRIOR,
     _RAG_ALIGNMENT_BOOST_CAP,
     _RAG_ARC_BOOST,
     _RAG_DIALOGUE_ACT_BOOST,
 )
-from app.core.rag_store import (
+from app.core.rag.rag_store import (
     MemoryRecord,
     MessageRecord,
     RagHit,

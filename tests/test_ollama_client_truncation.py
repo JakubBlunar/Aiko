@@ -17,7 +17,7 @@ import json
 import unittest
 from unittest.mock import Mock, patch
 
-from app.core.settings import load_settings
+from app.core.infra.settings import load_settings
 from app.llm.ollama_client import OllamaClient
 
 

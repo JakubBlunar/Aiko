@@ -11,7 +11,7 @@ from typing import Any
 
 import requests
 
-from app.core.settings import OllamaSettings
+from app.core.infra.settings import OllamaSettings
 
 
 log = logging.getLogger("app.llm.ollama_client")

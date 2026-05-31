@@ -15,7 +15,7 @@ import random
 import unittest
 from typing import Any
 
-from app.core.cadence import (
+from app.core.voice.cadence import (
     CadenceContext,
     ProsodyDispatcher,
     ProsodyParams,

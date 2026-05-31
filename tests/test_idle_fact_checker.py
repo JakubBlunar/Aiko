@@ -35,13 +35,13 @@ from typing import Any, Iterable
 
 import numpy as np
 
-from app.core.chat_database import ChatDatabase
-from app.core.claim_extractor import find_claims
-from app.core.fact_check_queue import ClaimItem, FactCheckQueue
-from app.core.fact_check_rate_limiter import FactCheckRateLimiter
-from app.core.idle_fact_checker import IdleFactChecker, Verdict
-from app.core.knowledge_gap_extractor import KnowledgeGapStore
-from app.core.memory_store import MemoryStore
+from app.core.infra.chat_database import ChatDatabase
+from app.core.memory.claim_extractor import find_claims
+from app.core.memory.fact_check_queue import ClaimItem, FactCheckQueue
+from app.core.memory.fact_check_rate_limiter import FactCheckRateLimiter
+from app.core.memory.idle_fact_checker import IdleFactChecker, Verdict
+from app.core.memory.knowledge_gap_extractor import KnowledgeGapStore
+from app.core.memory.memory_store import MemoryStore
 
 
 # ── tiny stubs ─────────────────────────────────────────────────────────

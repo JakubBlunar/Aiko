@@ -14,8 +14,8 @@ import unittest
 from datetime import datetime, timezone
 from typing import Any
 
-from app.core.idle_worker import IdleWorkerRecord, default_is_ready
-from app.core.idle_worker_scheduler import IdleWorkerScheduler
+from app.core.proactive.idle_worker import IdleWorkerRecord, default_is_ready
+from app.core.proactive.idle_worker_scheduler import IdleWorkerScheduler
 
 
 class _Worker:

@@ -1,6 +1,6 @@
 """Avatar + desktop-shell + circadian-outfit mixin.
 
-Extracted from :mod:`app.core.session_controller` to keep the controller
+Extracted from :mod:`app.core.session.session_controller` to keep the controller
 shell readable. Covers everything appearance-related that hangs off
 ``SessionController``:
 
@@ -22,8 +22,8 @@ State ownership stays in ``SessionController.__init__``; this mixin
 just reads/writes ``self.*``.
 
 NB: tests that previously patched
-``app.core.session_controller.time.monotonic`` /
-``app.core.session_controller.persist_user_overrides`` for methods now
+``app.core.session.session_controller.time.monotonic`` /
+``app.core.session.session_controller.persist_user_overrides`` for methods now
 living here patch
 ``app.core.session.avatar_mixin.time.monotonic`` /
 ``app.core.session.avatar_mixin.persist_user_overrides`` instead. The
@@ -37,12 +37,12 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from app.core import circadian as _circadian
-from app.core.backchannel_classifier import BackchannelHint
-from app.core.settings import OUTFIT_MODES, persist_user_overrides
+from app.core.affect import circadian as _circadian
+from app.core.conversation.backchannel_classifier import BackchannelHint
+from app.core.infra.settings import OUTFIT_MODES, persist_user_overrides
 
 if TYPE_CHECKING:  # pragma: no cover - import-cycle guard
-    from app.core.avatar_profile import AvatarProfile
+    from app.core.persona.avatar_profile import AvatarProfile
 
 
 log = logging.getLogger("app.session")
@@ -76,7 +76,7 @@ _BACKCHANNEL_MOTION_MAP: dict[str, tuple[str, ...]] = {
 # Per-overlay duration overrides (ms). Names omitted here fall back
 # to the ``_emit_avatar_overlay`` default of 1500 ms. ``tail_wag``
 # gets a longer window because the prompt grammar in
-# :mod:`app.core.prompt_assembler` advertises it as a "~2 s burst"
+# :mod:`app.core.session.prompt_assembler` advertises it as a "~2 s burst"
 # and the visual is more satisfying when the wag has time to
 # register on a physics-driven rig (where the boost runs through
 # ``ParamBreath`` and propagates with the natural physics delay).
@@ -211,7 +211,7 @@ class AvatarMixin:
         SettingsDrawer Accessories sub-section. Stays empty when no
         avatar is loaded so a minimal future model degrades cleanly.
         """
-        from app.core.settings import ACCESSORY_KEYS, EYE_COLOR_STATES
+        from app.core.infra.settings import ACCESSORY_KEYS, EYE_COLOR_STATES
 
         avatar = self._avatar
         catalogue: list[dict[str, Any]] = []
@@ -235,7 +235,7 @@ class AvatarMixin:
         # here to avoid coupling the mixin to that module's privates.
         cap_to_expr: dict[str, str] = {}
         try:
-            from app.core.avatar_profile import _ALEXIA_EXPR_TO_CAPABILITY
+            from app.core.persona.avatar_profile import _ALEXIA_EXPR_TO_CAPABILITY
             for expr_name, cap_name in _ALEXIA_EXPR_TO_CAPABILITY.items():
                 cap_to_expr.setdefault(cap_name, expr_name)
         except Exception:
@@ -293,7 +293,7 @@ class AvatarMixin:
         channel ``update_avatar_settings`` uses), so the renderer's
         ``AccessoryChannel`` can re-sync on the next WS frame.
         """
-        from app.core.settings import (
+        from app.core.infra.settings import (
             ACCESSORY_KEYS,
             EYE_COLOR_STATES,
             _load_accessory_state,
@@ -484,7 +484,7 @@ class AvatarMixin:
             # Defer to :func:`split_reaction_stack` so the parser
             # semantics (dedup, trim, lowercase) stay in lock-step
             # with the reaction-stack side of the grammar.
-            from app.core.reactions import split_reaction_stack
+            from app.core.affect.reactions import split_reaction_stack
             components = split_reaction_stack(normalized)
             for component in components:
                 self._emit_avatar_overlay(component, duration_ms=duration_ms)

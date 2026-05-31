@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import unittest
 
-from app.core import clarification_detector
-from app.core.clarification_detector import (
+from app.core.conversation import clarification_detector
+from app.core.conversation.clarification_detector import (
     ClarificationResult,
     detect,
     render_inner_life_block,

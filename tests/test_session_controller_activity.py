@@ -14,7 +14,7 @@ import threading
 import unittest
 from dataclasses import dataclass
 
-from app.core.session_controller import SessionController
+from app.core.session.session_controller import SessionController
 
 
 @dataclass

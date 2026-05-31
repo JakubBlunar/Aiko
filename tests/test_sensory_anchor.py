@@ -1,4 +1,4 @@
-"""K24 unit tests -- ``app.core.sensory_anchor``.
+"""K24 unit tests -- ``app.core.conversation.sensory_anchor``.
 
 Pure-module test coverage: posture-kind compatibility matrix,
 quantity-weighted item pick, no-repeat ring, cooldown decrement,
@@ -11,7 +11,7 @@ import random
 import unittest
 from dataclasses import dataclass
 
-from app.core.sensory_anchor import (
+from app.core.conversation.sensory_anchor import (
     SensoryAnchorCadence,
     SensoryBeat,
     _ARC_WEIGHTS,
@@ -387,7 +387,7 @@ class ArcWeightsTableTests(unittest.TestCase):
     def test_all_arcs_present(self) -> None:
         # Every value in VALID_ARCS must have an entry; defending
         # against the matrix being silently truncated.
-        from app.core.conversation_arc import VALID_ARCS
+        from app.core.conversation.conversation_arc import VALID_ARCS
 
         for arc in VALID_ARCS:
             self.assertIn(arc, _ARC_WEIGHTS)

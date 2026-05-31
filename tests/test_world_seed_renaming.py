@@ -11,8 +11,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from app.core.chat_database import ChatDatabase
-from app.core.world_store import (
+from app.core.infra.chat_database import ChatDatabase
+from app.core.world.world_store import (
     WorldStore,
     _slug_from_user_name,
 )

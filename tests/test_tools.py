@@ -281,7 +281,7 @@ class TurnRunnerTwoPassTests(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        from app.core.turn_runner import TurnRunner
+        from app.core.session.turn_runner import TurnRunner
 
         # Build a TurnRunner without real dependencies; we won't call run().
         self._TurnRunner = TurnRunner

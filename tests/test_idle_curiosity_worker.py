@@ -34,13 +34,13 @@ from typing import Any, Iterable
 
 import numpy as np
 
-from app.core.chat_database import ChatDatabase
-from app.core.fact_check_rate_limiter import FactCheckRateLimiter
-from app.core.idle_curiosity_worker import (
+from app.core.infra.chat_database import ChatDatabase
+from app.core.memory.fact_check_rate_limiter import FactCheckRateLimiter
+from app.core.proactive.idle_curiosity_worker import (
     IdleCuriosityWorker,
     CuriosityAnswer,
 )
-from app.core.memory_store import MemoryStore
+from app.core.memory.memory_store import MemoryStore
 
 
 # ── tiny stubs ─────────────────────────────────────────────────────────

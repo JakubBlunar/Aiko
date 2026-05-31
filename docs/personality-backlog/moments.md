@@ -13,7 +13,7 @@ would attribute moments to multiple participants (`participants:
 [user_id, ...]` already exists in the metadata shape but is never
 read) so a multi-user setup (Jacob + a partner, or a family
 deployment) can have separate timelines. Key files:
-[`app/core/shared_moments.py`](../../app/core/shared_moments.py),
+[`app/core/relationship/shared_moments.py`](../../app/core/relationship/shared_moments.py),
 [`app/web/server.py`](../../app/web/server.py) `/api/together` filter,
 Together tab UI.
 
@@ -38,5 +38,5 @@ follow-up is letting `ProactiveDirector` consume them — e.g.
 rather than picking up a thread. Don't let the axes *trigger* a nudge
 on their own (would feel like surveillance); just colour the topic
 selection when a nudge fires for other reasons. Key files:
-[`app/core/proactive_director.py`](../../app/core/proactive_director.py)
-`_pick_topic`, [`app/core/relationship_axes.py`](../../app/core/relationship_axes.py).
+[`app/core/proactive/proactive_director.py`](../../app/core/proactive/proactive_director.py)
+`_pick_topic`, [`app/core/relationship/relationship_axes.py`](../../app/core/relationship/relationship_axes.py).

@@ -1,7 +1,7 @@
 """World tools: let Aiko look around her room and interact with it.
 
 The room is a structured persistent model owned by
-:class:`app.core.world_store.WorldStore`. These tools expose a slice
+:class:`app.core.world.world_store.WorldStore`. These tools expose a slice
 of it to the LLM so Aiko can:
 
 - ``look_around`` to ground a reply in her surroundings (read-only).
@@ -40,8 +40,8 @@ from app.llm.tools.base import ToolError, ToolSchema
 
 
 if TYPE_CHECKING:
-    from app.core.session_controller import SessionController
-    from app.core.world_store import Item, Location, RoomState
+    from app.core.session.session_controller import SessionController
+    from app.core.world.world_store import Item, Location, RoomState
 
 
 log = logging.getLogger("app.tools.world")
@@ -234,7 +234,7 @@ class ChangePostureTool:
         )
 
     def run(self, arguments: dict[str, Any]) -> str:
-        from app.core.world_store import VALID_ACTIVITIES, VALID_POSTURES
+        from app.core.world.world_store import VALID_ACTIVITIES, VALID_POSTURES
 
         posture = (arguments.get("posture") or "").strip().lower()
         if not posture:
@@ -514,7 +514,7 @@ class PlantSeedTool:
     def run(self, arguments: dict[str, Any]) -> str:
         from datetime import datetime, timezone
 
-        from app.core.world_store import species_fact
+        from app.core.world.world_store import species_fact
 
         store = getattr(self._session, "_world_store", None)
         if store is None:

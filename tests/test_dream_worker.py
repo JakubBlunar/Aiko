@@ -18,9 +18,9 @@ from tempfile import TemporaryDirectory
 
 import numpy as np
 
-from app.core.chat_database import ChatDatabase
-from app.core.dream_worker import DreamWorker, _DREAM_PREFIX, _clean_dream_output
-from app.core.memory_store import MemoryStore
+from app.core.infra.chat_database import ChatDatabase
+from app.core.proactive.dream_worker import DreamWorker, _DREAM_PREFIX, _clean_dream_output
+from app.core.memory.memory_store import MemoryStore
 
 
 class _FakeOllama:

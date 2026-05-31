@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import unittest
 
-from app.core.settings import EndpointingSettings
+from app.core.infra.settings import EndpointingSettings
 from app.stt.endpointing import decide, is_hesitation_marker, is_sentence_final
 
 

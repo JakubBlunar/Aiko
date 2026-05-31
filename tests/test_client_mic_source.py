@@ -14,7 +14,7 @@ import unittest
 import numpy as np
 
 from app.audio.client_mic_source import ClientMicSource, _QueuedInputStream
-from app.core.settings import AudioSettings
+from app.core.infra.settings import AudioSettings
 
 
 def _settings(sample_rate: int = 16000, channels: int = 1) -> AudioSettings:

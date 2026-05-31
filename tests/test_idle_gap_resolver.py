@@ -27,11 +27,11 @@ from pathlib import Path
 
 import numpy as np
 
-from app.core.chat_database import ChatDatabase
-from app.core.idle_gap_resolver import IdleGapResolver
-from app.core.knowledge_gap_extractor import KnowledgeGapStore
-from app.core.memory_store import MemoryStore
-from app.core.settings import AgentSettings
+from app.core.infra.chat_database import ChatDatabase
+from app.core.conversation.idle_gap_resolver import IdleGapResolver
+from app.core.memory.knowledge_gap_extractor import KnowledgeGapStore
+from app.core.memory.memory_store import MemoryStore
+from app.core.infra.settings import AgentSettings
 
 
 class _DeterministicEmbedder:

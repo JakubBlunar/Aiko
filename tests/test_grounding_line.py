@@ -1,4 +1,4 @@
-"""Unit tests for :mod:`app.core.grounding_line` (K16).
+"""Unit tests for :mod:`app.core.conversation.grounding_line` (K16).
 
 The renderer is pure / deterministic, so the tests assert on exact
 phrasing for representative slot combinations. If a refactor changes
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import unittest
 
-from app.core.grounding_line import (
+from app.core.conversation.grounding_line import (
     GroundingContext,
     GroundingLineRenderer,
     render,

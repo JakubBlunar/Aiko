@@ -24,16 +24,16 @@ from typing import Any, Iterable
 
 import numpy as np
 
-from app.core.chat_database import ChatDatabase
-from app.core.fact_check_privacy import (
+from app.core.infra.chat_database import ChatDatabase
+from app.core.memory.fact_check_privacy import (
     classify_memory_for_fact_check,
     scrub_claim_for_search,
 )
-from app.core.fact_check_queue import FactCheckQueue
-from app.core.fact_check_rate_limiter import FactCheckRateLimiter
-from app.core.idle_fact_checker import IdleFactChecker
-from app.core.knowledge_gap_extractor import KnowledgeGapStore
-from app.core.memory_store import MemoryStore
+from app.core.memory.fact_check_queue import FactCheckQueue
+from app.core.memory.fact_check_rate_limiter import FactCheckRateLimiter
+from app.core.memory.idle_fact_checker import IdleFactChecker
+from app.core.memory.knowledge_gap_extractor import KnowledgeGapStore
+from app.core.memory.memory_store import MemoryStore
 
 
 # ── classify_memory_for_fact_check ─────────────────────────────────────

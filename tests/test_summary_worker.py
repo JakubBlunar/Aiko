@@ -6,8 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from app.core.chat_database import ChatDatabase
-from app.core.summary_worker import SummaryWorker
+from app.core.infra.chat_database import ChatDatabase
+from app.core.proactive.summary_worker import SummaryWorker
 from app.llm.ollama_client import OllamaUsage
 
 

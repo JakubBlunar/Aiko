@@ -8,7 +8,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock
 
-from app.core.shared_moment_extractor import MomentDetector
+from app.core.relationship.shared_moment_extractor import MomentDetector
 
 
 def _make(min_turn_gap: int = 2, cooldown: float = 0.0) -> tuple[MomentDetector, MagicMock]:

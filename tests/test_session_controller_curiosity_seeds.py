@@ -16,7 +16,7 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
-from app.core.session_controller import SessionController
+from app.core.session.session_controller import SessionController
 
 
 @dataclass

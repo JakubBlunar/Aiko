@@ -5,8 +5,8 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from app.core.chat_database import ChatDatabase
-from app.core.dialogue_act_tagger import (
+from app.core.infra.chat_database import ChatDatabase
+from app.core.conversation.dialogue_act_tagger import (
     DialogueActResult,
     DialogueActTagger,
     VALID_DIALOGUE_ACTS,

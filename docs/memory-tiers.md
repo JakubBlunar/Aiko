@@ -45,14 +45,14 @@ the producer rules every new worker should follow.
 | `archive` | `0.0` | `-0.03` | `10000` | Cold history. Surfaces only on strong cosine matches. |
 
 The RAG offset is a small additive nudge applied in
-[`rag_retriever.py`](../app/core/rag_retriever.py) (`_MEMORY_TIER_OFFSET`)
+[`rag_retriever.py`](../app/core/rag/rag_retriever.py) (`_MEMORY_TIER_OFFSET`)
 so verified anchors win ties against speculative scratchpad siblings,
 and archive rows need a stronger match to break out.
 
 ### Promotion / demotion rules
 
 Run by `MemoryPromotionWorker`
-(`app/core/memory_promotion_worker.py`), default cadence is hourly
+(`app/core/memory/memory_promotion_worker.py`), default cadence is hourly
 (configurable via `memory.promotion_worker_interval_seconds`).
 
 - **Promote scratchpad → long_term** when either
@@ -116,14 +116,14 @@ decay **proportional to elapsed wall-clock time**.
   `elapsed_days`.
 - On first-ever run (anchor missing), `decay()` just writes the
   anchor and returns — no retroactive penalty.
-- The `MemoryDecayWorker` (`app/core/memory_decay_worker.py`)
+- The `MemoryDecayWorker` (`app/core/memory/memory_decay_worker.py`)
   ticks hourly by default (`memory.decay_worker_interval_seconds`).
   Idempotent: calling it more often is safe, just wastes a little CPU.
 
 ## The IdleWorker framework (G1)
 
 Both new workers run through a single
-[`IdleWorkerScheduler`](../app/core/idle_worker_scheduler.py) instead of
+[`IdleWorkerScheduler`](../app/core/proactive/idle_worker_scheduler.py) instead of
 each owning its own daemon thread. The scheduler:
 
 1. Wakes every `memory.idle_worker_wake_seconds (60s)` (configurable
@@ -144,7 +144,7 @@ Registering a new worker is two lines:
 sched.register(MyWorker(deps...))
 ```
 
-The protocol lives in `app/core/idle_worker.py`. Workers expose `name`,
+The protocol lives in `app/core/proactive/idle_worker.py`. Workers expose `name`,
 `interval_seconds`, `is_ready`, and `run() -> dict | None`. Errors
 are caught, recorded on the per-worker `IdleWorkerRecord`, and surface
 through the optional MCP debug tool (force_run / inspect endpoints —

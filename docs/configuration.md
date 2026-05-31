@@ -2,7 +2,7 @@
 
 This is the human-facing map of every knob Aiko exposes via
 `config/default.json` (shipped) and `config/user.json` (your local
-overrides). Drift between this doc and `app/core/settings.py` is
+overrides). Drift between this doc and `app/core/infra/settings.py` is
 expensive — the
 [`config-documentation` rule](../.cursor/rules/config-documentation.mdc)
 exists to keep them in lock-step.
@@ -14,7 +14,7 @@ exists to keep them in lock-step.
 > means the `shared_moments_enabled` field inside the `"agent": { ... }`
 > block of `config/default.json`.
 >
-> Per-section dataclass: `app/core/settings.py`. Each section header below
+> Per-section dataclass: `app/core/infra/settings.py`. Each section header below
 > names the dataclass it loads into.
 
 > **How to change values**
@@ -47,6 +47,7 @@ exists to keep them in lock-step.
 | Reinforce "Aiko remembered" beats (callback detector) | `agent.callback_detector_enabled` | `true` |
 | Notice when {user_name} double-checks Aiko's claims (calibration) | `agent.calibration_detection_enabled` | `true` |
 | Let Aiko occasionally touch the room (sensory anchoring) | `agent.sensory_anchor_enabled` | `true` |
+| Wall-clock prefixes on chat history (K-time1) | `agent.history_age_prefix_enabled` | `true` |
 | Master memory switch | `memory.enabled` | `true` |
 | RAG recall depth per turn | `memory.top_k` | `6` |
 | Long-term memory cap | `memory.max_memories` | `5000` |
@@ -110,7 +111,7 @@ The big one. Inner-life workers, proactive nudges, summarisation, style trackers
 
 ### Proactive — voice mode
 
-- `agent.proactive_silence_seconds` *(float, `45.0`, min `10`)* — seconds of silence in **voice** mode before `ProactiveDirector` is allowed to fire a nudge. Higher → Aiko waits longer before chiming in; lower → she gets nag-y. See `app/core/proactive_director.py`.
+- `agent.proactive_silence_seconds` *(float, `45.0`, min `10`)* — seconds of silence in **voice** mode before `ProactiveDirector` is allowed to fire a nudge. Higher → Aiko waits longer before chiming in; lower → she gets nag-y. See `app/core/proactive/proactive_director.py`.
 - `agent.proactive_cooldown_seconds` *(float, `120.0`, min `30`)* — minimum gap between two voice-mode proactive nudges. Higher → fewer back-to-back unprompted utterances.
 
 ### Proactive — typed mode
@@ -224,7 +225,7 @@ Tracks Jacob's writing style across recent user turns and emits a "How Jacob wri
 
 Per-turn detector that scores Jacob's reply latency + message length against rolling baselines and routes the signal to **two consumers** depending on mode:
 
-- **Voice mode**: latency + length contribute to a small `closeness_delta` that rides into [`RelationshipAxesUpdater.apply_turn`](../app/core/relationship_axes.py) on the same turn (snappy replies nudge closeness up; long voice gaps + curt messages nudge it down).
+- **Voice mode**: latency + length contribute to a small `closeness_delta` that rides into [`RelationshipAxesUpdater.apply_turn`](../app/core/relationship/relationship_axes.py) on the same turn (snappy replies nudge closeness up; long voice gaps + curt messages nudge it down).
 - **Typed mode**: latency is intentionally **NOT** consumed as engagement — typed pauses are thinking time, not disengagement. Instead, a gap landing in the configured band (default 30 min – 4 h) feeds the one-shot **absence-curiosity** inner-life cue on the *next* user turn ("welcome them back warmly without making them feel like they owe you an account of their time"). A label of `"abandoned"` (steep latency *and* curt message) also suppresses the typed proactive nudge.
 
 Latency baseline is voice-only (typed turns never touch the latency window); length baseline is shared with the K13 stylometric mirror via `StyleSignalAnalyzer.recent_word_counts()` (no duplicate buffer).
@@ -241,7 +242,7 @@ Latency baseline is voice-only (typed turns never touch the latency window); len
 
 ### K5 — mood shell tilt
 
-Per-turn one-line emotional directive derived from the live [`AffectState`](../app/core/affect_state.py) (valence + arousal) and [`RelationshipAxesState`](../app/core/relationship_axes.py) (closeness / humor / trust / comfort). Output reads like a stage direction — *"Lean affectionate and unhurried; let warmth show."* / *"Stay playful and quick; the room is laughing."* / *"Slow your tempo; let the words land before pushing forward."* — and colours Aiko's delivery (pacing, sentence length, warmth, word choice) **without** dictating content.
+Per-turn one-line emotional directive derived from the live [`AffectState`](../app/core/affect/affect_state.py) (valence + arousal) and [`RelationshipAxesState`](../app/core/relationship/relationship_axes.py) (closeness / humor / trust / comfort). Output reads like a stage direction — *"Lean affectionate and unhurried; let warmth show."* / *"Stay playful and quick; the room is laughing."* / *"Slow your tempo; let the words land before pushing forward."* — and colours Aiko's delivery (pacing, sentence length, warmth, word choice) **without** dictating content.
 
 Empty on the common turn — only fires when affect is off-baseline AND/OR a relationship axis crosses `mood_shell_axis_threshold`. Part of the K16 `replace` suppression set (the unified grounding line folds the same surface area); kept active in `split` and `off` modes.
 
@@ -378,6 +379,18 @@ Optional fusion of seven "ambient" inner-life signals (circadian, world, activit
 
   Verification: `provider_ms.grounding_line` in MCP `get_last_response_detail` is non-zero in `replace`/`split`, missing in `off`. Invalid values clamp to `"off"` with a debug log.
 
+### K-time1 — wall-clock prefixes on chat history
+
+Per-message relative-age tag prepended to every chat-history message sent to the LLM: `[just now] ...`, `[2 min ago] ...`, `[today 13:32] ...`, `[yesterday 18:45] ...`, `[Wednesday 18:45] ...`, `[May 28 18:45] ...`. The current user message Aiko is replying to is appended *after* the history block and never gets a prefix. Default on.
+
+Why: without per-message timestamps the LLM has no clock against the conversation. A user message from 2 minutes ago saying "I'm planning to visit my grandparents in half an hour" pattern-matches as a completed past event, and Aiko asks "did you make it back?". The prefix gives an explicit per-turn clock; the companion persona block in [`data/persona/aiko_companion.txt`](../data/persona/aiko_companion.txt) ("Wall-clock awareness in the conversation") teaches Aiko how to read it and explicitly tells her not to quote the prefix back.
+
+- `agent.history_age_prefix_enabled` *(bool, `true`)* — master switch. Off → the chat-history block is byte-identical to the pre-K-time1 behaviour (raw `{role, content}` pairs with no per-message timestamp). Use the off setting for A/B comparison or if your model interprets the bracketed metadata as part of the dialogue.
+
+Cost: ~4–6 tokens per kept history message. Negligible against the configured `ollama.context_window` budget.
+
+Verification: enable INFO logging on `app.core.session.prompt_assembler`; the rendered prompt's history messages start with `[…]` brackets. The `_format_age` ladder is unit-tested in `tests/test_prompt_assembler.py::WallClockHistoryPrefixTests`.
+
 ---
 
 ## `memory` — `MemorySettings`
@@ -415,7 +428,7 @@ Long-term memory: cross-session vector store of durable facts, plus the tiered (
 
 ### K7 — forgetting protocol
 
-Renders a `(faded)` suffix on the RAG memory block for old / decayed rows so the persona reads them as half-remembered instead of as crisp current facts. Fires for archive-tier rows AND for long_term rows that have decayed in place (low salience AND idle for a while). Implementation lives in `_is_faded_memory` inside [`app/core/rag_retriever.py`](../app/core/rag_retriever.py); the persona rule that turns the suffix into a soft hedge lives in [`data/persona/aiko_companion.txt`](../data/persona/aiko_companion.txt).
+Renders a `(faded)` suffix on the RAG memory block for old / decayed rows so the persona reads them as half-remembered instead of as crisp current facts. Fires for archive-tier rows AND for long_term rows that have decayed in place (low salience AND idle for a while). Implementation lives in `_is_faded_memory` inside [`app/core/rag/rag_retriever.py`](../app/core/rag/rag_retriever.py); the persona rule that turns the suffix into a soft hedge lives in [`data/persona/aiko_companion.txt`](../data/persona/aiko_companion.txt).
 
 - `memory.fade_hedge_enabled` *(bool, `true`)* — master switch. Off → no `(faded)` suffix ever, including archive-tier rows. Use when you want Aiko to speak from memory without ever hedging "I think you said this once, ages ago…".
 - `memory.faded_salience_threshold` *(float, `0.20`, clamped `[0, 1]`)* — salience floor for a long_term row to register as faded. Higher → more aggressive hedging on lukewarm memories; lower → only very faded rows hedge. Strict `<` semantics — a row sitting exactly on the threshold does NOT fade. Archive-tier rows ignore this and always fade when the master switch is on.
@@ -423,7 +436,7 @@ Renders a `(faded)` suffix on the RAG memory block for old / decayed rows so the
 
 ### K22 — callback / inside-joke detector
 
-Post-turn cosine pass between Aiko's reply and older eligible memories. Hits stamp `metadata.callback_count` and bump `salience` + `revival_score` so the retriever's read-side bonus (`_RAG_CALLBACK_BONUS`) prefers memories Aiko has actually managed to weave back into a reply over equally-relevant siblings that have never been cited. The reinforcement is **invisible to the LLM by design** — explicit awareness would lead to meta-narration ("hey, glad I remembered that thing"); the point is for the callback to feel organic. Implementation lives in [`app/core/callback_detector.py`](../app/core/callback_detector.py); the RAG read-side bonus lives in [`app/core/rag_retriever.py`](../app/core/rag_retriever.py). The master switch [`agent.callback_detector_enabled`](#k22--callback--inside-joke-detector) only gates the *write* side — once a memory has `callback_count >= 1`, the read-side bonus stays on even if the user later disables the detector.
+Post-turn cosine pass between Aiko's reply and older eligible memories. Hits stamp `metadata.callback_count` and bump `salience` + `revival_score` so the retriever's read-side bonus (`_RAG_CALLBACK_BONUS`) prefers memories Aiko has actually managed to weave back into a reply over equally-relevant siblings that have never been cited. The reinforcement is **invisible to the LLM by design** — explicit awareness would lead to meta-narration ("hey, glad I remembered that thing"); the point is for the callback to feel organic. Implementation lives in [`app/core/conversation/callback_detector.py`](../app/core/conversation/callback_detector.py); the RAG read-side bonus lives in [`app/core/rag/rag_retriever.py`](../app/core/rag/rag_retriever.py). The master switch [`agent.callback_detector_enabled`](#k22--callback--inside-joke-detector) only gates the *write* side — once a memory has `callback_count >= 1`, the read-side bonus stays on even if the user later disables the detector.
 
 - `agent.callback_detector_enabled` *(bool, `true`)* — master switch for the post-turn cosine pass. Off → no new callback stamps. Earned weight on already-stamped rows is preserved.
 - `memory.callback_age_floor_days` *(int, `3`, min `1`)* — minimum days since `created_at` before a memory is eligible to be counted as a callback target. Lower than this and the row is treated as part of the current thread, not a callback. Higher → only very-old rows qualify.
@@ -435,7 +448,7 @@ Post-turn cosine pass between Aiko's reply and older eligible memories. Hits sta
 
 ### K20 — metacognitive calibration
 
-Post-turn classifier that detects whether `{user_name}` pushed back on / softened / affirmed Aiko's last claim, and adjusts a per-user `CalibrationState` (a global trust scalar in `[0, 1]` plus a bounded ring of topic slots). The state is read by an inner-life provider on the **next** turn — when the global score sits below `calibration_global_low_threshold` or any topic slot is below `calibration_topic_low_threshold`, Aiko sees a one-line "you've been double-checking me lately — hedge the next claim" cue. The state decays exponentially toward `calibration_baseline` so a tense afternoon doesn't sour the whole week. Implementation lives in [`app/core/calibration_detector.py`](../app/core/calibration_detector.py) and [`app/core/calibration_store.py`](../app/core/calibration_store.py); persona guidance is in the **"When {user_name} has been double-checking you"** block of [`data/persona/aiko_companion.txt`](../data/persona/aiko_companion.txt). K20 deliberately does **not** touch RAG retrieval scores — F3 (`memory.confidence` + `(uncertain)` suffix) already owns the per-memory accuracy lane. K20 is the *per-user / per-topic register tilt* on top of it.
+Post-turn classifier that detects whether `{user_name}` pushed back on / softened / affirmed Aiko's last claim, and adjusts a per-user `CalibrationState` (a global trust scalar in `[0, 1]` plus a bounded ring of topic slots). The state is read by an inner-life provider on the **next** turn — when the global score sits below `calibration_global_low_threshold` or any topic slot is below `calibration_topic_low_threshold`, Aiko sees a one-line "you've been double-checking me lately — hedge the next claim" cue. The state decays exponentially toward `calibration_baseline` so a tense afternoon doesn't sour the whole week. Implementation lives in [`app/core/affect/calibration_detector.py`](../app/core/affect/calibration_detector.py) and [`app/core/affect/calibration_store.py`](../app/core/affect/calibration_store.py); persona guidance is in the **"When {user_name} has been double-checking you"** block of [`data/persona/aiko_companion.txt`](../data/persona/aiko_companion.txt). K20 deliberately does **not** touch RAG retrieval scores — F3 (`memory.confidence` + `(uncertain)` suffix) already owns the per-memory accuracy lane. K20 is the *per-user / per-topic register tilt* on top of it.
 
 - `agent.calibration_detection_enabled` *(bool, `true`)* — master switch for the post-turn classifier AND the inner-life cue. Off → no new state updates AND `_render_calibration_block` returns empty so the cue goes silent. Earned state on disk is preserved.
 - `memory.calibration_baseline` *(float, `0.80`, clamped `[0, 1]`)* — score the global + topic slots decay toward in the absence of new signals. `0.80` reads as "neutral-positive" (Aiko speaks confidently by default). Lower → more reflexively hedgy after any pushback; higher → trust recovers more aggressively between sessions.
@@ -448,7 +461,7 @@ Post-turn classifier that detects whether `{user_name}` pushed back on / softene
 
 ### K24 — sensory anchoring layer
 
-Adaptive per-arc cadence that occasionally surfaces a one-line "small physical beat available: the {item} is right here. If a body anchor would land naturally this reply, you could {hint}…" cue so Aiko can substitute a sensory detail for an emotional statement ("pulling the blanket tighter" instead of "I hear you"). The cue **suggests** an `(item, verb-class)` pair; Aiko's voice picks the actual word. State is in-memory on the controller — there is **no DB / no persistence**, worst case after a restart is one extra beat in the first quiet window. Implementation lives in [`app/core/sensory_anchor.py`](../app/core/sensory_anchor.py); persona guidance is in the **"Small physical beats"** block of [`data/persona/aiko_companion.txt`](../data/persona/aiko_companion.txt). K24 reads `RoomState.posture` + `WorldStore.list_items()` + the live conversation arc; it intentionally **does not** key off `RoomState.activity` (the redundancy edge cases like "snacking + food cue" are left to the persona rule "use it only if it lands" until we observe enough fired beats to decide whether stricter gating is needed).
+Adaptive per-arc cadence that occasionally surfaces a one-line "small physical beat available: the {item} is right here. If a body anchor would land naturally this reply, you could {hint}…" cue so Aiko can substitute a sensory detail for an emotional statement ("pulling the blanket tighter" instead of "I hear you"). The cue **suggests** an `(item, verb-class)` pair; Aiko's voice picks the actual word. State is in-memory on the controller — there is **no DB / no persistence**, worst case after a restart is one extra beat in the first quiet window. Implementation lives in [`app/core/conversation/sensory_anchor.py`](../app/core/conversation/sensory_anchor.py); persona guidance is in the **"Small physical beats"** block of [`data/persona/aiko_companion.txt`](../data/persona/aiko_companion.txt). K24 reads `RoomState.posture` + `WorldStore.list_items()` + the live conversation arc; it intentionally **does not** key off `RoomState.activity` (the redundancy edge cases like "snacking + food cue" are left to the persona rule "use it only if it lands" until we observe enough fired beats to decide whether stricter gating is needed).
 
 The per-arc cadence table is hardcoded in the module (not user-configurable): `support` / `reflection` get the highest probability (0.45) and shortest cooldown (4 turns), `casual_check_in` / `playful` are medium (0.25, 6 turns), `silly` is low (0.10, 8 turns), and `planning` is near-silent (0.05, 12 turns). The four `memory.sensory_anchor_*` knobs below scale that table globally.
 
@@ -625,7 +638,7 @@ FastAPI + WebSocket layer that serves the React UI.
 Backend log discipline. The companion file `data/app.log` is the source of truth for "what happened during a turn" — see `AGENTS.md` § *Debugging via logs* for the full grep playbook.
 
 - `logging.level` *(string, `"INFO"`)* — global root level. `WARNING` for production quiet, `INFO` for one structured line per turn, `DEBUG` for the firehose.
-- `logging.module_levels` *(object, `{}`)* — per-module overrides, e.g. `{"app.core.prompt_assembler": "DEBUG"}`. Keep the root at `INFO` and dial up just the suspect module.
+- `logging.module_levels` *(object, `{}`)* — per-module overrides, e.g. `{"app.core.session.prompt_assembler": "DEBUG"}`. Keep the root at `INFO` and dial up just the suspect module.
 - `logging.file_enabled` *(bool, `true`)* — write to the rotating `data/app.log`.
 - `logging.file_path` *(string, `"data/app.log"`)* — log file path.
 - `logging.file_max_bytes` *(int, `5242880`, min `65 536`)* — rotate at this many bytes (default 5 MB).
@@ -651,7 +664,7 @@ Some runtime state belongs in `user.json` because it's hyper-local and never app
 (This is the short-form companion to the
 [`config-documentation` rule](../.cursor/rules/config-documentation.mdc).)
 
-1. Add the field to the relevant dataclass in `app/core/settings.py` with a short inline comment explaining what tuning up vs down does.
+1. Add the field to the relevant dataclass in `app/core/infra/settings.py` with a short inline comment explaining what tuning up vs down does.
 2. If users should be able to set it from JSON, add the default to `config/default.json` under the right section.
 3. Parse it in `load_settings()` with whatever clamp / fallback makes sense.
 4. Add a row to the right section of this file using the format `` - `key` *(type, default)* — what it does. Higher → effect. Lower → effect. ``

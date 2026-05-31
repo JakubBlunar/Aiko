@@ -26,9 +26,9 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
-from app.core.chat_database import ChatDatabase
-from app.core.session_controller import SessionController, _MergeBuffer
-from app.core.turn_runner import TurnResult
+from app.core.infra.chat_database import ChatDatabase
+from app.core.session.session_controller import SessionController, _MergeBuffer
+from app.core.session.turn_runner import TurnResult
 
 
 # ── shared helpers ────────────────────────────────────────────────────────
@@ -36,7 +36,7 @@ from app.core.turn_runner import TurnResult
 
 @dataclass
 class _FakeTurnRunner:
-    """Stand-in for :class:`app.core.turn_runner.TurnRunner`.
+    """Stand-in for :class:`app.core.session.turn_runner.TurnRunner`.
 
     Records each ``run`` call (text, kwargs) and lets the test override
     the streaming behaviour: ``streaming_action`` may emit TTS chunks,
@@ -240,7 +240,7 @@ class TurnRunnerResumeTests(_TempDbCase):
 
         # Stand up a TurnRunner just enough to exercise ``_run_inner``'s
         # insert-vs-skip branch. The PromptAssembler call is mocked.
-        from app.core.turn_runner import TurnRunner
+        from app.core.session.turn_runner import TurnRunner
 
         ollama = MagicMock()
         ollama.chat_stream.return_value = iter([])

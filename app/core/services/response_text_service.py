@@ -60,7 +60,7 @@ def parse_reaction_stack_at_start(
         (identical to the second element of
         :func:`parse_reaction_at_start`).
 
-    The dispatch boundary in :mod:`app.core.turn_runner` uses
+    The dispatch boundary in :mod:`app.core.session.turn_runner` uses
     ``companions`` to fire long-duration overlay pulses on top of the
     persistent reaction — see the Phase 3 entry in
     ``docs/alexia-model-notes.md`` §3 / persona stack idiom.
@@ -71,7 +71,7 @@ def parse_reaction_stack_at_start(
         return None, [], source
     # Local import avoids a circular dep between
     # ``response_text_service`` and ``reactions`` at module load.
-    from app.core.reactions import split_reaction_stack
+    from app.core.affect.reactions import split_reaction_stack
     components = split_reaction_stack(match.group(1))
     rest = source[match.end() :].lstrip("\n")
     if not components:
@@ -278,7 +278,7 @@ _AGENDA_OPEN_TAIL_PATTERN = re.compile(
 )
 
 # Schema v7: [[moment:vibe:short summary]] — Aiko-curated shared moment
-# (see :mod:`app.core.shared_moment_extractor`). Stripped from chat text
+# (see :mod:`app.core.relationship.shared_moment_extractor`). Stripped from chat text
 # and TTS; persisted to a ``shared_moment`` memory row by
 # SessionController. The grammar matches the [[remember:…]] family so
 # the streaming hold logic in :func:`safe_visible_prefix` already covers
@@ -296,7 +296,7 @@ _MOMENT_OPEN_TAIL_PATTERN = re.compile(
 # delivery tag, orthogonal to [[reaction:X]] (mood label) and the
 # stage-direction earcons. Five values for v1: ``whisper``, ``soft``,
 # ``slow``, ``fast``, ``firm``. Each maps to a small overlay applied
-# by :class:`app.core.cadence.ProsodyDispatcher` (speed multiplier +
+# by :class:`app.core.voice.cadence.ProsodyDispatcher` (speed multiplier +
 # gain dB + sometimes a pause hint). Leading position in the
 # sentence wins; trailing tags are still stripped from chat / TTS by
 # :func:`strip_all_meta_tags` so a misplaced tag never leaks audio.
@@ -359,7 +359,7 @@ def consume_leading_prosody_tag(text: str) -> tuple[str | None, str]:
 
 
 # H1: [[arc:NAME]] — Aiko's optional self-tag of the conversation arc
-# (one of the six values in :data:`app.core.conversation_arc.VALID_ARCS`).
+# (one of the six values in :data:`app.core.conversation.conversation_arc.VALID_ARCS`).
 # Stripped from display + TTS like the other meta tags; consumed by
 # :class:`ArcStore.set_from_self_tag` at confidence 0.85 so a regex hit
 # can't immediately overwrite it. Tag is single-valued per turn -- if
@@ -374,7 +374,7 @@ _ARC_OPEN_TAIL_PATTERN = re.compile(
 )
 
 # F2 personality backlog: [[gap:topic:short question]] — knowledge-gap
-# journal entry (see :mod:`app.core.knowledge_gap_extractor`). Same
+# journal entry (see :mod:`app.core.memory.knowledge_gap_extractor`). Same
 # stripping treatment as [[remember:...]] and [[moment:...]]: invisible
 # to chat / TTS, persisted to a ``knowledge_gap`` memory row by
 # SessionController._post_turn_inner_life. F1's background fact-checker
@@ -411,7 +411,7 @@ _CONFLICT_OPEN_TAIL_PATTERN = re.compile(
 # free-text summary (4-200 chars, no square brackets / newlines).
 # Stripped from chat / TTS the same way as ``[[gap:...]]``. The
 # SessionController dispatch (``_post_turn_inner_life``) hands every
-# extracted tag to :meth:`app.core.goal_store.GoalStore.add_goal`.
+# extracted tag to :meth:`app.core.goals.goal_store.GoalStore.add_goal`.
 _GOAL_TAG_PATTERN = re.compile(
     r"\[\[goal:([^\[\]\n]{4,200}?)\]\]",
     flags=re.IGNORECASE,
@@ -441,7 +441,7 @@ _GOAL_OPEN_TAIL_PATTERN = re.compile(
 # Stripped from chat / TTS the same way as ``[[conflict:...]]``.
 # The SessionController dispatch (``_post_turn_inner_life``) calls
 # :func:`extract_predict_tags` and upserts each tuple via
-# :class:`app.core.belief_store.BeliefStore`, then force_runs the
+# :class:`app.core.relationship.belief_store.BeliefStore`, then force_runs the
 # K2 worker so any belief Aiko already inferred gets a fresh
 # gap-detector evaluation in the same tick.
 _PREDICT_TAG_PATTERN = re.compile(
@@ -545,7 +545,7 @@ def parse_arc_tags(text: str) -> list[str]:
     """Return every well-formed ``[[arc:NAME]]`` value from ``text``.
 
     Values are lowercased and trimmed; validation against
-    :data:`app.core.conversation_arc.VALID_ARCS` happens at the dispatch
+    :data:`app.core.conversation.conversation_arc.VALID_ARCS` happens at the dispatch
     site (this module avoids the import cycle). Tag is intentionally
     single-valued per turn -- if Aiko emits more than one, the dispatcher
     takes ``parse_arc_tags(...)[-1]`` and ignores the rest.

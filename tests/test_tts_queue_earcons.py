@@ -11,7 +11,7 @@ import threading
 import time
 import unittest
 
-from app.core.tts_queue import TtsQueue
+from app.core.voice.tts_queue import TtsQueue
 
 
 class _StubTtsEngine:

@@ -1,4 +1,4 @@
-"""Tests for :mod:`app.core.belief_store` and the schema v12 migration."""
+"""Tests for :mod:`app.core.relationship.belief_store` and the schema v12 migration."""
 from __future__ import annotations
 
 import sqlite3
@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from app.core.belief_store import (
+from app.core.relationship.belief_store import (
     Belief,
     BeliefStore,
     KIND_MOOD,
@@ -21,7 +21,7 @@ from app.core.belief_store import (
     STATUS_CONTRADICTED,
     STATUS_STALE,
 )
-from app.core.chat_database import ChatDatabase, _SCHEMA_VERSION
+from app.core.infra.chat_database import ChatDatabase, _SCHEMA_VERSION
 
 
 def _build_db() -> tuple[ChatDatabase, BeliefStore, Path]:

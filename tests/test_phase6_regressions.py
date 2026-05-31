@@ -16,25 +16,25 @@ from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from app.core.affect_state import AffectStore
-from app.core.agenda import AgendaStore, extract_inline_tags
-from app.core.cadence import (
+from app.core.affect.affect_state import AffectStore
+from app.core.goals.agenda import AgendaStore, extract_inline_tags
+from app.core.voice.cadence import (
     CadenceContext,
     ProsodyDispatcher,
     analyze_sentence,
 )
-from app.core.chat_database import ChatDatabase
-from app.core.circadian import compute as circadian_compute
-from app.core.conversation_arc import ArcEstimator, ArcStore
-from app.core.prepared_nudge import PreparedNudgeStore
-from app.core.promise_extractor import extract_regex
-from app.core.relationship import RelationshipStore, RelationshipTracker
-from app.core.speaking_window_scheduler import (
+from app.core.infra.chat_database import ChatDatabase
+from app.core.affect.circadian import compute as circadian_compute
+from app.core.conversation.conversation_arc import ArcEstimator, ArcStore
+from app.core.proactive.prepared_nudge import PreparedNudgeStore
+from app.core.memory.promise_extractor import extract_regex
+from app.core.relationship.relationship import RelationshipStore, RelationshipTracker
+from app.core.voice.speaking_window_scheduler import (
     ScheduledJob,
     SpeakingWindowScheduler,
 )
-from app.core.user_profile import UserProfileStore
-from app.core.user_state import UserStateEstimator, UserStateStore
+from app.core.infra.user_profile import UserProfileStore
+from app.core.affect.user_state import UserStateEstimator, UserStateStore
 
 
 def _make_db() -> tuple[TemporaryDirectory, ChatDatabase]:

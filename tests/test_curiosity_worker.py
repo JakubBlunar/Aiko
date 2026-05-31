@@ -5,7 +5,7 @@ import unittest
 from dataclasses import dataclass
 from typing import Any
 
-from app.core.curiosity_worker import (
+from app.core.proactive.curiosity_worker import (
     CuriosityWorker,
     _clean_curiosity_output,
     _looks_like_question,

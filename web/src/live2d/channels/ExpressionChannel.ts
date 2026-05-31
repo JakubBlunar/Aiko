@@ -88,7 +88,7 @@ import type {
 // ``wistful``, ``concerned``, ``tired``, ``cry``) intentionally chains
 // among themselves — that's where the tear-streak overlay belongs.
 // Exported so tests in ``ExpressionChannel.test.ts`` can lock parity
-// with the Python source of truth in ``app/core/reactions.py``.
+// with the Python source of truth in ``app/core/affect/reactions.py``.
 export const _REACTION_NEIGHBOURS: Record<string, string[]> = {
   amused: ["cheerful", "playful", "friendly", "warm", "neutral"],
   playful: ["amused", "cheerful", "excited", "friendly", "warm"],

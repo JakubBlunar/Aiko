@@ -1,4 +1,4 @@
-"""Tests for :mod:`app.core.belief_worker`."""
+"""Tests for :mod:`app.core.relationship.belief_worker`."""
 from __future__ import annotations
 
 import json
@@ -12,10 +12,10 @@ from typing import Any, Iterable
 
 import numpy as np
 
-from app.core.belief_store import BeliefStore, KIND_MOOD, KIND_OPINION
-from app.core.belief_worker import BeliefInferenceWorker
-from app.core.chat_database import ChatDatabase
-from app.core.fact_check_rate_limiter import FactCheckRateLimiter
+from app.core.relationship.belief_store import BeliefStore, KIND_MOOD, KIND_OPINION
+from app.core.relationship.belief_worker import BeliefInferenceWorker
+from app.core.infra.chat_database import ChatDatabase
+from app.core.memory.fact_check_rate_limiter import FactCheckRateLimiter
 
 
 class _StubEmbedder:

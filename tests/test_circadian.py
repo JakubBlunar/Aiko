@@ -4,7 +4,7 @@ from __future__ import annotations
 import unittest
 from datetime import datetime
 
-from app.core.circadian import CircadianState, compute
+from app.core.affect.circadian import CircadianState, compute
 
 
 def _at(hour: int, minute: int = 0) -> datetime:

@@ -1,4 +1,4 @@
-"""Tests for app.core.chat_database.ChatDatabase."""
+"""Tests for app.core.infra.chat_database.ChatDatabase."""
 from __future__ import annotations
 
 import tempfile
@@ -6,7 +6,7 @@ import threading
 import unittest
 from pathlib import Path
 
-from app.core.chat_database import (
+from app.core.infra.chat_database import (
     ChatDatabase,
     MessageRow,
     SummaryRow,
@@ -59,7 +59,7 @@ class TestSchemaCreation(unittest.TestCase):
                 self.assertNotIn(obsolete, tables)
 
     def test_schema_version_is_current(self):
-        from app.core.chat_database import _SCHEMA_VERSION
+        from app.core.infra.chat_database import _SCHEMA_VERSION
         with _TempDB() as db:
             conn = db._get_conn()
             row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
@@ -180,7 +180,7 @@ class TestSchemaV7Migration(unittest.TestCase):
 
     def test_v6_database_upgrades_to_v7(self):
         import sqlite3 as _sqlite3
-        from app.core.chat_database import _SCHEMA_VERSION
+        from app.core.infra.chat_database import _SCHEMA_VERSION
 
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "legacy.db"

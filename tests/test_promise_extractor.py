@@ -5,7 +5,7 @@ import unittest
 
 import numpy as np
 
-from app.core.promise_extractor import (
+from app.core.memory.promise_extractor import (
     Promise,
     PromiseExtractor,
     _parse_llm_payload,

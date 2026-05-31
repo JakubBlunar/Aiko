@@ -32,7 +32,7 @@ from app.llm.tools.base import ToolError, ToolSchema
 
 
 if TYPE_CHECKING:
-    from app.core.session_controller import SessionController
+    from app.core.session.session_controller import SessionController
 
 
 log = logging.getLogger("app.tools.goals")

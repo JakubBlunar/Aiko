@@ -1,4 +1,4 @@
-"""Tests for :mod:`app.core.aiko_style_tracker` (anti-rut layer).
+"""Tests for :mod:`app.core.persona.aiko_style_tracker` (anti-rut layer).
 
 The tracker is a pure rolling-window detector -- no embedder, no LLM
 -- so the tests just feed scripted assistant-text streams and assert
@@ -10,7 +10,7 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from app.core.aiko_style_tracker import (
+from app.core.persona.aiko_style_tracker import (
     BAND_LENGTH_SPRAWL,
     BAND_OPENER_RUT,
     BAND_QUESTION_SATURATION,

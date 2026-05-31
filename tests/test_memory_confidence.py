@@ -19,8 +19,8 @@ from pathlib import Path
 
 import numpy as np
 
-from app.core.chat_database import _SCHEMA_VERSION, ChatDatabase
-from app.core.memory_store import MemoryStore
+from app.core.infra.chat_database import _SCHEMA_VERSION, ChatDatabase
+from app.core.memory.memory_store import MemoryStore
 
 
 class _FakeEmbedder:
@@ -236,25 +236,25 @@ class TestRagRetrieverConfidencePenalty(unittest.TestCase):
     """
 
     def test_high_confidence_has_no_penalty(self) -> None:
-        from app.core.rag_retriever import _confidence_penalty
+        from app.core.rag.rag_retriever import _confidence_penalty
 
         self.assertAlmostEqual(_confidence_penalty(1.0), 0.0, places=5)
         self.assertAlmostEqual(_confidence_penalty(0.7), 0.0, places=5)
         self.assertAlmostEqual(_confidence_penalty(0.5), 0.0, places=5)
 
     def test_zero_confidence_hits_the_cap(self) -> None:
-        from app.core.rag_retriever import _confidence_penalty
+        from app.core.rag.rag_retriever import _confidence_penalty
 
         self.assertAlmostEqual(_confidence_penalty(0.0), -0.15, places=5)
 
     def test_mid_confidence_is_proportional(self) -> None:
-        from app.core.rag_retriever import _confidence_penalty
+        from app.core.rag.rag_retriever import _confidence_penalty
 
         # confidence=0.25 -> halfway between 0.0 and 0.5 -> half of -0.15
         self.assertAlmostEqual(_confidence_penalty(0.25), -0.075, places=5)
 
     def test_none_returns_zero(self) -> None:
-        from app.core.rag_retriever import _confidence_penalty
+        from app.core.rag.rag_retriever import _confidence_penalty
 
         self.assertAlmostEqual(_confidence_penalty(None), 0.0, places=5)
 
@@ -265,8 +265,8 @@ class TestMemoryRetrieverUncertainSuffix(unittest.TestCase):
     """
 
     def test_low_confidence_gets_suffix(self) -> None:
-        from app.core.memory_retriever import MemoryRetriever
-        from app.core.memory_store import SearchHit
+        from app.core.memory.memory_retriever import MemoryRetriever
+        from app.core.memory.memory_store import SearchHit
 
         _, store = _store_factory()
         low = store.add("low conf claim", "fact", _emb("low"), confidence=0.3)

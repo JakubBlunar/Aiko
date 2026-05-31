@@ -1,4 +1,4 @@
-"""Tests for :mod:`app.core.novelty_detector` (K6 personality backlog).
+"""Tests for :mod:`app.core.conversation.novelty_detector` (K6 personality backlog).
 
 Stub the embedder and rag_store so we don't pull in Ollama / LanceDB
 on a unit-test pass. The detector's interesting surface is the ring
@@ -14,7 +14,7 @@ from typing import Sequence
 
 import numpy as np
 
-from app.core.novelty_detector import (
+from app.core.conversation.novelty_detector import (
     BAND_MILD,
     BAND_STRONG,
     NoveltyDetector,

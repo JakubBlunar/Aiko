@@ -79,7 +79,7 @@ of `ParamEyeR/LOpen` (`PhysicsSetting13` / `14` — ears flick on
 every blink), so even with detection working, `tickTier3` writes
 would be clobbered. Fixed by adding an optional per-rig
 `avatar_overrides.json` lookup in
-[`avatar_profile.py`](../../app/core/avatar_profile.py) (supported
+[`avatar_profile.py`](../../app/core/persona/avatar_profile.py) (supported
 keys this pass: `cat_ear_param_ids`, `cat_tail_param_ids`),
 shipping the Alexia override
 ([`data/personas/active/Alexia/avatar_overrides.json`](../../data/personas/active/Alexia/avatar_overrides.json))
@@ -106,7 +106,7 @@ auto-cascades to soft / neutral alternatives only; the explicit
 `[[reaction:concerned]]` from the LLM still resolves to the rig's
 mapping (intentional empathy beat). A second trace surfaced a
 follow-up path through the explicit `[[reaction:X]]` neighbour
-fallback in [`reactions.py`](../../app/core/reactions.py) /
+fallback in [`reactions.py`](../../app/core/affect/reactions.py) /
 [`ExpressionChannel.ts`](../../web/src/live2d/channels/ExpressionChannel.ts)
 `_REACTION_NEIGHBOURS`: non-sad reactions (`thoughtful`, `serious`,
 `frustrated`, `angry`) chained through `concerned` as fallback. Fix
@@ -141,7 +141,7 @@ and didn't survive a tab refresh. Sharing one file when reporting a
 bug now reconstructs the whole flow.
 
 `logging.ui_log_enabled` (added to
-[`LoggingSettings`](../../app/core/settings.py)) gates the feature;
+[`LoggingSettings`](../../app/core/infra/settings.py)) gates the feature;
 off by default. The "Debug logging" block in
 **Settings drawer -> Chat -> Diagnostics** flips it via
 `PATCH /api/settings`, the server broadcasts
@@ -212,7 +212,7 @@ self-explanatory.
 
 ## Aiko's room — virtual space with locations + items
 
-[`WorldStore`](../../app/core/world_store.py) backs a small persistent
+[`WorldStore`](../../app/core/world/world_store.py) backs a small persistent
 SQLite world (locations, items with consume semantics, a singleton
 state row holding posture / activity / location). A default rich
 room is seeded once on first boot. The room flows into the LLM via
@@ -229,7 +229,7 @@ cookie" is intentionally silent. Schema v6 added `world_locations`
 
 Extends the world model with a `garden` location seeded
 idempotently on every boot
-([`WorldStore.ensure_garden_seed`](../../app/core/world_store.py))
+([`WorldStore.ensure_garden_seed`](../../app/core/world/world_store.py))
 plus two new item kinds: `plant` (with `species` / `stage` /
 `lifecycle` in `state`) and `seed`. Plants advance through
 `sprout -> sapling -> growing -> flowering -> mature` over wall-clock
@@ -282,7 +282,7 @@ elapsed time since `memory.last_decay_run_at`, clamped by
 `decay_max_catchup_days`) with per-tier rates and a revival rebate
 (`salience += revival_coefficient * elapsed * revival_score`).
 `prune()` enforces per-tier caps independently. A new
-[`IdleWorkerScheduler`](../../app/core/idle_worker_scheduler.py) wakes
+[`IdleWorkerScheduler`](../../app/core/proactive/idle_worker_scheduler.py) wakes
 during quiet windows (no Live mode + no recent user activity) and
 runs one registered worker per tick. First two workers:
 `MemoryPromotionWorker` (promotes scratchpad rows on
@@ -309,13 +309,13 @@ Idle worker that fact-checks recently surfaced claims in the
 background and updates the originating memory's `confidence` (and
 optionally its content) when the search clearly corrects a number /
 date. Lives in
-[`app/core/idle_fact_checker.py`](../../app/core/idle_fact_checker.py)
+[`app/core/memory/idle_fact_checker.py`](../../app/core/memory/idle_fact_checker.py)
 and registers with the shipped `IdleWorkerScheduler`. Privacy is
-enforced by [`fact_check_privacy.py`](../../app/core/fact_check_privacy.py)
+enforced by [`fact_check_privacy.py`](../../app/core/memory/fact_check_privacy.py)
 which blocks personal claims at classification time and scrubs the
 search query (drops emails, phone numbers, names, addresses) before
 it ever leaves the box. Per-hour and per-day budgets live in
-[`fact_check_rate_limiter.py`](../../app/core/fact_check_rate_limiter.py)
+[`fact_check_rate_limiter.py`](../../app/core/memory/fact_check_rate_limiter.py)
 backed by `kv_meta`. Each phase logs at INFO with timing + previews
 (`start`, `scrubbed`, `search done`, `distil done`, `apply done`)
 so [`data/app.log`](../../data/app.log) is the audit trail. Tests:
@@ -330,10 +330,10 @@ so [`data/app.log`](../../data/app.log) is the audit trail. Tests:
 Captures Aiko's "I don't know" moments as structured
 `knowledge_gap` memories so F1 can close them later and the prompt
 can resurface them when the topic returns. Extraction lives in
-[`app/core/knowledge_gap_extractor.py`](../../app/core/knowledge_gap_extractor.py)
+[`app/core/memory/knowledge_gap_extractor.py`](../../app/core/memory/knowledge_gap_extractor.py)
 (regex + the inline `[[gap:topic:question]]` self-tag, mirroring
 the promise extractor shape). Storage reuses `MemoryStore` via the
-`knowledge_gap` kind in [`memory_store.py`](../../app/core/memory_store.py).
+`knowledge_gap` kind in [`memory_store.py`](../../app/core/memory/memory_store.py).
 Resolved gaps gain a `resolved_at` metadata stamp from the F1
 worker and the original gap row is kept for audit. Surfacing in the
 prompt is gated on cosine similarity to the current turn so only
@@ -357,11 +357,11 @@ prompt every session for weeks until the user explicitly notices
 F2.1 adds two complementary closure paths, both stamping
 `metadata.resolved_at` + `resolved_by_memory_id` (and a new
 `metadata.resolved_by` audit field) via the existing
-[`KnowledgeGapStore.mark_resolved`](../../app/core/knowledge_gap_extractor.py)
+[`KnowledgeGapStore.mark_resolved`](../../app/core/memory/knowledge_gap_extractor.py)
 API:
 
 * **Idle memory-match resolver** — a new
-  [`IdleGapResolver`](../../app/core/idle_gap_resolver.py) registered
+  [`IdleGapResolver`](../../app/core/conversation/idle_gap_resolver.py) registered
   with `IdleWorkerScheduler`. Each tick (default 600 s) walks
   `KnowledgeGapStore.list_open()` and calls `MemoryStore.search` with
   the gap's *already-stored* embedding (no re-embed cost). Hits are
@@ -385,7 +385,7 @@ API:
   moment the user speaks it; the idle worker mops up the rest.
 
 Tunables on
-[`AgentSettings`](../../app/core/settings.py):
+[`AgentSettings`](../../app/core/infra/settings.py):
 `gap_resolver_enabled`, `gap_resolver_interval_seconds` (600),
 `gap_resolver_threshold` (0.55 — slightly stricter than the seed
 resolver's 0.50 because closing a gap is a stronger claim than
@@ -410,7 +410,7 @@ plumbing all carry it now. Defaults: extractor `0.7`,
 user-confirmed tags `0.9`, tool-result memories (RAG / web) `0.95`,
 manual memory-tab creates `1.0`. F1 pushes confidence up toward
 `0.95` on positive verification and down to `0.4` on contradiction.
-[`rag_retriever.py`](../../app/core/rag_retriever.py) penalises
+[`rag_retriever.py`](../../app/core/rag/rag_retriever.py) penalises
 hits with `confidence < 0.5` and appends an `(uncertain)` suffix
 in the rendered memory block so the LLM hedges. Memory tab in
 [`SettingsDrawer.tsx`](../../web/src/components/SettingsDrawer.tsx)
@@ -423,29 +423,29 @@ gained a confidence column + filter. Pinned rows clamp to `>= 0.9`.
 Periodic background worker that scans pairs of allow-listed memories
 (`fact` / `preference` / `relationship` / `event`) with high cosine
 similarity but lexically contradicting content. New
-[`memory_conflicts`](../../app/core/chat_database.py) table (schema
+[`memory_conflicts`](../../app/core/infra/chat_database.py) table (schema
 v11) records each detected pair with the heuristic signals,
 optional LLM verdict, and a status of `open` / `auto_resolved` /
 `user_resolved` / `dismissed`. The
-[`MemoryConflictStore`](../../app/core/memory_conflict_store.py)
+[`MemoryConflictStore`](../../app/core/memory/memory_conflict_store.py)
 wraps it with `record` / `list_open` / `mark_user_resolved` /
 `dismiss` / `delete_for_memory` (cascade-cleanup hook on
 `MemoryStore.delete`).
 
 Detection is hybrid: a cheap heuristic gate in
-[`conflict_heuristics.py`](../../app/core/conflict_heuristics.py)
+[`conflict_heuristics.py`](../../app/core/memory/conflict_heuristics.py)
 (negation flip, antonym table, numerical mismatch) labels each
 candidate pair `definite` (skip LLM, resolve immediately),
 `borderline` (LLM verifies via a `YES` / `NO` / `UNRELATED` JSON
 prompt, rate-limited through a dedicated
-[`FactCheckRateLimiter`](../../app/core/fact_check_rate_limiter.py)
+[`FactCheckRateLimiter`](../../app/core/memory/fact_check_rate_limiter.py)
 with `state_key="conflict_detector.rate_state"`), or `no` (drop
 without LLM cost). Confirmed conflicts with `|conf_a - conf_b| >=
 0.30` (default) auto-demote the loser to `tier=archive`,
 `confidence=0.20`, with `metadata.superseded_by` stamped — the rest
 surface in the new Conflicts sub-tab on the Memory drawer for the
 user to resolve via Keep-this / dismiss buttons. The worker
-[`MemoryConflictWorker`](../../app/core/memory_conflict_worker.py)
+[`MemoryConflictWorker`](../../app/core/memory/memory_conflict_worker.py)
 registers with the shipped `IdleWorkerScheduler` on an hourly
 cadence and respects per-tick caps (`max_corpus=1000`,
 `max_pairs_per_run=50`) so an O(n²) sweep can never tank a tick.
@@ -454,7 +454,7 @@ Aiko can also self-flag mid-turn with `[[conflict:short reason]]`
 (parsed in
 [`response_text_service.py`](../../app/core/services/response_text_service.py),
 stripped from chat/TTS, dispatched in
-[`SessionController._post_turn_inner_life`](../../app/core/session_controller.py)
+[`SessionController._post_turn_inner_life`](../../app/core/session/session_controller.py)
 to `IdleWorkerScheduler.force_run` so the worker runs immediately
 instead of waiting for the next hour). REST endpoints
 `/api/memory-conflicts` (GET / resolve / dismiss) in
@@ -477,13 +477,13 @@ plus extensions to `tests/test_response_text_service.py` and
 
 A persistent model of what Aiko *thinks* Jacob believes / feels,
 kept separate from the facts she knows. New
-[`beliefs`](../../app/core/chat_database.py) table (schema v12) holds
+[`beliefs`](../../app/core/infra/chat_database.py) table (schema v12) holds
 two shapes in one store, distinguished by the `kind` column:
 `mood` beliefs carry numeric `valence` / `arousal` so the gap
 detector can compare directly against the live
-[`AffectState`](../../app/core/affect_state.py), and `opinion`
+[`AffectState`](../../app/core/affect/affect_state.py), and `opinion`
 beliefs hold a free-text predicted state ("rust is overhyped"). The
-[`BeliefStore`](../../app/core/belief_store.py) wraps it with
+[`BeliefStore`](../../app/core/relationship/belief_store.py) wraps it with
 `upsert` (dedupes by `(user_id, kind, topic)` plus topic-embedding
 cosine ≥ 0.88) / `list_active` / `mark_contradicted` /
 `mark_confirmed` / `mark_stale` / `delete` / `count_by_status`,
@@ -494,18 +494,18 @@ Two write paths feed the store. The self-tag fast path adds a new
 [`response_text_service.py`](../../app/core/services/response_text_service.py)
 (parsed alongside `[[conflict:...]]`, stripped from chat/TTS,
 dispatched in `_post_turn_inner_life`); the
-[`BeliefInferenceWorker`](../../app/core/belief_worker.py) mines
+[`BeliefInferenceWorker`](../../app/core/relationship/belief_worker.py) mines
 recent user turns once an hour, privacy-scrubs the transcript via
-[`fact_check_privacy.scrub_claim_for_search`](../../app/core/fact_check_privacy.py),
+[`fact_check_privacy.scrub_claim_for_search`](../../app/core/memory/fact_check_privacy.py),
 spends one rate-limited LLM call through a dedicated
-[`FactCheckRateLimiter`](../../app/core/fact_check_rate_limiter.py)
+[`FactCheckRateLimiter`](../../app/core/memory/fact_check_rate_limiter.py)
 (`state_key="belief_worker.rate_state"`) to extract a JSON array of
 `{kind, topic, predicted_state, confidence}` tuples, then upserts
 with `source="worker"`. Self-tagged beliefs at higher confidence are
 preserved over worker rewrites.
 
 The
-[`BeliefGapDetector`](../../app/core/belief_gap_detector.py) runs
+[`BeliefGapDetector`](../../app/core/relationship/belief_gap_detector.py) runs
 each post-turn and surfaces mismatches: for each active mood belief
 younger than `belief_recent_window_hours` (default 24h), it
 flips the row to `contradicted` when
@@ -513,7 +513,7 @@ flips the row to `contradicted` when
 `|aro_pred - aro_obs| > belief_gap_arousal_threshold` (default 0.25),
 or the recomputed valence band lands in opposing territory. Opinion
 beliefs use
-[`conflict_heuristics.classify_pair`](../../app/core/conflict_heuristics.py)
+[`conflict_heuristics.classify_pair`](../../app/core/memory/conflict_heuristics.py)
 against the user's recent message — a `definite` heuristic flips to
 `contradicted`, a strong Jaccard overlap nudges to `confirmed`, and
 beliefs untouched for `belief_stale_after_days` (default 90) bulk-
@@ -550,11 +550,11 @@ give a continuation. No new schema, no REST surface — the detector
 is in-process and the signal lives entirely in the inner-life
 prompt.
 
-The [`NoveltyDetector`](../../app/core/novelty_detector.py) keeps an
+The [`NoveltyDetector`](../../app/core/conversation/novelty_detector.py) keeps an
 in-memory `collections.deque[np.ndarray]` of size `novelty_window`
 (default 12) on each `SessionController`. On the first `detect()`
 call per session it lazily warms the ring from
-[`RagStore.list_recent_user_vectors`](../../app/core/rag_store.py)
+[`RagStore.list_recent_user_vectors`](../../app/core/rag/rag_store.py)
 filtered by the current user prefix (`session_id` starts with
 `{user_id}:`) so a topic genuinely discussed yesterday won't re-fire
 "this is new" today. On every turn it embeds `user_text`
@@ -574,7 +574,7 @@ silently — cold-start installs don't blare novelty on their first
 three turns.
 
 The signal surfaces through a new `novelty` inner-life provider on
-[`PromptAssembler`](../../app/core/prompt_assembler.py) (same shape
+[`PromptAssembler`](../../app/core/session/prompt_assembler.py) (same shape
 as `knowledge_gaps`: takes the live `user_text`, called inside
 `assemble_with_budget`, dropped under `aggressive=True`). The
 provider's banded copy lands in the system prompt right after
@@ -623,7 +623,7 @@ and ducks the surveillance-theatre tic that comes from repeating the
 "don't recite this" guard eight times per turn.
 
 K16 ships a new
-[`GroundingLineRenderer`](../../app/core/grounding_line.py) that
+[`GroundingLineRenderer`](../../app/core/conversation/grounding_line.py) that
 consumes a structured `GroundingContext` (built once per turn from the
 same store getters the granular block providers already use) and
 composes a deterministic, template-driven 1-3 sentence paragraph at
@@ -646,7 +646,7 @@ axes, petname, vocal_tone, catchphrase, narrative, arc.
 ### The three-mode config (canonical reference)
 
 K16 ships behind `agent.grounding_line_mode`, a string-valued setting
-in [`AgentSettings`](../../app/core/settings.py) (default `"off"`,
+in [`AgentSettings`](../../app/core/infra/settings.py) (default `"off"`,
 mirrored in [`config/default.json`](../../config/default.json)).
 Invalid values clamp to `"off"` with a debug log so a typo never
 wedges the prompt. Three modes:
@@ -730,7 +730,7 @@ returns text.
   `split` it's a small positive number (the renderer is template-
   driven, sub-millisecond per render).
 - DEBUG-level `prompt built:` log line from
-  `app.core.prompt_assembler` (see P2): the `providers=` count drops
+  `app.core.session.prompt_assembler` (see P2): the `providers=` count drops
   by the number of suppressed granular blocks; `slowest_provider=`
   shifts.
 - The persona note doubles as a sanity gate: if Aiko starts reciting
@@ -765,7 +765,7 @@ keeps flagging.
 
 Implemented as a **sibling** of `NoveltyDetector` rather than an
 extension of it: a new
-[`TopicStagnationDetector`](../../app/core/topic_stagnation.py) is
+[`TopicStagnationDetector`](../../app/core/conversation/topic_stagnation.py) is
 a pure streak counter — no embedder, no rag_store, no per-user
 state — that consumes the per-turn distance K6 already computed.
 To make that consumption cheap, `NoveltyDetector` was extended with
@@ -790,7 +790,7 @@ K6 (short text / warmup / embed failure) is treated as "no
 measurement" and does not advance the streak.
 
 The signal surfaces through a new `stagnation` inner-life provider
-on [`PromptAssembler`](../../app/core/prompt_assembler.py) — same
+on [`PromptAssembler`](../../app/core/session/prompt_assembler.py) — same
 shape as the K6 `novelty` provider, dropped under
 `aggressive=True`. Provider order matters: `novelty` runs first so
 its `last_distance`/`last_band` are fresh when the stagnation
@@ -844,7 +844,7 @@ Gives every memory three new fields — `event_time`, `temporal_type`
 `timeless`), and `relevance_until` — so Aiko can tell the difference
 between "Jacob is in Tokyo this week" and "Jacob went to Tokyo
 last year". Schema migration is additive in
-[`chat_database.py`](../../app/core/chat_database.py); the `Memory`
+[`chat_database.py`](../../app/core/infra/chat_database.py); the `Memory`
 dataclass and `RagStore` carry the new fields with a
 join-only strategy in LanceDB so we don't reindex existing
 embeddings. The memory extractor anchors a `today` reference,
@@ -856,7 +856,7 @@ bullets with a temporal suffix (`(last year)`, `(planned for Friday)`,
 The `MemoryDecayWorker` got a reclassification pass that nudges
 `future_plan` -> `past_event` once `event_time` is in the past, and
 a new
-[`FollowUpWorker`](../../app/core/follow_up_worker.py)
+[`FollowUpWorker`](../../app/core/proactive/follow_up_worker.py)
 generates proactive nudges for overdue `future_plan` memories,
 queueing them in
 [`PreparedNudgeStore`](../../app/core/prepared_nudge_store.py)
@@ -880,10 +880,10 @@ phrase ("weekday evenings", "weekend afternoons") into the
 SQL + Python bucketing. Confidence scales with sample size, and
 writes are skipped when the inferred phrase is unchanged.
 Lives in
-[`app/core/schedule_learner.py`](../../app/core/schedule_learner.py),
+[`app/core/infra/schedule_learner.py`](../../app/core/infra/schedule_learner.py),
 registers with the shipped `IdleWorkerScheduler`. The new field
 is allow-listed in
-[`app/core/user_profile.py`](../../app/core/user_profile.py)
+[`app/core/infra/user_profile.py`](../../app/core/infra/user_profile.py)
 `PROFILE_FIELDS` so the LLM `UserProfileWorker` is also aware of
 it. Tests: `tests/test_schedule_learner.py`.
 
@@ -909,7 +909,7 @@ and a persona note in
 teaches Aiko to lean into a matching rhythm only when the moment
 actually fits — never as a list, never as a calendar reminder.
 Settings:
-[`AgentSettings.routine_detection_enabled`](../../app/core/settings.py)
+[`AgentSettings.routine_detection_enabled`](../../app/core/infra/settings.py)
 plus `MemorySettings.routine_min_touches` /
 `routine_min_share` / `routine_max_active`. Tests:
 `tests/test_schedule_learner.py::RoutineDetectionTests` plus a
@@ -921,7 +921,7 @@ plus `MemorySettings.routine_min_touches` /
 
 Picks the oldest unresolved `open_question` memory during idle,
 runs it through
-[`fact_check_privacy.scrub_claim_for_search`](../../app/core/fact_check_privacy.py)
+[`fact_check_privacy.scrub_claim_for_search`](../../app/core/memory/fact_check_privacy.py)
 to produce a safe query, calls `web_search`, distils a concise
 JSON answer (`{answer, confidence}`) via Ollama, and stores the
 result as a `curiosity_finding` memory linked back to the source
@@ -929,11 +929,11 @@ question. Source `open_question` rows are stamped with
 `curiosity_resolved_at` / `curiosity_inconclusive_at` /
 `curiosity_skipped_at` metadata so a question is never re-processed
 in a tight loop. The worker shares
-[`FactCheckRateLimiter`](../../app/core/fact_check_rate_limiter.py)
+[`FactCheckRateLimiter`](../../app/core/memory/fact_check_rate_limiter.py)
 shape but with a separate `state_key="idle_curiosity.rate_state"`
 so its budget doesn't compete with the fact-checker's. Lives in
-[`app/core/idle_curiosity_worker.py`](../../app/core/idle_curiosity_worker.py).
-[`rag_retriever.py`](../../app/core/rag_retriever.py) appends a
+[`app/core/proactive/idle_curiosity_worker.py`](../../app/core/proactive/idle_curiosity_worker.py).
+[`rag_retriever.py`](../../app/core/rag/rag_retriever.py) appends a
 `(curiosity)` suffix on retrieved findings, and a Memory-section
 rule in [`aiko_companion.txt`](../../data/persona/aiko_companion.txt)
 teaches Aiko to surface them as "I was reading about X — turns
@@ -948,13 +948,13 @@ independence test in `tests/test_fact_check_rate_limiter.py`.
 Single shared
 [`Embedder`](../../app/llm/embedder.py)
 serves three live consumers per turn —
-[`RagRetriever`](../../app/core/rag_retriever.py) embeds
+[`RagRetriever`](../../app/core/rag/rag_retriever.py) embeds
 `"ctx || query"`, K6
-[`NoveltyDetector`](../../app/core/novelty_detector.py) embeds the
+[`NoveltyDetector`](../../app/core/conversation/novelty_detector.py) embeds the
 raw user message, K18
-[`TopicStagnationDetector`](../../app/core/topic_stagnation.py)
+[`TopicStagnationDetector`](../../app/core/conversation/topic_stagnation.py)
 piggybacks on K6's distance — plus the async
-[`MessageIndexer`](../../app/core/message_indexer.py) on the
+[`MessageIndexer`](../../app/core/rag/message_indexer.py) on the
 background thread. Two HTTP `/api/embeddings` round-trips per turn
 is the common case once novelty + RAG are both on. Before P1 there
 was no per-turn count or wall time, so "my turn felt slow" couldn't
@@ -970,7 +970,7 @@ calls (they're free). The counters are *thread-local* on purpose —
 background worker, and we don't want its async writes polluting the
 turn thread's accounting; threads that never call `begin_turn` see
 `active=False` and skip all accounting.
-[`TurnRunner.run`](../../app/core/turn_runner.py) brackets each
+[`TurnRunner.run`](../../app/core/session/turn_runner.py) brackets each
 turn with begin/end, stamps the result onto
 `PromptTelemetry.embed_calls` / `embed_ms` right before the
 `turn done:` INFO log, and the public `run()`'s `finally` calls
@@ -979,7 +979,7 @@ can't leak counter state into the next turn.
 
 The headline INFO line gained four new fields
 (`embed_calls=N embed_ms=N assemble_ms=N rag_lookup_ms=N`) and the
-[`SessionController`](../../app/core/session_controller.py) metrics
+[`SessionController`](../../app/core/session/session_controller.py) metrics
 dict carries them through to
 [`get_last_response_detail`](../../app/mcp/server.py) so MCP can
 grep regressions over time. Tests:
@@ -1009,7 +1009,7 @@ the eleven that have shipped since
 knowledge-gaps, …) were invisible. A regression in any of them
 couldn't be attributed without instrumenting the suspect by hand.
 
-[`PromptAssembler`](../../app/core/prompt_assembler.py) now wraps
+[`PromptAssembler`](../../app/core/session/prompt_assembler.py) now wraps
 every provider call through a `_safe_provider(timing_sink=…)` /
 `_timed_phase` pair into a flat
 `provider_ms: dict[str, float]` keyed by the provider name. The
@@ -1052,7 +1052,7 @@ time before the next submit — was being thrown away.
 The scheduler now drains as many due workers as fit into a per-tick
 wall-time budget (`tick_budget_ms`, default 3000). Workers are
 sorted oldest `last_run_at` first; each worker's
-[`avg_duration_ms`](../../app/core/idle_worker.py) (EMA, alpha=0.3
+[`avg_duration_ms`](../../app/core/proactive/idle_worker.py) (EMA, alpha=0.3
 on `IdleWorkerRecord`) is the cost estimate. Anti-starvation always
 admits the most-overdue ready worker even if its estimate exceeds
 the remaining budget, so a tight budget on a slow machine still
@@ -1081,7 +1081,7 @@ first. Each row carries `last_run_at`, `next_due_at`,
 tool stays for quick checks; reach for `get_idle_workers_status`
 when you want to answer "which workers are starving and why?".
 
-Settings: [`MemorySettings.idle_worker_tick_budget_ms`](../../app/core/settings.py)
+Settings: [`MemorySettings.idle_worker_tick_budget_ms`](../../app/core/infra/settings.py)
 + `idle_worker_max_per_tick`, mirrored in
 [`config/default.json`](../../config/default.json). Tests:
 `tests/test_idle_worker_p8.py` (EMA shape, multi-worker drain,
@@ -1096,7 +1096,7 @@ multi-worker default and a `max_per_tick=1` regression.
 
 `MemoryStore.migrate_to_rag` re-pushed every SQLite memory into
 LanceDB on every boot via a per-row
-[`RagStore.add_memory`](../../app/core/rag_store.py) loop. Each
+[`RagStore.add_memory`](../../app/core/rag/rag_store.py) loop. Each
 call did its own `delete` + `add` under the write lock, so 135
 memories meant 270 LanceDB write ops with manifest churn between
 each. On Windows that landed at ~525 ms per op, ~71 s total — a
@@ -1105,7 +1105,7 @@ N existing memories into LanceDB` in the log, and one that
 scaled linearly with memory count.
 
 The mirror now goes through a new
-[`RagStore.add_memories_bulk`](../../app/core/rag_store.py)
+[`RagStore.add_memories_bulk`](../../app/core/rag/rag_store.py)
 batch path: one `delete` with an `id IN (...)` predicate plus one
 `add(rows)` per chunk. With `chunk_size=500` (the default) a
 typical install lands all rows in a single chunk — two write ops
@@ -1137,7 +1137,7 @@ a raised bulk exception returns 0 instead of crashing.
 ## H1 + K4. Conversation-arc self-tag + dialogue-act tagging (schema v13)
 
 H1 closes the loop on the conversation-arc tracker that already shipped
-in [`app/core/conversation_arc.py`](../../app/core/conversation_arc.py)
+in [`app/core/conversation/conversation_arc.py`](../../app/core/conversation/conversation_arc.py)
 and K4 adds the user-side cousin per turn. One schema migration adds two
 nullable columns to `messages` (`arc`, `dialogue_act`); the arc taxonomy
 trims to a companion-friendly six (drop `debug` / `deep_dive`, add
@@ -1147,14 +1147,14 @@ mirroring `[[moment:]]` / `[[agenda:]]`) routes through
 `ArcStore.set_from_self_tag` at confidence `0.85` — the new middle rung
 on the ladder `regex 0.5 < self-tag 0.85 < smoother 0.95`. The estimator
 hot-path guard now refuses to overwrite a self-tag-or-better prior. K4:
-new [`app/core/dialogue_act_tagger.py`](../../app/core/dialogue_act_tagger.py)
-mirrors the [`promise_extractor`](../../app/core/promise_extractor.py)
+new [`app/core/conversation/dialogue_act_tagger.py`](../../app/core/conversation/dialogue_act_tagger.py)
+mirrors the [`promise_extractor`](../../app/core/memory/promise_extractor.py)
 shape (regex hot path inline + LLM cold path via the speaking-window
 scheduler) and tags every user turn into one of `question / story /
 vent / banter / planning / chitchat`. Both signals feed
-[`rag_retriever.py`](../../app/core/rag_retriever.py) (`+0.03` per match,
+[`rag_retriever.py`](../../app/core/rag/rag_retriever.py) (`+0.03` per match,
 combined cap `+0.05`) and tighten
-[`proactive_director.py`](../../app/core/proactive_director.py)
+[`proactive_director.py`](../../app/core/proactive/proactive_director.py)
 eligibility (suppress nudges on a `vent` turn; loosen cooldown on
 `silly` / `playful` arcs). Tests:
 [`tests/test_arc_self_tag.py`](../../tests/test_arc_self_tag.py),
@@ -1186,7 +1186,7 @@ punctuation rewrites. Layer 3 introduced a per-sentence
 parsed in
 [`response_text_service.py`](../../app/core/services/response_text_service.py)
 and consumed by
-[`analyze_sentence`](../../app/core/cadence.py) -- each label maps
+[`analyze_sentence`](../../app/core/voice/cadence.py) -- each label maps
 to a small overlay on the reaction-derived `ProsodyParams`
 (`speed_mult`, `gain_db_delta`, `pause_before`). Layer 4 expanded
 the earcon palette in
@@ -1223,12 +1223,12 @@ voice-swap perception on speed changes (because varispeed couples speed
 and pitch, so a 10% faster excited sentence is also ~1.6 semitones
 higher). Two new opt-in gates land the layers safely without forcing
 every voice to inherit the artefacts:
-* [`agent.tts_runtime_temp_enabled`](../../app/core/settings.py)
+* [`agent.tts_runtime_temp_enabled`](../../app/core/infra/settings.py)
   (default `False`) gates the per-reaction `_REACTION_TEMP_DELTA`
   table in
   [`PocketTtsService._resolve_runtime_temp`](../../app/tts/pocket_tts_service.py).
   When OFF, every call uses `tts.pocket_tts_temp` baseline.
-* [`agent.tts_runtime_speed_enabled`](../../app/core/settings.py)
+* [`agent.tts_runtime_speed_enabled`](../../app/core/infra/settings.py)
   (default `False`) gates both the per-reaction sub-cap table AND
   the cadence layer's per-sentence `speed_hint` in
   [`PocketTtsService.speak_async`](../../app/tts/pocket_tts_service.py).
@@ -1286,7 +1286,7 @@ fix it without changing model or prompt budget:
   with the Layer 2 cues: tells Aiko how to react to an opener / question
   / length nudge from the tracker without naming it out loud.
 * **Layer 2 -- `AikoStylePatternTracker`** in
-  [`app/core/aiko_style_tracker.py`](../../app/core/aiko_style_tracker.py).
+  [`app/core/persona/aiko_style_tracker.py`](../../app/core/persona/aiko_style_tracker.py).
   Pure rolling-window detector mirroring K6/K18: no embedder, no LLM,
   per-turn cost is a deque append plus a few counter scans. Three
   banded signals evaluated in priority order:
@@ -1299,16 +1299,16 @@ fix it without changing model or prompt budget:
   opener-rut nudge doesn't mask a later question-saturation cue, and
   the same band doesn't re-fire on every turn. Warmup gate (default
   6 recorded turns) keeps cold-start silent. All thresholds live on
-  [`AgentSettings`](../../app/core/settings.py) (`style_tracker_*`)
+  [`AgentSettings`](../../app/core/infra/settings.py) (`style_tracker_*`)
   and in [`config/default.json`](../../config/default.json) so
   calibration moves without code changes.
 
 Wiring follows the K6/K18 idiom verbatim:
-[`SessionController.__init__`](../../app/core/session_controller.py)
+[`SessionController.__init__`](../../app/core/session/session_controller.py)
 instantiates the tracker right after `TopicStagnationDetector`;
 [`InnerLifeProvidersMixin._render_style_pattern_block`](../../app/core/session/inner_life_providers_mixin.py)
 calls `tracker.detect()` and renders the matching cue;
-[`PromptAssembler.set_inner_life_providers`](../../app/core/prompt_assembler.py)
+[`PromptAssembler.set_inner_life_providers`](../../app/core/session/prompt_assembler.py)
 gains a `style_pattern` slot; the resulting block is appended to
 `system_parts` immediately after the K18 stagnation block so all three
 "Heads-up..." cues cluster together (and all three drop in aggressive
@@ -1333,7 +1333,7 @@ persona has always said "match their register" -- before this layer
 that was only ever observed in the live ~10-turn history window so
 the register reset every session. K13 anchors it persistently across
 days. New file:
-[`app/core/style_signal.py`](../../app/core/style_signal.py).
+[`app/core/persona/style_signal.py`](../../app/core/persona/style_signal.py).
 
 Five-axis rolling-window analyzer mirroring K6/K18 -- pure deque
 plus a few regex scans, no embedder, no LLM. Each axis is normalised
@@ -1367,9 +1367,9 @@ thing aggressive mode wants to preserve.
 Persistence is a single JSON blob keyed by `user_id` in a new
 `user_style_signal` table (`CREATE TABLE IF NOT EXISTS` migration --
 no column changes needed to extend the schema later). Mirrors the
-[`UserProfileStore`](../../app/core/user_profile.py) pattern via the
-new [`StyleSignalStore`](../../app/core/style_signal.py). On boot
-[`SessionController`](../../app/core/session_controller.py) eagerly
+[`UserProfileStore`](../../app/core/infra/user_profile.py) pattern via the
+new [`StyleSignalStore`](../../app/core/persona/style_signal.py). On boot
+[`SessionController`](../../app/core/session/session_controller.py) eagerly
 loads the persisted blob so the rolling window survives restart;
 the lazy `warm_from_history` runs on the very first post-turn record
 only when the persisted blob was empty (fresh install) so we don't
@@ -1379,7 +1379,7 @@ Wiring follows the K6/K18 idiom:
 [`InnerLifeProvidersMixin._render_style_signal_block`](../../app/core/session/inner_life_providers_mixin.py)
 reads `analyzer.current_signal()` + `analyzer.labels_for_signal()` and
 renders the line; the new `style_signal` slot on
-[`PromptAssembler.set_inner_life_providers`](../../app/core/prompt_assembler.py)
+[`PromptAssembler.set_inner_life_providers`](../../app/core/session/prompt_assembler.py)
 clusters the block right after `profile_block` (it's a stable user
 fact, not a per-turn cue);
 [`PostTurnMixin._post_turn_inner_life`](../../app/core/session/post_turn_mixin.py)
@@ -1390,7 +1390,7 @@ explains the cue (terse/chatty/casual/formal/slang/emoji/question)
 and the match-don't-narrate rule; sits next to "Reading {user_name}"
 since they're sibling concepts (live affect cue vs stable typing
 register). All thresholds live on
-[`AgentSettings`](../../app/core/settings.py) (`style_signal_*`) and
+[`AgentSettings`](../../app/core/infra/settings.py) (`style_signal_*`) and
 in [`config/default.json`](../../config/default.json).
 
 Optional debug tool: a new
@@ -1419,9 +1419,9 @@ she's missed a beat.
 ### K7. Forgetting protocol — `(faded)` suffix
 
 Stamps `memory_tier` on
-[`RagHit`](../../app/core/rag_store.py) during retrieval (joined from
+[`RagHit`](../../app/core/rag/rag_store.py) during retrieval (joined from
 the SQLite mirror where the score offset is already applied), then
-[`RagRetriever.format_block`](../../app/core/rag_retriever.py)
+[`RagRetriever.format_block`](../../app/core/rag/rag_retriever.py)
 appends `(faded)` next to `(uncertain)` / `(curiosity)` for any hit
 whose tier is `archive`. The persona "Memory" section reads the
 suffix as a soft hedge ("I think you said something about X once,
@@ -1435,7 +1435,7 @@ ordering.
 
 ### K17. Clarification-repair — "you missed his last point"
 
-New [`app/core/clarification_detector.py`](../../app/core/clarification_detector.py).
+New [`app/core/conversation/clarification_detector.py`](../../app/core/conversation/clarification_detector.py).
 Per-turn regex classifier with two bands:
 
 - **`strong`** — explicit corrections like "no that's not what I
@@ -1458,7 +1458,7 @@ hit on `SessionController._pending_clarification`.
 [`InnerLifeProvidersMixin._render_clarification_block`](../../app/core/session/inner_life_providers_mixin.py)
 consumes the slot on the next turn and clears it — sticky cues are
 worse than missing cues here, so a render exception still resets.
-[`PromptAssembler`](../../app/core/prompt_assembler.py) gets a new
+[`PromptAssembler`](../../app/core/session/prompt_assembler.py) gets a new
 `clarification` provider slot whose block lands in `system_parts`
 right after `belief_gaps_block` and above novelty / stagnation /
 style_pattern; if she missed the point, she should re-read first
@@ -1467,7 +1467,7 @@ point" cue is exactly what aggressive mode wants to keep).
 
 ### K8. Affect rupture-and-repair — "their mood just dipped"
 
-New [`app/core/affect_rupture_detector.py`](../../app/core/affect_rupture_detector.py).
+New [`app/core/affect/affect_rupture_detector.py`](../../app/core/affect/affect_rupture_detector.py).
 Cheapest possible detector: subtract two scalars and reaction-
 filter. Computes `prior_valence - current_valence` from the
 existing pre/post snapshots
@@ -1506,7 +1506,7 @@ lives in the existing Memory section right next to the
 ### Settings
 
 All three layers gate on
-[`AgentSettings`](../../app/core/settings.py): `clarification_repair_enabled`
+[`AgentSettings`](../../app/core/infra/settings.py): `clarification_repair_enabled`
 (default `true`), `rupture_repair_enabled` (default `true`),
 `rupture_valence_drop_threshold` (default `0.12`). K7 has no
 toggle — it's a render-layer addition that costs zero on rows
@@ -1536,14 +1536,14 @@ hash randomisation; passes in isolation).
 
 ## K14. Implicit engagement signals (latency + length)
 
-New [`app/core/engagement_tracker.py`](../../app/core/engagement_tracker.py).
+New [`app/core/affect/engagement_tracker.py`](../../app/core/affect/engagement_tracker.py).
 Per-turn detector that scores Jacob's reply latency + message length
 against rolling baselines and routes the signal to two consumers
 depending on which mode the turn ran in:
 
 - **Voice mode**: latency + length contribute to a small
   `closeness_delta` that rides into
-  [`RelationshipAxesUpdater.apply_turn`](../../app/core/relationship_axes.py)
+  [`RelationshipAxesUpdater.apply_turn`](../../app/core/relationship/relationship_axes.py)
   via the new `engagement_delta` kwarg (clamped to
   `engagement_closeness_delta_max=0.04` so the reaction-tag /
   moment-vibe / milestone channels still dominate inside the existing
@@ -1560,7 +1560,7 @@ depending on which mode the turn ran in:
   gap). A typed turn whose label scores as `"abandoned"` (steep
   latency *and* curt message — only possible when voice mode mixed in)
   also suppresses the typed proactive nudge via a new gate in
-  [`SessionController._is_typed_proactive_eligible`](../../app/core/session_controller.py).
+  [`SessionController._is_typed_proactive_eligible`](../../app/core/session/session_controller.py).
 
 Latency baseline lives in a small `collections.deque` (voice-only —
 typed turns never touch the latency window); length baseline is
@@ -1574,7 +1574,7 @@ and *before* the axes updater (so `closeness_delta` rides in the
 same `apply_turn` call).
 
 Each turn emits one structured INFO log line for the
-[`app.engagement`](../../app/core/engagement_tracker.py) logger
+[`app.engagement`](../../app/core/affect/engagement_tracker.py) logger
 (grep-friendly via `tail_logs(module_contains="engagement")`):
 
 ```
@@ -1627,10 +1627,10 @@ reports.
 
 ## K5. Mood shell tilt (only-when-notable)
 
-New [`app/core/mood_shell.py`](../../app/core/mood_shell.py). Per-turn
+New [`app/core/affect/mood_shell.py`](../../app/core/affect/mood_shell.py). Per-turn
 one-line emotional directive derived from the live
-[`AffectState`](../../app/core/affect_state.py) (valence + arousal)
-and [`RelationshipAxesState`](../../app/core/relationship_axes.py)
+[`AffectState`](../../app/core/affect/affect_state.py) (valence + arousal)
+and [`RelationshipAxesState`](../../app/core/relationship/relationship_axes.py)
 (closeness / humor / trust / comfort). Output reads like a stage
 direction — *"Lean affectionate and unhurried; let warmth show."* /
 *"Stay playful and quick; the room is laughing."* / *"Slow your
@@ -1653,7 +1653,7 @@ axis crossing AND no useful fallback band) so the block is empty
 most of the time.
 
 Surfaces through a new `mood_shell` inner-life provider on
-[`PromptAssembler`](../../app/core/prompt_assembler.py), registered
+[`PromptAssembler`](../../app/core/session/prompt_assembler.py), registered
 alongside the existing `relationship` / `axes` / `arc` cluster. Lands
 in `system_parts` right after the `axes_block` because mood-shell
 derives FROM the same axes the assistant just read. Part of the K16
@@ -1700,8 +1700,8 @@ the things she wants to grow into / explore / get better at — distinct
 from the agenda (TODOs the user gave her) and from one-shot self-
 memories. Two new memory kinds (`goal` + `goal_progress`) on the
 existing tier ladder, a dedicated facade
-[`GoalStore`](../../app/core/goal_store.py), an idle worker
-[`GoalWorker`](../../app/core/goal_worker.py) that bootstraps the
+[`GoalStore`](../../app/core/goals/goal_store.py), an idle worker
+[`GoalWorker`](../../app/core/goals/goal_worker.py) that bootstraps the
 initial ring and reflects on goals during quiet windows, an inner-life
 prompt block, an inline `[[goal:summary]]` self-tag, four agent tools,
 a small RAG goal-alignment bonus, and a Memory-tab panel.
@@ -1724,7 +1724,7 @@ eviction.
 ### Worker
 
 `GoalWorker` registers with the existing
-[`IdleWorkerScheduler`](../../app/core/idle_worker_scheduler.py) and
+[`IdleWorkerScheduler`](../../app/core/proactive/idle_worker_scheduler.py) and
 runs at the configured cadence (default hourly). Two branches in
 `run()`:
 
@@ -1740,7 +1740,7 @@ runs at the configured cadence (default hourly). Two branches in
   mirrors it into the parent goal's `metadata.last_progress_note`.
 
 Both branches are rate-limited via a dedicated
-[`FactCheckRateLimiter`](../../app/core/fact_check_rate_limiter.py)
+[`FactCheckRateLimiter`](../../app/core/memory/fact_check_rate_limiter.py)
 with `state_key='goal_worker.rate_state'` so a chatty session can't
 blow past `agent.goal_worker_per_hour_cap` / `_per_day_cap`. The
 cancel event is the same shared `fact_check_cancel` flag used by F1
@@ -1750,7 +1750,7 @@ LLM call cleanly.
 ### Prompt block
 
 A new `goals` inner-life provider on
-[`PromptAssembler`](../../app/core/prompt_assembler.py) renders the
+[`PromptAssembler`](../../app/core/session/prompt_assembler.py) renders the
 active goals as an "Aiko's quiet long-term goals" bullet list with an
 optional `(recent: ...)` sub-line under the most-recently-reflected
 goal. Lands in `system_parts` right after `agenda_block` and before
@@ -1788,7 +1788,7 @@ under the `tools.goals` switch (see
 
 ### RAG bonus
 
-[`RagRetriever`](../../app/core/rag_retriever.py) gains a small
+[`RagRetriever`](../../app/core/rag/rag_retriever.py) gains a small
 `_RAG_GOAL_ALIGNMENT_BOOST=+0.04` applied to memory hits whose
 embedding cosines above `_RAG_GOAL_ALIGNMENT_THRESHOLD=0.55` against
 any active goal vector. Skips the goal / goal_progress rows themselves
@@ -1933,11 +1933,11 @@ onboarding completion of a brand-new user.
 
 #### File-paths summary
 
-- [`app/core/onboarding_goal.py`](../../app/core/onboarding_goal.py)
+- [`app/core/goals/onboarding_goal.py`](../../app/core/goals/onboarding_goal.py)
   — new pure module: `_ONBOARDING_GOAL_KV_KEY`,
   `_ONBOARDING_GOAL_TEMPLATE`, `seed_onboarding_goal()`,
   `is_onboarding_goal_seeded()`. No state, no embedder, no LLM call.
-- [`app/core/session_controller.py`](../../app/core/session_controller.py)
+- [`app/core/session/session_controller.py`](../../app/core/session/session_controller.py)
   — `_seed_onboarding_goal_if_first_time()` method; backfill call
   + identity-listener registration at the end of `__init__`.
 - [`app/mcp/server.py`](../../app/mcp/server.py)
@@ -1952,7 +1952,7 @@ onboarding completion of a brand-new user.
 ## K7. Forgetting protocol (graded `(faded)` predicate + persona-rule rewrite)
 
 Half of K7 had been silently shipping for a while: the render-side
-`(faded)` suffix in [`RagRetriever.format_block`](../../app/core/rag_retriever.py)
+`(faded)` suffix in [`RagRetriever.format_block`](../../app/core/rag/rag_retriever.py)
 and a persona rule that told Aiko how to read the tag. The completion
 closes the missing low-salience half of the original spec and rewrites
 both `(faded)` and `(uncertain)` persona rules to avoid two systematic
@@ -1975,7 +1975,7 @@ through with no hedge — a 6-week-old `long_term` row decayed to
 `salience = 0.05` read identically to a fresh, sharp memory.
 
 The completion adds a graded predicate
-[`_is_faded_memory`](../../app/core/rag_retriever.py) that fires on:
+[`_is_faded_memory`](../../app/core/rag/rag_retriever.py) that fires on:
 
 - `tier == "archive"` — always (unchanged), OR
 - `tier in (None, "long_term")` AND `salience < memory.faded_salience_threshold`
@@ -1991,7 +1991,7 @@ observation" with "old half-forgotten" muddies two different signals.
 `RagRetriever` instance; the static signature gains optional kwargs
 with safe defaults so existing test call sites keep working. The
 `RagRetriever.block_for` instance wrapper and the speculative
-[`RagPrefetcher`](../../app/core/rag_prefetcher.py) both thread the
+[`RagPrefetcher`](../../app/core/rag/rag_prefetcher.py) both thread the
 instance settings through.
 
 ### Gap B: persona rules were going to tic
@@ -2029,7 +2029,7 @@ were rewritten to:
 
 ### Settings
 
-Three new knobs under [`MemorySettings`](../../app/core/settings.py):
+Three new knobs under [`MemorySettings`](../../app/core/infra/settings.py):
 
 - `memory.fade_hedge_enabled` (default `true`) — master kill-switch.
   Off → no `(faded)` suffix ever, including archive-tier.
@@ -2046,7 +2046,7 @@ new class of rows. Full docs in [`docs/configuration.md`](../configuration.md#k7
 ### Why no MCP tool
 
 The existing
-[`set_log_level("app.rag_retriever", "DEBUG")`](../../app/core/rag_retriever.py)
+[`set_log_level("app.rag_retriever", "DEBUG")`](../../app/core/rag/rag_retriever.py)
 plus
 [`get_last_response_detail`](../../app/mcp/server.py)
 are enough to verify "did this hit get the suffix?" in repro —
@@ -2076,16 +2076,16 @@ via grep over `tests/`).
 
 ### Filed-paths summary
 
-- [`app/core/rag_retriever.py`](../../app/core/rag_retriever.py) —
+- [`app/core/rag/rag_retriever.py`](../../app/core/rag/rag_retriever.py) —
   `_is_faded_memory` helper + `format_block` kwargs + `__init__`
   settings storage + `block_for` threading.
-- [`app/core/rag_prefetcher.py`](../../app/core/rag_prefetcher.py) —
+- [`app/core/rag/rag_prefetcher.py`](../../app/core/rag/rag_prefetcher.py) —
   threads settings through the speculative path.
-- [`app/core/settings.py`](../../app/core/settings.py) — three new
+- [`app/core/infra/settings.py`](../../app/core/infra/settings.py) — three new
   `MemorySettings` fields + parser entries.
 - [`config/default.json`](../../config/default.json) — three new
   defaults under `memory`.
-- [`app/core/session_controller.py`](../../app/core/session_controller.py)
+- [`app/core/session/session_controller.py`](../../app/core/session/session_controller.py)
   — wires the settings into the `RagRetriever` constructor call.
 - [`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt)
   — rewritten `(uncertain)` and `(faded)` bullets.
@@ -2140,11 +2140,11 @@ flowchart TD
 
 ### Detector module
 
-New [`app/core/callback_detector.py`](../../app/core/callback_detector.py)
+New [`app/core/conversation/callback_detector.py`](../../app/core/conversation/callback_detector.py)
 — a stateless module exposing `detect()` + `record()` + a
 `CallbackHit` dataclass, modelled on the shape of the K8
-([`affect_rupture_detector`](../../app/core/affect_rupture_detector.py))
-and K17 ([`clarification_detector`](../../app/core/clarification_detector.py))
+([`affect_rupture_detector`](../../app/core/affect/affect_rupture_detector.py))
+and K17 ([`clarification_detector`](../../app/core/conversation/clarification_detector.py))
 modules. No class, no per-session state — all persistence rides the
 existing `Memory.metadata` JSON column. No schema change.
 
@@ -2180,7 +2180,7 @@ never blocks TTS.
 ### RAG retriever read-side bonus
 
 Single new constant in
-[`app/core/rag_retriever.py`](../../app/core/rag_retriever.py):
+[`app/core/rag/rag_retriever.py`](../../app/core/rag/rag_retriever.py):
 
 ```python
 _RAG_CALLBACK_BONUS = 0.04
@@ -2202,11 +2202,11 @@ stamps) without erasing earned weight on already-stamped rows.
 ### Settings
 
 One new master switch on
-[`AgentSettings`](../../app/core/settings.py):
+[`AgentSettings`](../../app/core/infra/settings.py):
 
 - `agent.callback_detector_enabled` (default `true`)
 
-Six new knobs on [`MemorySettings`](../../app/core/settings.py):
+Six new knobs on [`MemorySettings`](../../app/core/infra/settings.py):
 
 - `memory.callback_age_floor_days` (default `3`, min `1`) — strict
   `<` against age in days; rows from the same recent thread aren't
@@ -2273,15 +2273,15 @@ Full docs in
 
 ### File-paths summary
 
-- [`app/core/callback_detector.py`](../../app/core/callback_detector.py)
+- [`app/core/conversation/callback_detector.py`](../../app/core/conversation/callback_detector.py)
   — new module with `detect()`, `record()`, `CallbackHit`,
   `CALLBACK_KINDS`.
 - [`app/core/session/post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py)
   — post-turn wire-in inside `_post_turn_inner_life`.
-- [`app/core/rag_retriever.py`](../../app/core/rag_retriever.py)
+- [`app/core/rag/rag_retriever.py`](../../app/core/rag/rag_retriever.py)
   — `_RAG_CALLBACK_BONUS` constant + branch in the memory-join
   block.
-- [`app/core/settings.py`](../../app/core/settings.py)
+- [`app/core/infra/settings.py`](../../app/core/infra/settings.py)
   — one new `AgentSettings` field + six new `MemorySettings`
   fields + parser entries with clamps.
 - [`config/default.json`](../../config/default.json)
@@ -2338,7 +2338,7 @@ flowchart TD
 
 ### Store + schema
 
-New [`app/core/calibration_store.py`](../../app/core/calibration_store.py) — a tiny adapter around
+New [`app/core/affect/calibration_store.py`](../../app/core/affect/calibration_store.py) — a tiny adapter around
 `ChatDatabase` round-tripping a single JSON blob per `user_id`, plus
 two frozen dataclasses for the in-memory shape:
 
@@ -2349,7 +2349,7 @@ two frozen dataclasses for the in-memory shape:
   (`int`).
 
 Schema bump v13 → v14: a new
-[`user_calibration_state`](../../app/core/chat_database.py) table
+[`user_calibration_state`](../../app/core/infra/chat_database.py) table
 (`user_id` PK + `state_json` + `updated_at`). Identical shape to
 K13's `user_style_signal` table by design so the migration trail
 stays uniform and the blob shape can extend without further
@@ -2362,11 +2362,11 @@ the detector can proceed.
 
 ### Detector module
 
-New [`app/core/calibration_detector.py`](../../app/core/calibration_detector.py)
+New [`app/core/affect/calibration_detector.py`](../../app/core/affect/calibration_detector.py)
 — a stateless module exposing `detect()`, `apply_signal()`,
 `decay()`, and `render_inner_life_block()`, modelled on the shape
-of K17 ([`clarification_detector`](../../app/core/clarification_detector.py))
-and K8 ([`affect_rupture_detector`](../../app/core/affect_rupture_detector.py)).
+of K17 ([`clarification_detector`](../../app/core/conversation/clarification_detector.py))
+and K8 ([`affect_rupture_detector`](../../app/core/affect/affect_rupture_detector.py)).
 No class, no per-session state — every method takes a
 `CalibrationState` snapshot and returns either a signal or a new
 state.
@@ -2500,12 +2500,12 @@ explicit rules:
 ### Settings
 
 One new master switch on
-[`AgentSettings`](../../app/core/settings.py):
+[`AgentSettings`](../../app/core/infra/settings.py):
 
 - `agent.calibration_detection_enabled` (default `true`)
 
 Seven new knobs on
-[`MemorySettings`](../../app/core/settings.py):
+[`MemorySettings`](../../app/core/infra/settings.py):
 
 - `memory.calibration_baseline` (default `0.80`, clamped
   `[0, 1]`) — decay target.
@@ -2562,18 +2562,18 @@ analyzer + store split.
 
 ### File-paths summary
 
-- [`app/core/calibration_detector.py`](../../app/core/calibration_detector.py)
+- [`app/core/affect/calibration_detector.py`](../../app/core/affect/calibration_detector.py)
   — new module: `detect()`, `apply_signal()`, `decay()`,
   `render_inner_life_block()`, `CalibrationSignal`,
   regex bands, hedge-token AND-gate.
-- [`app/core/calibration_store.py`](../../app/core/calibration_store.py)
+- [`app/core/affect/calibration_store.py`](../../app/core/affect/calibration_store.py)
   — new module: `CalibrationState`, `TopicSlot`,
   `CalibrationStore`, `baseline_state()`, JSON round-trip
   helpers.
-- [`app/core/chat_database.py`](../../app/core/chat_database.py)
+- [`app/core/infra/chat_database.py`](../../app/core/infra/chat_database.py)
   — schema bump v13 → v14, new `user_calibration_state` table,
   migration trail.
-- [`app/core/session_controller.py`](../../app/core/session_controller.py)
+- [`app/core/session/session_controller.py`](../../app/core/session/session_controller.py)
   — `CalibrationStore` init right after `StyleSignalStore`;
   `_last_assistant_vec` / `_prior_assistant_vec` slots;
   `calibration` provider registered on `PromptAssembler`.
@@ -2583,10 +2583,10 @@ analyzer + store split.
 - [`app/core/session/inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py)
   — `_render_calibration_block()` reads + decays the state and
   delegates render to the detector module.
-- [`app/core/prompt_assembler.py`](../../app/core/prompt_assembler.py)
+- [`app/core/session/prompt_assembler.py`](../../app/core/session/prompt_assembler.py)
   — `calibration_provider` slot + `_timed_phase` block +
   `system_parts` placement right after `clarification_block`.
-- [`app/core/settings.py`](../../app/core/settings.py)
+- [`app/core/infra/settings.py`](../../app/core/infra/settings.py)
   — one new `AgentSettings` field + seven new `MemorySettings`
   fields + parser entries with clamps.
 - [`config/default.json`](../../config/default.json)
@@ -2670,7 +2670,7 @@ tuples are dropped silently (no reach / no affordance). `furniture`
 is excluded across the board (the room *is* the furniture; you
 don't pick up a bed). `plant` + `seed` are only reachable from
 `sitting` / `standing` / `leaning`. Below is a condensed map; see
-[`app/core/sensory_anchor.py`](../../app/core/sensory_anchor.py)
+[`app/core/conversation/sensory_anchor.py`](../../app/core/conversation/sensory_anchor.py)
 for the full table.
 
 | Posture | Reachable kinds | Sample verb classes |
@@ -2744,21 +2744,21 @@ history of *which* item Aiko touched.
 
 ### File-paths summary
 
-- [`app/core/sensory_anchor.py`](../../app/core/sensory_anchor.py)
+- [`app/core/conversation/sensory_anchor.py`](../../app/core/conversation/sensory_anchor.py)
   — new module: `_ARC_WEIGHTS` + `_POSTURE_KIND_VERBS` +
   `_VERB_CLASS_HINT` + `SensoryBeat` + `pick_beat()` +
   `render_inner_life_block()` + `SensoryAnchorCadence` class.
-- [`app/core/session_controller.py`](../../app/core/session_controller.py)
+- [`app/core/session/session_controller.py`](../../app/core/session/session_controller.py)
   — `SensoryAnchorCadence` init right after `CalibrationStore`;
   `sensory_anchor=self._render_sensory_anchor_block` registered
   on `PromptAssembler`.
 - [`app/core/session/inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py)
   — `_render_sensory_anchor_block()` reads `RoomState` + items
   + live arc and delegates to the module's `tick()`.
-- [`app/core/prompt_assembler.py`](../../app/core/prompt_assembler.py)
+- [`app/core/session/prompt_assembler.py`](../../app/core/session/prompt_assembler.py)
   — `sensory_anchor` provider slot + `_timed_phase("sensory_anchor")`
   block + `system_parts` placement right after `activity_block`.
-- [`app/core/settings.py`](../../app/core/settings.py)
+- [`app/core/infra/settings.py`](../../app/core/infra/settings.py)
   — `AgentSettings.sensory_anchor_enabled` + four `MemorySettings`
   knobs (`sensory_anchor_min_turn_gap`, `_probability_scale`,
   `_max_recent_items`, `_max_window_items`) with parser clamps.
@@ -2783,4 +2783,80 @@ history of *which* item Aiko touched.
   knobs (defaults, overrides, clamps).
 - [`docs/configuration.md`](../configuration.md) — cheatsheet
   row + dedicated "K24 — sensory anchoring layer" subsection.
+
+## K-time1. Wall-clock prefixes on chat history
+
+The chat history sent to the LLM on every turn used to be a flat list of `{role, content}` pairs with **no per-message timestamps** — `MessageRow.created_at` was read from SQLite and silently discarded inside `_fit_history`. The `_ambient_block` provider gave the LLM the *absolute* current time ("Sunday, May 31, 1:35 PM") but not the *relative age* of each prior turn.
+
+Observed bug that triggered the work: {user} said "I am drinking my coffee and planning to visit my grandparents in half an hour", and two messages / ~2 wall-clock minutes later, Aiko asked "did you manage to drink that coffee before you left?". She had pattern-matched the future-tense plan as a completed past event because nothing in the prompt told her the conversation was still inside the same five-minute window. The future-tense plan + the absence of a clock against the in-session history is the perfect setup for the most common narrative interpretation: "the plan happened".
+
+K-time1 closes that gap by prefixing every kept history message with a short bracketed relative-age tag:
+
+- `< 60 sec`     → `[just now] {content}`
+- `1–59 min`     → `[N min ago] {content}`
+- same calendar day, ≥ 1 hour → `[today HH:MM] {content}`
+- previous day   → `[yesterday HH:MM] {content}`
+- 2–6 days old   → `[Wednesday 18:45] {content}` (day name)
+- 7+ days old    → `[May 28 18:45] {content}` (month + day)
+
+The current user message Aiko is replying to is appended *after* the history block by `assemble_with_budget` and never gets a prefix — it represents "right now" so the absence is itself the signal. Token cost is roughly 4–6 tokens per kept history message; the prefix is included in the token-cost accounting inside `_fit_history` so the history budget stays honest.
+
+### Decision flow
+
+```mermaid
+flowchart TD
+    A[per-turn history rows<br/>MessageRow with created_at] --> B{prefix_enabled?}
+    B -- false --> C[byte-identical content<br/>pre-K-time1 behaviour]
+    B -- true --> D[_format_age created_at, now]
+    D -- "valid ISO" --> E[render '[age]' prefix]
+    D -- "unparseable" --> F[skip prefix<br/>raw content survives]
+    E --> G[prepend '[<age>] ' to content]
+    F --> G
+    G --> H[token-cost includes prefix]
+    H --> I[fit into history budget]
+```
+
+### Architecture
+
+- **Setting**: `agent.history_age_prefix_enabled` (bool, default `true`) in [`app/core/infra/settings.py`](../../app/core/infra/settings.py); JSON mirror in [`config/default.json`](../../config/default.json). No clamp needed beyond the `bool(...)` cast.
+- **Constructor flag**: `PromptAssembler.__init__` accepts `history_age_prefix_enabled` (default `True` so direct-construction callers keep the new behaviour). [`SessionController`](../../app/core/session/session_controller.py) reads the setting at boot and threads it through.
+- **Age renderer**: `PromptAssembler._format_age(created_at_iso, now)` is a self-contained static helper. Parses `Z`-suffixed and explicit-offset ISO strings; promotes naive `created_at` values to UTC; returns `""` on parse failure so the calling site can fall back to raw content without a crash. Future timestamps (writer-side clock skew) collapse to `"just now"`.
+- **History packing**: `_fit_history` now accepts `prefix_enabled` and an optional `now` (defaults to `datetime.now(timezone.utc)`; the parameter exists for deterministic testability). When `prefix_enabled` is true and `_format_age` returns non-empty, the message content is replaced with `"[{age}] {content}"` *before* `estimate_tokens` runs.
+- **Persona guard**: the "Wall-clock awareness in the conversation" section in [`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt) (folded right after the existing "Where you are right now" grounding paragraph) teaches Aiko how to read the prefix, explicitly calls out the "future plan ≠ past event" misread, and forbids quoting the bracket prefix back at {user}.
+
+### What the LLM sees
+
+Before K-time1, a 4-message tail looked like:
+
+```
+user: I am drinking my coffee and planning to visit my grandparents in half an hour
+assistant: That sounds nice -- enjoy the time with them.
+user: bringing them flowers too
+assistant: <-- about to generate, has no clock for any of the above
+```
+
+After K-time1 (same tail, two minutes later):
+
+```
+user: [2 min ago] I am drinking my coffee and planning to visit my grandparents in half an hour
+assistant: [1 min ago] That sounds nice -- enjoy the time with them.
+user: [just now] bringing them flowers too
+assistant: <-- about to generate; can now see the conversation is still inside the planning window
+```
+
+### MCP-debuggable
+
+- `get_status` shows `history_age_prefix_enabled` in the settings snapshot.
+- The DEBUG `prompt built:` log line from `app.core.session.prompt_assembler` carries the same `history_msgs_out=` count; spot-check one of the rendered messages by enabling that level (`set_log_level("app.core.session.prompt_assembler", "DEBUG")`) and reading the prompt-build payload.
+- Tests: `tests/test_prompt_assembler.py::WallClockHistoryPrefixTests` covers all six bands, the disable path (byte-identical content), the unparseable-timestamp degrade, the budget-accounting invariant, and an end-to-end smoke through `assemble_with_budget`.
+
+### Files
+
+- [`app/core/infra/settings.py`](../../app/core/infra/settings.py) — `AgentSettings.history_age_prefix_enabled` field + matching `bool(agent_raw.get(...))` entry in `load_settings`. Inline comment documents the toggle, the bug it prevents, and the token-cost expectation.
+- [`config/default.json`](../../config/default.json) — `agent.history_age_prefix_enabled: true`.
+- [`app/core/session/prompt_assembler.py`](../../app/core/session/prompt_assembler.py) — adds `timezone` to the datetime import, the constructor flag, `_format_age`, and the `_fit_history` rewrite. The call site inside `assemble_with_budget` passes the flag through.
+- [`app/core/session/session_controller.py`](../../app/core/session/session_controller.py) — reads the setting at boot, threads it to `PromptAssembler(...)`.
+- [`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt) — "Wall-clock awareness in the conversation" section folded into the grounding cluster.
+- [`tests/test_prompt_assembler.py`](../../tests/test_prompt_assembler.py) — `WallClockHistoryPrefixTests` (9 tests).
+- [`docs/configuration.md`](../configuration.md) — cheatsheet row + dedicated "K-time1 — wall-clock prefixes on chat history" subsection.
 

@@ -1,4 +1,4 @@
-"""Tests for ``app.core.avatar_profile``.
+"""Tests for ``app.core.persona.avatar_profile``.
 
 Uses tiny hand-authored fixtures under ``tests/fixtures/avatar_min/``
 and ``tests/fixtures/avatar_bare/`` so CI doesn't need the gitignored
@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from app.core.avatar_profile import (
+from app.core.persona.avatar_profile import (
     AvatarProfile,
     AvatarProfileError,
     ExpressionParam,
@@ -107,7 +107,7 @@ class CapabilityDetectionTests(unittest.TestCase):
     def test_alexia_outfit_capability_mapping_matches_visual_rig(self) -> None:
         # Locks in the visual outfit assignment for Alexia so a future
         # refactor can't silently flip ``yf`` <-> ``yfmz`` again. See
-        # ``app.core.avatar_profile._ALEXIA_EXPR_TO_CAPABILITY`` (and
+        # ``app.core.persona.avatar_profile._ALEXIA_EXPR_TO_CAPABILITY`` (and
         # ``docs/alexia-model-notes.md`` for the full audit).
         #
         # User-confirmed visual mapping (May 2026):
@@ -115,7 +115,7 @@ class CapabilityDetectionTests(unittest.TestCase):
         #   - yf  (Param16=30 only)      -> pajamas + hood UP
         #   - yfmz (Param16=30,Param17=30) -> pajamas, hood pulled DOWN
         # Param17 is a "lift hood off" toggle, not an "add hood" one.
-        from app.core.avatar_profile import _ALEXIA_EXPR_TO_CAPABILITY
+        from app.core.persona.avatar_profile import _ALEXIA_EXPR_TO_CAPABILITY
         self.assertEqual(_ALEXIA_EXPR_TO_CAPABILITY["yf"], "pajamas_hooded")
         self.assertEqual(_ALEXIA_EXPR_TO_CAPABILITY["yfmz"], "pajamas")
 
@@ -643,7 +643,7 @@ class OutfitGatedExpressionsTests(unittest.TestCase):
 class AvatarOverridesTests(unittest.TestCase):
     """``avatar_overrides.json`` is a per-rig escape hatch for cases
     where the multilingual synonym tables in
-    :mod:`app.core.avatar_profile` can't catch the rig's chosen
+    :mod:`app.core.persona.avatar_profile` can't catch the rig's chosen
     parameter names. The motivating case is Alexia's cat ears, which
     live on parameters named ``Hair 5`` / ``Hair 5-1`` / ``Hair 5-2``
     / ``Hair 5-3`` after the cdi3 translation pass — none match

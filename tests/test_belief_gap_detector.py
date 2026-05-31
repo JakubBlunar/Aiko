@@ -1,17 +1,17 @@
-"""Tests for :mod:`app.core.belief_gap_detector`."""
+"""Tests for :mod:`app.core.relationship.belief_gap_detector`."""
 from __future__ import annotations
 
 import tempfile
 import unittest
 from pathlib import Path
 
-from app.core.affect_state import AffectState
-from app.core.belief_gap_detector import (
+from app.core.affect.affect_state import AffectState
+from app.core.relationship.belief_gap_detector import (
     BeliefGap,
     BeliefGapDetector,
     render_inner_life_block,
 )
-from app.core.belief_store import (
+from app.core.relationship.belief_store import (
     BeliefStore,
     KIND_MOOD,
     KIND_OPINION,
@@ -20,7 +20,7 @@ from app.core.belief_store import (
     STATUS_CONTRADICTED,
     STATUS_STALE,
 )
-from app.core.chat_database import ChatDatabase
+from app.core.infra.chat_database import ChatDatabase
 
 
 def _build() -> tuple[BeliefStore, BeliefGapDetector]:

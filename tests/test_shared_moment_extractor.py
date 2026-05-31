@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import unittest
 
-from app.core.shared_moment_extractor import (
+from app.core.relationship.shared_moment_extractor import (
     SharedMomentCandidate,
     VIBE_VOCABULARY,
     _parse_llm_payload,

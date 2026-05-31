@@ -5,7 +5,7 @@ import threading
 import time
 import unittest
 
-from app.core.filler_injector import FillerInjector, pick_filler
+from app.core.voice.filler_injector import FillerInjector, pick_filler
 
 
 class PickFillerTests(unittest.TestCase):

@@ -10,7 +10,7 @@ from tempfile import TemporaryDirectory
 
 import numpy as np
 
-from app.core.self_image_worker import SelfImageWorker, _clean_paragraph
+from app.core.persona.self_image_worker import SelfImageWorker, _clean_paragraph
 
 
 class _FakeMemory:

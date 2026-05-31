@@ -1,5 +1,5 @@
 """Tests for the recency / revival scoring layered onto memory hits in
-:class:`app.core.rag_retriever.RagRetriever` (Phase A3 of the personality
+:class:`app.core.rag.rag_retriever.RagRetriever` (Phase A3 of the personality
 depth pass).
 
 These tests stub the ``RagStore`` so we can dictate exactly what hits the
@@ -16,7 +16,7 @@ from typing import Any
 
 import numpy as np
 
-from app.core.rag_retriever import (
+from app.core.rag.rag_retriever import (
     RagRetriever,
     _MEMORY_PRIOR,
     _MEMORY_RECENCY_PENALTY,
@@ -25,7 +25,7 @@ from app.core.rag_retriever import (
     _MEMORY_REVIVAL_DAYS,
     _memory_recency_adjust,
 )
-from app.core.rag_store import (
+from app.core.rag.rag_store import (
     DocumentChunk,
     MemoryRecord,
     MessageRecord,

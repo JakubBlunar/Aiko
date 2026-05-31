@@ -1,4 +1,4 @@
-"""Tests for :mod:`app.core.topic_stagnation` (K18 personality backlog).
+"""Tests for :mod:`app.core.conversation.topic_stagnation` (K18 personality backlog).
 
 The detector is a pure streak counter -- no embedder, no rag_store --
 so the tests just feed scripted distance streams and assert the
@@ -10,7 +10,7 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from app.core.topic_stagnation import (
+from app.core.conversation.topic_stagnation import (
     BAND_MILD_LULL,
     BAND_STRONG_LULL,
     StagnationResult,

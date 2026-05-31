@@ -1,6 +1,6 @@
 """Post-turn inner-life mixin.
 
-Extracted from :mod:`app.core.session_controller` to keep the
+Extracted from :mod:`app.core.session.session_controller` to keep the
 controller shell readable. Covers the cold-path work that runs
 *after* every turn — schema-v8 memory revival, K9 curiosity-seed
 resolution, and the big ``_post_turn_inner_life`` orchestrator that
@@ -15,7 +15,7 @@ text is committed to the chat DB and surfaced to the user, so they
 have no init-order risk.
 
 NB: tests that previously patched
-``app.core.session_controller.<symbol>`` for any of the moved methods
+``app.core.session.session_controller.<symbol>`` for any of the moved methods
 must patch ``app.core.session.post_turn_mixin.<symbol>`` instead. The
 patch must target the module where the symbol is *looked up*.
 """
@@ -394,7 +394,7 @@ class PostTurnMixin:
             )
         ):
             try:
-                from app.core import affect_rupture_detector
+                from app.core.affect import affect_rupture_detector
 
                 threshold = float(
                     getattr(
@@ -486,7 +486,7 @@ class PostTurnMixin:
             and self._embedder is not None
         ):
             try:
-                from app.core import callback_detector
+                from app.core.conversation import callback_detector
                 from datetime import datetime, timezone
 
                 turn_vec = self._embedder.embed(assistant_text)
@@ -583,7 +583,7 @@ class PostTurnMixin:
             and self._embedder is not None
         ):
             try:
-                from app.core import calibration_detector
+                from app.core.affect import calibration_detector
                 from datetime import datetime, timezone
 
                 prior_assistant_vec = getattr(
@@ -766,7 +766,7 @@ class PostTurnMixin:
                     log.debug("reflection job raised", exc_info=True)
 
             try:
-                from app.core.speaking_window_scheduler import ScheduledJob
+                from app.core.voice.speaking_window_scheduler import ScheduledJob
 
                 self._scheduler.submit(ScheduledJob(
                     name="reflection",
@@ -865,7 +865,7 @@ class PostTurnMixin:
             getattr(self._settings.agent, "clarification_repair_enabled", True)
         ):
             try:
-                from app.core import clarification_detector
+                from app.core.conversation import clarification_detector
 
                 clarification_result = clarification_detector.detect(user_text)
                 if clarification_result is not None:
@@ -882,7 +882,7 @@ class PostTurnMixin:
         agenda_store = getattr(self, "_agenda_store", None)
         if agenda_store is not None and raw_assistant_text:
             try:
-                from app.core.agenda import extract_inline_tags
+                from app.core.goals.agenda import extract_inline_tags
 
                 for goal_text, importance in extract_inline_tags(raw_assistant_text):
                     agenda_store.add(
@@ -931,7 +931,7 @@ class PostTurnMixin:
             and raw_assistant_text
         ):
             try:
-                from app.core.conversation_arc import VALID_ARCS
+                from app.core.conversation.conversation_arc import VALID_ARCS
                 from app.core.services.response_text_service import (
                     parse_arc_tags,
                 )
@@ -1020,7 +1020,7 @@ class PostTurnMixin:
             and bool(getattr(self._settings.agent, "shared_moments_enabled", True))
         ):
             try:
-                from app.core.shared_moment_extractor import extract_inline_tags
+                from app.core.relationship.shared_moment_extractor import extract_inline_tags
 
                 for candidate in extract_inline_tags(raw_assistant_text):
                     row = moments_store.add_from_candidate(
@@ -1046,7 +1046,7 @@ class PostTurnMixin:
         gap_store = getattr(self, "_knowledge_gap_store", None)
         if gap_store is not None and raw_assistant_text:
             try:
-                from app.core.knowledge_gap_extractor import (
+                from app.core.memory.knowledge_gap_extractor import (
                     extract_inline_tags as _extract_gaps,
                 )
 
@@ -1314,7 +1314,7 @@ class PostTurnMixin:
             and bool(getattr(self._settings.agent, "relationship_axes_enabled", True))
         ):
             try:
-                from app.core.shared_moment_extractor import (
+                from app.core.relationship.shared_moment_extractor import (
                     detect_moment_reaction_tags,
                 )
 

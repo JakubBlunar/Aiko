@@ -1,0 +1,1208 @@
+"""Multi-source retrieval over the LanceDB :class:`RagStore`.
+
+Supersedes :class:`app.core.memory.memory_retriever.MemoryRetriever`. Searches three
+tables in parallel and merges the hits with source-aware scoring:
+
+  - ``memories`` (durable cross-session facts; high prior weight)
+  - ``messages`` (chat history embeddings; recency-aware)
+  - ``documents`` (uploaded notes / PDFs)
+
+The output is a structured ``list[RagHit]`` *plus* a ready-to-paste prompt
+block. The prompt block intentionally splits "What you know about Jacob"
+(memories) from "Snippets you remembered" (messages) and "From your notes"
+(documents), so the LLM can use them with appropriate confidence.
+
+Design notes:
+  - Memory hits get a small salience boost inside :class:`RagStore`; we
+    additionally bias message hits down so a strong memory always wins ties.
+  - We dedupe by content-text after merging.
+  - Recency is folded into message scores via an exponential decay on
+    ``created_at``; older messages are penalized so RAG doesn't unearth a
+    five-month-old line on every turn.
+  - H1 + K4: when an arc-state provider and chat_db are wired, hits whose
+    source ``messages`` row matches the *current* arc / dialogue_act get
+    a small boost (capped at ``+0.05`` combined). Two cheap dict lookups
+    per hit -- the join is a single SQL ``IN (...)`` query batched across
+    all surfaced hits.
+"""
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Sequence
+
+import numpy as np
+
+from app.core.rag.rag_store import RagHit
+
+if TYPE_CHECKING:
+    from app.core.infra.chat_database import ChatDatabase
+    from app.core.conversation.conversation_arc import ArcState
+    from app.core.goals.goal_store import GoalStore
+    from app.core.memory.memory_store import MemoryStore
+    from app.core.rag.rag_store import RagStore
+    from app.llm.embedder import Embedder
+
+
+log = logging.getLogger("app.rag_retriever")
+
+
+# Tuning knobs. Kept small so we can iterate without breaking callers.
+_MEMORY_PRIOR = 0.05
+_MESSAGE_PRIOR = -0.04
+_DOCUMENT_PRIOR = 0.0
+# Half-life in days for message recency decay; messages older than ~3 weeks
+# get heavily penalized in the merged score.
+_MESSAGE_HALFLIFE_DAYS = 21.0
+
+# Memory recency / revival tuning. The plain cosine + salience scoring is
+# stateless across turns, so a single high-salience callback would surface
+# every turn until the user manually deletes it. These two adjustments fix
+# that without weakening relevance:
+#
+#   * If a memory was last surfaced within ``_MEMORY_RECENCY_PENALTY_HOURS``
+#     we subtract ``_MEMORY_RECENCY_PENALTY`` from its score so the
+#     second-best candidate gets a real chance to win.
+#   * If a memory was used at least once but hasn't been touched in
+#     ``_MEMORY_REVIVAL_DAYS`` days, we add ``_MEMORY_REVIVAL_BONUS`` so
+#     stale threads can re-emerge with an "oh, whatever happened with…"
+#     framing instead of being lost forever under fresher hits.
+#
+# The deltas are intentionally smaller than the typical cosine gap between
+# top results (~0.05-0.10) so the recency signal nudges ordering without
+# overpowering relevance. ``_MEMORY_RECENCY_PENALTY`` is roughly twice the
+# revival bonus because suppressing a stale repeat is more valuable than
+# resurrecting a dormant one.
+_MEMORY_RECENCY_PENALTY_HOURS = 6.0
+_MEMORY_RECENCY_PENALTY = 0.08
+_MEMORY_REVIVAL_DAYS = 7.0
+_MEMORY_REVIVAL_BONUS = 0.04
+# Bonus for memories the user has explicitly pinned via the Memory tab.
+# Pinning is a curation signal ("I want this surfaced when relevant"); a
+# small additive nudge gives pinned hits the edge over equally-similar
+# unpinned siblings without overpowering raw cosine relevance.
+_MEMORY_PINNED_BONUS = 0.05
+# Bonus for ``shared_moment`` memories whose ``metadata.when`` matches an
+# anniversary window today (1mo / 3mo / 6mo / 1yr / Nyr). The size is the
+# same as the pinned bonus so a moment having its anniversary also gets
+# a small leg-up against an equally-similar non-anniversary sibling.
+_MEMORY_ANNIVERSARY_BONUS = 0.05
+_ANNIVERSARY_WINDOW_DAYS: tuple[int, ...] = (30, 90, 180, 365, 730, 1095, 1460, 1825)
+_ANNIVERSARY_TOLERANCE_DAYS = 1.0
+
+# Schema v8 — per-tier score offset applied to memory hits.
+# ``scratchpad`` rows are still probationary and pre-revival, so we
+# bias them slightly down; ``archive`` rows are cold history, so they
+# need a strong cosine match to surface (avoids unburying noise on
+# weak queries). ``long_term`` is the neutral baseline. The deltas are
+# small enough that a revived scratchpad row (revival_score > 0.5) or
+# a high-salience archive row still wins against an equally-similar
+# long_term sibling.
+_MEMORY_TIER_OFFSET: dict[str, float] = {
+    "scratchpad": -0.02,
+    "long_term": 0.0,
+    "archive": -0.03,
+}
+
+# Schema v9 — confidence-tier penalty for low-confidence memory hits.
+# Memories with ``confidence < 0.5`` get a proportional score penalty
+# capped at ``-0.15`` (when confidence == 0). Never hides — just demotes,
+# so a strong cosine match on an uncertain memory still surfaces but with
+# a small handicap against a high-confidence sibling. Per the F3 backlog
+# spec: "never hiding things from Aiko is the simpler invariant".
+_MEMORY_CONFIDENCE_PENALTY_THRESHOLD = 0.5
+_MEMORY_CONFIDENCE_PENALTY_MAX = 0.15
+
+# H1 + K4 — per-hit boost for source rows that share the current
+# conversation arc (H1) or the live user dialogue-act (K4). The deltas
+# are intentionally tiny: we want the alignment to nudge ordering when
+# cosine scores are near-tied, never to move a weak match past a strong
+# one. Combined cap is +0.05 -- a hit matching on both never gets the
+# full additive +0.06.
+_RAG_ARC_BOOST = 0.03
+_RAG_DIALOGUE_ACT_BOOST = 0.03
+_RAG_ALIGNMENT_BOOST_CAP = 0.05
+
+# K7 — Forgetting protocol defaults. The original implementation only
+# fired ``(faded)`` for ``tier=="archive"`` rows; this completion adds a
+# graded predicate so long_term rows that have decayed in place
+# (``salience`` below the threshold AND idle longer than ``idle_days``)
+# also pick up the suffix. The 30-180 day window between "decayed" and
+# "demoted to archive" was passing through with no hedge.
+#
+# Defaults are quiet on purpose: with the long_term decay rate of
+# 0.02/day, a fresh ``salience=0.5`` row hits the 0.20 threshold around
+# day 15; combined with the 30-day idle floor, only rows that genuinely
+# haven't surfaced in over a month qualify. The master switch
+# ``fade_hedge_enabled`` disables every ``(faded)`` suffix (including
+# archive) for users who want sharp memories only.
+_FADED_DEFAULT_SALIENCE_THRESHOLD = 0.20
+_FADED_DEFAULT_IDLE_DAYS = 30
+
+
+def _is_faded_memory(
+    *,
+    tier: str | None,
+    salience: float | None,
+    last_used_at: str | None,
+    created_at: str | None,
+    now: datetime,
+    salience_threshold: float,
+    idle_days: int,
+) -> bool:
+    """K7 graded fade predicate.
+
+    Returns ``True`` when the row should pick up the ``(faded)``
+    suffix. Two cases:
+
+    - ``tier == "archive"`` — always faded (cold history that survived
+      the score offset because the cosine match was strong).
+    - ``tier == "long_term"`` (or missing) AND salience below the
+      threshold AND last touched longer than ``idle_days`` ago — the
+      slow-decay-in-place case.
+
+    Scratchpad never fades: that tier has its own lifecycle
+    (``scratchpad_ttl_days`` prunes; promotion lifts the warm ones)
+    and conflating "raw new observation" with "old half-forgotten"
+    muddies two different signals.
+    """
+    if tier == "archive":
+        return True
+    if tier not in (None, "long_term"):
+        return False
+    if salience is None:
+        return False
+    if float(salience) >= float(salience_threshold):
+        return False
+    ts = last_used_at or created_at
+    if not ts:
+        return False
+    try:
+        last = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return False
+    # ``timedelta.days`` floors, so a strict ``>`` reads correctly:
+    # "more than N days idle" means at least N+1 calendar days.
+    return (now - last).days > int(idle_days)
+
+
+# K1 — per-hit boost for memories that semantically align with one of
+# Aiko's active long-term goals (cosine >= ``_RAG_GOAL_ALIGNMENT_THRESHOLD``).
+# Same posture as the arc / dialogue-act boosts: small enough to nudge
+# ordering on near-ties without ever moving a weak match past a strong
+# one. We only apply it once per hit, so a hit aligned with two goals
+# still gets just the single bonus.
+_RAG_GOAL_ALIGNMENT_BOOST = 0.04
+_RAG_GOAL_ALIGNMENT_THRESHOLD = 0.55
+
+# K22 — per-hit boost for memories that Aiko has actually managed to
+# weave back into a reply (``metadata.callback_count >= 1``). Same
+# posture as the pinned / anniversary / goal-alignment bonuses: small
+# enough to nudge ordering on near-ties without ever moving a weak
+# match past a strong one. Single-step (no per-count scaling) because
+# the salience bump applied at callback-record time already provides
+# the compounding effect; doing it again here would double-count and
+# let "hot-spot" memories permanently dominate the retriever. Bonus
+# is always-on once a row has been stamped — the settings only gate
+# the *write* side (the post-turn detector); read-side bonuses
+# survive even if the user later disables the detector.
+_RAG_CALLBACK_BONUS = 0.04
+
+
+def _confidence_penalty(confidence: float | None) -> float:
+    """Return a non-positive penalty for low-confidence memory hits.
+
+    ``confidence >= 0.5`` -> 0.0 (no nudge).
+    ``confidence == 0.0`` -> ``-_MEMORY_CONFIDENCE_PENALTY_MAX``.
+    Linear ramp in between.
+    """
+    if confidence is None:
+        return 0.0
+    try:
+        value = float(confidence)
+    except (TypeError, ValueError):
+        return 0.0
+    if value >= _MEMORY_CONFIDENCE_PENALTY_THRESHOLD:
+        return 0.0
+    gap = _MEMORY_CONFIDENCE_PENALTY_THRESHOLD - max(0.0, value)
+    return -(gap / _MEMORY_CONFIDENCE_PENALTY_THRESHOLD) * _MEMORY_CONFIDENCE_PENALTY_MAX
+
+
+# Schema v10 — humanized time annotations for retrieved memories.
+# ``_humanize_past`` and ``_humanize_future`` return short, natural
+# phrases ("yesterday", "3 days ago", "tonight 20:00") that
+# :func:`_temporal_suffix` wraps into the bullet annotation Aiko sees
+# in the prompt block. The format is intentionally informal — it's
+# meant to read like a friend's note ("you mentioned this 3 days
+# ago"), not a database timestamp.
+_HOUR_SECONDS = 3600.0
+_DAY_SECONDS = 86400.0
+
+
+def _to_aware(dt: datetime) -> datetime:
+    """Promote a tz-naive datetime to UTC. No-op for aware values."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _parse_temporal_iso(value: str | None) -> datetime | None:
+    """ISO-8601 -> aware datetime, with ``Z`` and naive normalisation."""
+    if not value or not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return _to_aware(dt)
+
+
+def _humanize_past(when_iso: str, now: datetime) -> str:
+    """Render ``when_iso`` as a short past-tense phrase relative to ``now``.
+
+    ``in the past`` is the safe fallback when parsing fails. Day-of-week
+    granularity kicks in for 2-6 days ago; week / month / year units take
+    over beyond that.
+    """
+    when = _parse_temporal_iso(when_iso)
+    if when is None:
+        return "in the past"
+    now = _to_aware(now)
+    delta = (now - when).total_seconds()
+    if delta < 0:
+        # Caller asked us to render a future time as past — defensive
+        # fall-through. Treat as "moments ago" so we don't print
+        # nonsense.
+        return "moments ago"
+    if delta < _HOUR_SECONDS:
+        minutes = max(1, int(delta // 60))
+        return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+    if delta < _DAY_SECONDS:
+        hours = max(1, int(delta // _HOUR_SECONDS))
+        return f"{hours} hour{'s' if hours != 1 else ''} ago"
+    days = int(delta // _DAY_SECONDS)
+    if days == 1:
+        return "yesterday"
+    if days < 7:
+        return f"{days} days ago"
+    if days < 30:
+        weeks = days // 7
+        return f"{weeks} week{'s' if weeks != 1 else ''} ago"
+    if days < 365:
+        months = max(1, days // 30)
+        return f"{months} month{'s' if months != 1 else ''} ago"
+    years = max(1, days // 365)
+    return f"{years} year{'s' if years != 1 else ''} ago"
+
+
+def _humanize_future(when_iso: str | None, now: datetime) -> str:
+    """Render ``when_iso`` as a short future-tense phrase relative to ``now``.
+
+    Falls back to ``"soon"`` when ``when_iso`` is missing or
+    unparseable so a future_plan with no precise time still gets a
+    sensible suffix.
+    """
+    if not when_iso:
+        return "soon"
+    when = _parse_temporal_iso(when_iso)
+    if when is None:
+        return "soon"
+    now = _to_aware(now)
+    delta = (when - now).total_seconds()
+    if delta <= 0:
+        # Time has passed — caller should have flipped this to
+        # past_event by now. Render with the "should be done by now"
+        # framing so Aiko knows to ask retrospectively.
+        return "earlier"
+    # Same calendar day
+    when_local = when.astimezone()
+    now_local = now.astimezone()
+    same_day = when_local.date() == now_local.date()
+    tomorrow = (when_local.date() - now_local.date()).days == 1
+    clock = when_local.strftime("%H:%M")
+    if same_day:
+        # Pod-aware phrasing: "tonight" reads more naturally than
+        # "today at 20:00" in casual chat. Hours are local.
+        hour = when_local.hour
+        if hour < 5:
+            return f"later tonight {clock}"
+        if hour < 12:
+            return f"this morning {clock}"
+        if hour < 17:
+            return f"this afternoon {clock}"
+        if hour < 22:
+            return f"tonight {clock}"
+        return f"late tonight {clock}"
+    if tomorrow:
+        hour = when_local.hour
+        if hour < 12:
+            return f"tomorrow morning {clock}"
+        if hour < 17:
+            return f"tomorrow afternoon {clock}"
+        if hour < 22:
+            return f"tomorrow evening {clock}"
+        return f"tomorrow night {clock}"
+    days = int(delta // _DAY_SECONDS)
+    if days < 7:
+        # Use the weekday name + clock for the "next few days" bucket.
+        return f"on {when_local.strftime('%A')} {clock}"
+    if days < 14:
+        return "next week"
+    if days < 30:
+        weeks = days // 7
+        return f"in {weeks} week{'s' if weeks != 1 else ''}"
+    if days < 365:
+        months = max(1, days // 30)
+        return f"in {months} month{'s' if months != 1 else ''}"
+    years = max(1, days // 365)
+    return f"in {years} year{'s' if years != 1 else ''}"
+
+
+# Schema v10 — score adjustments for temporally-classified memories.
+# ``future_plan`` rows whose moment is still ahead get a tiny demotion
+# so they don't crowd current-relevance hits unless the cosine match
+# is genuinely strong. ``past_event`` rows whose ``relevance_until``
+# has already passed are filtered out entirely (they stay in DB for
+# archive / reflection use, just not in the live RAG block). The
+# magnitudes are deliberately small — the deltas tune ordering, not
+# visibility.
+_FUTURE_PLAN_PENALTY = -0.05
+
+
+def _temporal_filter_drops(mem, now: datetime) -> bool:
+    """True if the v10 temporal fields say this memory should be skipped.
+
+    Currently only ``past_event`` rows whose ``relevance_until`` is in
+    the past are dropped — they've outlived their freshness window
+    and continuing to surface them in normal RAG produces the exact
+    "asking about progress on something that already finished" bug
+    this work targets. Other temporal types are kept.
+    """
+    temporal_type = getattr(mem, "temporal_type", None)
+    if temporal_type != "past_event":
+        return False
+    relevance_until = getattr(mem, "relevance_until", None)
+    if not relevance_until:
+        return False
+    until = _parse_temporal_iso(relevance_until)
+    if until is None:
+        return False
+    return until < _to_aware(now)
+
+
+def _temporal_boost(mem) -> float:
+    """Score adjustment derived from the v10 temporal classification.
+
+    ``future_plan`` rows get a small demotion so an upcoming-but-not-
+    yet-arrived plan doesn't crowd a current-relevance hit. Returns 0
+    for everything else so the function stays cheap and additive.
+    """
+    if getattr(mem, "temporal_type", None) == "future_plan":
+        return _FUTURE_PLAN_PENALTY
+    return 0.0
+
+
+def _temporal_suffix(
+    *,
+    temporal_type: str | None,
+    event_time: str | None,
+    created_at: str | None,
+    now: datetime,
+) -> str:
+    """Build the parenthetical time tag for a retrieved memory bullet.
+
+    Returns ``""`` for ``durable`` / ``preference`` / unknown types
+    (timeless memories should render with no suffix, exactly like
+    pre-v10 retrieval). ``ongoing`` gets a short "(ongoing)" tag.
+    ``past_event`` and ``future_plan`` get humanised relative-time
+    phrases sourced from ``event_time`` (with ``created_at`` as a
+    fallback for past events that lacked an explicit event_time —
+    "we learned this N days ago" is still better than no anchor).
+    """
+    if not temporal_type:
+        return ""
+    t = temporal_type.lower()
+    if t in ("durable", "preference"):
+        return ""
+    if t == "ongoing":
+        return " (ongoing)"
+    if t == "past_event":
+        anchor = event_time or created_at
+        if not anchor:
+            return ""
+        return f" ({_humanize_past(anchor, now)})"
+    if t == "future_plan":
+        when = _parse_temporal_iso(event_time)
+        if when is None:
+            return f" (planned for {_humanize_future(event_time, now)})"
+        if when <= _to_aware(now):
+            # Time has passed but the decay worker hasn't reclassified
+            # yet — render with the explicit "should be done by now"
+            # framing so Aiko picks the retrospective lane.
+            return (
+                f" (was planned for {_humanize_future(event_time, when - timedelta(seconds=1))}"
+                " — should be done by now)"
+            )
+        return f" (planned for {_humanize_future(event_time, now)})"
+    return ""
+
+
+def _is_anniversary_today(metadata: dict | None) -> bool:
+    """True if ``metadata.when`` falls inside an anniversary window today.
+
+    Safe to call with arbitrary dicts and on rows whose ``when`` is
+    missing or malformed; returns ``False`` in those cases.
+    """
+    if not metadata or not isinstance(metadata, dict):
+        return False
+    when_raw = metadata.get("when")
+    if not when_raw:
+        return False
+    try:
+        when = datetime.fromisoformat(str(when_raw).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    delta = (datetime.now(timezone.utc) - when).total_seconds() / 86400.0
+    if delta <= 0:
+        return False
+    for window in _ANNIVERSARY_WINDOW_DAYS:
+        if abs(delta - window) <= _ANNIVERSARY_TOLERANCE_DAYS:
+            return True
+    return False
+
+
+class RagRetriever:
+    def __init__(
+        self,
+        store: "RagStore",
+        embedder: "Embedder",
+        *,
+        top_k: int = 6,
+        score_threshold: float = 0.4,
+        per_source_top_k: int = 6,
+        include_messages: bool = True,
+        include_documents: bool = True,
+        memory_store: "MemoryStore | None" = None,
+        chat_db: "ChatDatabase | None" = None,
+        arc_state_provider: "Callable[[], ArcState | None] | None" = None,
+        dialogue_act_provider: "Callable[[str], str | None] | None" = None,
+        goal_store: "GoalStore | None" = None,
+        fade_hedge_enabled: bool = True,
+        faded_salience_threshold: float = _FADED_DEFAULT_SALIENCE_THRESHOLD,
+        faded_idle_days: int = _FADED_DEFAULT_IDLE_DAYS,
+    ) -> None:
+        self._store = store
+        self._embedder = embedder
+        self._top_k = max(0, int(top_k))
+        self._score_threshold = float(score_threshold)
+        self._per_source_top_k = max(1, int(per_source_top_k))
+        self._include_messages = bool(include_messages)
+        self._include_documents = bool(include_documents)
+        # Optional handle to the canonical SQLite memory store. When set,
+        # ``retrieve`` calls ``MemoryStore.mark_used`` on the memory hits
+        # it surfaces so subsequent turns can apply the recency penalty
+        # / revival bonus tuned above. Plumbing tolerates ``None`` so
+        # tests and lean deployments can run without it; the recency
+        # signal then simply stays at 0.
+        self._memory_store = memory_store
+        # H1 + K4: optional handles for the conversation-arc / dialogue-act
+        # alignment boost. ``chat_db`` is used to fetch the per-row arc /
+        # dialogue_act for the surfaced hits' source ``messages`` rows;
+        # the providers return the *current* arc state and the regex-
+        # tagged dialogue-act for the live query. All three are optional;
+        # when any is None the boost is silently skipped so legacy /
+        # test wiring stays functional.
+        self._chat_db = chat_db
+        self._arc_state_provider = arc_state_provider
+        self._dialogue_act_provider = dialogue_act_provider
+        # K1 — optional :class:`GoalStore` handle. When set, ``retrieve``
+        # pulls the active-goal vector list once per call and applies
+        # ``_RAG_GOAL_ALIGNMENT_BOOST`` to any hit whose own embedding
+        # cosine-aligns with one of them above
+        # ``_RAG_GOAL_ALIGNMENT_THRESHOLD``. Cost is O(num_goals × hits)
+        # cosines — negligible since num_goals is capped at ~5 and
+        # hits is bounded by ``per_source_top_k``. ``None`` keeps the
+        # legacy retriever behaviour for tests and lean deployments.
+        self._goal_store = goal_store
+        # K7 — Forgetting protocol settings. ``fade_hedge_enabled``
+        # is the master kill-switch; off disables every ``(faded)``
+        # suffix (including archive). The threshold + idle-days
+        # define the graded predicate for long_term rows that have
+        # decayed in place. See :func:`_is_faded_memory`.
+        self._fade_hedge_enabled = bool(fade_hedge_enabled)
+        self._faded_salience_threshold = max(
+            0.0, min(1.0, float(faded_salience_threshold)),
+        )
+        self._faded_idle_days = max(1, int(faded_idle_days))
+        # Schema v8 — IDs of memories surfaced in the last
+        # :meth:`retrieve` call. ``SessionController._post_turn_inner_life``
+        # reads this snapshot to run the keyword-overlap revival check
+        # against Aiko's reply and bump ``revival_score`` on rows she
+        # actually cited.
+        self._last_surfaced_memory_ids: list[int] = []
+
+    @property
+    def top_k(self) -> int:
+        return self._top_k
+
+    def set_goal_store(self, store: "GoalStore | None") -> None:
+        """Attach (or detach) the K1 :class:`GoalStore` after construction.
+
+        SessionController builds the retriever before the goal store
+        exists, so we wire the dependency in a second pass. Passing
+        ``None`` cleanly disables the goal-alignment bonus.
+        """
+        self._goal_store = store
+
+    def update_settings(
+        self,
+        *,
+        top_k: int | None = None,
+        score_threshold: float | None = None,
+        include_messages: bool | None = None,
+        include_documents: bool | None = None,
+    ) -> None:
+        if top_k is not None:
+            self._top_k = max(0, int(top_k))
+        if score_threshold is not None:
+            self._score_threshold = max(0.0, min(1.0, float(score_threshold)))
+        if include_messages is not None:
+            self._include_messages = bool(include_messages)
+        if include_documents is not None:
+            self._include_documents = bool(include_documents)
+
+    # ── retrieval ───────────────────────────────────────────────────────
+
+    def retrieve(
+        self,
+        query_text: str,
+        *,
+        recent_turns: Iterable[str] | None = None,
+        exclude_session_id: str | None = None,
+    ) -> list[RagHit]:
+        """Return up to ``top_k`` merged hits across all sources.
+
+        ``recent_turns`` is an optional list of recent message texts used to
+        widen the query (concatenated). This dramatically improves retrieval
+        on follow-up questions that share little surface form with the prior
+        turn (e.g. "what did I say earlier?").
+        """
+        if self._top_k <= 0:
+            return []
+        query = self._build_query(query_text, recent_turns)
+        if not query:
+            return []
+        try:
+            embedding = self._embedder.embed(query)
+        except Exception:
+            log.debug("rag retriever: embed failed", exc_info=True)
+            return []
+
+        # K1 — pre-fetch active goal vectors once per retrieval call so
+        # the per-hit alignment cosine check below is a cheap O(num_goals)
+        # dot product. The goal vectors are unit-normalised by
+        # ``MemoryStore.add`` so the dot product equals cosine directly.
+        goal_vectors: list[np.ndarray] = []
+        if self._goal_store is not None:
+            try:
+                goal_vectors = list(self._goal_store.active_goal_vectors())
+            except Exception:
+                log.debug(
+                    "rag retriever: goal_store active vectors failed",
+                    exc_info=True,
+                )
+                goal_vectors = []
+
+        merged: list[RagHit] = []
+        try:
+            mem_hits = self._store.search_memories(
+                embedding,
+                top_k=self._per_source_top_k,
+                min_score=self._score_threshold,
+            )
+            for h in mem_hits:
+                h.score += _MEMORY_PRIOR + _memory_recency_adjust(
+                    last_used_at=getattr(h.record, "last_used_at", None),
+                    use_count=int(getattr(h.record, "use_count", 0) or 0),
+                )
+                # Pin status lives in the SQLite mirror, not LanceDB --
+                # apply the bonus by joining against ``MemoryStore`` here.
+                # Wrapped in a broad try/except because a misbehaving or
+                # duck-typed memory store must not abort retrieval (the
+                # outer except for the whole memory branch would drop
+                # every memory hit, see test_mark_used_failure_does_not_
+                # break_retrieval).
+                if self._memory_store is not None:
+                    try:
+                        raw_id = getattr(h.record, "id", None)
+                        if raw_id is not None and hasattr(
+                            self._memory_store, "get"
+                        ):
+                            mem = self._memory_store.get(int(raw_id))
+                            if mem is not None:
+                                if getattr(mem, "pinned", False):
+                                    h.score += _MEMORY_PINNED_BONUS
+                                # Schema v7: anniversary nudge for
+                                # ``shared_moment`` rows whose ``when``
+                                # matches one of the 1mo/3mo/6mo/1yr/Nyr
+                                # windows today. Keeps the rendering of
+                                # this hint out of the hot path.
+                                if mem.kind == "shared_moment" and _is_anniversary_today(
+                                    getattr(mem, "metadata", None)
+                                ):
+                                    h.score += _MEMORY_ANNIVERSARY_BONUS
+                                # Schema v8: tier offset. Reads from the
+                                # SQLite mirror (tier is not stored in
+                                # the LanceDB record). Defaults to 0
+                                # when the row predates v8 / tier is
+                                # missing so callers stay safe.
+                                tier = getattr(mem, "tier", "long_term")
+                                h.score += _MEMORY_TIER_OFFSET.get(tier, 0.0)
+                                # K7 — stamp the tier on the hit so
+                                # ``format_block`` can render a
+                                # "(faded)" suffix for archive-tier
+                                # rows without a second join.
+                                h.memory_tier = tier
+                                # Schema v9: confidence penalty. Same
+                                # join path as the tier offset above;
+                                # low-confidence hits are demoted (never
+                                # hidden) so they only surface when the
+                                # cosine match is strong enough to
+                                # overcome the handicap. The confidence
+                                # is also stamped on the hit so
+                                # ``format_block`` can append the
+                                # "(uncertain)" suffix without a second
+                                # SQLite roundtrip.
+                                mem_confidence = getattr(mem, "confidence", None)
+                                h.score += _confidence_penalty(mem_confidence)
+                                if mem_confidence is not None:
+                                    h.confidence = float(mem_confidence)
+                                # K1 — small goal-alignment nudge.
+                                # Walks the pre-fetched active goal
+                                # vectors against ``mem.embedding``
+                                # (already unit-normalised by
+                                # MemoryStore.add). Skip goal /
+                                # goal_progress hits themselves so
+                                # the bonus doesn't compound on top
+                                # of the cosine score those rows
+                                # already win on. One bonus per hit
+                                # max — early-exit on the first
+                                # goal that aligns.
+                                if (
+                                    goal_vectors
+                                    and mem.kind not in ("goal", "goal_progress")
+                                    and mem.embedding is not None
+                                ):
+                                    try:
+                                        mem_arr = np.asarray(
+                                            mem.embedding, dtype=np.float32,
+                                        )
+                                        for gv in goal_vectors:
+                                            sim = float((mem_arr * gv).sum())
+                                            if sim >= _RAG_GOAL_ALIGNMENT_THRESHOLD:
+                                                h.score += _RAG_GOAL_ALIGNMENT_BOOST
+                                                break
+                                    except Exception:
+                                        log.debug(
+                                            "rag retriever: goal-alignment cosine raised",
+                                            exc_info=True,
+                                        )
+                                # K22 — callback bonus. Memories that
+                                # Aiko has successfully wound back
+                                # into a reply (cosine >= threshold
+                                # in :mod:`app.core.conversation.callback_detector`)
+                                # carry a positive
+                                # ``metadata.callback_count``. A
+                                # single-step bonus surfaces them
+                                # ahead of equally-relevant siblings
+                                # so the next reply naturally reaches
+                                # for them again. Per-count scaling
+                                # is intentionally absent: the
+                                # compounding loop lives on the
+                                # salience bump applied at
+                                # record-time, which the retriever
+                                # already factors in via tier
+                                # offsets + RagStore's salience-
+                                # aware base score.
+                                mem_meta = getattr(mem, "metadata", None)
+                                if mem_meta:
+                                    try:
+                                        cb_count = int(
+                                            mem_meta.get("callback_count", 0)
+                                        )
+                                    except (TypeError, ValueError):
+                                        cb_count = 0
+                                    if cb_count >= 1:
+                                        h.score += _RAG_CALLBACK_BONUS
+                                # Schema v10: stamp the temporal
+                                # fields onto the hit so format_block
+                                # can render the time-tag suffix
+                                # without a second SQLite roundtrip.
+                                # ``temporal_type`` always lands (the
+                                # SQLite column has a NOT NULL
+                                # default); ``event_time`` and
+                                # ``relevance_until`` are ``None`` for
+                                # legacy / pre-v10 rows or when the
+                                # extractor didn't anchor a timestamp.
+                                h.temporal_type = getattr(
+                                    mem, "temporal_type", None
+                                )
+                                h.event_time = getattr(mem, "event_time", None)
+                                h.relevance_until = getattr(
+                                    mem, "relevance_until", None
+                                )
+                                # Apply the relevance-window filter
+                                # *and* the future-plan boost. We tag
+                                # the hit with a sentinel score so
+                                # the dedupe/top-k cut at the bottom
+                                # of ``retrieve`` discards it, instead
+                                # of scattering ``continue`` here.
+                                if _temporal_filter_drops(mem, datetime.now(timezone.utc)):
+                                    h.score = -1.0
+                                else:
+                                    h.score += _temporal_boost(mem)
+                    except Exception:
+                        log.debug("pinned-bonus lookup failed", exc_info=True)
+                merged.append(h)
+        except Exception:
+            log.debug("memory search failed", exc_info=True)
+
+        if self._include_messages:
+            try:
+                msg_hits = self._store.search_messages(
+                    embedding,
+                    top_k=self._per_source_top_k,
+                    min_score=self._score_threshold,
+                )
+                for h in msg_hits:
+                    if exclude_session_id and h.source == "message":
+                        # Don't surface lines from the *current* session --
+                        # they're already in the recent-window context.
+                        if getattr(h.record, "session_id", None) == exclude_session_id:
+                            continue
+                    h.score = h.score + _MESSAGE_PRIOR + _recency_bonus(
+                        getattr(h.record, "created_at", "")
+                    )
+                    merged.append(h)
+            except Exception:
+                log.debug("message search failed", exc_info=True)
+
+        if self._include_documents:
+            try:
+                doc_hits = self._store.search_documents(
+                    embedding,
+                    top_k=self._per_source_top_k,
+                    min_score=self._score_threshold,
+                )
+                for h in doc_hits:
+                    h.score += _DOCUMENT_PRIOR
+                    merged.append(h)
+            except Exception:
+                log.debug("document search failed", exc_info=True)
+
+        # H1 + K4: apply the conversation-arc / dialogue-act alignment
+        # boost. Combined cap is +0.05 so a hit matching on both never
+        # gets the full additive +0.06; misaligned hits stay at 0. The
+        # join is a single SQL ``IN (...)`` call across every surfaced
+        # hit, batched in :meth:`_apply_alignment_boost`.
+        try:
+            self._apply_alignment_boost(merged, query_text=query_text)
+        except Exception:
+            log.debug("alignment boost failed", exc_info=True)
+
+        # Dedupe by content text (case-insensitive, whitespace-stripped).
+        # Schema v10: hits flagged with ``score < 0`` by the temporal
+        # filter (e.g. expired past_events) are dropped here before
+        # the top-k cut so they never make it into the prompt block.
+        seen: set[str] = set()
+        unique: list[RagHit] = []
+        for h in sorted(merged, key=lambda x: x.score, reverse=True):
+            if h.score < 0:
+                continue
+            key = (h.text or "").strip().lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            unique.append(h)
+            if len(unique) >= self._top_k:
+                break
+
+        # Bump ``last_used_at`` / ``use_count`` for every memory we're
+        # actually surfacing this turn. Closes the loop with the recency
+        # penalty above: a memory we just sent the LLM gets penalised on
+        # the very next turn, breaking the "always wins" feedback loop
+        # the legacy retriever suffered from. Best-effort — a broken
+        # store must not abort the prompt build.
+        ids: list[int] = []
+        for hit in unique:
+            if hit.source != "memory":
+                continue
+            raw = getattr(hit.record, "id", None)
+            if raw is None:
+                continue
+            try:
+                ids.append(int(raw))
+            except (TypeError, ValueError):
+                # Lance memory ids are stringified ints; anything
+                # that doesn't parse cleanly is a non-canonical row
+                # we can't reach via the SQLite mirror anyway.
+                continue
+        # Schema v8: snapshot the surfaced memory IDs so
+        # SessionController can run the post-turn revival check (keyword
+        # overlap between Aiko's reply and each surfaced memory) before
+        # the next retrieve() clobbers the list.
+        self._last_surfaced_memory_ids = list(ids)
+        if self._memory_store is not None and ids:
+            try:
+                self._memory_store.mark_used(ids)
+            except Exception:
+                log.debug("mark_used failed", exc_info=True)
+        return unique
+
+    @property
+    def last_surfaced_memory_ids(self) -> list[int]:
+        """Snapshot of memory IDs surfaced by the most recent ``retrieve``.
+
+        Empty list when the last call returned no memory hits or before
+        the first call. Consumed by :class:`SessionController` to
+        run the post-turn revival keyword-overlap check.
+        """
+        return list(self._last_surfaced_memory_ids)
+
+    # ── alignment boost (H1 + K4) ───────────────────────────────────────
+
+    def _apply_alignment_boost(
+        self, hits: list[RagHit], *, query_text: str,
+    ) -> None:
+        """Bump hits whose source row matches the live arc / dialogue_act.
+
+        Called once per ``retrieve`` against the merged hit list; mutates
+        ``hit.score`` in place. Silently noops when any of the optional
+        wirings (``chat_db``, ``arc_state_provider``,
+        ``dialogue_act_provider``) is missing -- the legacy retrieval
+        ordering is unchanged in that case.
+
+        Combined boost is capped at ``_RAG_ALIGNMENT_BOOST_CAP`` so a
+        hit aligned on both signals never gets the full additive +0.06.
+        """
+        if not hits or self._chat_db is None:
+            return
+        current_arc: str | None = None
+        if self._arc_state_provider is not None:
+            try:
+                state = self._arc_state_provider()
+            except Exception:
+                state = None
+            if state is not None:
+                current_arc = getattr(state, "arc", None)
+        current_act: str | None = None
+        if self._dialogue_act_provider is not None and query_text:
+            try:
+                current_act = self._dialogue_act_provider(query_text)
+            except Exception:
+                current_act = None
+        if not current_arc and not current_act:
+            return
+
+        message_ids: list[int] = []
+        for h in hits:
+            mid = self._extract_message_id(h)
+            if mid is not None:
+                message_ids.append(mid)
+        if not message_ids:
+            return
+        try:
+            signals = self._chat_db.get_message_signals(message_ids)
+        except Exception:
+            log.debug("get_message_signals failed", exc_info=True)
+            return
+        if not signals:
+            return
+
+        for h in hits:
+            mid = self._extract_message_id(h)
+            if mid is None:
+                continue
+            row_arc, row_act = signals.get(mid, (None, None))
+            bonus = 0.0
+            if current_arc and row_arc and row_arc == current_arc:
+                bonus += _RAG_ARC_BOOST
+            if current_act and row_act and row_act == current_act:
+                bonus += _RAG_DIALOGUE_ACT_BOOST
+            if bonus <= 0.0:
+                continue
+            h.score += min(bonus, _RAG_ALIGNMENT_BOOST_CAP)
+
+    @staticmethod
+    def _extract_message_id(hit: RagHit) -> int | None:
+        """Return the underlying ``messages`` row id for a hit, or ``None``."""
+        record = hit.record
+        if hit.source == "memory":
+            mid = getattr(record, "source_message_id", None)
+        elif hit.source == "message":
+            mid = getattr(record, "message_id", None)
+        else:
+            return None
+        if mid is None:
+            return None
+        try:
+            value = int(mid)
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0 else None
+
+    # ── formatting ──────────────────────────────────────────────────────
+
+    @staticmethod
+    def format_block(
+        hits: list[RagHit],
+        *,
+        user_display_name: str = "the user",
+        fade_hedge_enabled: bool = True,
+        faded_salience_threshold: float = _FADED_DEFAULT_SALIENCE_THRESHOLD,
+        faded_idle_days: int = _FADED_DEFAULT_IDLE_DAYS,
+    ) -> str:
+        """Render hits into a system-prompt-ready block.
+
+        Three sections, in this order, each only emitted when non-empty:
+          - "What you know about <user> (long-term memory):" -- memories with
+            ``kind`` in {fact, preference, event, relationship}.
+          - "Things you've shared / decided about yourself:" -- memories with
+            ``kind == "self"``.
+          - "Snippets you remembered from past chats:" -- message hits.
+          - "From your notes:" -- document hits.
+
+        K7 — ``fade_hedge_enabled`` / ``faded_salience_threshold`` /
+        ``faded_idle_days`` control the ``(faded)`` suffix. Defaults
+        preserve the original archive-only behaviour with the graded
+        long_term predicate enabled; flip ``fade_hedge_enabled=False``
+        to silence every fade hedge including archive.
+        """
+        if not hits:
+            return ""
+        user_lines: list[str] = []
+        self_lines: list[str] = []
+        message_lines: list[str] = []
+        document_lines: list[str] = []
+        now = datetime.now(timezone.utc)
+        for hit in hits:
+            text = (hit.text or "").strip()
+            if not text:
+                continue
+            if hit.source == "memory":
+                kind = (getattr(hit.record, "kind", "") or "").lower()
+                # Suffix tags. Order matters: "(uncertain)" first so
+                # confidence reads before provenance.
+                suffix_tags: list[str] = []
+                # Schema v9: append "(uncertain)" so the LLM hedges when
+                # the underlying memory has a low confidence score (the
+                # F1 fact-checker may have flagged it, or it never had
+                # a high-confidence source to begin with).
+                confidence = getattr(hit, "confidence", None)
+                if confidence is not None and float(confidence) < 0.5:
+                    suffix_tags.append("(uncertain)")
+                # G3: append "(curiosity)" so the persona rule can
+                # surface findings as "I was reading about X — turns
+                # out…" rather than reciting them as bare facts. The
+                # tag is invisible to the user; only the LLM ever
+                # sees it.
+                if kind == "curiosity_finding":
+                    suffix_tags.append("(curiosity)")
+                # K7 — Forgetting protocol. Graded fade predicate
+                # covers both archive-tier rows (cold history) AND
+                # long_term rows that have decayed in place
+                # (salience below threshold AND idle longer than
+                # ``faded_idle_days``). The 30-180 day window between
+                # "decayed" and "archive demoted" used to pass
+                # through with no hedge — closing that gap is what
+                # the K7 completion adds. The ``fade_hedge_enabled``
+                # master switch lets a user disable every fade
+                # suffix (including archive) for a sharper feel.
+                if fade_hedge_enabled and _is_faded_memory(
+                    tier=getattr(hit, "memory_tier", None),
+                    salience=getattr(hit.record, "salience", None),
+                    last_used_at=getattr(hit.record, "last_used_at", None),
+                    created_at=getattr(hit.record, "created_at", None),
+                    now=now,
+                    salience_threshold=faded_salience_threshold,
+                    idle_days=faded_idle_days,
+                ):
+                    suffix_tags.append("(faded)")
+                suffix = (" " + " ".join(suffix_tags)) if suffix_tags else ""
+                # Schema v10: append the temporal time-tag (e.g.
+                # "(yesterday)", "(planned for tonight 20:00)",
+                # "(ongoing)") so Aiko reads the memory at the right
+                # tense. Empty for durable/preference rows so the
+                # output stays identical to pre-v10 for legacy /
+                # timeless memories.
+                time_suffix = _temporal_suffix(
+                    temporal_type=getattr(hit, "temporal_type", None),
+                    event_time=getattr(hit, "event_time", None),
+                    created_at=getattr(hit.record, "created_at", None),
+                    now=now,
+                )
+                if kind in ("self", "self_tagged"):
+                    self_lines.append(f"- {text}{suffix}{time_suffix}")
+                else:
+                    user_lines.append(f"- {text}{suffix}{time_suffix}")
+            elif hit.source == "message":
+                role = (getattr(hit.record, "role", "") or "").lower()
+                speaker = (
+                    f"{user_display_name} said" if role == "user" else "You said"
+                )
+                message_lines.append(f'- {speaker}: "{_truncate(text, 200)}"')
+            elif hit.source == "document":
+                title = getattr(hit.record, "title", "")
+                head = f"({title}) " if title else ""
+                document_lines.append(f"- {head}{_truncate(text, 240)}")
+        sections: list[str] = []
+        if user_lines:
+            sections.append(
+                f"What you know about {user_display_name} (long-term memory):\n"
+                + "\n".join(user_lines)
+            )
+        if self_lines:
+            sections.append(
+                "Things you've shared / decided about yourself:\n"
+                + "\n".join(self_lines)
+            )
+        if message_lines:
+            sections.append(
+                "Snippets you remembered from past chats:\n"
+                + "\n".join(message_lines)
+            )
+        if document_lines:
+            sections.append("From your notes:\n" + "\n".join(document_lines))
+        return "\n\n".join(sections)
+
+    def block_for(
+        self,
+        query_text: str,
+        *,
+        recent_turns: Iterable[str] | None = None,
+        exclude_session_id: str | None = None,
+        user_display_name: str = "the user",
+    ) -> str:
+        hits = self.retrieve(
+            query_text,
+            recent_turns=recent_turns,
+            exclude_session_id=exclude_session_id,
+        )
+        return self.format_block(
+            hits,
+            user_display_name=user_display_name,
+            fade_hedge_enabled=self._fade_hedge_enabled,
+            faded_salience_threshold=self._faded_salience_threshold,
+            faded_idle_days=self._faded_idle_days,
+        )
+
+    # ── internals ───────────────────────────────────────────────────────
+
+    @staticmethod
+    def _build_query(query_text: str, recent_turns: Iterable[str] | None) -> str:
+        base = (query_text or "").strip()
+        if not recent_turns:
+            return base
+        # Prepend a small recent-context snippet (last 2-3 turns) so search
+        # can pick up referents like "that" / "earlier".
+        chunks: list[str] = []
+        for t in recent_turns:
+            t = (t or "").strip()
+            if not t:
+                continue
+            chunks.append(t)
+        if not chunks:
+            return base
+        ctx = " | ".join(chunks[-3:])
+        if not base:
+            return ctx
+        return f"{ctx} || {base}"
+
+
+# ── helpers ─────────────────────────────────────────────────────────────────
+
+
+def _truncate(s: str, limit: int) -> str:
+    s = s.strip()
+    if len(s) <= limit:
+        return s
+    return s[: max(20, limit - 1)].rstrip() + "…"
+
+
+def _recency_bonus(created_at: str) -> float:
+    """Tiny bonus for recent messages, penalty for ancient ones.
+
+    Returns a value in roughly ``[-0.06, 0.06]``. Combined with the cosine
+    score (which is in ``[score_threshold, 1.0]`` by then), this nudges the
+    final ordering without overpowering raw similarity.
+    """
+    if not created_at:
+        return 0.0
+    try:
+        ts = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+    except Exception:
+        return 0.0
+    delta_days = (datetime.now(timezone.utc) - ts).total_seconds() / 86400.0
+    if delta_days < 0:
+        delta_days = 0.0
+    # Exponential decay halved every _MESSAGE_HALFLIFE_DAYS; bonus shrinks
+    # from 0.06 to ~0 as messages age.
+    import math
+
+    weight = math.pow(0.5, delta_days / _MESSAGE_HALFLIFE_DAYS)
+    return 0.06 * (weight - 0.5)
+
+
+def _hours_since(iso_ts: str | None) -> float | None:
+    """Hours elapsed between ``iso_ts`` (UTC ISO-8601) and now, or
+    ``None`` for missing / unparseable values.
+
+    Negative deltas (clock skew) are clamped to 0.0 so a future-dated
+    timestamp doesn't accidentally trigger the revival bonus.
+    """
+    if not iso_ts:
+        return None
+    try:
+        ts = datetime.fromisoformat(str(iso_ts).replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+    seconds = (datetime.now(timezone.utc) - ts).total_seconds()
+    return max(0.0, seconds / 3600.0)
+
+
+def _memory_recency_adjust(
+    *,
+    last_used_at: str | None,
+    use_count: int,
+) -> float:
+    """Per-memory score nudge based on how recently it was surfaced.
+
+    See the constants at the top of the module for the rationale. The
+    function is total: it returns 0.0 for never-used memories, for
+    parse failures, and for the "in-between" zone (used some time ago,
+    not yet stale enough to revive).
+    """
+    hours = _hours_since(last_used_at)
+    if hours is None:
+        # Never surfaced -> no adjustment. Fresh discovery wins on its
+        # own merits.
+        return 0.0
+    if hours < _MEMORY_RECENCY_PENALTY_HOURS:
+        return -_MEMORY_RECENCY_PENALTY
+    days = hours / 24.0
+    if days >= _MEMORY_REVIVAL_DAYS and use_count > 0:
+        return _MEMORY_REVIVAL_BONUS
+    return 0.0
+
+

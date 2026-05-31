@@ -12,8 +12,8 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from app.core.chat_database import ChatDatabase
-from app.core.fact_check_rate_limiter import FactCheckRateLimiter
+from app.core.infra.chat_database import ChatDatabase
+from app.core.memory.fact_check_rate_limiter import FactCheckRateLimiter
 
 
 class StateKeyIndependenceTests(unittest.TestCase):

@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from app.core.chat_database import ChatDatabase
-from app.core.world_store import WorldStore
+from app.core.infra.chat_database import ChatDatabase
+from app.core.world.world_store import WorldStore
 from app.llm.tools.world import (
     ChangePostureTool,
     ConsumeItemTool,

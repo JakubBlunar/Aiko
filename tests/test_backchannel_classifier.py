@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import unittest
 
-from app.core.backchannel_classifier import (
+from app.core.conversation.backchannel_classifier import (
     BackchannelGate,
     classify,
 )

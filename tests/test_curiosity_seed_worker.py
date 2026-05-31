@@ -1,4 +1,4 @@
-"""Tests for :mod:`app.core.curiosity_seed_worker` (K9 personality backlog).
+"""Tests for :mod:`app.core.proactive.curiosity_seed_worker` (K9 personality backlog).
 
 The worker glues together a deterministic LLM mock, a stub topic
 graph, a stub embedder, and a real :class:`MemoryStore` only insofar
@@ -17,7 +17,7 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
-from app.core.curiosity_seed_worker import CuriositySeedWorker
+from app.core.proactive.curiosity_seed_worker import CuriositySeedWorker
 
 
 # ── stubs ────────────────────────────────────────────────────────────

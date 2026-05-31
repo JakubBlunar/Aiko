@@ -6,13 +6,13 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from app.core.affect_state import (
+from app.core.affect.affect_state import (
     AffectState,
     AffectStore,
     AffectUpdater,
     render_ambient_block,
 )
-from app.core.chat_database import ChatDatabase
+from app.core.infra.chat_database import ChatDatabase
 
 
 class _TempDb:

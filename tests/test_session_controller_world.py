@@ -17,9 +17,9 @@ from typing import Any
 
 from dataclasses import dataclass
 
-from app.core.chat_database import ChatDatabase
-from app.core.session_controller import SessionController
-from app.core.world_store import WorldStore
+from app.core.infra.chat_database import ChatDatabase
+from app.core.session.session_controller import SessionController
+from app.core.world.world_store import WorldStore
 
 
 @dataclass

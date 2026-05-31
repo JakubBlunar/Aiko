@@ -8,7 +8,7 @@ release into that folder before running the app.
 
 This document captures the things that aren't obvious from inspecting
 the files and that have already burned us once. **Read it before
-changing anything in `app/core/avatar_profile.py` or the outfit /
+changing anything in `app/core/persona/avatar_profile.py` or the outfit /
 overlay code paths in `web/src/components/Live2DAvatar.tsx`.**
 
 ---
@@ -61,7 +61,7 @@ needs Param16.
 ### Day clothes is synthetic
 
 There is no `.exp3.json` for day clothes — day clothes IS the model's
-baseline state. `app/core/avatar_profile.py::_detect_capabilities`
+baseline state. `app/core/persona/avatar_profile.py::_detect_capabilities`
 synthesises an empty `OutfitBinding` for `day_clothes` whenever any
 pajama variant is detected, so the SettingsDrawer always renders the
 "Day" radio. The empty params list also guarantees that the day
@@ -453,7 +453,7 @@ when Aiko speaks while a grin reaction is on, both mouths render
 simultaneously: the static toothy grin overlay and the flapping
 lip-synced jaw underneath.
 
-The fix lives in `app/core/avatar_profile.py` and
+The fix lives in `app/core/persona/avatar_profile.py` and
 `web/src/live2d/channels/ExpressionChannel.ts`:
 
 - `_detect_mouth_overlay_param_ids` walks the cdi3 `Parameters`
@@ -540,8 +540,8 @@ mitigation in place:
    nonexistent hood capability. It's in `_ALEXIA_EXPR_TO_CAPABILITY`
    explicitly to short-circuit the synonym pass.
 6. **Forgetting to update the four-place validator allow-list**.
-   `auto_outfit` is whitelisted in `app/core/settings.py` (loader),
-   `app/core/session_controller.py` (`update_avatar_settings`),
+   `auto_outfit` is whitelisted in `app/core/infra/settings.py` (loader),
+   `app/core/session/session_controller.py` (`update_avatar_settings`),
    `app/web/server.py` (`PATCH /api/avatar`), and `web/src/types.ts`.
    Use the `OUTFIT_MODES` constant on the Python side; only
    `web/src/types.ts` needs a manual edit when adding a new mode.

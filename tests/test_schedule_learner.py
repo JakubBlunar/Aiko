@@ -26,8 +26,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from app.core.chat_database import ChatDatabase
-from app.core.schedule_learner import (
+from app.core.infra.chat_database import ChatDatabase
+from app.core.infra.schedule_learner import (
     _RITUAL_LABELS,
     ScheduleLearner,
     _classify_local,
@@ -35,7 +35,7 @@ from app.core.schedule_learner import (
     _summarize_buckets,
     _summarize_routines,
 )
-from app.core.user_profile import UserProfileStore
+from app.core.infra.user_profile import UserProfileStore
 
 
 @dataclass

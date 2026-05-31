@@ -1,6 +1,6 @@
 """Speaking-window background-job scheduling mixin.
 
-Extracted from :mod:`app.core.session_controller` to keep the controller
+Extracted from :mod:`app.core.session.session_controller` to keep the controller
 shell readable. Covers the entire ``_maybe_schedule_*`` cluster — the
 12 per-turn checks that submit cohort-level work into the
 ``SpeakingWindowScheduler`` so heavy LLM/IO jobs only run while Aiko
@@ -20,7 +20,7 @@ State ownership stays in ``SessionController.__init__``; this mixin
 just reads ``self.*`` and delegates to ``self._scheduler.submit``.
 
 NB: tests that previously patched
-``app.core.session_controller.<symbol>`` for any of the moved methods
+``app.core.session.session_controller.<symbol>`` for any of the moved methods
 must patch
 ``app.core.session.speaking_window_jobs_mixin.<symbol>`` instead.
 The patch must target the module where the symbol is *looked up*.
@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING, Any
 
 
 if TYPE_CHECKING:
-    from app.core.dialogue_act_tagger import DialogueActResult
+    from app.core.conversation.dialogue_act_tagger import DialogueActResult
 
 
 log = logging.getLogger("app.session")
@@ -119,7 +119,7 @@ class SpeakingWindowJobsMixin:
                 log.debug("agenda groom job raised", exc_info=True)
 
         try:
-            from app.core.speaking_window_scheduler import ScheduledJob
+            from app.core.voice.speaking_window_scheduler import ScheduledJob
 
             self._scheduler.submit(ScheduledJob(
                 name="agenda_groom",
@@ -181,7 +181,7 @@ class SpeakingWindowJobsMixin:
                 log.debug("dialogue_act llm job raised", exc_info=True)
 
         try:
-            from app.core.speaking_window_scheduler import ScheduledJob
+            from app.core.voice.speaking_window_scheduler import ScheduledJob
 
             self._scheduler.submit(ScheduledJob(
                 name="dialogue_act_llm",
@@ -231,7 +231,7 @@ class SpeakingWindowJobsMixin:
                 log.debug("promise llm job raised", exc_info=True)
 
         try:
-            from app.core.speaking_window_scheduler import ScheduledJob
+            from app.core.voice.speaking_window_scheduler import ScheduledJob
 
             self._scheduler.submit(ScheduledJob(
                 name="promise_llm",
@@ -263,7 +263,7 @@ class SpeakingWindowJobsMixin:
             return
 
         try:
-            from app.core.shared_moment_extractor import detect_moment_reaction_tags
+            from app.core.relationship.shared_moment_extractor import detect_moment_reaction_tags
 
             reaction_signal = bool(
                 detect_moment_reaction_tags(raw_assistant_text or "")
@@ -319,7 +319,7 @@ class SpeakingWindowJobsMixin:
                 log.debug("moment llm job raised", exc_info=True)
 
         try:
-            from app.core.speaking_window_scheduler import ScheduledJob
+            from app.core.voice.speaking_window_scheduler import ScheduledJob
 
             self._scheduler.submit(ScheduledJob(
                 name="moment_llm",
@@ -371,7 +371,7 @@ class SpeakingWindowJobsMixin:
                 log.debug("user profile job raised", exc_info=True)
 
         try:
-            from app.core.speaking_window_scheduler import ScheduledJob
+            from app.core.voice.speaking_window_scheduler import ScheduledJob
 
             self._scheduler.submit(ScheduledJob(
                 name="user_profile",
@@ -409,7 +409,7 @@ class SpeakingWindowJobsMixin:
                 log.debug("self-image pulse raised", exc_info=True)
 
         try:
-            from app.core.speaking_window_scheduler import ScheduledJob
+            from app.core.voice.speaking_window_scheduler import ScheduledJob
 
             self._scheduler.submit(ScheduledJob(
                 name="self_image_pulse",
@@ -442,7 +442,7 @@ class SpeakingWindowJobsMixin:
                 log.debug("consolidator job raised", exc_info=True)
 
         try:
-            from app.core.speaking_window_scheduler import ScheduledJob
+            from app.core.voice.speaking_window_scheduler import ScheduledJob
 
             self._scheduler.submit(ScheduledJob(
                 name="memory_consolidator",
@@ -498,7 +498,7 @@ class SpeakingWindowJobsMixin:
                 log.debug("arc smoother job raised", exc_info=True)
 
         try:
-            from app.core.speaking_window_scheduler import ScheduledJob
+            from app.core.voice.speaking_window_scheduler import ScheduledJob
 
             self._scheduler.submit(ScheduledJob(
                 name="arc_smoother",
@@ -533,7 +533,7 @@ class SpeakingWindowJobsMixin:
                 log.debug("narrative weaver job raised", exc_info=True)
 
         try:
-            from app.core.speaking_window_scheduler import ScheduledJob
+            from app.core.voice.speaking_window_scheduler import ScheduledJob
 
             self._scheduler.submit(ScheduledJob(
                 name="narrative_weaver",
@@ -568,7 +568,7 @@ class SpeakingWindowJobsMixin:
                 log.debug("relationship pulse job raised", exc_info=True)
 
         try:
-            from app.core.speaking_window_scheduler import ScheduledJob
+            from app.core.voice.speaking_window_scheduler import ScheduledJob
 
             self._scheduler.submit(ScheduledJob(
                 name="relationship_pulse",
@@ -623,7 +623,7 @@ class SpeakingWindowJobsMixin:
                 log.debug("curiosity worker job raised", exc_info=True)
 
         try:
-            from app.core.speaking_window_scheduler import ScheduledJob
+            from app.core.voice.speaking_window_scheduler import ScheduledJob
 
             self._scheduler.submit(ScheduledJob(
                 name="curiosity",
@@ -656,7 +656,7 @@ class SpeakingWindowJobsMixin:
                 log.debug("catchphrase miner job raised", exc_info=True)
 
         try:
-            from app.core.speaking_window_scheduler import ScheduledJob
+            from app.core.voice.speaking_window_scheduler import ScheduledJob
 
             self._scheduler.submit(ScheduledJob(
                 name="catchphrase_miner",

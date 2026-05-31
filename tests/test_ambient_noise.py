@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 import unittest
 
-from app.core.ambient_noise import (
+from app.core.affect.ambient_noise import (
     AmbientNoiseTracker,
 )
 

@@ -5,8 +5,8 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from app.core.chat_database import ChatDatabase
-from app.core.conversation_arc import (
+from app.core.infra.chat_database import ChatDatabase
+from app.core.conversation.conversation_arc import (
     ArcEstimator,
     ArcStore,
     VALID_ARCS,

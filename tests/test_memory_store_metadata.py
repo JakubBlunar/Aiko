@@ -15,8 +15,8 @@ from pathlib import Path
 
 import numpy as np
 
-from app.core.chat_database import ChatDatabase
-from app.core.memory_store import MemoryStore
+from app.core.infra.chat_database import ChatDatabase
+from app.core.memory.memory_store import MemoryStore
 
 
 class _FakeEmbedder:

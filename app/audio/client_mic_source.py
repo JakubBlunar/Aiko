@@ -46,7 +46,7 @@ import wave
 
 import numpy as np
 
-from app.core.settings import AudioSettings
+from app.core.infra.settings import AudioSettings
 
 try:
     import webrtcvad

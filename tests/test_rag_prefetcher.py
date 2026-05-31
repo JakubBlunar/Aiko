@@ -5,7 +5,7 @@ import threading
 import time
 import unittest
 
-from app.core.rag_prefetcher import RagPrefetcher, _prefix_similarity
+from app.core.rag.rag_prefetcher import RagPrefetcher, _prefix_similarity
 
 
 class PrefixSimilarityTests(unittest.TestCase):

@@ -22,7 +22,7 @@ the relationship instead of snapping between hard-coded phases.
 
 ## Schema (v6 → v7)
 
-`app/core/chat_database.py` bumps `_SCHEMA_VERSION` from `6` to `7` and
+`app/core/infra/chat_database.py` bumps `_SCHEMA_VERSION` from `6` to `7` and
 applies two changes:
 
 1. **`memories.metadata TEXT` column** — a nullable JSON blob. Today
@@ -47,7 +47,7 @@ LLM calls:
 - **Track 1 — inline tag.** Aiko emits `[[moment:vibe:short summary]]`
   inline during a reply (max one per turn). The reply stripper hides
   the tag from the user-visible transcript. `extract_inline_tags` in
-  `app/core/shared_moment_extractor.py` pulls every match.
+  `app/core/relationship/shared_moment_extractor.py` pulls every match.
   Vibe is normalised onto a closed vocabulary
   (`VIBE_VOCABULARY`); unknown labels collapse to `general`.
 
@@ -69,7 +69,7 @@ LLM calls:
 
 ## Storage (`SharedMomentsStore`)
 
-`app/core/shared_moments.py` is a thin lens over `MemoryStore` that
+`app/core/relationship/shared_moments.py` is a thin lens over `MemoryStore` that
 serialises / deserialises the structured metadata. CRUD surface used
 by `SessionController` + the REST layer:
 
@@ -83,7 +83,7 @@ by `SessionController` + the REST layer:
 
 ## Anniversary surfacing
 
-`app/core/anniversary.py` is pure functions. `pick_anniversary` walks
+`app/core/relationship/anniversary.py` is pure functions. `pick_anniversary` walks
 the list of `SharedMomentRow`s and matches against calendar windows
 (`1 month`, `3 months`, `6 months`, `1 year`, then yearly) with a
 ±1-day tolerance. Tie-breakers, in order:
@@ -108,7 +108,7 @@ anniversary block called out.
 
 ## Relationship axes
 
-`app/core/relationship_axes.py` defines:
+`app/core/relationship/relationship_axes.py` defines:
 
 - `RelationshipAxesState` — `{user_id, closeness, humor, trust,
   comfort, updated_at}`, all four axes clamped to `[-1, 1]`.
@@ -189,13 +189,13 @@ REST surface in `app/web/server.py`.
 
 ## Where to look next
 
-- Schema: `app/core/chat_database.py`
-- Memory layer: `app/core/memory_store.py`, `app/core/shared_moments.py`
-- Detection: `app/core/shared_moment_extractor.py`
-- Axes: `app/core/relationship_axes.py`
-- Anniversary: `app/core/anniversary.py`
-- Prompt assembly: `app/core/prompt_assembler.py` (`_anniversary_provider`, `_axes_provider`)
-- Session wiring: `app/core/session_controller.py`
+- Schema: `app/core/infra/chat_database.py`
+- Memory layer: `app/core/memory/memory_store.py`, `app/core/relationship/shared_moments.py`
+- Detection: `app/core/relationship/shared_moment_extractor.py`
+- Axes: `app/core/relationship/relationship_axes.py`
+- Anniversary: `app/core/relationship/anniversary.py`
+- Prompt assembly: `app/core/session/prompt_assembler.py` (`_anniversary_provider`, `_axes_provider`)
+- Session wiring: `app/core/session/session_controller.py`
   (`_post_turn_inner_life`, `_maybe_schedule_moment_llm_job`,
    `_render_anniversary_block`, `_render_axes_block`)
 - REST + WS: `app/web/server.py` (`/api/together`, `/api/shared-moments`,

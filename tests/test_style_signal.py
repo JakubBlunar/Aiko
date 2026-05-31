@@ -1,4 +1,4 @@
-"""Tests for :mod:`app.core.style_signal` (K13 stylometric mirror).
+"""Tests for :mod:`app.core.persona.style_signal` (K13 stylometric mirror).
 
 Pure rolling-window analyzer -- no embedder, no LLM -- so the tests
 just feed scripted user-text streams and assert per-axis feature
@@ -11,7 +11,7 @@ import sqlite3
 import unittest
 from types import SimpleNamespace
 
-from app.core.style_signal import (
+from app.core.persona.style_signal import (
     StyleSignal,
     StyleSignalAnalyzer,
     StyleSignalStore,

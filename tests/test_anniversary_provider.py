@@ -1,4 +1,4 @@
-"""Tests for ``app.core.anniversary.pick_anniversary``.
+"""Tests for ``app.core.relationship.anniversary.pick_anniversary``.
 
 Calendar-windowed matching, ±1-day tolerance, longest-window precedence,
 6h rate-limit, pinning + recency tiebreaker.
@@ -8,12 +8,12 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from app.core.anniversary import (
+from app.core.relationship.anniversary import (
     AnniversaryMatch,
     pick_anniversary,
     render_anniversary_block,
 )
-from app.core.shared_moments import SharedMomentRow
+from app.core.relationship.shared_moments import SharedMomentRow
 
 
 def _row(

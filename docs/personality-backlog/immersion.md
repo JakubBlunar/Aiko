@@ -25,11 +25,11 @@ calendar feed plus a `birthday` field on `UserProfile`; both feed
 into a new `_render_time_context_block` that lives alongside the
 existing circadian provider rather than replacing it. Key files:
 new helper in
-[`app/core/session_controller.py`](../../app/core/session_controller.py)
+[`app/core/session/session_controller.py`](../../app/core/session/session_controller.py)
 `_render_time_context_block`, wired into
-[`app/core/prompt_assembler.py`](../../app/core/prompt_assembler.py)
+[`app/core/session/prompt_assembler.py`](../../app/core/session/prompt_assembler.py)
 right after `world_block` and dropped in `aggressive` mode,
-[`app/core/user_profile.py`](../../app/core/user_profile.py)
+[`app/core/infra/user_profile.py`](../../app/core/infra/user_profile.py)
 (new `birthday` field + LLM worker prompt update).
 
 ---
@@ -42,9 +42,9 @@ Aiko's axes have drifted notably in a single direction (e.g.
 `closeness` has been climbing for two weeks), surface a small
 reflective note for Aiko to acknowledge gently — never mechanically
 ("you seem to be in a better place lately, I've noticed"). Key
-files: [`app/core/affect_state.py`](../../app/core/affect_state.py),
-[`app/core/relationship_axes.py`](../../app/core/relationship_axes.py),
-[`app/core/session_controller.py`](../../app/core/session_controller.py)
+files: [`app/core/affect/affect_state.py`](../../app/core/affect/affect_state.py),
+[`app/core/relationship/relationship_axes.py`](../../app/core/relationship/relationship_axes.py),
+[`app/core/session/session_controller.py`](../../app/core/session/session_controller.py)
 inner-life providers.
 
 ---
@@ -52,7 +52,7 @@ inner-life providers.
 ## H4. Document-recall recency boost
 
 Documents Jacob uploaded in the last 7 days get a `+0.05` retrieval
-score in [`app/core/rag_retriever.py`](../../app/core/rag_retriever.py)
+score in [`app/core/rag/rag_retriever.py`](../../app/core/rag/rag_retriever.py)
 so newly-added knowledge surfaces preferentially without crowding
 out long-term anchors. Cheap to ship; gives uploaded docs a chance
 to feel "current" before fading into the long-term pool.
@@ -68,7 +68,7 @@ picks the scene appropriate to the conversation ("let's go grab
 tea") and the prompt block flips. Would need a `scene_id` column
 on `world_state`, a tool to switch scenes, and some thinking about
 whether items move with her or stay in their scene. Key files:
-[`app/core/world_store.py`](../../app/core/world_store.py),
+[`app/core/world/world_store.py`](../../app/core/world/world_store.py),
 [`app/llm/tools/world_tools.py`](../../app/llm/tools/world_tools.py),
 [`web/src/components/WorldTab.tsx`](../../web/src/components/WorldTab.tsx).
 Out of scope for v1 because a single cozy room + garden already
@@ -100,6 +100,6 @@ forgotten.
   clamp to ±12% with per-reaction sub-caps. All CPU, no new model.
 - **Barge-in enabled by default for Live mode.** Currently
   `audio.barge_in_enabled: false` in [`config/default.json`](../../config/default.json).
-  The plumbing is there in [`app/core/live_session.py`](../../app/core/live_session.py);
+  The plumbing is there in [`app/core/session/live_session.py`](../../app/core/session/live_session.py);
   flip the flag and validate against the existing
   `barge_in_min_speech_seconds` floor.

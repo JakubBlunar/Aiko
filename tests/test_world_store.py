@@ -1,4 +1,4 @@
-"""Tests for :mod:`app.core.world_store` (Aiko's room).
+"""Tests for :mod:`app.core.world.world_store` (Aiko's room).
 
 Exercises the SQLite-backed world model end-to-end: schema migration,
 default seed, location/item CRUD, consume semantics, and the
@@ -12,8 +12,8 @@ from pathlib import Path
 
 from datetime import datetime, timedelta, timezone
 
-from app.core.chat_database import ChatDatabase
-from app.core.world_store import (
+from app.core.infra.chat_database import ChatDatabase
+from app.core.world.world_store import (
     VALID_KINDS,
     VALID_PLANT_STAGES,
     VALID_POSTURES,

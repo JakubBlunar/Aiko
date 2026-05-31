@@ -31,7 +31,7 @@ from pathlib import Path
 
 import numpy as np
 
-from app.core.settings import TtsSettings
+from app.core.infra.settings import TtsSettings
 from app.tts.pocket_tts_service import (
     PocketTtsService,
     _REACTION_SPEED,

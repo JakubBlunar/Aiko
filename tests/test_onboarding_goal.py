@@ -1,4 +1,4 @@
-"""Unit tests for ``app.core.onboarding_goal``.
+"""Unit tests for ``app.core.goals.onboarding_goal``.
 
 The module's contract:
 
@@ -23,10 +23,10 @@ from pathlib import Path
 
 import numpy as np
 
-from app.core.chat_database import ChatDatabase
-from app.core.goal_store import GoalStore
-from app.core.memory_store import MemoryStore
-from app.core.onboarding_goal import (
+from app.core.infra.chat_database import ChatDatabase
+from app.core.goals.goal_store import GoalStore
+from app.core.memory.memory_store import MemoryStore
+from app.core.goals.onboarding_goal import (
     _ONBOARDING_GOAL_KV_KEY,
     is_onboarding_goal_seeded,
     seed_onboarding_goal,
@@ -82,7 +82,7 @@ class SeedOnboardingGoalTests(unittest.TestCase):
         assert mem is not None  # narrow for the type checker
         # The summary must mention the user name verbatim and
         # explicitly say "Get to know" so the existing summary-to-
-        # title convention in :mod:`app.core.goal_store` picks it
+        # title convention in :mod:`app.core.goals.goal_store` picks it
         # up as the goal's display title.
         self.assertIn("Jacob", mem.content)
         self.assertIn("Get to know", mem.content)
