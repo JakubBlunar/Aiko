@@ -31,6 +31,58 @@ log = logging.getLogger("app.session")
 class PostTurnMixin:
     """``_resolve_curiosity_seeds``, revival detection, ``_post_turn_inner_life``."""
 
+    def _maybe_arm_turning_over_slot(self, engagement: Any) -> None:
+        """K28: stash ``latency_seconds`` on ``_pending_turning_over_seconds``
+        when the turn qualifies.
+
+        Gates (all must pass):
+
+        * Master switch ``agent.turning_over_enabled`` is on.
+        * Engagement mode is ``"typed"`` (voice turns never arm K28
+          — same gating as K14).
+        * ``engagement.latency_seconds`` is a positive number (cold-
+          start engagements report ``None``).
+        * Latency clears ``memory.turning_over_min_gap_minutes * 60``
+          (defensive floor on the parser clamp).
+
+        On a passing turn, sets ``self._pending_turning_over_seconds``
+        to the latency value; the next prompt assembly's provider
+        reads + clears the slot and runs the picker. The slot is NOT
+        cleared here on a failing gate — that preserves any value
+        stashed by a previous turn (i.e. an unconsumed cue waiting
+        for the next prompt).
+        """
+        if engagement is None:
+            return
+        if not bool(
+            getattr(self._settings.agent, "turning_over_enabled", True)
+        ):
+            return
+        mode = getattr(engagement, "mode", None)
+        if mode != "typed":
+            return
+        latency = getattr(engagement, "latency_seconds", None)
+        if latency is None:
+            return
+        try:
+            latency_f = float(latency)
+        except (TypeError, ValueError):
+            return
+        if latency_f <= 0.0:
+            return
+        min_gap_s = (
+            float(
+                getattr(
+                    self._memory_settings,
+                    "turning_over_min_gap_minutes",
+                    90.0,
+                )
+            )
+            * 60.0
+        )
+        if latency_f >= min_gap_s:
+            self._pending_turning_over_seconds = latency_f
+
     def _resolve_curiosity_seeds(  # noqa: C901
         self,
         *,
@@ -1288,6 +1340,15 @@ class PostTurnMixin:
                 engagement_delta = float(engagement.closeness_delta)
                 self._last_engagement_label = engagement.label
                 self._pending_absence_seconds = engagement.absence_seconds
+                # K28: arm the turning-over cue in parallel with K14's
+                # absence_curiosity slot. The two stack on the 90 min -
+                # 4h overlap (K14 frames the welcome-back, K28 adds
+                # "...and I was thinking about X"). Extracted into a
+                # helper so the unit test in
+                # ``tests/test_post_turn_turning_over.py`` can exercise
+                # the gates without re-running the whole post-turn
+                # orchestrator.
+                self._maybe_arm_turning_over_slot(engagement)
                 log.info(
                     "engagement: mode=%s label=%s delta=%+.4f "
                     "latency_s=%s length_z=%s warmed=%s",

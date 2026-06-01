@@ -50,6 +50,7 @@ exists to keep them in lock-step.
 | Pull back when {user} goes quiet (K23 misattunement) | `agent.misattunement_detection_enabled` | `true` |
 | Hedge old claims with time-language (K25 confidence decay) | `agent.confidence_time_decay_enabled` | `true` |
 | Push back when she has a stance (K29 opinion injection) | `agent.opinion_injection_enabled` | `true` |
+| Surface "what I've been turning over" between sessions (K28) | `agent.turning_over_enabled` | `true` |
 | Wall-clock prefixes on chat history (K-time1) | `agent.history_age_prefix_enabled` | `true` |
 | Master memory switch | `memory.enabled` | `true` |
 | RAG recall depth per turn | `memory.top_k` | `6` |
@@ -428,6 +429,31 @@ Default behaviour at `horizon_days=365, floor=0.3, distant_threshold=0.5`:
 - `memory.confidence_decay_distant_threshold` *(float, `0.5`, range `[0, 1]`)* — effective-confidence value below which the `(distant)` suffix fires. Mirrors the existing `0.5` cutoff used for `(uncertain)`. Lower → only very-decayed claims hedge; higher → more hedging across the board.
 
 Verification: call MCP `get_confidence_decay_state(limit=20)` to see which memories would currently render with which suffix. Tweak `user.json`, restart, call again — the row's `effective_confidence` should shift and the `distant` flag should flip predictably. Tests: `tests/test_confidence_decay.py`, `FormatBlockDistantSuffixTests` in `tests/test_rag_retriever_scoring.py`, `ConfidenceDecaySettingsTests` in `tests/test_settings.py`.
+
+### K28 — turning over (what I've been thinking about between sessions)
+
+One-shot inner-life cue on the first user turn after a long typed gap (default `>= 90 min`). Surfaces one recent `kind="reflection"` memory (which covers both `ReflectionWorker` output and `DreamWorker` output — the latter is identified by a `[dream]` content prefix) so Aiko's first reply can fold in "actually, I was thinking about your interview prep last night --" as a casual aside instead of arriving blank. The persona block ("What I've been turning over" in [`data/persona/aiko_companion.txt`](../data/persona/aiko_companion.txt)) carries the anti-announcement discipline (fold it in casually, never lead with "I have something to share", drop silently if it doesn't fit the moment) and the softer dream-variant framing.
+
+Pairs with K14 absence-curiosity on the 90 min – 4h overlap: K14 frames the welcome-back ("hey, you, back already?"), K28 adds the specific thought ("...and I was thinking about your interview prep"). The two cues stack — they use independent post-turn slots — so a 2h-gap typed turn lands both blocks in the system prompt, in that order. Voice-mode turns never arm K28 (same gating as K14).
+
+Picker (v1, simple-then-iterate):
+
+1. **Age window** — `min_age_hours <= reflection_age <= max_age_hours` (defaults `24h .. 72h`).
+2. **Topical match** — candidate embedding scored against the union of active-goal vectors AND the last `recent_msgs_window` user-message vectors from the RAG store. `topical_score = max(over both pools)`. Below `min_topical_similarity` → drop.
+3. **Recency tie-break** — among surviving candidates, the youngest wins.
+
+The picker would rather stay silent than surface an off-topic reflection. A weighted picker (`score = recency * w_r + cosine(goals) * w_g + cosine(threads) * w_t`) is documented as a fast-follow in [`shipped.md`](personality-backlog/shipped.md#k28-what-ive-been-turning-over-between-session-thought-thread) — only worth implementing if the simple picker reads too random.
+
+Settings:
+
+- `agent.turning_over_enabled` *(bool, `true`)* — master switch. Off → no turning-over block ever lands in the prompt and the post-turn arm doesn't stash anything.
+- `memory.turning_over_min_gap_minutes` *(float, `90.0`, min `5.0`)* — minimum gap (in minutes) between Aiko's last reply and the current user message that arms K28. Sits inside K14's `[30 min, 4h)` band on purpose so the two cues stack on the 90 min – 4h overlap. Raise (e.g. `240`) to only fire on overnight / multi-day returns; lower (e.g. `60`) to fire on lunch-break-sized gaps.
+- `memory.turning_over_min_age_hours` *(float, `24.0`, min `1.0`)* — picker drops reflections younger than this. Prevents a reflection written 5 minutes before the session ended from showing up as "I've been turning this over".
+- `memory.turning_over_max_age_hours` *(float, `72.0`, min `min_age_hours + 1`)* — picker drops reflections older than this. Keeps the cue tied to the most recent between-session window. The parser cross-clamps `max >= min + 1` so a hostile config can't produce an empty window.
+- `memory.turning_over_min_topical_similarity` *(float, `0.30`, range `[0, 1]`)* — cosine floor for the candidate vs the goal / thread pools. Lower (e.g. `0.20`) → easier topical match (more fires, more "huh, where did that come from"); higher (e.g. `0.45`) → only sharply-on-topic reflections fire.
+- `memory.turning_over_recent_msgs_window` *(int, `12`, min `0`)* — how many recent user-message vectors to pull from the RAG store as the "thread" pool. `0` disables the thread pool entirely (picker only matches against active goals).
+
+Verification: enable INFO logging on `app.session` and watch for `turning-over fire: memory_id=… age_h=… topical=… source=… dream=…` on every fire. The MCP tool `get_turning_over_state()` includes a **dry-run picker result** so you can see what *would* surface against the current memory state without waiting for an organic trigger; `force_turning_over()` arms a one-shot bypass on the gap gate so the picker runs on the next message regardless. End-to-end repro: insert a `kind="reflection"` row 30h old aligned with an active goal, call `force_turning_over`, send a relevant message, watch `tail_logs(module_contains="turning_over")` for the fire line and confirm Aiko's reply folds it in as a casual aside. Tests: `tests/test_turning_over_picker.py`, `tests/test_turning_over_provider.py`, `tests/test_post_turn_turning_over.py`, `TurningOverProviderTests` in `tests/test_prompt_assembler.py`, `TurningOverSettingsTests` in `tests/test_settings.py`.
 
 ### K29 — opinion injection (push back when she has a stance)
 

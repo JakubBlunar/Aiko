@@ -756,6 +756,199 @@ class InnerLifeProvidersMixin:
             "explanation. The cue is curiosity, not absence-anxiety."
         )
 
+    def _render_turning_over_block(self) -> str:
+        """K28: surface one recent reflection on the first turn after a gap.
+
+        Sibling of :meth:`_render_absence_curiosity_block` -- both
+        ride the typed-gap signal armed by the post-turn engagement
+        tracker, but they answer different questions: K14
+        ``absence_curiosity`` frames the welcome-back; K28
+        ``turning_over`` surfaces what Aiko's been thinking about
+        in the meantime. The two stack on the 90 min - 4h overlap.
+
+        One-shot contract: reads ``self._pending_turning_over_seconds``
+        (armed by ``post_turn_mixin`` when ``engagement.latency_seconds
+        >= memory.turning_over_min_gap_minutes * 60``), clears the
+        slot, and runs the picker
+        (:func:`app.core.session.inner_life.turning_over.pick_turning_over`).
+        Falls silent when:
+
+        * the master switch is off,
+        * the slot was never armed (no recent qualifying gap),
+        * the threshold double-check fails (defensive against
+          settings changes between turns), OR
+        * the picker returns ``None`` (no reflection clears the age
+          window + topical-similarity gate).
+
+        MCP debug: ``force_turning_over`` arms
+        ``_turning_over_force_next`` so the next provider call
+        ignores both the pending-slot gate AND the threshold
+        double-check. The picker still runs, so a forced bypass
+        on an empty reflection corpus still silently expires.
+        """
+        if not bool(
+            getattr(self._settings.agent, "turning_over_enabled", True)
+        ):
+            return ""
+
+        # MCP-debug bypass: ``force_next`` ignores the pending-slot
+        # gate for this one call. Cleared whether we fire or not.
+        force_next = bool(
+            getattr(self, "_turning_over_force_next", False)
+        )
+        if force_next:
+            self._turning_over_force_next = False
+
+        seconds = getattr(self, "_pending_turning_over_seconds", None)
+        if not force_next and seconds is None:
+            return ""
+        self._pending_turning_over_seconds = None
+
+        # Defensive threshold double-check: the post-turn arm has
+        # already gated on the same threshold, but settings can flip
+        # between turns and the slot might carry a stale value.
+        if not force_next and seconds is not None:
+            try:
+                seconds_f = float(seconds)
+            except (TypeError, ValueError):
+                return ""
+            min_gap_s = (
+                float(
+                    getattr(
+                        self._memory_settings,
+                        "turning_over_min_gap_minutes",
+                        90.0,
+                    )
+                )
+                * 60.0
+            )
+            if seconds_f < min_gap_s:
+                return ""
+
+        memory_store = getattr(self, "_memory_store", None)
+        if memory_store is None:
+            return ""
+
+        try:
+            reflections = list(memory_store.iter_by_kind("reflection"))
+        except Exception:
+            log.debug(
+                "turning-over: reflection snapshot failed", exc_info=True,
+            )
+            return ""
+        if not reflections:
+            log.debug("turning-over silent: no reflection rows")
+            return ""
+
+        # Active-goal vectors. Empty when no GoalStore is wired or no
+        # active goals exist; the picker handles empty pools.
+        goal_vecs: list = []
+        goal_store = getattr(self, "_goal_store", None)
+        if goal_store is not None:
+            try:
+                goal_vecs = list(goal_store.active_goal_vectors())
+            except Exception:
+                log.debug(
+                    "turning-over: goal vectors raised", exc_info=True,
+                )
+                goal_vecs = []
+
+        # Recent user-message vectors from the RAG store. Same shape
+        # K6 uses to warm its novelty ring buffer.
+        msg_vecs: list = []
+        rag_store = getattr(self, "_rag_store", None)
+        msgs_window = int(
+            getattr(
+                self._memory_settings,
+                "turning_over_recent_msgs_window",
+                12,
+            )
+        )
+        if rag_store is not None and msgs_window > 0:
+            try:
+                msg_vecs = list(
+                    rag_store.list_recent_user_vectors(
+                        user_id_prefix=getattr(self, "_user_id", "") or "",
+                        limit=msgs_window,
+                    )
+                )
+            except Exception:
+                log.debug(
+                    "turning-over: recent_user_vectors raised", exc_info=True,
+                )
+                msg_vecs = []
+
+        try:
+            from app.core.session.inner_life import turning_over as _to
+        except Exception:
+            log.debug("turning-over import failed", exc_info=True)
+            return ""
+
+        from datetime import datetime, timezone
+
+        memory_settings = self._memory_settings
+        try:
+            result = _to.pick_turning_over(
+                reflections=reflections,
+                active_goal_vecs=goal_vecs,
+                recent_user_vecs=msg_vecs,
+                now=datetime.now(timezone.utc),
+                min_age_hours=float(
+                    getattr(
+                        memory_settings,
+                        "turning_over_min_age_hours",
+                        _to.DEFAULT_MIN_AGE_HOURS,
+                    )
+                ),
+                max_age_hours=float(
+                    getattr(
+                        memory_settings,
+                        "turning_over_max_age_hours",
+                        _to.DEFAULT_MAX_AGE_HOURS,
+                    )
+                ),
+                min_topical_similarity=float(
+                    getattr(
+                        memory_settings,
+                        "turning_over_min_topical_similarity",
+                        _to.DEFAULT_MIN_TOPICAL_SIMILARITY,
+                    )
+                ),
+            )
+        except Exception:
+            log.debug("turning-over picker raised", exc_info=True)
+            return ""
+
+        if result is None:
+            log.debug(
+                "turning-over silent: no candidate cleared the gates "
+                "(reflections=%d goals=%d msgs=%d)",
+                len(reflections), len(goal_vecs), len(msg_vecs),
+            )
+            return ""
+
+        # Stash diagnostics for the MCP debug tool.
+        self._last_turning_over = result
+
+        log.info(
+            "turning-over fire: memory_id=%d age_h=%.1f topical=%.3f "
+            "source=%s dream=%s",
+            result.memory_id,
+            result.age_hours,
+            result.topical_score,
+            result.topical_source or "-",
+            result.dream,
+        )
+
+        try:
+            return _to.render_inner_life_block(
+                result,
+                user_display_name=self.user_display_name,
+            )
+        except Exception:
+            log.debug("turning-over render failed", exc_info=True)
+            return ""
+
     def _render_rupture_block(self) -> str:
         """K8: surface a one-shot affect-rupture cue.
 

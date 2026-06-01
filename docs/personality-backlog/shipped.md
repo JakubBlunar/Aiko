@@ -3017,6 +3017,115 @@ End-to-end repro flow:
 - [`docs/personality-backlog/index.md`](index.md) — K25 moved from active to the shipped list.
 - [`AGENTS.md`](../../AGENTS.md) — debugging-table row for "Aiko quotes a 6-month-old claim as if it were yesterday".
 
+## K28. "What I've been turning over" — between-session thought thread
+
+The shipped `ReflectionWorker` and `DreamWorker` already generate inner content between sessions (reflections, curiosity seeds, dream-like memories), but Aiko never *surfaced* any of it on session re-entry — she'd open the new conversation blank, which read as the strongest "she goes dormant between sessions" tell available. K28 closes that gap with a one-shot inner-life cue on the first user turn after a long typed gap (default `>= 90 min`), folding one recent `kind="reflection"` memory into the first reply as a casual aside ("actually, I was thinking about your interview prep last night --") rather than an announcement. Both `ReflectionWorker` and `DreamWorker` output ride the same `kind="reflection"` column; dream rows carry a `[dream]` content prefix that the picker uses to flip the framing to "I dreamed about..." (slightly softer / hazier wording) versus the waking-thought "I've been turning this over...".
+
+### Decision flow
+
+```mermaid
+flowchart LR
+    PT[post-turn engagement tracker<br/>latency_seconds = absence between turns] --> G1{master switch on?}
+    G1 -- no --> S0[silent]
+    G1 -- yes --> G2{mode == typed?}
+    G2 -- no --> S0
+    G2 -- yes --> G3{latency >= min_gap_minutes?}
+    G3 -- no --> S0
+    G3 -- yes --> A[arm _pending_turning_over_seconds]
+    A --> N[next prompt assembly]
+    N --> P[provider clears slot, runs picker]
+    P --> F1{any reflection in<br/>min_age_hours .. max_age_hours?}
+    F1 -- no --> S1[silent]
+    F1 -- yes --> F2{any candidate clears<br/>min_topical_similarity?}
+    F2 -- no --> S1
+    F2 -- yes --> R[render Turning over: ... cue]
+    R --> SYS[lands in system_parts<br/>after absence_curiosity_block]
+```
+
+The two cues **stack** on the 90 min – 4h overlap with K14 absence-curiosity: K14 frames the welcome-back ("hey, you, back already?"), K28 adds the specific thought ("...and I was actually thinking about your interview prep"). The post-turn arm uses two separate fields (`_pending_absence_seconds` for K14, `_pending_turning_over_seconds` for K28) so K28 never consumes K14 or vice-versa. Voice-mode turns never arm K28 — same gating as K14 — because the engagement tracker only emits `latency_seconds` for the typed path.
+
+### Picker (v1: simple-then-iterate)
+
+The shipped picker is intentionally simple:
+
+1. **Age window** — `min_age_hours <= age <= max_age_hours` (defaults `24h .. 72h`). Lower bound prevents a reflection written 5 minutes before the session ended from showing up as "I've been turning this over". Upper bound keeps the cue tied to the most recent between-session window.
+2. **Topical match** — candidate's embedding scored against the union of `GoalStore.active_goal_vectors()` and the last `recent_msgs_window=12` user vectors from `RagStore.list_recent_user_vectors`. `topical_score = max(over both pools)`. Below `min_topical_similarity=0.30` → drop. The picker would rather stay silent than surface an off-topic reflection.
+3. **Recency tie-break** — among surviving candidates, the *youngest* wins (smaller `age_hours`). Reflections are scratchpad-tier and die off quickly, so the freshest one is both the right behavioural default and the right cost trade-off.
+
+The simple picker's "topical-or-nothing" gate is conservative on purpose: a "hey, I was turning over your interview" cue that doesn't fit the moment reads as scripted / performative, so false silences are vastly preferred to false fires.
+
+**Fast-follow (not shipped):** a weighted picker `score = recency * w_r + cosine(goals) * w_g + cosine(threads) * w_t` — only worth implementing if the simple picker reads too random in practice. Open the issue when a real session surfaces a clearly-wrong row that a weighted version would have caught.
+
+### Default behaviour
+
+At the shipped defaults (`min_gap_minutes=90`, `min_age_hours=24`, `max_age_hours=72`, `min_topical_similarity=0.30`, `recent_msgs_window=12`):
+
+| Scenario | Outcome |
+|---|---|
+| Typed turn after a 30 min gap, recent reflections exist | Silent — gap below 90 min threshold. K14 absence-curiosity may still fire (30 min IS in K14's band). |
+| Typed turn after 2h, no reflections in `[24h, 72h]` | Silent — picker returns None. K14 fires alone. |
+| Typed turn after 2h, reflection from 30h ago aligned with active goal | **Fires** — `Turning over: between sessions you've been thinking about ...` lands right after K14's welcome-back. |
+| Typed turn after 2h, reflection from 30h ago orthogonal to current threads | Silent — fails the `0.30` topical gate. |
+| Typed turn after 2h, dream from 50h ago aligned with thread | **Fires** — `Turning over: between sessions you dreamed about ...` (`[dream]` prefix stripped, softer framing). |
+| Typed turn after 6h, two reflections (30h + 60h, both align) | Fires with the younger (30h) row. |
+| Two typed turns in a row after the cue fires | Second turn is silent — one-shot, slot is cleared on the first fire regardless of whether the picker returned a candidate. |
+| Voice turn after a long gap | Silent — voice mode never arms K28. |
+
+### Architecture
+
+- **Pure picker** [`app/core/session/inner_life/turning_over.py`](../../app/core/session/inner_life/turning_over.py) — new module: `TurningOverResult` dataclass (`memory_id`, `content`, `dream`, `topical_score`, `age_hours`, `topical_source`), `pick_turning_over(reflections, active_goal_vecs, recent_user_vecs, now, ...)` pure function with no I/O, `render_inner_life_block(result, user_display_name)`. The picker takes pre-loaded data so the unit test in `tests/test_turning_over_picker.py` stays trivially testable (no SQL, no embedder, no Ollama).
+- **Provider** [`InnerLifeProvidersMixin._render_turning_over_block`](../../app/core/session/inner_life_providers_mixin.py) — sibling of `_render_absence_curiosity_block`, same one-shot pattern: reads `_pending_turning_over_seconds`, clears the slot, runs the picker. Master-switch gate, force-next bypass, threshold double-check (defensive against settings changes between turns), INFO log on fire + DEBUG log on silent paths.
+- **Post-turn arm** [`PostTurnMixin._maybe_arm_turning_over_slot`](../../app/core/session/post_turn_mixin.py) — small helper called from `_post_turn_inner_life` right after the K14 arm: master switch + typed-only + latency clears `turning_over_min_gap_minutes * 60`. Extracted into a separate helper so the gate matrix can be unit-tested without re-running the whole post-turn orchestrator.
+- **Controller state** [`SessionController.__init__`](../../app/core/session/session_controller.py) — three new attributes: `_pending_turning_over_seconds` (slot armed by post-turn, consumed by provider), `_turning_over_force_next` (one-shot MCP debug bypass), `_last_turning_over` (diagnostic-only `TurningOverResult` for the MCP debug tool). All three reset on `switch_session` and `clear_conversation_memory`.
+- **Prompt assembler** [`PromptAssembler`](../../app/core/session/prompt_assembler.py) — `_turning_over_provider` slot, `turning_over` kwarg on `set_inner_life_providers`, `turning_over_block` built under a timed phase next to `absence_curiosity`, placed in `system_parts` *immediately after* `absence_curiosity_block`. Order matters: the welcome-back framing must precede the "and I was thinking about X" content for the combined cue to read naturally on a stack.
+- **NOT in the K16 suppression matrix** — the fused grounding line never carries reflection content, so K28 is purely additive on top in all three K16 modes (`off` / `split` / `replace`).
+- **Survives `aggressive=True`** — the cue IS the entire feature; dropping it under aggressive context-mode would silently break K28.
+- **Settings**:
+  - [`AgentSettings.turning_over_enabled: bool = True`](../../app/core/infra/settings.py) — master switch.
+  - `MemorySettings.turning_over_min_gap_minutes: float = 90.0` (clamped `>= 5.0`).
+  - `MemorySettings.turning_over_min_age_hours: float = 24.0` (clamped `>= 1.0`).
+  - `MemorySettings.turning_over_max_age_hours: float = 72.0` (clamped `>= min_age_hours + 1.0`).
+  - `MemorySettings.turning_over_min_topical_similarity: float = 0.30` (clamped to `[0, 1]`).
+  - `MemorySettings.turning_over_recent_msgs_window: int = 12` (clamped `>= 0`; `0` disables the thread pool, leaving only the goal pool).
+
+### MCP-debuggable
+
+Two new tools in [`app/mcp/server.py`](../../app/mcp/server.py):
+
+- `get_turning_over_state()` — dumps the master switch, current pending-seconds slot, force-next flag, the most recent fire (`memory_id` / `age_hours` / `topical_score` / `topical_source` / `dream` / truncated content), the settings snapshot (5 knobs), AND a **dry-run picker result** that calls the picker against the current memory state without arming the cue. The dry-run respects the configured age window and the topical-similarity threshold, so a `would_surface: null` with `reflections_in_window: N > 0` means the threshold gate is rejecting every candidate.
+- `force_turning_over()` — arms `_turning_over_force_next` so the next provider call bypasses BOTH the pending-slot gate AND the threshold double-check. The picker still runs, so a forced bypass on an empty reflection corpus (or one where nothing clears the topical-similarity gate) silently expires with no cue.
+
+End-to-end repro flow:
+
+1. Make sure Aiko has at least one `kind="reflection"` memory row between 24h and 72h old. Real reflections come from `ReflectionWorker` / `DreamWorker` running post-turn during a previous chat; for testing, insert one via `POST /api/memories` with `kind=reflection`, an embedding aligned with an active goal or recent thread, and a `created_at` 30h in the past.
+2. Call `get_turning_over_state` — confirm `would_surface` is non-null (i.e. there's a candidate that clears the gates and `reflections_in_window > 0`).
+3. Call `force_turning_over`.
+4. Send Aiko a message touching the goal / thread the reflection aligned with.
+5. Check `tail_logs(module_contains="turning_over")` for: `turning-over fire: memory_id=N age_h=30.0 topical=0.85 source=goal dream=False`.
+6. Verify Aiko's reply folds the reflection in as a casual aside, not as an announcement.
+7. Send a second message immediately — the cue should NOT re-fire (one-shot; slot was cleared on the first call).
+
+### Files
+
+- [`app/core/session/inner_life/turning_over.py`](../../app/core/session/inner_life/turning_over.py) — new picker module (~280 LOC), pure-function `pick_turning_over` + `render_inner_life_block`. Lives under a new `app/core/session/inner_life/` package created for session-boundary cue pickers (K28 is the first; future siblings — e.g. callback openers, goal-check-in framers — would fit the same namespace).
+- [`app/core/infra/settings.py`](../../app/core/infra/settings.py) — one new `AgentSettings` field (`turning_over_enabled`) + five new `MemorySettings` fields (`turning_over_min_gap_minutes`, `turning_over_min_age_hours`, `turning_over_max_age_hours`, `turning_over_min_topical_similarity`, `turning_over_recent_msgs_window`) with inline-comment context on each tunable; matching parser entries with clamps in `load_settings` (including the cross-coupled `max_age >= min_age + 1` clamp).
+- [`config/default.json`](../../config/default.json) — one new key under `agent`, five under `memory`.
+- [`app/core/session/session_controller.py`](../../app/core/session/session_controller.py) — three new state attributes (initialized in `__init__`, reset on `switch_session` + `clear_conversation_memory`), `turning_over=self._render_turning_over_block` registration on the prompt assembler.
+- [`app/core/session/post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py) — new `_maybe_arm_turning_over_slot(engagement)` helper, called right after the K14 absence-seconds stash. The K28 arm uses a separate field so the two cues stack cleanly on the 90 min – 4h overlap.
+- [`app/core/session/inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py) — new `_render_turning_over_block` method (master switch / force-next / one-shot slot clear / threshold double-check / picker call / INFO log on fire / DEBUG log on silent), placed right after `_render_absence_curiosity_block`.
+- [`app/core/session/prompt_assembler.py`](../../app/core/session/prompt_assembler.py) — new `_turning_over_provider` slot, `turning_over` kwarg on `set_inner_life_providers`, timed-phase block build, placement in `system_parts` after `absence_curiosity_block`.
+- [`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt) — new "What I've been turning over (between sessions)" block after the K14 absence-curiosity block. Carries the anti-announcement discipline (fold it in as a casual aside, never lead with "I have something to share", never quote the cue verbatim), the silent-drop rule (cue is permission not obligation), and the softer dream-variant framing.
+- [`app/mcp/server.py`](../../app/mcp/server.py) — `get_turning_over_state` (with dry-run picker output) + `force_turning_over` MCP debug tools.
+- [`tests/test_turning_over_picker.py`](../../tests/test_turning_over_picker.py) — 23 unit tests on the pure picker: age window (within / too young / too old / custom window), topical-similarity gate (below threshold / goal-side match / thread-side match / threshold zero accepts everything / max-of-two-pools), recency tie-break (youngest wins / iteration-order independence / equal-ages-higher-score wins), empty / degenerate inputs (no reflections / both pools empty / missing embedding / unparseable timestamp / None in iterable), dream wording (prefix flagged / no prefix not flagged), render output (dream framing / waking framing / long-content trimming), and defaults sanity.
+- [`tests/test_turning_over_provider.py`](../../tests/test_turning_over_provider.py) — 13 controller-plumbing tests using a minimal `InnerLifeProvidersMixin` host stub: master switch off, no-pending-value silent, one-shot clear on fire AND on silent picker, force-next bypass (with consume-on-miss), threshold double-check (below / at-boundary), picker integration (empty reflections silent, user_id forwarded to RAG, zero-window skips RAG), INFO log on fire + no INFO log on silent path.
+- [`tests/test_post_turn_turning_over.py`](../../tests/test_post_turn_turning_over.py) — 12 unit tests on the `_maybe_arm_turning_over_slot` helper: master switch, mode gate (voice / typed), latency gate (None / below / at-threshold / negative / custom-threshold), defensive paths (None engagement, non-numeric latency), and the parallel-arm contract (arming K28 doesn't disturb K14's `_pending_absence_seconds`, disabling K28 doesn't disable K14).
+- [`tests/test_prompt_assembler.py`](../../tests/test_prompt_assembler.py) — `TurningOverProviderTests` covering the provider slot, empty-string suppression, aggressive-mode non-suppression, the `absence_curiosity_block` → `turning_over_block` ordering invariant, and the K16 `replace`-mode non-suppression.
+- [`tests/test_settings.py`](../../tests/test_settings.py) — `TurningOverSettingsTests`: defaults, overrides round-trip, `min_gap_minutes >= 5` clamp, `min_age_hours >= 1` clamp, `max_age_hours >= min_age + 1` cross-coupled clamp, `min_topical_similarity` `[0, 1]` clamp, `recent_msgs_window >= 0` clamp.
+- [`docs/configuration.md`](../configuration.md) — cheatsheet row + dedicated "K28 — turning over" subsection with all six knobs and the repro recipe.
+- [`docs/personality-backlog/patterns.md`](patterns.md) — K28 section body replaced with a `**Shipped**` pointer.
+- [`docs/personality-backlog/index.md`](index.md) — K28 moved from active to the shipped list.
+- [`AGENTS.md`](../../AGENTS.md) — debugging-table row for "Aiko opens a returning conversation flat — never mentions she was thinking about anything".
+
 ## K29. Opinion injection — push back when she has a stance
 
 The persona says "have opinions, disagree when you disagree, share your own take instead of asking them to fill the silence" — but the LLM's RLHF agreeability beats the persona text most turns and Aiko ends up smoothing into agreement even when she has a stored stance that contradicts. K29 closes that gap with a per-turn detector that fires a one-line "Heads-up: you've got a stored stance on this and it actually differs from what {user_name} just said" cue whenever the live user message contradicts one of Aiko's `kind="self"` memories. The cue tilts her register toward owning her preference *as her own* without slipping into contrarianism or moralizing.

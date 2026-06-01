@@ -869,5 +869,159 @@ class OpinionInjectionSettingsTests(unittest.TestCase):
         self.assertEqual(result.memory.opinion_injection_per_day_cap, 0)
 
 
+class TurningOverSettingsTests(unittest.TestCase):
+    """K28: 1 agent flag + 5 memory knobs round-trip with clamps."""
+
+    _TO_AGENT_KEYS = ("turning_over_enabled",)
+    _TO_MEMORY_KEYS = (
+        "turning_over_min_gap_minutes",
+        "turning_over_min_age_hours",
+        "turning_over_max_age_hours",
+        "turning_over_min_topical_similarity",
+        "turning_over_recent_msgs_window",
+    )
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(
+        self,
+        agent_extra: dict | None = None,
+        memory_extra: dict | None = None,
+        strip_keys: bool = True,
+    ) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(
+            json.loads(default_path.read_text(encoding="utf-8"))
+        )
+        if strip_keys:
+            for k in self._TO_AGENT_KEYS:
+                cfg.get("agent", {}).pop(k, None)
+            for k in self._TO_MEMORY_KEYS:
+                cfg.get("memory", {}).pop(k, None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        if memory_extra is not None:
+            cfg["memory"] = {**cfg.get("memory", {}), **memory_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults_load_when_keys_missing(self) -> None:
+        path = self._write_config()
+        result = load_settings(config_path=path)
+        self.assertTrue(result.agent.turning_over_enabled)
+        self.assertAlmostEqual(
+            result.memory.turning_over_min_gap_minutes, 90.0,
+        )
+        self.assertAlmostEqual(
+            result.memory.turning_over_min_age_hours, 24.0,
+        )
+        self.assertAlmostEqual(
+            result.memory.turning_over_max_age_hours, 72.0,
+        )
+        self.assertAlmostEqual(
+            result.memory.turning_over_min_topical_similarity, 0.30,
+        )
+        self.assertEqual(result.memory.turning_over_recent_msgs_window, 12)
+
+    def test_overrides_round_trip(self) -> None:
+        path = self._write_config(
+            agent_extra={"turning_over_enabled": False},
+            memory_extra={
+                "turning_over_min_gap_minutes": 120.0,
+                "turning_over_min_age_hours": 12.0,
+                "turning_over_max_age_hours": 48.0,
+                "turning_over_min_topical_similarity": 0.50,
+                "turning_over_recent_msgs_window": 6,
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.turning_over_enabled)
+        self.assertAlmostEqual(
+            result.memory.turning_over_min_gap_minutes, 120.0,
+        )
+        self.assertAlmostEqual(
+            result.memory.turning_over_min_age_hours, 12.0,
+        )
+        self.assertAlmostEqual(
+            result.memory.turning_over_max_age_hours, 48.0,
+        )
+        self.assertAlmostEqual(
+            result.memory.turning_over_min_topical_similarity, 0.50,
+        )
+        self.assertEqual(result.memory.turning_over_recent_msgs_window, 6)
+
+    def test_min_gap_minutes_clamps_to_floor(self) -> None:
+        path = self._write_config(
+            memory_extra={"turning_over_min_gap_minutes": 0.1},
+        )
+        result = load_settings(config_path=path)
+        # Floor is 5 minutes; lower values clamp up.
+        self.assertAlmostEqual(
+            result.memory.turning_over_min_gap_minutes, 5.0,
+        )
+
+    def test_min_age_hours_clamps_to_floor(self) -> None:
+        path = self._write_config(
+            memory_extra={"turning_over_min_age_hours": 0.0},
+        )
+        result = load_settings(config_path=path)
+        # Floor is 1 hour.
+        self.assertAlmostEqual(
+            result.memory.turning_over_min_age_hours, 1.0,
+        )
+
+    def test_max_age_hours_clamps_above_min_plus_one(self) -> None:
+        # Hostile config: max <= min. Parser clamps max to min + 1
+        # so the picker window is always non-empty.
+        path = self._write_config(
+            memory_extra={
+                "turning_over_min_age_hours": 24.0,
+                "turning_over_max_age_hours": 10.0,
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertAlmostEqual(
+            result.memory.turning_over_min_age_hours, 24.0,
+        )
+        self.assertAlmostEqual(
+            result.memory.turning_over_max_age_hours, 25.0,
+        )
+
+    def test_min_topical_similarity_clamps_unit_interval(self) -> None:
+        path = self._write_config(
+            memory_extra={"turning_over_min_topical_similarity": -0.4},
+        )
+        result = load_settings(config_path=path)
+        self.assertAlmostEqual(
+            result.memory.turning_over_min_topical_similarity, 0.0,
+        )
+        path = self._write_config(
+            memory_extra={"turning_over_min_topical_similarity": 5.0},
+        )
+        result = load_settings(config_path=path)
+        self.assertAlmostEqual(
+            result.memory.turning_over_min_topical_similarity, 1.0,
+        )
+
+    def test_recent_msgs_window_floors_at_zero(self) -> None:
+        path = self._write_config(
+            memory_extra={"turning_over_recent_msgs_window": -3},
+        )
+        result = load_settings(config_path=path)
+        # Floor 0 disables the thread pool; not negative.
+        self.assertEqual(result.memory.turning_over_recent_msgs_window, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

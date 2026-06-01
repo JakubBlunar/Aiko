@@ -910,6 +910,19 @@ class AgentSettings:
     opinion_injection_enabled: bool = True
     opinion_injection_require_definite: bool = False
 
+    # ── K28: "What I've been turning over" ────────────────────────────
+    # Master switch for the between-session reflection-surfacing cue.
+    # Off → no turning-over block ever lands in the prompt. On (default)
+    # → the post-turn pipeline arms ``_pending_turning_over_seconds``
+    # whenever a typed turn lands after a gap of at least
+    # ``memory.turning_over_min_gap_minutes`` (default 90 min), and the
+    # next prompt assembly runs the picker
+    # (:mod:`app.core.session.inner_life.turning_over`). The picker is
+    # silent when no recent ``reflection`` memory clears the topical
+    # match, so the cue stays rare even with the switch on. See
+    # [`app/core/session/inner_life/turning_over.py`](../session/inner_life/turning_over.py).
+    turning_over_enabled: bool = True
+
     # ── K25: memory confidence time-decay ─────────────────────────────
     # Master switch for the ``(distant)`` suffix the RAG retriever
     # stamps on age-decayed memory rows. The three numeric knobs that
@@ -1189,6 +1202,40 @@ class MemorySettings:
     opinion_injection_per_session_cap: int = 3
     opinion_injection_per_hour_cap: int = 6
     opinion_injection_per_day_cap: int = 30
+
+    # ── K28 personality backlog: turning-over picker ─────────────────
+    # The "What I've been turning over" cue (see ``AgentSettings.
+    # turning_over_enabled`` for the master switch) only arms when
+    # the gap between Aiko's last reply and the current user message
+    # is at least this long. The default (90 min) sits inside K14's
+    # absence-curiosity band [30 min, 4h) by design -- the two cues
+    # stack: K14 frames the welcome-back, K28 adds "...and I was
+    # thinking about X". Clamped to ``>= 5`` so a misconfiguration
+    # can't make the cue fire on every typed turn. Voice-mode turns
+    # never arm K28 (same gating as K14).
+    turning_over_min_gap_minutes: float = 90.0
+    # Picker age window for candidate reflections (the picker only
+    # considers rows with ``min_age_hours <= age <= max_age_hours``).
+    # Lower bound prevents a reflection written 5 minutes ago from
+    # surfacing as "I've been turning this over"; upper bound keeps
+    # the cue tied to the most recent between-session window. The
+    # parser clamps ``max`` to ``>= min + 1h`` so the window is
+    # always non-empty.
+    turning_over_min_age_hours: float = 24.0
+    turning_over_max_age_hours: float = 72.0
+    # Cosine similarity floor for the candidate reflection against
+    # the union of active-goal vectors and recent user-message
+    # vectors. Below this, the candidate is dropped as "not relevant
+    # to the current thread". 0.30 is conservative -- the picker
+    # would rather stay silent than surface an off-topic reflection.
+    # Clamped to ``[0, 1]``.
+    turning_over_min_topical_similarity: float = 0.30
+    # How many recent user-message vectors to pull from the RAG
+    # store as the "thread" pool. 0 disables the thread pool
+    # (picker would then only match against active goals). Default
+    # 12 mirrors K6's :data:`NoveltyDetector.window`.
+    turning_over_recent_msgs_window: int = 12
+
     # ── K22 personality backlog: callback / inside-joke detector ─────
     # Post-turn cosine pass between Aiko's reply and older eligible
     # memories. Hits stamp ``metadata.callback_count`` and bump
@@ -2304,6 +2351,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             opinion_injection_require_definite=bool(
                 agent_raw.get("opinion_injection_require_definite", False),
             ),
+            turning_over_enabled=bool(
+                agent_raw.get("turning_over_enabled", True),
+            ),
             confidence_time_decay_enabled=bool(
                 agent_raw.get("confidence_time_decay_enabled", True),
             ),
@@ -2517,6 +2567,54 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             opinion_injection_per_day_cap=max(
                 0,
                 int(memory_raw.get("opinion_injection_per_day_cap", 30)),
+            ),
+            # ── K28: turning-over picker ──────────────────────────────
+            # ``turning_over_min_gap_minutes`` clamped to >= 5 so a
+            # misconfigured value can't make the cue fire on every
+            # typed turn.
+            turning_over_min_gap_minutes=max(
+                5.0,
+                float(
+                    memory_raw.get("turning_over_min_gap_minutes", 90.0)
+                ),
+            ),
+            # ``min_age_hours`` clamped to >= 1; ``max_age_hours``
+            # clamped to >= min_age + 1 so the picker window is always
+            # non-empty even with a hostile config.
+            turning_over_min_age_hours=max(
+                1.0,
+                float(
+                    memory_raw.get("turning_over_min_age_hours", 24.0)
+                ),
+            ),
+            turning_over_max_age_hours=max(
+                max(
+                    1.0,
+                    float(
+                        memory_raw.get("turning_over_min_age_hours", 24.0)
+                    ),
+                )
+                + 1.0,
+                float(
+                    memory_raw.get("turning_over_max_age_hours", 72.0)
+                ),
+            ),
+            turning_over_min_topical_similarity=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get(
+                            "turning_over_min_topical_similarity", 0.30,
+                        )
+                    ),
+                ),
+            ),
+            turning_over_recent_msgs_window=max(
+                0,
+                int(
+                    memory_raw.get("turning_over_recent_msgs_window", 12)
+                ),
             ),
             callback_age_floor_days=max(
                 1, int(memory_raw.get("callback_age_floor_days", 3)),

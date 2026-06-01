@@ -547,6 +547,137 @@ class AbsenceCuriosityProviderTests(unittest.TestCase):
             )
 
 
+class TurningOverProviderTests(unittest.TestCase):
+    """K28 turning-over provider lands in the system prompt right
+    after the K14 absence_curiosity block, survives aggressive
+    context-mode (the cue is the entire feature), and is NOT
+    suppressed by the K16 ``replace`` grounding mode (reflection
+    content never overlaps with what the fused line carries)."""
+
+    def test_turning_over_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="to1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                turning_over=lambda: (
+                    "Turning over: between sessions you've been "
+                    "thinking about Jacob's interview prep."
+                ),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "to1",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertIn(
+                "Turning over", messages[0]["content"],
+            )
+
+    def test_turning_over_silent_when_empty(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="to2", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                turning_over=lambda: "",
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "to2",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertNotIn(
+                "Turning over", messages[0]["content"],
+            )
+
+    def test_turning_over_survives_aggressive_mode(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="to3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                turning_over=lambda: (
+                    "Turning over: thinking about Jacob's interview prep."
+                ),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "to3",
+                "x",
+                context_window=4096,
+                response_budget=256,
+                aggressive=True,
+            )
+            # NOT in the aggressive-drop set: the cue IS the feature.
+            self.assertIn(
+                "Turning over", messages[0]["content"],
+            )
+
+    def test_turning_over_lands_after_absence_curiosity(self) -> None:
+        """Both cues stack on the 90 min - 4h overlap; the welcome-back
+        line must precede the "and I was thinking about X" content
+        for the combined cue to read naturally."""
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="to4", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                absence_curiosity=lambda: (
+                    "Absence-curiosity: Jacob was away for a few hours."
+                ),
+                turning_over=lambda: (
+                    "Turning over: thinking about the interview prep."
+                ),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "to4",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            sys_text = messages[0]["content"]
+            abs_idx = sys_text.find("Absence-curiosity")
+            to_idx = sys_text.find("Turning over")
+            self.assertGreaterEqual(abs_idx, 0)
+            self.assertGreaterEqual(to_idx, 0)
+            self.assertLess(
+                abs_idx, to_idx,
+                "absence_curiosity must precede turning_over",
+            )
+
+    def test_turning_over_not_dropped_by_k16_replace(self) -> None:
+        """K16 ``replace`` collapses situational ambient blocks into
+        the fused grounding line; reflection content doesn't sit in
+        that suppression set, so K28 stays in the prompt."""
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            assembler.set_grounding_line_mode("replace")
+            db.add_message(
+                session_id="to5", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                turning_over=lambda: (
+                    "Turning over: thinking about the interview prep."
+                ),
+                grounding_line=lambda: "Right now: it's morning and quiet.",
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "to5",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertIn(
+                "Turning over", messages[0]["content"],
+            )
+
+
 class MoodShellProviderTests(unittest.TestCase):
     """K5 mood-shell tilt: lands in the system prompt, survives
     ``aggressive=True`` (tonal cue is exactly what aggressive mode

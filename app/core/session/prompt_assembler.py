@@ -642,6 +642,15 @@ class PromptAssembler:
         # lands in the configured band; this provider renders the cue
         # on the very next turn and clears the slot.
         self._absence_curiosity_provider: Callable[[], str] | None = None
+        # K28 "What I've been turning over" one-shot. Sibling of the
+        # K14 absence_curiosity provider: same post-turn-armed slot
+        # mechanic but a longer gap threshold (default 90 min) and
+        # a different render (surfaces one recent reflection rather
+        # than welcoming the user back). Stacks with K14 on the
+        # 90 min - 4h overlap; the welcome-back line precedes the
+        # "and I was thinking about X" content in the system prompt
+        # so the two cues read naturally together.
+        self._turning_over_provider: Callable[[], str] | None = None
         # K5 mood-shell tilt. NOT one-shot -- derived fresh every turn
         # from current affect / relationship axes / pending moments,
         # so the renderer is stateless from the assembler's POV.
@@ -841,6 +850,7 @@ class PromptAssembler:
         misattunement: Callable[[str], str] | None = None,
         opinion_injection: Callable[[str], str] | None = None,
         absence_curiosity: Callable[[], str] | None = None,
+        turning_over: Callable[[], str] | None = None,
         mood_shell: Callable[[], str] | None = None,
         novelty: Callable[[str], str] | None = None,
         stagnation: Callable[[str], str] | None = None,
@@ -913,6 +923,8 @@ class PromptAssembler:
             self._opinion_injection_provider = opinion_injection
         if absence_curiosity is not None:
             self._absence_curiosity_provider = absence_curiosity
+        if turning_over is not None:
+            self._turning_over_provider = turning_over
         if mood_shell is not None:
             self._mood_shell_provider = mood_shell
         if novelty is not None:
@@ -1494,6 +1506,31 @@ class PromptAssembler:
                     )
                     absence_curiosity_block = ""
 
+        # K28 "What I've been turning over" one-shot. Sibling of the
+        # K14 block above: same post-turn-armed mechanic but a longer
+        # gap threshold (90 min default) and a different render -- the
+        # provider runs a picker over recent reflection memories and
+        # returns a "Turning over: ..." cue or empty. NOT gated on
+        # aggressive mode (same rationale as K14: the cue IS the
+        # entire feature, dropping it silently would defeat the point).
+        # NOT in the K16 ``replace`` suppression set: the fused
+        # grounding line never carries reflection content, so K28 is
+        # purely additive on top.
+        turning_over_block = ""
+        if (
+            getattr(self, "_turning_over_provider", None) is not None
+        ):
+            with _timed_phase(provider_ms, "turning_over"):
+                try:
+                    turning_over_block = (
+                        self._turning_over_provider() or ""
+                    )
+                except Exception:
+                    log.debug(
+                        "turning_over provider raised", exc_info=True,
+                    )
+                    turning_over_block = ""
+
         # K5 mood-shell tilt. Stateless: derives a one-line emotional
         # directive from current affect + relationship axes + pending
         # moments every turn, returns "" when nothing is notable. NOT
@@ -1804,6 +1841,14 @@ class PromptAssembler:
             # one-shot policy: appears exactly once per qualifying
             # gap.
             system_parts.append(absence_curiosity_block)
+        if turning_over_block:
+            # K28: "Turning over: between sessions you've been thinking
+            # about ..." lands *immediately after* the K14 welcome-back
+            # line. Order matters: the welcome-back framing must
+            # precede the "and I was thinking about X" content for the
+            # combined cue to read naturally on a 90 min - 4h gap
+            # (where both K14 and K28 fire). One-shot, same as K14.
+            system_parts.append(turning_over_block)
         if novelty_block:
             # K6: surface the "Heads-up: Jacob just brought up
             # something new" line right after belief_gaps so reaction

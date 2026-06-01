@@ -284,41 +284,7 @@ uniform-roll version reads too random.
 
 ## K28. "What I've been turning over" — between-session thought thread
 
-The shipped `ReflectionWorker` and `DreamWorker` already
-generate inner content between sessions (reflections,
-curiosity seeds, dream-like memories). The gap is *surfacing*
-— Aiko never opens a new session with "hey, I was actually
-thinking about your interview last night". She arrives blank,
-which reads as the strongest "she goes dormant when I'm not
-around" tell available. The cue would land as a one-shot
-first-message-of-new-session inner-life provider: pick one
-recent (last 24-72h) `reflection` or `dream` memory that's
-still relevant to the active goals / recent threads, frame it
-as "Aiko's been turning this over — fold it into the first
-reply if it fits naturally", and decay after the first turn so
-it doesn't loop. Detection of "new session" rides the existing
-`SessionController` first-turn-after-idle logic (last user
-message > N minutes ago, default 90). Persona block teaches
-Aiko to land it as a casual aside ("actually, I was thinking
-about your interview prep last night --") rather than an
-announcement; the cue must NOT be quoted, and if no
-recent-reflection fits, the cue stays silent. Pairs with
-K-time1 (we now know how long it's been since last session)
-and with K1 goals (the reflection picker should prefer
-reflections that touch an active goal or a recently-mentioned
-thread). Key files:
-new `app/core/session/inner_life/turning_over.py`
-(reflection picker + fits-active-context scorer),
-[`app/core/session/inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py)
-(new `turning_over` provider, fires only on first turn of a
-new session, one-shot decay),
-[`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt)
-("What I've been turning over" block), MCP debug tool
-`get_turning_over_state` to inspect what would surface next
-re-open. Open question: should it fire on *every* new session
-or rate-limit (e.g. once per 6h)? Start with every new session
-gated on `session_idle_minutes_threshold`; tighten if it
-starts feeling forced.
+**Shipped** — see [`docs/personality-backlog/shipped.md#k28-what-ive-been-turning-over-between-session-thought-thread`](shipped.md#k28-what-ive-been-turning-over-between-session-thought-thread).
 
 ---
 
