@@ -1422,6 +1422,7 @@ class SessionController(
             affect=self._render_affect_block,
             circadian=self._render_circadian_block,
             day_color=self._render_day_color_block,
+            vulnerability_budget=self._render_vulnerability_budget_block,
             profile=self._render_user_profile_block,
             user_state=self._render_user_state_block,
             relationship=self._render_relationship_block,
@@ -2412,6 +2413,24 @@ class SessionController(
         #   Consumed one-shot.
         self._day_color_force_next: str | None = None
         self._day_color_force_reroll: bool = False
+        # K15 -- vulnerability budget MCP debug flags. The persisted
+        # bucket lives in ``kv_meta`` (``aiko.vulnerability_budget``)
+        # and is read+decayed lazily on every provider call; these
+        # flags only exist so MCP debug tools can override the next
+        # render or wipe the persisted state without crafting real
+        # self-tags:
+        #
+        # * ``_vulnerability_budget_force_spent``: when set, the
+        #   next provider call renders the cue as if ``state.spent``
+        #   equalled this value. Does NOT touch ``kv_meta`` (so the
+        #   real persisted bucket survives the test). Consumed
+        #   one-shot.
+        # * ``_vulnerability_budget_force_reset``: when True, the
+        #   next provider call writes a fresh
+        #   ``BudgetState(spent=0)`` to ``kv_meta``. Consumed
+        #   one-shot.
+        self._vulnerability_budget_force_spent: float | None = None
+        self._vulnerability_budget_force_reset: bool = False
         if (
             self._chat_db is not None
             and bool(getattr(settings.agent, "belief_tracking_enabled", True))

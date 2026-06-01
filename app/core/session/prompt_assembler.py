@@ -723,6 +723,21 @@ class PromptAssembler:
         # provider reads. Returns "" when none of the three
         # sub-detectors fire (the steady state).
         self._self_noticing_provider: Callable[[], str] | None = None
+        # K15 personality backlog: "Self-disclosure / vulnerability
+        # budget" inner-life cue. One-line nudge ("you've shared a
+        # lot of softness with Jacob recently -- let yourself stay
+        # surface this turn") that paces how often Aiko opens up
+        # personally. Takes no args; the provider on
+        # :class:`SessionController` reads ``kv_meta``, applies
+        # rolling decay, and renders the cue based on the
+        # spent/capacity ratio. NOT suppressed under
+        # ``aggressive=True`` because the cue is one line and the
+        # whole point is to make the over-cap warning persist
+        # through tight-budget turns when long replies would
+        # otherwise compound the over-disclosure. NOT included in
+        # the K16 grounding-line suppression matrix because it's
+        # a budget cue, not an ambient grounding block.
+        self._vulnerability_budget_provider: Callable[[], str] | None = None
         # K9 personality backlog: "Quiet curiosity" inner-life bullet
         # listing 1-2 active curiosity seeds (topics Aiko has been
         # quietly wondering about that haven't come up yet). Cheap
@@ -876,6 +891,7 @@ class PromptAssembler:
         style_pattern: Callable[[], str] | None = None,
         style_signal: Callable[[], str] | None = None,
         self_noticing: Callable[[], str] | None = None,
+        vulnerability_budget: Callable[[], str] | None = None,
         curiosity_seeds: Callable[[], str] | None = None,
         grounding_line: Callable[[], str] | None = None,
     ) -> None:
@@ -959,6 +975,8 @@ class PromptAssembler:
             self._style_signal_provider = style_signal
         if self_noticing is not None:
             self._self_noticing_provider = self_noticing
+        if vulnerability_budget is not None:
+            self._vulnerability_budget_provider = vulnerability_budget
         if curiosity_seeds is not None:
             self._curiosity_seeds_provider = curiosity_seeds
         if grounding_line is not None:
@@ -1650,6 +1668,29 @@ class PromptAssembler:
                     log.debug("self_noticing provider raised", exc_info=True)
                     self_noticing_block = ""
 
+        # K15: self-disclosure / vulnerability budget cue. One-line
+        # pacing nudge ("you've shared a lot of softness recently --
+        # let yourself stay surface this turn unless a moment really
+        # earns it"). Soft enforcement: the persona block teaches
+        # Aiko to read the cue but allows real moments to override.
+        # NOT dropped under ``aggressive=True`` -- a tight budget is
+        # exactly when an over-cap warning matters most (long replies
+        # compound over-disclosure). NOT in the K16 grounding-line
+        # suppression matrix because it's a pacing cue, not an
+        # ambient grounding block.
+        vulnerability_budget_block = ""
+        if self._vulnerability_budget_provider is not None:
+            with _timed_phase(provider_ms, "vulnerability_budget"):
+                try:
+                    vulnerability_budget_block = (
+                        self._vulnerability_budget_provider() or ""
+                    )
+                except Exception:
+                    log.debug(
+                        "vulnerability_budget provider raised", exc_info=True,
+                    )
+                    vulnerability_budget_block = ""
+
         # K13: stylometric mirror. One short "How Jacob writes lately"
         # line that shapes Aiko's register across days. Unlike the
         # K6/K18/anti-rut cues this block is intentionally NOT gated
@@ -1945,6 +1986,14 @@ class PromptAssembler:
             # can teach Aiko them as one register-shift family.
             # Empty on the common no-streak turn.
             system_parts.append(self_noticing_block)
+        if vulnerability_budget_block:
+            # K15: self-disclosure / vulnerability budget cue. Sits
+            # right after the K30 self-noticing cluster so the
+            # "register I'm in / how much have I shared" pair reads
+            # as one self-aware family — both teach Aiko to pace
+            # herself, just on different axes (rut vs. depth).
+            # Silent on the common turn (budget under 50% spent).
+            system_parts.append(vulnerability_budget_block)
         if curiosity_seeds_block:
             # K9: "Quiet curiosity" — at-most-two topics Aiko has
             # been wondering about that haven't come up yet. Sits

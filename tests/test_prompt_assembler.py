@@ -1303,6 +1303,135 @@ class DayColorProviderSlotTests(unittest.TestCase):
             )
 
 
+class VulnerabilityBudgetProviderSlotTests(unittest.TestCase):
+    """K15 vulnerability-budget provider lands in the system prompt
+    right after the K30 self-noticing cluster (same "patterns I'm in"
+    family), is NOT dropped under ``aggressive=True`` (a tight budget
+    is exactly when the over-cap warning matters most -- long replies
+    compound over-disclosure), and swallows provider exceptions so a
+    bad provider can never strand the turn.
+
+    The provider plumbing itself is exhaustively tested in
+    ``tests/test_vulnerability_budget_provider.py``; this class only
+    verifies the slot wiring + ordering in the assembler.
+    """
+
+    _CUE = (
+        "You've shared a lot of softness with Jacob recently -- "
+        "let yourself stay surface this turn."
+    )
+
+    def test_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="vb1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                vulnerability_budget=lambda: self._CUE,
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "vb1",
+                "what's up?",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertIn(self._CUE, messages[0]["content"])
+
+    def test_block_lands_after_self_noticing(self) -> None:
+        # K30 self-noticing is the closest sibling -- both are
+        # "register I'm in / how much have I shared" cues. The
+        # K15 block must land *after* the self-noticing one so
+        # the rut-detection family (style + self-noticing) reads
+        # first, then the depth-pacing nudge.
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="vb2", role="user", content="hi", token_count=2,
+            )
+            self_noticing_cue = "Heads-up: your last three replies all agreed."
+            assembler.set_inner_life_providers(
+                self_noticing=lambda: self_noticing_cue,
+                vulnerability_budget=lambda: self._CUE,
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "vb2",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            content = messages[0]["content"]
+            self.assertIn(self_noticing_cue, content)
+            self.assertIn(self._CUE, content)
+            self.assertLess(
+                content.index(self_noticing_cue),
+                content.index(self._CUE),
+            )
+
+    def test_block_silent_when_provider_returns_empty(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="vb3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                vulnerability_budget=lambda: "",
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "vb3",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            # The cue substring must not appear (the empty return is
+            # the steady state -- a healthy budget renders nothing).
+            self.assertNotIn(self._CUE, messages[0]["content"])
+
+    def test_block_retained_under_aggressive(self) -> None:
+        # K15 is NOT in the rut-cluster that gets dropped under
+        # ``aggressive=True``. The pacing cue is one line and the
+        # over-cap warning is exactly what should persist when the
+        # budget is tight -- a long reply on a tight budget is when
+        # over-disclosure compounds hardest.
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="vb4", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                vulnerability_budget=lambda: self._CUE,
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "vb4",
+                "x",
+                context_window=4096,
+                response_budget=256,
+                aggressive=True,
+            )
+            self.assertIn(self._CUE, messages[0]["content"])
+
+    def test_block_provider_exception_swallowed(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="vb5", role="user", content="hi", token_count=2,
+            )
+
+            def _boom() -> str:
+                raise RuntimeError("vulnerability_budget exploded")
+
+            assembler.set_inner_life_providers(vulnerability_budget=_boom)
+            messages, _ = assembler.assemble_with_budget(
+                "vb5",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            # The cue must not appear, and the assembler must not
+            # have raised -- prompt assembly proceeded normally.
+            self.assertNotIn(self._CUE, messages[0]["content"])
+
+
 class GroundingLineModeTests(unittest.TestCase):
     """K16 unified ambient grounding line modes.
 

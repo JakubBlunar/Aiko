@@ -116,22 +116,7 @@ signals (latency + length)".
 
 ## K15. Self-disclosure / vulnerability budget
 
-Aiko has self-image, pinned self-memories, and reflection
-workers, but no cadence cap on personal disclosure depth. Over a
-long session she can over-share (or under-share when the moment
-calls for it) relative to where the relationship axes actually
-sit. A per-session "vulnerability budget" — a small token-bucket
-gated on `closeness` + `trust` — would cap how often she emits a
-self-tag of kind `self` (`[[remember:self:...]]`) and how deep
-the disclosure can go (a 1-3 scale: surface preference / mild
-admission / genuine softness). Out-of-budget moments still
-happen, just register as a rare event rather than the default
-register. Key files:
-[`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt)
-(soft-cap guidance),
-new inner-life provider exposing the live budget,
-[`app/core/memory/memory_store.py`](../../app/core/memory/memory_store.py)
-(`self` kind metadata for depth tier).
+**Shipped** — see [shipped.md → K15](shipped.md#k15-self-disclosure--vulnerability-budget).
 
 ---
 
