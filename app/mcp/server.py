@@ -1589,6 +1589,257 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"force_opinion_injection raised: {exc}"
 
     @mcp.tool()
+    def get_turning_over_state() -> str:
+        """K28 — dump the in-memory turning-over picker state.
+
+        Returns a JSON dict with the master switch, the current
+        pending-seconds slot (set by the post-turn engagement
+        tracker when a long enough typed gap was observed), the
+        ``force_next`` flag (armed by ``force_turning_over``),
+        the most recent fire (``memory_id`` / ``age_hours`` /
+        ``topical_score`` / ``topical_source`` / ``dream`` /
+        truncated ``content``), the settings snapshot (5 knobs),
+        plus a **dry-run picker result** that calls the picker
+        against the *current* memory state without arming the
+        cue -- so you can see what *would* surface on the next
+        qualifying turn even when the slot isn't currently armed.
+
+        The dry-run respects the configured age window and the
+        topical-similarity threshold, so a ``would_surface: null``
+        with ``reflections_in_window: N > 0`` means the threshold
+        gate is rejecting every candidate.
+
+        Pairs with ``force_turning_over`` for the end-to-end repro:
+
+        1. Call ``get_turning_over_state`` first -- read
+           ``would_surface`` to confirm there's a candidate that
+           clears the gates.
+        2. Call ``force_turning_over`` to arm the one-shot bypass.
+        3. Send a message; verify ``tail_logs(module_contains=
+           "turning_over")`` shows ``turning-over fire: ...``.
+        4. Call ``get_turning_over_state`` again -- ``force_next``
+           should be ``false`` (consumed), ``last_fire`` populated.
+        """
+        try:
+            agent = session._settings.agent
+            memory = session._memory_settings
+            pending_s = getattr(
+                session, "_pending_turning_over_seconds", None,
+            )
+            force_next = bool(
+                getattr(session, "_turning_over_force_next", False),
+            )
+            last = getattr(session, "_last_turning_over", None)
+            last_payload = None
+            if last is not None:
+                last_payload = {
+                    "memory_id": int(getattr(last, "memory_id", 0) or 0),
+                    "age_hours": float(getattr(last, "age_hours", 0.0)),
+                    "topical_score": float(
+                        getattr(last, "topical_score", 0.0)
+                    ),
+                    "topical_source": str(
+                        getattr(last, "topical_source", "") or ""
+                    ),
+                    "dream": bool(getattr(last, "dream", False)),
+                    "content": (
+                        (getattr(last, "content", "") or "")[:200]
+                    ),
+                }
+
+            # Dry-run: pick a candidate against the current memory
+            # state without arming the cue. Mirrors the live provider's
+            # picker call so what we show here is what would land.
+            dry_run = None
+            reflections_in_window = 0
+            try:
+                from datetime import datetime, timezone
+                from app.core.session.inner_life import turning_over as _to
+
+                memory_store = getattr(session, "_memory_store", None)
+                if memory_store is not None:
+                    reflections = list(memory_store.iter_by_kind("reflection"))
+                    # Count rows in the age window for diagnostic.
+                    now = datetime.now(timezone.utc)
+                    min_age = float(
+                        getattr(
+                            memory,
+                            "turning_over_min_age_hours",
+                            _to.DEFAULT_MIN_AGE_HOURS,
+                        )
+                    )
+                    max_age = float(
+                        getattr(
+                            memory,
+                            "turning_over_max_age_hours",
+                            _to.DEFAULT_MAX_AGE_HOURS,
+                        )
+                    )
+                    for mem in reflections:
+                        age = _to._parse_age_hours(
+                            getattr(mem, "created_at", None), now=now,
+                        )
+                        if age is None:
+                            continue
+                        if min_age <= age <= max_age:
+                            reflections_in_window += 1
+                    goal_store = getattr(session, "_goal_store", None)
+                    goal_vecs = []
+                    if goal_store is not None:
+                        try:
+                            goal_vecs = list(goal_store.active_goal_vectors())
+                        except Exception:
+                            goal_vecs = []
+                    msg_vecs = []
+                    rag_store = getattr(session, "_rag_store", None)
+                    msgs_window = int(
+                        getattr(
+                            memory,
+                            "turning_over_recent_msgs_window",
+                            12,
+                        )
+                    )
+                    if rag_store is not None and msgs_window > 0:
+                        try:
+                            msg_vecs = list(
+                                rag_store.list_recent_user_vectors(
+                                    user_id_prefix=(
+                                        getattr(session, "_user_id", "") or ""
+                                    ),
+                                    limit=msgs_window,
+                                )
+                            )
+                        except Exception:
+                            msg_vecs = []
+                    picked = _to.pick_turning_over(
+                        reflections=reflections,
+                        active_goal_vecs=goal_vecs,
+                        recent_user_vecs=msg_vecs,
+                        now=now,
+                        min_age_hours=min_age,
+                        max_age_hours=max_age,
+                        min_topical_similarity=float(
+                            getattr(
+                                memory,
+                                "turning_over_min_topical_similarity",
+                                _to.DEFAULT_MIN_TOPICAL_SIMILARITY,
+                            )
+                        ),
+                    )
+                    if picked is not None:
+                        dry_run = {
+                            "memory_id": int(picked.memory_id),
+                            "age_hours": float(picked.age_hours),
+                            "topical_score": float(picked.topical_score),
+                            "topical_source": picked.topical_source,
+                            "dream": bool(picked.dream),
+                            "content": (picked.content or "")[:200],
+                        }
+            except Exception as dry_exc:
+                dry_run = {"error": str(dry_exc)}
+
+            return json.dumps(
+                {
+                    "enabled": bool(
+                        getattr(agent, "turning_over_enabled", True)
+                    ),
+                    "pending_seconds": (
+                        float(pending_s) if pending_s is not None else None
+                    ),
+                    "force_next": force_next,
+                    "last_fire": last_payload,
+                    "would_surface": dry_run,
+                    "reflections_in_window": reflections_in_window,
+                    "settings": {
+                        "min_gap_minutes": float(
+                            getattr(
+                                memory,
+                                "turning_over_min_gap_minutes",
+                                90.0,
+                            )
+                        ),
+                        "min_age_hours": float(
+                            getattr(
+                                memory,
+                                "turning_over_min_age_hours",
+                                24.0,
+                            )
+                        ),
+                        "max_age_hours": float(
+                            getattr(
+                                memory,
+                                "turning_over_max_age_hours",
+                                72.0,
+                            )
+                        ),
+                        "min_topical_similarity": float(
+                            getattr(
+                                memory,
+                                "turning_over_min_topical_similarity",
+                                0.30,
+                            )
+                        ),
+                        "recent_msgs_window": int(
+                            getattr(
+                                memory,
+                                "turning_over_recent_msgs_window",
+                                12,
+                            )
+                        ),
+                    },
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"get_turning_over_state raised: {exc}"
+
+    @mcp.tool()
+    def force_turning_over() -> str:
+        """K28 — arm a one-shot bypass on the turning-over gap gate.
+
+        Sets ``_turning_over_force_next`` so the next call to the
+        provider treats the pending-slot gate AND the threshold
+        double-check as bypassed. The picker still runs, so a
+        forced bypass on an empty reflection corpus (or one where
+        nothing clears the topical-similarity gate) silently
+        expires with no cue. Bypass is consumed regardless --
+        strictly one-turn.
+
+        Repro recipe:
+
+        1. Make sure Aiko has at least one ``kind="reflection"``
+           memory row written between 24h and 72h ago. Real
+           reflections come from the post-turn ``ReflectionWorker``
+           or ``DreamWorker``; for testing, you can insert one via
+           ``POST /api/memories`` with ``kind=reflection`` and a
+           ``created_at`` 30h in the past.
+        2. Call ``get_turning_over_state`` -- confirm
+           ``would_surface`` is non-null (i.e. there's a candidate
+           that clears the gates).
+        3. Call this tool.
+        4. Send a message; check ``tail_logs(module_contains=
+           "turning_over")`` for ``turning-over fire: memory_id=...``.
+        5. Aiko's reply should fold in the reflection as a casual
+           aside, not as an announcement.
+        """
+        try:
+            session._turning_over_force_next = True
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next provider call will ignore the pending-slot "
+                        "gate AND the threshold double-check; picker still "
+                        "runs, so an empty reflection corpus or a "
+                        "below-threshold candidate silently expires"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_turning_over raised: {exc}"
+
+    @mcp.tool()
     def get_confidence_decay_state(limit: int = 20) -> str:
         """K25 — preview which memory rows would currently render
         with the ``(distant)`` suffix.

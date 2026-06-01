@@ -74,7 +74,6 @@ K19 cold-start companion onboarding ·
 K21 fresh-eyes thread re-summary ·
 K26 Aiko-side voice evolution ·
 K27 Aiko's day (daily personality colour) ·
-K28 "what I've been turning over" (between-session thought thread) ·
 K30 self-noticing cues (agreement-streak / flat-affect / repeated-thought).
 
 (K1 long-term goals, K2 theory-of-mind, K3 routine awareness,
@@ -85,8 +84,9 @@ K16 unified ambient grounding line, K17 clarification-repair,
 K18 topic stagnation, K20 metacognitive calibration,
 K22 callback / inside-joke detector, K23 subtle misattunement
 detection, K24 sensory anchoring layer, K25 memory
-confidence time-decay, and K29 opinion injection have shipped —
-see [`shipped.md`](shipped.md).)
+confidence time-decay, K28 "what I've been turning over",
+and K29 opinion injection have shipped — see
+[`shipped.md`](shipped.md).)
 
 ### P. Performance + observability — [`perf.md`](perf.md)
 

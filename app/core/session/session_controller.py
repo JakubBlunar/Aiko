@@ -1256,6 +1256,7 @@ class SessionController(
             misattunement=self._render_misattunement_block,
             opinion_injection=self._render_opinion_injection_block,
             absence_curiosity=self._render_absence_curiosity_block,
+            turning_over=self._render_turning_over_block,
             mood_shell=self._render_mood_shell_block,
             novelty=self._render_novelty_block,
             stagnation=self._render_stagnation_block,
@@ -2127,6 +2128,19 @@ class SessionController(
         self._opinion_injection_force_next: bool = False
         self._last_opinion_injection: Any = None
         self._opinion_injection_rate_limiter = None
+        # K28 — "What I've been turning over" between-session cue.
+        # ``_pending_turning_over_seconds`` is armed by the post-turn
+        # engagement tracker when a typed turn lands after a gap of
+        # at least ``memory.turning_over_min_gap_minutes``. The next
+        # prompt assembly's provider reads + clears the slot and
+        # runs the picker. ``_turning_over_force_next`` is the MCP
+        # debug bypass (set by ``force_turning_over``); cleared
+        # whether the picker fires or not so the bypass is strictly
+        # one-turn. ``_last_turning_over`` carries the most recent
+        # :class:`TurningOverResult` for the MCP debug tool.
+        self._pending_turning_over_seconds: float | None = None
+        self._turning_over_force_next: bool = False
+        self._last_turning_over: Any = None
         if (
             self._chat_db is not None
             and bool(getattr(settings.agent, "belief_tracking_enabled", True))
@@ -2693,6 +2707,13 @@ class SessionController(
         # Cooldown survives so a fresh switch doesn't accidentally
         # re-fire on the same beat that the prior session ended on.
         self._opinion_injection_session_count = 0
+        # K28 — wipe any stashed turning-over slot so the new session
+        # doesn't inherit a "this is a comeback" cue from the prior
+        # one. The force-next bypass and last-fire diagnostic also
+        # clear so MCP debug state matches the visible session.
+        self._pending_turning_over_seconds = None
+        self._turning_over_force_next = False
+        self._last_turning_over = None
         # Best-effort: a write failure (read-only volume, locked file)
         # must not break the in-memory switch — the user just lands
         # back on whatever was previously persisted on next launch.
@@ -2759,6 +2780,11 @@ class SessionController(
         self._opinion_injection_cooldown = 0
         self._opinion_injection_force_next = False
         self._last_opinion_injection = None
+        # K28 — same logic: a full clear should leave no stashed
+        # turning-over slot or force-next bypass.
+        self._pending_turning_over_seconds = None
+        self._turning_over_force_next = False
+        self._last_turning_over = None
 
     def _clear_merge_buffer(self, session_key: str | None = None) -> None:
         """Drop the voice merge buffer (one specific session, or all).
