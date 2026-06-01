@@ -96,16 +96,18 @@ The local Ollama runtime that hosts the chat + embedding models. Sits **behind**
 
 Provider-routing layer in front of `ollama`. Lets you run chat on Ollama Cloud, OpenAI, Grok, Groq, OpenRouter, DeepSeek, Together, Mistral — anything OpenAI-compatible.
 
-- `chat_llm.provider` *(string, `"ollama"`)* — `"ollama"` (local or Ollama Cloud) or `"openai_compatible"` (anything that speaks the OpenAI API).
-- `chat_llm.model` *(string, `""`)* — model name override. Empty → falls back to `ollama.chat_model`.
+- `chat_llm.provider` *(string, `"ollama"`)* — `"ollama"` (local or Ollama Cloud) or `"openai_compatible"` (anything that speaks the OpenAI API: Gemini, OpenAI, Groq, OpenRouter, DeepSeek, …).
+- `chat_llm.provider_preset` *(string, `""`)* — UI hint emitted by the curated picker. One of `""` / `"ollama"` / `"ollama_cloud"` / `"openai"` / `"gemini"` / `"groq"` / `"openrouter"`. Controller ignores it; only the React drawer reads it to highlight the active preset card.
+- `chat_llm.model` *(string, `""`)* — model name override. Empty → falls back to `ollama.chat_model`. For `openai_compatible` this is **required** (e.g. `"gemini-2.5-flash-lite"`, `"gpt-4o-mini"`).
 - `chat_llm.base_url` *(string, `""`)* — endpoint URL. Empty → `ollama.base_url` (when provider is `ollama`).
-- `chat_llm.api_key` *(string, `""`)* — bearer token. Empty → looked up via `api_key_env` or inferred from the host.
+- `chat_llm.api_key` *(string, `""`)* — bearer token. Empty → looked up via `api_key_env` or inferred from the host. Always written via `PUT /api/settings/llm-credentials` from the UI so the key never round-trips through `GET /api/settings`.
 - `chat_llm.api_key_env` *(string, `""`)* — explicit env var holding the key (e.g. `"OPENAI_API_KEY"`).
 - `chat_llm.context_window` *(int | null, `null`)* — context window for the routed model.
 - `chat_llm.temperature` *(float | null, `null`)* — overrides `ollama.temperature` when set.
-- `chat_llm.extra_headers` *(object, `{}`)* — extra HTTP headers (vendor-specific knobs).
-- `chat_llm.max_tokens` *(int, `512`)* — hard cap on tokens **per assistant reply**. Without this, models routinely emit 2 k+ tokens of rambling on casual chat. **Higher → longer replies**, more chance the LLM drifts off-topic; lower → terser, more chance of mid-sentence truncation. `0` / negative disables the cap. Watch `data/app.log` for `ollama response truncated:` warnings — they fire only when the cap actually clipped a reply.
-- `chat_llm.keep_alive` *(string, `"30m"`)* — how long Ollama keeps the chat model resident in VRAM after a request. Higher → no model-load latency on the next message; lower → frees GPU for other workloads sooner. Accepts any Ollama duration (`"30m"`, `"1h"`, `"-1"` for "forever").
+- `chat_llm.extra_headers` *(object, `{}`)* — extra HTTP headers (vendor-specific knobs; OpenRouter wants `HTTP-Referer` + `X-Title`).
+- `chat_llm.max_tokens` *(int, `512`)* — hard cap on tokens **per assistant reply**. Without this, models routinely emit 2 k+ tokens of rambling on casual chat. **Higher → longer replies**, more chance the LLM drifts off-topic; lower → terser, more chance of mid-sentence truncation. `0` / negative disables the cap. Watch `data/app.log` for `ollama response truncated:` / `openai-compat response truncated:` warnings — they fire only when the cap actually clipped a reply.
+- `chat_llm.keep_alive` *(string, `"30m"`)* — how long Ollama keeps the chat model resident in VRAM after a request. Ollama-only (silently ignored by remote providers). Accepts any Ollama duration (`"30m"`, `"1h"`, `"-1"` for "forever").
+- `chat_llm.workers_use_local` *(bool, `true`)* — when the chat provider is **not** `"ollama"` AND this is `true`, the ~24 background workers keep talking to a local Ollama instance. Defaults to `true` because Gemini's 1500-req/day free-tier would drain in well under an hour otherwise. Set to `false` to opt workers into the same remote provider (burns quota; useful when there's no local Ollama at all). See [`docs/llm-providers.md`](llm-providers.md) for the rationale.
 
 ---
 

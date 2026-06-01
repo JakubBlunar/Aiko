@@ -69,8 +69,10 @@ from app.core.voice.speaking_window_scheduler import SpeakingWindowScheduler
 from app.core.proactive.summary_worker import SummaryWorker
 from app.core.voice.tts_queue import TtsQueue
 from app.core.session.turn_runner import TurnRunner
+from app.llm.chat_client import ChatClient
 from app.llm.embedder import Embedder
 from app.llm.ollama_client import OllamaClient
+from app.llm.openai_compatible_client import OpenAICompatibleClient
 from app.llm.token_utils import estimate_tokens
 from app.stt import endpointing as _endpointing
 from app.stt.realtime_stt_service import RealtimeSttService
@@ -144,6 +146,7 @@ _PROVIDER_ENV_HINTS: tuple[tuple[str, str], ...] = (
     ("api.groq.com", "GROQ_API_KEY"),
     ("api.x.ai", "XAI_API_KEY"),
     ("openrouter.ai", "OPENROUTER_API_KEY"),
+    ("generativelanguage.googleapis.com", "GEMINI_API_KEY"),
 )
 
 
@@ -155,6 +158,183 @@ def _resolve_env_var_name(*, base_url: str, explicit: str = "") -> str:
         if needle in host:
             return env_name
     return ""
+
+
+# Curated provider preset table. Exposed verbatim via
+# ``GET /api/llm/presets`` so the React drawer can render
+# self-documenting cards without re-encoding these strings on the
+# client. The ``free_tier`` label is intentionally vague (rate limits
+# move around quarterly); the goal is to give users a hint, not to
+# enforce a hard quota.
+_PROVIDER_PRESETS: tuple[dict[str, Any], ...] = (
+    {
+        "id": "ollama",
+        "label": "Local Ollama",
+        "provider": "ollama",
+        "base_url": "http://127.0.0.1:11434",
+        "recommended_models": [
+            "llama3.1:8b",
+            "qwen2.5:7b",
+            "jaahas/qwen3.5-uncensored:9b",
+        ],
+        "env_hint": "",
+        "api_key_required": False,
+        "free_tier": "Unlimited (runs on your machine)",
+        "docs_url": "https://ollama.com",
+        "default_workers_use_local": False,
+    },
+    {
+        "id": "ollama_cloud",
+        "label": "Ollama Cloud",
+        "provider": "ollama",
+        "base_url": "https://ollama.com",
+        "recommended_models": [
+            "llama3.1:70b",
+            "qwen2.5:72b",
+        ],
+        "env_hint": "OLLAMA_API_KEY",
+        "api_key_required": True,
+        "free_tier": "Paid plan required",
+        "docs_url": "https://ollama.com/cloud",
+        "default_workers_use_local": True,
+    },
+    {
+        "id": "gemini",
+        "label": "Google Gemini",
+        "provider": "openai_compatible",
+        "base_url": (
+            "https://generativelanguage.googleapis.com/v1beta/openai/"
+        ),
+        "recommended_models": [
+            "gemini-2.5-flash-lite",
+            "gemini-2.5-flash",
+            "gemini-2.5-pro",
+        ],
+        "env_hint": "GEMINI_API_KEY",
+        "api_key_required": True,
+        "free_tier": "Free tier: ~15 req/min, ~1500 req/day",
+        "docs_url": "https://ai.google.dev",
+        "default_workers_use_local": True,
+    },
+    {
+        "id": "openai",
+        "label": "OpenAI",
+        "provider": "openai_compatible",
+        "base_url": "https://api.openai.com/v1",
+        "recommended_models": [
+            "gpt-4o-mini",
+            "gpt-4o",
+            "gpt-4.1-mini",
+        ],
+        "env_hint": "OPENAI_API_KEY",
+        "api_key_required": True,
+        "free_tier": "Paid (no free tier)",
+        "docs_url": "https://platform.openai.com",
+        "default_workers_use_local": True,
+    },
+    {
+        "id": "groq",
+        "label": "Groq",
+        "provider": "openai_compatible",
+        "base_url": "https://api.groq.com/openai/v1",
+        "recommended_models": [
+            "llama-3.3-70b-versatile",
+            "llama-3.1-8b-instant",
+            "mixtral-8x7b-32768",
+        ],
+        "env_hint": "GROQ_API_KEY",
+        "api_key_required": True,
+        "free_tier": "Free tier: 30 req/min",
+        "docs_url": "https://console.groq.com",
+        "default_workers_use_local": True,
+    },
+    {
+        "id": "openrouter",
+        "label": "OpenRouter",
+        "provider": "openai_compatible",
+        "base_url": "https://openrouter.ai/api/v1",
+        "recommended_models": [
+            "anthropic/claude-3.5-sonnet",
+            "openai/gpt-4o-mini",
+            "google/gemini-2.5-flash",
+        ],
+        "env_hint": "OPENROUTER_API_KEY",
+        "api_key_required": True,
+        "free_tier": "Pay-per-token (some models free)",
+        "docs_url": "https://openrouter.ai/docs",
+        "default_workers_use_local": True,
+    },
+)
+
+
+def _build_chat_client(
+    *,
+    chat_llm: Any,
+    ollama_settings: Any,
+    role: str,
+) -> ChatClient:
+    """Factory: pick a concrete chat client for ``chat_llm.provider``.
+
+    ``role`` is one of ``"chat"`` (main TurnRunner path) or ``"worker"``
+    (background workers). It's used only for logging clarity — the two
+    callers in :class:`SessionController` go through the same code
+    path and only diverge on whether ``chat_llm.workers_use_local``
+    forces a local fallback.
+
+    Resolves the API key in this order:
+    1. ``chat_llm.api_key`` (explicit override)
+    2. ``os.environ[chat_llm.api_key_env or inferred]``
+    """
+    base_url = (chat_llm.base_url or "").strip() or ollama_settings.base_url
+    api_key_explicit = (chat_llm.api_key or "").strip()
+    api_key_env_name = _resolve_env_var_name(
+        base_url=base_url,
+        explicit=(chat_llm.api_key_env or "").strip(),
+    )
+    api_key = api_key_explicit or os.environ.get(
+        api_key_env_name, "",
+    ).strip()
+    extra_headers = {
+        str(k).strip(): str(v).strip()
+        for k, v in dict(chat_llm.extra_headers or {}).items()
+        if str(k).strip() and v is not None
+    }
+    provider = (chat_llm.provider or "ollama").strip().lower()
+    if provider == "openai_compatible":
+        model = (chat_llm.model or "").strip()
+        if not model:
+            # Empty model = config not finished yet. Falling through to
+            # a local Ollama client keeps the boot healthy until the
+            # user picks one in the drawer.
+            log.warning(
+                "chat_llm.provider=openai_compatible but model is empty; "
+                "falling back to local Ollama for role=%s. Configure "
+                "chat_llm.model in user.json or via Settings → Chat.",
+                role,
+            )
+            return OllamaClient(
+                ollama_settings,
+                base_url=base_url,
+                api_key=api_key or None,
+                extra_headers=extra_headers or None,
+                keep_alive=chat_llm.keep_alive,
+            )
+        return OpenAICompatibleClient(
+            ollama_settings,
+            base_url=base_url,
+            api_key=api_key or None,
+            model=model,
+            extra_headers=extra_headers or None,
+            keep_alive=chat_llm.keep_alive,
+        )
+    # Default path: Ollama (local or cloud, distinguished only by base_url).
+    return OllamaClient(
+        ollama_settings,
+        base_url=base_url,
+        api_key=api_key or None,
+        extra_headers=extra_headers or None,
+        keep_alive=chat_llm.keep_alive,
+    )
 
 
 def _seed_avatar_root_if_empty(avatar_root: Path) -> None:
@@ -221,34 +401,46 @@ class SessionController(
         # the fallback chain.
         self._session_id = self._resolve_initial_session_id(default="main")
 
-        # ── Chat LLM client (Ollama or Ollama Cloud) ──────────────────────
+        # ── Chat LLM clients (provider-aware split) ──────────────────────
+        # Two clients live side by side:
+        #   - ``self._chat_client`` is the user-visible path (TurnRunner +
+        #     ProactiveDirector). Routes through whatever ``chat_llm.provider``
+        #     points at — local Ollama, Ollama Cloud, or any OpenAI-compatible
+        #     endpoint (Gemini, OpenAI, Groq, OpenRouter, ...).
+        #   - ``self._worker_client`` is the background-worker path
+        #     (reflection, dream, belief, ~24 workers in total). Defaults to
+        #     a local Ollama instance so a switch to Gemini doesn't drain its
+        #     1500-req/day free tier within the hour; set
+        #     ``chat_llm.workers_use_local = False`` to share the chat
+        #     client instead.
+        # ``self._ollama`` is a back-compat alias for the worker client — too
+        # many older test patches and a few external scripts reach in for
+        # it for us to rename in this round.
         chat_llm = settings.chat_llm
-        chat_provider = (chat_llm.provider or "ollama").strip().lower()
-        if chat_provider != "ollama":
-            log.warning(
-                "chat_llm.provider=%s is not supported in the lean rewrite; "
-                "falling back to Ollama. Set the model on settings.ollama.chat_model.",
-                chat_provider,
+        self._chat_client: ChatClient = _build_chat_client(
+            chat_llm=chat_llm,
+            ollama_settings=settings.ollama,
+            role="chat",
+        )
+        if (
+            (chat_llm.provider or "ollama").strip().lower() != "ollama"
+            and bool(getattr(chat_llm, "workers_use_local", True))
+        ):
+            # Workers stay on a local Ollama instance with the configured
+            # base_url ignored — we use the canonical OllamaSettings.base_url
+            # (typically http://127.0.0.1:11434) so the user doesn't have
+            # to set two URLs.
+            self._worker_client: ChatClient = OllamaClient(
+                settings.ollama,
+                base_url=settings.ollama.base_url,
+                keep_alive=chat_llm.keep_alive,
             )
-        chat_base_url = (chat_llm.base_url or "").strip() or settings.ollama.base_url
-        api_key_explicit = (chat_llm.api_key or "").strip()
-        api_key_env_name = _resolve_env_var_name(
-            base_url=chat_base_url, explicit=(chat_llm.api_key_env or "").strip(),
-        )
-        api_key = api_key_explicit or os.environ.get(api_key_env_name, "").strip()
-        extra_headers = {
-            str(k).strip(): str(v).strip()
-            for k, v in dict(chat_llm.extra_headers or {}).items()
-            if str(k).strip() and v is not None
-        }
-        self._ollama = OllamaClient(
-            settings.ollama,
-            base_url=chat_base_url,
-            api_key=api_key or None,
-            extra_headers=extra_headers or None,
-            keep_alive=chat_llm.keep_alive,
-        )
-        self._chat_provider = "ollama"
+        else:
+            # Either pure Ollama (one client serves both roles) or the
+            # user explicitly opted workers into the remote provider.
+            self._worker_client = self._chat_client
+        self._ollama = self._worker_client  # back-compat alias
+        self._chat_provider = (chat_llm.provider or "ollama").strip().lower()
 
         chat_model_override = (chat_llm.model or "").strip()
         self._effective_chat_model = (
@@ -1820,7 +2012,7 @@ class SessionController(
                 log.warning("idle worker scheduler boot failed", exc_info=True)
                 self._idle_scheduler = None
         self._turn_runner = TurnRunner(
-            self._ollama,
+            self._chat_client,
             self._chat_db,
             self._prompt_assembler,
             model=self._effective_chat_model,
@@ -2431,7 +2623,7 @@ class SessionController(
         self._pending_absence_seconds: float | None = None
 
         self._proactive = ProactiveDirector(
-            self._ollama,
+            self._chat_client,
             self._chat_db,
             self._prompt_assembler,
             model=self._effective_chat_model,
@@ -2878,7 +3070,7 @@ class SessionController(
             except (TypeError, ValueError):
                 pass
         try:
-            detected = self._ollama.get_context_length(model)
+            detected = self._chat_client.get_context_length(model)
         except Exception:
             detected = None
         if detected and detected > 0:
@@ -2889,7 +3081,13 @@ class SessionController(
         normalized = (model_name or "").strip()
         if not normalized:
             return
+        # The legacy field on ``OllamaSettings.chat_model`` is the
+        # canonical source of truth for the Ollama provider. For
+        # OpenAI-compatible we ALSO copy the choice onto
+        # ``chat_llm.model`` so a restart picks up the same model.
         self._settings.ollama.chat_model = normalized
+        if (self._chat_provider or "ollama") != "ollama":
+            self._settings.chat_llm.model = normalized
         self._effective_chat_model = normalized
         # Re-resolve the context window for the new model. Honour the explicit
         # config override if any; otherwise re-query /api/show.
@@ -2918,6 +3116,196 @@ class SessionController(
                 log.debug(
                     "dialogue_act tagger model update failed", exc_info=True,
                 )
+
+    def reconfigure_chat_llm(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Rebuild ``self._chat_client`` from a partial ``chat_llm`` patch.
+
+        ``payload`` is a dict subset of :class:`ChatLlmSettings` fields
+        (any combination of ``provider``, ``provider_preset``,
+        ``model``, ``base_url``, ``api_key``, ``api_key_env``,
+        ``max_tokens``, ``temperature``, ``context_window``,
+        ``keep_alive``, ``workers_use_local``, ``extra_headers``).
+
+        Side effects:
+        1. The in-memory :class:`ChatLlmSettings` is mutated in place.
+        2. ``persist_user_overrides({"chat_llm": ...})`` writes the
+           new values to ``user.json`` so the change survives a restart.
+        3. ``self._chat_client`` is rebuilt via :func:`_build_chat_client`.
+        4. ``self._worker_client`` (and the ``self._ollama`` alias) is
+           rebound: if the new provider is non-Ollama and
+           ``workers_use_local`` is True, a fresh local Ollama client
+           is created; otherwise the worker client points at the
+           chat client.
+        5. TurnRunner + ProactiveDirector are pointed at the new
+           client; the model + context window cache are reset.
+        6. Worker clients **are not** swapped on existing worker
+           instances — the rename in this method is best-effort
+           against new turns only. A restart is required to flip
+           background workers between Ollama and a remote provider.
+           Documented in the "Restart required" notice on the UI.
+
+        Returns the masked snapshot (with ``has_api_key`` instead of
+        the raw key) so the REST caller can echo it back to the
+        client.
+        """
+        chat_llm = self._settings.chat_llm
+
+        def _set(field: str, value: Any) -> None:
+            if hasattr(chat_llm, field):
+                setattr(chat_llm, field, value)
+
+        if "provider" in payload:
+            raw = str(payload["provider"] or "").strip().lower()
+            if raw in {"ollama", "openai_compatible"}:
+                _set("provider", raw)
+        if "provider_preset" in payload:
+            _set("provider_preset", str(payload["provider_preset"] or "").strip().lower())
+        if "model" in payload:
+            _set("model", str(payload["model"] or "").strip())
+        if "base_url" in payload:
+            _set("base_url", str(payload["base_url"] or "").strip())
+        if "api_key" in payload:
+            # Empty string is a valid value here — it means "clear the
+            # stored key". Don't strip-then-falsy-collapse.
+            _set("api_key", str(payload["api_key"] or "").strip())
+        if "api_key_env" in payload:
+            _set("api_key_env", str(payload["api_key_env"] or "").strip())
+        if "max_tokens" in payload:
+            try:
+                _set("max_tokens", max(0, int(payload["max_tokens"])))
+            except (TypeError, ValueError):
+                pass
+        if "temperature" in payload:
+            try:
+                _set("temperature", float(payload["temperature"]))
+            except (TypeError, ValueError):
+                pass
+        if "context_window" in payload:
+            raw = payload["context_window"]
+            try:
+                _set(
+                    "context_window",
+                    int(raw) if raw not in (None, "", 0) else None,
+                )
+            except (TypeError, ValueError):
+                pass
+        if "keep_alive" in payload:
+            _set("keep_alive", str(payload["keep_alive"] or "").strip() or "30m")
+        if "workers_use_local" in payload:
+            _set("workers_use_local", bool(payload["workers_use_local"]))
+        if "extra_headers" in payload:
+            raw_headers = payload.get("extra_headers") or {}
+            if isinstance(raw_headers, dict):
+                _set("extra_headers", {
+                    str(k).strip(): str(v).strip()
+                    for k, v in raw_headers.items()
+                    if str(k).strip() and v is not None
+                })
+
+        # Persist (drops api_key entirely if the user cleared it).
+        try:
+            persist_user_overrides({"chat_llm": {
+                "provider": chat_llm.provider,
+                "provider_preset": chat_llm.provider_preset,
+                "model": chat_llm.model,
+                "base_url": chat_llm.base_url,
+                "api_key": chat_llm.api_key,
+                "api_key_env": chat_llm.api_key_env,
+                "max_tokens": chat_llm.max_tokens,
+                "temperature": chat_llm.temperature,
+                "context_window": chat_llm.context_window,
+                "keep_alive": chat_llm.keep_alive,
+                "workers_use_local": chat_llm.workers_use_local,
+                "extra_headers": dict(chat_llm.extra_headers or {}),
+            }})
+        except Exception:
+            log.warning("persist chat_llm overrides failed", exc_info=True)
+
+        # Rebuild clients.
+        self._chat_client = _build_chat_client(
+            chat_llm=chat_llm,
+            ollama_settings=self._settings.ollama,
+            role="chat",
+        )
+        if (
+            (chat_llm.provider or "ollama").strip().lower() != "ollama"
+            and bool(chat_llm.workers_use_local)
+        ):
+            self._worker_client = OllamaClient(
+                self._settings.ollama,
+                base_url=self._settings.ollama.base_url,
+                keep_alive=chat_llm.keep_alive,
+            )
+        else:
+            self._worker_client = self._chat_client
+        self._ollama = self._worker_client  # back-compat alias
+        self._chat_provider = (chat_llm.provider or "ollama").strip().lower()
+
+        # Re-resolve model + context window. ``set_chat_model`` does
+        # the right cascade (TurnRunner / ProactiveDirector / workers).
+        new_model = (
+            chat_llm.model.strip()
+            or self._settings.ollama.chat_model.strip()
+            or "llama3.1:8b"
+        )
+        # Drop the model-listing cache so the next /api/models lands fresh.
+        self._models_cache = None
+        # Point TurnRunner + ProactiveDirector at the new client.
+        # ``set_chat_model`` below cascades the model/context update.
+        try:
+            self._turn_runner.update_runtime(client=self._chat_client)
+        except Exception:
+            log.debug("turn_runner update_runtime(client=) failed", exc_info=True)
+        try:
+            self._proactive.update_runtime(client=self._chat_client)
+        except Exception:
+            log.debug("proactive update_runtime(client=) failed", exc_info=True)
+        self.set_chat_model(new_model)
+        log.info(
+            "chat_llm reconfigured: provider=%s model=%s base_url=%s "
+            "workers_use_local=%s has_api_key=%s",
+            chat_llm.provider,
+            self._effective_chat_model,
+            chat_llm.base_url or "(default)",
+            "1" if chat_llm.workers_use_local else "0",
+            "1" if (chat_llm.api_key or "").strip() else "0",
+        )
+        return self._chat_llm_public_snapshot()
+
+    def _chat_llm_public_snapshot(self) -> dict[str, Any]:
+        """Return a serialisable view of ``chat_llm`` with the API key masked.
+
+        Used by ``GET /api/settings`` and the response to PATCH /
+        PUT credentials. The raw key is replaced by a boolean
+        ``has_api_key`` flag; the UI shows ``••••••••`` when true and
+        empty when false.
+        """
+        cfg = self._settings.chat_llm
+        return {
+            "provider": cfg.provider,
+            "provider_preset": cfg.provider_preset,
+            "model": cfg.model,
+            "base_url": cfg.base_url,
+            "has_api_key": bool((cfg.api_key or "").strip()),
+            "api_key_env": cfg.api_key_env,
+            "max_tokens": int(cfg.max_tokens),
+            "temperature": (
+                float(cfg.temperature) if cfg.temperature is not None else None
+            ),
+            "context_window": cfg.context_window,
+            "keep_alive": cfg.keep_alive,
+            "workers_use_local": bool(cfg.workers_use_local),
+            "extra_headers": dict(cfg.extra_headers or {}),
+        }
+
+    @staticmethod
+    def provider_presets() -> list[dict[str, Any]]:
+        """Return the curated preset catalogue.
+
+        Static method — the catalogue is process-wide. Exposed via
+        ``GET /api/llm/presets``.
+        """
+        return [dict(p) for p in _PROVIDER_PRESETS]
 
     @property
     def remember_history(self) -> bool:
@@ -3163,28 +3551,45 @@ class SessionController(
 
         effective = self._effective_chat_model
         cloud_model = effective.endswith("-cloud") or effective.endswith(":cloud")
-        report("Checking Ollama availability...")
-        try:
-            models = self._ollama.list_models()
-        except Exception as exc:
-            raise RuntimeError(f"Failed to reach Ollama server: {exc}") from exc
-        if not cloud_model and effective not in models:
-            raise RuntimeError(
-                f"Chat model not found in Ollama: {effective}. "
-                f"Pull it with: ollama pull {effective}",
-            )
-        if cloud_model:
-            report(f"Using Ollama Cloud model: {effective} (no local warmup)")
-        else:
-            report(f"Warming chat model: {effective}")
+        provider = self._chat_provider or "ollama"
+        # For remote OpenAI-compatible providers we skip the local
+        # "model not found" guard (we can't enumerate every Gemini /
+        # OpenAI model reliably, and even when we can it costs an
+        # extra request that doesn't actually warm anything). We do
+        # still optionally probe ``/v1/models`` so a wrong base_url
+        # surfaces with a clear error before the first real turn.
+        if provider == "openai_compatible":
+            report(f"Checking {provider} endpoint...")
             try:
-                self._ollama.chat(
-                    [{"role": "user", "content": "Reply with OK."}],
-                    model=effective,
-                    surface="model_warmup",
-                )
+                # Best-effort: ``list_models`` returns ``[]`` on failure
+                # rather than raising, so the boot stays healthy.
+                self._chat_client.list_models()
+            except Exception:
+                log.debug("openai-compat list_models probe failed", exc_info=True)
+            report(f"Using remote model: {effective} (no local warmup)")
+        else:
+            report("Checking Ollama availability...")
+            try:
+                models = self._chat_client.list_models()
             except Exception as exc:
-                log.warning("chat model warmup failed: %s", exc)
+                raise RuntimeError(f"Failed to reach Ollama server: {exc}") from exc
+            if not cloud_model and effective not in models:
+                raise RuntimeError(
+                    f"Chat model not found in Ollama: {effective}. "
+                    f"Pull it with: ollama pull {effective}",
+                )
+            if cloud_model:
+                report(f"Using Ollama Cloud model: {effective} (no local warmup)")
+            else:
+                report(f"Warming chat model: {effective}")
+                try:
+                    self._chat_client.chat(
+                        [{"role": "user", "content": "Reply with OK."}],
+                        model=effective,
+                        surface="model_warmup",
+                    )
+                except Exception as exc:
+                    log.warning("chat model warmup failed: %s", exc)
 
         report("Warming TTS models...")
         self.prewarm_tts()
@@ -3640,12 +4045,53 @@ class SessionController(
 
     # ── Models listing ───────────────────────────────────────────────
 
-    def list_chat_models(self, *, refresh: bool = False) -> list[str]:
+    def list_chat_models(
+        self,
+        *,
+        refresh: bool = False,
+        provider: str | None = None,
+    ) -> list[str]:
+        """Return the model identifiers visible to the active chat client.
+
+        ``provider`` (optional) lets the UI preview a non-active
+        provider's model list without committing to it — used by the
+        ChatProviderSection drawer to populate the model dropdown the
+        instant a user picks a different preset. When None, returns the
+        cached / fresh list from ``self._chat_client``.
+
+        Best-effort: the underlying ``list_models`` returns ``[]`` on
+        failure, and we always prepend the currently configured model
+        so the dropdown shows a working selection even when the
+        provider's listing endpoint is down.
+        """
+        # Provider preview: build a throwaway client with the requested
+        # provider, no api_key (the listing endpoint is usually
+        # open). This is intentionally lossy — auth-gated providers
+        # will just return [] and the UI falls back to a free-text
+        # input. The throwaway never touches the real client state.
+        if provider:
+            target = provider.strip().lower()
+            if target and target != (self._chat_provider or "ollama"):
+                try:
+                    from app.core.infra.settings import ChatLlmSettings
+
+                    probe = _build_chat_client(
+                        chat_llm=ChatLlmSettings(provider=target),
+                        ollama_settings=self._settings.ollama,
+                        role="probe",
+                    )
+                    return probe.list_models()
+                except Exception:
+                    log.debug(
+                        "list_chat_models provider preview failed: %s",
+                        target, exc_info=True,
+                    )
+                    return []
         now = time.monotonic()
         if not refresh and self._models_cache is not None and (now - self._models_cache_time) < self._cache_ttl:
             return list(self._models_cache)
         try:
-            models = self._ollama.list_models()
+            models = self._chat_client.list_models()
         except Exception:
             models = []
         current = self.chat_model

@@ -29,9 +29,10 @@ class ChatLlmSettings:
     ``base_url``/``model``/``api_key`` are blank the legacy local Ollama chat
     behaviour is preserved unchanged. Setting ``base_url`` to ``https://ollama.com``
     plus an ``api_key`` flips the same code path to Ollama Cloud Pro. The
-    ``openai_compatible`` provider routes through ``langchain-openai``'s
-    ``ChatOpenAI`` and covers OpenAI / xAI Grok / Groq / OpenRouter / DeepSeek /
-    Together / Mistral via custom ``base_url``.
+    ``openai_compatible`` provider routes through
+    :class:`app.llm.openai_compatible_client.OpenAICompatibleClient`
+    and covers OpenAI / Google Gemini / xAI Grok / Groq / OpenRouter /
+    DeepSeek / Together / Mistral via custom ``base_url``.
     """
 
     provider: str = "ollama"  # "ollama" | "openai_compatible"
@@ -54,6 +55,23 @@ class ChatLlmSettings:
     # Ollama duration string ("30m", "1h", "-1" for "until unloaded").
     # Tune down for shared-GPU setups where holding VRAM is expensive.
     keep_alive: str = "30m"
+    # UI hint emitted by the curated preset picker. One of
+    # ``""`` (unspecified / Custom), ``"ollama"``, ``"ollama_cloud"``,
+    # ``"openai"``, ``"gemini"``, ``"groq"``, ``"openrouter"``. The
+    # value is round-tripped to the React drawer so it can highlight
+    # the active preset card; the controller does not read it.
+    provider_preset: str = ""
+    # When the chat provider is NOT Ollama and this is True, background
+    # workers (reflection, dream, belief, memory extractor, ...) keep
+    # talking to a local Ollama instance even though the main chat path
+    # goes through the remote provider. Why True by default? Free-tier
+    # remote quotas (Gemini = 1500 req/day) drain fast when the ~25
+    # background workers each fire a few requests per hour. Workers
+    # don't need a frontier model; routing them locally keeps the
+    # remote quota for user-visible turns. Set False to opt workers
+    # into the same provider — burns quota; useful when running
+    # without a local Ollama at all.
+    workers_use_local: bool = True
 
 
 @dataclass(slots=True)
@@ -1794,6 +1812,22 @@ def _parse_chat_llm(raw: dict[str, Any]) -> ChatLlmSettings:
         else "30m"
     )
 
+    # ``provider_preset`` is a UI hint only — the controller ignores it.
+    # We still clamp to the known preset names (plus "") so a typo from
+    # the React drawer can't confuse the round-trip.
+    preset_raw = str(
+        payload.get("provider_preset", "") or "",
+    ).strip().lower()
+    _KNOWN_PRESETS: frozenset[str] = frozenset({
+        "", "ollama", "ollama_cloud", "openai", "gemini",
+        "groq", "openrouter",
+    })
+    if preset_raw not in _KNOWN_PRESETS:
+        preset_raw = ""
+
+    workers_use_local_raw = payload.get("workers_use_local", True)
+    workers_use_local = bool(workers_use_local_raw)
+
     return ChatLlmSettings(
         provider=provider_raw,
         model=str(payload.get("model", "") or "").strip(),
@@ -1805,6 +1839,8 @@ def _parse_chat_llm(raw: dict[str, Any]) -> ChatLlmSettings:
         extra_headers=extra_headers,
         max_tokens=max_tokens,
         keep_alive=keep_alive,
+        provider_preset=preset_raw,
+        workers_use_local=workers_use_local,
     )
 
 

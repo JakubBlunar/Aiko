@@ -187,6 +187,7 @@ class TurnRunner:
     def update_runtime(
         self,
         *,
+        client: Any | None = None,
         model: str | None = None,
         context_window: int | None = None,
         max_tokens: int | None = None,
@@ -195,6 +196,13 @@ class TurnRunner:
         filler_threshold_ms: int | None = None,
         filler_enabled: bool | None = None,
     ) -> None:
+        # ``client`` lets ``SessionController.reconfigure_chat_llm`` swap
+        # the chat-LLM backend (e.g. Ollama -> Gemini) without recreating
+        # the TurnRunner. Existing in-flight turns keep their reference
+        # because the attribute is captured into local variables at the
+        # top of ``run()``; new turns pick up the new client.
+        if client is not None:
+            self._ollama = client
         if model is not None:
             self._model = model
         if context_window is not None:

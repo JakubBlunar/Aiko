@@ -43,6 +43,51 @@ from app.web import audio_frames as _frames
 log = logging.getLogger("app.web.server")
 
 
+def _classify_test_error(exc: BaseException) -> tuple[str, str]:
+    """Map an exception from the ``test-connection`` probe to a UI code.
+
+    The UI uses ``error_code`` to pick a leading label ("Unauthorized:",
+    "Model not found:", ...) and ``error_message`` for the
+    provider-verbatim body. Both are bounded to ~500 chars so a
+    runaway provider response can't bloat the JSON payload.
+    """
+    import requests as _requests
+
+    raw = str(exc)
+    text = raw.lower()
+    if isinstance(exc, _requests.exceptions.Timeout):
+        return "timeout", "Request timed out."
+    if isinstance(exc, _requests.exceptions.ConnectionError):
+        return "network", f"Cannot reach the endpoint: {raw[:400]}"
+    if isinstance(exc, _requests.HTTPError):
+        status = (
+            exc.response.status_code if exc.response is not None else 0
+        )
+        if status in (401, 403):
+            return "unauthorized", _trim(raw, 500)
+        if status == 404:
+            return "not_found_model", _trim(raw, 500)
+        if status == 429:
+            return "rate_limited", _trim(raw, 500)
+    if "unauthor" in text or "invalid api key" in text or "api_key" in text:
+        return "unauthorized", _trim(raw, 500)
+    if "not found" in text or "model" in text and "404" in text:
+        return "not_found_model", _trim(raw, 500)
+    if "rate limit" in text or "quota" in text:
+        return "rate_limited", _trim(raw, 500)
+    if "timed out" in text or "timeout" in text:
+        return "timeout", _trim(raw, 500)
+    return "unknown", _trim(raw, 500)
+
+
+def _trim(text: str, limit: int) -> str:
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "…"
+
+
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _DIST_DIR = _PROJECT_ROOT / "web" / "dist"
 # ``data/persona`` is unrelated to the Live2D pipeline — it stores the
@@ -661,6 +706,11 @@ def create_web_app(session: "SessionController") -> FastAPI:
                 "temperature": float(s.ollama.temperature),
                 "max_tokens": int(s.chat_llm.max_tokens),
             },
+            # Provider routing snapshot. The raw API key is intentionally
+            # NOT echoed back — only ``has_api_key`` so the UI knows
+            # whether to prefill the password input with a •••• placeholder
+            # or leave it empty.
+            "chat_llm": session._chat_llm_public_snapshot(),
             "tts": {
                 "provider": session.tts_provider,
                 "voice": session.tts_voice,
@@ -774,6 +824,29 @@ def create_web_app(session: "SessionController") -> FastAPI:
             session.set_chat_model(str(chat["model"]))
             hub.broadcast({"type": "model_changed", "model": session.effective_chat_model})
             _broadcast_context_window()
+        chat_llm_patch = payload.get("chat_llm") or {}
+        if chat_llm_patch:
+            # Safety net: never accept an API key through the generic
+            # PATCH endpoint. ``PUT /api/settings/llm-credentials`` is
+            # the dedicated write-only path so a misclick in another
+            # form field can't leak credentials in browser tooling.
+            chat_llm_patch.pop("api_key", None)
+            try:
+                snapshot = session.reconfigure_chat_llm(chat_llm_patch)
+                hub.broadcast({
+                    "type": "llm_settings_changed",
+                    "chat_llm": snapshot,
+                })
+                hub.broadcast({
+                    "type": "model_changed",
+                    "model": session.effective_chat_model,
+                })
+                _broadcast_context_window()
+            except Exception as exc:
+                log.warning("reconfigure_chat_llm failed: %s", exc, exc_info=True)
+                raise HTTPException(
+                    400, f"chat_llm reconfigure failed: {exc}",
+                )
         tts = payload.get("tts") or {}
         if "voice" in tts:
             session.set_tts_voice(str(tts["voice"]))
@@ -992,8 +1065,210 @@ def create_web_app(session: "SessionController") -> FastAPI:
         return get_settings()
 
     @app.get("/api/models")
-    def list_models(refresh: bool = False) -> JSONResponse:
+    def list_models(
+        refresh: bool = False, provider: str | None = None,
+    ) -> JSONResponse:
+        # ``provider`` (optional) lets the React drawer preview the
+        # model list of a non-active provider before the user commits
+        # to it. Empty / missing -> active provider, cached.
+        if provider:
+            return JSONResponse(
+                session.list_chat_models(provider=provider),
+            )
         return JSONResponse(session.list_chat_models(refresh=refresh))
+
+    # ── REST: LLM provider config (chat_llm) ────────────────────────
+
+    @app.get("/api/llm/presets")
+    def get_llm_presets() -> JSONResponse:
+        """Return the curated provider preset catalogue.
+
+        Read-only. Includes ``base_url`` / recommended models / free-tier
+        labels per preset so the UI can render self-documenting cards
+        without re-encoding the same strings on the client.
+        """
+        return JSONResponse({"presets": session.provider_presets()})
+
+    @app.put("/api/settings/llm-credentials")
+    async def put_llm_credentials(payload: dict[str, Any]) -> JSONResponse:
+        """Persist provider credentials + URL in one write-only call.
+
+        Body accepts ``{api_key, api_key_env, base_url, extra_headers}``.
+        Mirrors :func:`put_identity`'s shape. Validates that ``base_url``
+        (if present) starts with ``http://`` or ``https://`` and that
+        the API key is whitespace-free (so a stray copy-paste newline
+        can't trip later requests). Returns the masked snapshot.
+        """
+        patch: dict[str, Any] = {}
+        if "api_key" in payload:
+            raw_key = str(payload.get("api_key", "") or "")
+            if raw_key and any(c.isspace() for c in raw_key):
+                raise HTTPException(
+                    400,
+                    "api_key must not contain whitespace",
+                )
+            patch["api_key"] = raw_key.strip()
+        if "api_key_env" in payload:
+            patch["api_key_env"] = str(
+                payload.get("api_key_env", "") or "",
+            ).strip()
+        if "base_url" in payload:
+            raw_url = str(payload.get("base_url", "") or "").strip()
+            if raw_url and not (
+                raw_url.startswith("http://")
+                or raw_url.startswith("https://")
+            ):
+                raise HTTPException(
+                    400,
+                    "base_url must start with http:// or https://",
+                )
+            patch["base_url"] = raw_url
+        if "extra_headers" in payload:
+            raw_headers = payload.get("extra_headers") or {}
+            if not isinstance(raw_headers, dict):
+                raise HTTPException(
+                    400, "extra_headers must be an object",
+                )
+            patch["extra_headers"] = raw_headers
+        if not patch:
+            return JSONResponse(session._chat_llm_public_snapshot())
+        try:
+            snapshot = session.reconfigure_chat_llm(patch)
+        except Exception as exc:
+            log.warning(
+                "llm-credentials write failed: %s", exc, exc_info=True,
+            )
+            raise HTTPException(400, f"credentials write failed: {exc}")
+        hub.broadcast({
+            "type": "llm_settings_changed",
+            "chat_llm": snapshot,
+        })
+        return JSONResponse(snapshot)
+
+    @app.post("/api/llm/test-connection")
+    async def post_test_llm_connection(
+        payload: dict[str, Any],
+    ) -> JSONResponse:
+        """Verify a candidate provider config without persisting it.
+
+        Issues a real one-token chat completion against the supplied
+        ``{provider, base_url, api_key, model, extra_headers}`` using a
+        throwaway :class:`app.llm.chat_client.ChatClient`. The
+        controller's saved ``chat_llm`` is **never** touched — this is
+        explicitly a dry run so the user can pre-flight Gemini before
+        committing the key to disk.
+
+        Returns 200 with a structured ``{success, ...}`` payload on
+        both pass and fail so the UI can show a green check or a red
+        banner with the provider's error message verbatim. The endpoint
+        only returns 4xx when the request body itself is malformed.
+        """
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "expected JSON object body")
+        provider = str(payload.get("provider", "") or "").strip().lower()
+        if provider not in {"ollama", "openai_compatible"}:
+            raise HTTPException(
+                400, "provider must be 'ollama' or 'openai_compatible'",
+            )
+        model = str(payload.get("model", "") or "").strip()
+        if not model and provider == "openai_compatible":
+            raise HTTPException(
+                400, "model is required for openai_compatible",
+            )
+        base_url = str(payload.get("base_url", "") or "").strip()
+        api_key = str(payload.get("api_key", "") or "").strip()
+        raw_headers = payload.get("extra_headers") or {}
+        if not isinstance(raw_headers, dict):
+            raise HTTPException(400, "extra_headers must be an object")
+
+        # Build a throwaway ChatLlmSettings + client. Reuses the
+        # controller's existing factory so the test path can't drift
+        # from the real path.
+        from app.core.infra.settings import ChatLlmSettings
+        from app.core.session.session_controller import (
+            _build_chat_client,
+        )
+
+        probe_cfg = ChatLlmSettings(
+            provider=provider,
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+            extra_headers={
+                str(k).strip(): str(v).strip()
+                for k, v in raw_headers.items()
+                if str(k).strip() and v is not None
+            },
+        )
+        try:
+            probe = _build_chat_client(
+                chat_llm=probe_cfg,
+                ollama_settings=session._settings.ollama,
+                role="connection_test",
+            )
+        except Exception as exc:
+            log.info("test-connection client build failed: %s", exc)
+            return JSONResponse({
+                "success": False,
+                "latency_ms": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "model_resolved": model,
+                "error_code": "bad_response",
+                "error_message": str(exc)[:500],
+            })
+
+        # One-token chat ping. ``num_predict=1`` works on both clients;
+        # ``surface="connection_test"`` shows up in the truncation
+        # warning gate so a future grep over logs can find these calls.
+        ping_messages = [{"role": "user", "content": "ping"}]
+        ping_options: dict[str, object] = {"num_predict": 1}
+        import time as _time
+
+        t0 = _time.monotonic()
+        try:
+            response = probe.chat_with_tools(
+                ping_messages,
+                options=ping_options,
+                model=model or None,
+                surface="connection_test",
+            )
+            latency_ms = int((_time.monotonic() - t0) * 1000.0)
+            usage = getattr(probe, "last_usage", None)
+            return JSONResponse({
+                "success": True,
+                "latency_ms": latency_ms,
+                "prompt_tokens": int(
+                    getattr(usage, "prompt_tokens", 0) or 0,
+                ),
+                "completion_tokens": int(
+                    getattr(usage, "completion_tokens", 0) or 0,
+                ),
+                "model_resolved": model,
+                "error_code": None,
+                "error_message": None,
+                # Always include the ping content (trimmed) for the UI's
+                # debug surface, even though success is determined by
+                # the HTTP-level outcome rather than content shape.
+                "content_preview": (response.content or "")[:80],
+            })
+        except Exception as exc:
+            latency_ms = int((_time.monotonic() - t0) * 1000.0)
+            error_code, error_message = _classify_test_error(exc)
+            log.info(
+                "test-connection failed: provider=%s model=%s code=%s "
+                "elapsed_ms=%d msg=%s",
+                provider, model, error_code, latency_ms, error_message,
+            )
+            return JSONResponse({
+                "success": False,
+                "latency_ms": latency_ms,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "model_resolved": model,
+                "error_code": error_code,
+                "error_message": error_message,
+            })
 
     @app.get("/api/voices")
     def list_voices() -> JSONResponse:

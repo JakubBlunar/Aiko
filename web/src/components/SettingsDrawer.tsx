@@ -16,8 +16,9 @@ import type {
   WorldLocation,
 } from "../types";
 import { useAssistantStore } from "../store";
-import { Row, Section } from "./settings/SettingsSection";
+import { Section } from "./settings/SettingsSection";
 import { IdentitySection } from "./settings/IdentitySection";
+import { ChatProviderSection } from "./settings/ChatProviderSection";
 import { VoiceTab } from "./settings/VoiceTab";
 import { AvatarTab } from "./settings/AvatarTab";
 import { DiagnosticsSection } from "./settings/DiagnosticsSection";
@@ -61,7 +62,6 @@ const MEMORY_PAGE_SIZE = 50;
 
 export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
   const [settings, setSettings] = useState<AssistantSettings | null>(null);
-  const [models, setModels] = useState<string[]>([]);
   const [voices, setVoices] = useState<string[]>([]);
   const [deviceLists, setDeviceLists] = useState<{
     inputs: { deviceId: string; label: string; groupId: string }[];
@@ -332,9 +332,8 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
     setBusy(true);
     setError(null);
     try {
-      const [s, m, v] = await Promise.all([
+      const [s, v] = await Promise.all([
         api.getSettings(),
-        api.listModels().catch(() => []),
         api.listVoices().catch(() => []),
       ]);
       setSettings(s);
@@ -345,7 +344,6 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
       setActivityAwarenessEnabled(
         Boolean(s.activity?.awareness_enabled),
       );
-      setModels(m);
       setVoices(v);
     } catch (err) {
       setError(String(err));
@@ -1009,27 +1007,11 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                 <>
                   <IdentitySection />
 
-                  <Section title="Chat model">
-                    <label className="block text-xs text-ink-100/60">Model</label>
-                    <select
-                      value={settings.chat.model}
-                      onChange={(e) =>
-                        void apply({ chat: { model: e.target.value } })
-                      }
-                      className="mt-1 w-full rounded-md border border-white/10 bg-black/40 px-3 py-2 text-sm text-ink-100"
-                    >
-                      {(models.length > 0 ? models : [settings.chat.model]).map(
-                        (model) => (
-                          <option key={model} value={model}>
-                            {model}
-                          </option>
-                        ),
-                      )}
-                    </select>
-                    <Row label="Context window" value={settings.chat.context_window.toLocaleString()} />
-                    <Row label="Temperature" value={settings.chat.temperature.toFixed(2)} />
-                    <Row label="Max tokens" value={String(settings.chat.max_tokens)} />
-                  </Section>
+                  <ChatProviderSection
+                    settings={settings}
+                    apply={apply}
+                    onSettingsChanged={refreshAll}
+                  />
 
                   <DiagnosticsSection
                     metrics={metrics}
