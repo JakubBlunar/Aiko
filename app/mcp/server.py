@@ -2060,6 +2060,258 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"reroll_day_color raised: {exc}"
 
     @mcp.tool()
+    def get_vulnerability_budget_state() -> str:
+        """K15 — dump the persisted vulnerability budget snapshot.
+
+        Returns a JSON dict with the master switch, the current
+        persisted ``spent`` / ``last_decay_at`` from ``kv_meta``,
+        the ``capacity`` computed against the live
+        ``closeness`` / ``trust`` axes, the ``ratio``
+        (``spent / capacity``), the predicted cue that would
+        render *right now* without arming any force flag, and a
+        settings snapshot covering all 7 K15 knobs.
+
+        Pairs with ``spend_vulnerability`` for the end-to-end
+        repro: call this first to confirm the budget is healthy
+        (ratio < 0.5 -> silent), call ``spend_vulnerability(3)``
+        twice, then call this again -- ratio should clear 0.5
+        and ``cue_preview`` should render the half-spent / at-cap
+        line.
+        """
+        try:
+            from app.core.affect import vulnerability_budget as _vb
+
+            agent = session._settings.agent
+            chat_db = getattr(session, "_chat_db", None)
+            enabled = bool(
+                getattr(agent, "vulnerability_budget_enabled", True),
+            )
+
+            stored = None
+            if chat_db is not None:
+                try:
+                    stored = chat_db.kv_get(_vb.KV_BUDGET_STATE)
+                except Exception:
+                    stored = None
+            state = _vb.deserialize(stored)
+
+            closeness = trust = None
+            store = getattr(session, "_relationship_axes_store", None)
+            if store is not None:
+                try:
+                    axes = store.get(session._user_id)
+                    closeness = float(axes.closeness)
+                    trust = float(axes.trust)
+                except Exception:
+                    closeness = trust = None
+
+            min_cap = int(
+                getattr(agent, "vulnerability_budget_min_capacity", 1),
+            )
+            max_cap = int(
+                getattr(agent, "vulnerability_budget_max_capacity", 12),
+            )
+            capacity = _vb.compute_capacity(
+                closeness, trust,
+                min_cap=min_cap, max_cap=max_cap,
+            )
+            ratio = (
+                (state.spent / capacity) if capacity > 0 else 0.0
+            )
+            cue_preview = _vb.render_inner_life_block(
+                state,
+                capacity,
+                user_display_name=session.user_display_name,
+            )
+
+            payload = {
+                "enabled": enabled,
+                "spent": float(state.spent),
+                "last_decay_at": state.last_decay_at,
+                "closeness": closeness,
+                "trust": trust,
+                "capacity": capacity,
+                "ratio": float(ratio),
+                "cue_preview": cue_preview or None,
+                "settings": {
+                    "min_capacity": min_cap,
+                    "max_capacity": max_cap,
+                    "regen_per_hour": float(
+                        getattr(
+                            agent,
+                            "vulnerability_budget_regen_per_hour",
+                            0.5,
+                        )
+                    ),
+                    "tier1_cost": int(
+                        getattr(
+                            agent, "vulnerability_budget_tier1_cost", 1,
+                        )
+                    ),
+                    "tier2_cost": int(
+                        getattr(
+                            agent, "vulnerability_budget_tier2_cost", 3,
+                        )
+                    ),
+                    "tier3_cost": int(
+                        getattr(
+                            agent, "vulnerability_budget_tier3_cost", 6,
+                        )
+                    ),
+                },
+                "force_state": {
+                    "force_spent": getattr(
+                        session,
+                        "_vulnerability_budget_force_spent",
+                        None,
+                    ),
+                    "force_reset": bool(
+                        getattr(
+                            session,
+                            "_vulnerability_budget_force_reset",
+                            False,
+                        )
+                    ),
+                },
+            }
+            return json.dumps(payload, indent=2)
+        except Exception as exc:
+            return f"get_vulnerability_budget_state raised: {exc}"
+
+    @mcp.tool()
+    def spend_vulnerability(tier: int = 3) -> str:
+        """K15 — spend ``tier`` tokens against the budget bucket.
+
+        Mirrors what the post-turn hook would do if Aiko emitted
+        a ``[[remember:self:...]]`` tag classified at the given
+        tier, but without requiring a real LLM turn. Reads the
+        persisted state from ``kv_meta``, applies decay, adds
+        the tier's token cost, and writes the new state back.
+        Returns a JSON dict with the before / after spent values
+        and the predicted next-turn cue.
+
+        Validates ``tier`` is in ``{1, 2, 3}``; any other value
+        returns a palette-style error rather than silently spending
+        the wrong amount.
+        """
+        try:
+            from datetime import datetime, timezone
+
+            from app.core.affect import vulnerability_budget as _vb
+
+            if tier not in (1, 2, 3):
+                return json.dumps(
+                    {
+                        "error": (
+                            f"unknown tier: {tier!r} "
+                            f"(must be 1, 2, or 3)"
+                        ),
+                    },
+                    indent=2,
+                )
+
+            agent = session._settings.agent
+            chat_db = getattr(session, "_chat_db", None)
+            if chat_db is None:
+                return json.dumps(
+                    {"error": "chat_db not available"}, indent=2,
+                )
+
+            try:
+                stored = chat_db.kv_get(_vb.KV_BUDGET_STATE)
+            except Exception:
+                stored = None
+            state = _vb.deserialize(stored)
+            cost = _vb.tier_cost(int(tier), agent)
+            regen = float(
+                getattr(
+                    agent, "vulnerability_budget_regen_per_hour", 0.5,
+                )
+            )
+            max_cap = int(
+                getattr(agent, "vulnerability_budget_max_capacity", 12),
+            )
+            now = datetime.now(timezone.utc)
+            new_state = _vb.spend(
+                state, int(cost), now,
+                regen_per_hour=regen, max_capacity=max_cap,
+            )
+            try:
+                chat_db.kv_set(
+                    _vb.KV_BUDGET_STATE, _vb.serialize(new_state),
+                )
+            except Exception as kv_exc:
+                return json.dumps(
+                    {"error": f"kv_set failed: {kv_exc}"}, indent=2,
+                )
+
+            closeness = trust = None
+            store = getattr(session, "_relationship_axes_store", None)
+            if store is not None:
+                try:
+                    axes = store.get(session._user_id)
+                    closeness = float(axes.closeness)
+                    trust = float(axes.trust)
+                except Exception:
+                    closeness = trust = None
+            min_cap = int(
+                getattr(agent, "vulnerability_budget_min_capacity", 1),
+            )
+            capacity = _vb.compute_capacity(
+                closeness, trust,
+                min_cap=min_cap, max_cap=max_cap,
+            )
+            cue_preview = _vb.render_inner_life_block(
+                new_state, capacity,
+                user_display_name=session.user_display_name,
+            )
+
+            return json.dumps(
+                {
+                    "tier": int(tier),
+                    "cost": int(cost),
+                    "spent_before": float(state.spent),
+                    "spent_after": float(new_state.spent),
+                    "capacity": capacity,
+                    "ratio": (
+                        float(new_state.spent / capacity)
+                        if capacity > 0 else 0.0
+                    ),
+                    "cue_preview": cue_preview or None,
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"spend_vulnerability raised: {exc}"
+
+    @mcp.tool()
+    def reset_vulnerability_budget() -> str:
+        """K15 — arm a one-shot wipe of the vulnerability budget.
+
+        Sets ``_vulnerability_budget_force_reset`` so the next
+        provider call writes a fresh ``BudgetState(spent=0)`` to
+        ``kv_meta``. Useful when a test session has drifted into
+        the at-cap / over-cap band and you want to confirm the
+        healthy-budget silence path renders correctly.
+
+        One-shot: the flag is consumed by the next provider call.
+        """
+        try:
+            session._vulnerability_budget_force_reset = True
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next provider call will write "
+                        "BudgetState(spent=0) to kv_meta; one-shot"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"reset_vulnerability_budget raised: {exc}"
+
+    @mcp.tool()
     def get_turning_over_state() -> str:
         """K28 — dump the in-memory turning-over picker state.
 

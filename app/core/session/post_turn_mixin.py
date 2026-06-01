@@ -1517,3 +1517,77 @@ class PostTurnMixin:
                 )
             except Exception:
                 log.debug("moment detector schedule failed", exc_info=True)
+
+        # K15 — self-disclosure / vulnerability budget spend hook.
+        # Delegates to :func:`vulnerability_budget.compute_spend_for_self_tags`
+        # which re-parses ``[[remember:self:...]]`` tags (same regex
+        # the TurnRunner uses to extract memory rows), classifies
+        # each body, sums the cost, and applies wall-clock decay +
+        # spend. The pure helper makes this block source-testable
+        # without spinning up the post-turn orchestrator. Soft-only:
+        # exceeding capacity is allowed; the provider just renders
+        # a stronger cue next turn. Best-effort -- any failure path
+        # logs at DEBUG so a single broken tag can't strand the
+        # post-turn pipeline. The K30 self-noticing block runs
+        # earlier in this function (ring append + repeated-thought
+        # detect, no spend); K15 spends here so the post-turn order
+        # of operations matches the prompt assembler's render order
+        # (self_noticing block, then vulnerability_budget block).
+        agent_settings = getattr(self._settings, "agent", None)
+        if (
+            agent_settings is not None
+            and bool(
+                getattr(agent_settings, "vulnerability_budget_enabled", True)
+            )
+            and raw_assistant_text
+        ):
+            try:
+                from datetime import datetime, timezone
+
+                from app.core.affect import vulnerability_budget as _vb
+
+                chat_db = getattr(self, "_chat_db", None)
+                if chat_db is not None:
+                    now = datetime.now(timezone.utc)
+                    try:
+                        stored = chat_db.kv_get(_vb.KV_BUDGET_STATE)
+                    except Exception:
+                        log.debug(
+                            "K15 kv_get(budget) failed", exc_info=True,
+                        )
+                        stored = None
+                    state = _vb.deserialize(stored)
+                    report = _vb.compute_spend_for_self_tags(
+                        raw_assistant_text, state, now,
+                        settings=agent_settings,
+                    )
+                    # Only write when something actually spent (or
+                    # the timestamp meaningfully moved). The no-spend
+                    # / no-change path is the steady state and must
+                    # NOT churn kv_meta on every turn.
+                    if (
+                        report.total_cost > 0
+                        or report.new_state.spent != state.spent
+                    ):
+                        try:
+                            chat_db.kv_set(
+                                _vb.KV_BUDGET_STATE,
+                                _vb.serialize(report.new_state),
+                            )
+                        except Exception:
+                            log.debug(
+                                "K15 kv_set(budget) failed", exc_info=True,
+                            )
+                    if report.total_cost > 0:
+                        log.info(
+                            "vulnerability-budget spend: cost=%d "
+                            "tier_counts=%s spent=%.2f -> %.2f",
+                            report.total_cost,
+                            report.tier_counts,
+                            float(state.spent),
+                            float(report.new_state.spent),
+                        )
+            except Exception:
+                log.debug(
+                    "vulnerability-budget spend hook raised", exc_info=True,
+                )

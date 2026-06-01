@@ -1116,6 +1116,170 @@ class DayColorSettingsTests(unittest.TestCase):
         self.assertTrue(result.agent.day_color_enabled)
 
 
+class VulnerabilityBudgetSettingsTests(unittest.TestCase):
+    """K15: 7 agent knobs round-trip with the documented clamps."""
+
+    _VB_AGENT_KEYS = (
+        "vulnerability_budget_enabled",
+        "vulnerability_budget_min_capacity",
+        "vulnerability_budget_max_capacity",
+        "vulnerability_budget_regen_per_hour",
+        "vulnerability_budget_tier1_cost",
+        "vulnerability_budget_tier2_cost",
+        "vulnerability_budget_tier3_cost",
+    )
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(
+        self,
+        agent_extra: dict | None = None,
+        strip_keys: bool = True,
+    ) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(
+            json.loads(default_path.read_text(encoding="utf-8"))
+        )
+        if strip_keys:
+            for k in self._VB_AGENT_KEYS:
+                cfg.get("agent", {}).pop(k, None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults_load_when_keys_missing(self) -> None:
+        # Strip all 7 keys, verify the dataclass defaults land.
+        # These defaults are part of the documented contract --
+        # shipped.md and the persona file reference the values.
+        path = self._write_config()
+        result = load_settings(config_path=path)
+        self.assertTrue(result.agent.vulnerability_budget_enabled)
+        self.assertEqual(
+            result.agent.vulnerability_budget_min_capacity, 1,
+        )
+        self.assertEqual(
+            result.agent.vulnerability_budget_max_capacity, 12,
+        )
+        self.assertEqual(
+            result.agent.vulnerability_budget_regen_per_hour, 0.5,
+        )
+        self.assertEqual(
+            result.agent.vulnerability_budget_tier1_cost, 1,
+        )
+        self.assertEqual(
+            result.agent.vulnerability_budget_tier2_cost, 3,
+        )
+        self.assertEqual(
+            result.agent.vulnerability_budget_tier3_cost, 6,
+        )
+
+    def test_overrides_round_trip(self) -> None:
+        path = self._write_config(
+            agent_extra={
+                "vulnerability_budget_enabled": False,
+                "vulnerability_budget_min_capacity": 2,
+                "vulnerability_budget_max_capacity": 20,
+                "vulnerability_budget_regen_per_hour": 1.0,
+                "vulnerability_budget_tier1_cost": 2,
+                "vulnerability_budget_tier2_cost": 4,
+                "vulnerability_budget_tier3_cost": 8,
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.vulnerability_budget_enabled)
+        self.assertEqual(
+            result.agent.vulnerability_budget_min_capacity, 2,
+        )
+        self.assertEqual(
+            result.agent.vulnerability_budget_max_capacity, 20,
+        )
+        self.assertEqual(
+            result.agent.vulnerability_budget_regen_per_hour, 1.0,
+        )
+        self.assertEqual(
+            result.agent.vulnerability_budget_tier1_cost, 2,
+        )
+        self.assertEqual(
+            result.agent.vulnerability_budget_tier2_cost, 4,
+        )
+        self.assertEqual(
+            result.agent.vulnerability_budget_tier3_cost, 8,
+        )
+
+    def test_min_capacity_floor(self) -> None:
+        # Floor is 1; lower values clamp up so the bucket math
+        # always has a non-zero divisor.
+        path = self._write_config(
+            agent_extra={"vulnerability_budget_min_capacity": 0},
+        )
+        result = load_settings(config_path=path)
+        self.assertEqual(
+            result.agent.vulnerability_budget_min_capacity, 1,
+        )
+
+    def test_max_capacity_floor(self) -> None:
+        # Floor is 1; negative / zero values clamp up.
+        path = self._write_config(
+            agent_extra={"vulnerability_budget_max_capacity": -5},
+        )
+        result = load_settings(config_path=path)
+        self.assertEqual(
+            result.agent.vulnerability_budget_max_capacity, 1,
+        )
+
+    def test_regen_clamps_to_floor(self) -> None:
+        # Floor is 0.01 -- below that, decay would be functionally
+        # disabled and the bucket would never recover. A zero / neg
+        # value silently clamps up.
+        path = self._write_config(
+            agent_extra={"vulnerability_budget_regen_per_hour": 0.0},
+        )
+        result = load_settings(config_path=path)
+        self.assertEqual(
+            result.agent.vulnerability_budget_regen_per_hour, 0.01,
+        )
+
+    def test_tier_costs_clamp_at_zero(self) -> None:
+        # Floor is 0 -- negative costs would credit the bucket,
+        # which makes no semantic sense.
+        path = self._write_config(
+            agent_extra={
+                "vulnerability_budget_tier1_cost": -1,
+                "vulnerability_budget_tier2_cost": -3,
+                "vulnerability_budget_tier3_cost": -6,
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertEqual(
+            result.agent.vulnerability_budget_tier1_cost, 0,
+        )
+        self.assertEqual(
+            result.agent.vulnerability_budget_tier2_cost, 0,
+        )
+        self.assertEqual(
+            result.agent.vulnerability_budget_tier3_cost, 0,
+        )
+
+    def test_enabled_accepts_truthy_values(self) -> None:
+        path = self._write_config(
+            agent_extra={"vulnerability_budget_enabled": 1},
+        )
+        result = load_settings(config_path=path)
+        self.assertTrue(result.agent.vulnerability_budget_enabled)
+
+
 class ChatLlmSettingsTests(unittest.TestCase):
     """``chat_llm.workers_use_local`` + ``provider_preset`` round-trip
     through the loader. Also verifies ``provider="openai_compatible"``

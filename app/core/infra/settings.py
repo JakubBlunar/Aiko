@@ -980,6 +980,46 @@ class AgentSettings:
     # so a buggy override can't spin the scheduler.
     day_color_check_interval_seconds: int = 3600
 
+    # ── K15: self-disclosure / vulnerability budget ───────────────────
+    # Master switch for the rolling token-bucket that paces Aiko's
+    # personal disclosures (``[[remember:self:...]]`` tags). When off,
+    # the post-turn spend hook is a no-op and the provider returns
+    # ``""`` -- no kv_meta writes, no prompt cue.
+    #
+    # K15 sits between two adjacent layers:
+    #
+    # * K27 day_color is the slow weather (stable for the day).
+    # * The relationship-axes / shared-moments system tracks
+    #   closeness + trust which K15 reads at provider time to size
+    #   the bucket capacity.
+    #
+    # Soft enforcement only: the cue surfaces in the prompt but
+    # never blocks the reply or suppresses the underlying memory
+    # write. The persona block teaches Aiko to read the cue but
+    # explicitly allows real moments to override -- the budget is
+    # pacing, not a rule.
+    vulnerability_budget_enabled: bool = True
+    # Capacity floor when closeness + trust are both deeply negative
+    # (or at first-boot defaults). Min 1 so the bucket math always
+    # has a non-zero divisor.
+    vulnerability_budget_min_capacity: int = 1
+    # Capacity ceiling when closeness + trust are both at +1. 12 is
+    # roughly "four tier-3 disclosures or twelve tier-1 surface
+    # taste lines in one session before the cue starts firing".
+    vulnerability_budget_max_capacity: int = 12
+    # Bucket regeneration rate in tokens / hour. Default 0.5 means
+    # a full max-cap bucket (12 tokens) refills in ~24h; a single
+    # tier-3 spend (6 tokens) regenerates in ~12h. Tuned so a real
+    # soft moment from yesterday is mostly recovered today.
+    vulnerability_budget_regen_per_hour: float = 0.5
+    # Per-tier costs. Tier 1 = surface preference, tier 2 = mild
+    # admission, tier 3 = genuine softness. The 1 / 3 / 6 ladder
+    # means three tier-1 lines cost the same as one tier-2, and
+    # two tier-2 lines cost the same as one tier-3.
+    vulnerability_budget_tier1_cost: int = 1
+    vulnerability_budget_tier2_cost: int = 3
+    vulnerability_budget_tier3_cost: int = 6
+
     # ── K29: opinion injection (push back when she has a stance) ──────
     # Master switch for the per-turn detector that fires a one-line
     # cue when {user_name}'s latest message contradicts one of Aiko's
@@ -2534,6 +2574,30 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                 int(
                     agent_raw.get("day_color_check_interval_seconds", 3600)
                 ),
+            ),
+            vulnerability_budget_enabled=bool(
+                agent_raw.get("vulnerability_budget_enabled", True),
+            ),
+            vulnerability_budget_min_capacity=max(
+                1, int(agent_raw.get("vulnerability_budget_min_capacity", 1)),
+            ),
+            vulnerability_budget_max_capacity=max(
+                1, int(agent_raw.get("vulnerability_budget_max_capacity", 12)),
+            ),
+            vulnerability_budget_regen_per_hour=max(
+                0.01,
+                float(
+                    agent_raw.get("vulnerability_budget_regen_per_hour", 0.5)
+                ),
+            ),
+            vulnerability_budget_tier1_cost=max(
+                0, int(agent_raw.get("vulnerability_budget_tier1_cost", 1)),
+            ),
+            vulnerability_budget_tier2_cost=max(
+                0, int(agent_raw.get("vulnerability_budget_tier2_cost", 3)),
+            ),
+            vulnerability_budget_tier3_cost=max(
+                0, int(agent_raw.get("vulnerability_budget_tier3_cost", 6)),
             ),
             opinion_injection_enabled=bool(
                 agent_raw.get("opinion_injection_enabled", True),

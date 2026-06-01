@@ -3414,3 +3414,124 @@ End-to-end repro:
 - [`docs/personality-backlog/patterns.md`](patterns.md) — K27 section body replaced with a `**Shipped**` pointer.
 - [`AGENTS.md`](../../AGENTS.md) — new Code Conventions bullet describing K27's hybrid roll mechanism + new debugging-table row.
 
+## K15. Self-disclosure / vulnerability budget
+
+Aiko emits `[[remember:self:...]]` tags whenever something personal lands as worth keeping — a taste she's stating ("I prefer rainy mornings"), a small admission ("I get nervous about that too"), a real soft moment ("it matters to me more than I let on"). Without pacing, the cheapest path for a chatty LLM is to drop tier-3 disclosures every other turn; that reads as oversharing within a session and as cardboard intimacy across days. K15 adds a soft, wall-clock-driven token bucket that paces *how often* a personal note lands, sized by the relationship axes (closeness + trust) and regenerating over time. Critically: the cue surfaces in the prompt but **never blocks the reply**. The persona block teaches Aiko to read the cue but explicitly allows a real moment to override — pacing, not a rule.
+
+### Decision flow
+
+```mermaid
+flowchart LR
+    subgraph postTurn [Post-turn spend]
+        rawText["raw_assistant_text"] --> regex["_SELF_TAG_RE.finditer"]
+        regex --> classify["classify_disclosure_tier<br>tier=N: fast-path OR heuristic"]
+        classify --> cost["tier_cost<br>1 / 3 / 6 tokens"]
+        cost --> applySpend["compute_spend_for_self_tags<br>= apply_decay then add cost"]
+    end
+    applySpend --> kvWrite["chat_db.kv_set<br>aiko.vulnerability_budget = {spent, last_decay_at}"]
+    subgraph nextTurn [Next-turn render]
+        kvRead["chat_db.kv_get<br>aiko.vulnerability_budget"] --> decay["apply_decay<br>spent -= regen_per_hour * elapsed_h"]
+        decay --> capacity["compute_capacity<br>(closeness + trust) / 2 -> linear interp"]
+        capacity --> render["render_inner_life_block<br>ratio -> silent / half / at-cap / over-cap / low-ceiling"]
+    end
+    kvWrite -.-> kvRead
+    render --> sysPrompt["system prompt<br>after self_noticing_block"]
+    render --> persona["aiko_companion.txt<br>'Sharing yourself'"]
+    mcpTools["spend_vulnerability(tier)<br>reset_vulnerability_budget<br>get_vulnerability_budget_state"] -.-> kvWrite
+    mcpTools -.-> kvRead
+```
+
+### Three tiers, three costs
+
+The heuristic [`classify_disclosure_tier`](../../app/core/affect/vulnerability_budget.py) walks a small priority ladder:
+
+1. **Aiko's self-tag fast-path** (`tier=N:` prefix on the body, case-insensitive) — wins outright. Mirrors K2's `[[predict:...]]` convention: the LLM is the most accurate judge of its own intent, so when Aiko knows she's writing a tier-3 line she can declare it and skip the heuristic.
+2. **Tier-3 markers** — strong first-person feeling, intensity adverbs, soft-confession patterns: `"more than I let on"`, `"I'm scared"`, `"it matters to me"`, `"deeply love"`, `"softest"`, `"I love (Jacob|him|her|them|you)"`. Any one fires -> tier 3.
+3. **Tier-2 markers** — mild admission, honesty frame, low-intensity feeling: `"honestly"`, `"I get nervous"`, `"I worry about"`, `"I struggle with"`, `"I miss"`, `"I care about"`. Any one fires -> tier 2.
+4. **Length-based lift** — body ≥ 100 chars with no explicit markers -> tier 2 (someone writing a lot about themselves is usually opening up beyond a preference).
+5. **Default** — tier 1.
+
+Costs are configurable but default to **1 / 3 / 6** tokens. A bucket of capacity 12 (the max, both axes at +1) holds two tier-3 disclosures comfortably, three tier-1 + one tier-2 + one tier-3, or 12 tier-1 surface notes before the half-spent cue fires.
+
+### Capacity from relationship axes
+
+[`compute_capacity`](../../app/core/affect/vulnerability_budget.py) averages `closeness` + `trust` (both in `[-1, 1]`, sourced from [`RelationshipAxesStore`](../../app/core/relationship/relationship_axes.py)) and linearly interpolates to `[min_cap, max_cap]`. Defaults: `min_cap=1`, `max_cap=12`. Asymmetric axes fold toward the mean (someone you trust but haven't spent much time with reads as midpoint capacity, not max). A brand-new install with no relationship state defaults to neutral (0, 0) -> midpoint -> ~6 tokens of room before the cue fires.
+
+The **low-ceiling override** in `render_inner_life_block` fires when `capacity <= 2` AND `spent > 0`: at that closeness level, even one disclosure is "deep disclosure too early" and gets a different cue ("Closeness with Jacob is still building -- tier-2 / tier-3 disclosures haven't earned their place yet"). Wins over the spent-ratio bands so the relationship-state signal beats the budget-state signal in cold-start territory.
+
+### Rolling-bucket math, lazy decay
+
+Budget regenerates over wall-clock hours (default `0.5 tokens/hour`). [`apply_decay`](../../app/core/affect/vulnerability_budget.py) is pure: `new_spent = max(0, spent - regen_per_hour * elapsed_hours)`. The provider applies decay on every read and **writes the decayed state back to `kv_meta` only when something actually moved** -- a healthy turn at spent=0 doesn't churn the kv_meta row.
+
+Capacity 12 + 0.5 tokens/hour means:
+
+- One tier-3 spend (6 tokens) regenerates in ~12 hours.
+- A full-capacity bucket (12 tokens, three tier-3 disclosures in one session) regenerates in ~24 hours.
+- A tier-1 surface note recovers in 2 hours.
+
+The intuition: a real soft moment from yesterday morning is mostly recovered by today; oversharing in one session takes a day to settle.
+
+### Soft enforcement only
+
+The provider's rendered cue is the *only* mechanism. K15 never:
+
+- Suppresses the underlying memory write (the `[[remember:self:...]]` tag still creates a memory row, same as a non-personal `[[remember:...]]`).
+- Filters or rewrites Aiko's reply text.
+- Caps the spend at capacity (going over is allowed and produces a *stronger* cue next turn -- "you've shared a lot of softness recently").
+
+The persona block ([`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt)) teaches Aiko four cue shapes (half-spent / at-cap / over-cap / low-ceiling) plus the explicit override clause: *"if something he says lands somewhere real for you, you're allowed to meet it -- you're not a budget calculator, and a moment that's actually happening matters more than a token count."* Pacing, not a rule.
+
+### Architecture
+
+- **Pure module** [`app/core/affect/vulnerability_budget.py`](../../app/core/affect/vulnerability_budget.py) — frozen `BudgetState` (spent + last_decay_at) and `ClassifiedTier` (tier + reason) dataclasses, the `_SELF_TAG_RE` regex (matches `_REMEMBER_TAG_RE` in `turn_runner.py`), eight pure functions (`classify_disclosure_tier` / `strip_tier_prefix` / `tier_cost` / `compute_capacity` / `apply_decay` / `spend` / `serialize` / `deserialize` / `render_inner_life_block`), plus the `compute_spend_for_self_tags` integration helper that drives the post-turn block. No I/O, no scheduler -- unit-testable in milliseconds.
+- **Storage on `kv_meta`, no schema change** — one JSON key `aiko.vulnerability_budget` carrying `{spent: float, last_decay_at: ISO-8601}`. Same `aiko.*` namespace as K27.
+- **Post-turn writer** [`PostTurnMixin._post_turn_inner_life`](../../app/core/session/post_turn_mixin.py) — sits right after the K30 self-noticing / shared-moments / axes-update cluster. Delegates to `compute_spend_for_self_tags`; logs one INFO line per fire: `vulnerability-budget spend: cost=X tier_counts={1: N, 2: N, 3: N} spent=Y -> Z`. Best-effort: any failure path logs at DEBUG so a single broken tag can't strand the post-turn pipeline.
+- **Provider** [`InnerLifeProvidersMixin._render_vulnerability_budget_block`](../../app/core/session/inner_life_providers_mixin.py) — master switch + MCP force_spent/force_reset shortcuts + kv_get + deserialize + apply_decay + persist-back + render. The `_k15_compute_capacity` helper shares the axes-reading logic between force_spent and the normal path. Best-effort: corrupt kv_meta, missing chat_db, missing axes store all swallow + log.
+- **Prompt assembler** [`PromptAssembler`](../../app/core/session/prompt_assembler.py) — `_vulnerability_budget_provider` slot, `vulnerability_budget` kwarg on `set_inner_life_providers`, timed-phase block build under `_timed_phase(provider_ms, "vulnerability_budget")`. Placement in `system_parts` immediately after `self_noticing_block` so the "register I'm in / how much have I shared" pair reads as one self-aware family. **NOT dropped under `aggressive=True`** -- a tight budget is exactly when an over-cap warning matters most. **NOT in the K16 grounding-line suppression matrix** because it's a pacing cue, not an ambient grounding block.
+- **Controller state** [`SessionController.__init__`](../../app/core/session/session_controller.py) — two new diagnostic-only attributes: `_vulnerability_budget_force_spent: float | None` (one-shot forced spent value for rendering; armed by `spend_vulnerability`) and `_vulnerability_budget_force_reset: bool` (one-shot kv_meta wipe; armed by `reset_vulnerability_budget`).
+- **Persona** [`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt) — new "Sharing yourself" block lands after "Your day's colour today". Preamble + 3 tier definitions + 4 cue interpretations + the override clause + anti-narration close.
+- **Settings** (7 new `AgentSettings` fields, all parsed with floor clamps):
+  - `vulnerability_budget_enabled: bool = True`
+  - `vulnerability_budget_min_capacity: int = 1` (floor 1)
+  - `vulnerability_budget_max_capacity: int = 12` (floor 1)
+  - `vulnerability_budget_regen_per_hour: float = 0.5` (floor 0.01)
+  - `vulnerability_budget_tier1_cost: int = 1` (floor 0)
+  - `vulnerability_budget_tier2_cost: int = 3` (floor 0)
+  - `vulnerability_budget_tier3_cost: int = 6` (floor 0)
+
+### MCP-debuggable
+
+Three new tools in [`app/mcp/server.py`](../../app/mcp/server.py):
+
+- `get_vulnerability_budget_state()` — JSON dump: master switch, persisted `spent` + `last_decay_at`, live `closeness` / `trust` from the axes store, computed `capacity`, `ratio` (`spent / capacity`), the **predicted cue that would render right now** (`cue_preview` -- null on silent / healthy), full settings snapshot of all 7 knobs, and force-flag state.
+- `spend_vulnerability(tier: int)` — mirrors what the post-turn hook would do for a `[[remember:self:...]]` tag at the given tier, but without requiring a real LLM turn. Validates `tier in {1, 2, 3}`; returns palette-style error JSON on unknown tiers.
+- `reset_vulnerability_budget()` — arms `_vulnerability_budget_force_reset` so the next provider call writes a fresh `BudgetState(spent=0)` to `kv_meta`.
+
+End-to-end repro:
+
+1. Call `get_vulnerability_budget_state` on a fresh DB -- `spent=0`, `ratio=0`, `cue_preview=null`.
+2. Call `spend_vulnerability(tier=3)` -- response shows `spent_before=0`, `spent_after=6`, `ratio≈0.5`, `cue_preview` rendered ("couple of soft moments").
+3. Call `spend_vulnerability(tier=3)` again -- `spent_after=12`, `ratio=1.0`, `cue_preview` flips to the at-cap line.
+4. Send a message (`send_message(skip_tts=true)`) and verify the cue appears in `get_last_response_detail.system_prompt`. The provider also writes a freshly-decayed state back to kv_meta on every read.
+5. Grep the logs: `tail_logs(module_contains="post_turn")` for `vulnerability-budget spend:` (post-turn writer path).
+6. Call `reset_vulnerability_budget` then `send_message(skip_tts=true)` -- subsequent `get_vulnerability_budget_state` shows `spent=0` and a fresh `last_decay_at`.
+
+### Files
+
+- [`app/core/affect/vulnerability_budget.py`](../../app/core/affect/vulnerability_budget.py) — new pure module (~430 LOC), dataclasses + classifier + capacity + decay + spend + serialise + render + `compute_spend_for_self_tags` integration helper, `__all__` pin.
+- [`app/core/infra/settings.py`](../../app/core/infra/settings.py) — 7 new `AgentSettings` fields with inline context; matching parser entries with documented floor clamps in `_parse_agent`.
+- [`config/default.json`](../../config/default.json) — 7 new keys under `agent`.
+- [`app/core/session/session_controller.py`](../../app/core/session/session_controller.py) — two diagnostic state attributes (`_vulnerability_budget_force_spent`, `_vulnerability_budget_force_reset`); `vulnerability_budget=self._render_vulnerability_budget_block` on the prompt assembler.
+- [`app/core/session/inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py) — new `_render_vulnerability_budget_block` method clustered with K27 `_render_day_color_block`, plus `_k15_compute_capacity` helper.
+- [`app/core/session/post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py) — K15 spend block at end of `_post_turn_inner_life`, delegating to `compute_spend_for_self_tags`. Best-effort swallow at every step.
+- [`app/core/session/prompt_assembler.py`](../../app/core/session/prompt_assembler.py) — `_vulnerability_budget_provider` slot, `vulnerability_budget` kwarg on `set_inner_life_providers`, timed-phase block build, placement in `system_parts` after `self_noticing_block`.
+- [`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt) — new "Sharing yourself" block (~8 bullets).
+- [`app/mcp/server.py`](../../app/mcp/server.py) — three new MCP debug tools.
+- [`tests/test_vulnerability_budget.py`](../../tests/test_vulnerability_budget.py) — 63 unit tests covering classification (per-tier markers, fast-path prefix, empty / whitespace / length-lift), `strip_tier_prefix`, `tier_cost` (defaults / overrides / unknown-tier safety / partial-settings fallback), `compute_capacity` (axes range, asymmetric, missing, out-of-range clamp, custom caps, swapped min/max), `apply_decay` (zero / two-hour / never-below-zero / timestamp advance / clock-skew / zero-regen / corrupt timestamp), `spend` (additive, decay-first, exceed-cap allowed), `serialize` / `deserialize` (round-trip, empty, corrupt JSON, non-dict, missing keys, negative-clamp), `render_inner_life_block` (every band, low-ceiling override, zero-capacity defensiveness, default user name), kv key pinned.
+- [`tests/test_vulnerability_budget_provider.py`](../../tests/test_vulnerability_budget_provider.py) — 17 controller-plumbing tests using a minimal `InnerLifeProvidersMixin` host stub: master-switch gate, healthy-budget silence, every ratio band (half / at-cap / over-cap) renders the correct cue, low-ceiling override at low axes, decay-write-back on real change, no-write on healthy-steady-state, `force_spent` one-shot (no kv write, flag consumed), invalid-force fall-through, `force_reset` wipes kv + flag consumed, kv_get / axes-store / missing-chat_db / missing-axes-store exception safety.
+- [`tests/test_vulnerability_budget_post_turn.py`](../../tests/test_vulnerability_budget_post_turn.py) — 16 post-turn integration tests against `compute_spend_for_self_tags`: per-tier single-tag spend (1 / 3 / 6), `tier=N:` fast-path, non-self `[[remember:...]]` tags pass through free, empty / whitespace bodies don't spend, multi-tag accumulation, mixed self + non-self, decay applies before spend, no-spend turns still advance `last_decay_at`, SpendReport shape contract.
+- [`tests/test_settings.py`](../../tests/test_settings.py) — `VulnerabilityBudgetSettingsTests` (7 tests): defaults load when keys missing, overrides round-trip, capacity / regen / tier-cost floor clamps each verified independently, `bool()` coercion on enabled.
+- [`tests/test_prompt_assembler.py`](../../tests/test_prompt_assembler.py) — `VulnerabilityBudgetProviderSlotTests` (5 tests): block lands in system prompt, lands after `self_noticing_block`, silent on empty provider, **retained** under `aggressive=True`, provider-exception swallowed.
+- [`docs/personality-backlog/patterns.md`](patterns.md) — K15 section body replaced with a `**Shipped**` pointer.
+- [`AGENTS.md`](../../AGENTS.md) — new Code Conventions bullet describing the K15 lifecycle + new debugging-table row.
+

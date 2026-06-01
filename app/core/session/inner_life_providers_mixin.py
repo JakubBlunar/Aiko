@@ -316,6 +316,204 @@ class InnerLifeProvidersMixin:
             log.debug("day_color block render failed", exc_info=True)
             return ""
 
+    def _render_vulnerability_budget_block(self) -> str:
+        """K15: render the self-disclosure / vulnerability budget cue.
+
+        One-line prompt nudge that paces how often Aiko opens up
+        personally. Reads the persisted token-bucket from
+        ``kv_meta`` (key ``aiko.vulnerability_budget``), applies
+        rolling decay against wall-clock elapsed time, computes the
+        bucket capacity from the live closeness + trust axes, and
+        renders the cue based on the spent/capacity ratio.
+
+        Three layers in order:
+
+        1. **Master switch** -- ``agent.vulnerability_budget_enabled``
+           short-circuits to ``""`` so the feature can be turned off
+           without redeploying. Same shape as K27 / K30.
+        2. **MCP debug shortcuts** -- the
+           ``_vulnerability_budget_force_spent`` /
+           ``_vulnerability_budget_force_reset`` one-shot flags
+           armed by the :func:`spend_vulnerability` /
+           :func:`reset_vulnerability_budget` MCP tools take
+           precedence. ``force_spent`` renders the cue with the
+           forced spent value without touching kv_meta (so the
+           real persisted bucket survives the test);
+           ``force_reset`` writes a fresh ``BudgetState(spent=0)``
+           to kv_meta. Both are consumed one-shot.
+        3. **Read + decay + persist + render** -- read kv_meta,
+           deserialise, apply decay (math: ``new_spent = max(0,
+           spent - regen_per_hour * elapsed_hours)``), write the
+           decayed state back so the next call doesn't re-apply
+           the same elapsed window, compute the capacity from
+           axes, and render the cue.
+
+        Best-effort: any failure path returns ``""``. Mirrors the
+        K30 / K27 swallow-and-log convention -- a corrupt kv_meta
+        row, a missing axes store on a brand-new install, or a
+        broken settings field must never cascade into the rest of
+        the prompt assembly.
+        """
+        agent_settings = self._settings.agent
+        if not bool(
+            getattr(agent_settings, "vulnerability_budget_enabled", True)
+        ):
+            return ""
+
+        try:
+            from datetime import datetime, timezone
+
+            from app.core.affect import vulnerability_budget as _vb
+
+            chat_db = getattr(self, "_chat_db", None)
+            if chat_db is None:
+                return ""
+
+            min_cap = int(
+                getattr(
+                    agent_settings,
+                    "vulnerability_budget_min_capacity",
+                    1,
+                )
+            )
+            max_cap = int(
+                getattr(
+                    agent_settings,
+                    "vulnerability_budget_max_capacity",
+                    12,
+                )
+            )
+            regen = float(
+                getattr(
+                    agent_settings,
+                    "vulnerability_budget_regen_per_hour",
+                    0.5,
+                )
+            )
+            now = datetime.now(timezone.utc)
+
+            # 2. MCP force_reset shortcut -- wipe state, then fall
+            # through to the read path so the cue still renders
+            # (capacity > 0, spent = 0 -> silent, which is the
+            # expected post-reset render).
+            if bool(getattr(self, "_vulnerability_budget_force_reset", False)):
+                self._vulnerability_budget_force_reset = False
+                try:
+                    fresh = _vb.BudgetState(
+                        spent=0.0, last_decay_at=now.isoformat(),
+                    )
+                    chat_db.kv_set(_vb.KV_BUDGET_STATE, _vb.serialize(fresh))
+                except Exception:
+                    log.debug(
+                        "K15 force_reset kv_set failed", exc_info=True,
+                    )
+
+            # 2. MCP force_spent shortcut -- render the cue against
+            # the forced ``spent`` value WITHOUT touching kv_meta so
+            # the real persisted bucket survives the test. Consumed
+            # one-shot.
+            forced_spent = getattr(
+                self, "_vulnerability_budget_force_spent", None,
+            )
+            if forced_spent is not None:
+                self._vulnerability_budget_force_spent = None
+                # Use min(capacity, max_cap) so the forced render
+                # still respects the axes-derived ceiling (low
+                # closeness + forced spent should still trigger the
+                # low-ceiling cue).
+                try:
+                    forced_state = _vb.BudgetState(
+                        spent=float(forced_spent),
+                        last_decay_at=now.isoformat(),
+                    )
+                except (TypeError, ValueError):
+                    log.debug(
+                        "K15 force_spent: invalid value %r", forced_spent,
+                    )
+                else:
+                    capacity = self._k15_compute_capacity(
+                        min_cap=min_cap, max_cap=max_cap,
+                    )
+                    return _vb.render_inner_life_block(
+                        forced_state,
+                        capacity,
+                        user_display_name=self.user_display_name,
+                    )
+
+            # 3. Read + decay + persist + render.
+            try:
+                stored = chat_db.kv_get(_vb.KV_BUDGET_STATE)
+            except Exception:
+                log.debug(
+                    "K15 kv_get(budget) failed", exc_info=True,
+                )
+                stored = None
+            state = _vb.deserialize(stored)
+            decayed = _vb.apply_decay(
+                state, now,
+                regen_per_hour=regen, max_capacity=max_cap,
+            )
+            # Persist the decayed timestamp so the next call doesn't
+            # re-apply the same elapsed window. Skip the write when
+            # nothing changed (rare: both ``spent`` and
+            # ``last_decay_at`` identical) so a healthy budget on a
+            # fast turn doesn't keep churning the kv_meta row.
+            if (
+                decayed.spent != state.spent
+                or decayed.last_decay_at != state.last_decay_at
+            ):
+                try:
+                    chat_db.kv_set(
+                        _vb.KV_BUDGET_STATE, _vb.serialize(decayed),
+                    )
+                except Exception:
+                    log.debug(
+                        "K15 kv_set(decayed) failed", exc_info=True,
+                    )
+
+            capacity = self._k15_compute_capacity(
+                min_cap=min_cap, max_cap=max_cap,
+            )
+            return _vb.render_inner_life_block(
+                decayed,
+                capacity,
+                user_display_name=self.user_display_name,
+            )
+        except Exception:
+            log.debug(
+                "vulnerability_budget block render failed", exc_info=True,
+            )
+            return ""
+
+    def _k15_compute_capacity(self, *, min_cap: int, max_cap: int) -> int:
+        """Capacity helper -- read closeness + trust, interpolate.
+
+        Extracted so the force_spent path and the normal render
+        path share the same axes-reading code. Defaults to neutral
+        (0, 0) when the axes store is unavailable or raises, which
+        maps to the midpoint capacity (~6 on the default 1..12
+        ladder).
+        """
+        from app.core.affect import vulnerability_budget as _vb
+
+        closeness: float | None = None
+        trust: float | None = None
+        store = getattr(self, "_relationship_axes_store", None)
+        if store is not None:
+            try:
+                axes = store.get(self._user_id)
+                closeness = float(axes.closeness)
+                trust = float(axes.trust)
+            except Exception:
+                log.debug(
+                    "K15 axes lookup failed -- using neutral baseline",
+                    exc_info=True,
+                )
+        return _vb.compute_capacity(
+            closeness, trust,
+            min_cap=min_cap, max_cap=max_cap,
+        )
+
     def _cadence_context(self) -> Any:
         """Phase 5b: build a CadenceContext from the live affect/circadian."""
         from app.core.voice.cadence import CadenceContext
