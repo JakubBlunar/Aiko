@@ -1023,5 +1023,70 @@ class TurningOverSettingsTests(unittest.TestCase):
         self.assertEqual(result.memory.turning_over_recent_msgs_window, 0)
 
 
+class ChatLlmSettingsTests(unittest.TestCase):
+    """``chat_llm.workers_use_local`` + ``provider_preset`` round-trip
+    through the loader. Also verifies ``provider="openai_compatible"``
+    is accepted while a typo'd preset collapses to ``""``.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        self._base_config = json.loads(
+            default_path.read_text(encoding="utf-8"),
+        )
+
+    def _write_config(self, chat_llm_extra: dict | None = None) -> Path:
+        cfg = copy.deepcopy(self._base_config)
+        if chat_llm_extra is not None:
+            cfg["chat_llm"] = {**cfg.get("chat_llm", {}), **chat_llm_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_workers_use_local_defaults_true(self) -> None:
+        path = self._write_config()
+        result = load_settings(config_path=path)
+        self.assertTrue(result.chat_llm.workers_use_local)
+
+    def test_workers_use_local_override_round_trips(self) -> None:
+        path = self._write_config({"workers_use_local": False})
+        result = load_settings(config_path=path)
+        self.assertFalse(result.chat_llm.workers_use_local)
+
+    def test_provider_preset_round_trips(self) -> None:
+        for preset in ("ollama", "gemini", "openai", "groq", "openrouter"):
+            path = self._write_config({"provider_preset": preset})
+            result = load_settings(config_path=path)
+            self.assertEqual(
+                result.chat_llm.provider_preset, preset,
+                f"preset {preset} did not round-trip",
+            )
+
+    def test_unknown_preset_collapses_to_empty(self) -> None:
+        path = self._write_config({"provider_preset": "made-up"})
+        result = load_settings(config_path=path)
+        self.assertEqual(result.chat_llm.provider_preset, "")
+
+    def test_provider_openai_compatible_accepted(self) -> None:
+        path = self._write_config({"provider": "openai_compatible"})
+        result = load_settings(config_path=path)
+        self.assertEqual(result.chat_llm.provider, "openai_compatible")
+
+    def test_unknown_provider_falls_back_to_ollama(self) -> None:
+        path = self._write_config({"provider": "azure"})
+        result = load_settings(config_path=path)
+        self.assertEqual(result.chat_llm.provider, "ollama")
+
+
 if __name__ == "__main__":
     unittest.main()

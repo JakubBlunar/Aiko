@@ -25,6 +25,73 @@ export interface SessionRow {
   last_activity: string | null;
 }
 
+/** One option in the curated provider preset catalogue.
+ *
+ * Returned verbatim by ``GET /api/llm/presets`` and rendered as
+ * tappable cards in the Settings → Chat → Provider section. The
+ * ``id`` doubles as both the React key and the value persisted into
+ * ``chat_llm.provider_preset`` so the UI can highlight the active card
+ * after a round-trip.
+ */
+export interface LlmProviderPreset {
+  id: string;
+  label: string;
+  provider: "ollama" | "openai_compatible";
+  base_url: string;
+  recommended_models: string[];
+  env_hint: string;
+  api_key_required: boolean;
+  free_tier: string;
+  docs_url: string;
+  default_workers_use_local: boolean;
+}
+
+/** Provider-routing snapshot for ``GET /api/settings``.
+ *
+ * ``has_api_key`` is a boolean placeholder — the raw key is never
+ * echoed back through any GET endpoint. To write, use the dedicated
+ * ``PUT /api/settings/llm-credentials`` call.
+ */
+export interface ChatLlmSnapshot {
+  provider: "ollama" | "openai_compatible";
+  provider_preset: string;
+  model: string;
+  base_url: string;
+  has_api_key: boolean;
+  api_key_env: string;
+  max_tokens: number;
+  temperature: number | null;
+  context_window: number | null;
+  keep_alive: string;
+  workers_use_local: boolean;
+  extra_headers: Record<string, string>;
+}
+
+/** Response shape from ``POST /api/llm/test-connection``.
+ *
+ * Always returns 200 — ``success`` distinguishes "the test ran and the
+ * provider responded" from "the test ran and the provider rejected
+ * us". 4xx is reserved for malformed request bodies.
+ */
+export interface LlmTestConnectionResult {
+  success: boolean;
+  latency_ms: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  model_resolved: string;
+  error_code:
+    | "unauthorized"
+    | "not_found_model"
+    | "rate_limited"
+    | "network"
+    | "timeout"
+    | "bad_response"
+    | "unknown"
+    | null;
+  error_message: string | null;
+  content_preview?: string;
+}
+
 export interface AssistantSettings {
   chat: {
     model: string;
@@ -32,6 +99,8 @@ export interface AssistantSettings {
     temperature: number;
     max_tokens: number;
   };
+  /** Provider routing snapshot. See :class:`ChatLlmSnapshot`. */
+  chat_llm?: ChatLlmSnapshot;
   tts: {
     provider: string;
     voice: string;
@@ -981,6 +1050,7 @@ export type WsServerEvent =
       model: string;
     }
   | { type: "model_changed"; model: string }
+  | { type: "llm_settings_changed" }
   | {
       type: "tts_state";
       event: "start" | "end";

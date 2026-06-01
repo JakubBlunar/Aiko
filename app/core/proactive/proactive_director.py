@@ -297,11 +297,18 @@ class ProactiveDirector:
     def update_runtime(
         self,
         *,
+        client: Any | None = None,
         model: str | None = None,
         cooldown_seconds: float | None = None,
         cooldown_seconds_typed: float | None = None,
         context_window: int | None = None,
     ) -> None:
+        # ``client`` lets ``SessionController.reconfigure_chat_llm``
+        # rebind the proactive director's chat client without
+        # rebuilding the whole instance. New nudge tasks see the new
+        # client; in-flight ones keep their original reference.
+        if client is not None:
+            self._ollama = client
         if model is not None:
             self._model = model
         if cooldown_seconds is not None:

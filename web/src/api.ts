@@ -9,8 +9,11 @@ import type {
   AvatarSettingsKnobs,
   Belief,
   BeliefsResponse,
+  ChatLlmSnapshot,
   ChatMessage,
   Identity,
+  LlmProviderPreset,
+  LlmTestConnectionResult,
   Memory,
   MemoriesResponse,
   MemoryConflictsResponse,
@@ -107,9 +110,46 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patch),
     }),
-  listModels: (refresh = false) =>
-    jsonFetch<string[]>(`/api/models${refresh ? "?refresh=true" : ""}`),
+  listModels: (refresh = false, provider?: string) => {
+    const params = new URLSearchParams();
+    if (refresh) params.set("refresh", "true");
+    if (provider) params.set("provider", provider);
+    const qs = params.toString();
+    return jsonFetch<string[]>(`/api/models${qs ? `?${qs}` : ""}`);
+  },
   listVoices: () => jsonFetch<string[]>("/api/voices"),
+  // ── Chat LLM provider ────────────────────────────────────────────
+  /** Curated provider preset catalogue. Read-only; renders the
+   *  picker cards in Settings → Chat. */
+  getLlmPresets: () =>
+    jsonFetch<{ presets: LlmProviderPreset[] }>("/api/llm/presets"),
+  /** Write-only credentials path. Returns the masked snapshot. */
+  setLlmCredentials: (payload: {
+    api_key?: string;
+    api_key_env?: string;
+    base_url?: string;
+    extra_headers?: Record<string, string>;
+  }) =>
+    jsonFetch<ChatLlmSnapshot>("/api/settings/llm-credentials", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  /** Dry-run: ping the candidate provider with a one-token chat call.
+   *  Never persists the supplied creds; returns 200 with success=false
+   *  on auth/model failure so the UI can show the provider's error. */
+  testLlmConnection: (payload: {
+    provider: "ollama" | "openai_compatible";
+    base_url: string;
+    api_key: string;
+    model: string;
+    extra_headers?: Record<string, string>;
+  }) =>
+    jsonFetch<LlmTestConnectionResult>("/api/llm/test-connection", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
   listMemories: (
     options: {
       limit?: number;

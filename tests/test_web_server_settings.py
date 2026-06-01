@@ -122,6 +122,23 @@ def _build_client() -> tuple[TestClient, MagicMock, _SettingsStub]:
     session.vad_silence_seconds = 1.0
     session.barge_in_enabled.return_value = False
     session.available_tool_names.return_value = []
+    # GET /api/settings now includes the masked chat_llm snapshot.
+    # Return a real serialisable dict from the mocked accessor so
+    # FastAPI's JSON encoder doesn't choke on a MagicMock placeholder.
+    session._chat_llm_public_snapshot.return_value = {
+        "provider": "ollama",
+        "provider_preset": "",
+        "model": "",
+        "base_url": "",
+        "has_api_key": False,
+        "api_key_env": "",
+        "max_tokens": 512,
+        "temperature": None,
+        "context_window": None,
+        "keep_alive": "30m",
+        "workers_use_local": True,
+        "extra_headers": {},
+    }
     # Track active-app state on the mock so the PATCH path can drop it.
     session._user_active_app = "Discord"
 

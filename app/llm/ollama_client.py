@@ -1,17 +1,23 @@
 from __future__ import annotations
 
 import logging
-import re
 import threading
 import time
 from collections.abc import Generator
-from dataclasses import dataclass, field
 import json
 from typing import Any
 
 import requests
 
 from app.core.infra.settings import OllamaSettings
+from app.llm.chat_client import (
+    ChatResponse,
+    ChatToolCall,
+    ChatUsage,
+    content_looks_complete as _content_looks_complete,
+    strip_thinking_blocks,
+    strip_thinking_blocks_with_signal as _strip_thinking_blocks_with_signal,
+)
 
 
 log = logging.getLogger("app.llm.ollama_client")
@@ -20,72 +26,16 @@ log = logging.getLogger("app.llm.ollama_client")
 _announced_base_urls: set[str] = set()
 
 
-@dataclass(slots=True)
-class OllamaToolCall:
-    name: str
-    arguments: dict[str, Any] = field(default_factory=dict)
-    call_id: str = ""
-
-
-@dataclass(slots=True)
-class OllamaChatResponse:
-    content: str
-    tool_calls: list[OllamaToolCall] = field(default_factory=list)
-
-
-@dataclass(slots=True)
-class OllamaUsage:
-    """Token + timing telemetry pulled from the final streaming chunk.
-
-    Mirrors the fields Ollama's /api/chat returns when ``done=True`` is sent.
-    All values are 0 when the server didn't include them.
-    """
-
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    total_duration_ms: float = 0.0
-    eval_duration_ms: float = 0.0
-    prompt_eval_duration_ms: float = 0.0
-    # Ollama's terminal status flag from the final chunk/body.
-    # Common values are ``"stop"`` (clean end of generation) and
-    # ``"length"`` (hit ``num_predict`` cap — the response is
-    # truncated mid-token-budget). ``None`` means the server didn't
-    # include the field, which we treat as "unknown, not truncated"
-    # so the warning gate stays specific.
-    done_reason: str | None = None
-
-    @property
-    def total_tokens(self) -> int:
-        return self.prompt_tokens + self.completion_tokens
-
-    @property
-    def tokens_per_second(self) -> float:
-        if self.eval_duration_ms <= 0 or self.completion_tokens <= 0:
-            return 0.0
-        return round((self.completion_tokens * 1000.0) / self.eval_duration_ms, 1)
-
-    def merge(self, other: "OllamaUsage") -> "OllamaUsage":
-        """Return a new usage that adds another pass on top of this one.
-
-        Used to combine the tool pre-pass and the streaming reply pass into a
-        single per-turn telemetry record.
-        """
-        # Truncation is sticky: if either pass got cut off, the merged
-        # usage carries that signal forward. Otherwise the later
-        # pass's reason wins (it's the one closer to "what the user
-        # actually saw").
-        if self.done_reason == "length" or other.done_reason == "length":
-            merged_reason: str | None = "length"
-        else:
-            merged_reason = other.done_reason or self.done_reason
-        return OllamaUsage(
-            prompt_tokens=self.prompt_tokens + other.prompt_tokens,
-            completion_tokens=self.completion_tokens + other.completion_tokens,
-            total_duration_ms=self.total_duration_ms + other.total_duration_ms,
-            eval_duration_ms=self.eval_duration_ms + other.eval_duration_ms,
-            prompt_eval_duration_ms=self.prompt_eval_duration_ms + other.prompt_eval_duration_ms,
-            done_reason=merged_reason,
-        )
+# Legacy aliases — pre-rename code (every worker module, lots of tests)
+# imports ``OllamaToolCall`` / ``OllamaChatResponse`` / ``OllamaUsage``
+# from here. They're identical to the provider-neutral
+# ``ChatToolCall`` / ``ChatResponse`` / ``ChatUsage`` types defined in
+# :mod:`app.llm.chat_client`; keeping the old names alive avoids a
+# 30-file rename for no observable benefit. New code should prefer the
+# generic names.
+OllamaToolCall = ChatToolCall
+OllamaChatResponse = ChatResponse
+OllamaUsage = ChatUsage
 
 
 def _extract_done_reason(payload: object) -> str | None:
@@ -156,91 +106,6 @@ def _warn_if_truncated(
         model,
         int(usage.completion_tokens),
     )
-
-
-# Reasoning models (qwen3.x, deepseek-r1, gpt-oss, ...) sometimes leak
-# their internal chain-of-thought into ``message.content`` even when we
-# pass ``think=False`` to /api/chat. Different fine-tunes use different
-# wrapper tokens, so we accept the common ones (case-insensitive) and
-# strip them before handing content back to callers. We DO NOT strip
-# when ``think=True`` is explicitly requested — at that point the
-# caller is asking for the trace.
-_THINKING_BLOCK_RE: re.Pattern[str] = re.compile(
-    r"<\s*(think|thinking|reasoning|reflection)\s*>.*?"
-    r"<\s*/\s*\1\s*>",
-    re.IGNORECASE | re.DOTALL,
-)
-# Some fine-tunes open a thinking block but never close it before
-# running out of budget (or before the answer starts). When that
-# happens the *whole* unclosed tail is reasoning we can drop. This
-# pattern matches ``<think>`` (and variants) with no matching close
-# anywhere after it.
-_UNCLOSED_THINKING_RE: re.Pattern[str] = re.compile(
-    r"<\s*(think|thinking|reasoning|reflection)\s*>(?:(?!<\s*/\s*\1\s*>).)*\Z",
-    re.IGNORECASE | re.DOTALL,
-)
-
-
-def _strip_thinking_blocks_with_signal(text: str) -> tuple[str, bool]:
-    """Strip thinking blocks and report whether any were removed.
-
-    Returns ``(cleaned, had_thinking)``. ``had_thinking`` lets the
-    caller distinguish two flavours of ``done_reason="length"``:
-
-    1. The model wrote a thinking trace and a complete answer, but the
-       *trace* tipped the response over ``num_predict``. The visible
-       reply is fine; the warning would be a false positive.
-    2. The model didn't think (or barely did), so the cap actually
-       chopped the answer.
-
-    Combined with :func:`_content_looks_complete` we can downgrade the
-    first case to debug noise instead of surfacing it as a WARNING.
-    """
-    if not text or "<" not in text:
-        return text, False
-    cleaned = _THINKING_BLOCK_RE.sub("", text)
-    cleaned = _UNCLOSED_THINKING_RE.sub("", cleaned)
-    cleaned = cleaned.strip()
-    return cleaned, cleaned != text
-
-
-def _strip_thinking_blocks(text: str) -> str:
-    """Remove ``<think>...</think>``-style blocks from LLM content.
-
-    Returns the text unchanged when there are no thinking markers,
-    so the common case is essentially free. Both balanced blocks and
-    a final unclosed block are stripped, then we collapse surrounding
-    whitespace so the cleaned content starts and ends where the
-    actual answer does.
-    """
-    cleaned, _ = _strip_thinking_blocks_with_signal(text)
-    return cleaned
-
-
-# Closing punctuation that signals "the answer made it to a natural
-# stop". Non-exhaustive on purpose — the goal is to suppress only the
-# cases we're confident about and warn on anything else.
-_TERMINAL_PUNCTUATION: tuple[str, ...] = (
-    ".", "!", "?", "…", '"', "'", "`", ")", "]", "}", ">",
-)
-
-
-def _content_looks_complete(text: str) -> bool:
-    """Heuristic: did the visible answer reach a natural stop?
-
-    True when ``text`` is non-empty and ends with closing punctuation
-    after stripping trailing whitespace. False for empty content
-    (cap chopped everything) or content that ends mid-word/mid-clause.
-    """
-    if not text:
-        return False
-    return text.rstrip().endswith(_TERMINAL_PUNCTUATION)
-
-
-# Public alias so streaming consumers (which buffer chunks themselves)
-# can run the same strip as the non-streaming entry points without
-# importing a private symbol.
-strip_thinking_blocks = _strip_thinking_blocks
 
 
 class OllamaClient:

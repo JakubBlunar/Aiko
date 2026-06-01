@@ -13,8 +13,15 @@
   },
   "chat_llm": {
     "provider": "ollama",
+    "provider_preset": "",
+    "model": "",
+    "base_url": "",
+    "api_key": "",
+    "api_key_env": "",
     "max_tokens": 512,
-    "keep_alive": "30m"
+    "keep_alive": "30m",
+    "workers_use_local": true,
+    "extra_headers": {}
   },
   "agent": {
     "proactive_silence_seconds": 45,

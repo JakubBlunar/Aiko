@@ -217,6 +217,20 @@ export function useAssistantSocket(): {
         store.setModel(evt.model);
         break;
 
+      case "llm_settings_changed":
+        // Backend broadcast after PATCH /api/settings { chat_llm: ... }
+        // or PUT /api/settings/llm-credentials. Mirrors the
+        // identity_changed flow: any open settings drawer in another
+        // tab reloads its snapshot via the existing settings refresh
+        // path. The Zustand store doesn't carry the provider snapshot
+        // directly, so the SettingsDrawer re-fetches on focus when
+        // this lands; for now we just nudge the global state to flag a
+        // stale settings view.
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new CustomEvent("aiko:llm-settings-changed"));
+        }
+        break;
+
       case "tts_state":
         store.setTtsState(
           evt.event === "start" ? "speaking" : "idle",
