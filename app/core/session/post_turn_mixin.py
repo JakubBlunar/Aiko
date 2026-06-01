@@ -22,6 +22,7 @@ patch must target the module where the symbol is *looked up*.
 from __future__ import annotations
 
 import logging
+from collections import deque
 from typing import Any
 
 
@@ -433,6 +434,27 @@ class PostTurnMixin:
             log.debug("affect updater failed", exc_info=True)
             return
 
+        # K30 — feed the self-noticing flat-affect ring with one
+        # ``(valence, arousal, reaction)`` triple per turn. ``state``
+        # is the POST-turn scalar (matches what the user actually
+        # walked away with). ``reaction`` is the assistant tag from
+        # the just-finished turn (None when no ``[[reaction:...]]``
+        # fired) and is what the detector uses to decide whether
+        # Aiko "landed somewhere" this turn. Cheap append, no
+        # detector call -- the detector runs at provider time.
+        try:
+            ring = getattr(self, "_self_noticing_affect_samples", None)
+            if ring is not None:
+                ring.append(
+                    (
+                        float(state.valence),
+                        float(state.arousal),
+                        (reaction or None) if reaction else None,
+                    )
+                )
+        except Exception:
+            log.debug("self-noticing affect-ring append failed", exc_info=True)
+
         # K8 — affect rupture-and-repair detection. The cheapest
         # possible cue: subtract two valence scalars and reaction-
         # filter. Runs immediately after the AffectUpdater so we
@@ -547,6 +569,83 @@ class PostTurnMixin:
                 # turn; carry-forward happens at the end of K20's
                 # block below).
                 self._last_assistant_vec = turn_vec
+
+                # K30 — repeated-thought detection. Compare the
+                # just-finished reply against the last-3 assistant
+                # vectors (in-memory ring on the controller); if max
+                # cosine >= ``self_noticing_repeated_cosine_threshold``,
+                # arm the one-shot carry-forward flag so the NEXT
+                # turn's provider surfaces a Heads-up. Reuses the
+                # same ``turn_vec`` K22 already computed -- no extra
+                # embed cost. Falls back silently when the
+                # sub-detector is disabled OR the master switch is
+                # off; the ring is still appended either way so
+                # toggling the switch back on mid-session warms
+                # cleanly.
+                if bool(
+                    getattr(
+                        self._settings.agent, "self_noticing_enabled", True,
+                    )
+                ) and bool(
+                    getattr(
+                        self._settings.agent,
+                        "self_noticing_repeated_thought_enabled",
+                        True,
+                    )
+                ):
+                    try:
+                        from app.core.affect.self_pattern_detector import (
+                            detect_repeated_thought,
+                        )
+
+                        prior = list(
+                            getattr(
+                                self,
+                                "_self_noticing_aiko_vecs",
+                                deque(),
+                            )
+                        )
+                        result = detect_repeated_thought(
+                            turn_vec,
+                            prior,
+                            threshold=float(
+                                getattr(
+                                    self._settings.agent,
+                                    "self_noticing_repeated_cosine_threshold",
+                                    0.85,
+                                )
+                            ),
+                        )
+                        self._repeated_thought_fired_last_turn = bool(
+                            result.fired
+                        )
+                        self._repeated_thought_last_cosine = float(
+                            result.max_cosine
+                        )
+                        self._repeated_thought_last_matched_index = int(
+                            result.matched_index
+                        )
+                        if result.fired:
+                            log.info(
+                                "self-noticing repeated-thought: "
+                                "cosine=%.3f matched_index=%d ring_size=%d",
+                                result.max_cosine,
+                                result.matched_index,
+                                len(prior),
+                            )
+                    except Exception:
+                        log.debug(
+                            "self-noticing repeated-thought detect failed",
+                            exc_info=True,
+                        )
+                try:
+                    ring = getattr(self, "_self_noticing_aiko_vecs", None)
+                    if ring is not None:
+                        ring.append(turn_vec)
+                except Exception:
+                    log.debug(
+                        "self-noticing vec-ring append failed", exc_info=True,
+                    )
                 now = datetime.now(timezone.utc)
                 hits = callback_detector.detect(
                     assistant_vec=turn_vec,

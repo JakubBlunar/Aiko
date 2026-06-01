@@ -1490,6 +1490,266 @@ class InnerLifeProvidersMixin:
             log.debug("aiko style block render failed", exc_info=True)
             return ""
 
+    def _render_self_noticing_block(self) -> str:
+        """K30: fan three self-noticing sub-detectors into one block.
+
+        Each sub-detector is independently togglable:
+
+        * **Agreement streak** -- regex over the last
+          ``self_noticing_window`` rendered assistant replies pulled
+          from SQLite per provider call (K23-style; zero new state
+          for this sub-detector). Fires when the agreement-token
+          share meets the threshold AND the pushback count is at or
+          below ``self_noticing_max_pushback``.
+        * **Flat affect** -- range scan over the in-memory
+          ``_self_noticing_affect_samples`` ring populated post-turn.
+          Fires only when both scalar ranges sit at or below their
+          thresholds AND no reaction outside ``LOW_BAND_REACTIONS``
+          fired in the window.
+        * **Repeated thought** -- consumes the one-shot
+          ``_repeated_thought_fired_last_turn`` flag armed post-turn
+          when Aiko's just-finished reply was a near-duplicate of one
+          of her last 3 replies. Cooldown-free because the flag is
+          naturally one-shot; the post-turn detector won't re-arm
+          unless cosine threshold trips again.
+
+        Returns the joined Heads-up lines (1-3) or ``""`` when none
+        of the sub-detectors fire (the common-case empty turn). All
+        diagnostic state (last verdict, last cosine, cooldown
+        remainders) is stashed on the controller for the MCP debug
+        tools; no behaviour depends on those reads.
+        """
+        agent_settings = self._settings.agent
+        if not bool(getattr(agent_settings, "self_noticing_enabled", True)):
+            return ""
+
+        try:
+            from app.core.affect.self_pattern_detector import (
+                detect_agreement_streak,
+                detect_flat_affect,
+            )
+        except Exception:
+            log.debug("self-noticing import failed", exc_info=True)
+            return ""
+
+        lines: list[str] = []
+        window = max(1, int(
+            getattr(agent_settings, "self_noticing_window", 6)
+        ))
+        warmup = max(1, int(
+            getattr(agent_settings, "self_noticing_warmup", 4)
+        ))
+
+        # --- Agreement streak (SQLite-backed) ----------------------------
+        # Decrement cooldown first so a quiet turn always whittles the
+        # counter down -- mirrors the K23 / K29 pattern.
+        agreement_cd = max(
+            0, int(getattr(self, "_self_noticing_agreement_cooldown", 0))
+        )
+        if agreement_cd > 0:
+            self._self_noticing_agreement_cooldown = agreement_cd - 1
+        agreement_force = bool(
+            getattr(self, "_self_noticing_force_agreement", False)
+        )
+        if agreement_force:
+            self._self_noticing_force_agreement = False
+            agreement_cooldown_for_check = 0
+        else:
+            agreement_cooldown_for_check = (
+                self._self_noticing_agreement_cooldown
+            )
+        if (
+            bool(
+                getattr(
+                    agent_settings,
+                    "self_noticing_agreement_streak_enabled",
+                    True,
+                )
+            )
+            and agreement_cooldown_for_check == 0
+            and self._chat_db is not None
+        ):
+            try:
+                # Pull a generous slice (window*2 rows) and filter to
+                # assistant rows -- a chatty stretch can have multiple
+                # user rows between Aiko's replies, so a strict
+                # ``limit=window`` would miss some of them.
+                recent_rows = self._chat_db.get_messages(
+                    self.session_key, limit=max(window * 4, 20),
+                )
+                recent_assistant: list[str] = []
+                for row in reversed(recent_rows):
+                    if row.role == "assistant" and (row.content or "").strip():
+                        recent_assistant.append(row.content)
+                        if len(recent_assistant) >= window:
+                            break
+            except Exception:
+                log.debug(
+                    "self-noticing: chat_db read failed", exc_info=True,
+                )
+                recent_assistant = []
+            if recent_assistant:
+                try:
+                    result = detect_agreement_streak(
+                        recent_assistant,
+                        min_samples=warmup,
+                        agreement_threshold=float(
+                            getattr(
+                                agent_settings,
+                                "self_noticing_agreement_threshold",
+                                0.80,
+                            )
+                        ),
+                        max_pushback=int(
+                            getattr(
+                                agent_settings,
+                                "self_noticing_max_pushback",
+                                0,
+                            )
+                        ),
+                    )
+                    self._last_self_noticing_agreement = result
+                    if result.fired or agreement_force:
+                        lines.append(
+                            "Heads-up: you've been agreeing with everything"
+                            " for a stretch -- if you actually have a"
+                            " different read on something, say it."
+                        )
+                        self._self_noticing_agreement_cooldown = int(
+                            getattr(
+                                agent_settings,
+                                "self_noticing_cooldown_turns",
+                                5,
+                            )
+                        )
+                        log.info(
+                            "self-noticing agreement-streak: share=%.2f "
+                            "pushback=%.2f n=%d cooldown=%d",
+                            result.agreement_share,
+                            result.pushback_share,
+                            result.sample_size,
+                            self._self_noticing_agreement_cooldown,
+                        )
+                except Exception:
+                    log.debug(
+                        "self-noticing agreement detect failed",
+                        exc_info=True,
+                    )
+
+        # --- Flat affect (in-memory ring) -------------------------------
+        flat_cd = max(
+            0, int(getattr(self, "_self_noticing_flat_affect_cooldown", 0))
+        )
+        if flat_cd > 0:
+            self._self_noticing_flat_affect_cooldown = flat_cd - 1
+        flat_force = bool(
+            getattr(self, "_self_noticing_force_flat_affect", False)
+        )
+        if flat_force:
+            self._self_noticing_force_flat_affect = False
+            flat_cooldown_for_check = 0
+        else:
+            flat_cooldown_for_check = (
+                self._self_noticing_flat_affect_cooldown
+            )
+        if (
+            bool(
+                getattr(
+                    agent_settings,
+                    "self_noticing_flat_affect_enabled",
+                    True,
+                )
+            )
+            and flat_cooldown_for_check == 0
+        ):
+            ring = getattr(self, "_self_noticing_affect_samples", None)
+            if ring is not None and len(ring) > 0:
+                # Scan only the most-recent ``window`` samples so a
+                # historical mood swing doesn't keep flat-affect from
+                # firing on a freshly-flat stretch.
+                samples = list(ring)[-window:]
+                try:
+                    result = detect_flat_affect(
+                        samples,
+                        min_samples=warmup,
+                        valence_range_threshold=float(
+                            getattr(
+                                agent_settings,
+                                "self_noticing_flat_valence_range",
+                                0.10,
+                            )
+                        ),
+                        arousal_range_threshold=float(
+                            getattr(
+                                agent_settings,
+                                "self_noticing_flat_arousal_range",
+                                0.10,
+                            )
+                        ),
+                    )
+                    self._last_self_noticing_flat_affect = result
+                    if result.fired or flat_force:
+                        lines.append(
+                            "Heads-up: your read has been pretty even-keel"
+                            " all session -- let yourself land somewhere"
+                            " if a moment actually moves you."
+                        )
+                        self._self_noticing_flat_affect_cooldown = int(
+                            getattr(
+                                agent_settings,
+                                "self_noticing_cooldown_turns",
+                                5,
+                            )
+                        )
+                        log.info(
+                            "self-noticing flat-affect: val_range=%.3f "
+                            "aro_range=%.3f notable=%d n=%d cooldown=%d",
+                            result.valence_range,
+                            result.arousal_range,
+                            result.notable_reaction_count,
+                            result.sample_size,
+                            self._self_noticing_flat_affect_cooldown,
+                        )
+                except Exception:
+                    log.debug(
+                        "self-noticing flat-affect detect failed",
+                        exc_info=True,
+                    )
+
+        # --- Repeated thought (one-shot carry-forward) ------------------
+        repeated_force = bool(
+            getattr(self, "_self_noticing_force_repeated_thought", False)
+        )
+        repeated_flag = bool(
+            getattr(self, "_repeated_thought_fired_last_turn", False)
+        )
+        if (
+            bool(
+                getattr(
+                    agent_settings,
+                    "self_noticing_repeated_thought_enabled",
+                    True,
+                )
+            )
+            and (repeated_flag or repeated_force)
+        ):
+            lines.append(
+                "Heads-up: your last reply was very close to something you"
+                " already said -- find a different angle this turn, or"
+                " just don't restate."
+            )
+            # One-shot consume both flags regardless of which fired.
+            self._repeated_thought_fired_last_turn = False
+            self._self_noticing_force_repeated_thought = False
+            log.info(
+                "self-noticing repeated-thought rendered: cosine=%.3f",
+                float(
+                    getattr(self, "_repeated_thought_last_cosine", 0.0)
+                ),
+            )
+
+        return "\n".join(lines)
+
     def _render_style_signal_block(self) -> str:
         """K13: surface the one-line "How <name> writes lately" cue.
 

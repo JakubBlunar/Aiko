@@ -907,6 +907,51 @@ class AgentSettings:
     misattunement_pivot_max_user_words: int = 8
     misattunement_cooldown_turns: int = 3
 
+    # ── K30: self-noticing cues (agreement / flat-affect / repeated) ──
+    # K20 metacognitive calibration tracks {user}'s trust in Aiko;
+    # K30 is the symmetric loop -- Aiko notices HER own patterns.
+    # One master switch fans into three sub-detectors that can be
+    # toggled independently while tuning:
+    #
+    # * ``self_noticing_agreement_streak_enabled`` -- per-provider
+    #   call regex over the last ``self_noticing_window`` rendered
+    #   assistant replies (SQLite round-trip, K23-style). Fires when
+    #   the agreement-token share crosses
+    #   ``self_noticing_agreement_threshold`` AND pushback count
+    #   sits at or below ``self_noticing_max_pushback``.
+    # * ``self_noticing_flat_affect_enabled`` -- reads a small
+    #   in-memory ``(valence, arousal, reaction)`` ring populated
+    #   post-turn (there's no ring on ``AffectState`` itself). Fires
+    #   when both scalar ranges sit at or below their thresholds AND
+    #   no reaction outside ``LOW_BAND_REACTIONS`` fired in the
+    #   window.
+    # * ``self_noticing_repeated_thought_enabled`` -- post-turn
+    #   cosine pass on Aiko's just-finished reply against a tiny
+    #   embedding ring (last 3 assistant vectors, reusing K22's
+    #   synchronous ``turn_vec`` -- no extra embed call). Fires
+    #   when ``max_cosine >= self_noticing_repeated_cosine_threshold``;
+    #   the cue surfaces on the NEXT turn (one-shot carry-forward
+    #   flag), matching v1's detect-and-log discipline.
+    #
+    # ``self_noticing_cooldown_turns`` arms after the streak
+    # detectors fire so the same Heads-up doesn't re-stack for the
+    # next several turns. Repeated-thought has no multi-turn
+    # cooldown -- the carry-forward flag is naturally one-shot.
+    # See
+    # [`app/core/affect/self_pattern_detector.py`](../affect/self_pattern_detector.py).
+    self_noticing_enabled: bool = True
+    self_noticing_agreement_streak_enabled: bool = True
+    self_noticing_flat_affect_enabled: bool = True
+    self_noticing_repeated_thought_enabled: bool = True
+    self_noticing_window: int = 6
+    self_noticing_warmup: int = 4
+    self_noticing_agreement_threshold: float = 0.80
+    self_noticing_max_pushback: int = 0
+    self_noticing_flat_valence_range: float = 0.10
+    self_noticing_flat_arousal_range: float = 0.10
+    self_noticing_repeated_cosine_threshold: float = 0.85
+    self_noticing_cooldown_turns: int = 5
+
     # ── K29: opinion injection (push back when she has a stance) ──────
     # Master switch for the per-turn detector that fires a one-line
     # cue when {user_name}'s latest message contradicts one of Aiko's
@@ -2380,6 +2425,78 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                         "misattunement_cooldown_turns", 3,
                     )
                 ),
+            ),
+            self_noticing_enabled=bool(
+                agent_raw.get("self_noticing_enabled", True),
+            ),
+            self_noticing_agreement_streak_enabled=bool(
+                agent_raw.get(
+                    "self_noticing_agreement_streak_enabled", True,
+                ),
+            ),
+            self_noticing_flat_affect_enabled=bool(
+                agent_raw.get(
+                    "self_noticing_flat_affect_enabled", True,
+                ),
+            ),
+            self_noticing_repeated_thought_enabled=bool(
+                agent_raw.get(
+                    "self_noticing_repeated_thought_enabled", True,
+                ),
+            ),
+            self_noticing_window=max(
+                1,
+                int(agent_raw.get("self_noticing_window", 6)),
+            ),
+            self_noticing_warmup=max(
+                1,
+                int(agent_raw.get("self_noticing_warmup", 4)),
+            ),
+            self_noticing_agreement_threshold=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        agent_raw.get(
+                            "self_noticing_agreement_threshold", 0.80,
+                        )
+                    ),
+                ),
+            ),
+            self_noticing_max_pushback=max(
+                0,
+                int(agent_raw.get("self_noticing_max_pushback", 0)),
+            ),
+            self_noticing_flat_valence_range=max(
+                0.0,
+                float(
+                    agent_raw.get(
+                        "self_noticing_flat_valence_range", 0.10,
+                    )
+                ),
+            ),
+            self_noticing_flat_arousal_range=max(
+                0.0,
+                float(
+                    agent_raw.get(
+                        "self_noticing_flat_arousal_range", 0.10,
+                    )
+                ),
+            ),
+            self_noticing_repeated_cosine_threshold=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        agent_raw.get(
+                            "self_noticing_repeated_cosine_threshold", 0.85,
+                        )
+                    ),
+                ),
+            ),
+            self_noticing_cooldown_turns=max(
+                0,
+                int(agent_raw.get("self_noticing_cooldown_turns", 5)),
             ),
             opinion_injection_enabled=bool(
                 agent_raw.get("opinion_injection_enabled", True),

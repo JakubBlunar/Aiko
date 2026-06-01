@@ -1589,6 +1589,301 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"force_opinion_injection raised: {exc}"
 
     @mcp.tool()
+    def get_self_noticing_state() -> str:
+        """K30 — dump the live self-noticing detector state.
+
+        Returns a JSON dict with the master switch, the three
+        sub-switches, the most recent verdict from each sub-detector
+        (agreement-streak share + sample size, flat-affect ranges +
+        notable reaction count, repeated-thought cosine + matched
+        index), the live cooldown remainders, the one-shot
+        ``force_next`` flags, the size of the in-memory affect ring
+        and assistant-vector ring, and a settings snapshot so you
+        can see what thresholds are actually in force.
+
+        The two cooldown counters (agreement, flat-affect) decrement
+        by one each provider call regardless of trigger state -- a
+        value of 0 means the next eligible turn can fire. Repeated-
+        thought has no multi-turn cooldown; the one-shot
+        carry-forward flag is set in ``post_turn`` and consumed by
+        the next provider call.
+        """
+        try:
+            agent = session._settings.agent
+
+            def _verdict_payload(verdict: object | None) -> dict | None:
+                if verdict is None:
+                    return None
+                payload = {}
+                for field in (
+                    "fired",
+                    "agreement_share",
+                    "pushback_share",
+                    "valence_range",
+                    "arousal_range",
+                    "notable_reaction_count",
+                    "max_cosine",
+                    "matched_index",
+                    "sample_size",
+                ):
+                    if hasattr(verdict, field):
+                        value = getattr(verdict, field)
+                        if isinstance(value, bool):
+                            payload[field] = bool(value)
+                        elif isinstance(value, int):
+                            payload[field] = int(value)
+                        elif isinstance(value, float):
+                            payload[field] = round(float(value), 4)
+                return payload
+
+            affect_ring = getattr(session, "_self_noticing_affect_samples", None)
+            vec_ring = getattr(session, "_self_noticing_aiko_vecs", None)
+            return json.dumps(
+                {
+                    "enabled": bool(
+                        getattr(agent, "self_noticing_enabled", True)
+                    ),
+                    "sub_switches": {
+                        "agreement_streak": bool(
+                            getattr(
+                                agent,
+                                "self_noticing_agreement_streak_enabled",
+                                True,
+                            )
+                        ),
+                        "flat_affect": bool(
+                            getattr(
+                                agent,
+                                "self_noticing_flat_affect_enabled",
+                                True,
+                            )
+                        ),
+                        "repeated_thought": bool(
+                            getattr(
+                                agent,
+                                "self_noticing_repeated_thought_enabled",
+                                True,
+                            )
+                        ),
+                    },
+                    "agreement_streak": {
+                        "cooldown_remaining": int(
+                            getattr(
+                                session,
+                                "_self_noticing_agreement_cooldown",
+                                0,
+                            ) or 0
+                        ),
+                        "force_next": bool(
+                            getattr(
+                                session,
+                                "_self_noticing_force_agreement",
+                                False,
+                            )
+                        ),
+                        "last_verdict": _verdict_payload(
+                            getattr(
+                                session,
+                                "_last_self_noticing_agreement",
+                                None,
+                            )
+                        ),
+                    },
+                    "flat_affect": {
+                        "cooldown_remaining": int(
+                            getattr(
+                                session,
+                                "_self_noticing_flat_affect_cooldown",
+                                0,
+                            ) or 0
+                        ),
+                        "force_next": bool(
+                            getattr(
+                                session,
+                                "_self_noticing_force_flat_affect",
+                                False,
+                            )
+                        ),
+                        "affect_ring_size": (
+                            len(affect_ring) if affect_ring is not None else 0
+                        ),
+                        "last_verdict": _verdict_payload(
+                            getattr(
+                                session,
+                                "_last_self_noticing_flat_affect",
+                                None,
+                            )
+                        ),
+                    },
+                    "repeated_thought": {
+                        "flagged_for_next_turn": bool(
+                            getattr(
+                                session,
+                                "_repeated_thought_fired_last_turn",
+                                False,
+                            )
+                        ),
+                        "force_next": bool(
+                            getattr(
+                                session,
+                                "_self_noticing_force_repeated_thought",
+                                False,
+                            )
+                        ),
+                        "last_cosine": round(
+                            float(
+                                getattr(
+                                    session,
+                                    "_repeated_thought_last_cosine",
+                                    0.0,
+                                )
+                            ),
+                            4,
+                        ),
+                        "last_matched_index": int(
+                            getattr(
+                                session,
+                                "_repeated_thought_last_matched_index",
+                                -1,
+                            )
+                        ),
+                        "vec_ring_size": (
+                            len(vec_ring) if vec_ring is not None else 0
+                        ),
+                    },
+                    "settings": {
+                        "window": int(
+                            getattr(agent, "self_noticing_window", 6)
+                        ),
+                        "warmup": int(
+                            getattr(agent, "self_noticing_warmup", 4)
+                        ),
+                        "agreement_threshold": float(
+                            getattr(
+                                agent,
+                                "self_noticing_agreement_threshold",
+                                0.80,
+                            )
+                        ),
+                        "max_pushback": int(
+                            getattr(
+                                agent, "self_noticing_max_pushback", 0,
+                            )
+                        ),
+                        "flat_valence_range": float(
+                            getattr(
+                                agent,
+                                "self_noticing_flat_valence_range",
+                                0.10,
+                            )
+                        ),
+                        "flat_arousal_range": float(
+                            getattr(
+                                agent,
+                                "self_noticing_flat_arousal_range",
+                                0.10,
+                            )
+                        ),
+                        "repeated_cosine_threshold": float(
+                            getattr(
+                                agent,
+                                "self_noticing_repeated_cosine_threshold",
+                                0.85,
+                            )
+                        ),
+                        "cooldown_turns": int(
+                            getattr(
+                                agent,
+                                "self_noticing_cooldown_turns",
+                                5,
+                            )
+                        ),
+                    },
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"get_self_noticing_state raised: {exc}"
+
+    @mcp.tool()
+    def force_agreement_streak() -> str:
+        """K30 — arm a one-shot bypass on the agreement-streak cooldown.
+
+        Sets ``_self_noticing_force_agreement`` so the next provider
+        call ignores the cooldown counter AND fires the cue
+        regardless of whether the streak actually crosses the
+        threshold. Useful for verifying the Heads-up line lands in
+        the rendered prompt (call this tool, then ``send_message``,
+        then inspect the next ``get_last_response_detail`` output
+        for the cue in ``system_prompt``).
+        """
+        try:
+            session._self_noticing_force_agreement = True
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next provider call will surface the agreement-"
+                        "streak Heads-up unconditionally; one-shot"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_agreement_streak raised: {exc}"
+
+    @mcp.tool()
+    def force_flat_affect() -> str:
+        """K30 — arm a one-shot bypass on the flat-affect cooldown.
+
+        Sets ``_self_noticing_force_flat_affect`` so the next
+        provider call ignores the cooldown counter AND fires the
+        cue regardless of whether the in-memory affect ring actually
+        sits below the configured thresholds. The cue surfaces the
+        normal "Heads-up: your read has been pretty even-keel..."
+        line; consume by sending one user message.
+        """
+        try:
+            session._self_noticing_force_flat_affect = True
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next provider call will surface the flat-affect "
+                        "Heads-up unconditionally; one-shot"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_flat_affect raised: {exc}"
+
+    @mcp.tool()
+    def force_repeated_thought() -> str:
+        """K30 — arm a one-shot bypass on the repeated-thought flag.
+
+        Sets ``_self_noticing_force_repeated_thought`` so the next
+        provider call surfaces the "your last reply was very close
+        to something you already said" Heads-up regardless of the
+        actual cosine measurement. The flag is consumed whether the
+        cue fires or not -- strictly one-turn.
+        """
+        try:
+            session._self_noticing_force_repeated_thought = True
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next provider call will surface the repeated-"
+                        "thought Heads-up unconditionally; one-shot"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_repeated_thought raised: {exc}"
+
+    @mcp.tool()
     def get_turning_over_state() -> str:
         """K28 — dump the in-memory turning-over picker state.
 

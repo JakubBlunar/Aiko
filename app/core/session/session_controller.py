@@ -1454,6 +1454,7 @@ class SessionController(
             stagnation=self._render_stagnation_block,
             style_pattern=self._render_style_pattern_block,
             style_signal=self._render_style_signal_block,
+            self_noticing=self._render_self_noticing_block,
             curiosity_seeds=self._render_curiosity_seeds_block,
             grounding_line=self._render_grounding_line,
         )
@@ -2333,6 +2334,39 @@ class SessionController(
         self._pending_turning_over_seconds: float | None = None
         self._turning_over_force_next: bool = False
         self._last_turning_over: Any = None
+        # K30 — self-noticing cues (agreement-streak / flat-affect /
+        # repeated-thought). Three sub-detectors fan into one
+        # ``self_noticing`` inner-life block. Agreement-streak is
+        # stateless (the provider queries ``chat_db.get_messages`` per
+        # turn, K23-style); the other two each own a small ring on
+        # the controller because ``AffectState`` has no per-turn
+        # ring buffer and there's no shared "recent assistant
+        # vectors" accessor on ``RagStore``. ``_repeated_thought_*``
+        # is the one-shot carry-forward flag set in ``post_turn``
+        # and consumed by the next provider call. Force flags
+        # mirror the K23 / K29 one-shot bypass shape so the MCP
+        # debug tools can drop a cue into the next prompt without
+        # waiting for the streak to genuinely fire.
+        self_noticing_window = max(
+            1, int(getattr(settings.agent, "self_noticing_window", 6))
+        )
+        self._self_noticing_affect_samples: deque[
+            tuple[float, float, str | None]
+        ] = deque(maxlen=max(12, self_noticing_window * 2))
+        self._self_noticing_aiko_vecs: deque[Any] = deque(maxlen=3)
+        self._self_noticing_force_agreement: bool = False
+        self._self_noticing_force_flat_affect: bool = False
+        self._self_noticing_force_repeated_thought: bool = False
+        self._self_noticing_agreement_cooldown: int = 0
+        self._self_noticing_flat_affect_cooldown: int = 0
+        self._repeated_thought_fired_last_turn: bool = False
+        self._repeated_thought_last_cosine: float = 0.0
+        self._repeated_thought_last_matched_index: int = -1
+        # Diagnostic-only — most-recent verdicts from the three
+        # sub-detectors. Read by ``get_self_noticing_state`` over MCP;
+        # no behaviour depends on them.
+        self._last_self_noticing_agreement: Any = None
+        self._last_self_noticing_flat_affect: Any = None
         if (
             self._chat_db is not None
             and bool(getattr(settings.agent, "belief_tracking_enabled", True))

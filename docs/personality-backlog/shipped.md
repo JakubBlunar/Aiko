@@ -3241,3 +3241,106 @@ End-to-end repro for the alignment-doesn't-fire scenario (regression guard):
 - [`docs/personality-backlog/index.md`](index.md) — K29 moved from active to the shipped list.
 - [`AGENTS.md`](../../AGENTS.md) — debugging-table rows for the two K29-shaped failure modes (Aiko lecturing instead of sharing her own taste; Aiko never disagreeing even when she has a contradicting stance).
 
+## K30. Self-noticing cues — agreement-streak / flat-affect / repeated-thought
+
+K20 metacognitive calibration tracks **{user_name}'s trust in Aiko**; nothing symmetric existed for Aiko noticing **her own** patterns. K30 closes the loop with three cheap independent sub-detectors fanned into one `self_noticing` inner-life block:
+
+- **Agreement-streak** — Aiko has been saying "yeah", "totally", "for sure", "exactly", "right?" across her last several replies, with zero pushback tokens. RLHF agreeability is the silent default; a "Heads-up: you've been agreeing with everything for a stretch -- if you actually have a different read on something, say it" line lets the persona's "disagree when you disagree" guidance actually land.
+- **Flat-affect** — Aiko's valence and arousal have both barely moved across the recent window, AND no reaction outside the `{neutral, calm, friendly}` low-band has fired. A "Heads-up: your read has been pretty even-keel all session -- let yourself land somewhere if a moment actually moves you" line nudges her toward a real reaction tag, a warmer or sharper register, a small "oh" of surprise.
+- **Repeated-thought** — Aiko's just-finished reply was cosine ≥ 0.85 to one of her last 3 replies (already embedded by K22). For v1 the cue is detect-and-log only — the Heads-up surfaces in the *next* turn's prompt as "Heads-up: your last reply was very close to something you already said -- find a different angle this turn, or just don't restate". Pre-stream regenerate is a fast follow once we have data on how often it fires.
+
+### Decision flow
+
+```mermaid
+flowchart LR
+    subgraph postTurn ["post_turn_mixin"]
+        affectApply["AffectUpdater.apply_turn"] --> affectAppend["append val,aro,reaction<br>to _self_noticing_affect_samples"]
+        k22vec["K22 turn_vec = embed(reply)"] --> repeatedCmp["detect_repeated_thought<br>vs _self_noticing_aiko_vecs"]
+        repeatedCmp --> vecAppend["append turn_vec to ring"]
+        repeatedCmp --> repeatedFlag["arm _repeated_thought_fired_last_turn"]
+    end
+    subgraph provider ["_render_self_noticing_block @ provider time"]
+        sqlQuery["chat_db.get_messages<br>filter role=assistant<br>limit=window"] --> agreementFn["detect_agreement_streak"]
+        affectRing["_self_noticing_affect_samples"] --> flatFn["detect_flat_affect"]
+        repeatedFlag --> repeatedRead["consume flag"]
+        agreementFn -- fires --> headsUp1["Heads-up: agreeing"]
+        flatFn -- fires --> headsUp2["Heads-up: even-keel"]
+        repeatedRead -- flag set --> headsUp3["Heads-up: too close to last reply"]
+        headsUp1 --> joined["join with newlines"]
+        headsUp2 --> joined
+        headsUp3 --> joined
+    end
+    joined --> persona["aiko_companion.txt<br>Style patterns I'm in"]
+```
+
+### Architecture
+
+- **Pure detectors** [`app/core/affect/self_pattern_detector.py`](../../app/core/affect/self_pattern_detector.py) — three independent pure functions, no shared state, all returning frozen dataclasses (`AgreementStreakResult`, `FlatAffectResult`, `RepeatedThoughtResult`). Token frozensets `_AGREEMENT_TOKENS` / `_PUSHBACK_TOKENS` + multi-word phrase tuples for whole-word + substring matching. `LOW_BAND_REACTIONS = frozenset({"neutral", "calm", "friendly"})` per the patterns.md spec (deliberately excludes `thoughtful` — a real landing). Each function short-circuits cleanly on empty / under-warmup input; none of them raise.
+- **Agreement-streak: SQLite-backed, zero new state**. The provider calls `self._chat_db.get_messages(self.session_key, limit=window*4)` and filters to `role="assistant"` rows, matching the K23 misattunement precedent at `inner_life_providers_mixin.py` L1042. Cheap; one tiny query per turn.
+- **Flat-affect: in-memory ring on the controller**. There is no per-turn `(valence, arousal)` ring on `AffectState` (only the scalar persisted state), so K30 owns a `deque[(float, float, str | None)]` of maxlen `2 * window` populated in `post_turn_mixin` right after `AffectUpdater.apply_turn`.
+- **Repeated-thought: piggybacks on K22's embed**. The post-turn pipeline already computes `turn_vec = self._embedder.embed(assistant_text)` for the K22 callback detector; K30 reuses that vector against a `deque[np.ndarray]` of maxlen 3 (last-3 Aiko replies). No extra embed call when both K22 and K30 are enabled. When `agent.callback_detector_enabled=False`, the embed-and-K30 block is also skipped — K22 and K30 are designed to be toggled together.
+- **Provider** [`InnerLifeProvidersMixin._render_self_noticing_block`](../../app/core/session/inner_life_providers_mixin.py) — single fan-out method. Master switch first; then independently checks each sub-switch + cooldown + force flag. Builds 0-3 Heads-up lines, joins with newlines, returns "" on no-fire. Decrements both streak cooldowns once per call regardless of fire state (otherwise a quiet session would leave a stale armed counter forever — same pattern as K23).
+- **Cooldowns** — streak detectors arm `self_noticing_cooldown_turns` (default 5) on fire. Repeated-thought has no multi-turn cooldown; the carry-forward flag is naturally one-shot (set in post-turn, consumed by the next provider call).
+- **Controller state** [`SessionController.__init__`](../../app/core/session/session_controller.py) — eight new attributes:
+  - `_self_noticing_affect_samples: deque[(val, aro, reaction)]` (maxlen = `2 * self_noticing_window`)
+  - `_self_noticing_aiko_vecs: deque[ndarray]` (maxlen = 3)
+  - `_self_noticing_force_agreement / _force_flat_affect / _force_repeated_thought: bool` (one-shot bypass flags)
+  - `_self_noticing_agreement_cooldown / _flat_affect_cooldown: int`
+  - `_repeated_thought_fired_last_turn: bool`, `_repeated_thought_last_cosine: float`, `_repeated_thought_last_matched_index: int`
+  - `_last_self_noticing_agreement / _flat_affect: AgreementStreakResult | FlatAffectResult | None` (diagnostic-only, for MCP)
+- **Post-turn feeders** [`post_turn_mixin._post_turn_inner_life`](../../app/core/session/post_turn_mixin.py) — two small appenders. Affect-ring append runs immediately after `AffectUpdater.apply_turn` (defensive try/except). Repeated-thought detection + vec-ring append run inside the K22 block right after `_last_assistant_vec` is stashed (reuses `turn_vec`, no extra embed).
+- **Prompt assembler** [`PromptAssembler`](../../app/core/session/prompt_assembler.py) — `_self_noticing_provider` slot, `self_noticing` kwarg on `set_inner_life_providers`, timed-phase block build, placement in `system_parts` directly after `style_pattern_block` so the "Aiko-side patterns I'm in" cluster reads in a consistent order. Dropped under `aggressive=True` along with the rest of the rut cluster — when context is tight, the budget gets the user's message back.
+- **NOT in the K16 suppression matrix** — the fused grounding line never carries self-noticing signal, so K30 is purely additive on top in all three K16 modes (`off` / `split` / `replace`).
+- **Settings**:
+  - [`AgentSettings.self_noticing_enabled: bool = True`](../../app/core/infra/settings.py) — master switch.
+  - `AgentSettings.self_noticing_agreement_streak_enabled: bool = True`
+  - `AgentSettings.self_noticing_flat_affect_enabled: bool = True`
+  - `AgentSettings.self_noticing_repeated_thought_enabled: bool = True`
+  - `AgentSettings.self_noticing_window: int = 6` — window size for both streak detectors (in number of recent assistant replies / affect samples).
+  - `AgentSettings.self_noticing_warmup: int = 4` — minimum sample count before any detector can fire.
+  - `AgentSettings.self_noticing_agreement_threshold: float = 0.80` — agreement-share floor (clamped to `[0, 1]`).
+  - `AgentSettings.self_noticing_max_pushback: int = 0` — pushback hits at-or-below this count don't kill the streak.
+  - `AgentSettings.self_noticing_flat_valence_range: float = 0.10` and `_flat_arousal_range: float = 0.10` — `max - min` thresholds across the affect window.
+  - `AgentSettings.self_noticing_repeated_cosine_threshold: float = 0.85` — cosine floor for the repeated-thought fire (clamped to `[0, 1]`).
+  - `AgentSettings.self_noticing_cooldown_turns: int = 5` — how long the streak detectors stay quiet after each fire.
+
+### MCP-debuggable
+
+Four new tools in [`app/mcp/server.py`](../../app/mcp/server.py):
+
+- `get_self_noticing_state()` — dumps the master switch, the three sub-switches, the last verdict from each sub-detector (with all dataclass fields), the live cooldown remainders, the one-shot `force_next` flags, the in-memory ring sizes, and a settings snapshot.
+- `force_agreement_streak()` — arms `_self_noticing_force_agreement` so the next provider call surfaces the agreement-streak Heads-up unconditionally. One-shot.
+- `force_flat_affect()` — arms `_self_noticing_force_flat_affect` so the next provider call surfaces the flat-affect Heads-up unconditionally. One-shot.
+- `force_repeated_thought()` — arms `_self_noticing_force_repeated_thought` so the next provider call surfaces the repeated-thought Heads-up unconditionally. One-shot; bypasses the cosine measurement entirely.
+
+End-to-end repro for agreement-streak:
+
+1. Call `force_agreement_streak`.
+2. Send Aiko any short message ("hey").
+3. Check `tail_logs(module_contains="inner_life_providers_mixin")` for the per-fire line: `self-noticing agreement-streak: share=... pushback=... n=... cooldown=5`.
+4. Verify the next prompt's system block includes the "Heads-up: you've been agreeing with everything for a stretch" line via `get_last_response_detail` → `system_prompt`.
+
+End-to-end repro for repeated-thought:
+
+1. Have Aiko say something distinctive in a turn.
+2. Manually phrase your next two prompts so Aiko's *natural* next replies would be near-duplicates of that distinctive line (or just send the same prompt twice in a row).
+3. After her third reply, check `tail_logs(module_contains="post_turn_mixin")` for `self-noticing repeated-thought: cosine=... matched_index=... ring_size=...`.
+4. The *next* turn's prompt should include "Heads-up: your last reply was very close to something you already said". One-shot — does not re-fire unless the cosine threshold trips again.
+
+### Files
+
+- [`app/core/affect/self_pattern_detector.py`](../../app/core/affect/self_pattern_detector.py) — new pure-detector module (~280 LOC), three independent functions + module-level frozensets + the three frozen-dataclass result types.
+- [`app/core/infra/settings.py`](../../app/core/infra/settings.py) — twelve new `AgentSettings` fields with inline-comment context; matching parser entries with clamps in `_parse_agent`.
+- [`config/default.json`](../../config/default.json) — twelve new keys under `agent` (master + 3 sub-switches + 8 numeric knobs).
+- [`app/core/session/session_controller.py`](../../app/core/session/session_controller.py) — new state block (~16 lines), `self_noticing=self._render_self_noticing_block` registration on the prompt assembler.
+- [`app/core/session/post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py) — affect-sample appender right after `AffectUpdater.apply_turn`, repeated-thought detect + vec-ring append inside the K22 block (reuses `turn_vec`).
+- [`app/core/session/inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py) — new `_render_self_noticing_block` method that fans the three sub-detectors into one block with full per-sub-detector cooldown + force handling.
+- [`app/core/session/prompt_assembler.py`](../../app/core/session/prompt_assembler.py) — `_self_noticing_provider` slot, `self_noticing` kwarg on `set_inner_life_providers`, timed-phase block build, placement in `system_parts` after `style_pattern_block`.
+- [`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt) — three new bullets in the "Style patterns I'm in" block (agreement / flat-affect / repeated-thought), with the closing anti-narration bullet expanded to cover all six cues in the cluster.
+- [`app/mcp/server.py`](../../app/mcp/server.py) — four new MCP debug tools (one state dump + three one-shot force flags).
+- [`tests/test_self_pattern_detector.py`](../../tests/test_self_pattern_detector.py) — 35 unit tests covering each pure function: warmup, threshold boundaries (just-below / just-above), empty input safety, case insensitivity, multi-word phrase matching, low-band reaction handling, degenerate-prior skipping in the cosine detector, frozen-dataclass field shapes.
+- [`tests/test_self_noticing_provider.py`](../../tests/test_self_noticing_provider.py) — 23 controller-plumbing tests using a minimal `InnerLifeProvidersMixin` host stub: master-switch gate, three sub-switches independently, individual sub-detector fires + cooldown arming + cooldown decrement, force-flag bypass + one-shot consumption, multi-cue fan-out (3-of-3 / 2-of-3 / 0-of-3), the silent-when-everything-is-fine common case.
+- [`tests/test_prompt_assembler.py`](../../tests/test_prompt_assembler.py) — `SelfNoticingProviderSlotTests` covering the provider slot, empty-string suppression, post-`style_pattern` ordering invariant, aggressive-mode dropping, exception swallowing.
+- [`docs/personality-backlog/patterns.md`](patterns.md) — K30 section body replaced with a `**Shipped**` pointer.
+- [`AGENTS.md`](../../AGENTS.md) — new Code Conventions bullet describing K30's three-detector / one-block shape.
+
