@@ -1067,6 +1067,114 @@ class StagnationBlockProviderTests(unittest.TestCase):
             self.assertEqual(seen, ["we keep circling this"])
 
 
+class SelfNoticingProviderSlotTests(unittest.TestCase):
+    """K30 self-noticing provider lands in the system prompt right
+    after the style_pattern block (same "patterns I'm in" cluster),
+    is dropped under ``aggressive=True``, and swallows provider
+    exceptions without breaking the turn."""
+
+    def test_self_noticing_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="sn1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                self_noticing=lambda: (
+                    "Heads-up: you've been agreeing with everything for a stretch"
+                ),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "sn1",
+                "what's up?",
+                context_window=4096,
+                response_budget=256,
+            )
+            content = messages[0]["content"]
+            self.assertIn("agreeing with everything", content)
+
+    def test_self_noticing_lands_after_style_pattern(self) -> None:
+        # Order encodes the K30 cluster -- style_pattern (opener-rut
+        # / question-saturation / length-sprawl) then self_noticing
+        # (agreement / flat-affect / repeated-thought). Both are
+        # Aiko-side noticing cues so they cluster together; the order
+        # mirrors the K6-then-K18 dataflow precedent.
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="sn2", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                style_pattern=lambda: "Heads-up: opener rut",
+                self_noticing=lambda: "Heads-up: agreeing too much",
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "sn2",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            content = messages[0]["content"]
+            self.assertIn("opener rut", content)
+            self.assertIn("agreeing too much", content)
+            self.assertLess(
+                content.index("opener rut"),
+                content.index("agreeing too much"),
+            )
+
+    def test_self_noticing_block_silent_when_provider_empty(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="sn3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(self_noticing=lambda: "")
+            messages, _ = assembler.assemble_with_budget(
+                "sn3",
+                "anything",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertNotIn("Heads-up", messages[0]["content"])
+
+    def test_self_noticing_block_dropped_under_aggressive(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="sn4", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                self_noticing=lambda: "Heads-up: flat affect.",
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "sn4",
+                "x",
+                context_window=4096,
+                response_budget=256,
+                aggressive=True,
+            )
+            self.assertNotIn("Heads-up", messages[0]["content"])
+
+    def test_self_noticing_provider_exception_swallowed(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="sn5", role="user", content="hi", token_count=2,
+            )
+
+            def _boom() -> str:
+                raise RuntimeError("self-noticing exploded")
+
+            assembler.set_inner_life_providers(self_noticing=_boom)
+            messages, _ = assembler.assemble_with_budget(
+                "sn5",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertNotIn("Heads-up", messages[0]["content"])
+
+
 class GroundingLineModeTests(unittest.TestCase):
     """K16 unified ambient grounding line modes.
 

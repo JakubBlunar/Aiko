@@ -705,6 +705,16 @@ class PromptAssembler:
         # preserve. Returns "" during warmup or when every axis is
         # default.
         self._style_signal_provider: Callable[[], str] | None = None
+        # K30 personality backlog: "self-noticing cues" — one block
+        # that fans the three agreement-streak / flat-affect /
+        # repeated-thought sub-detectors. Same register and cadence
+        # as ``style_pattern`` (Aiko-side patterns I'm in), dropped
+        # in aggressive mode for the same reason. Takes no args;
+        # post-turn pushes affect samples + assistant embeddings
+        # into rings on :class:`SessionController` which the
+        # provider reads. Returns "" when none of the three
+        # sub-detectors fire (the steady state).
+        self._self_noticing_provider: Callable[[], str] | None = None
         # K9 personality backlog: "Quiet curiosity" inner-life bullet
         # listing 1-2 active curiosity seeds (topics Aiko has been
         # quietly wondering about that haven't come up yet). Cheap
@@ -856,6 +866,7 @@ class PromptAssembler:
         stagnation: Callable[[str], str] | None = None,
         style_pattern: Callable[[], str] | None = None,
         style_signal: Callable[[], str] | None = None,
+        self_noticing: Callable[[], str] | None = None,
         curiosity_seeds: Callable[[], str] | None = None,
         grounding_line: Callable[[], str] | None = None,
     ) -> None:
@@ -935,6 +946,8 @@ class PromptAssembler:
             self._style_pattern_provider = style_pattern
         if style_signal is not None:
             self._style_signal_provider = style_signal
+        if self_noticing is not None:
+            self._self_noticing_provider = self_noticing
         if curiosity_seeds is not None:
             self._curiosity_seeds_provider = curiosity_seeds
         if grounding_line is not None:
@@ -1593,6 +1606,23 @@ class PromptAssembler:
                     log.debug("style_pattern provider raised", exc_info=True)
                     style_pattern_block = ""
 
+        # K30: self-noticing cues. Sibling of ``style_pattern`` (same
+        # persona block, same anti-narration rules) -- fans three
+        # sub-detectors (agreement streak / flat affect / repeated
+        # thought) into one Heads-up cluster. Sits right after the
+        # opener / question / length cues so all of Aiko's "patterns
+        # I'm in" beats render together. Dropped in aggressive mode
+        # like the rest of the rut cluster -- the budget gets the
+        # user's message back when context is tight.
+        self_noticing_block = ""
+        if not aggressive and self._self_noticing_provider is not None:
+            with _timed_phase(provider_ms, "self_noticing"):
+                try:
+                    self_noticing_block = self._self_noticing_provider() or ""
+                except Exception:
+                    log.debug("self_noticing provider raised", exc_info=True)
+                    self_noticing_block = ""
+
         # K13: stylometric mirror. One short "How Jacob writes lately"
         # line that shapes Aiko's register across days. Unlike the
         # K6/K18/anti-rut cues this block is intentionally NOT gated
@@ -1871,6 +1901,15 @@ class PromptAssembler:
             # Aiko reads and silently corrects on this turn). Empty
             # on the common no-rut turn.
             system_parts.append(style_pattern_block)
+        if self_noticing_block:
+            # K30: self-noticing cluster — agreement-streak,
+            # flat-affect, and/or repeated-thought Heads-ups (1-3
+            # lines depending on which sub-detectors fired). Sits
+            # right after the K30 anti-rut block so the "patterns
+            # I'm in" cluster reads together and the persona block
+            # can teach Aiko them as one register-shift family.
+            # Empty on the common no-streak turn.
+            system_parts.append(self_noticing_block)
         if curiosity_seeds_block:
             # K9: "Quiet curiosity" — at-most-two topics Aiko has
             # been wondering about that haven't come up yet. Sits
