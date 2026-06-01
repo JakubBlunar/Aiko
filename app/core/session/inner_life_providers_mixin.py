@@ -208,6 +208,114 @@ class InnerLifeProvidersMixin:
             log.debug("circadian block render failed", exc_info=True)
             return ""
 
+    def _render_day_color_block(self) -> str:
+        """K27: render today's daily personality colour cue.
+
+        One-line prompt cue ("Your day's colour today: pensive --
+        slower replies, more 'hmm'..."), drawn once per local day
+        from the 10-entry palette in
+        :mod:`app.core.affect.day_color`. The full reasoning lives
+        in the persona block; this provider just plumbs whichever
+        colour is current into the system prompt next to the
+        circadian cue.
+
+        Three layers in order:
+
+        1. **Master switch** -- ``agent.day_color_enabled`` short-
+           circuits to ``""`` so the feature can be turned off
+           without redeploying.
+        2. **MCP debug shortcuts** -- the
+           ``_day_color_force_next`` / ``_day_color_force_reroll``
+           one-shot flags armed by the
+           :func:`force_day_color` / :func:`reroll_day_color`
+           MCP tools take precedence over the stored value so a
+           tester can poke the system without shifting the OS
+           clock.
+        3. **Lazy fallback + render** -- read ``kv_meta``; if
+           today's colour isn't set (first turn after midnight,
+           idle-worker hasn't ticked yet), roll a fresh one via
+           :func:`day_color.roll_for_today` and write it. Then
+           render whichever colour is current.
+
+        Best-effort: any failure path returns ``""`` so a corrupt
+        ``kv_meta`` row or a missing ``chat_db`` reference doesn't
+        cascade into the rest of the prompt assembly. Mirrors the
+        K30 / K23 / K28 swallow-and-log convention.
+        """
+        agent_settings = self._settings.agent
+        if not bool(getattr(agent_settings, "day_color_enabled", True)):
+            return ""
+
+        try:
+            from datetime import datetime
+
+            from app.core.affect import day_color
+            from app.core.affect.day_color_worker import (
+                KV_DAY_COLOR,
+                KV_DAY_COLOR_SET_AT,
+            )
+
+            now = datetime.now().astimezone()
+
+            forced = getattr(self, "_day_color_force_next", None)
+            if forced:
+                # One-shot override: render the requested colour
+                # without touching kv_meta so the persisted roll
+                # survives the test.
+                self._day_color_force_next = None
+                chosen = day_color.get_color_by_name(forced)
+                if chosen is not None:
+                    return day_color.render_inner_life_block(chosen)
+                # Unknown colour name -- fall through to the normal
+                # path rather than rendering a confusing empty cue.
+
+            force_reroll = bool(
+                getattr(self, "_day_color_force_reroll", False)
+            )
+
+            chat_db = getattr(self, "_chat_db", None)
+            if chat_db is None:
+                return ""
+
+            try:
+                stored_at = chat_db.kv_get(KV_DAY_COLOR_SET_AT)
+            except Exception:
+                log.debug("day_color kv_get(set_at) failed", exc_info=True)
+                stored_at = None
+
+            if force_reroll or day_color.is_stale(stored_at, now):
+                # Lazy fallback path -- the idle-worker hasn't fired
+                # since the local-date rollover (or a tester just
+                # armed force_reroll). Roll + write + log so the
+                # next provider call hits the stable-read path.
+                self._day_color_force_reroll = False
+                try:
+                    chosen = day_color.roll_for_today(now=now)
+                    chat_db.kv_set(KV_DAY_COLOR, chosen.name)
+                    chat_db.kv_set(KV_DAY_COLOR_SET_AT, now.isoformat())
+                    log.info(
+                        "day_color lazy-roll: name=%s set_at=%s",
+                        chosen.name, now.isoformat(),
+                    )
+                    return day_color.render_inner_life_block(chosen)
+                except Exception:
+                    log.debug(
+                        "day_color lazy-roll failed", exc_info=True,
+                    )
+                    return ""
+
+            # Stable-read path -- today's colour is already set.
+            try:
+                stored_name = chat_db.kv_get(KV_DAY_COLOR)
+            except Exception:
+                log.debug("day_color kv_get(name) failed", exc_info=True)
+                return ""
+            chosen = day_color.get_color_by_name(stored_name)
+            return day_color.render_inner_life_block(chosen) if chosen else ""
+        except Exception:
+            log.debug("day_color block render failed", exc_info=True)
+            return ""
+
     def _cadence_context(self) -> Any:
         """Phase 5b: build a CadenceContext from the live affect/circadian."""
         from app.core.voice.cadence import CadenceContext

@@ -249,36 +249,7 @@ block consumer.
 
 ## K27. Aiko's day — daily personality colour
 
-Affect (`AffectState`) is *reactive* — valence/arousal move in
-response to turns and decay back to baseline. K5 mood-shell
-tilt rides on top of that. What's still missing is the slow
-*ambient weather* a real person walks into a conversation with
-— "she's pensive today", "she's been restless all afternoon"
-— independent of what just happened. A daily personality
-colour, drawn once per local day from a small palette
-(`pensive`, `restless`, `cozy`, `sharp_witted`, `dreamy`,
-`focused`, `scatterbrained`, `sentimental`, `mischievous`,
-`low_key`), would bias her register all day. Implementation
-shape: store `aiko.day_color` + `aiko.day_color_set_at` in
-`kv_meta` (cheap, no schema change), refresh via a new idle
-worker `DayColorWorker` once per local midnight (gated by
-`aiko.day_color_set_at` date != today). Persona block teaches
-Aiko a short paragraph per colour ("pensive: slower replies,
-more 'hmm', half-finished thoughts welcome — let yourself
-trail off"). Pairs with K5 (which is reactive) — K27 is the
-slow under-current K5 reacts on top of. Key files: new
-`app/core/affect/day_color.py` (palette + roll +
-read/write to `kv_meta`), new `app/core/idle_workers/day_color_worker.py`,
-`app/core/session/inner_life_providers_mixin.py` (one-line
-ambient cue), `data/persona/aiko_companion.txt` ("Your day's
-colour" block), settings knob
-`agent.day_color_enabled` + `memory.day_color_refresh_at_hour`
-(default 4 AM local). Open question: whether the roll should
-be uniform across the palette or weighted by recent affect
-trends ("she's been low-affect for a week, bias toward
-`sentimental` / `dreamy` rather than `mischievous`"). Start
-with uniform; the bias version is a fast follow if the
-uniform-roll version reads too random.
+**Shipped** — see [`docs/personality-backlog/shipped.md#k27-aikos-day--daily-personality-colour`](shipped.md#k27-aikos-day--daily-personality-colour).
 
 ---
 

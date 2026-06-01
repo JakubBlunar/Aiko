@@ -1023,6 +1023,99 @@ class TurningOverSettingsTests(unittest.TestCase):
         self.assertEqual(result.memory.turning_over_recent_msgs_window, 0)
 
 
+class DayColorSettingsTests(unittest.TestCase):
+    """K27: 2 agent knobs round-trip with clamps."""
+
+    _DC_AGENT_KEYS = (
+        "day_color_enabled",
+        "day_color_check_interval_seconds",
+    )
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(
+        self,
+        agent_extra: dict | None = None,
+        strip_keys: bool = True,
+    ) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(
+            json.loads(default_path.read_text(encoding="utf-8"))
+        )
+        if strip_keys:
+            for k in self._DC_AGENT_KEYS:
+                cfg.get("agent", {}).pop(k, None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults_load_when_keys_missing(self) -> None:
+        # Strip both keys and verify the dataclass defaults land.
+        # The defaults are part of the documented contract: the
+        # patterns.md / shipped.md sections all quote them.
+        path = self._write_config()
+        result = load_settings(config_path=path)
+        self.assertTrue(result.agent.day_color_enabled)
+        self.assertEqual(
+            result.agent.day_color_check_interval_seconds, 3600,
+        )
+
+    def test_overrides_round_trip(self) -> None:
+        path = self._write_config(
+            agent_extra={
+                "day_color_enabled": False,
+                "day_color_check_interval_seconds": 7200,
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.day_color_enabled)
+        self.assertEqual(
+            result.agent.day_color_check_interval_seconds, 7200,
+        )
+
+    def test_interval_clamps_to_floor(self) -> None:
+        # Floor is 60s; lower values clamp up. Guards against a
+        # buggy override pinning the scheduler against the wall.
+        path = self._write_config(
+            agent_extra={"day_color_check_interval_seconds": 5},
+        )
+        result = load_settings(config_path=path)
+        self.assertEqual(
+            result.agent.day_color_check_interval_seconds, 60,
+        )
+
+    def test_negative_interval_clamps_to_floor(self) -> None:
+        path = self._write_config(
+            agent_extra={"day_color_check_interval_seconds": -100},
+        )
+        result = load_settings(config_path=path)
+        self.assertEqual(
+            result.agent.day_color_check_interval_seconds, 60,
+        )
+
+    def test_enabled_accepts_truthy_values(self) -> None:
+        # bool() coercion -- a JSON-side "true" string or 1 should
+        # still flip the switch on. Confirms the parser doesn't
+        # require a Python-side bool literal.
+        path = self._write_config(
+            agent_extra={"day_color_enabled": 1},
+        )
+        result = load_settings(config_path=path)
+        self.assertTrue(result.agent.day_color_enabled)
+
+
 class ChatLlmSettingsTests(unittest.TestCase):
     """``chat_llm.workers_use_local`` + ``provider_preset`` round-trip
     through the loader. Also verifies ``provider="openai_compatible"``
