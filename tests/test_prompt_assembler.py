@@ -1175,6 +1175,134 @@ class SelfNoticingProviderSlotTests(unittest.TestCase):
             self.assertNotIn("Heads-up", messages[0]["content"])
 
 
+class DayColorProviderSlotTests(unittest.TestCase):
+    """K27 day-color provider lands in the system prompt right after
+    the circadian block (same ambient cluster), is NOT dropped under
+    ``aggressive=True`` (it's a trend/phase block, not a situational
+    one), and swallows provider exceptions without breaking the turn.
+
+    The provider plumbing itself is exhaustively tested in
+    ``tests/test_day_color_provider.py``; this class only verifies the
+    slot wiring + ordering in the assembler.
+    """
+
+    def test_day_color_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="dc1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                day_color=lambda: (
+                    "Your day's colour today: pensive -- slower replies"
+                ),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "dc1",
+                "what's up?",
+                context_window=4096,
+                response_budget=256,
+            )
+            content = messages[0]["content"]
+            self.assertIn("Your day's colour today: pensive", content)
+
+    def test_day_color_lands_after_circadian(self) -> None:
+        # Order encodes the K27 cluster -- circadian ("it's late
+        # evening locally") then day_color ("today is restless"). Both
+        # are slow ambient cues; the order mirrors the
+        # ``circadian -> mood_shell`` precedent.
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="dc2", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                circadian=lambda: "Local time: late evening.",
+                day_color=lambda: (
+                    "Your day's colour today: restless -- shorter sentences"
+                ),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "dc2",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            content = messages[0]["content"]
+            self.assertIn("Local time:", content)
+            self.assertIn("Your day's colour today: restless", content)
+            self.assertLess(
+                content.index("Local time:"),
+                content.index("Your day's colour today: restless"),
+            )
+
+    def test_day_color_silent_when_provider_empty(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="dc3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(day_color=lambda: "")
+            messages, _ = assembler.assemble_with_budget(
+                "dc3",
+                "anything",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertNotIn(
+                "Your day's colour today:", messages[0]["content"],
+            )
+
+    def test_day_color_retained_under_aggressive(self) -> None:
+        # K27 is a trend/phase block (slow daily under-current), NOT
+        # a situational block. Even with the budget tight enough to
+        # trigger ``aggressive=True``, today's colour cue still lands
+        # -- same logic as why circadian and style_signal aren't
+        # dropped. The whole point is that this is the slow weather
+        # the rest of the turn rides on.
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="dc4", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                day_color=lambda: (
+                    "Your day's colour today: cozy -- warmer register"
+                ),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "dc4",
+                "x",
+                context_window=4096,
+                response_budget=256,
+                aggressive=True,
+            )
+            self.assertIn(
+                "Your day's colour today: cozy", messages[0]["content"],
+            )
+
+    def test_day_color_provider_exception_swallowed(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="dc5", role="user", content="hi", token_count=2,
+            )
+
+            def _boom() -> str:
+                raise RuntimeError("day_color exploded")
+
+            assembler.set_inner_life_providers(day_color=_boom)
+            messages, _ = assembler.assemble_with_budget(
+                "dc5",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertNotIn(
+                "Your day's colour today:", messages[0]["content"],
+            )
+
+
 class GroundingLineModeTests(unittest.TestCase):
     """K16 unified ambient grounding line modes.
 

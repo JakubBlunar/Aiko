@@ -952,6 +952,34 @@ class AgentSettings:
     self_noticing_repeated_cosine_threshold: float = 0.85
     self_noticing_cooldown_turns: int = 5
 
+    # ── K27: daily personality colour (Aiko's day) ────────────────────
+    # Master switch for the slow ambient colour rolled once per local
+    # day from the 10-entry palette in
+    # [`app/core/affect/day_color.py`](../affect/day_color.py).
+    # When off, the inner-life block short-circuits to ``""`` and the
+    # :class:`DayColorWorker` skips its tick -- no roll, no read.
+    #
+    # K27 sits between two adjacent layers:
+    #
+    # * K5 mood-shell tilt is *reactive* and decays toward baseline;
+    #   K27 is the slow under-current K5 reacts on top of.
+    # * K30 self-noticing flat-affect detects when Aiko's session
+    #   has gone flat; K27 gives her a non-flat starting point so
+    #   the K30 measurement actually means "she's slipped" rather
+    #   than "she has no colour to begin with".
+    #
+    # The :class:`DayColorWorker` is the canonical path (runs every
+    # ``day_color_check_interval_seconds`` and only writes when the
+    # local date has rolled over). The provider has a cheap lazy
+    # fallback for the first-turn-after-midnight case when the
+    # idle-worker hasn't fired yet.
+    day_color_enabled: bool = True
+    # Cadence of the idle-worker tick. Defaults to 1h (3600s) -- the
+    # tick is cheap (one kv_get + one date compare) so a tighter
+    # cadence has negligible cost. Floored at 60s in ``_parse_agent``
+    # so a buggy override can't spin the scheduler.
+    day_color_check_interval_seconds: int = 3600
+
     # ── K29: opinion injection (push back when she has a stance) ──────
     # Master switch for the per-turn detector that fires a one-line
     # cue when {user_name}'s latest message contradicts one of Aiko's
@@ -2497,6 +2525,15 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             self_noticing_cooldown_turns=max(
                 0,
                 int(agent_raw.get("self_noticing_cooldown_turns", 5)),
+            ),
+            day_color_enabled=bool(
+                agent_raw.get("day_color_enabled", True),
+            ),
+            day_color_check_interval_seconds=max(
+                60,
+                int(
+                    agent_raw.get("day_color_check_interval_seconds", 3600)
+                ),
             ),
             opinion_injection_enabled=bool(
                 agent_raw.get("opinion_injection_enabled", True),

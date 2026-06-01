@@ -146,6 +146,8 @@
     "self_noticing_flat_arousal_range": 0.10,
     "self_noticing_repeated_cosine_threshold": 0.85,
     "self_noticing_cooldown_turns": 5,
+    "day_color_enabled": true,
+    "day_color_check_interval_seconds": 3600,
     "opinion_injection_enabled": true,
     "opinion_injection_require_definite": false,
     "turning_over_enabled": true,

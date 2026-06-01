@@ -1884,6 +1884,182 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"force_repeated_thought raised: {exc}"
 
     @mcp.tool()
+    def get_day_color_state() -> str:
+        """K27 — dump the live daily personality colour state.
+
+        Returns a JSON dict with the master switch, the current
+        stored colour name + ``set_at`` ISO timestamp, the age in
+        hours, an ``is_stale`` boolean (true means the next
+        provider call will lazy-roll a fresh colour), the worker
+        cadence in seconds, both one-shot force flags
+        (``force_next`` / ``force_reroll``), and the full palette
+        names so a follow-up ``force_day_color`` call doesn't need
+        clairvoyance.
+
+        Pairs with ``force_day_color`` / ``reroll_day_color`` for
+        end-to-end repro without shifting the OS clock:
+
+        1. Call ``get_day_color_state`` -- read the current name +
+           palette.
+        2. Call ``force_day_color(color="pensive")`` -- arm the
+           one-shot override.
+        3. Send a message and read ``get_last_response_detail`` --
+           the rendered system prompt should contain the
+           "Your day's colour today: pensive --" line.
+        4. ``reroll_day_color`` -- the next ``get_day_color_state``
+           shows a new name + fresh ``set_at``.
+        """
+        try:
+            from datetime import datetime
+
+            from app.core.affect import day_color
+            from app.core.affect.day_color_worker import (
+                KV_DAY_COLOR,
+                KV_DAY_COLOR_SET_AT,
+            )
+
+            agent = session._settings.agent
+            chat_db = getattr(session, "_chat_db", None)
+            stored_name: str | None = None
+            stored_at: str | None = None
+            if chat_db is not None:
+                try:
+                    stored_name = chat_db.kv_get(KV_DAY_COLOR)
+                except Exception:
+                    stored_name = None
+                try:
+                    stored_at = chat_db.kv_get(KV_DAY_COLOR_SET_AT)
+                except Exception:
+                    stored_at = None
+
+            now = datetime.now().astimezone()
+            stale = day_color.is_stale(stored_at, now)
+
+            age_hours: float | None = None
+            if stored_at:
+                try:
+                    text = str(stored_at).strip()
+                    if text.endswith("Z"):
+                        text = text[:-1] + "+00:00"
+                    stored_dt = datetime.fromisoformat(text)
+                    if stored_dt.tzinfo is None:
+                        stored_dt = stored_dt.astimezone()
+                    age_hours = round(
+                        (now - stored_dt).total_seconds() / 3600.0, 3,
+                    )
+                except Exception:
+                    age_hours = None
+
+            return json.dumps(
+                {
+                    "enabled": bool(
+                        getattr(agent, "day_color_enabled", True)
+                    ),
+                    "interval_seconds": int(
+                        getattr(
+                            agent,
+                            "day_color_check_interval_seconds",
+                            3600,
+                        )
+                    ),
+                    "current": {
+                        "name": stored_name,
+                        "set_at": stored_at,
+                        "age_hours": age_hours,
+                        "is_stale": stale,
+                    },
+                    "force_flags": {
+                        "force_next": getattr(
+                            session, "_day_color_force_next", None,
+                        ),
+                        "force_reroll": bool(
+                            getattr(
+                                session, "_day_color_force_reroll", False,
+                            )
+                        ),
+                    },
+                    "palette": [c.name for c in day_color.PALETTE],
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"get_day_color_state raised: {exc}"
+
+    @mcp.tool()
+    def force_day_color(color: str) -> str:
+        """K27 — arm a one-shot palette override.
+
+        Sets ``_day_color_force_next`` so the *next* provider call
+        renders the requested colour without touching ``kv_meta``
+        (the persisted daily roll survives). Validates ``color``
+        against the palette and returns ``{"error": "unknown
+        color", ...}`` with the palette list when the name isn't
+        recognised.
+
+        One-shot: the flag is consumed by the next provider call
+        whether or not the cue fires (in practice it always does
+        because the validation has already passed).
+        """
+        try:
+            from app.core.affect import day_color
+
+            chosen = day_color.get_color_by_name(color)
+            if chosen is None:
+                return json.dumps(
+                    {
+                        "error": "unknown color",
+                        "palette": [c.name for c in day_color.PALETTE],
+                    },
+                    indent=2,
+                )
+            session._day_color_force_next = chosen.name
+            return json.dumps(
+                {
+                    "armed": True,
+                    "color": chosen.name,
+                    "tagline": chosen.tagline,
+                    "note": (
+                        "next provider call will render this colour; "
+                        "kv_meta NOT modified; one-shot"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_day_color raised: {exc}"
+
+    @mcp.tool()
+    def reroll_day_color() -> str:
+        """K27 — arm a one-shot reroll of today's colour.
+
+        Sets ``_day_color_force_reroll`` so the next provider call
+        rolls a fresh palette entry via
+        :func:`day_color.roll_for_today` and writes it to
+        ``kv_meta`` (overwriting today's stored colour). Useful
+        for end-to-end repro without waiting for midnight or
+        shifting the OS clock.
+
+        One-shot: the flag is consumed by the next provider call.
+        The result lands in ``kv_meta`` so the new colour persists
+        for the rest of the local day; subsequent calls hit the
+        normal stable-read path until midnight.
+        """
+        try:
+            session._day_color_force_reroll = True
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next provider call will roll a fresh colour "
+                        "and write it to kv_meta; one-shot"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"reroll_day_color raised: {exc}"
+
+    @mcp.tool()
     def get_turning_over_state() -> str:
         """K28 — dump the in-memory turning-over picker state.
 

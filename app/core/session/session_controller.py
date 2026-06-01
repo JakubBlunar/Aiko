@@ -1421,6 +1421,7 @@ class SessionController(
         self._prompt_assembler.set_inner_life_providers(
             affect=self._render_affect_block,
             circadian=self._render_circadian_block,
+            day_color=self._render_day_color_block,
             profile=self._render_user_profile_block,
             user_state=self._render_user_state_block,
             relationship=self._render_relationship_block,
@@ -1560,6 +1561,32 @@ class SessionController(
                         ),
                     )
                 )
+                # K27 — daily personality colour roll. Cheap (hourly
+                # kv_get + date compare; writes only on local-date
+                # rollover). Registered immediately after the memory
+                # workers so it shares their quiet-window gate. The
+                # provider has a lazy fallback for the first-turn-
+                # after-midnight case when this worker hasn't fired
+                # yet -- see _render_day_color_block.
+                if bool(
+                    getattr(settings.agent, "day_color_enabled", True)
+                ):
+                    try:
+                        from app.core.affect.day_color_worker import (
+                            DayColorWorker,
+                        )
+
+                        self._idle_scheduler.register(
+                            DayColorWorker(
+                                chat_db=self._chat_db,
+                                settings=settings.agent,
+                            )
+                        )
+                    except Exception:
+                        log.warning(
+                            "day_color worker registration failed",
+                            exc_info=True,
+                        )
                 # F1 — background fact-checker. Registered last because
                 # it depends on the knowledge-gap store (created above)
                 # and the (lazy) web-search helper. Failures here only
@@ -2367,6 +2394,24 @@ class SessionController(
         # no behaviour depends on them.
         self._last_self_noticing_agreement: Any = None
         self._last_self_noticing_flat_affect: Any = None
+        # K27 — daily personality colour MCP debug flags. The canonical
+        # roll is performed by :class:`DayColorWorker` (registered on
+        # the idle scheduler above) and by the lazy fallback in
+        # :meth:`_render_day_color_block` for the first-turn-after-
+        # midnight case. These flags only exist to let MCP debug tools
+        # override the next provider call without waiting for natural
+        # cadence:
+        #
+        # * ``_day_color_force_next``: name of a palette colour to
+        #   render on the next call regardless of kv_meta state. Does
+        #   NOT touch ``kv_meta`` (so the persisted roll survives).
+        #   Consumed one-shot.
+        # * ``_day_color_force_reroll``: when True, the next provider
+        #   call rolls a fresh colour and writes it to ``kv_meta``
+        #   (useful for repro without shifting the OS clock).
+        #   Consumed one-shot.
+        self._day_color_force_next: str | None = None
+        self._day_color_force_reroll: bool = False
         if (
             self._chat_db is not None
             and bool(getattr(settings.agent, "belief_tracking_enabled", True))

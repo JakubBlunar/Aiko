@@ -559,6 +559,14 @@ class PromptAssembler:
         # SQL reads + dict lookups, no LLM. Set via ``set_inner_life_providers``.
         self._affect_provider: Callable[[], str] | None = None
         self._circadian_provider: Callable[[], str] | None = None
+        # K27 -- daily personality colour. Slow ambient cue rolled
+        # once per local day, kept standalone (not folded into the
+        # K16 unified grounding line). Returns a one-line phrase
+        # like "Your day's colour today: pensive -- slower replies,
+        # more 'hmm'...". The provider has a lazy fallback so the
+        # very first turn after midnight always has a fresh colour,
+        # even when the idle-worker hasn't fired yet.
+        self._day_color_provider: Callable[[], str] | None = None
         self._profile_provider: Callable[[], str] | None = None
         self._user_state_provider: Callable[[], str] | None = None
         self._relationship_provider: Callable[[], str] | None = None
@@ -833,6 +841,7 @@ class PromptAssembler:
         *,
         affect: Callable[[], str] | None = None,
         circadian: Callable[[], str] | None = None,
+        day_color: Callable[[], str] | None = None,
         profile: Callable[[], str] | None = None,
         user_state: Callable[[], str] | None = None,
         relationship: Callable[[], str] | None = None,
@@ -880,6 +889,8 @@ class PromptAssembler:
             self._affect_provider = affect
         if circadian is not None:
             self._circadian_provider = circadian
+        if day_color is not None:
+            self._day_color_provider = day_color
         if profile is not None:
             self._profile_provider = profile
         if user_state is not None:
@@ -1248,6 +1259,22 @@ class PromptAssembler:
         mood_hint = slices.mood_hint
         affect_block = slices.affect_block
         circadian_block = slices.circadian_block
+        # K27 -- daily personality colour. NOT cached in _StaticSlices
+        # because the provider mutates state on two paths: (1) the
+        # lazy fallback writes a fresh roll to kv_meta on the first
+        # turn after a local-date rollover, and (2) the MCP
+        # ``force_day_color`` / ``reroll_day_color`` shortcuts consume
+        # one-shot flags. Built on every assembly so those state
+        # transitions happen exactly once. Cheap: one kv_get + one
+        # date compare on the steady-state path.
+        day_color_block = ""
+        if self._day_color_provider is not None:
+            with _timed_phase(provider_ms, "day_color"):
+                try:
+                    day_color_block = self._day_color_provider() or ""
+                except Exception:
+                    log.debug("day_color provider raised", exc_info=True)
+                    day_color_block = ""
         profile_block = slices.profile_block
         user_state_block = slices.user_state_block
         relationship_block = slices.relationship_block
@@ -1676,8 +1703,10 @@ class PromptAssembler:
         #              hint, relationship, user_state, world, activity}.
         # Anniversary, profile, pajama, knowledge_gaps, belief_gaps,
         # novelty, stagnation, agenda, axes, petname, vocal_tone,
-        # catchphrase, narrative, arc are NEVER suppressed — they each
-        # carry data that fusing dilutes.
+        # catchphrase, narrative, arc, day_color are NEVER suppressed —
+        # they each carry data that fusing dilutes. K27 day_color is
+        # explicitly a trend/phase block (slow daily under-current),
+        # not a situational block, so it survives both modes.
         grounding_mode = self._grounding_line_mode
         if grounding_block and grounding_mode in ("split", "replace"):
             circadian_block = ""
@@ -1755,6 +1784,12 @@ class PromptAssembler:
             system_parts.append(ambient)
         if circadian_block:
             system_parts.append(circadian_block)
+        if day_color_block:
+            # K27 -- daily personality colour. Lands right after the
+            # circadian cue so "what time of day" + "what colour today"
+            # cluster together. Never suppressed by K16 grounding-line
+            # mode (trend/phase block, not situational).
+            system_parts.append(day_color_block)
         if pajama_block:
             # Pajama-aware cue lands right next to the circadian block
             # so the LLM sees both pieces of "what time is it / what

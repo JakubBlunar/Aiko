@@ -3344,3 +3344,73 @@ End-to-end repro for repeated-thought:
 - [`docs/personality-backlog/patterns.md`](patterns.md) — K30 section body replaced with a `**Shipped**` pointer.
 - [`AGENTS.md`](../../AGENTS.md) — new Code Conventions bullet describing K30's three-detector / one-block shape.
 
+## K27. Aiko's day — daily personality colour
+
+Affect ([`AffectState`](../../app/core/affect/affect_state.py)) is *reactive* and decays toward baseline. K5 mood-shell tilt rides on top of that. K30 (self-noticing flat-affect) catches when Aiko's session has gone flat. None of those give her a **non-flat starting point** — a real person walks in with weather. K27 fixes the missing layer: a slow ambient colour rolled once per local day from a 10-entry palette (`pensive`, `restless`, `cozy`, `sharp_witted`, `dreamy`, `focused`, `scatterbrained`, `sentimental`, `mischievous`, `low_key`) that biases Aiko's register all day. K27 is what K30 detects deviations *from* and what K5 reacts *on top of*.
+
+### Decision flow
+
+```mermaid
+flowchart LR
+    subgraph rollPaths [Roll paths]
+        idleWorker["DayColorWorker idle-worker<br>interval 3600s, gated quiet"]
+        lazyFallback["_render_day_color_block<br>'no colour for today? roll once'"]
+    end
+    idleWorker --> rollFn["day_color.roll_for_today<br>uniform random.choice"]
+    lazyFallback --> rollFn
+    rollFn --> kvWrite["chat_db.kv_set<br>aiko.day_color = pensive<br>aiko.day_color_set_at = ISO"]
+    kvWrite --> mcpTools["force_day_color<br>reroll_day_color<br>get_day_color_state"]
+    kvRead["chat_db.kv_get<br>aiko.day_color*"] --> provider["_render_day_color_block"]
+    provider --> sysPrompt["system prompt<br>after circadian_block"]
+    provider --> persona["aiko_companion.txt<br>'Your day's colour today'"]
+```
+
+### Architecture
+
+- **Pure module** [`app/core/affect/day_color.py`](../../app/core/affect/day_color.py) — frozen `DayColor` dataclass (`name`, `tagline`), 10-entry `PALETTE` tuple, four pure functions (`roll_for_today` / `is_stale` / `render_inner_life_block` / `get_color_by_name`). No I/O, no scheduler — unit-testable in milliseconds. `roll_for_today` accepts an optional seeded `random.Random` for deterministic tests; `is_stale` is the single source of truth for "is today's colour set?" and is graceful about corrupt / missing values (returns `True` so the caller's roll path overwrites the bad row).
+- **Hybrid roll mechanism** — two paths, one pure function. The canonical path is [`DayColorWorker`](../../app/core/affect/day_color_worker.py), an `IdleWorker` matching the [`MemoryDecayWorker`](../../app/core/memory/memory_decay_worker.py) shape exactly (class-level `name`, `interval_seconds` property reading from settings, `is_ready(now, last_run_at)`, `run() -> dict`). The worker fires once an hour and only writes to `kv_meta` when the local date has rolled over. Because the idle scheduler only runs during quiet windows, a user who wakes Aiko at 08:30 and starts chatting immediately would read yesterday's colour until the next idle window — so [`_render_day_color_block`](../../app/core/session/inner_life_providers_mixin.py) also has a cheap lazy fallback that runs the same `roll_for_today` when it sees stale state. Identical semantics; the worker is the regular cadence, the provider is the seatbelt for the first-turn-after-midnight case.
+- **Storage on `kv_meta`** — no schema change. Two keys: `aiko.day_color` (palette name string) and `aiko.day_color_set_at` (ISO timestamp of the roll). Same shape as `memory.last_decay_run_at`. The `aiko.*` namespace keeps K27 state from colliding with the `memory.*` (`MemoryStore`) and `goals.*` (onboarding seed) namespaces.
+- **Provider** [`InnerLifeProvidersMixin._render_day_color_block`](../../app/core/session/inner_life_providers_mixin.py) — clusters with `_render_circadian_block`. Three-layer logic: (1) master switch `agent.day_color_enabled` short-circuits to `""`; (2) MCP `_day_color_force_next` / `_day_color_force_reroll` one-shot flags get checked before the normal path; (3) `kv_get` + `is_stale` → either lazy-roll-and-write or stable-read-and-render. Best-effort: any failure path returns `""` (corrupt kv_meta, missing chat_db, roll failure all swallow + log).
+- **Prompt assembler** [`PromptAssembler`](../../app/core/session/prompt_assembler.py) — `_day_color_provider` slot, `day_color` kwarg on `set_inner_life_providers`, timed-phase block build under `_timed_phase(provider_ms, "day_color")`. **Built every turn**, NOT in `_StaticSlices`, because the provider mutates state (lazy roll writes; MCP force flags consumed). Placement in `system_parts` directly after `circadian_block` so "what time of day" + "what colour today" cluster together.
+- **K16 grounding-line behaviour** — K27 is explicitly a **trend/phase block** (slow daily under-current), not a situational block. Survives both `split` and `replace` modes alongside `affect` / `mood_hint` / `relationship` / `user_state`. Also NOT dropped under `aggressive=True` — the colour is one short line and it's the slow undercurrent the rest of the turn rides on, same logic as why circadian and `style_signal` aren't dropped.
+- **Controller state** [`SessionController.__init__`](../../app/core/session/session_controller.py) — two new diagnostic-only attributes for the MCP debug tools: `_day_color_force_next: str | None` (one-shot palette override; armed by `force_day_color`) and `_day_color_force_reroll: bool` (one-shot reroll; armed by `reroll_day_color`). The worker registration sits with the other memory workers (`MemoryPromotionWorker` / `MemoryDecayWorker`) so it shares their quiet-window gate.
+- **Persona** [`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt) — new "Your day's colour today:" block. Short preamble explaining the cue + no-narrate rule (the absence of the cue is also fine; never name the colour out loud), then 10 colour-specific bullets (~2 sentences each) teaching Aiko what each colour feels like in her register. Lives in the persona file so users can rewrite the voice without touching code.
+- **Settings**:
+  - [`AgentSettings.day_color_enabled: bool = True`](../../app/core/infra/settings.py) — master switch. When off, the provider short-circuits to `""` and the worker skips its tick.
+  - `AgentSettings.day_color_check_interval_seconds: int = 3600` — worker cadence. Hourly; the actual roll only fires when the local date has rolled over, so the tick is cheap. Floored at 60s in `_parse_agent` so a buggy override can't pin the scheduler against the wall.
+
+### MCP-debuggable
+
+Three new tools in [`app/mcp/server.py`](../../app/mcp/server.py):
+
+- `get_day_color_state()` — JSON dump: master switch, worker `interval_seconds`, current `name` + `set_at` + `age_hours` + `is_stale`, both force flags, full palette names (so a follow-up `force_day_color` call doesn't need clairvoyance).
+- `force_day_color(color: str)` — arms `_day_color_force_next` so the next provider call renders the requested colour without touching `kv_meta` (the persisted daily roll survives). Validates against the palette and returns `{"error": "unknown color", "palette": [...]}` for unknown names.
+- `reroll_day_color()` — arms `_day_color_force_reroll` so the next provider call rolls a fresh palette entry, writes it to `kv_meta`, and renders it. Useful for end-to-end testing without waiting for midnight or shifting the OS clock.
+
+End-to-end repro:
+
+1. Call `get_day_color_state` on a fresh DB — `current.name=null`, `is_stale=true`.
+2. Send a message (`send_message(skip_tts=true)`) — the lazy fallback fires; the next `get_day_color_state` shows today's date in `set_at` and a real palette entry in `name`.
+3. Call `force_day_color(color="pensive")` then `send_message(skip_tts=true)` — verify "Your day's colour today: pensive --" lands in the rendered prompt via `get_last_response_detail.system_prompt`. The persisted roll from step 2 should still be in `kv_meta` (force_next is one-shot, doesn't touch storage).
+4. Call `reroll_day_color()` then `send_message(skip_tts=true)` — `get_day_color_state` shows a new name + fresh `set_at` timestamp.
+5. Grep the logs: `tail_logs(module_contains="day_color")` for `day_color rolled:` (worker path) or `day_color lazy-roll:` (provider path) lines.
+
+### Files
+
+- [`app/core/affect/day_color.py`](../../app/core/affect/day_color.py) — new pure module (~190 LOC), frozen dataclass + 10-entry palette + four pure functions, `__all__` pin.
+- [`app/core/affect/day_color_worker.py`](../../app/core/affect/day_color_worker.py) — new `IdleWorker` (~110 LOC) matching `MemoryDecayWorker` shape; two `KV_*` constants exported for the provider and the MCP tool to share key strings.
+- [`app/core/infra/settings.py`](../../app/core/infra/settings.py) — two new `AgentSettings` fields with inline context; matching parser entries with the `max(60, int(...))` clamp in `_parse_agent`.
+- [`config/default.json`](../../config/default.json) — two new keys under `agent` (master + interval).
+- [`app/core/session/session_controller.py`](../../app/core/session/session_controller.py) — worker registration in the idle-scheduler cluster, two diagnostic state attributes, `day_color=self._render_day_color_block` on the prompt assembler.
+- [`app/core/session/inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py) — new `_render_day_color_block` method clustered next to `_render_circadian_block`.
+- [`app/core/session/prompt_assembler.py`](../../app/core/session/prompt_assembler.py) — `_day_color_provider` slot, `day_color` kwarg on `set_inner_life_providers`, timed-phase block build right after the cached `circadian_block` from `_StaticSlices`, placement in `system_parts` after `circadian_block`. K16 suppression-matrix comment extended to note K27 as a trend/phase block.
+- [`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt) — new "Your day's colour today" block (1 preamble + 10 colour bullets).
+- [`app/mcp/server.py`](../../app/mcp/server.py) — three new MCP debug tools (`get_day_color_state` + two one-shot force tools).
+- [`tests/test_day_color.py`](../../tests/test_day_color.py) — 26 unit tests covering palette shape (length, uniqueness, lowercase names, non-empty taglines, frozen dataclass), `roll_for_today` (seeded determinism, palette membership, uniform-distribution smoke check, empty-palette raise, `now=` ignored in v1), `is_stale` (None / empty / unparseable / same-day / different-day / Z-suffix / naive timezone / default-now), `render_inner_life_block` (None safety, prefix pinning, every palette entry), `get_color_by_name` (round-trip, case-insensitive, unknown returns `None`, empty inputs).
+- [`tests/test_day_color_worker.py`](../../tests/test_day_color_worker.py) — 14 worker-shape tests using a tiny in-memory kv stub: `is_ready` respects master switch + interval + first-tick rule, `interval_seconds` property reads from settings, `run()` skips on disabled / skips on fresh / rolls on stale / rolls on missing, swallows `kv_get` / `kv_set` / `roll` failures with stable-shape stats dicts, kv key namespacing.
+- [`tests/test_day_color_provider.py`](../../tests/test_day_color_provider.py) — 13 controller-plumbing tests using a minimal `InnerLifeProvidersMixin` host stub: master-switch gate, lazy-roll on missing / stale kv, kv_set failure swallow, stable-read no-write path, unknown-name in kv falls through to `""`, `force_day_color` one-shot override (no kv write, flag consumed), unknown-force falls through, `reroll_day_color` writes fresh, exception safety on kv_get / missing chat_db / roll failure.
+- [`tests/test_prompt_assembler.py`](../../tests/test_prompt_assembler.py) — `DayColorProviderSlotTests` (5 tests): block lands in system prompt, lands after `circadian_block`, silent on empty provider, **retained** under `aggressive=True` (trend/phase block invariant), provider-exception swallowed.
+- [`tests/test_settings.py`](../../tests/test_settings.py) — `DayColorSettingsTests` (5 tests): defaults load when keys missing, overrides round-trip, interval clamps to 60s floor on too-small / negative input, `bool()` coercion on enabled.
+- [`docs/personality-backlog/patterns.md`](patterns.md) — K27 section body replaced with a `**Shipped**` pointer.
+- [`AGENTS.md`](../../AGENTS.md) — new Code Conventions bullet describing K27's hybrid roll mechanism + new debugging-table row.
+
