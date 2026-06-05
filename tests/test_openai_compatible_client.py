@@ -487,7 +487,8 @@ class ListModelsTests(unittest.TestCase):
         ):
             self.assertEqual(client.list_models(), [])
 
-    def test_get_context_length_always_none(self) -> None:
+    def test_get_context_length_known_models(self) -> None:
+        """Known model-id prefixes resolve to conservative caps."""
         settings = load_settings().ollama
         client = OpenAICompatibleClient(
             settings,
@@ -495,7 +496,73 @@ class ListModelsTests(unittest.TestCase):
             model="gpt-4o-mini",
             api_key="sk-test",
         )
-        self.assertIsNone(client.get_context_length("gpt-4o-mini"))
+        cases: list[tuple[str, int]] = [
+            # GPT-5 family — all variants share the 128 k cap.
+            ("gpt-5-mini", 131_072),
+            ("gpt-5-nano", 131_072),
+            ("gpt-5-pro", 131_072),
+            ("gpt-5.4-mini", 131_072),
+            ("gpt-5.5-pro", 131_072),
+            ("GPT-5", 131_072),  # case-insensitive
+            # GPT-4.1 family — 1 M native, capped at 128 k.
+            ("gpt-4.1-mini", 131_072),
+            ("gpt-4.1-nano", 131_072),
+            ("gpt-4.1", 131_072),
+            # GPT-4o / 4-turbo — native 128 k.
+            ("gpt-4o-mini", 131_072),
+            ("gpt-4o", 131_072),
+            ("gpt-4-turbo", 131_072),
+            # Older GPT-4 / 3.5 — smaller native windows.
+            ("gpt-4", 8_192),
+            ("gpt-3.5-turbo", 16_385),
+            # Reasoning models — 200 k.
+            ("o1", 200_000),
+            ("o3", 200_000),
+            ("o4-mini", 200_000),
+            # Gemini family — capped at 128 k. Both bare and prefixed
+            # forms accepted (`/v1/models` returns `models/gemini-...`).
+            ("gemini-2.5-flash-lite", 131_072),
+            ("gemini-2.5-flash", 131_072),
+            ("gemini-2.5-pro", 131_072),
+            ("models/gemini-2.5-pro", 131_072),
+            # Groq llama family.
+            ("llama-3.3-70b-versatile", 131_072),
+            ("llama-3.1-8b-instant", 131_072),
+            # Anthropic via OpenRouter (prefix-stripped + prefixed).
+            ("claude-3.5-sonnet", 200_000),
+            ("claude-3-opus", 200_000),
+            ("claude-4", 200_000),
+            ("anthropic/claude-3.5-sonnet", 200_000),
+        ]
+        for model, expected in cases:
+            with self.subTest(model=model):
+                self.assertEqual(
+                    client.get_context_length(model),
+                    expected,
+                    f"{model!r} did not resolve to {expected}",
+                )
+
+    def test_get_context_length_unknown_returns_none(self) -> None:
+        """Unrecognised model ids fall through to ``None`` so the
+        controller's last-resort 8192 default kicks in."""
+        settings = load_settings().ollama
+        client = OpenAICompatibleClient(
+            settings,
+            base_url="https://api.openai.com/v1",
+            model="unknown-model-xyz",
+            api_key="sk-test",
+        )
+        for model in [
+            "unknown-model-xyz",
+            "totally-made-up-id",
+            "",
+            "   ",
+            "ft:gpt-3.5-omg-fine-tuned",  # no prefix match without ``-turbo``
+            "deepseek-v3",
+            "mistral-large",
+        ]:
+            with self.subTest(model=model):
+                self.assertIsNone(client.get_context_length(model))
 
 
 if __name__ == "__main__":

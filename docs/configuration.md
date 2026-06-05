@@ -78,9 +78,9 @@ Personal identity + the one global TTS knob.
 
 ---
 
-## `ollama` — `OllamaSettings`
+## `ollama` — `OllamaSettings` (legacy, mirror of `local_ollama` provider)
 
-The local Ollama runtime that hosts the chat + embedding models. Sits **behind** `chat_llm` (which can route to a different provider).
+The local Ollama runtime that hosts the chat + embedding models. Sits **behind** `chat_llm` (which can route to a different provider). The `embedding_*` fields are still authoritative (the embedder is not catalogued); the rest is mirror-written to the `local_ollama` entry in `llm.providers` on every reconfigure.
 
 - `ollama.base_url` *(string, `"http://127.0.0.1:11434"`)* — where the local Ollama daemon listens.
 - `ollama.embedding_base_url` *(string, `""`)* — separate URL for the embedding model if you split it onto another box; empty falls back to `base_url`.
@@ -92,9 +92,54 @@ The local Ollama runtime that hosts the chat + embedding models. Sits **behind**
 
 ---
 
-## `chat_llm` — `ChatLlmSettings`
+## `llm` — `LlmSettings` (catalogue + role mapping)
+
+The canonical LLM configuration. Holds the **provider catalogue**
+(`llm.providers[]`) and the **role assignment table** (`llm.routes{}`).
+On first boot, [`_migrate_legacy_llm`](../app/core/infra/settings.py)
+synthesises this block from the legacy `chat_llm` + `ollama` blocks
+when `llm.providers` is empty — see [llm-providers.md →
+Migrating from the legacy config](llm-providers.md#migrating-from-the-legacy-chat_llm--ollama-config).
+
+### `llm.providers[]` — saved provider catalogue
+
+Each entry is a slotted `LlmProvider`:
+
+- `llm.providers[].id` *(string, required, unique)* — stable identifier used by routes. Example: `"local_ollama"`, `"openai"`, `"openai_team"`.
+- `llm.providers[].name` *(string)* — display name for the catalogue list.
+- `llm.providers[].kind` *(string, `"ollama"` | `"openai_compatible"`)* — wire protocol family.
+- `llm.providers[].base_url` *(string)* — endpoint URL.
+- `llm.providers[].api_key` *(string, `""`)* — bearer token (written via `PUT /api/llm/providers/{id}/credentials`; never round-trips through GET).
+- `llm.providers[].api_key_env` *(string, `""`)* — env-var fallback (e.g. `"OPENAI_API_KEY"`).
+- `llm.providers[].extra_headers` *(object, `{}`)* — vendor-specific headers (OpenRouter wants `HTTP-Referer` + `X-Title`).
+- `llm.providers[].timeout_seconds` *(int, `300`)* — HTTP timeout.
+- `llm.providers[].keep_alive` *(string, `"30m"`)* — Ollama-only model-resident-in-VRAM duration; silently ignored by remote providers.
+
+Two routes pointing at the same provider share one `ChatClient`
+instance through the cache in [`app/llm/factory.py`](../app/llm/factory.py).
+
+### `llm.routes{}` — role assignments
+
+Maps a role name (canonical: `"main_chat"`, `"worker_default"`; future: `"heavy_workers"`, …) to an `LlmRoute`:
+
+- `llm.routes[role].provider_id` *(string, required)* — references `llm.providers[].id`. Server returns 404 when unknown.
+- `llm.routes[role].model` *(string, required)* — model name (for `openai_compatible`) or tag (for `ollama`). Free-text combobox in the drawer.
+- `llm.routes[role].context_window` *(int | null, `null`)* — explicit budget. `null` / `0` falls through to the per-model auto-detect (see `chat_llm.context_window` below for the resolution order).
+- `llm.routes[role].max_tokens` *(int, `512`)* — hard cap per assistant reply for this role.
+- `llm.routes[role].temperature` *(float | null, `null`)* — sampling temperature; `null` inherits from the legacy block.
+
+`main_chat` updates cascade through `reconfigure_chat_llm` so the
+live chat client + `TurnRunner` + `ProactiveDirector` rebuild
+immediately. `worker_default` updates are persisted; workers pick
+up the new config on next restart.
+
+---
+
+## `chat_llm` — `ChatLlmSettings` (legacy, mirror of `llm.routes.main_chat`)
 
 Provider-routing layer in front of `ollama`. Lets you run chat on Ollama Cloud, OpenAI, Grok, Groq, OpenRouter, DeepSeek, Together, Mistral — anything OpenAI-compatible.
+
+**Status**: legacy. The catalogue (`llm.providers` + `llm.routes`) is the new source of truth; the controller mirror-writes both directions so external scripts that still read `chat_llm.*` keep working. New code should target `llm.routes.main_chat` instead.
 
 - `chat_llm.provider` *(string, `"ollama"`)* — `"ollama"` (local or Ollama Cloud) or `"openai_compatible"` (anything that speaks the OpenAI API: Gemini, OpenAI, Groq, OpenRouter, DeepSeek, …).
 - `chat_llm.provider_preset` *(string, `""`)* — UI hint emitted by the curated picker. One of `""` / `"ollama"` / `"ollama_cloud"` / `"openai"` / `"gemini"` / `"groq"` / `"openrouter"`. Controller ignores it; only the React drawer reads it to highlight the active preset card.
@@ -102,7 +147,7 @@ Provider-routing layer in front of `ollama`. Lets you run chat on Ollama Cloud, 
 - `chat_llm.base_url` *(string, `""`)* — endpoint URL. Empty → `ollama.base_url` (when provider is `ollama`).
 - `chat_llm.api_key` *(string, `""`)* — bearer token. Empty → looked up via `api_key_env` or inferred from the host. Always written via `PUT /api/settings/llm-credentials` from the UI so the key never round-trips through `GET /api/settings`.
 - `chat_llm.api_key_env` *(string, `""`)* — explicit env var holding the key (e.g. `"OPENAI_API_KEY"`).
-- `chat_llm.context_window` *(int | null, `null`)* — context window for the routed model.
+- `chat_llm.context_window` *(int | null, `null`)* — explicit context-window override (tokens) used as the prompt-assembly budget. Resolution order is **explicit override > active client's `get_context_length(model)` > hardcoded 8192 fallback**. Set to `null` / `0` / unset to use auto-detect: Ollama hits `/api/show` per model; the `OpenAICompatibleClient` consults a static lookup table that maps known cloud model ids to **conservative caps** (gpt-5-mini → 131072, gpt-4.1-mini → 131072, gemini-2.5-* → 131072, claude-3-* → 200000, etc. — see `_CONTEXT_WINDOW_TABLE` in `app/llm/openai_compatible_client.py`). Cap is intentionally below the model's true max: gpt-4.1-mini's 1 M and gemini-2.5-pro's 2 M are clamped to 128 k because (a) typical use is <50 k, (b) bigger budgets make compaction lazy, and (c) for OpenAI's long-context billing tier, staying under 128 k keeps requests in the cheaper short-context column. Editable from the drawer's **Settings → Chat → Advanced → Context window** input. The `context_window_source` field on `get_status` / Diagnostics reports which branch won (`config`, `client`, or `fallback`).
 - `chat_llm.temperature` *(float | null, `null`)* — overrides `ollama.temperature` when set.
 - `chat_llm.extra_headers` *(object, `{}`)* — extra HTTP headers (vendor-specific knobs; OpenRouter wants `HTTP-Referer` + `X-Title`).
 - `chat_llm.max_tokens` *(int, `512`)* — hard cap on tokens **per assistant reply**. Without this, models routinely emit 2 k+ tokens of rambling on casual chat. **Higher → longer replies**, more chance the LLM drifts off-topic; lower → terser, more chance of mid-sentence truncation. `0` / negative disables the cap. Watch `data/app.log` for `ollama response truncated:` / `openai-compat response truncated:` warnings — they fire only when the cap actually clipped a reply.

@@ -2902,6 +2902,84 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             indent=2,
         )
 
+    # ── PR 2: LLM provider catalogue debug tools ─────────────────────
+
+    @mcp.tool()
+    def list_llm_providers() -> str:
+        """Snapshot the LLM provider catalogue with credentials masked.
+
+        Each entry shows ``id`` (used by routes), ``kind``,
+        ``base_url``, and a boolean ``has_api_key``. Use alongside
+        ``list_llm_routes`` to debug "why is Aiko using the wrong
+        model" / "did my credentials make it to the cache".
+        """
+        try:
+            return json.dumps(session.list_providers(), indent=2, default=str)
+        except Exception as exc:
+            return f"Error listing providers: {exc}"
+
+    @mcp.tool()
+    def list_llm_routes() -> str:
+        """Snapshot the role -> provider routing table.
+
+        Returns ``{role: {provider_id, model, context_window, max_tokens, temperature}}``
+        for every active role (``main_chat`` + ``worker_default``,
+        plus any future ``heavy_workers`` etc.).
+        """
+        try:
+            return json.dumps(session.list_routes(), indent=2, default=str)
+        except Exception as exc:
+            return f"Error listing routes: {exc}"
+
+    @mcp.tool()
+    def set_llm_route(
+        role: str,
+        provider_id: str,
+        model: str,
+        context_window: int = 0,
+        max_tokens: int = 0,
+    ) -> str:
+        """Retarget a role to a different provider / model.
+
+        ``role`` is typically ``main_chat`` (rebuilds the chat client
+        immediately) or ``worker_default`` (recorded; restart picks it
+        up). ``context_window`` and ``max_tokens`` of ``0`` mean
+        "leave unchanged on the route" — the resolved budget then
+        falls back to the client's lookup or the existing value.
+
+        Useful for quickly flipping the chat path to a different
+        cloud provider during testing without going through the
+        Settings drawer.
+        """
+        draft: dict[str, Any] = {
+            "provider_id": provider_id,
+            "model": model,
+        }
+        if context_window > 0:
+            draft["context_window"] = int(context_window)
+        if max_tokens > 0:
+            draft["max_tokens"] = int(max_tokens)
+        try:
+            updated = session.update_route(role, draft)
+        except KeyError as exc:
+            return f"Error: {exc}"
+        except Exception as exc:
+            return f"Error setting route: {exc}"
+        return json.dumps(updated, indent=2, default=str)
+
+    @mcp.tool()
+    def get_client_cache_stats() -> str:
+        """Diagnostic snapshot of the shared LLM client cache.
+
+        Shows how many distinct underlying clients are alive and which
+        provider ids share each. Useful to verify "two routes pointing
+        at the same OpenAI key share one client" after a route swap.
+        """
+        try:
+            return json.dumps(session.client_cache_stats(), indent=2, default=str)
+        except Exception as exc:
+            return f"Error reading client cache stats: {exc}"
+
     # ── Resources ────────────────────────────────────────────────────
 
     @mcp.resource("assistant://history")

@@ -10,6 +10,8 @@ import type {
   ChatMessage,
   CircadianPeriod,
   Identity,
+  LlmProvider,
+  LlmRoute,
   LoggingSettings,
   Memory,
   MemoryCounts,
@@ -204,6 +206,23 @@ interface AssistantState {
   /** Reducer for the ``world_updated`` WS event. Surgically merges the
    * patch (state / location / item / deleted_*_id / snapshot). */
   applyWorldPatch: (patch: WorldPatch) => void;
+
+  // ── PR 2: LLM provider catalogue + role assignments ─────────────
+  //
+  // Loaded once when the Settings drawer opens (or on a WS
+  // ``llm_settings_changed`` broadcast). Both null until the first
+  // ``GET /api/llm/{providers,routes}`` resolves.
+  llmProviders: LlmProvider[] | null;
+  llmRoutes: Record<string, LlmRoute> | null;
+  setLlmProviders: (providers: LlmProvider[] | null) => void;
+  setLlmRoutes: (routes: Record<string, LlmRoute> | null) => void;
+  /** Insert / replace a single provider entry (used after PATCH /
+   *  POST). The match is by ``id``; missing ids are appended. */
+  upsertLlmProvider: (provider: LlmProvider) => void;
+  /** Remove a provider by id (used after DELETE). */
+  removeLlmProvider: (providerId: string) => void;
+  /** Set or replace a route by role (used after PATCH /api/llm/routes/{role}). */
+  setLlmRoute: (role: string, route: LlmRoute) => void;
 
   // Live2D avatar (fixed Alexia bundle).
   avatar: AvatarProfile | null;
@@ -801,6 +820,32 @@ export const useAssistantStore = create<AssistantState>((set) => ({
         },
       };
     }),
+
+  // PR 2: provider catalogue + role assignments.
+  llmProviders: null,
+  llmRoutes: null,
+  setLlmProviders: (providers) => set({ llmProviders: providers }),
+  setLlmRoutes: (routes) => set({ llmRoutes: routes }),
+  upsertLlmProvider: (provider) =>
+    set((state) => {
+      const list = state.llmProviders ?? [];
+      const idx = list.findIndex((p) => p.id === provider.id);
+      const next =
+        idx >= 0
+          ? [...list.slice(0, idx), provider, ...list.slice(idx + 1)]
+          : [...list, provider];
+      return { llmProviders: next };
+    }),
+  removeLlmProvider: (providerId) =>
+    set((state) => ({
+      llmProviders: (state.llmProviders ?? []).filter(
+        (p) => p.id !== providerId,
+      ),
+    })),
+  setLlmRoute: (role, route) =>
+    set((state) => ({
+      llmRoutes: { ...(state.llmRoutes ?? {}), [role]: route },
+    })),
 
   world: null,
   setWorld: (snapshot) => set({ world: snapshot }),

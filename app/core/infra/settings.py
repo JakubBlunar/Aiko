@@ -75,6 +75,71 @@ class ChatLlmSettings:
 
 
 @dataclass(slots=True)
+class LlmProvider:
+    """One entry in the provider catalogue.
+
+    Catalogue-mode: credentials live here (one per provider), and
+    :class:`LlmRoute` rows pick which catalogue entry serves which
+    role. Multiple roles pointing at the same provider share one
+    underlying :class:`ChatClient` instance (the cache key is
+    ``(kind, base_url, resolved_api_key)``).
+
+    Migrated from the legacy :class:`ChatLlmSettings` + :class:`OllamaSettings`
+    blocks by :func:`_migrate_legacy_llm`. See ``docs/llm-providers.md``
+    for the user-facing model.
+    """
+
+    id: str  # stable identifier (``"local_ollama"``, ``"openai"``, ``"custom_3"``…)
+    name: str  # human-friendly label for the UI
+    kind: str  # ``"ollama"`` | ``"openai_compatible"``
+    base_url: str
+    api_key: str = ""
+    api_key_env: str = ""  # explicit env-var fallback; empty = inferred per host
+    extra_headers: dict[str, str] = field(default_factory=dict)
+    timeout_seconds: int = 300
+    keep_alive: str = "30m"  # Ollama-only; ignored by openai_compatible
+
+
+@dataclass(slots=True)
+class LlmRoute:
+    """One row in the role-assignment table.
+
+    Each role (``"main_chat"``, ``"worker_default"``, future
+    ``"heavy_workers"``…) picks a provider from the catalogue and
+    specifies the per-role model + budget. ``context_window`` /
+    ``temperature`` of ``None`` mean "let the client decide" — the
+    OpenAI-compat lookup table, Ollama's ``/api/show``, or the
+    inherited ``OllamaSettings.temperature``.
+    """
+
+    provider_id: str  # references ``LlmProvider.id``
+    model: str
+    context_window: int | None = None
+    max_tokens: int = 512
+    temperature: float | None = None
+
+
+@dataclass(slots=True)
+class LlmSettings:
+    """Top-level container for the provider catalogue + role table.
+
+    Lives on :class:`AppSettings`. When ``providers`` is empty at boot
+    (first run after upgrade), :func:`_migrate_legacy_llm` synthesises
+    one entry from each legacy block and wires the default routes.
+    """
+
+    providers: list[LlmProvider] = field(default_factory=list)
+    routes: dict[str, LlmRoute] = field(default_factory=dict)
+
+
+# Canonical role names. New roles can be added (Phase 3:
+# ``"heavy_workers"``) without a schema migration; these are the two
+# guaranteed-present roles after legacy migration.
+LLM_ROLE_MAIN_CHAT = "main_chat"
+LLM_ROLE_WORKER_DEFAULT = "worker_default"
+
+
+@dataclass(slots=True)
 class AudioSettings:
     """Server-side audio knobs.
 
@@ -1785,6 +1850,12 @@ class AppSettings:
     web_server: WebServerSettings = field(default_factory=WebServerSettings)
     memory: MemorySettings = field(default_factory=MemorySettings)
     chat_llm: ChatLlmSettings = field(default_factory=ChatLlmSettings)
+    # PR 2: provider catalogue + role-assignment table. Populated by
+    # ``_migrate_legacy_llm`` when ``llm.providers`` is missing/empty.
+    # Coexists with the legacy ``chat_llm`` + ``ollama`` blocks; those
+    # are still readable and writable via back-compat shims so a
+    # downgrade still boots.
+    llm: LlmSettings = field(default_factory=LlmSettings)
     tools: ToolsSettings = field(default_factory=ToolsSettings)
     endpointing: EndpointingSettings = field(default_factory=EndpointingSettings)
     avatar: AvatarSettings = field(default_factory=AvatarSettings)
@@ -2000,6 +2071,244 @@ def _parse_chat_llm(raw: dict[str, Any]) -> ChatLlmSettings:
     )
 
 
+# PR 2: provider catalogue + role-assignment parsers + legacy migration.
+
+
+def _parse_llm_provider(payload: dict[str, Any]) -> LlmProvider | None:
+    """Validate one entry from ``llm.providers``.
+
+    Returns ``None`` when the entry is malformed (missing id, unknown
+    kind, etc.) so callers can drop it without aborting the whole
+    load. Trimming + lowercasing matches the legacy ``_parse_chat_llm``
+    contract exactly.
+    """
+    if not isinstance(payload, dict):
+        return None
+    provider_id = str(payload.get("id", "") or "").strip()
+    if not provider_id:
+        return None
+    kind = str(payload.get("kind", "") or "").strip().lower()
+    if kind not in {"ollama", "openai_compatible"}:
+        return None
+    name = str(payload.get("name", "") or "").strip() or provider_id
+    base_url = str(payload.get("base_url", "") or "").strip()
+    headers_raw = payload.get("extra_headers") or {}
+    if isinstance(headers_raw, dict):
+        extra_headers = {
+            str(k).strip(): str(v).strip()
+            for k, v in headers_raw.items()
+            if str(k).strip() and v is not None
+        }
+    else:
+        extra_headers = {}
+    timeout_raw = payload.get("timeout_seconds", 300)
+    try:
+        timeout_seconds = max(1, int(timeout_raw))
+    except (TypeError, ValueError):
+        timeout_seconds = 300
+    return LlmProvider(
+        id=provider_id,
+        name=name,
+        kind=kind,
+        base_url=base_url,
+        api_key=str(payload.get("api_key", "") or "").strip(),
+        api_key_env=str(payload.get("api_key_env", "") or "").strip(),
+        extra_headers=extra_headers,
+        timeout_seconds=timeout_seconds,
+        keep_alive=str(payload.get("keep_alive", "30m") or "30m").strip() or "30m",
+    )
+
+
+def _parse_llm_route(payload: dict[str, Any]) -> LlmRoute | None:
+    """Validate one entry from ``llm.routes``."""
+    if not isinstance(payload, dict):
+        return None
+    provider_id = str(payload.get("provider_id", "") or "").strip()
+    if not provider_id:
+        return None
+    ctx_raw = payload.get("context_window")
+    try:
+        context_window = (
+            int(ctx_raw) if ctx_raw not in (None, "", 0) else None
+        )
+    except (TypeError, ValueError):
+        context_window = None
+    temp_raw = payload.get("temperature")
+    try:
+        temperature = float(temp_raw) if temp_raw not in (None, "") else None
+    except (TypeError, ValueError):
+        temperature = None
+    max_tokens_raw = payload.get("max_tokens", 512)
+    try:
+        max_tokens = int(max_tokens_raw) if max_tokens_raw not in (None, "") else 512
+    except (TypeError, ValueError):
+        max_tokens = 512
+    return LlmRoute(
+        provider_id=provider_id,
+        model=str(payload.get("model", "") or "").strip(),
+        context_window=context_window,
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
+
+
+def _parse_llm(raw: Any) -> LlmSettings:
+    """Validate the ``llm`` config block.
+
+    Returns an empty :class:`LlmSettings` when the block is missing
+    or malformed; the caller (``load_settings``) then runs
+    :func:`_migrate_legacy_llm` to synthesise providers + routes from
+    the legacy ``chat_llm`` + ``ollama`` blocks.
+    """
+    if not isinstance(raw, dict):
+        return LlmSettings()
+    providers: list[LlmProvider] = []
+    seen_ids: set[str] = set()
+    for entry in raw.get("providers") or []:
+        parsed = _parse_llm_provider(entry)
+        if parsed is None:
+            continue
+        if parsed.id in seen_ids:
+            log.warning("llm: duplicate provider id %r skipped", parsed.id)
+            continue
+        seen_ids.add(parsed.id)
+        providers.append(parsed)
+    routes: dict[str, LlmRoute] = {}
+    raw_routes = raw.get("routes") or {}
+    if isinstance(raw_routes, dict):
+        for role, route_payload in raw_routes.items():
+            role_name = str(role or "").strip()
+            if not role_name:
+                continue
+            parsed_route = _parse_llm_route(route_payload)
+            if parsed_route is None:
+                continue
+            routes[role_name] = parsed_route
+    return LlmSettings(providers=providers, routes=routes)
+
+
+_LEGACY_LOCAL_OLLAMA_ID = "local_ollama"
+_LEGACY_CHAT_PROVIDER_ID = "chat_migrated"
+
+
+def _migrate_legacy_llm(
+    *,
+    chat_llm: ChatLlmSettings,
+    ollama: OllamaSettings,
+    timeout: int,
+) -> LlmSettings:
+    """Synthesise a :class:`LlmSettings` from the legacy blocks.
+
+    Called by :func:`load_settings` when ``llm.providers`` is empty.
+    Idempotent: subsequent boots see the populated ``llm`` block and
+    skip this path. The legacy blocks remain readable indefinitely
+    so downgrades still boot — the new code also mirror-writes them
+    on every save (see ``persist_user_overrides`` flow in
+    SessionController) so external scripts that read ``chat_llm.*``
+    keep working.
+
+    Migration rules (from the plan):
+
+    1. Synthesize ``local_ollama`` from the existing ``ollama.*`` block.
+    2. If ``chat_llm.provider == "ollama"`` AND base_url matches local,
+       route ``main_chat -> local_ollama`` with ``chat_llm.model`` /
+       ``chat_llm.context_window``.
+    3. Otherwise synthesize a second provider (id from
+       ``chat_llm.provider_preset`` when set, else ``chat_migrated``)
+       and route ``main_chat`` to it.
+    4. Route ``worker_default -> local_ollama`` always (workers stay
+       on local by default; user can later flip via UI).
+    """
+    providers: list[LlmProvider] = []
+
+    # Step 1: local_ollama from the legacy ``ollama`` block.
+    local_provider = LlmProvider(
+        id=_LEGACY_LOCAL_OLLAMA_ID,
+        name="Local Ollama",
+        kind="ollama",
+        base_url=(ollama.base_url or "http://127.0.0.1:11434").strip(),
+        api_key="",
+        api_key_env="",
+        extra_headers={},
+        timeout_seconds=int(timeout) if timeout else 300,
+        keep_alive="30m",
+    )
+    providers.append(local_provider)
+
+    # Steps 2-3: where does ``main_chat`` go?
+    chat_provider_id = _LEGACY_LOCAL_OLLAMA_ID
+    chat_model = (chat_llm.model or ollama.chat_model or "").strip()
+    chat_context_window = chat_llm.context_window
+
+    chat_base = (chat_llm.base_url or "").strip()
+    local_base = local_provider.base_url
+    chat_is_local = (
+        chat_llm.provider == "ollama"
+        and (not chat_base or _urls_match(chat_base, local_base))
+    )
+
+    if not chat_is_local:
+        # Need a second provider entry for the remote chat path.
+        # Prefer the provider_preset string as the id (stable across
+        # restarts) when it's set to something the user picked.
+        preset = (chat_llm.provider_preset or "").strip().lower()
+        candidate_id = preset or _LEGACY_CHAT_PROVIDER_ID
+        # Avoid collisions with the local entry.
+        if candidate_id == _LEGACY_LOCAL_OLLAMA_ID:
+            candidate_id = _LEGACY_CHAT_PROVIDER_ID
+        kind = (chat_llm.provider or "openai_compatible").strip().lower()
+        if kind not in {"ollama", "openai_compatible"}:
+            kind = "openai_compatible"
+        # Friendly name from preset id, capitalised; falls back to
+        # the kind label.
+        if preset:
+            name = preset.replace("_", " ").title()
+        else:
+            name = "Chat provider"
+        remote_provider = LlmProvider(
+            id=candidate_id,
+            name=name,
+            kind=kind,
+            base_url=chat_base,
+            api_key=chat_llm.api_key or "",
+            api_key_env=chat_llm.api_key_env or "",
+            extra_headers=dict(chat_llm.extra_headers or {}),
+            timeout_seconds=int(timeout) if timeout else 300,
+            keep_alive=chat_llm.keep_alive or "30m",
+        )
+        providers.append(remote_provider)
+        chat_provider_id = remote_provider.id
+
+    # Step 4: routes.
+    routes: dict[str, LlmRoute] = {
+        LLM_ROLE_MAIN_CHAT: LlmRoute(
+            provider_id=chat_provider_id,
+            model=chat_model,
+            context_window=chat_context_window,
+            max_tokens=int(chat_llm.max_tokens or 512),
+            temperature=chat_llm.temperature,
+        ),
+        LLM_ROLE_WORKER_DEFAULT: LlmRoute(
+            provider_id=_LEGACY_LOCAL_OLLAMA_ID,
+            model=(ollama.chat_model or "").strip(),
+            context_window=ollama.context_window,
+            max_tokens=512,
+            temperature=None,
+        ),
+    }
+    return LlmSettings(providers=providers, routes=routes)
+
+
+def _urls_match(a: str, b: str) -> bool:
+    """Loose URL equality for legacy-migration purposes.
+
+    Trailing slash + case are normalised so
+    ``"http://127.0.0.1:11434"`` and ``"http://127.0.0.1:11434/"``
+    are treated as the same provider entry.
+    """
+    return (a or "").strip().rstrip("/").lower() == (b or "").strip().rstrip("/").lower()
+
+
 def _migrate_legacy_audio_keys(user_path: Path) -> None:
     """One-shot migration: drop ``audio.microphone_device`` /
     ``audio.output_device`` / ``audio.live_*`` from ``user.json``.
@@ -2072,11 +2381,12 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
     web_server_raw = raw.get("web_server", {}) or {}
     memory_raw = raw.get("memory", {}) or {}
     chat_llm_raw = raw.get("chat_llm", {}) or {}
+    llm_raw = raw.get("llm", {}) or {}
     tools_raw = raw.get("tools", {}) or {}
     endpointing_raw = raw.get("endpointing", {}) or {}
     avatar_raw = raw.get("avatar", {}) or {}
 
-    return AppSettings(
+    settings = AppSettings(
         assistant=AssistantSettings(
             name=_required(assistant, "name"),
             remember_history=bool(_required(assistant, "remember_history")),
@@ -3272,6 +3582,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             ),
         ),
         chat_llm=_parse_chat_llm(chat_llm_raw),
+        llm=_parse_llm(llm_raw),  # populated below if empty
         tools=ToolsSettings(
             enabled=bool(tools_raw.get("enabled", True)),
             get_time=bool(tools_raw.get("get_time", True)),
@@ -3320,3 +3631,19 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             accessory_state=_load_accessory_state(avatar_raw.get("accessory_state")),
         ),
     )
+
+    # ── PR 2: legacy LLM migration (idempotent) ─────────────────────
+    #
+    # If ``llm.providers`` is empty (first boot after upgrade), synthesise
+    # the catalogue + routes from the legacy ``chat_llm`` + ``ollama``
+    # blocks. Subsequent boots see the populated ``llm`` block and skip.
+    # The legacy blocks remain readable indefinitely — back-compat is
+    # the contract, not opt-in.
+    if not settings.llm.providers:
+        settings.llm = _migrate_legacy_llm(
+            chat_llm=settings.chat_llm,
+            ollama=settings.ollama,
+            timeout=settings.ollama.timeout,
+        )
+
+    return settings

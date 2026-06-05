@@ -19,6 +19,8 @@ import { useAssistantStore } from "../store";
 import { Section } from "./settings/SettingsSection";
 import { IdentitySection } from "./settings/IdentitySection";
 import { ChatProviderSection } from "./settings/ChatProviderSection";
+import { LlmProvidersListSection } from "./settings/LlmProvidersListSection";
+import { LlmRoutesSection } from "./settings/LlmRoutesSection";
 import { VoiceTab } from "./settings/VoiceTab";
 import { AvatarTab } from "./settings/AvatarTab";
 import { DiagnosticsSection } from "./settings/DiagnosticsSection";
@@ -1012,6 +1014,10 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                     apply={apply}
                     onSettingsChanged={refreshAll}
                   />
+
+                  <LlmProvidersListSection />
+
+                  <LlmRoutesSection />
 
                   <DiagnosticsSection
                     metrics={metrics}
