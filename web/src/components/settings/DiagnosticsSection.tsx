@@ -41,7 +41,8 @@ export function DiagnosticsSection({
         : 0;
   const fillPct = Math.min(100, Math.round(promptPct * 100));
   const sourceLabel: Record<string, string> = {
-    ollama_show: "auto-detected from Ollama",
+    client: "auto-detected from provider",
+    ollama_show: "auto-detected from Ollama", // legacy label, kept for back-compat
     config: "from config",
     fallback: "default fallback",
   };

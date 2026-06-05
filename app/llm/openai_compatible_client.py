@@ -68,6 +68,66 @@ _announced_base_urls: set[str] = set()
 _BENIGN_TRUNCATION_SURFACES: frozenset[str] = frozenset({"tool_pass"})
 
 
+# Conservative context-window caps keyed by model-id prefix.
+#
+# First match wins (longer prefixes must come before shorter ones so
+# e.g. ``gpt-4.1-mini`` doesn't fall through to the ``gpt-4`` rule).
+# Values are intentionally below the model's true maximum; see
+# ``OpenAICompatibleClient.get_context_length`` for the rationale.
+_CONTEXT_WINDOW_TABLE: tuple[tuple[str, int], ...] = (
+    # ── GPT-5 family (Aug 2025+). 400 k native, capped at 128 k. ───
+    # Covers gpt-5, gpt-5-mini, gpt-5-nano, gpt-5-pro, gpt-5.1,
+    # gpt-5.2, gpt-5.4-*, gpt-5.5-*, gpt-5.5-pro, …
+    ("gpt-5", 131_072),
+    # ── GPT-4.1 family. 1 M native, capped at 128 k. ────────────────
+    ("gpt-4.1", 131_072),
+    # ── GPT-4o family. Native 128 k. ────────────────────────────────
+    ("gpt-4o", 131_072),
+    ("gpt-4-turbo", 131_072),
+    # ── Older GPT-4 / 3.5. Native windows are smaller. ──────────────
+    ("gpt-4", 8_192),
+    ("gpt-3.5-turbo", 16_385),
+    # ── Reasoning models (o-series). 200 k native. ──────────────────
+    ("o4-mini", 200_000),
+    ("o3", 200_000),
+    ("o1", 200_000),
+    # ── Gemini 2.5 family. 1-2 M native, capped at 128 k. ───────────
+    ("gemini-2.5-pro", 131_072),
+    ("gemini-2.5-flash-lite", 131_072),
+    ("gemini-2.5-flash", 131_072),
+    ("gemini-2.5", 131_072),
+    # ── Groq llama-3.x family. 128 k native. ────────────────────────
+    ("llama-3.3", 131_072),
+    ("llama-3.1", 131_072),
+    # ── Anthropic via OpenRouter / openai-compat. 200 k native. ─────
+    ("claude-3.5", 200_000),
+    ("claude-3-", 200_000),
+    ("claude-4", 200_000),
+    ("anthropic/claude-3.5", 200_000),
+    ("anthropic/claude-3", 200_000),
+    ("anthropic/claude-4", 200_000),
+)
+
+
+def _lookup_context_window(model: str) -> int | None:
+    """Match a model id against ``_CONTEXT_WINDOW_TABLE``.
+
+    Strips the ``models/`` prefix Gemini sometimes emits before
+    matching, lowercases for case-insensitive matching, and returns
+    ``None`` when no prefix matches (the controller falls back to
+    the explicit override or the hardcoded 8192 last-resort default).
+    """
+    name = (model or "").strip().lower()
+    if name.startswith("models/"):
+        name = name[len("models/"):]
+    if not name:
+        return None
+    for prefix, window in _CONTEXT_WINDOW_TABLE:
+        if name.startswith(prefix):
+            return window
+    return None
+
+
 def _is_gemini_model(model: str) -> bool:
     """True when the configured model is a Gemini variant.
 
@@ -709,14 +769,29 @@ class OpenAICompatibleClient:
         return names
 
     def get_context_length(self, model: str) -> int | None:
-        """OpenAI-compat endpoints don't expose this consistently.
+        """Return a conservative context-window cap for known cloud models.
 
-        Returns ``None`` so the controller falls back to the
-        configured ``chat_llm.context_window`` (or the hardcoded
-        8192 last-resort default).
+        OpenAI-compat endpoints (OpenAI, Gemini, Groq, OpenRouter,
+        Anthropic via OpenRouter, ...) don't expose context-window
+        metadata over ``/v1/models``, so we maintain a static table
+        of known model-id prefixes -> conservative caps. Returns
+        ``None`` for ids we don't recognise; the controller then
+        falls back to ``chat_llm.context_window`` or the hardcoded
+        8192 last-resort default in ``_resolve_context_window``.
+
+        Caps are intentionally **conservative**, not the model's
+        true maximum: gpt-4.1-mini's 1 M and gemini-2.5-pro's 2 M
+        are capped at 128 k here because (a) real conversational
+        use rarely exceeds 50 k, (b) larger budgets make prompt
+        compaction lazy, and (c) for OpenAI's long-context tier
+        pricing, staying under 128 k keeps requests in the cheaper
+        short-context billing column.
+
+        First match wins. The ``models/`` prefix Gemini sometimes
+        emits is stripped before matching so both ``gemini-2.5-pro``
+        and ``models/gemini-2.5-pro`` resolve identically.
         """
-        del model
-        return None
+        return _lookup_context_window(model)
 
     # ── Helpers ─────────────────────────────────────────────────────
 

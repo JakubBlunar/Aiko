@@ -100,6 +100,63 @@ export interface LlmProviderPreset {
   free_tier: string;
   docs_url: string;
   default_workers_use_local: boolean;
+  /**
+   * Suggested ``chat_llm.context_window`` value when the preset card
+   * is clicked. ``null`` means "auto-detect" (Ollama / local) — leave
+   * the field blank so the controller falls back to the model's
+   * ``/api/show`` value. A positive integer pre-fills the Advanced
+   * panel's "Context window" input with a conservative cap for cloud
+   * providers (typically 131 072 = 128 k — see the per-model lookup
+   * table in ``app/llm/openai_compatible_client.py``).
+   */
+  default_context_window: number | null;
+}
+
+// ── PR 2: provider catalogue + role-assignment table ─────────────
+//
+// New shape that supersedes the legacy ``chat_llm`` block (which is
+// kept in sync via mirror-writes server-side). Two roles ship now —
+// ``main_chat`` (the chat path) and ``worker_default`` (the ~24
+// background workers). Future ``heavy_workers`` (browser tools,
+// Playwright agent, …) can be added without a schema migration.
+
+/** Stable identifier for an LLM role. */
+export type LlmRoleId = "main_chat" | "worker_default" | string;
+
+/**
+ * One row in the provider catalogue. ``api_key`` is intentionally
+ * never echoed — the server replaces it with ``has_api_key: boolean``
+ * so the raw key never round-trips through the wire.
+ */
+export interface LlmProvider {
+  id: string;
+  name: string;
+  kind: "ollama" | "openai_compatible";
+  base_url: string;
+  has_api_key: boolean;
+  api_key_env: string;
+  extra_headers: Record<string, string>;
+  timeout_seconds: number;
+  keep_alive: string;
+}
+
+/** One row in the role-assignment table. */
+export interface LlmRoute {
+  provider_id: string;
+  model: string;
+  context_window: number | null;
+  max_tokens: number;
+  temperature: number | null;
+}
+
+/** Server response shape for the test-provider endpoint. */
+export interface LlmProviderTestResult {
+  success: boolean;
+  latency_ms?: number;
+  completion_tokens?: number;
+  model?: string;
+  error_code?: string;
+  error_message?: string;
 }
 
 /** Provider-routing snapshot for ``GET /api/settings``.
@@ -857,7 +914,7 @@ export interface MetricsSnapshot {
   tokens_per_second?: number;
   // Context fill.
   context_window?: number;
-  context_source?: "config" | "ollama_show" | "fallback" | string;
+  context_source?: "config" | "client" | "ollama_show" | "fallback" | string;
   prompt_pct?: number;
   // Prompt-assembly telemetry.
   system_tokens?: number;
@@ -1106,7 +1163,16 @@ export type WsServerEvent =
       model: string;
     }
   | { type: "model_changed"; model: string }
-  | { type: "llm_settings_changed" }
+  | {
+      type: "llm_settings_changed";
+      // Optional payload (added in PR 2): when present, lets the
+      // store sync the providers + routes slices without a follow-up
+      // fetch. Old broadcasts (pre-PR 2) carry none of these fields,
+      // so the reducer falls back to ``GET /api/llm/{providers,routes}``.
+      chat_llm?: ChatLlmSnapshot;
+      providers?: LlmProvider[];
+      routes?: Record<string, LlmRoute>;
+    }
   | {
       type: "tts_state";
       event: "start" | "end";

@@ -223,6 +223,41 @@ class PatchChatLlmTests(unittest.TestCase):
         called_payload = session.reconfigure_chat_llm.call_args.args[0]
         self.assertNotIn("api_key", called_payload)
 
+    def test_patch_chat_llm_context_window_round_trips(self) -> None:
+        """The new Context window input on the Advanced panel saves
+        through to ``reconfigure_chat_llm`` so the controller can rebuild
+        the prompt-assembler budget. Both a positive integer and a
+        ``null`` (= auto) value must be passed through unchanged."""
+        client, session, _settings = _build_client()
+        # Positive integer override.
+        client.patch(
+            "/api/settings",
+            json={
+                "chat_llm": {
+                    "provider": "openai_compatible",
+                    "model": "gpt-5-mini",
+                    "context_window": 65_536,
+                },
+            },
+        )
+        called = session.reconfigure_chat_llm.call_args.args[0]
+        self.assertEqual(called.get("context_window"), 65_536)
+        self.assertEqual(called.get("model"), "gpt-5-mini")
+        # ``null`` -> "auto" (controller falls back to client lookup).
+        session.reconfigure_chat_llm.reset_mock()
+        client.patch(
+            "/api/settings",
+            json={
+                "chat_llm": {
+                    "provider": "openai_compatible",
+                    "model": "gpt-5-mini",
+                    "context_window": None,
+                },
+            },
+        )
+        called = session.reconfigure_chat_llm.call_args.args[0]
+        self.assertIsNone(called.get("context_window"))
+
 
 class PutCredentialsTests(unittest.TestCase):
     def test_put_credentials_writes_via_reconfigure(self) -> None:

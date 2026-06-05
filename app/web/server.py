@@ -1301,6 +1301,194 @@ def create_web_app(session: "SessionController") -> FastAPI:
                 "error_message": error_message,
             })
 
+    # ── PR 2: provider catalogue + role-assignment REST surface ────
+    #
+    # New endpoints sit alongside the legacy /api/settings + /api/llm/presets +
+    # /api/llm/test-connection ones (which keep working unchanged as back-compat
+    # shims). The new catalogue is the eventual primary; the legacy block stays
+    # readable / writable so downgrades and external scripts don't break.
+
+    @app.get("/api/llm/providers")
+    def get_llm_providers() -> JSONResponse:
+        """List the saved provider catalogue with credentials masked.
+
+        Each entry is a snapshot of :class:`LlmProvider` with the raw
+        ``api_key`` replaced by ``has_api_key: bool``.
+        """
+        return JSONResponse({"providers": session.list_providers()})
+
+    @app.post("/api/llm/providers")
+    async def post_llm_provider(payload: dict[str, Any]) -> JSONResponse:
+        """Create a new provider catalogue entry.
+
+        Body: ``{template_id?: str, draft: {...}}``. ``template_id``
+        seeds the entry from one of ``_PROVIDER_PRESETS``; ``draft``
+        can override any field. Returns 409 when the id is taken.
+        """
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "expected JSON object body")
+        template_id = payload.get("template_id") or None
+        draft = payload.get("draft") or {}
+        if not isinstance(draft, dict):
+            raise HTTPException(400, "draft must be an object")
+        try:
+            entry = session.add_provider(
+                template_id=str(template_id) if template_id else None,
+                draft=draft,
+            )
+        except ValueError as exc:
+            raise HTTPException(409, str(exc))
+        hub.broadcast({
+            "type": "llm_settings_changed",
+            "providers": session.list_providers(),
+            "routes": session.list_routes(),
+        })
+        return JSONResponse(entry)
+
+    @app.patch("/api/llm/providers/{provider_id}")
+    async def patch_llm_provider(
+        provider_id: str, payload: dict[str, Any],
+    ) -> JSONResponse:
+        """Edit non-credential fields on a saved provider."""
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "expected JSON object body")
+        # Safety net: credentials only flow through PUT
+        # /api/llm/providers/{id}/credentials so an accidental PATCH
+        # field can't leak through this surface.
+        safe = {k: v for k, v in payload.items() if k not in ("api_key", "api_key_env")}
+        try:
+            entry = session.update_provider(provider_id, safe)
+        except KeyError as exc:
+            raise HTTPException(404, str(exc))
+        hub.broadcast({
+            "type": "llm_settings_changed",
+            "providers": session.list_providers(),
+            "routes": session.list_routes(),
+        })
+        return JSONResponse(entry)
+
+    @app.put("/api/llm/providers/{provider_id}/credentials")
+    async def put_llm_provider_credentials(
+        provider_id: str, payload: dict[str, Any],
+    ) -> JSONResponse:
+        """Replace the api_key / api_key_env on a saved provider.
+
+        Validates that the API key is whitespace-free (parallel to the
+        legacy /api/settings/llm-credentials endpoint).
+        """
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "expected JSON object body")
+        creds: dict[str, Any] = {}
+        if "api_key" in payload:
+            raw_key = str(payload.get("api_key", "") or "")
+            if raw_key and any(c.isspace() for c in raw_key):
+                raise HTTPException(
+                    400, "api_key must not contain whitespace",
+                )
+            creds["api_key"] = raw_key.strip()
+        if "api_key_env" in payload:
+            creds["api_key_env"] = str(
+                payload.get("api_key_env", "") or "",
+            ).strip()
+        if not creds:
+            raise HTTPException(400, "no credential fields supplied")
+        try:
+            entry = session.update_provider_credentials(provider_id, creds)
+        except KeyError as exc:
+            raise HTTPException(404, str(exc))
+        hub.broadcast({
+            "type": "llm_settings_changed",
+            "providers": session.list_providers(),
+            "routes": session.list_routes(),
+        })
+        return JSONResponse(entry)
+
+    @app.delete("/api/llm/providers/{provider_id}")
+    async def delete_llm_provider(provider_id: str) -> JSONResponse:
+        """Delete a saved provider. 409 when still referenced by a route."""
+        try:
+            session.remove_provider(provider_id)
+        except KeyError as exc:
+            raise HTTPException(404, str(exc))
+        except ValueError as exc:
+            raise HTTPException(409, str(exc))
+        hub.broadcast({
+            "type": "llm_settings_changed",
+            "providers": session.list_providers(),
+            "routes": session.list_routes(),
+        })
+        return JSONResponse({"ok": True, "deleted": provider_id})
+
+    @app.post("/api/llm/providers/{provider_id}/test")
+    async def post_llm_provider_test(
+        provider_id: str, payload: dict[str, Any] | None = None,
+    ) -> JSONResponse:
+        """Run a one-token probe against a saved provider.
+
+        Body (all optional): ``{model?: str, context_window?: int}``.
+        Returns the same shape as the legacy /api/llm/test-connection
+        endpoint so the UI can reuse the green/red banner.
+        """
+        body = payload if isinstance(payload, dict) else {}
+        override_model = body.get("model")
+        override_ctx_raw = body.get("context_window")
+        try:
+            override_ctx = (
+                int(override_ctx_raw)
+                if override_ctx_raw not in (None, "", 0)
+                else None
+            )
+        except (TypeError, ValueError):
+            override_ctx = None
+        try:
+            result = session.test_provider(
+                provider_id,
+                override_model=(
+                    str(override_model).strip()
+                    if override_model is not None
+                    else None
+                ),
+                override_context_window=override_ctx,
+            )
+        except KeyError as exc:
+            raise HTTPException(404, str(exc))
+        return JSONResponse(result)
+
+    @app.get("/api/llm/routes")
+    def get_llm_routes() -> JSONResponse:
+        """List all role assignments."""
+        return JSONResponse({"routes": session.list_routes()})
+
+    @app.patch("/api/llm/routes/{role}")
+    async def patch_llm_route(
+        role: str, payload: dict[str, Any],
+    ) -> JSONResponse:
+        """Set ``llm.routes[role]`` from a partial draft.
+
+        For ``main_chat`` this cascades through the legacy
+        :meth:`SessionController.reconfigure_chat_llm` path so the
+        in-flight chat client + TurnRunner are rebuilt immediately.
+        For other roles (currently only ``worker_default``) the route
+        is recorded; a restart picks it up.
+        """
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "expected JSON object body")
+        try:
+            updated = session.update_route(role, payload)
+        except KeyError as exc:
+            raise HTTPException(404, str(exc))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        hub.broadcast({
+            "type": "llm_settings_changed",
+            "providers": session.list_providers(),
+            "routes": session.list_routes(),
+            # Echo the matching legacy snapshot so the existing UI
+            # keeps working unchanged until the catalogue UI lands.
+            "chat_llm": session._chat_llm_public_snapshot(),
+        })
+        return JSONResponse(updated)
+
     @app.get("/api/voices")
     def list_voices() -> JSONResponse:
         return JSONResponse(session.list_tts_voices())

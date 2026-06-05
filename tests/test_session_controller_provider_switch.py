@@ -193,9 +193,28 @@ class ProviderPresetsTests(unittest.TestCase):
             for required in (
                 "id", "label", "provider", "base_url",
                 "recommended_models", "api_key_required", "free_tier",
+                "default_context_window",
             ):
                 self.assertIn(required, preset, f"missing {required} in {preset}")
             self.assertIsInstance(preset["recommended_models"], list)
+            # ``default_context_window`` is ``None`` for Ollama
+            # presets (auto-detect via ``/api/show``) and a positive
+            # int for OpenAI-compat cloud providers (conservative cap).
+            ctx = preset["default_context_window"]
+            self.assertTrue(ctx is None or (isinstance(ctx, int) and ctx > 0))
+
+    def test_openai_preset_recommends_gpt5_family(self) -> None:
+        """The OpenAI preset's recommended_models lead with the cost-conscious
+        GPT-5 / GPT-4.1 mini-tier shortlist so the dropdown surfaces them
+        even when ``/v1/models`` doesn't include them for an account."""
+        openai = next(
+            p for p in SessionController.provider_presets() if p["id"] == "openai"
+        )
+        self.assertIn("gpt-5-mini", openai["recommended_models"])
+        self.assertIn("gpt-5-nano", openai["recommended_models"])
+        self.assertIn("gpt-4.1-mini", openai["recommended_models"])
+        self.assertIn("gpt-4.1-nano", openai["recommended_models"])
+        self.assertEqual(openai["default_context_window"], 131_072)
 
 
 class ReconfigureChatLlmTests(unittest.TestCase):
@@ -258,8 +277,16 @@ class ReconfigureChatLlmTests(unittest.TestCase):
         self.assertEqual(cfg.model, "gemini-2.5-flash-lite")
         self.assertEqual(cfg.api_key, "AIza-test")
         self.assertEqual(cfg.provider_preset, "gemini")
-        # persist_user_overrides called exactly once.
-        persist.assert_called_once()
+        # persist_user_overrides is now called twice: once for the
+        # legacy ``chat_llm`` block (back-compat) and once for the new
+        # ``llm.providers`` + ``llm.routes`` catalogue mirror (PR 2).
+        self.assertEqual(persist.call_count, 2)
+        legacy_call = persist.call_args_list[0]
+        self.assertIn("chat_llm", legacy_call.args[0])
+        catalogue_call = persist.call_args_list[1]
+        self.assertIn("llm", catalogue_call.args[0])
+        self.assertIn("providers", catalogue_call.args[0]["llm"])
+        self.assertIn("routes", catalogue_call.args[0]["llm"])
         # New chat client is the OpenAI-compatible variant.
         self.assertIsInstance(controller._chat_client, OpenAICompatibleClient)
         # Worker client points at a fresh local OllamaClient because
@@ -313,6 +340,89 @@ class ReconfigureChatLlmTests(unittest.TestCase):
         # Both clients are now the same Ollama instance.
         self.assertIs(controller._worker_client, controller._chat_client)
         self.assertEqual(controller._chat_provider, "ollama")
+
+
+class ResolveContextWindowTests(unittest.TestCase):
+    """``_resolve_context_window`` decides what budget the prompt assembler
+    uses. The precedence is: explicit override > client lookup > 8192."""
+
+    def _make_controller(
+        self, *, chat_client: Any,
+    ) -> SessionController:
+        controller = SessionController.__new__(SessionController)
+        controller._chat_client = chat_client
+        return controller
+
+    def test_explicit_override_wins(self) -> None:
+        client = MagicMock()
+        client.get_context_length.return_value = 999_999
+        controller = self._make_controller(chat_client=client)
+        window, source = controller._resolve_context_window(
+            override=42_000, model="gpt-5-mini",
+        )
+        self.assertEqual(window, 42_000)
+        self.assertEqual(source, "config")
+        # Override path short-circuits — the client lookup is not called.
+        client.get_context_length.assert_not_called()
+
+    def test_zero_override_falls_through_to_client(self) -> None:
+        client = MagicMock()
+        client.get_context_length.return_value = 131_072
+        controller = self._make_controller(chat_client=client)
+        window, source = controller._resolve_context_window(
+            override=0, model="gpt-5-mini",
+        )
+        self.assertEqual(window, 131_072)
+        self.assertEqual(source, "client")
+        client.get_context_length.assert_called_once_with("gpt-5-mini")
+
+    def test_none_override_uses_client(self) -> None:
+        """An OpenAI-compat client now returns a positive cap for
+        known cloud models. The source label should be ``client``
+        (not the legacy ``ollama_show``)."""
+        client = MagicMock()
+        client.get_context_length.return_value = 131_072
+        controller = self._make_controller(chat_client=client)
+        window, source = controller._resolve_context_window(
+            override=None, model="gpt-4.1-mini",
+        )
+        self.assertEqual(window, 131_072)
+        self.assertEqual(source, "client")
+
+    def test_client_returns_none_falls_back_to_8192(self) -> None:
+        client = MagicMock()
+        client.get_context_length.return_value = None
+        controller = self._make_controller(chat_client=client)
+        window, source = controller._resolve_context_window(
+            override=None, model="totally-unknown-model",
+        )
+        self.assertEqual(window, 8192)
+        self.assertEqual(source, "fallback")
+
+    def test_client_raises_falls_back_to_8192(self) -> None:
+        """A misbehaving client (network glitch, bad JSON) must not
+        crash the controller — we swallow the exception and fall
+        back to the hardcoded default."""
+        client = MagicMock()
+        client.get_context_length.side_effect = RuntimeError("boom")
+        controller = self._make_controller(chat_client=client)
+        window, source = controller._resolve_context_window(
+            override=None, model="any",
+        )
+        self.assertEqual(window, 8192)
+        self.assertEqual(source, "fallback")
+
+    def test_negative_override_treated_as_no_override(self) -> None:
+        """Defensive: a negative integer override is invalid; we
+        ignore it rather than echoing back a silly negative budget."""
+        client = MagicMock()
+        client.get_context_length.return_value = 131_072
+        controller = self._make_controller(chat_client=client)
+        window, source = controller._resolve_context_window(
+            override=-100, model="gpt-5-mini",
+        )
+        self.assertEqual(window, 131_072)
+        self.assertEqual(source, "client")
 
 
 if __name__ == "__main__":

@@ -62,6 +62,11 @@ from app.core.session.session_text_utils import (
 )
 from app.core.infra.settings import (
     AppSettings,
+    LLM_ROLE_MAIN_CHAT,
+    LLM_ROLE_WORKER_DEFAULT,
+    LlmProvider,
+    LlmRoute,
+    _urls_match,
     persist_user_overrides,
     read_user_overrides,
 )
@@ -71,6 +76,7 @@ from app.core.voice.tts_queue import TtsQueue
 from app.core.session.turn_runner import TurnRunner
 from app.llm.chat_client import ChatClient
 from app.llm.embedder import Embedder
+from app.llm.factory import ClientCache
 from app.llm.ollama_client import OllamaClient
 from app.llm.openai_compatible_client import OpenAICompatibleClient
 from app.llm.token_utils import estimate_tokens
@@ -182,6 +188,8 @@ _PROVIDER_PRESETS: tuple[dict[str, Any], ...] = (
         "free_tier": "Unlimited (runs on your machine)",
         "docs_url": "https://ollama.com",
         "default_workers_use_local": False,
+        # ``None`` -> auto-detect via Ollama's ``/api/show`` per model.
+        "default_context_window": None,
     },
     {
         "id": "ollama_cloud",
@@ -197,6 +205,7 @@ _PROVIDER_PRESETS: tuple[dict[str, Any], ...] = (
         "free_tier": "Paid plan required",
         "docs_url": "https://ollama.com/cloud",
         "default_workers_use_local": True,
+        "default_context_window": None,
     },
     {
         "id": "gemini",
@@ -215,22 +224,34 @@ _PROVIDER_PRESETS: tuple[dict[str, Any], ...] = (
         "free_tier": "Free tier: ~15 req/min, ~1500 req/day",
         "docs_url": "https://ai.google.dev",
         "default_workers_use_local": True,
+        # 128 k cap from 1-2 M native — see ``_CONTEXT_WINDOW_TABLE``
+        # in ``openai_compatible_client.py`` for the rationale.
+        "default_context_window": 131_072,
     },
     {
         "id": "openai",
         "label": "OpenAI",
         "provider": "openai_compatible",
         "base_url": "https://api.openai.com/v1",
+        # GPT-5 (Aug 2025+) is the default chat suggestion — newer
+        # architecture, ~40 % cheaper than 4.1-mini on cached input,
+        # 400 k native context. The four-model shortlist matches
+        # the user's evaluation set (gpt-5-mini for chat,
+        # gpt-5-nano for cheap workers, 4.1 family as fallback).
+        # Pricier flagship variants (gpt-5, gpt-5.4-pro, …) still
+        # appear in the dropdown via the live ``/v1/models`` response.
         "recommended_models": [
-            "gpt-4o-mini",
-            "gpt-4o",
+            "gpt-5-mini",
+            "gpt-5-nano",
             "gpt-4.1-mini",
+            "gpt-4.1-nano",
         ],
         "env_hint": "OPENAI_API_KEY",
         "api_key_required": True,
         "free_tier": "Paid (no free tier)",
         "docs_url": "https://platform.openai.com",
         "default_workers_use_local": True,
+        "default_context_window": 131_072,
     },
     {
         "id": "groq",
@@ -247,6 +268,7 @@ _PROVIDER_PRESETS: tuple[dict[str, Any], ...] = (
         "free_tier": "Free tier: 30 req/min",
         "docs_url": "https://console.groq.com",
         "default_workers_use_local": True,
+        "default_context_window": 131_072,
     },
     {
         "id": "openrouter",
@@ -263,6 +285,7 @@ _PROVIDER_PRESETS: tuple[dict[str, Any], ...] = (
         "free_tier": "Pay-per-token (some models free)",
         "docs_url": "https://openrouter.ai/docs",
         "default_workers_use_local": True,
+        "default_context_window": 131_072,
     },
 )
 
@@ -417,6 +440,14 @@ class SessionController(
         # many older test patches and a few external scripts reach in for
         # it for us to rename in this round.
         chat_llm = settings.chat_llm
+        # PR 2: shared client cache for the provider catalogue. Routes
+        # pointing at the same provider share one underlying ChatClient
+        # so credentials / TCP pool / TLS cost are paid once. The
+        # legacy code path below builds its own clients without the
+        # cache for unchanged back-compat; the new public methods
+        # (``update_route``, ``test_provider``, …) go through the
+        # cache via :func:`app.llm.factory.build_client_for_route`.
+        self._client_cache = ClientCache(settings.ollama)
         self._chat_client: ChatClient = _build_chat_client(
             chat_llm=chat_llm,
             ollama_settings=settings.ollama,
@@ -3177,7 +3208,16 @@ class SessionController(
 
     @property
     def context_window_source(self) -> str:
-        """Where ``context_window`` came from: ``config|ollama_show|fallback``."""
+        """Where ``context_window`` came from: ``config|client|fallback``.
+
+        ``config`` means an explicit ``chat_llm.context_window`` (or
+        legacy ``ollama.context_window``) override won. ``client``
+        means the active ``ChatClient`` answered ``get_context_length``
+        with a positive value — either Ollama's ``/api/show`` for
+        local models or the static OpenAI-compat lookup table for
+        known cloud models. ``fallback`` is the hardcoded 8192
+        last-resort when neither path produced an answer.
+        """
         return getattr(self, "_context_source", "fallback")
 
     @property
@@ -3196,7 +3236,9 @@ class SessionController(
         Order of preference:
         1. Explicit config override (``chat_llm.context_window`` /
            ``ollama.context_window``).
-        2. ``OllamaClient.get_context_length(model)`` from ``/api/show``.
+        2. Active client's ``get_context_length(model)`` — Ollama's
+           ``/api/show`` for local models, the static lookup table
+           in ``OpenAICompatibleClient`` for known cloud models.
         3. Hardcoded ``8192`` last-resort fallback.
         """
         if override:
@@ -3211,7 +3253,7 @@ class SessionController(
         except Exception:
             detected = None
         if detected and detected > 0:
-            return int(detected), "ollama_show"
+            return int(detected), "client"
         return 8192, "fallback"
 
     def set_chat_model(self, model_name: str) -> None:
@@ -3407,6 +3449,16 @@ class SessionController(
             "1" if chat_llm.workers_use_local else "0",
             "1" if (chat_llm.api_key or "").strip() else "0",
         )
+        # PR 2: mirror the just-applied legacy state back into the
+        # catalogue so ``llm.routes.main_chat`` stays in sync. Cheap
+        # (mutates in-memory dataclasses), idempotent, and lets the
+        # new REST surface read either ``chat_llm`` or the catalogue
+        # interchangeably.
+        try:
+            self._sync_llm_routes_from_legacy()
+            self._persist_llm_settings()
+        except Exception:
+            log.debug("sync llm.routes from legacy failed", exc_info=True)
         return self._chat_llm_public_snapshot()
 
     def _chat_llm_public_snapshot(self) -> dict[str, Any]:
@@ -3434,6 +3486,626 @@ class SessionController(
             "workers_use_local": bool(cfg.workers_use_local),
             "extra_headers": dict(cfg.extra_headers or {}),
         }
+
+    # ── PR 2: provider catalogue + role-assignment API ──────────────
+    #
+    # The catalogue lives on ``self._settings.llm`` and is kept in sync
+    # with the legacy ``chat_llm`` + ``ollama`` blocks via the
+    # mirror-write helpers below. The legacy blocks remain the
+    # in-memory primary for now (the ``_chat_client`` / ``_worker_client``
+    # construction paths still read from them) — this keeps the diff
+    # contained and lets external scripts / MCP keep reading
+    # ``chat_llm`` unchanged. Phase 3 may flip the direction.
+
+    def _mask_provider(self, provider: LlmProvider) -> dict[str, Any]:
+        """Return a JSON-serialisable view of ``provider`` with the
+        ``api_key`` masked behind a ``has_api_key`` flag."""
+        return {
+            "id": provider.id,
+            "name": provider.name,
+            "kind": provider.kind,
+            "base_url": provider.base_url,
+            "has_api_key": bool((provider.api_key or "").strip()),
+            "api_key_env": provider.api_key_env,
+            "extra_headers": dict(provider.extra_headers or {}),
+            "timeout_seconds": int(provider.timeout_seconds or 300),
+            "keep_alive": provider.keep_alive,
+        }
+
+    def list_providers(self) -> list[dict[str, Any]]:
+        """Return the catalogue with credentials masked."""
+        return [self._mask_provider(p) for p in self._settings.llm.providers]
+
+    def list_routes(self) -> dict[str, dict[str, Any]]:
+        """Return the role-assignment table."""
+        out: dict[str, dict[str, Any]] = {}
+        for role, route in self._settings.llm.routes.items():
+            out[role] = {
+                "provider_id": route.provider_id,
+                "model": route.model,
+                "context_window": route.context_window,
+                "max_tokens": int(route.max_tokens or 512),
+                "temperature": route.temperature,
+            }
+        return out
+
+    def _find_llm_provider(self, provider_id: str) -> LlmProvider | None:
+        for entry in self._settings.llm.providers:
+            if entry.id == provider_id:
+                return entry
+        return None
+
+    def _generate_provider_id(self, template_id: str | None) -> str:
+        """Pick a unique id for a new provider.
+
+        Uses ``template_id`` as a seed when supplied; appends a suffix
+        when the natural id is already taken so two "openai" entries
+        can coexist (e.g. a "personal" key and a "team" key).
+        """
+        base = (template_id or "custom").strip().lower()
+        existing = {p.id for p in self._settings.llm.providers}
+        if base not in existing:
+            return base
+        for i in range(2, 100):
+            candidate = f"{base}_{i}"
+            if candidate not in existing:
+                return candidate
+        return f"{base}_{uuid.uuid4().hex[:8]}"
+
+    def add_provider(
+        self,
+        *,
+        template_id: str | None = None,
+        draft: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Append a new provider to the catalogue.
+
+        ``template_id`` (optional) seeds the entry from a row of
+        :func:`_PROVIDER_PRESETS` (``"openai"``, ``"gemini"``, …). The
+        ``draft`` dict can override any field. Returns the masked
+        snapshot of the inserted entry.
+        """
+        seed: dict[str, Any] = {}
+        if template_id:
+            for preset in _PROVIDER_PRESETS:
+                if preset.get("id") == template_id:
+                    seed = {
+                        "kind": preset.get("provider", "ollama"),
+                        "name": preset.get("label", template_id),
+                        "base_url": preset.get("base_url", ""),
+                        "api_key_env": preset.get("env_hint", ""),
+                    }
+                    break
+        payload = dict(draft or {})
+        for k, v in seed.items():
+            payload.setdefault(k, v)
+        # Translate the legacy "provider" key (used in presets) to the
+        # new "kind" field.
+        if "kind" not in payload and "provider" in payload:
+            payload["kind"] = payload.pop("provider")
+        provider_id = (
+            str(payload.get("id", "") or "").strip()
+            or self._generate_provider_id(template_id)
+        )
+        kind = str(payload.get("kind", "ollama") or "ollama").strip().lower()
+        if kind not in {"ollama", "openai_compatible"}:
+            kind = "ollama"
+        name = str(payload.get("name", "") or "").strip() or provider_id
+        base_url = str(payload.get("base_url", "") or "").strip()
+        api_key = str(payload.get("api_key", "") or "").strip()
+        api_key_env = str(payload.get("api_key_env", "") or "").strip()
+        headers_raw = payload.get("extra_headers") or {}
+        if isinstance(headers_raw, dict):
+            extra_headers = {
+                str(k).strip(): str(v).strip()
+                for k, v in headers_raw.items()
+                if str(k).strip() and v is not None
+            }
+        else:
+            extra_headers = {}
+        try:
+            timeout = max(1, int(payload.get("timeout_seconds", 300)))
+        except (TypeError, ValueError):
+            timeout = 300
+        keep_alive = str(payload.get("keep_alive", "30m") or "30m").strip() or "30m"
+        new_provider = LlmProvider(
+            id=provider_id,
+            name=name,
+            kind=kind,
+            base_url=base_url,
+            api_key=api_key,
+            api_key_env=api_key_env,
+            extra_headers=extra_headers,
+            timeout_seconds=timeout,
+            keep_alive=keep_alive,
+        )
+        if self._find_llm_provider(provider_id) is not None:
+            raise ValueError(
+                f"provider id {provider_id!r} already exists; "
+                "edit the existing entry or pick a different id"
+            )
+        self._settings.llm.providers.append(new_provider)
+        self._persist_llm_settings()
+        log.info(
+            "llm: added provider id=%s kind=%s base_url=%s",
+            new_provider.id,
+            new_provider.kind,
+            new_provider.base_url,
+        )
+        return self._mask_provider(new_provider)
+
+    def update_provider(
+        self,
+        provider_id: str,
+        draft: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Edit non-credential fields on an existing provider.
+
+        Use :meth:`update_provider_credentials` for the api_key /
+        api_key_env path (separate to keep credentials out of logs).
+        """
+        provider = self._find_llm_provider(provider_id)
+        if provider is None:
+            raise KeyError(f"unknown provider id={provider_id!r}")
+        if "name" in draft:
+            provider.name = str(draft["name"] or "").strip() or provider.name
+        if "kind" in draft:
+            kind = str(draft["kind"] or "").strip().lower()
+            if kind in {"ollama", "openai_compatible"}:
+                provider.kind = kind
+        if "base_url" in draft:
+            provider.base_url = str(draft["base_url"] or "").strip()
+        if "extra_headers" in draft:
+            raw_headers = draft.get("extra_headers") or {}
+            if isinstance(raw_headers, dict):
+                provider.extra_headers = {
+                    str(k).strip(): str(v).strip()
+                    for k, v in raw_headers.items()
+                    if str(k).strip() and v is not None
+                }
+        if "timeout_seconds" in draft:
+            try:
+                provider.timeout_seconds = max(1, int(draft["timeout_seconds"]))
+            except (TypeError, ValueError):
+                pass
+        if "keep_alive" in draft:
+            provider.keep_alive = (
+                str(draft["keep_alive"] or "").strip() or "30m"
+            )
+        # Anything changed -> drop the cached client so future
+        # ``cache.get`` rebuilds with the new fields.
+        self._client_cache.invalidate(provider_id)
+        # If the main_chat route still points at this provider, mirror
+        # the changes back to the legacy ``chat_llm`` block so the
+        # active session reflects them.
+        main_route = self._settings.llm.routes.get(LLM_ROLE_MAIN_CHAT)
+        if main_route is not None and main_route.provider_id == provider_id:
+            self._mirror_route_to_chat_llm(provider, main_route)
+            # Rebuild the active chat client so the next turn picks up
+            # the new base_url / extra_headers immediately.
+            self._chat_client = _build_chat_client(
+                chat_llm=self._settings.chat_llm,
+                ollama_settings=self._settings.ollama,
+                role="chat",
+            )
+            try:
+                self._turn_runner.update_runtime(client=self._chat_client)
+                self._proactive.update_runtime(client=self._chat_client)
+            except Exception:
+                log.debug("update_runtime(client=) after provider edit failed", exc_info=True)
+        self._persist_llm_settings()
+        log.info("llm: updated provider id=%s", provider_id)
+        return self._mask_provider(provider)
+
+    def update_provider_credentials(
+        self,
+        provider_id: str,
+        creds: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Replace the api_key / api_key_env on an existing provider."""
+        provider = self._find_llm_provider(provider_id)
+        if provider is None:
+            raise KeyError(f"unknown provider id={provider_id!r}")
+        if "api_key" in creds:
+            provider.api_key = str(creds["api_key"] or "").strip()
+        if "api_key_env" in creds:
+            provider.api_key_env = str(creds["api_key_env"] or "").strip()
+        # Credentials changed -> invalidate the cached client so the
+        # next get() rebuilds with the new bearer header.
+        self._client_cache.invalidate(provider_id)
+        # If main_chat references this provider, mirror to chat_llm and
+        # rebuild the in-flight chat client.
+        main_route = self._settings.llm.routes.get(LLM_ROLE_MAIN_CHAT)
+        if main_route is not None and main_route.provider_id == provider_id:
+            self._settings.chat_llm.api_key = provider.api_key
+            self._settings.chat_llm.api_key_env = provider.api_key_env
+            self._chat_client = _build_chat_client(
+                chat_llm=self._settings.chat_llm,
+                ollama_settings=self._settings.ollama,
+                role="chat",
+            )
+            try:
+                self._turn_runner.update_runtime(client=self._chat_client)
+                self._proactive.update_runtime(client=self._chat_client)
+            except Exception:
+                log.debug("update_runtime(client=) after credentials edit failed", exc_info=True)
+        self._persist_llm_settings()
+        log.info(
+            "llm: updated credentials provider=%s has_api_key=%s",
+            provider_id,
+            "1" if (provider.api_key or "").strip() else "0",
+        )
+        return self._mask_provider(provider)
+
+    def remove_provider(self, provider_id: str) -> None:
+        """Delete a provider. Fails with ``ValueError`` when any route
+        still references it (the UI catches the 409 and asks the user
+        to retarget the route first)."""
+        if self._find_llm_provider(provider_id) is None:
+            raise KeyError(f"unknown provider id={provider_id!r}")
+        referenced_by = [
+            role
+            for role, route in self._settings.llm.routes.items()
+            if route.provider_id == provider_id
+        ]
+        if referenced_by:
+            raise ValueError(
+                f"provider id={provider_id!r} is still referenced by "
+                f"route(s) {sorted(referenced_by)!r}; retarget them first"
+            )
+        self._settings.llm.providers = [
+            p for p in self._settings.llm.providers
+            if p.id != provider_id
+        ]
+        self._client_cache.invalidate(provider_id)
+        self._persist_llm_settings()
+        log.info("llm: removed provider id=%s", provider_id)
+
+    def update_route(
+        self,
+        role: str,
+        draft: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Set ``llm.routes[role]`` from a partial draft.
+
+        For ``main_chat`` this is the catalogue-aware equivalent of
+        :meth:`reconfigure_chat_llm`: it mutates the route, mirrors
+        the matching fields back to the legacy ``chat_llm`` block,
+        and rebuilds the chat client + cascades to TurnRunner /
+        ProactiveDirector / SummaryWorker via ``set_chat_model``. For
+        ``worker_default`` the route + cache update is recorded but
+        the in-flight workers still read from the legacy
+        ``ollama`` + ``chat_llm.workers_use_local`` config — Phase 3
+        will swap that.
+        """
+        role_name = (role or "").strip()
+        if not role_name:
+            raise ValueError("role must be a non-empty string")
+        current = self._settings.llm.routes.get(role_name)
+        if current is None:
+            # Allow creation of new roles (Phase 3 prep).
+            current = LlmRoute(provider_id="", model="")
+        if "provider_id" in draft:
+            current.provider_id = str(draft["provider_id"] or "").strip()
+        if "model" in draft:
+            current.model = str(draft["model"] or "").strip()
+        if "context_window" in draft:
+            raw = draft["context_window"]
+            try:
+                current.context_window = (
+                    int(raw) if raw not in (None, "", 0) else None
+                )
+            except (TypeError, ValueError):
+                current.context_window = None
+        if "max_tokens" in draft:
+            try:
+                current.max_tokens = max(0, int(draft["max_tokens"] or 0)) or 512
+            except (TypeError, ValueError):
+                pass
+        if "temperature" in draft:
+            raw = draft["temperature"]
+            try:
+                current.temperature = (
+                    float(raw) if raw not in (None, "") else None
+                )
+            except (TypeError, ValueError):
+                current.temperature = None
+        provider = self._find_llm_provider(current.provider_id)
+        if provider is None:
+            raise KeyError(
+                f"route {role_name!r} references unknown "
+                f"provider_id={current.provider_id!r}"
+            )
+        self._settings.llm.routes[role_name] = current
+        if role_name == LLM_ROLE_MAIN_CHAT:
+            # Mirror to legacy chat_llm + rebuild client (uses the
+            # existing reconfigure_chat_llm path so all the cascades
+            # fire correctly).
+            chat_payload = self._route_to_chat_llm_payload(provider, current)
+            self.reconfigure_chat_llm(chat_payload)
+        else:
+            # Non-chat role: persist the catalogue snapshot. Workers
+            # don't pick up the new client mid-flight; restart required.
+            self._persist_llm_settings()
+        log.info(
+            "llm: updated route %s -> provider=%s model=%s context=%s",
+            role_name,
+            current.provider_id,
+            current.model,
+            current.context_window,
+        )
+        return {
+            "provider_id": current.provider_id,
+            "model": current.model,
+            "context_window": current.context_window,
+            "max_tokens": int(current.max_tokens or 512),
+            "temperature": current.temperature,
+        }
+
+    def test_provider(
+        self,
+        provider_id: str,
+        *,
+        override_model: str | None = None,
+        override_context_window: int | None = None,
+    ) -> dict[str, Any]:
+        """Run a one-token probe chat against ``provider``.
+
+        Returns the same shape as the existing
+        ``POST /api/llm/test-connection`` response so the UI can
+        reuse the same banner. The probe is built from the provider's
+        own credentials (never touches the saved key on a different
+        entry). ``override_model`` lets the caller test a model id
+        the user is typing in the combobox before committing to save.
+        """
+        provider = self._find_llm_provider(provider_id)
+        if provider is None:
+            raise KeyError(f"unknown provider id={provider_id!r}")
+        # Borrow the existing test-connection plumbing. We synthesise
+        # a one-off ``ChatLlmSettings`` instance from the provider +
+        # the overrides so the test path stays identical to the
+        # legacy ``POST /api/llm/test-connection``.
+        from app.core.infra.settings import ChatLlmSettings
+
+        candidate_model = (override_model or "").strip()
+        if not candidate_model:
+            main_route = self._settings.llm.routes.get(LLM_ROLE_MAIN_CHAT)
+            if main_route is not None and main_route.provider_id == provider_id:
+                candidate_model = main_route.model
+        probe_settings = ChatLlmSettings(
+            provider=provider.kind,
+            model=candidate_model,
+            base_url=provider.base_url,
+            api_key=provider.api_key,
+            api_key_env=provider.api_key_env,
+            context_window=override_context_window,
+            extra_headers=dict(provider.extra_headers or {}),
+            max_tokens=8,  # enough for a one-token probe
+            keep_alive=provider.keep_alive,
+        )
+        start = time.time()
+        try:
+            probe = _build_chat_client(
+                chat_llm=probe_settings,
+                ollama_settings=self._settings.ollama,
+                role="test",
+            )
+            try:
+                resp = probe.chat(
+                    [{"role": "user", "content": "Reply 'ok'."}],
+                    model=candidate_model,
+                    options={"num_predict": 4, "temperature": 0},
+                )
+            finally:
+                close = getattr(probe, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        pass
+            latency_ms = int((time.time() - start) * 1000)
+            usage = getattr(resp, "usage", None)
+            completion_tokens = int(
+                getattr(usage, "completion_tokens", 0) or 0
+            )
+            return {
+                "success": True,
+                "latency_ms": latency_ms,
+                "completion_tokens": completion_tokens,
+                "model": candidate_model,
+            }
+        except Exception as exc:
+            return {
+                "success": False,
+                "error_code": exc.__class__.__name__,
+                "error_message": str(exc) or "Provider rejected the request.",
+                "model": candidate_model,
+            }
+
+    def client_cache_stats(self) -> dict[str, Any]:
+        """Diagnostic snapshot of the shared client cache."""
+        return self._client_cache.stats()
+
+    # ── PR 2: catalogue <-> legacy mirror helpers ───────────────────
+
+    def _mirror_route_to_chat_llm(
+        self, provider: LlmProvider, route: LlmRoute,
+    ) -> None:
+        """Write a (provider, route) pair into the legacy ``chat_llm`` block.
+
+        Keeps the legacy block in sync with the new catalogue so
+        downstream code that still reads ``chat_llm.*`` (and external
+        scripts) keeps working unchanged.
+        """
+        cfg = self._settings.chat_llm
+        cfg.provider = provider.kind
+        cfg.model = route.model
+        cfg.base_url = provider.base_url
+        cfg.api_key = provider.api_key
+        cfg.api_key_env = provider.api_key_env
+        cfg.extra_headers = dict(provider.extra_headers or {})
+        cfg.keep_alive = provider.keep_alive or "30m"
+        cfg.context_window = route.context_window
+        cfg.max_tokens = int(route.max_tokens or 512)
+        cfg.temperature = route.temperature
+        # Set the UI hint to the provider id when it matches a known
+        # preset (purely cosmetic — used to highlight the card).
+        cfg.provider_preset = (
+            provider.id if provider.id in {p["id"] for p in _PROVIDER_PRESETS} else ""
+        )
+
+    def _route_to_chat_llm_payload(
+        self, provider: LlmProvider, route: LlmRoute,
+    ) -> dict[str, Any]:
+        """Translate a (provider, route) pair into a ``reconfigure_chat_llm``
+        payload so we can reuse all the legacy cascade plumbing."""
+        return {
+            "provider": provider.kind,
+            "provider_preset": (
+                provider.id if provider.id in {p["id"] for p in _PROVIDER_PRESETS} else ""
+            ),
+            "model": route.model,
+            "base_url": provider.base_url,
+            "api_key": provider.api_key,
+            "api_key_env": provider.api_key_env,
+            "max_tokens": int(route.max_tokens or 512),
+            "temperature": route.temperature,
+            "context_window": route.context_window,
+            "keep_alive": provider.keep_alive,
+            "extra_headers": dict(provider.extra_headers or {}),
+            # ``workers_use_local`` lives outside the catalogue for
+            # now (a per-role concern that the new ``routes`` table
+            # supersedes); keep the existing value to avoid
+            # accidentally flipping it.
+            "workers_use_local": bool(self._settings.chat_llm.workers_use_local),
+        }
+
+    def _sync_llm_routes_from_legacy(self) -> None:
+        """Mirror ``chat_llm`` + ``ollama`` back into ``llm.routes``.
+
+        Called at the end of :meth:`reconfigure_chat_llm` so a legacy
+        PATCH against ``/api/settings`` (e.g. from an old client) still
+        leaves ``llm.routes.main_chat`` consistent with the new state.
+        Also runs at end of ``__init__`` so a fresh boot lands with
+        the two snapshots in sync even when the migration produced a
+        slightly stale shape.
+        """
+        chat_llm = self._settings.chat_llm
+        ollama = self._settings.ollama
+        # Make sure a local_ollama provider exists (it must — the
+        # migration synthesises one, but a hand-edited user.json
+        # could have removed it).
+        local_provider = self._find_llm_provider("local_ollama")
+        if local_provider is None:
+            local_provider = LlmProvider(
+                id="local_ollama",
+                name="Local Ollama",
+                kind="ollama",
+                base_url=(ollama.base_url or "").strip() or "http://127.0.0.1:11434",
+                api_key="",
+                api_key_env="",
+                extra_headers={},
+                timeout_seconds=int(getattr(ollama, "timeout", 300)) or 300,
+                keep_alive="30m",
+            )
+            self._settings.llm.providers.append(local_provider)
+        else:
+            # Keep base_url + timeout in sync with the legacy block.
+            local_provider.base_url = (ollama.base_url or "").strip() or local_provider.base_url
+            local_provider.timeout_seconds = int(getattr(ollama, "timeout", 300)) or local_provider.timeout_seconds
+        # Resolve which provider main_chat points at.
+        provider_id_for_chat = "local_ollama"
+        if (chat_llm.provider or "").strip().lower() != "ollama" or (
+            chat_llm.base_url and not _urls_match(chat_llm.base_url, local_provider.base_url)
+        ):
+            # Find or create a separate provider entry that matches
+            # the legacy chat_llm block.
+            preset_id = (chat_llm.provider_preset or "").strip().lower()
+            target_id = preset_id or "chat_migrated"
+            if target_id == "local_ollama":
+                target_id = "chat_migrated"
+            existing = self._find_llm_provider(target_id)
+            if existing is None:
+                kind = (chat_llm.provider or "openai_compatible").strip().lower()
+                if kind not in {"ollama", "openai_compatible"}:
+                    kind = "openai_compatible"
+                existing = LlmProvider(
+                    id=target_id,
+                    name=preset_id.title() if preset_id else "Chat provider",
+                    kind=kind,
+                    base_url=(chat_llm.base_url or "").strip(),
+                    api_key=chat_llm.api_key or "",
+                    api_key_env=chat_llm.api_key_env or "",
+                    extra_headers=dict(chat_llm.extra_headers or {}),
+                    timeout_seconds=int(getattr(ollama, "timeout", 300)) or 300,
+                    keep_alive=chat_llm.keep_alive or "30m",
+                )
+                self._settings.llm.providers.append(existing)
+            else:
+                kind = (chat_llm.provider or existing.kind).strip().lower()
+                if kind in {"ollama", "openai_compatible"}:
+                    existing.kind = kind
+                existing.base_url = (chat_llm.base_url or existing.base_url).strip()
+                existing.api_key = chat_llm.api_key or existing.api_key
+                existing.api_key_env = chat_llm.api_key_env or existing.api_key_env
+                existing.extra_headers = dict(chat_llm.extra_headers or existing.extra_headers or {})
+                existing.keep_alive = chat_llm.keep_alive or existing.keep_alive
+            provider_id_for_chat = target_id
+        self._settings.llm.routes[LLM_ROLE_MAIN_CHAT] = LlmRoute(
+            provider_id=provider_id_for_chat,
+            model=(chat_llm.model or "").strip(),
+            context_window=chat_llm.context_window,
+            max_tokens=int(chat_llm.max_tokens or 512),
+            temperature=chat_llm.temperature,
+        )
+        self._settings.llm.routes[LLM_ROLE_WORKER_DEFAULT] = LlmRoute(
+            provider_id="local_ollama",
+            model=(ollama.chat_model or "").strip(),
+            context_window=ollama.context_window,
+            max_tokens=512,
+            temperature=None,
+        )
+
+    def _persist_llm_settings(self) -> None:
+        """Write the catalogue + routes to ``user.json``.
+
+        Mirrors :func:`persist_user_overrides` for the ``chat_llm``
+        block. Credentials are NOT masked here — they live on disk in
+        ``user.json`` the same way the legacy ``chat_llm.api_key``
+        does. ``user.json`` has file-system permissions and is
+        gitignored; the masking only happens on the REST + WS layer.
+        """
+        providers_payload: list[dict[str, Any]] = []
+        for p in self._settings.llm.providers:
+            providers_payload.append({
+                "id": p.id,
+                "name": p.name,
+                "kind": p.kind,
+                "base_url": p.base_url,
+                "api_key": p.api_key,
+                "api_key_env": p.api_key_env,
+                "extra_headers": dict(p.extra_headers or {}),
+                "timeout_seconds": int(p.timeout_seconds or 300),
+                "keep_alive": p.keep_alive,
+            })
+        routes_payload: dict[str, dict[str, Any]] = {}
+        for role, r in self._settings.llm.routes.items():
+            routes_payload[role] = {
+                "provider_id": r.provider_id,
+                "model": r.model,
+                "context_window": r.context_window,
+                "max_tokens": int(r.max_tokens or 512),
+                "temperature": r.temperature,
+            }
+        try:
+            persist_user_overrides({
+                "llm": {
+                    "providers": providers_payload,
+                    "routes": routes_payload,
+                },
+            })
+        except Exception:
+            log.warning("persist llm overrides failed", exc_info=True)
 
     @staticmethod
     def provider_presets() -> list[dict[str, Any]]:
@@ -5657,6 +6329,11 @@ class SessionController(
             self._tts.stop()
         except Exception:
             pass
+        if getattr(self, "_client_cache", None) is not None:
+            try:
+                self._client_cache.shutdown()
+            except Exception:
+                log.debug("client cache shutdown failed", exc_info=True)
         if getattr(self, "_idle_scheduler", None) is not None:
             try:
                 self._idle_scheduler.stop(timeout=1.5)

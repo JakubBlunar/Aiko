@@ -218,14 +218,19 @@ export function useAssistantSocket(): {
         break;
 
       case "llm_settings_changed":
-        // Backend broadcast after PATCH /api/settings { chat_llm: ... }
-        // or PUT /api/settings/llm-credentials. Mirrors the
-        // identity_changed flow: any open settings drawer in another
-        // tab reloads its snapshot via the existing settings refresh
-        // path. The Zustand store doesn't carry the provider snapshot
-        // directly, so the SettingsDrawer re-fetches on focus when
-        // this lands; for now we just nudge the global state to flag a
-        // stale settings view.
+        // Backend broadcast after:
+        //   - legacy PATCH /api/settings { chat_llm: ... } / PUT
+        //     /api/settings/llm-credentials (carries chat_llm? only),
+        //   - PR 2 PATCH /api/llm/providers / /api/llm/routes (carries
+        //     providers + routes snapshots).
+        // The CustomEvent kept for back-compat with any drawer code
+        // that listens on the window for "settings reload, please".
+        if (evt.providers !== undefined) {
+          store.setLlmProviders(evt.providers);
+        }
+        if (evt.routes !== undefined) {
+          store.setLlmRoutes(evt.routes);
+        }
         if (typeof window !== "undefined") {
           window.dispatchEvent(new CustomEvent("aiko:llm-settings-changed"));
         }

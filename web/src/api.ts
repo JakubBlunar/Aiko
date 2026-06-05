@@ -12,7 +12,10 @@ import type {
   ChatLlmSnapshot,
   ChatMessage,
   Identity,
+  LlmProvider,
   LlmProviderPreset,
+  LlmProviderTestResult,
+  LlmRoute,
   LlmTestConnectionResult,
   Memory,
   MemoriesResponse,
@@ -150,6 +153,87 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     }),
+  // ── PR 2: provider catalogue + role-assignment ───────────────────
+  /** List the saved provider catalogue with credentials masked. */
+  listLlmProviders: () =>
+    jsonFetch<{ providers: LlmProvider[] }>("/api/llm/providers"),
+  /** Create a new provider entry. ``template_id`` (optional) seeds
+   *  from a row of ``_PROVIDER_PRESETS``; ``draft`` overrides any
+   *  field. 409 when the id is taken. */
+  addLlmProvider: (payload: {
+    template_id?: string;
+    draft: Partial<LlmProvider> & { id?: string; api_key?: string };
+  }) =>
+    jsonFetch<LlmProvider>("/api/llm/providers", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  /** Edit non-credential fields on a saved provider. The api_key is
+   *  stripped server-side as a safety net — use ``updateLlmProviderCredentials``
+   *  for that path. */
+  updateLlmProvider: (
+    providerId: string,
+    patch: Partial<Omit<LlmProvider, "id" | "has_api_key">>,
+  ) =>
+    jsonFetch<LlmProvider>(
+      `/api/llm/providers/${encodeURIComponent(providerId)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      },
+    ),
+  /** Replace the api_key / api_key_env on a saved provider. Validated:
+   *  api_key must be whitespace-free. */
+  updateLlmProviderCredentials: (
+    providerId: string,
+    payload: { api_key?: string; api_key_env?: string },
+  ) =>
+    jsonFetch<LlmProvider>(
+      `/api/llm/providers/${encodeURIComponent(providerId)}/credentials`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      },
+    ),
+  /** Delete a saved provider. 409 when still referenced by a route. */
+  deleteLlmProvider: (providerId: string) =>
+    jsonFetch<{ ok: boolean; deleted: string }>(
+      `/api/llm/providers/${encodeURIComponent(providerId)}`,
+      { method: "DELETE" },
+    ),
+  /** Run a one-token probe against a saved provider. ``model`` and
+   *  ``context_window`` are optional overrides for testing a typed
+   *  combobox value before saving. */
+  testLlmProvider: (
+    providerId: string,
+    overrides?: { model?: string; context_window?: number | null },
+  ) =>
+    jsonFetch<LlmProviderTestResult>(
+      `/api/llm/providers/${encodeURIComponent(providerId)}/test`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(overrides ?? {}),
+      },
+    ),
+  /** List role -> provider assignments. */
+  listLlmRoutes: () =>
+    jsonFetch<{ routes: Record<string, LlmRoute> }>("/api/llm/routes"),
+  /** Set ``llm.routes[role]`` from a partial draft. For ``main_chat``
+   *  this rebuilds the chat client immediately and broadcasts
+   *  ``llm_settings_changed``. */
+  updateLlmRoute: (role: string, patch: Partial<LlmRoute>) =>
+    jsonFetch<LlmRoute>(
+      `/api/llm/routes/${encodeURIComponent(role)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      },
+    ),
   listMemories: (
     options: {
       limit?: number;

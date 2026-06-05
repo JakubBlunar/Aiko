@@ -47,6 +47,12 @@ interface DraftState {
   workers_use_local: boolean;
   max_tokens: number;
   extra_headers_json: string;
+  /** Explicit context-window override. ``null`` means "auto" — let
+   *  the controller resolve via the active client's
+   *  ``get_context_length(model)`` lookup (Ollama's ``/api/show`` for
+   *  local models, the static OpenAI-compat lookup table otherwise),
+   *  with an 8192 last-resort fallback. */
+  context_window: number | null;
 }
 
 function snapshotToDraft(
@@ -76,6 +82,7 @@ function snapshotToDraft(
       Object.keys(snap.extra_headers || {}).length > 0
         ? JSON.stringify(snap.extra_headers, null, 2)
         : "",
+    context_window: snap.context_window,
   };
 }
 
@@ -194,6 +201,10 @@ export function ChatProviderSection({
           preset.provider === "ollama"
             ? false
             : preset.default_workers_use_local,
+        // Pre-fill the explicit context-window cap from the preset
+        // template (131 072 for cloud providers, ``null`` for Ollama
+        // so ``/api/show`` auto-detect wins per model).
+        context_window: preset.default_context_window,
       });
     },
     [editDraft],
@@ -278,6 +289,10 @@ export function ChatProviderSection({
           model: draft.model,
           workers_use_local: draft.workers_use_local,
           max_tokens: draft.max_tokens,
+          // ``0`` / empty / null -> server treats as "no explicit
+          //  override" and falls back to ``client.get_context_length``
+          //  per the precedence in ``_resolve_context_window``.
+          context_window: draft.context_window || null,
         },
       });
       // Reset the touched flag so the masked placeholder reappears
@@ -306,6 +321,37 @@ export function ChatProviderSection({
     [presets, draft?.preset_id],
   );
 
+  // ``modelOptions`` is the autocomplete-suggestion set surfaced
+  // through the ``<datalist>`` below. The union of:
+  //   1. live ``/v1/models`` response for the chosen provider
+  //      (account-specific — only what the API key can actually use),
+  //   2. the active preset's curated ``recommended_models`` (so
+  //      ``gpt-5-mini`` stays visible even when the live API doesn't
+  //      include it for an account that hasn't been verified yet),
+  //   3. the current draft.model (so a user-typed custom id shows
+  //      up as a one-shot suggestion next to the live ones).
+  // The input itself is free-text — the datalist only ever offers
+  // suggestions; the user can type anything and Save accepts it.
+  //
+  // MUST stay above the ``if (!draft)`` early return below — React's
+  // Rules of Hooks require an identical hook count on every render,
+  // so a useMemo placed after a conditional return crashes the
+  // settings drawer the moment ``draft`` flips from null to populated.
+  const modelOptions = useMemo(() => {
+    const recommended = activePreset?.recommended_models ?? [];
+    const seen = new Set<string>();
+    const out: string[] = [];
+    const draftModel = draft?.model ?? "";
+    for (const raw of [...providerModels, ...recommended, draftModel]) {
+      const id = (raw ?? "").trim();
+      if (id && !seen.has(id)) {
+        seen.add(id);
+        out.push(id);
+      }
+    }
+    return out;
+  }, [providerModels, activePreset?.recommended_models, draft?.model]);
+
   // ── Render ──────────────────────────────────────────────────────
 
   if (!chatLlm || !draft) {
@@ -315,9 +361,6 @@ export function ChatProviderSection({
       </Section>
     );
   }
-
-  const modelOptions =
-    providerModels.length > 0 ? providerModels : [draft.model].filter(Boolean);
 
   return (
     <Section title="Chat provider">
@@ -430,34 +473,31 @@ export function ChatProviderSection({
             <span className="text-[10px] text-ink-100/40">Loading…</span>
           ) : null}
         </div>
+        <input
+          id="chat-provider-model"
+          type="text"
+          list="chat-provider-model-options"
+          value={draft.model}
+          onChange={(e) => editDraft({ model: e.target.value })}
+          placeholder="Type or pick a model id"
+          autoComplete="off"
+          spellCheck={false}
+          className="mt-1 w-full rounded-md border border-white/10 bg-black/40 px-3 py-1.5 text-sm text-ink-100"
+        />
+        <datalist id="chat-provider-model-options">
+          {modelOptions.map((m) => (
+            <option key={m} value={m} />
+          ))}
+        </datalist>
         {modelOptions.length > 0 ? (
-          <select
-            id="chat-provider-model"
-            value={draft.model}
-            onChange={(e) => editDraft({ model: e.target.value })}
-            className="mt-1 w-full rounded-md border border-white/10 bg-black/40 px-3 py-1.5 text-sm text-ink-100"
-          >
-            {modelOptions.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-            {!modelOptions.includes(draft.model) && draft.model ? (
-              <option key={draft.model} value={draft.model}>
-                {draft.model}
-              </option>
-            ) : null}
-          </select>
-        ) : (
-          <input
-            id="chat-provider-model"
-            type="text"
-            value={draft.model}
-            onChange={(e) => editDraft({ model: e.target.value })}
-            placeholder="Type a model id"
-            className="mt-1 w-full rounded-md border border-white/10 bg-black/40 px-3 py-1.5 text-sm text-ink-100"
-          />
-        )}
+          <p className="mt-1 text-[10px] text-ink-100/40">
+            Click the field to see suggestions, or type any model id (e.g.,
+            a brand-new release, an experimental preview, an
+            OpenRouter-prefixed id, a fine-tuned model). Use{" "}
+            <span className="font-medium">Test connection</span> to verify
+            the provider accepts the typed id.
+          </p>
+        ) : null}
       </div>
 
       {/* Test connection */}
@@ -537,6 +577,35 @@ export function ChatProviderSection({
                 })
               }
               className="mt-1 w-32 rounded-md border border-white/10 bg-black/40 px-2 py-1 text-sm text-ink-100"
+            />
+          </label>
+          <label className="block">
+            <span className="block text-[11px] text-ink-100/60">
+              Context window (tokens)
+              <span className="block text-[10px] text-ink-100/40">
+                Caps prompt assembly. Lower = cheaper turns + earlier
+                compaction. Leave at 0 to auto-detect from the model
+                (Ollama via /api/show, OpenAI / Gemini / etc. via a
+                conservative per-model lookup; default 8192 if neither
+                matches).
+              </span>
+            </span>
+            <input
+              type="number"
+              min={0}
+              max={1_048_576}
+              step={1024}
+              value={draft.context_window ?? 0}
+              onChange={(e) => {
+                const raw = Number.parseInt(e.target.value, 10);
+                const cleaned =
+                  Number.isFinite(raw) && raw > 0
+                    ? Math.min(1_048_576, Math.max(0, raw))
+                    : null;
+                editDraft({ context_window: cleaned });
+              }}
+              placeholder="0 (auto)"
+              className="mt-1 w-40 rounded-md border border-white/10 bg-black/40 px-2 py-1 text-sm text-ink-100"
             />
           </label>
           <label className="block">
