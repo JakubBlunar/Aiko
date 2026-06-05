@@ -1122,6 +1122,21 @@ class PostTurnMixin:
             except Exception:
                 log.debug("messages.arc stamp failed", exc_info=True)
 
+        # K31 soft physicality: seal the per-turn gesture accumulator
+        # onto the assistant message row so the chat bubble footer
+        # badge survives a reload. The accumulator was populated by
+        # ``avatar_mixin._emit_avatar_touch`` during the streaming
+        # phase; here we flush it to ``messages.gestures``. The
+        # helper is a no-op when the accumulator is empty.
+        try:
+            persist = getattr(self, "_persist_turn_gestures", None)
+            if persist is not None and assistant_message_id:
+                persist(int(assistant_message_id))
+        except Exception:
+            log.debug(
+                "K31 _persist_turn_gestures failed", exc_info=True,
+            )
+
         if smoother is not None:
             try:
                 smoother.notify_user_turn()

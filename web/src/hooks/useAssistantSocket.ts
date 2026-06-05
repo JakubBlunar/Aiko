@@ -400,6 +400,46 @@ export function useAssistantSocket(): {
         });
         break;
 
+      case "avatar_touch":
+        // K31 soft physicality: stamp the gesture badge on the
+        // currently-streaming assistant bubble AND fan out to the
+        // Live2D engine (lean-in animation) AND to the persona
+        // action banner. The store reducers do all the routing.
+        store.pushAvatarTouch({
+          kind: String(evt.kind ?? ""),
+          label: String(evt.label ?? ""),
+          emoji: String(evt.emoji ?? ""),
+          duration_ms: Number(evt.duration_ms ?? 0),
+          lean_amount: Number(evt.lean_amount ?? 0),
+          overlays: Array.isArray(evt.overlays)
+            ? evt.overlays.map((s: unknown) => String(s))
+            : [],
+        });
+        if (evt.kind) {
+          store.appendGestureToCurrentTurn(String(evt.kind));
+        }
+        break;
+
+      case "message_reaction_updated": {
+        // K32 reciprocity: a reaction click landed (either from
+        // this window or another tab); merge the new counter map
+        // onto the matching message so both surfaces stay in sync.
+        const mid = Number(evt.message_id ?? 0) | 0;
+        if (mid > 0 && evt.reactions && typeof evt.reactions === "object") {
+          const reactions: Record<string, number> = {};
+          for (const [k, v] of Object.entries(
+            evt.reactions as Record<string, unknown>,
+          )) {
+            const n = Number(v);
+            if (Number.isFinite(n) && n > 0) {
+              reactions[String(k)] = n | 0;
+            }
+          }
+          store.applyMessageReactions(mid, reactions);
+        }
+        break;
+      }
+
       case "audio_amplitude":
         store.setAudioAmplitude(evt.level);
         break;

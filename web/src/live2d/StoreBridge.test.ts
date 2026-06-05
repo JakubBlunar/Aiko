@@ -108,6 +108,8 @@ const BASE_STATE: BridgedState = {
   mood: NEUTRAL_MOOD,
   backchannelHint: null,
   backchannelAt: 0,
+  avatarTouch: null,
+  avatarTouchAt: 0,
 };
 
 interface TestRig {

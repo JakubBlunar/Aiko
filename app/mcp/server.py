@@ -2312,6 +2312,149 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"reset_vulnerability_budget raised: {exc}"
 
     @mcp.tool()
+    def get_touch_state() -> str:
+        """K31 — dump the persisted TouchService state.
+
+        Returns a JSON dict with the kv_meta key, today's UTC
+        date, the per-kind ``last_fired`` ISO timestamps + the
+        per-kind ``daily_counts``, and the full taxonomy (every
+        :class:`TouchGesture` entry). Pairs with ``send_touch``
+        to verify cooldowns are accumulating between dispatches.
+        """
+        try:
+            service = getattr(session, "_touch_service", None)
+            if service is None:
+                return json.dumps(
+                    {"enabled": False, "reason": "TouchService not constructed"},
+                    indent=2,
+                )
+            snapshot = service.get_state_snapshot()
+            snapshot["touch_enabled"] = bool(
+                getattr(session._settings.agent, "touch_enabled", True),
+            )
+            return json.dumps(snapshot, indent=2)
+        except Exception as exc:
+            return f"get_touch_state raised: {exc}"
+
+    @mcp.tool()
+    def send_touch(kind: str) -> str:
+        """K31 — force-fire one ``[[touch:KIND]]`` (bypass gates).
+
+        Skips the axes-floor + cooldown + daily-cap gates so the
+        gesture lands regardless of relationship state. Useful for
+        end-to-end debugging:
+
+        1. ``send_touch("hug")`` → verify the chat bubble grows a
+           "Aiko gave you a hug 🫂" badge AND the persona action
+           banner appears in any open ``#/persona`` window AND the
+           Live2D rig leans in.
+        2. ``add_user_reaction(message_id, "heart")`` → verify the
+           reciprocity loop closes.
+
+        Returns the dispatch verdict as JSON so you can confirm
+        the side-effects landed.
+        """
+        try:
+            service = getattr(session, "_touch_service", None)
+            if service is None:
+                return json.dumps(
+                    {"dispatched": False, "reason": "service_unavailable"},
+                    indent=2,
+                )
+            from datetime import datetime, timezone
+
+            from app.core.touch.touch_gestures import get_gesture
+
+            # Route through the controller's emit method so the
+            # listeners (WS broadcast + gesture accumulator) fire
+            # exactly as they do on the real LLM path. We override
+            # ``_touch_service.try_dispatch`` for this one call by
+            # adding to the gesture accumulator directly if the
+            # service rejected -- the bypass is meaningless if
+            # ``_emit_avatar_touch`` re-applies the gate.
+            gesture = get_gesture(kind)
+            if gesture is None:
+                return json.dumps(
+                    {"dispatched": False, "reason": "unknown_kind"},
+                    indent=2,
+                )
+            report = service.try_dispatch(
+                kind,
+                axes=None,
+                now=datetime.now(timezone.utc),
+                bypass_gates=True,
+            )
+            if report.dispatched:
+                # Fan out the same side-channels the streaming path
+                # uses -- accumulator, paired overlays, listeners.
+                bucket = getattr(session, "_current_turn_gestures", None)
+                if isinstance(bucket, list):
+                    bucket.append(gesture.kind)
+                for overlay in gesture.overlays:
+                    try:
+                        session._emit_avatar_overlay(overlay)
+                    except Exception:
+                        pass
+                payload = {
+                    "kind": gesture.kind,
+                    "label": gesture.label,
+                    "emoji": gesture.emoji,
+                    "duration_ms": int(gesture.duration_ms),
+                    "lean_amount": float(gesture.lean_amount),
+                    "overlays": list(gesture.overlays),
+                }
+                for cb in list(session._avatar_touch_listeners):
+                    try:
+                        cb(dict(payload))
+                    except Exception:
+                        pass
+            return json.dumps(
+                {
+                    "dispatched": bool(report.dispatched),
+                    "reason": report.reason,
+                    "kind": gesture.kind,
+                    "duration_ms": gesture.duration_ms,
+                    "lean_amount": gesture.lean_amount,
+                    "overlays": list(gesture.overlays),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"send_touch raised: {exc}"
+
+    @mcp.tool()
+    def add_user_reaction(message_id: int, kind: str) -> str:
+        """K32 — fake a user reaction on an assistant message.
+
+        Mirrors the REST POST endpoint exactly: persists the
+        reaction, bumps the relationship axes (subject to the
+        daily cap), arms the next-turn inner-life cue ("Jacob just
+        hearted that line"), and fires the WS broadcaster so the
+        UI strip updates.
+
+        Use it to repro the reciprocity round-trip:
+          1. ``send_touch("hug")`` first.
+          2. ``add_user_reaction(<assistant_message_id>, "hug")``.
+          3. ``send_message("hey")`` and call
+             ``get_last_response_detail`` to verify
+             ``provider_ms.user_reactions`` is non-zero.
+
+        Returns the new reactions map as JSON, or an error string
+        on bad input.
+        """
+        try:
+            from app.core.relationship.user_reactions import is_valid_kind
+
+            if not is_valid_kind(kind):
+                return f"unknown reaction kind: {kind}"
+            result = session.apply_user_reaction(int(message_id), kind)
+            if result is None:
+                return f"message {message_id} not found / not assistant role"
+            return json.dumps(result, indent=2)
+        except Exception as exc:
+            return f"add_user_reaction raised: {exc}"
+
+    @mcp.tool()
     def get_turning_over_state() -> str:
         """K28 — dump the in-memory turning-over picker state.
 

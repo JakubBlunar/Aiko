@@ -498,6 +498,31 @@ export const api = {
         body: JSON.stringify({ vibe }),
       },
     ),
+  /** K32 reciprocity: register one click on a user-reaction kind
+   * (``heart`` / ``hug`` / ``laugh`` / ``thumbs`` / ``rose`` /
+   * ``surprise``). Returns the new full reactions map for the
+   * message so the caller can optimistically update before the WS
+   * broadcast lands. */
+  addReaction: (messageId: number, kind: string) =>
+    jsonFetch<{ message_id: number; reactions: Record<string, number> }>(
+      `/api/chat/messages/${messageId}/reactions`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind }),
+      },
+    ),
+  /** K32 reciprocity: undo one previously-registered reaction.
+   * Decrements the counter; does NOT subtract the relationship-
+   * axes nudge (the original act of expressing care still
+   * counted). Returns the new full reactions map. */
+  removeReaction: (messageId: number, kind: string) =>
+    jsonFetch<{ message_id: number; reactions: Record<string, number> }>(
+      `/api/chat/messages/${messageId}/reactions/${encodeURIComponent(kind)}`,
+      {
+        method: "DELETE",
+      },
+    ),
   getMetrics: () => jsonFetch<MetricsResponse>("/api/metrics"),
   // Identity (first-run onboarding). The frontend reads ``needs_onboarding``
   // from the WS hello on connect; this REST pair is used by the modal

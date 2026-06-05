@@ -514,6 +514,87 @@ class InnerLifeProvidersMixin:
             min_cap=min_cap, max_cap=max_cap,
         )
 
+    # ── K31 + K32: soft physicality providers ─────────────────────────
+
+    def _render_user_reactions_block(self) -> str:
+        """K32: arm the "Jacob just hearted that line" inner-life cue.
+
+        Drains :data:`_pending_user_reactions` -- the queue that
+        :meth:`world_mixin.apply_user_reaction` appends to whenever
+        the user taps a reaction button on an Aiko bubble. Renders
+        a one-line cue and clears the queue so the same reaction
+        can't re-fire the cue on later turns.
+
+        Best-effort: master switch off -> ``""``; empty queue ->
+        ``""``; any exception in the rendering path swallowed with
+        a DEBUG log.
+        """
+        agent_settings = getattr(self._settings, "agent", None)
+        if agent_settings is not None and not bool(
+            getattr(agent_settings, "user_reactions_enabled", True),
+        ):
+            return ""
+        queue = getattr(self, "_pending_user_reactions", None)
+        if queue is None or not len(queue):
+            return ""
+        try:
+            from app.core.relationship.user_reactions import (
+                render_user_reactions_block,
+            )
+
+            pending = list(queue)
+            # Drain only after we've copied -- a render exception would
+            # otherwise lose the cue.
+            queue.clear()
+            return render_user_reactions_block(
+                pending,
+                user_display_name=self.user_display_name,
+            )
+        except Exception:
+            log.debug(
+                "K32 user_reactions block render failed", exc_info=True,
+            )
+            return ""
+
+    def _render_touch_state_block(self) -> str:
+        """K31: render a low-budget cue when Aiko's been physical a lot.
+
+        Reads the persisted :class:`TouchServiceState` from ``kv_meta``
+        and runs it through :func:`touch_gestures.render_touch_state_block`
+        which stays silent on the common case. Off-switch is the
+        master ``agent.touch_enabled`` flag -- when off, the
+        physical-budget cue is irrelevant because Aiko can't touch
+        at all.
+
+        Best-effort: any failure path returns ``""`` (matches the
+        K15 / K27 swallow-and-log convention).
+        """
+        agent_settings = getattr(self._settings, "agent", None)
+        if agent_settings is not None and not bool(
+            getattr(agent_settings, "touch_enabled", True),
+        ):
+            return ""
+        try:
+            from datetime import datetime, timezone
+
+            from app.core.touch import touch_gestures as _touch
+
+            chat_db = getattr(self, "_chat_db", None)
+            if chat_db is None:
+                return ""
+            raw = chat_db.kv_get(_touch.KV_TOUCH_STATE)
+            state = _touch.deserialize_state(raw)
+            return _touch.render_touch_state_block(
+                state,
+                now=datetime.now(timezone.utc),
+                user_display_name=self.user_display_name,
+            )
+        except Exception:
+            log.debug(
+                "K31 touch_state block render failed", exc_info=True,
+            )
+            return ""
+
     def _cadence_context(self) -> Any:
         """Phase 5b: build a CadenceContext from the live affect/circadian."""
         from app.core.voice.cadence import CadenceContext

@@ -60,8 +60,10 @@ class _FakeTurnRunner:
         on_overlay=None,
         on_outfit=None,
         on_motion=None,
+        on_touch=None,
         stop_requested=None,
         resume_user_message_id=None,
+        **_extra: Any,
     ) -> TurnResult:
         self.runs.append({
             "session_key": session_key,
@@ -72,6 +74,7 @@ class _FakeTurnRunner:
             "on_overlay": on_overlay,
             "on_outfit": on_outfit,
             "on_motion": on_motion,
+            "on_touch": on_touch,
             "stop_requested": stop_requested,
             "resume_user_message_id": resume_user_message_id,
         })
@@ -152,6 +155,10 @@ def _make_controller(
     controller._typed_silence_armed_budget = None
     controller._user_active_app = None
     controller._live_voice_session_active = False
+    # K31: per-turn gesture accumulator cleared at the top of every
+    # ``chat_once_streaming`` call. The merge tests don't exercise the
+    # touch path but the attribute access has to land cleanly.
+    controller._current_turn_gestures = []
     controller._scheduler = MagicMock()
     controller._backchannel_gate = MagicMock()
     controller._backchannel_gate.consider.return_value = None

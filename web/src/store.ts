@@ -5,6 +5,7 @@ import type {
   AvatarOverlayState,
   AvatarProfile,
   AvatarSettingsKnobs,
+  AvatarTouchPayload,
   BackchannelHint,
   ChatMessage,
   CircadianPeriod,
@@ -93,6 +94,21 @@ interface AssistantState {
   appendProactiveMessage: (content: string) => void;
   pushSystemMessage: (content: string) => void;
   clearMessages: () => void;
+  /** K32: merge a fresh reactions counter map onto the matching
+   * message (matched by ``backendId``). Server-driven via the
+   * ``message_reaction_updated`` WS broadcast so a click in the
+   * chat window updates the persona banner and vice versa. */
+  applyMessageReactions: (
+    backendId: number, reactions: Record<string, number>,
+  ) => void;
+  /** K31: stamp the kinds Aiko emitted this turn onto an assistant
+   * bubble. Driven by the ``avatar_touch`` WS event so the badge
+   * appears the instant the rig leans in (independent of the
+   * eventual ``messages`` round-trip). The function matches by
+   * the latest assistant message that's still streaming OR the
+   * most recent assistant message overall when no streaming
+   * draft is active. */
+  appendGestureToCurrentTurn: (kind: string) => void;
 
   // Status / metrics
   status: string;
@@ -216,6 +232,15 @@ interface AssistantState {
   setAvatarOverlay: (overlay: AvatarOverlayState | null) => void;
   setAvatarMotion: (motion: AvatarMotionState | null) => void;
   setAudioAmplitude: (level: number) => void;
+
+  // K31: latest avatar_touch payload + dedup counter. The Live2D
+  // engine subscribes to ``avatarTouchAt`` (the counter) so
+  // back-to-back gestures with the same kind still re-fire the
+  // animation. Chat / persona surfaces read ``avatarTouch`` for
+  // the banner label + emoji.
+  avatarTouch: AvatarTouchPayload | null;
+  avatarTouchAt: number;
+  pushAvatarTouch: (payload: AvatarTouchPayload) => void;
 
   // Phase 2b: persistent mood snapshot, updated post-turn.
   mood: MoodState;
@@ -598,6 +623,43 @@ export const useAssistantStore = create<AssistantState>((set) => ({
     bubbleCounter = 0;
     set({ messages: [], streamingDraft: null });
   },
+  applyMessageReactions: (backendId, reactions) =>
+    set((state) => ({
+      messages: state.messages.map((m) =>
+        m.backendId === backendId ? { ...m, reactions: { ...reactions } } : m,
+      ),
+    })),
+  appendGestureToCurrentTurn: (kind) =>
+    set((state) => {
+      // Prefer the streaming bubble if one is in flight (the
+      // common case for an LLM-emitted touch). Otherwise stamp
+      // the most recent assistant bubble (e.g. proactive or
+      // MCP-forced ``send_touch``).
+      const draftId = state.streamingDraft?.id;
+      let targetIndex = -1;
+      if (draftId) {
+        targetIndex = state.messages.findIndex((m) => m.id === draftId);
+      }
+      if (targetIndex < 0) {
+        for (let i = state.messages.length - 1; i >= 0; i -= 1) {
+          if (state.messages[i].role === "assistant") {
+            targetIndex = i;
+            break;
+          }
+        }
+      }
+      if (targetIndex < 0) {
+        return state;
+      }
+      const target = state.messages[targetIndex];
+      const existing = target.gestures ?? [];
+      if (existing.includes(kind)) {
+        return state;
+      }
+      const next = [...state.messages];
+      next[targetIndex] = { ...target, gestures: [...existing, kind] };
+      return { messages: next };
+    }),
 
   status: "",
   setStatus: (status) => set({ status }),
@@ -857,6 +919,18 @@ export const useAssistantStore = create<AssistantState>((set) => ({
   setAvatarMotion: (motion) => set({ avatarMotion: motion }),
   setAudioAmplitude: (level) =>
     set({ audioAmplitude: Math.max(0, Math.min(1, level)) }),
+
+  avatarTouch: null,
+  avatarTouchAt: 0,
+  pushAvatarTouch: (payload) =>
+    set((state) => ({
+      avatarTouch: payload,
+      // Increment by at least 1 (and use Date.now() as a coarse
+      // wall-clock id) so the engine subscribes to a
+      // monotonically-increasing counter — back-to-back ``hug``
+      // gestures still fan out as two distinct dispatches.
+      avatarTouchAt: Math.max(state.avatarTouchAt + 1, Date.now()),
+    })),
 
   mood: { label: "content", intensity: 0.5, valence: 0, arousal: 0.4 },
   setMood: (mood) => set({ mood }),

@@ -1020,6 +1020,49 @@ class AgentSettings:
     vulnerability_budget_tier2_cost: int = 3
     vulnerability_budget_tier3_cost: int = 6
 
+    # ── K31 + K32: soft physicality (touch + reactions) ───────────────
+    # Master switch for the K31 ``[[touch:KIND]]`` tag family. When
+    # off, the streaming parser silently drops touch tags before they
+    # reach the avatar or the bubble badge; ``TouchService`` is still
+    # constructed (so the persisted state survives a settings flap)
+    # but ``try_dispatch`` always returns ``dispatched=False,
+    # reason="disabled"``.
+    touch_enabled: bool = True
+    # Per-kind override map, e.g.
+    # ``{"hug": {"cooldown_seconds": 300, "daily_cap": 6}}``. Lets
+    # users adjust the cadence without code changes; unknown fields
+    # or unknown kinds are silently ignored. Falls back to the
+    # taxonomy defaults in :data:`app.core.touch.touch_gestures`.
+    touch_per_kind_overrides: dict[str, Any] = field(default_factory=dict)
+    # Master switch for the K32 user-reaction tray. When off, the
+    # REST endpoints reject with 503 and the inner-life cue stays
+    # silent. The frontend hides the hover tray when the connection
+    # advertises the feature as disabled.
+    user_reactions_enabled: bool = True
+    # When True, every K32 reaction click also bumps relationship
+    # axes via :meth:`RelationshipAxesUpdater.apply_user_reaction`.
+    # Off lets you keep the cue + persistence without moving the
+    # axes (useful for debugging or for users who don't want the
+    # relationship signal to ride on a UI affordance).
+    user_reactions_axes_enabled: bool = True
+    # Cumulative absolute axis-movement cap per axis per UTC day,
+    # from reactions only. Tuned so 4-5 reactions in a session feels
+    # meaningful without grinding closeness to +1 from clicks alone.
+    # Implementation in
+    # :func:`app.core.relationship.user_reactions.apply_daily_cap`.
+    user_reactions_daily_axis_cap: float = 0.15
+    # Master switch for the persona-mode action banner (the small
+    # transient surface near the avatar in the Tauri overlay window
+    # that shows what Aiko just did + the reaction tray). Off hides
+    # the banner entirely in the persona webview; the underlying
+    # avatar animation still plays.
+    persona_touch_banner_enabled: bool = True
+    # Visible duration (seconds) of the persona banner. Clamped to
+    # ``[1, 120]`` in ``_parse_agent`` so a typo can't pin the
+    # banner permanently. Default 20s -- long enough for a glance
+    # + a reaction click, short enough not to clutter the overlay.
+    persona_touch_banner_duration_seconds: int = 20
+
     # ── K29: opinion injection (push back when she has a stance) ──────
     # Master switch for the per-turn detector that fires a one-line
     # cue when {user_name}'s latest message contradicts one of Aiko's
@@ -2598,6 +2641,42 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             ),
             vulnerability_budget_tier3_cost=max(
                 0, int(agent_raw.get("vulnerability_budget_tier3_cost", 6)),
+            ),
+            touch_enabled=bool(
+                agent_raw.get("touch_enabled", True),
+            ),
+            touch_per_kind_overrides=(
+                dict(agent_raw.get("touch_per_kind_overrides", {}))
+                if isinstance(
+                    agent_raw.get("touch_per_kind_overrides"), dict,
+                )
+                else {}
+            ),
+            user_reactions_enabled=bool(
+                agent_raw.get("user_reactions_enabled", True),
+            ),
+            user_reactions_axes_enabled=bool(
+                agent_raw.get("user_reactions_axes_enabled", True),
+            ),
+            user_reactions_daily_axis_cap=max(
+                0.0,
+                float(
+                    agent_raw.get("user_reactions_daily_axis_cap", 0.15),
+                ),
+            ),
+            persona_touch_banner_enabled=bool(
+                agent_raw.get("persona_touch_banner_enabled", True),
+            ),
+            persona_touch_banner_duration_seconds=max(
+                1,
+                min(
+                    120,
+                    int(
+                        agent_raw.get(
+                            "persona_touch_banner_duration_seconds", 20,
+                        )
+                    ),
+                ),
             ),
             opinion_injection_enabled=bool(
                 agent_raw.get("opinion_injection_enabled", True),

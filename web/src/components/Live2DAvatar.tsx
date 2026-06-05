@@ -20,6 +20,7 @@ import { LipsyncChannel } from "../live2d/channels/LipsyncChannel";
 import { MotionChannel } from "../live2d/channels/MotionChannel";
 import { OutfitChannel } from "../live2d/channels/OutfitChannel";
 import { OverlayChannel } from "../live2d/channels/OverlayChannel";
+import { ReachChannel } from "../live2d/channels/ReachChannel";
 import { GlobalMouseSource } from "../live2d/GlobalMouseSource";
 import { WindowMouseSource } from "../live2d/WindowMouseSource";
 import { debugLog } from "../log";
@@ -179,6 +180,11 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
           new GestureChannel(),
           new GazeChannel(),
           new AmbientBodyChannel(),
+          // K31 soft physicality: registered AFTER AmbientBody so
+          // its read-modify-write on ParamBodyAngleY layers on top
+          // of the always-on body-language drivers rather than
+          // clobbering them.
+          new ReachChannel(),
         );
         engine.start(adapter);
         const bridge = new StoreBridge(engine, useAssistantStore);

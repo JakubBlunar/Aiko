@@ -502,6 +502,22 @@ _MOTION_OPEN_TAIL_PATTERN = re.compile(
     r"\[\[motion:[^\]]*\Z",
     flags=re.IGNORECASE,
 )
+# K31 soft physicality: [[touch:KIND]] reaches toward the user with a
+# small physical gesture (hug, head_pat, poke, wave, ...). The
+# taxonomy + axes gate + cadence live in
+# ``app/core/touch/touch_gestures.py``; the dispatch path threads
+# through ``TurnRunner.on_touch`` -> ``avatar_mixin._emit_avatar_touch``
+# -> WS ``avatar_touch`` event. The literal touch is sold by the
+# bubble footer badge + persona action banner; the avatar lean-in is
+# an approximation because the Alexia rig has no real reach params.
+_TOUCH_TAG_PATTERN = re.compile(
+    r"\[\[touch:([A-Za-z_][A-Za-z0-9_]*)\]\]",
+    flags=re.IGNORECASE,
+)
+_TOUCH_OPEN_TAIL_PATTERN = re.compile(
+    r"\[\[touch:[^\]]*\Z",
+    flags=re.IGNORECASE,
+)
 
 
 def extract_overlays(text: str) -> list[tuple[str, int]]:
@@ -538,6 +554,24 @@ def extract_motion_commands(text: str) -> list[tuple[str, int]]:
     return [
         (m.group(1).strip().lower(), m.start())
         for m in _MOTION_TAG_PATTERN.finditer(source)
+    ]
+
+
+def extract_touch_commands(text: str) -> list[tuple[str, int]]:
+    """Return ``(kind, char_offset)`` ``[[touch:KIND]]`` markers.
+
+    Used by the post-turn pass in ``avatar_mixin._persist_turn_gestures``
+    to gather every touch kind Aiko emitted in this turn even if some
+    landed in chunks the streaming path didn't see (e.g. when a tool
+    pass merged into the final text). Stays as the canonical list-order
+    so consecutive ``[[touch:hug]] [[touch:hug]]`` reads as two entries.
+    """
+    source = str(text or "")
+    if not source:
+        return []
+    return [
+        (m.group(1).strip().lower(), m.start())
+        for m in _TOUCH_TAG_PATTERN.finditer(source)
     ]
 
 
@@ -738,6 +772,11 @@ def strip_all_meta_tags(text: str) -> str:
     s = _OUTFIT_OPEN_TAIL_PATTERN.sub("", s)
     s = _MOTION_TAG_PATTERN.sub("", s)
     s = _MOTION_OPEN_TAIL_PATTERN.sub("", s)
+    # K31 soft physicality: drop ``[[touch:KIND]]`` tags so they never
+    # leak into chat / TTS. The side-channel (``TurnRunner.on_touch``)
+    # extracted them earlier; this is the belt-and-braces strip.
+    s = _TOUCH_TAG_PATTERN.sub("", s)
+    s = _TOUCH_OPEN_TAIL_PATTERN.sub("", s)
     # Phase 1c: stage-direction earcons are stripped from display text;
     # the audio side-channel pulls them via :func:`extract_stage_directions`
     # before this stripping runs. Stripping here keeps the chat
@@ -825,6 +864,7 @@ _META_OPENERS = (
     "[[predict:",
     "[[prosody:",
     "[[goal:",
+    "[[touch:",
 )
 
 
@@ -862,6 +902,8 @@ def _looks_like_partial_opener(suffix: str) -> bool:
     if lowered.startswith("[[prosody:") and "]]" not in lowered:
         return True
     if lowered.startswith("[[goal:") and "]]" not in lowered:
+        return True
+    if lowered.startswith("[[touch:") and "]]" not in lowered:
         return True
     # Mid-tag like ``[[d`` / ``[[de`` / ``[[s`` etc.
     if lowered.startswith("[["):

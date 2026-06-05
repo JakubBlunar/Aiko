@@ -240,6 +240,220 @@ class WorldMixin:
             self._notify_shared_moment({"deleted_moment_id": int(moment_id)})
         return ok
 
+    # ── K32 user reactions: API used by /api/chat/messages/{id}/reactions
+
+    def add_message_reaction_listener(
+        self, callback: Callable[[dict[str, Any]], None],
+    ) -> None:
+        """Register a ``callback(payload)`` for K32 reaction updates.
+
+        Payload shape: ``{"message_id": int, "reactions": dict[str, int]}``.
+        Fires on add AND on remove (the reactions map is the full
+        post-edit state). The WS hub forwards as
+        ``message_reaction_updated``.
+        """
+        listeners = self._message_reaction_listeners
+        if callback and callback not in listeners:
+            listeners.append(callback)
+
+    def _notify_message_reaction(self, payload: dict[str, Any]) -> None:
+        for listener in list(self._message_reaction_listeners):
+            try:
+                listener(payload)
+            except Exception:
+                log.debug("message-reaction listener raised", exc_info=True)
+
+    def _load_message_reactions(self, message_id: int) -> dict[str, int]:
+        """Return the persisted ``reactions`` map for a message, or {}."""
+        import json as _json
+
+        try:
+            row = self._chat_db.execute_fetchone(
+                "SELECT reactions FROM messages WHERE id = ?",
+                (int(message_id),),
+            )
+        except Exception:
+            log.debug("_load_message_reactions failed", exc_info=True)
+            return {}
+        if row is None or row[0] is None:
+            return {}
+        try:
+            data = _json.loads(row[0])
+        except (TypeError, ValueError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        out: dict[str, int] = {}
+        for kind, count in data.items():
+            if not isinstance(kind, str):
+                continue
+            try:
+                out[kind.strip().lower()] = max(0, int(count))
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    def apply_user_reaction(
+        self, message_id: int, kind: str,
+    ) -> dict[str, Any] | None:
+        """Add a K32 reaction to a message and propagate side-effects.
+
+        Returns ``{"message_id": int, "reactions": dict[str, int]}`` on
+        success, ``None`` when the message doesn't exist or the kind is
+        invalid. Side-effects:
+
+        1. The reactions JSON column is updated in SQLite.
+        2. If the message is from Aiko (``role == "assistant"``) and
+           ``agent.user_reactions_axes_enabled`` is set, the
+           relationship axes are bumped via the daily-cap state machine
+           and the axes broadcaster fires.
+        3. A ``(message_id, kind)`` entry is appended to
+           ``_pending_user_reactions`` so the next assistant turn's
+           inner-life provider can render the "Jacob just X-ed your
+           reply" cue.
+        4. The ``message_reaction_updated`` listener fires with the
+           new full reactions map so both webviews stay in sync.
+        """
+        from app.core.relationship import user_reactions as _ur
+
+        if not _ur.is_valid_kind(kind):
+            return None
+        if not message_id or int(message_id) <= 0:
+            return None
+
+        message_row = self._chat_db.get_message_row(int(message_id))
+        if message_row is None:
+            return None
+
+        normalized_kind = str(kind).strip().lower()
+        # Reject reactions on user messages -- the K32 tray only lives
+        # on Aiko's bubbles. Reacting to your own message is a feature
+        # mis-use and the inner-life cue would read as nonsense
+        # ("Jacob hearted his own message").
+        if str(message_row.role) != "assistant":
+            return None
+
+        # K32 master switch: when off, the REST handler should already
+        # have 503'd, but guard here too so direct callers (MCP debug
+        # tool) respect the same posture.
+        agent = self._settings.agent
+        if not bool(getattr(agent, "user_reactions_enabled", True)):
+            return None
+
+        existing = self._load_message_reactions(int(message_id))
+        existing[normalized_kind] = existing.get(normalized_kind, 0) + 1
+
+        import json as _json
+
+        try:
+            self._chat_db.update_message_reactions(
+                int(message_id), _json.dumps(existing, sort_keys=True),
+            )
+        except Exception:
+            log.debug("update_message_reactions failed", exc_info=True)
+            return None
+
+        # Arm the inner-life cue regardless of whether the axes bump
+        # fires. ``surprise`` for instance has no axes delta but should
+        # still appear in the next-turn cue.
+        try:
+            self._pending_user_reactions.append(
+                (int(message_id), normalized_kind),
+            )
+        except Exception:
+            log.debug(
+                "K32 _pending_user_reactions append failed", exc_info=True,
+            )
+
+        # Axes bump (optional master switch). Driven by the
+        # RelationshipAxesUpdater so the per-turn clamp, broadcast
+        # debounce, and persist path all behave identically to the
+        # existing reaction-tag bumps.
+        updater = getattr(self, "_relationship_axes_updater", None)
+        if (
+            updater is not None
+            and bool(getattr(agent, "user_reactions_axes_enabled", True))
+        ):
+            try:
+                state = updater.apply_user_reaction(
+                    self._user_id,
+                    kind=normalized_kind,
+                    daily_cap=float(
+                        getattr(
+                            agent, "user_reactions_daily_axis_cap", 0.15,
+                        ),
+                    ),
+                )
+                if state is not None:
+                    self._maybe_notify_axes(state)
+            except Exception:
+                log.debug(
+                    "RelationshipAxesUpdater.apply_user_reaction failed",
+                    exc_info=True,
+                )
+
+        payload = {
+            "message_id": int(message_id),
+            "reactions": dict(existing),
+        }
+        self._notify_message_reaction(payload)
+        log.info(
+            "user_reaction applied: message_id=%d kind=%s reactions=%s",
+            int(message_id),
+            normalized_kind,
+            existing,
+        )
+        return payload
+
+    def remove_user_reaction(
+        self, message_id: int, kind: str,
+    ) -> dict[str, Any] | None:
+        """Undo one K32 reaction click (decrement the counter).
+
+        Symmetric with :meth:`apply_user_reaction` for the persistence
+        + broadcast path, but NOT for axes -- removing a reaction
+        does NOT subtract from the relationship axes. The reasoning:
+        a click that already moved closeness +0.03 was a real
+        signal at the time; undoing the UI affordance shouldn't
+        unwind the moment.
+        """
+        from app.core.relationship import user_reactions as _ur
+
+        if not _ur.is_valid_kind(kind):
+            return None
+        if not message_id or int(message_id) <= 0:
+            return None
+
+        existing = self._load_message_reactions(int(message_id))
+        normalized_kind = str(kind).strip().lower()
+        if normalized_kind not in existing:
+            return {
+                "message_id": int(message_id),
+                "reactions": dict(existing),
+            }
+
+        existing[normalized_kind] = max(0, existing[normalized_kind] - 1)
+        if existing[normalized_kind] <= 0:
+            del existing[normalized_kind]
+
+        import json as _json
+
+        try:
+            self._chat_db.update_message_reactions(
+                int(message_id),
+                _json.dumps(existing, sort_keys=True) if existing else None,
+            )
+        except Exception:
+            log.debug("update_message_reactions (delete) failed", exc_info=True)
+            return None
+
+        payload = {
+            "message_id": int(message_id),
+            "reactions": dict(existing),
+        }
+        self._notify_message_reaction(payload)
+        return payload
+
     def mark_message_as_moment(
         self,
         message_id: int,

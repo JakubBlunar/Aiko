@@ -13,9 +13,11 @@ export type { BridgedState, BridgedStore } from "./StoreBridge";
 export type {
   AvatarChannel,
   AvatarManifest,
+  AvatarTouchPayload,
   ChannelDeps,
   ChannelStoreSnapshot,
   Live2DModelAdapter,
   MouseSnapshot,
   ResolvedOverlayEvent,
+  ResolvedTouchEvent,
 } from "./types";

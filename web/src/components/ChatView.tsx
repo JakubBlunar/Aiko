@@ -4,7 +4,11 @@ import { api } from "../api";
 import { useMicCapture } from "../hooks/useMicCapture";
 import { useAssistantStore } from "../store";
 import type { ToolEvent, VoiceMode, WsClientCommand } from "../types";
-import { SHARED_MOMENT_VIBES } from "../types";
+import {
+  SHARED_MOMENT_VIBES,
+  TOUCH_GESTURE_LABELS,
+  USER_REACTION_KINDS,
+} from "../types";
 import { ContextBadge } from "./ContextBadge";
 import { MicButton } from "./MicButton";
 
@@ -506,6 +510,12 @@ interface BubbleProps {
   kind?: "proactive";
   /** Backend message id (when known) — gates the "Mark as moment" action. */
   backendId?: number;
+  /** K31: touch kinds Aiko emitted on this turn (one badge per
+   * entry, in order). Empty / undefined for plain bubbles. */
+  gestures?: string[];
+  /** K32: counter map of user-reaction kinds clicked on this
+   * bubble. The hover tray + persistent strip both render this. */
+  reactions?: Record<string, number>;
 }
 
 // Phase 3c: parse `[[correct]]old[[/correct]]new` into renderable
@@ -577,6 +587,8 @@ function MessageBubbleImpl({
   reaction,
   kind,
   backendId,
+  gestures,
+  reactions,
 }: BubbleProps) {
   // P9: when this bubble is the active streaming bubble, pull its
   // live content + reaction from the ``streamingDraft`` slice
@@ -593,7 +605,11 @@ function MessageBubbleImpl({
   const [markOpen, setMarkOpen] = useState(false);
   const [marking, setMarking] = useState(false);
   const [marked, setMarked] = useState(false);
+  const [reactBusyKind, setReactBusyKind] = useState<string | null>(null);
   const pushToast = useAssistantStore((s) => s.pushToast);
+  const applyMessageReactions = useAssistantStore(
+    (s) => s.applyMessageReactions,
+  );
 
   const onMark = useCallback(
     async (vibe: string) => {
@@ -613,6 +629,42 @@ function MessageBubbleImpl({
     [backendId, pushToast],
   );
 
+  // K32: react / un-react on this bubble. Optimistic: we update the
+  // store immediately, then reconcile with the server response (or
+  // roll back on error). The WS broadcast lands a moment later and
+  // is idempotent.
+  const onToggleReaction = useCallback(
+    async (kindClicked: string) => {
+      if (backendId == null) return;
+      const current = reactions ?? {};
+      const has = (current[kindClicked] ?? 0) > 0;
+      setReactBusyKind(kindClicked);
+      try {
+        if (has) {
+          const next = { ...current };
+          delete next[kindClicked];
+          applyMessageReactions(backendId, next);
+          const result = await api.removeReaction(backendId, kindClicked);
+          applyMessageReactions(backendId, result.reactions ?? {});
+        } else {
+          const next = { ...current, [kindClicked]: (current[kindClicked] ?? 0) + 1 };
+          applyMessageReactions(backendId, next);
+          const result = await api.addReaction(backendId, kindClicked);
+          applyMessageReactions(backendId, result.reactions ?? {});
+        }
+      } catch (err) {
+        // Roll back to the pre-click state. The WS broadcast is the
+        // ultimate source of truth; if it never comes the optimistic
+        // value sits, but at least the user sees an error toast.
+        applyMessageReactions(backendId, current);
+        pushToast("warning", `Reaction failed: ${String(err)}`);
+      } finally {
+        setReactBusyKind(null);
+      }
+    },
+    [backendId, reactions, applyMessageReactions, pushToast],
+  );
+
   if (role === "system") {
     return (
       <div className="mx-auto max-w-md text-center text-xs italic text-ink-100/40">
@@ -627,6 +679,17 @@ function MessageBubbleImpl({
   // (system messages excluded above). Streaming rows don't have a
   // backendId yet so the button stays hidden until the turn lands.
   const canMark = !streaming && backendId != null;
+  // K32: reactions are only meaningful on persisted assistant
+  // bubbles (the persistence column is on ``messages.reactions``).
+  const canReact = !isUser && !streaming && backendId != null;
+  // K31: only render the gesture footer on assistant bubbles that
+  // actually fired one.
+  const gestureKinds = !isUser && gestures ? gestures : [];
+  // K32: pre-compute the rendered counter strip so we don't
+  // recompute on every hover state change.
+  const reactionEntries = Object.entries(reactions ?? {}).filter(
+    ([, count]) => (count ?? 0) > 0,
+  );
   return (
     <div
       role="listitem"
@@ -698,6 +761,79 @@ function MessageBubbleImpl({
           </div>
         ) : null}
       </div>
+      {gestureKinds.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-1 self-start">
+          {gestureKinds.map((g, idx) => {
+            const meta = TOUCH_GESTURE_LABELS[g] ?? {
+              label: g,
+              emoji: "✨",
+            };
+            return (
+              <span
+                key={`${g}-${idx}`}
+                className="rounded-full border border-pink-400/30 bg-pink-500/[0.12] px-2 py-0.5 text-[10px] text-pink-50"
+                title={`Aiko ${meta.label}`}
+              >
+                <span className="mr-1">{meta.emoji}</span>
+                Aiko {meta.label}
+              </span>
+            );
+          })}
+        </div>
+      ) : null}
+      {canReact ? (
+        <div className="flex flex-wrap items-center gap-1 self-start">
+          {reactionEntries.length > 0 ? (
+            <div className="flex flex-wrap items-center gap-1">
+              {reactionEntries.map(([kindKey, count]) => {
+                const meta = USER_REACTION_KINDS.find(
+                  (r) => r.kind === kindKey,
+                );
+                if (!meta) return null;
+                return (
+                  <button
+                    key={kindKey}
+                    type="button"
+                    disabled={reactBusyKind != null}
+                    onClick={() => {
+                      void onToggleReaction(kindKey);
+                    }}
+                    title={`${meta.label} (click to remove)`}
+                    className="inline-flex items-center gap-1 rounded-full border border-pink-400/40 bg-pink-500/[0.18] px-2 py-0.5 text-[11px] text-pink-50 hover:bg-pink-500/30 disabled:opacity-50"
+                  >
+                    <span>{meta.emoji}</span>
+                    {count > 1 ? (
+                      <span className="text-[10px] text-pink-100/80">
+                        {count}
+                      </span>
+                    ) : null}
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
+          <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+            {USER_REACTION_KINDS.map((r) => {
+              const has = (reactions?.[r.kind] ?? 0) > 0;
+              if (has) return null;
+              return (
+                <button
+                  key={r.kind}
+                  type="button"
+                  disabled={reactBusyKind != null}
+                  onClick={() => {
+                    void onToggleReaction(r.kind);
+                  }}
+                  title={r.label}
+                  className="rounded-full px-1 py-0.5 text-[12px] text-ink-100/60 hover:bg-white/10 hover:text-ink-100 disabled:opacity-40"
+                >
+                  {r.emoji}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
       <div className="text-[10px] text-ink-100/40">
         {isUser ? "you" : isProactive ? "aiko · proactive" : "aiko"} ·{" "}
         {formatTime(createdAt)}

@@ -17,7 +17,63 @@ export interface ChatMessage {
   reaction?: string;
   /** Subtype hint -- e.g. "proactive" for unsolicited Aiko nudges. */
   kind?: "proactive";
+  /** K31 soft physicality: kinds Aiko emitted via ``[[touch:KIND]]``
+   * during this turn. Painted as small badges on the chat bubble
+   * footer (e.g. "🫂 Aiko gave you a hug"). Empty / undefined when
+   * the turn fired no touches. */
+  gestures?: string[];
+  /** K32 reciprocity: counter per reaction kind. Empty / undefined
+   * when the user hasn't reacted yet. */
+  reactions?: { [kind: string]: number };
 }
+
+/** K31: shape of the ``avatar_touch`` WS payload after the ``type``
+ * field is stripped. Mirrors :class:`TouchGesture` on the backend
+ * (``app/core/touch/touch_gestures.py``) and the Python dict
+ * built in ``_emit_avatar_touch``. */
+export interface AvatarTouchPayload {
+  kind: string;
+  label: string;
+  emoji: string;
+  duration_ms: number;
+  lean_amount: number;
+  overlays: string[];
+}
+
+/** K32: a single reaction kind in the user-reaction taxonomy.
+ * Mirrors :data:`REACTION_KINDS` on the backend
+ * (``app/core/relationship/user_reactions.py``). */
+export interface UserReactionKind {
+  kind: string;
+  emoji: string;
+  label: string;
+}
+
+/** K32: full taxonomy carried into the UI. The chat hover tray + the
+ * persona action banner both render this list verbatim. */
+export const USER_REACTION_KINDS: ReadonlyArray<UserReactionKind> = [
+  { kind: "heart", emoji: "💛", label: "love" },
+  { kind: "hug", emoji: "🫂", label: "hug back" },
+  { kind: "laugh", emoji: "😂", label: "laugh" },
+  { kind: "thumbs", emoji: "👍", label: "thumbs up" },
+  { kind: "rose", emoji: "🌹", label: "rose" },
+  { kind: "surprise", emoji: "🫢", label: "surprise" },
+];
+
+/** K31: pretty labels + emoji for the eight touch kinds. Mirrors
+ * :data:`_TOUCH_GESTURES` on the backend so the bubble badge and
+ * persona banner can render even when the WS payload is missing a
+ * label (e.g. legacy DB rows). */
+export const TOUCH_GESTURE_LABELS: Record<string, { label: string; emoji: string }> = {
+  wave: { label: "waved hi", emoji: "👋" },
+  poke: { label: "poked you", emoji: "👉" },
+  boop: { label: "booped your nose", emoji: "👈" },
+  nudge: { label: "nudged you", emoji: "🤝" },
+  high_five: { label: "high-fived you", emoji: "✋" },
+  hug: { label: "gave you a hug", emoji: "🫂" },
+  head_pat: { label: "patted your head", emoji: "🫳" },
+  cuddle: { label: "cuddled up", emoji: "🤗" },
+};
 
 export interface SessionRow {
   session_id: string;
@@ -1119,6 +1175,25 @@ export type WsServerEvent =
        * Backwards-compatible: payloads without this field are
        * treated as the default normal lane. */
       priority?: "idle" | "normal" | "force";
+    }
+  | {
+      /** K31: one Aiko-to-user gesture fired this turn. Mirrors
+       * the dict ``_emit_avatar_touch`` broadcasts. */
+      type: "avatar_touch";
+      kind: string;
+      label: string;
+      emoji: string;
+      duration_ms: number;
+      lean_amount: number;
+      overlays: string[];
+    }
+  | {
+      /** K32: per-bubble reaction-counter map after one
+       * add/remove. ``reactions`` is the full canonical map for
+       * the message (the WS broadcast is not a diff). */
+      type: "message_reaction_updated";
+      message_id: number;
+      reactions: Record<string, number>;
     }
   | { type: "audio_amplitude"; level: number }
   | {

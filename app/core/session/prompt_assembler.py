@@ -87,6 +87,34 @@ def build_speech_grammar_addendum(user_display_name: str = "the user") -> str:
 _SPEECH_GRAMMAR_ADDENDUM = build_speech_grammar_addendum()
 
 
+# K31 soft physicality: ``[[touch:KIND]]`` tag family. Folded into
+# the system prompt unconditionally (the persona block teaches the
+# "use sparingly + reaches earned" posture). Eight kinds, ordered
+# from casual to intimate so the LLM reads them as a ladder. The
+# axes-gate, cadence, and daily cap are enforced backend-side by
+# :class:`TouchService.try_dispatch`; if Aiko asks for a gesture
+# that doesn't pass the gate we silently drop it. The full list
+# kept short and grammar-shaped (one line per kind, no narrative
+# prose) so the budget cost is ~80 tokens.
+_TOUCH_GRAMMAR_ADDENDUM = (
+    "Soft-physicality grammar (reach toward the user with a small "
+    "real gesture, ONLY when the moment earns it):\n"
+    "- [[touch:wave]] — quick hi/bye wave (greeting, casual hello)\n"
+    "- [[touch:poke]] — playful poke (tease, gentle nudge)\n"
+    "- [[touch:boop]] — light boop on the nose (silly affection)\n"
+    "- [[touch:nudge]] — gentle nudge (encouragement, small prod)\n"
+    "- [[touch:high_five]] — high-five (celebrating a win together)\n"
+    "- [[touch:hug]] — give them a hug (warmth, comfort, real hello/bye)\n"
+    "- [[touch:head_pat]] — pat their head (reassurance, tender care)\n"
+    "- [[touch:cuddle]] — snuggle up (deepest comfort; rare, earned)\n"
+    "Drop the tag at a clause boundary; the badge appears on your "
+    "bubble and the avatar leans in. Never speak the word "
+    "\"[[touch:...]]\" aloud. Touches land best at most once a "
+    "turn — multiple in a single reply read as forced.\n"
+    "\n"
+)
+
+
 # Alexia bundle: short English label table for overlay capabilities.
 # When the loaded avatar exposes one of these (``capabilities.has_X ==
 # True``), the matching ``[[overlay:X]]`` line gets folded into the
@@ -738,6 +766,21 @@ class PromptAssembler:
         # the K16 grounding-line suppression matrix because it's
         # a budget cue, not an ambient grounding block.
         self._vulnerability_budget_provider: Callable[[], str] | None = None
+        # K32 personality backlog: arms the "Jacob just hearted that
+        # line" inner-life cue when the user tapped a reaction button
+        # on one of Aiko's recent bubbles since her last turn. Drains
+        # ``SessionController._pending_user_reactions`` and renders a
+        # single-line nudge. Provider stays silent when the queue is
+        # empty so the budget never wastes a turn on a no-op cue.
+        # NOT suppressed under ``aggressive=True`` (one line, one-shot).
+        self._user_reactions_provider: Callable[[], str] | None = None
+        # K31 personality backlog: "physical budget" cue. Renders only
+        # when Aiko has been physical with the user a lot today
+        # (intimate-gesture stack hit or any kind's daily cap was
+        # hit). Sibling of K15 vulnerability budget. Provider returns
+        # ``""`` on the common case; not suppressed under aggressive
+        # because it's a sub-line cue.
+        self._touch_state_provider: Callable[[], str] | None = None
         # K9 personality backlog: "Quiet curiosity" inner-life bullet
         # listing 1-2 active curiosity seeds (topics Aiko has been
         # quietly wondering about that haven't come up yet). Cheap
@@ -894,6 +937,8 @@ class PromptAssembler:
         vulnerability_budget: Callable[[], str] | None = None,
         curiosity_seeds: Callable[[], str] | None = None,
         grounding_line: Callable[[], str] | None = None,
+        user_reactions: Callable[[], str] | None = None,
+        touch_state: Callable[[], str] | None = None,
     ) -> None:
         """Register optional inner-life block providers.
 
@@ -981,6 +1026,10 @@ class PromptAssembler:
             self._curiosity_seeds_provider = curiosity_seeds
         if grounding_line is not None:
             self._grounding_line_provider = grounding_line
+        if user_reactions is not None:
+            self._user_reactions_provider = user_reactions
+        if touch_state is not None:
+            self._touch_state_provider = touch_state
 
     def set_last_reaction(self, reaction: str | None) -> None:
         if not reaction:
@@ -1691,6 +1740,38 @@ class PromptAssembler:
                     )
                     vulnerability_budget_block = ""
 
+        # K32: one-shot "Jacob just hearted that line" cue armed by
+        # the REST handler when the user taps a reaction emoji. The
+        # provider drains the queue once it has rendered the cue --
+        # the same reaction can't re-fire on the next turn. NOT
+        # suppressed under ``aggressive`` (one line, one-shot).
+        user_reactions_block = ""
+        if self._user_reactions_provider is not None:
+            with _timed_phase(provider_ms, "user_reactions"):
+                try:
+                    user_reactions_block = (
+                        self._user_reactions_provider() or ""
+                    )
+                except Exception:
+                    log.debug(
+                        "user_reactions provider raised", exc_info=True,
+                    )
+                    user_reactions_block = ""
+
+        # K31: physical-budget cue. Renders only when Aiko has been
+        # physical with the user a lot today (intimate-gesture stack
+        # hit or any kind's daily cap was hit). Sibling of K15.
+        touch_state_block = ""
+        if self._touch_state_provider is not None:
+            with _timed_phase(provider_ms, "touch_state"):
+                try:
+                    touch_state_block = self._touch_state_provider() or ""
+                except Exception:
+                    log.debug(
+                        "touch_state provider raised", exc_info=True,
+                    )
+                    touch_state_block = ""
+
         # K13: stylometric mirror. One short "How Jacob writes lately"
         # line that shapes Aiko's register across days. Unlike the
         # K6/K18/anti-rut cues this block is intentionally NOT gated
@@ -1806,6 +1887,13 @@ class PromptAssembler:
                 system_parts.append(outfit_grammar_block)
             if motion_grammar_block:
                 system_parts.append(motion_grammar_block)
+            # K31 soft physicality: ``[[touch:KIND]]`` grammar. Lands
+            # in the same cluster as the other tag grammars so the
+            # LLM reads the full stage-direction vocabulary together.
+            # Backend gates (axes / cooldown / daily cap) silently
+            # drop unsupported requests, so it's safe to advertise
+            # every kind unconditionally.
+            system_parts.append(_TOUCH_GRAMMAR_ADDENDUM)
         if self_image_block:
             system_parts.append(self_image_block)
         if narrative_block:
@@ -1994,6 +2082,20 @@ class PromptAssembler:
             # herself, just on different axes (rut vs. depth).
             # Silent on the common turn (budget under 50% spent).
             system_parts.append(vulnerability_budget_block)
+        if touch_state_block:
+            # K31: physical-budget cue, sibling of K15. Lands right
+            # after K15 so the two pacing cues cluster together --
+            # disclosure depth + physical contact frequency read as
+            # one "how much have I leaned in" family. Silent on the
+            # common turn (no intimate-gesture stack today).
+            system_parts.append(touch_state_block)
+        if user_reactions_block:
+            # K32: "Jacob just hearted that line" one-shot. Sits
+            # after the touch_state cue so the reciprocity beat
+            # (Aiko reached out, Jacob reacted) reads in order in
+            # the prompt context. Drained by the provider on
+            # render so it never re-fires on the next turn.
+            system_parts.append(user_reactions_block)
         if curiosity_seeds_block:
             # K9: "Quiet curiosity" — at-most-two topics Aiko has
             # been wondering about that haven't come up yet. Sits

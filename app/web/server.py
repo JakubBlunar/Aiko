@@ -521,6 +521,27 @@ def create_web_app(session: "SessionController") -> FastAPI:
     def _on_avatar_motion(payload: dict[str, Any]) -> None:
         hub.broadcast({"type": "avatar_motion", **payload})
 
+    def _on_avatar_touch(payload: dict[str, Any]) -> None:
+        """K31: forward an ``avatar_touch`` event to every webview.
+
+        Both the chat window and the persona overlay subscribe to
+        the same WS hub; the store reducer routes the event to
+        the avatar engine (lean-in animation) AND to the bubble
+        badge / persona-banner surface.
+        """
+        hub.broadcast({"type": "avatar_touch", **payload})
+
+    def _on_message_reaction_updated(payload: dict[str, Any]) -> None:
+        """K32: rebroadcast a reaction-counter update.
+
+        Payload shape: ``{"message_id": int, "reactions":
+        dict[str, int]}``. The frontend reducer merges the
+        new map onto the matching message row so both windows
+        stay in sync (a heart click in chat shows up in the
+        persona action banner too).
+        """
+        hub.broadcast({"type": "message_reaction_updated", **payload})
+
     try:
         session.add_avatar_settings_listener(_on_avatar_settings)
     except Exception:
@@ -533,6 +554,16 @@ def create_web_app(session: "SessionController") -> FastAPI:
         session.add_avatar_motion_listener(_on_avatar_motion)
     except Exception:
         log.debug("avatar motion listener subscription failed", exc_info=True)
+    try:
+        session.add_avatar_touch_listener(_on_avatar_touch)
+    except Exception:
+        log.debug("avatar touch listener subscription failed", exc_info=True)
+    try:
+        session.add_message_reaction_listener(_on_message_reaction_updated)
+    except Exception:
+        log.debug(
+            "message reaction listener subscription failed", exc_info=True,
+        )
 
     # ── Live (continuous voice) session ─────────────────────────────
     # One global instance per backend; SessionController already serializes
@@ -2065,6 +2096,69 @@ def create_web_app(session: "SessionController") -> FastAPI:
         if result is None:
             raise HTTPException(404, "message not found")
         return JSONResponse({"moment": result})
+
+    # ── REST: K32 user reactions on Aiko bubbles ────────────────────
+
+    @app.post("/api/chat/messages/{message_id}/reactions")
+    async def add_user_reaction(
+        message_id: int, payload: dict[str, Any] | None = None,
+    ) -> JSONResponse:
+        """K32: register one reaction click on an assistant bubble.
+
+        Body: ``{"kind": "heart" | "hug" | "laugh" | "thumbs" |
+        "rose" | "surprise"}``. Returns the new full reactions
+        map. Side-effects (axes nudge + inner-life cue) live in
+        :meth:`SessionController.apply_user_reaction`.
+        """
+        if not bool(
+            getattr(
+                session._settings.agent, "user_reactions_enabled", True,
+            ),
+        ):
+            raise HTTPException(503, "user reactions feature disabled")
+        if not isinstance(payload, dict) or "kind" not in payload:
+            raise HTTPException(400, "kind is required")
+        kind = payload.get("kind")
+        if not isinstance(kind, str) or not kind.strip():
+            raise HTTPException(400, "kind must be a non-empty string")
+        from app.core.relationship.user_reactions import is_valid_kind
+
+        if not is_valid_kind(kind):
+            raise HTTPException(
+                400, f"unknown reaction kind: {kind}",
+            )
+        result = session.apply_user_reaction(int(message_id), kind)
+        if result is None:
+            raise HTTPException(
+                404, "message not found or not an assistant bubble",
+            )
+        return JSONResponse(result)
+
+    @app.delete("/api/chat/messages/{message_id}/reactions/{kind}")
+    async def remove_user_reaction(
+        message_id: int, kind: str,
+    ) -> JSONResponse:
+        """K32: undo one reaction click (decrements the counter).
+
+        Symmetric with the POST endpoint for persistence + WS
+        broadcast; axes are NOT subtracted on undo.
+        """
+        if not bool(
+            getattr(
+                session._settings.agent, "user_reactions_enabled", True,
+            ),
+        ):
+            raise HTTPException(503, "user reactions feature disabled")
+        from app.core.relationship.user_reactions import is_valid_kind
+
+        if not is_valid_kind(kind):
+            raise HTTPException(
+                400, f"unknown reaction kind: {kind}",
+            )
+        result = session.remove_user_reaction(int(message_id), kind)
+        if result is None:
+            raise HTTPException(404, "message not found")
+        return JSONResponse(result)
 
     # ── REST: Live2D avatar (fixed Alexia bundle) ───────────────────
 
