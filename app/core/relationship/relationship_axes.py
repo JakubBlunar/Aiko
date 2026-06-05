@@ -325,6 +325,87 @@ class RelationshipAxesUpdater:
         self._store.save(state)
         return state
 
+    def apply_user_reaction(
+        self,
+        user_id: str,
+        *,
+        kind: str,
+        daily_cap: float = 0.15,
+    ) -> RelationshipAxesState | None:
+        """K32: apply a single user-reaction click to the axes.
+
+        Routes through :func:`user_reactions.compute_deltas` (per-kind
+        delta table + soft cap) and :func:`user_reactions.apply_daily_cap`
+        (running per-axis daily budget persisted in ``kv_meta``). On a
+        zero-delta path (``surprise`` kind, or cap fully spent) returns
+        the unmodified state without writing the row.
+
+        Persistence + clamping match :meth:`apply_turn` exactly.
+        """
+        from datetime import datetime, timezone
+
+        from app.core.relationship import user_reactions as _ur
+
+        proposed = _ur.compute_deltas(kind)
+        if not proposed:
+            return self._store.get(user_id)
+
+        chat_db = getattr(self._store, "_db", None)
+        if chat_db is None:
+            return None
+
+        now = datetime.now(timezone.utc)
+        cap_state = _ur.load_daily_state(chat_db)
+        verdict = _ur.apply_daily_cap(
+            proposed, cap_state, now=now, daily_cap=daily_cap,
+        )
+
+        # Persist the daily-cap state regardless of whether any delta
+        # survived -- we want the ``daily_date`` rollover to land even
+        # on a fully-capped click so tomorrow's first reaction starts
+        # from a fresh ledger.
+        _ur.save_daily_state(chat_db, verdict.new_state)
+
+        if not verdict.effective_deltas:
+            return self._store.get(user_id)
+
+        state = self._store.get(user_id)
+        deltas: dict[str, float] = {
+            "closeness": 0.0,
+            "humor": 0.0,
+            "trust": 0.0,
+            "comfort": 0.0,
+        }
+        for axis, value in verdict.effective_deltas.items():
+            if axis in deltas:
+                deltas[axis] += float(value)
+
+        # Mirror :meth:`apply_turn`'s per-axis hard clamp so a delta
+        # that survived the daily cap can never blow past the
+        # per-turn-style ceiling either. Belt-and-braces -- the
+        # K32 per-reaction soft cap (0.04) is already half of this.
+        for axis in deltas:
+            deltas[axis] = max(-_MAX_DELTA, min(_MAX_DELTA, deltas[axis]))
+
+        if all(abs(v) < 1e-6 for v in deltas.values()):
+            return state
+
+        state.closeness += deltas["closeness"]
+        state.humor += deltas["humor"]
+        state.trust += deltas["trust"]
+        state.comfort += deltas["comfort"]
+        state.clamp()
+        self._store.save(state)
+        if verdict.capped_axes:
+            log.info(
+                "user_reaction axes: user=%s kind=%s applied=%s capped=%s",
+                user_id,
+                kind,
+                verdict.effective_deltas,
+                list(verdict.capped_axes),
+            )
+        return state
+
 
 # ── rendering ───────────────────────────────────────────────────────────
 

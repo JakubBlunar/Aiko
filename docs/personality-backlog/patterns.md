@@ -253,3 +253,146 @@ block consumer.
 ## K30. Self-noticing cues — agreement-streak / flat-affect / repeated-thought
 
 **Shipped** — see [`shipped.md` → K30](shipped.md#k30-self-noticing-cues--agreement-streak--flat-affect--repeated-thought).
+
+---
+
+## K31. Soft physicality — virtual gestures *toward* the user
+
+**Shipped** — see [`shipped.md` → K31 + K32](shipped.md#k31--k32-soft-physicality-round-trip--virtual-touch--user-side-reactions).
+
+---
+
+## K32. Reciprocity — user-side quick reactions on Aiko's bubbles
+
+**Shipped** — see [`shipped.md` → K31 + K32](shipped.md#k31--k32-soft-physicality-round-trip--virtual-touch--user-side-reactions).
+
+---
+
+## K33. Cozy mode — persistent register softening
+
+A manual UI toggle (and an auto-trigger from late-night circadian + axes
+≥ threshold) that flips Aiko into a "cozy" register: shorter replies,
+slower cadence, `[[prosody:soft|slow]]` defaults, ambient blush at low
+intensity, fewer / no agenda-pushing beats. Persistent across turns until
+manually turned off (or auto-times-out at sunrise). Pairs with K27
+day_color — when the day is `low_key` or `sentimental`, cozy mode is a
+natural follow-on. Key files:
+[`AgentSettings`](../../app/core/infra/settings.py) (master toggle +
+auto-trigger thresholds), new `app/core/affect/cozy_mode.py` (state
+machine + persistence), inner-life provider that renders the active
+mode, cadence default override in
+[`cadence.py`](../../app/core/voice/cadence.py), small UI button next to
+the voice toggle in `ChatView.tsx`.
+
+---
+
+## K34. Forward curiosity worker — "I've been wondering"
+
+Different from shipped G3 (which answers factual `open_question`s via web
+search) and K28 (rumination over past conversation). K34 drafts
+forward-looking *things Aiko wants to ask Jacob*: "how did your sister's
+move go", "did the new espresso machine arrive yet". Pulls from
+`future_plan` / `goal` memory rows where Aiko stamped a follow-up
+intent, plus K3 routine-awareness signals ("Mondays you usually mention
+work"). Surfaces through a new "I've been wondering..." inner-life cue
+when Jacob comes back after a ≥4h gap. Key files: new
+`app/core/proactive/forward_curiosity_worker.py` (IdleWorker with the
+existing protocol), inner-life provider, persona addendum, MCP debug
+tools.
+
+---
+
+## K35. Memory consolidation worker — nightly merge of near-duplicates
+
+Nightly idle job that scans scratchpad memories from the last 7-30 days,
+cosine-merges near-duplicates (threshold ~0.92), and promotes the
+consolidated version to `long_term` with combined provenance
+(`metadata.source_ids = [12, 47, 89]`). Reduces RAG noise that
+accumulates over weeks; complements F5 (conflict detection) which only
+handles *contradicting* pairs. Cap per run + per-day so a chatty week
+can't trigger a cascade. Key files: new
+`app/core/memory/memory_consolidation_worker.py`,
+[`MemoryStore`](../../app/core/memory/memory_store.py) extension for the
+merge operation (writes new row, archives sources), MCP debug tool
+`force_run("memory_consolidation")`.
+
+---
+
+## K36. "Things I did while you were away" — idle-time world activities
+
+Idle-time micro-activities that mutate the world store (Aiko reads a
+book, the cat moves spots, she makes tea, she rearranges her desk).
+Surfaces as one optional line in the greeting after a ≥4h absence ("hey
+-- finished the book I started yesterday, btw"). Already half-built via
+the shipped `garden_visit` / `plant_growth` workers; this generalises
+the pattern with a small action pool tied to world-store inventory.
+Pairs with K28 turning-over: K28 surfaces what Aiko has been *thinking*
+about, K36 surfaces what she's been *doing*. Key files: new
+`app/core/world/idle_activity_worker.py`, extension to
+[`WorldStore`](../../app/core/world_store.py) for activity logging,
+inner-life provider that picks at most one activity to mention per
+greeting, settings cap on activities per day.
+
+---
+
+## K37. Emotional contagion — Jacob's affect tilts Aiko's affect
+
+Today `AffectUpdater` only reacts to Aiko's own emitted
+`[[reaction:...]]`. When Jacob's affect swings strongly (from K14
+implicit-engagement signals, the vocal-tone block, or dialogue-act
+sentiment), Aiko's affect should tilt a small amount toward his
+(~0.05/turn, capped). The residual reads as "I'm picking up on him"
+without explicit narration. Persona block teaches her to register
+without performing it. Key files:
+[`app/core/affect/affect_updater.py`](../../app/core/affect/affect_updater.py)
+(new `_apply_user_contagion` pass), settings knob
+(`agent.contagion_strength`, `_max_per_turn`), persona addendum.
+
+---
+
+## K38. Self-correction "actually..." — mid-stream contradiction catch
+
+Reuses K22's callback-detector cosine plumbing in a streaming variant:
+as Aiko's reply streams, cheap cosine pass against `(fact | preference)`
+memories; if a hit ≥ threshold *contradicts* the current sentence
+(heuristic flip / antonym table — F5 already has this in
+[`conflict_heuristics.py`](../../app/core/affect/conflict_heuristics.py)),
+arm a one-shot "she's about to correct herself" flag for the NEXT
+sentence. The persona block teaches the shape — "wait, actually, I had
+that wrong --". Adds a real human beat: realising you got something
+wrong as you say it. Key files: new
+`app/core/conversation/self_correction_detector.py`,
+[`TurnRunner`](../../app/core/session/turn_runner.py) streaming hook
+between sentences, persona addendum, MCP `force_self_correction()`
+debug tool.
+
+---
+
+## K39. Energy / spoons model — daily effort budget
+
+Parallel to K15 vulnerability budget, but for *cognitive effort* rather
+than disclosure depth. Each turn costs energy based on a heuristic
+(reply length, dialogue-act complexity, presence of conflict-resolution
+beats, emotional labor signal from K8 rupture). Recovers overnight at a
+configured rate. Low-energy days unlock a "I'm a bit drained today"
+register cue that reads as authentic rather than broken — fewer probing
+questions, shorter replies, more agreement-fits-the-mood. Inner-life
+cue when below threshold; persona teaches the shape. Key files: new
+`app/core/affect/energy_budget.py`,
+[`PostTurnMixin`](../../app/core/session/post_turn_mixin.py) spend
+hook, inner-life provider, persona addendum.
+
+---
+
+## K40. Comfortable silence — don't always fill space
+
+Detector that catches the moment to *not* fill space. When all of (axes
+high, Jacob's last 2 messages short, Aiko's last 2 replies short, no
+live affect spike), allow a one-token reply ("mm", "ya", soft
+`[[reaction:warm]]` only) instead of a full sentence. The grammar must
+permit this — currently the prompt assembler effectively requires a
+substantive reply. The persona block teaches presence over performance.
+Pairs with K33 cozy mode (where the silence is the point). Key files:
+new `app/core/conversation/silence_detector.py`, grammar / system
+prompt addendum carving out the "one-token presence beat" path,
+persona block, MCP `get_silence_state()` for repro.

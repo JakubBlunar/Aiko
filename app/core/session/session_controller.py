@@ -510,6 +510,26 @@ class SessionController(
         self._avatar_settings_listeners: list[Callable[[dict[str, Any]], None]] = []
         self._avatar_overlay_listeners: list[Callable[[dict[str, Any]], None]] = []
         self._avatar_motion_listeners: list[Callable[[dict[str, Any]], None]] = []
+        # K31 soft physicality. ``_avatar_touch_listeners`` carries the
+        # WS-broadcast listener (registered by ``app/web/server.py``);
+        # ``_current_turn_gestures`` is the per-turn accumulator that
+        # the post-turn pass seals onto ``messages.gestures``. Cleared
+        # at the start of every typed/voice turn so a previous turn's
+        # gestures never leak into the next bubble.
+        self._avatar_touch_listeners: list[Callable[[dict[str, Any]], None]] = []
+        self._current_turn_gestures: list[str] = []
+        # K32 user reactions: queue of recently-applied ``(message_id, kind)``
+        # tuples drained by the ``user_reactions`` inner-life provider
+        # on Aiko's next turn. Bounded so a frantic clicker can't pin
+        # the prompt cue to "Jacob just reacted x500 times".
+        from collections import deque
+        self._pending_user_reactions: deque[tuple[int, str]] = deque(maxlen=10)
+        # K32 broadcast listeners. ``app/web/server.py`` registers a
+        # ``message_reaction_updated`` broadcaster here so both
+        # webviews re-render the reaction strip.
+        self._message_reaction_listeners: list[
+            Callable[[dict[str, Any]], None]
+        ] = []
         # LLM-driven sticky outfit override. Set when the assistant says
         # ``[[outfit:NAME]]`` mid-reply; cleared when the circadian
         # period rolls over OR when the user manually flips
@@ -1383,6 +1403,23 @@ class SessionController(
                 self._relationship_axes_store = None
                 self._relationship_axes_updater = None
 
+        # K31 soft physicality: TouchService state machine. Constructed
+        # AFTER ``_relationship_axes_store`` so the dispatch path can
+        # read live axes for the per-kind gate. Always built (even when
+        # ``touch_enabled=False``) so the persisted cooldown state
+        # survives a settings flap without resetting.
+        self._touch_service = None
+        try:
+            from app.core.touch.touch_gestures import TouchService
+
+            self._touch_service = TouchService(
+                chat_db=self._chat_db,
+                settings=settings.agent,
+            )
+        except Exception:
+            log.warning("TouchService init failed", exc_info=True)
+            self._touch_service = None
+
         # Listeners for the REST/WS layer. Shared moments fire on create
         # and on every edit/delete; axes fire only when an axis crosses a
         # 0.05 step (debounced server-side — see ``set_user_present`` /
@@ -1459,6 +1496,8 @@ class SessionController(
             self_noticing=self._render_self_noticing_block,
             curiosity_seeds=self._render_curiosity_seeds_block,
             grounding_line=self._render_grounding_line,
+            user_reactions=self._render_user_reactions_block,
+            touch_state=self._render_touch_state_block,
         )
         self._prompt_assembler.set_pinned_self_memories_provider(
             self._top_pinned_self_memories,
@@ -4427,6 +4466,10 @@ class SessionController(
                 tts_chunk_cb, merge_key,
             ) if mode == "live" and tts_chunk_cb is not None else tts_chunk_cb
 
+            # Clear the K31 per-turn gesture accumulator before the
+            # streamed reply lands so a previous turn's gesture can
+            # never leak onto this turn's bubble.
+            self._current_turn_gestures.clear()
             result = self._turn_runner.run(
                 session_key,
                 cleaned,
@@ -4436,6 +4479,7 @@ class SessionController(
                 on_overlay=self._emit_avatar_overlay,
                 on_outfit=self._emit_avatar_outfit,
                 on_motion=self._emit_avatar_motion,
+                on_touch=self._emit_avatar_touch,
                 stop_requested=stop_requested,
                 resume_user_message_id=user_message_id,
             )

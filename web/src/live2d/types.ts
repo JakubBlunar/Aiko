@@ -200,6 +200,12 @@ export interface AvatarChannel {
    * so channels can compare against ``now()`` directly. */
   onOverlay?(event: ResolvedOverlayEvent): void;
 
+  /** Fired when a fresh ``avatar_touch`` arrives (K31). The engine
+   * converts the wall-clock ``duration_ms`` from the WS frame
+   * into a monotonic ``until`` so ``ReachChannel`` can compare
+   * against ``deps.now()`` directly. */
+  onTouch?(event: ResolvedTouchEvent): void;
+
   /** Fired when a new ``avatarMotion`` arrives. */
   onMotion?(event: AvatarMotionState): void;
 
@@ -258,4 +264,43 @@ export interface ResolvedOverlayEvent {
    * pulse should expire. Already converted by the engine; do NOT
    * compare against ``Date.now()``. */
   until: number;
+}
+
+/** K31 soft physicality: one Aiko-to-user gesture, normalised
+ * from the wall-clock ``avatar_touch`` WS frame into the engine's
+ * monotonic-clock domain. ``ReachChannel`` is the only consumer
+ * today; the engine handles the wall-clock -> monotonic
+ * conversion centrally (mirroring ``ResolvedOverlayEvent``) so
+ * channels can blindly compare ``until`` against ``deps.now()``. */
+export interface ResolvedTouchEvent {
+  /** K31 taxonomy kind: ``wave``, ``poke``, ``boop``, ``nudge``,
+   * ``high_five``, ``hug``, ``head_pat``, ``cuddle``. */
+  kind: string;
+  /** Short English caption shown on the bubble badge / persona
+   * banner, e.g. ``"Aiko gave you a hug"``. */
+  label: string;
+  /** Display emoji, e.g. ``"🫂"``. */
+  emoji: string;
+  /** Monotonic deadline at which the lean-in animation expires. */
+  until: number;
+  /** Peak forward-tilt in degrees on ``ParamBodyAngleY``. */
+  leanAmount: number;
+  /** Total duration in ms — channels precompute easing without
+   * back-solving from ``until``. */
+  durationMs: number;
+}
+
+/** Wire shape of the ``avatar_touch`` WS frame after the
+ * ``type`` discriminator is stripped. Matches the dict that
+ * ``app/core/session/avatar_mixin.py:_emit_avatar_touch`` builds
+ * and broadcasts. The engine converts it to a
+ * :class:`ResolvedTouchEvent` (filling in ``until`` from
+ * ``durationMs``) before fanning to channels. */
+export interface AvatarTouchPayload {
+  kind: string;
+  label: string;
+  emoji: string;
+  duration_ms: number;
+  lean_amount: number;
+  overlays: string[];
 }

@@ -6,6 +6,7 @@ import { desktop } from "../desktop/commands";
 import type { WsClientCommand } from "../types";
 import { Live2DAvatar } from "./Live2DAvatar";
 import { MicButton } from "./MicButton";
+import { PersonaActionBanner } from "./PersonaActionBanner";
 import { PersonaInput } from "./PersonaInput";
 
 interface PersonaWindowProps {
@@ -121,6 +122,11 @@ export function PersonaWindow({ send, sendBytes }: PersonaWindowProps) {
             {connected ? "loading avatar..." : "connecting..."}
           </div>
         )}
+        {/* K31 + K32: transient gesture banner. Sits absolutely
+            positioned over the avatar so it never displaces the rig.
+            Configurable visibility lifetime threaded later via
+            settings; defaults to the 20s plan baseline. */}
+        <PersonaActionBanner />
       </div>
 
       <div className="flex shrink-0 items-center gap-2 rounded-t-lg bg-black/40 px-2 py-2 backdrop-blur">

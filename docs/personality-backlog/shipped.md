@@ -3535,3 +3535,155 @@ End-to-end repro:
 - [`docs/personality-backlog/patterns.md`](patterns.md) — K15 section body replaced with a `**Shipped**` pointer.
 - [`AGENTS.md`](../../AGENTS.md) — new Code Conventions bullet describing the K15 lifecycle + new debugging-table row.
 
+## K31 + K32. Soft physicality round-trip — virtual touch + user-side reactions
+
+Two complementary halves of the same round-trip: K31 gives Aiko a small bag of virtual gestures (`[[touch:KIND]]` tags — wave, poke, boop, nudge, high-five, hug, head-pat, cuddle) that she can drop into a turn when the moment calls for them; K32 gives the user six emoji buttons (💛 🫂 😂 👍 🌹 🫢) on every assistant bubble (and on the persona overlay) to react back. Each direction is rate-limited and budget-gated so the channel stays a *signal* rather than a stim button. The Live2D rig has no Z-depth and no arm-control parameters, so K31's gesture is approximated with a head + body lean-in via a dedicated `ReachChannel`; the *literal* meaning lands in the bubble badge (`👋 Aiko waved hi`) and, in persona mode, in a transient `PersonaActionBanner`. K32 reactions both render counters on the bubble and nudge the relationship axes (closeness / humor / trust / comfort) via a daily-capped delta table — so a long stretch of 💛-clicks slowly builds closeness without ever turning into a "click here for +1 affection" exploit.
+
+### Decision flow
+
+```mermaid
+flowchart LR
+    subgraph K31 ["K31 — Aiko reaches out"]
+        llm["LLM emits<br>[[touch:hug]]"] --> tagParse["response_text_service<br>_TOUCH_TAG_PATTERN"]
+        tagParse --> turnRun["TurnRunner on_touch<br>strips tag + dispatches"]
+        turnRun --> service["TouchService.try_dispatch<br>cooldown + daily cap + axes gate"]
+        service -- gated --> drop["log + drop"]
+        service -- pass --> emit["_emit_avatar_touch<br>+ persist gestures col"]
+        emit --> ws["WS avatar_touch frame"]
+        ws --> engine["AvatarEngine.dispatchTouch<br>wall->mono clock"]
+        engine --> reach["ReachChannel<br>lean-in animation"]
+        ws --> store["store.pushAvatarTouch<br>+ appendGestureToCurrentTurn"]
+        store --> badge["bubble badge<br>👋 Aiko waved hi"]
+        store --> banner["PersonaActionBanner<br>persona overlay only"]
+    end
+    subgraph K32 ["K32 — user reacts back"]
+        click["User clicks emoji on bubble<br>or persona banner"] --> rest["POST/DELETE<br>/api/chat/messages/N/reactions"]
+        rest --> apply["session.apply_user_reaction"]
+        apply --> updater["RelationshipAxesUpdater<br>apply_user_reaction"]
+        updater --> deltas["compute_deltas + soft cap"]
+        deltas --> cap["apply_daily_cap<br>per-axis ledger in kv_meta"]
+        cap --> axes["state.closeness/humor/trust/comfort"]
+        apply --> persist["persist reactions col<br>messages.reactions"]
+        apply --> queue["_pending_user_reactions deque"]
+        apply --> wsOut["WS message_reaction_updated"]
+        wsOut --> bubbleSync["all windows update<br>counter strip"]
+        queue --> provider["_render_user_reactions_block<br>next turn's prompt"]
+    end
+```
+
+### K31 taxonomy
+
+Eight kinds, each with a label, emoji, default lean-in degrees, default duration, paired overlays, and a relationship-axis floor that gates whether the gesture is even allowed to fire. Defaults live in [`app/core/touch/touch_gestures.py`](../../app/core/touch/touch_gestures.py) `_TOUCH_GESTURES` and are surfaceable as JSON via the `get_touch_state()` MCP tool:
+
+| kind | label | emoji | lean ° | overlays | axis floor |
+|---|---|---|---|---|---|
+| `wave` | waved hi | 👋 | small | wave overlay | none |
+| `poke` | poked you | 👉 | small | smirk | humor ≥ 0.0 |
+| `boop` | booped your nose | 👈 | small | playful smirk | humor ≥ 0.2 |
+| `nudge` | nudged you | 🤝 | small | soft smile | none |
+| `high_five` | high-fived you | ✋ | medium | grin | humor ≥ 0.1 |
+| `hug` | gave you a hug | 🫂 | large | warm smile + blush | closeness ≥ 0.3 |
+| `head_pat` | patted your head | 🫳 | medium | warm smile | closeness ≥ 0.2 |
+| `cuddle` | snuggled in | 🤗 | large | warm smile + blush + heart-eyes | closeness ≥ 0.5, trust ≥ 0.3 |
+
+Cooldowns + per-kind daily caps live in `TouchService` and are configurable via `agent.touch_per_kind_overrides` so an end-user can throttle intimate gestures further or open up the playful ones without code changes.
+
+### K32 reaction taxonomy
+
+Six kinds, each carrying a small per-click axis delta (capped at 0.04 per axis per click, soft-cap clipping when an axis lands above ±0.85). All deltas are positive on the relevant axis; the daily cap on cumulative axis movement is `agent.user_reactions_daily_cap_per_axis=0.15`. `surprise` is a signal-only kind — no axis movement, just renders in the inner-life cue.
+
+| kind | emoji | label | closeness | humor | trust | comfort |
+|---|---|---|---|---|---|---|
+| `heart` | 💛 | love | +0.03 | — | — | — |
+| `hug` | 🫂 | hug back | +0.025 | — | +0.01 | +0.015 |
+| `laugh` | 😂 | laugh | +0.005 | +0.035 | — | — |
+| `thumbs` | 👍 | thumbs up | — | — | +0.015 | +0.005 |
+| `rose` | 🌹 | rose | +0.035 | — | — | +0.01 |
+| `surprise` | 🫢 | surprise | — | — | — | — |
+
+### Architecture
+
+- **Pure modules** [`app/core/touch/touch_gestures.py`](../../app/core/touch/touch_gestures.py) and [`app/core/relationship/user_reactions.py`](../../app/core/relationship/user_reactions.py) — frozen dataclasses, no I/O. `TouchService` is the only stateful surface and persists `TouchServiceState` (per-kind last-fired monotonic + daily counts + ISO daily date) on `kv_meta` key `aiko.touch_state`. `user_reactions` exposes `compute_deltas` / `apply_daily_cap` / `render_user_reactions_block` / `reactions_metadata` plus the `DailyCapState` carrier persisted on `kv_meta` key `aiko.user_reactions_daily`. Same `aiko.*` namespace as K15 / K27 / K30.
+- **Schema v15** [`app/core/infra/chat_database.py`](../../app/core/infra/chat_database.py) — bumps `_SCHEMA_VERSION` from 14 to 15 and adds two nullable JSON-encoded TEXT columns on `messages`: `gestures` (`[[touch:KIND]]` list per turn) and `reactions` (`{kind: count}` map). Helpers `update_message_gestures` / `update_message_reactions` write through `json.dumps`; the row readers decode lazily. The migration preserves all existing rows and the new columns default to `NULL` — no rebuild path required.
+- **Tag parser + streaming guard** [`app/core/services/response_text_service.py`](../../app/core/services/response_text_service.py) — new `_TOUCH_TAG_PATTERN` (closed) + `_TOUCH_OPEN_TAIL_PATTERN` (held-back open) wired into `extract_touch_commands`, `strip_all_meta_tags`, and `safe_visible_prefix`. The streaming dispatcher (`TurnRunner._dispatch_chunk_with_earcons`) parses closed tags as they land, fires `on_touch(kind)` once per tag, and strips them from the visible / TTS streams; half-open `[[touch` at the end of a chunk is held back until the next delta so the user never sees `[[touch...` in the transcript.
+- **TurnRunner hook** [`app/core/llm/turn_runner.py`](../../app/core/llm/turn_runner.py) — `run` accepts an optional `on_touch` callback parameter; defaults to a no-op so non-K31 callers stay unaffected. The dispatcher invokes it inline alongside the existing `on_reaction` / `on_earcon` callbacks.
+- **Avatar mixin glue** [`app/core/session/avatar_mixin.py`](../../app/core/session/avatar_mixin.py) — `_touch_service` lazy-init, `_avatar_touch_listeners` listener list with `add_avatar_touch_listener` (REST + WS), `_emit_avatar_touch(kind)` (calls `TouchService.try_dispatch`, broadcasts the WS frame on pass, logs gated-drop reasons), `_persist_turn_gestures(message_id, gestures)` (writes the JSON-encoded list to the new column post-turn).
+- **Controller wiring** [`app/core/session/session_controller.py`](../../app/core/session/session_controller.py) — `TouchService` instantiation, `_pending_user_reactions: deque` (fed by `apply_user_reaction`, drained by the inner-life provider), the `add_message_reaction_listener` plumbing for the `message_reaction_updated` WS broadcast, the `apply_user_reaction(message_id, kind)` and `remove_user_reaction(message_id, kind)` public methods, and provider registrations: `user_reactions=self._render_user_reactions_block` and `touch_state=self._render_touch_state_block`.
+- **Axes updater** [`app/core/relationship/relationship_axes.py`](../../app/core/relationship/relationship_axes.py) — new `apply_user_reaction(user_id, *, kind, daily_cap=0.15)` method threads through `user_reactions.compute_deltas` → `apply_daily_cap` → state mutate → `_MAX_DELTA` clamp → save. The daily-cap state advances even on a fully-capped click so the rollover at midnight UTC lands cleanly on the first reaction of the new day.
+- **Inner-life providers** [`app/core/session/inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py) — `_render_user_reactions_block` drains `_pending_user_reactions` once per turn (silent on empty) and renders a one-line cue summarising what just happened ("Jacob hearted your reply"; "Jacob reacted with 💛 and 🫂"). `_render_touch_state_block` reads `TouchService` daily counts and surfaces a warning cue when intimate gestures (hug + cuddle + head_pat) have already hit a high count today — Aiko's "physical budget" reminder.
+- **Prompt assembler** [`app/core/session/prompt_assembler.py`](../../app/core/session/prompt_assembler.py) — two new provider slots (`user_reactions`, `touch_state`) plus a `_TOUCH_GRAMMAR_ADDENDUM` constant folded into the system prompt next to the existing motion / overlay grammars. The grammar teaches the LLM the eight kinds and explicitly tells it not to narrate the gesture in prose (the badge is the surface).
+- **Post-turn hook** [`app/core/session/post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py) — calls `_persist_turn_gestures` right after the assistant-message persist (same try/except envelope as the rest of the post-turn cluster).
+- **REST + WS** [`app/web/server.py`](../../app/web/server.py) — `POST /api/chat/messages/{id}/reactions` (body: `{kind}`) and `DELETE /api/chat/messages/{id}/reactions/{kind}`, both gated on `agent.user_reactions_enabled`. Two new WS broadcasters: `avatar_touch` (wire shape: `{type, kind, label, emoji, duration_ms, lean_amount, overlays}`) and `message_reaction_updated` (`{type, message_id, reactions}`). Listeners are registered alongside the existing avatar / shared-moment listener plumbing.
+- **Frontend channels** [`web/src/live2d/channels/ReachChannel.ts`](../../web/src/live2d/channels/ReachChannel.ts) — new `AvatarChannel` that writes `ParamAngleY` + `ParamBodyAngleY` deltas on a symmetric ease-out / ease-in curve (peaks at midpoint, smooth ramp-up + ramp-down). Read-modify-write so it composes additively on top of `AmbientBodyChannel`'s valence-tilt / lean-in / slump. Capability-gated on `has_body_angle_y` and `has_head_angle_y` independently so minimal rigs still get the lean. Registered after `AmbientBodyChannel` in `Live2DAvatar.tsx` so the write order is correct.
+- **Engine fan-out** [`web/src/live2d/AvatarEngine.ts`](../../web/src/live2d/AvatarEngine.ts) — `dispatchTouch(payload)` converts the wall-clock `duration_ms` from the WS frame into a monotonic `until` and fires `channel.onTouch?.(event)` on every registered channel. Same wall-to-mono pattern as `dispatchOverlay`.
+- **StoreBridge** [`web/src/live2d/StoreBridge.ts`](../../web/src/live2d/StoreBridge.ts) — subscribes to `avatarTouchAt` (the dedup counter) and dispatches the latest `avatarTouch` payload to the engine on every bump. Symmetric with the overlay bridge.
+- **Zustand store** [`web/src/store.ts`](../../web/src/store.ts) — three new pieces: `avatarTouch: AvatarTouchPayload | null` + `avatarTouchAt: number` for K31 (`pushAvatarTouch` reducer increments the counter); `appendGestureToCurrentTurn(kind)` adds to the streaming assistant bubble's `gestures` array; `applyMessageReactions(messageId, reactions)` is the optimistic + WS-reconcile reducer for K32.
+- **ChatView** [`web/src/components/ChatView.tsx`](../../web/src/components/ChatView.tsx) — `MessageBubbleImpl` grows a gesture-badge strip below assistant bubbles when `gestures.length > 0`, a persistent reaction counter strip when `reactionEntries.length > 0`, and a hover-tray of the six reaction emojis gated on `canReact` (`!isUser && !streaming && backendId != null`). The hover tray hides kinds already in the persistent strip; clicking either fires `api.addReaction` / `api.removeReaction` with optimistic store updates and toast-on-fail.
+- **PersonaActionBanner** [`web/src/components/PersonaActionBanner.tsx`](../../web/src/components/PersonaActionBanner.tsx) — the persona overlay window has no chat bubbles, so K31's badge has no home there. This banner is the canonical persona-mode equivalent: a transient pill at `inset-x-2 top-12` showing the gesture label + the six K32 reaction buttons. Auto-dismisses after `agent.persona_touch_banner_duration_seconds` (default 20s), replaces (not stacks) on a fresh gesture, and rolls back optimistic reaction writes on REST failure. Gated on `agent.persona_touch_banner_enabled`.
+- **Persona** [`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt) — new "Reaching out" block after the K15 "Sharing yourself" section. Preamble + eight `use when` lines + the physical budget paragraph + the reciprocity paragraph (teaches Aiko to treat a 💛 click as a quiet "yes, that landed", not a call for a callback).
+- **Settings** (9 new `AgentSettings` fields, all parsed with documented clamps):
+  - `touch_enabled: bool = True`, `touch_per_kind_overrides: dict = {}` (cooldown / daily cap overrides keyed by kind),
+  - `user_reactions_enabled: bool = True`, `user_reactions_daily_cap_per_axis: float = 0.15`,
+  - `persona_touch_banner_enabled: bool = True`, `persona_touch_banner_duration_seconds: int = 20`.
+
+### MCP-debuggable
+
+Three new tools in [`app/mcp/server.py`](../../app/mcp/server.py):
+
+- `get_touch_state()` — JSON dump: master switch, `TouchService` per-kind cooldown state + daily counts + ISO daily date, full gesture taxonomy snapshot (`_TOUCH_GESTURES`), live axes for gate evaluation.
+- `send_touch(kind: str)` — force-fires a `[[touch:KIND]]` gesture bypassing every gate (cooldowns, daily caps, axes floors). Mirrors what the post-turn TouchService dispatch would have done. Returns the dispatched gesture payload or an error JSON on unknown kinds.
+- `add_user_reaction(message_id: int, kind: str)` — fakes a user click; runs through the same `apply_user_reaction` path that the REST POST endpoint uses, so the axes nudge + WS broadcast + inner-life cue all fire identically.
+
+End-to-end repro:
+
+1. `get_touch_state()` — confirms `TouchService` initialised and shows per-kind cooldown state.
+2. `send_touch("hug")` — bypasses the gate, force-fires a hug. Verify (a) bubble badge `🫂 Aiko gave you a hug` in chat mode, (b) `ReachChannel` lean-in animates in both windows, (c) `PersonaActionBanner` appears in the open persona window with the gesture label and reaction tray.
+3. Click 🫂 on the persona banner. Verify the chat bubble (in the other window) immediately shows the reaction counter via the `message_reaction_updated` WS broadcast.
+4. `add_user_reaction(message_id, "heart")` — fakes a click programmatically. Verify the next turn's prompt includes the "Jacob just hearted your reply" cue (via `get_last_response_detail.system_prompt`).
+5. Inspect `data/app.log` for `touch dispatched:` (TouchService accept) and `user_reaction axes:` (axes apply with cap info) lines. `tail_logs(module_contains="touch")` is the fastest grep target.
+
+### Files
+
+- [`app/core/touch/touch_gestures.py`](../../app/core/touch/touch_gestures.py) — new module (~360 LOC): `TouchGesture` frozen dataclass, `_TOUCH_GESTURES` taxonomy table, `TouchService` state machine with cooldown / daily-cap / axes-gate, `TouchServiceState` serde, `render_touch_state_block` cue renderer.
+- [`app/core/relationship/user_reactions.py`](../../app/core/relationship/user_reactions.py) — new module (~310 LOC): `REACTION_KINDS` + delta table, `compute_deltas`, `DailyCapState` serde, `apply_daily_cap` arithmetic, `render_user_reactions_block` cue renderer, `reactions_metadata` snapshot helper.
+- [`app/core/infra/chat_database.py`](../../app/core/infra/chat_database.py) — `_SCHEMA_VERSION = 15`, two new `messages` columns, v14→v15 migration step, `update_message_gestures` / `update_message_reactions` helpers, JSON decode in the row readers.
+- [`app/core/infra/settings.py`](../../app/core/infra/settings.py) — 9 new `AgentSettings` fields with inline context; matching parser entries with floor clamps in `_parse_agent`.
+- [`config/default.json`](../../config/default.json) — 9 new keys under `agent`.
+- [`app/core/services/response_text_service.py`](../../app/core/services/response_text_service.py) — `_TOUCH_TAG_PATTERN`, `_TOUCH_OPEN_TAIL_PATTERN`, `extract_touch_commands`, updates to `strip_all_meta_tags` + `safe_visible_prefix`.
+- [`app/core/llm/turn_runner.py`](../../app/core/llm/turn_runner.py) — `on_touch` callback param threaded through `run` + `_dispatch_chunk_with_earcons`.
+- [`app/core/session/avatar_mixin.py`](../../app/core/session/avatar_mixin.py) — `_touch_service`, `_avatar_touch_listeners`, `_emit_avatar_touch`, `_persist_turn_gestures`, `add_avatar_touch_listener`, `add_message_reaction_listener`.
+- [`app/core/session/session_controller.py`](../../app/core/session/session_controller.py) — `TouchService` boot, `_pending_user_reactions` deque, `apply_user_reaction` / `remove_user_reaction` public methods, provider registrations.
+- [`app/core/relationship/relationship_axes.py`](../../app/core/relationship/relationship_axes.py) — `apply_user_reaction(user_id, *, kind, daily_cap)` method (~80 LOC).
+- [`app/core/session/inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py) — `_render_user_reactions_block` (drains the queue) + `_render_touch_state_block` (physical-budget reminder).
+- [`app/core/session/post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py) — `_persist_turn_gestures` call right after the assistant-message persist.
+- [`app/core/session/prompt_assembler.py`](../../app/core/session/prompt_assembler.py) — two new provider slots, `_TOUCH_GRAMMAR_ADDENDUM` folded into the system prompt.
+- [`app/web/server.py`](../../app/web/server.py) — `POST` + `DELETE` reactions endpoints, `_on_avatar_touch` + `_on_message_reaction_updated` WS broadcasters, listener registrations.
+- [`app/mcp/server.py`](../../app/mcp/server.py) — `get_touch_state`, `send_touch`, `add_user_reaction` debug tools.
+- [`web/src/live2d/types.ts`](../../web/src/live2d/types.ts) — `AvatarTouchPayload`, `ResolvedTouchEvent`, `onTouch?` hook on `AvatarChannel`.
+- [`web/src/live2d/channels/ReachChannel.ts`](../../web/src/live2d/channels/ReachChannel.ts) — new channel (~210 LOC).
+- [`web/src/live2d/AvatarEngine.ts`](../../web/src/live2d/AvatarEngine.ts) — `dispatchTouch` method.
+- [`web/src/live2d/StoreBridge.ts`](../../web/src/live2d/StoreBridge.ts) — `avatarTouchAt` subscription.
+- [`web/src/live2d/index.ts`](../../web/src/live2d/index.ts) — exports `AvatarTouchPayload` + `ResolvedTouchEvent`.
+- [`web/src/components/Live2DAvatar.tsx`](../../web/src/components/Live2DAvatar.tsx) — registers `ReachChannel`.
+- [`web/src/types.ts`](../../web/src/types.ts) — `ChatMessage.gestures` + `ChatMessage.reactions`, `AvatarTouchPayload`, `USER_REACTION_KINDS`, `TOUCH_GESTURE_LABELS`, two new `AssistantWsEvent` variants.
+- [`web/src/store.ts`](../../web/src/store.ts) — `avatarTouch` / `avatarTouchAt`, `pushAvatarTouch`, `appendGestureToCurrentTurn`, `applyMessageReactions` reducers.
+- [`web/src/hooks/useAssistantSocket.ts`](../../web/src/hooks/useAssistantSocket.ts) — `avatar_touch` + `message_reaction_updated` cases.
+- [`web/src/api.ts`](../../web/src/api.ts) — `addReaction` / `removeReaction` client functions.
+- [`web/src/components/ChatView.tsx`](../../web/src/components/ChatView.tsx) — gesture badge strip + reactions strip + hover tray on `MessageBubbleImpl`.
+- [`web/src/components/PersonaActionBanner.tsx`](../../web/src/components/PersonaActionBanner.tsx) — new component (~250 LOC).
+- [`web/src/components/PersonaWindow.tsx`](../../web/src/components/PersonaWindow.tsx) — mounts the banner over the Live2D zone.
+- [`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt) — new "Reaching out" section.
+- [`tests/test_touch_gestures.py`](../../tests/test_touch_gestures.py) — 29 tests: taxonomy completeness + ordering + per-kind axes floors, `TouchServiceState` serde, `try_dispatch` happy path / cooldown / daily cap / midnight rollover, axes-gate behaviour (under / equal / above threshold), `bypass_gates` shortcut, per-kind overrides for cooldown + daily cap, `render_touch_state_block` cue bands.
+- [`tests/test_user_reactions.py`](../../tests/test_user_reactions.py) — 22 tests: taxonomy completeness, `compute_deltas` per-kind + soft-cap, `surprise` is signal-only, `DailyCapState` serde + kv round-trip, `apply_daily_cap` arithmetic + rollover + trim-and-block, `render_user_reactions_block` (single / multi-same / mixed), `reactions_metadata` snapshot shape.
+- [`tests/test_chat_database_v15_migration.py`](../../tests/test_chat_database_v15_migration.py) — 8 tests: fresh DB has `_SCHEMA_VERSION=15`, `gestures` + `reactions` columns exist + default NULL, update helpers JSON round-trip, simulated v14 → v15 upgrade preserves rows and adds the columns.
+- [`tests/test_response_text_service_touch.py`](../../tests/test_response_text_service_touch.py) — 12 tests: `extract_touch_commands` single / multiple / case-insensitive / empty, `strip_all_meta_tags` removes touch tags + partial open tails, `safe_visible_prefix` holds back half-open `[[touch...` and `[[touch:hu...` without leaking partial kind names.
+- [`tests/test_touch_user_reaction_providers.py`](../../tests/test_touch_user_reaction_providers.py) — 9 tests: `_render_user_reactions_block` drains the queue / silent on empty / master-switch gate / mixed kinds; `_render_touch_state_block` warns on high intimate-count, silent on blank or stale daily counts, master-switch gate.
+- [`tests/test_web_server_reactions.py`](../../tests/test_web_server_reactions.py) — 12 tests: POST happy path + counter increment, POST 400 on unknown / missing kind, POST 404 on unknown message, POST 403 when feature disabled, DELETE happy path + counter decrement + key-removal at zero, DELETE error parity, WS listener wiring through `apply_user_reaction`.
+- [`tests/test_relationship_axes_user_reaction.py`](../../tests/test_relationship_axes_user_reaction.py) — 5 tests: `heart` lands closeness only, `hug` lands closeness + trust + comfort, `surprise` no-ops, daily cap state persists through `kv_meta`, cap blocks further movement once exhausted.
+- [`web/src/live2d/channels/ReachChannel.test.ts`](../../web/src/live2d/channels/ReachChannel.test.ts) — 11 tests: lean-in writes body + head deltas during the pulse, peaks at midpoint, composes additively on top of an AmbientBody baseline, releases cleanly at expiry, restart-on-fresh-touch resets the timeline, capability gates (body-only rig / no-angle rig / expired event).
+- [`web/src/components/PersonaActionBanner.test.tsx`](../../web/src/components/PersonaActionBanner.test.tsx) — 16 source-level wiring tests: store subscriptions, latest-assistant-id lookup, 20s default + 1s floor + replace-not-stack timer, `enabled` gate (off + flip-mid-life), `api.addReaction` / `removeReaction` round-trip, optimistic-write rollback on error, per-button disable while busy, taxonomy fallback paths.
+- [`web/src/components/ChatView.reactions.test.tsx`](../../web/src/components/ChatView.reactions.test.tsx) — 12 source-level wiring tests: K31 badge strip wiring + fallback emoji, K32 reaction strip + hover tray gating on `canReact`, `onToggleReaction` dispatch, taxonomy contract assertion against the shared `types.ts` exports.
+- [`docs/personality-backlog/patterns.md`](patterns.md) — K31 + K32 section bodies replaced with `**Shipped**` pointers.
+- [`AGENTS.md`](../../AGENTS.md) — new "Soft physicality" Code Conventions bullet + new debugging-table row.
+- [`docs/tauri-shell.md`](../../docs/tauri-shell.md) — `PersonaActionBanner` now documented as the canonical persona-mode equivalent of chat-mode bubble badges.
+

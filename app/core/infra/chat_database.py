@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_SCHEMA_VERSION = 14
+_SCHEMA_VERSION = 15
 
 _CREATE_TABLES = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -24,7 +24,18 @@ CREATE TABLE IF NOT EXISTS messages (
     token_count INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     arc TEXT,
-    dialogue_act TEXT
+    dialogue_act TEXT,
+    -- Schema v15: K31 soft-physicality. JSON array of gesture kinds
+    -- Aiko emitted with this message (e.g. ``["hug"]``). NULL on
+    -- messages with no gesture. Survives reload so the chat-bubble
+    -- footer badge persists across reconnects / new tabs. The
+    -- taxonomy lives in ``app/core/touch/touch_gestures.py``.
+    gestures TEXT,
+    -- Schema v15: K32 user reactions. JSON object mapping reaction
+    -- kind -> count (e.g. ``{"heart": 1, "laugh": 1}``). NULL on
+    -- messages with no reactions. The taxonomy lives in
+    -- ``app/core/relationship/user_reactions.py``.
+    reactions TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at);
 
@@ -378,6 +389,16 @@ class MessageRow:
     created_at: str
     arc: str | None = None
     dialogue_act: str | None = None
+    # Schema v15: K31 + K32 soft-physicality.
+    # ``gestures`` is a JSON array of touch kinds Aiko emitted on
+    # this message (e.g. ``["hug"]``). ``reactions`` is a JSON
+    # object of user-reaction counts (e.g. ``{"heart": 1}``).
+    # Both NULL when nothing applies. See
+    # :func:`app.core.touch.touch_gestures.TouchService.try_dispatch`
+    # and :func:`app.core.relationship.user_reactions.apply_daily_cap`
+    # for the producer paths.
+    gestures: str | None = None
+    reactions: str | None = None
 
 
 @dataclass(slots=True)
@@ -661,6 +682,23 @@ class ChatDatabase:
         # ``CREATE TABLE IF NOT EXISTS`` block above already creates the
         # table on upgrade -- there's nothing to ALTER. The migration
         # entry exists for the audit trail.
+        # v14 -> v15: K31 + K32 soft physicality.
+        # ``messages.gestures`` stores a JSON array of touch kinds Aiko
+        # emitted on this message (e.g. ``["hug"]``); ``messages.reactions``
+        # stores a JSON object of user-reaction counts (e.g. ``{"heart":
+        # 1}``). Both default NULL so historical rows stay clean -- only
+        # turns tagged after rollout populate them. The taxonomies live in
+        # ``app/core/touch/touch_gestures.py`` and
+        # ``app/core/relationship/user_reactions.py``. No index: both
+        # columns are accessed by message_id PK only.
+        for stmt in (
+            "ALTER TABLE messages ADD COLUMN gestures TEXT",
+            "ALTER TABLE messages ADD COLUMN reactions TEXT",
+        ):
+            try:
+                conn.execute(stmt)
+            except sqlite3.OperationalError:
+                pass
         conn.execute("UPDATE schema_version SET version = ?", (_SCHEMA_VERSION,))
         conn.commit()
 
@@ -809,6 +847,58 @@ class ChatDatabase:
                     pass
         return msg_id
 
+    def update_message_gestures(
+        self, message_id: int, gestures_json: str | None,
+    ) -> bool:
+        """Set the K31 ``gestures`` JSON column for a message row.
+
+        ``gestures_json`` may be ``None`` to clear the column.
+        Returns True if a row was updated, False if the id is missing
+        or non-positive.
+        """
+        if message_id <= 0:
+            return False
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "UPDATE messages SET gestures = ? WHERE id = ?",
+            (gestures_json, int(message_id)),
+        )
+        conn.commit()
+        return bool(cursor.rowcount)
+
+    def update_message_reactions(
+        self, message_id: int, reactions_json: str | None,
+    ) -> bool:
+        """Set the K32 ``reactions`` JSON column for a message row.
+
+        ``reactions_json`` may be ``None`` to clear the column.
+        Returns True if a row was updated, False otherwise.
+        """
+        if message_id <= 0:
+            return False
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "UPDATE messages SET reactions = ? WHERE id = ?",
+            (reactions_json, int(message_id)),
+        )
+        conn.commit()
+        return bool(cursor.rowcount)
+
+    def get_message_row(self, message_id: int) -> MessageRow | None:
+        """Return one full :class:`MessageRow` by id, or ``None``."""
+        if message_id <= 0:
+            return None
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT id, session_id, role, content, token_count, "
+            "       created_at, arc, dialogue_act, gestures, reactions "
+            "FROM messages WHERE id = ?",
+            (int(message_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return MessageRow(*row)
+
     def update_message_content(
         self,
         message_id: int,
@@ -924,7 +1014,8 @@ class ChatDatabase:
         """
         conn = self._get_conn()
         select = (
-            "SELECT id, session_id, role, content, token_count, created_at, arc, dialogue_act "
+            "SELECT id, session_id, role, content, token_count, created_at, "
+            "       arc, dialogue_act, gestures, reactions "
             "FROM messages WHERE session_id = ?"
         )
         if offset and limit:

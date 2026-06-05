@@ -99,6 +99,7 @@ the route surface is a single binary switch.
 ┌────────────────────────────┐
 │ aiko · idle           [×]  │ ← drag handle (data-tauri-drag-region)
 ├────────────────────────────┤
+│  🫂 Aiko gave you a hug  ▾ │ ← PersonaActionBanner (transient, K31/K32)
 │                            │
 │        Live2D avatar       │
 │                            │
@@ -116,6 +117,37 @@ the route surface is a single binary switch.
   attribute. Outside of Tauri it does nothing, so the same component
   renders correctly in a regular browser tab when you visit
   `http://localhost:5173/#/persona` for debugging.
+
+### Persona-mode user feedback — the `PersonaActionBanner` pattern
+
+The persona overlay window never renders chat bubbles, so any feature
+whose primary chat-mode surface is a bubble badge / hover tray / inline
+strip needs a *persona-mode equivalent* if the user should see it in
+overlay mode. The canonical pattern is
+[`PersonaActionBanner.tsx`](../web/src/components/PersonaActionBanner.tsx),
+which shipped with K31 + K32 (soft physicality round-trip):
+
+* Subscribes to the same Zustand store slice as the chat-mode renderer
+  (in K31's case, `avatarTouchAt` + `avatarTouch`) so the persona window
+  sees every event the chat window does — no per-window WS plumbing.
+* Renders as a transient absolute-positioned pill at `inset-x-2 top-12`,
+  *over* the Live2D zone but *below* the drag handle, so the avatar
+  stays visible and the drag handle still works.
+* Auto-dismisses after a configurable duration
+  (`agent.persona_touch_banner_duration_seconds`, default 20 s);
+  a fresh event mid-window replaces the visible banner (not stacks)
+  and resets the timer.
+* Includes any interactive affordances the chat-mode surface offers
+  (K32's six reaction buttons in this case), routing through the
+  same REST endpoint and optimistically updating the store so the
+  chat-mode bubble counter and the persona banner counters stay in sync.
+
+When adding a new feature that needs user-visible feedback in overlay
+mode, follow the same template: a thin presentational component
+subscribing to the same store slice as the chat-mode renderer, gated
+on a `persona_*_enabled` setting, mounted in
+[`PersonaWindow.tsx`](../web/src/components/PersonaWindow.tsx) as an
+absolutely-positioned child of the Live2D zone.
 
 ## The `backendBase()` resolver convention
 

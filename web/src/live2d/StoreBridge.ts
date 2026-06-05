@@ -17,6 +17,7 @@
  */
 import type { StoreApi, UseBoundStore } from "zustand";
 import type { AvatarEngine } from "./AvatarEngine";
+import type { AvatarTouchPayload } from "./types";
 import type {
   AvatarMotionState,
   AvatarOverlayState,
@@ -39,6 +40,11 @@ export interface BridgedState {
   mood: MoodState;
   backchannelHint: string | null;
   backchannelAt: number;
+  /** K31: the most recent ``avatar_touch`` payload. Same
+   * "increment a dedup counter so we re-fire on identical
+   * payloads" idiom as ``backchannel``. */
+  avatarTouch: AvatarTouchPayload | null;
+  avatarTouchAt: number;
 }
 
 /** Strict shape required of the store passed to the bridge.
@@ -59,6 +65,7 @@ export class StoreBridge {
   private _unsubOutfit: (() => void) | null = null;
   private _unsubVoiceMode: (() => void) | null = null;
   private _unsubBackchannel: (() => void) | null = null;
+  private _unsubTouch: (() => void) | null = null;
 
   constructor(engine: AvatarEngine, store: BridgedStore) {
     this._engine = engine;
@@ -125,6 +132,16 @@ export class StoreBridge {
         this._engine.dispatchBackchannel(hint);
       },
     );
+    // K31: subscribe to the dedup counter so back-to-back gestures
+    // with the same kind still re-fire. The payload itself is
+    // fetched fresh from the store inside the listener.
+    this._unsubTouch = this._subscribe(
+      (s) => s.avatarTouchAt,
+      () => {
+        const payload = this._store.getState().avatarTouch;
+        this._engine.dispatchTouch(payload);
+      },
+    );
   }
 
   /** Unsubscribe from everything. Idempotent. */
@@ -138,6 +155,7 @@ export class StoreBridge {
       this._unsubOutfit,
       this._unsubVoiceMode,
       this._unsubBackchannel,
+      this._unsubTouch,
     ]) {
       if (off) {
         try {
@@ -155,6 +173,7 @@ export class StoreBridge {
     this._unsubOutfit = null;
     this._unsubVoiceMode = null;
     this._unsubBackchannel = null;
+    this._unsubTouch = null;
   }
 
   // ── internal helpers ─────────────────────────────────────────────

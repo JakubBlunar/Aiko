@@ -28,11 +28,13 @@
  */
 import type {
   AvatarChannel,
+  AvatarTouchPayload,
   ChannelDeps,
   ChannelStoreSnapshot,
   Live2DModelAdapter,
   MouseSnapshot,
   ResolvedOverlayEvent,
+  ResolvedTouchEvent,
 } from "./types";
 import type { EngineState } from "./state";
 import type {
@@ -261,6 +263,30 @@ export class AvatarEngine {
       return;
     }
     this._fanOut("onMotion", (channel) => channel.onMotion?.(motion));
+  }
+
+  /** K31 soft physicality: fan out an ``avatar_touch`` WS payload
+   * to every channel that opted into ``onTouch``. The WS frame
+   * carries a wall-clock ``duration_ms``; this method converts it
+   * to a monotonic ``until = now() + duration_ms`` so channels
+   * can compare against ``deps.now()`` directly (mirroring how
+   * ``dispatchOverlay`` resolves ``expiresAt``). A null/empty
+   * payload is silently dropped. */
+  dispatchTouch(payload: AvatarTouchPayload | null): void {
+    if (!payload || !payload.kind) {
+      return;
+    }
+    const durationMs = Math.max(0, Number(payload.duration_ms ?? 0) | 0);
+    const until = this._now() + durationMs;
+    const event: ResolvedTouchEvent = {
+      kind: payload.kind,
+      label: String(payload.label ?? ""),
+      emoji: String(payload.emoji ?? ""),
+      until,
+      leanAmount: Number(payload.lean_amount ?? 0),
+      durationMs,
+    };
+    this._fanOut("onTouch", (channel) => channel.onTouch?.(event));
   }
 
   dispatchOutfit(outfit: ResolvedOutfit): void {

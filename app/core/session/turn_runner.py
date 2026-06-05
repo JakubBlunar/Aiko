@@ -85,6 +85,14 @@ OutfitCallback = Callable[[str], None]
 # broadcasts an ``avatar_motion`` WS event for the renderer.
 MotionCallback = Callable[[str], None]
 
+# K31 soft physicality: ``[[touch:KIND]]`` callback — fires for
+# every recognised touch kind in stream order. The SessionController
+# threads this to ``avatar_mixin._emit_avatar_touch`` which runs the
+# TouchService cooldown + axes gate, then (on dispatch) broadcasts
+# an ``avatar_touch`` WS event AND records the kind on the assistant
+# message row's ``gestures`` column.
+TouchCallback = Callable[[str], None]
+
 StopPredicate = Callable[[], bool]
 
 
@@ -232,6 +240,7 @@ class TurnRunner:
         on_overlay: OverlayCallback | None = None,
         on_outfit: OutfitCallback | None = None,
         on_motion: MotionCallback | None = None,
+        on_touch: TouchCallback | None = None,
     ) -> None:
         """Phase 1c: split a sentence into text + stage-direction
         earcons and emit each piece in order.
@@ -263,11 +272,13 @@ class TurnRunner:
             _MOTION_TAG_PATTERN,
             _OUTFIT_TAG_PATTERN,
             _OVERLAY_TAG_PATTERN,
+            _TOUCH_TAG_PATTERN,
         )
 
         # Fire avatar side-channel markers first (overlay / outfit /
-        # motion are all stage directions, not spoken). Stripping them
-        # before the earcon split keeps the TTS flow oblivious.
+        # motion / touch are all stage directions, not spoken).
+        # Stripping them before the earcon split keeps the TTS flow
+        # oblivious.
         if on_overlay is not None:
             for match in _OVERLAY_TAG_PATTERN.finditer(chunk):
                 try:
@@ -289,6 +300,16 @@ class TurnRunner:
                 except Exception:
                     log.debug("on_motion raised", exc_info=True)
         chunk = _MOTION_TAG_PATTERN.sub("", chunk)
+        # K31 soft physicality: ``[[touch:KIND]]`` is a stage direction
+        # (avatar lean-in + bubble badge); strip from the TTS path and
+        # dispatch to the side-channel here.
+        if on_touch is not None:
+            for match in _TOUCH_TAG_PATTERN.finditer(chunk):
+                try:
+                    on_touch(match.group(1).strip().lower())
+                except Exception:
+                    log.debug("on_touch raised", exc_info=True)
+        chunk = _TOUCH_TAG_PATTERN.sub("", chunk)
 
         chunk_with_tsk = _CORRECTION_BLOCK_PATTERN.sub("[[tsk]]", chunk)
         pieces = split_text_with_stage_directions(chunk_with_tsk)
@@ -316,6 +337,7 @@ class TurnRunner:
         on_overlay: OverlayCallback | None = None,
         on_outfit: OutfitCallback | None = None,
         on_motion: MotionCallback | None = None,
+        on_touch: TouchCallback | None = None,
         stop_requested: StopPredicate | None = None,
         resume_user_message_id: int | None = None,
     ) -> TurnResult:
@@ -348,6 +370,7 @@ class TurnRunner:
                 on_overlay=on_overlay,
                 on_outfit=on_outfit,
                 on_motion=on_motion,
+                on_touch=on_touch,
                 stop_requested=stop_requested,
                 resume_user_message_id=resume_user_message_id,
             )
@@ -372,6 +395,7 @@ class TurnRunner:
         on_overlay: OverlayCallback | None,
         on_outfit: OutfitCallback | None,
         on_motion: MotionCallback | None,
+        on_touch: TouchCallback | None,
         stop_requested: StopPredicate | None,
         resume_user_message_id: int | None,
     ) -> TurnResult:
@@ -552,6 +576,7 @@ class TurnRunner:
                                 on_overlay=on_overlay,
                                 on_outfit=on_outfit,
                                 on_motion=on_motion,
+                                on_touch=on_touch,
                             )
 
         except Exception as exc:
@@ -625,6 +650,7 @@ class TurnRunner:
             _MOTION_TAG_PATTERN,
             _OUTFIT_TAG_PATTERN,
             _OVERLAY_TAG_PATTERN,
+            _TOUCH_TAG_PATTERN,
         )
 
         if not aborted:
@@ -646,6 +672,12 @@ class TurnRunner:
                         on_motion(match.group(1).strip().lower())
                     except Exception:
                         log.debug("on_motion raised", exc_info=True)
+            if on_touch is not None:
+                for match in _TOUCH_TAG_PATTERN.finditer(full_raw):
+                    try:
+                        on_touch(match.group(1).strip().lower())
+                    except Exception:
+                        log.debug("on_touch raised", exc_info=True)
         body_text = strip_all_meta_tags(full_raw)
         # Final-flush: emit any tail that the streaming holdback was sitting on
         # (e.g. a "[[" that turned out NOT to be a tag) so the UI bubble lands
@@ -674,6 +706,7 @@ class TurnRunner:
                     on_overlay=on_overlay,
                     on_outfit=on_outfit,
                     on_motion=on_motion,
+                    on_touch=on_touch,
                 )
 
         # Merge the tool-pass usage into the streaming-pass usage so the turn
