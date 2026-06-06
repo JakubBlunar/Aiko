@@ -341,6 +341,320 @@ class ChatWithToolsTests(unittest.TestCase):
         self.assertEqual(payload["top_p"], 0.9)
         self.assertNotIn("num_predict", payload)
 
+    def test_max_tokens_field_name_picked_by_model_family(self) -> None:
+        # Regression: OpenAI's GPT-5 family + o-series strict-reject
+        # ``max_tokens`` (``Unsupported parameter: 'max_tokens' is not
+        # supported with this model. Use 'max_completion_tokens'
+        # instead.``). Older OpenAI models and every non-OpenAI
+        # compat provider (Gemini, Groq, OpenRouter) still want
+        # ``max_tokens``. The client switches the field name based on
+        # model prefix; callers keep sending ``num_predict``.
+        settings = load_settings().ollama
+        fake = _fake_chat_response(content="ok")
+
+        # GPT-5 family -> max_completion_tokens.
+        for model in ("gpt-5", "gpt-5-mini", "gpt-5-nano"):
+            client = OpenAICompatibleClient(
+                settings,
+                base_url="https://api.openai.com/v1",
+                model=model,
+                api_key="sk-test",
+            )
+            with patch(
+                "app.llm.openai_compatible_client.requests.post",
+                return_value=fake,
+            ) as posted:
+                client.chat_with_tools(
+                    [{"role": "user", "content": "x"}],
+                    options={"num_predict": 256},
+                )
+            payload = posted.call_args.kwargs["json"]
+            self.assertEqual(
+                payload.get("max_completion_tokens"), 256,
+                f"{model} should send max_completion_tokens",
+            )
+            self.assertNotIn(
+                "max_tokens", payload,
+                f"{model} must not send legacy max_tokens",
+            )
+
+        # o-series reasoning models -> max_completion_tokens.
+        for model in ("o1", "o1-mini", "o3-mini", "o4-mini"):
+            client = OpenAICompatibleClient(
+                settings,
+                base_url="https://api.openai.com/v1",
+                model=model,
+                api_key="sk-test",
+            )
+            with patch(
+                "app.llm.openai_compatible_client.requests.post",
+                return_value=fake,
+            ) as posted:
+                client.chat_with_tools(
+                    [{"role": "user", "content": "x"}],
+                    options={"num_predict": 256},
+                )
+            payload = posted.call_args.kwargs["json"]
+            self.assertEqual(
+                payload.get("max_completion_tokens"), 256,
+                f"{model} should send max_completion_tokens",
+            )
+            self.assertNotIn("max_tokens", payload)
+
+        # Older OpenAI + non-OpenAI compat -> max_tokens (unchanged).
+        for model in (
+            "gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1",
+            "gpt-4-turbo", "gemini-2.0-flash", "llama-3.1-70b",
+        ):
+            client = OpenAICompatibleClient(
+                settings,
+                base_url="https://api.openai.com/v1",
+                model=model,
+                api_key="sk-test",
+            )
+            with patch(
+                "app.llm.openai_compatible_client.requests.post",
+                return_value=fake,
+            ) as posted:
+                client.chat_with_tools(
+                    [{"role": "user", "content": "x"}],
+                    options={"num_predict": 256, "temperature": 0.5},
+                )
+            payload = posted.call_args.kwargs["json"]
+            self.assertEqual(
+                payload.get("max_tokens"), 256,
+                f"{model} should keep legacy max_tokens",
+            )
+            self.assertNotIn(
+                "max_completion_tokens", payload,
+                f"{model} must not send max_completion_tokens",
+            )
+            self.assertEqual(
+                payload.get("temperature"), 0.5,
+                f"{model} should pass temperature through",
+            )
+
+    def test_responses_api_family_drops_unsupported_sampling_knobs(self) -> None:
+        # Regression: OpenAI's GPT-5 + o-series lock the sampling
+        # knobs to defaults. ``temperature=0.6`` 400s with
+        # ``Unsupported value: 'temperature' does not support 0.6 with
+        # this model. Only the default (1) value is supported.``;
+        # ``top_p`` / ``presence_penalty`` / ``frequency_penalty`` /
+        # ``logprobs`` / ``top_logprobs`` / ``logit_bias`` are
+        # rejected outright. The client drops them BEFORE posting so
+        # ``TurnRunner``'s shared options dict can keep its
+        # cross-provider shape.
+        settings = load_settings().ollama
+        fake = _fake_chat_response(content="ok")
+        for model in (
+            "gpt-5", "gpt-5-mini", "gpt-5-nano",
+            "o1", "o1-mini", "o3-mini", "o4-mini",
+        ):
+            client = OpenAICompatibleClient(
+                settings,
+                base_url="https://api.openai.com/v1",
+                model=model,
+                api_key="sk-test",
+            )
+            with patch(
+                "app.llm.openai_compatible_client.requests.post",
+                return_value=fake,
+            ) as posted:
+                client.chat_with_tools(
+                    [{"role": "user", "content": "x"}],
+                    options={
+                        "num_predict": 256,
+                        "temperature": 0.6,
+                        "top_p": 0.9,
+                        "presence_penalty": 0.5,
+                        "frequency_penalty": 0.3,
+                        "logprobs": True,
+                        "top_logprobs": 5,
+                        "logit_bias": {"50256": -100},
+                        # Stays — both seed and stop are honoured by
+                        # GPT-5 / o-series alongside the locked knobs.
+                        "seed": 7,
+                        "stop": ["END"],
+                    },
+                )
+            payload = posted.call_args.kwargs["json"]
+            for key in (
+                "temperature", "top_p", "presence_penalty",
+                "frequency_penalty", "logprobs", "top_logprobs",
+                "logit_bias",
+            ):
+                self.assertNotIn(
+                    key, payload,
+                    f"{model} must drop unsupported sampling knob {key}",
+                )
+            # Still routes the token budget into the right field.
+            self.assertEqual(
+                payload.get("max_completion_tokens"), 256,
+            )
+            # Knobs not in the unsupported set still pass through.
+            self.assertEqual(payload.get("seed"), 7)
+            self.assertEqual(payload.get("stop"), ["END"])
+
+    def test_responses_api_family_sets_minimal_reasoning_effort(self) -> None:
+        # Regression: GPT-5 + o-series consume part of the
+        # ``max_completion_tokens`` budget on internal reasoning
+        # tokens before emitting visible content. With a tight
+        # budget (``chat_llm.max_tokens=512``) and the default
+        # ``reasoning_effort="medium"`` we saw the budget exhausted
+        # entirely on reasoning, leaving Aiko's visible reply
+        # empty (``chars=0``). Pinning ``reasoning_effort="minimal"``
+        # makes the visible reply approximate the configured budget.
+        settings = load_settings().ollama
+        fake = _fake_chat_response(content="ok")
+        for model in (
+            "gpt-5", "gpt-5-mini", "gpt-5-nano",
+            "o1", "o1-mini", "o3-mini", "o4-mini",
+        ):
+            client = OpenAICompatibleClient(
+                settings,
+                base_url="https://api.openai.com/v1",
+                model=model,
+                api_key="sk-test",
+            )
+            with patch(
+                "app.llm.openai_compatible_client.requests.post",
+                return_value=fake,
+            ) as posted:
+                client.chat_with_tools(
+                    [{"role": "user", "content": "x"}],
+                    options={"num_predict": 512},
+                )
+            payload = posted.call_args.kwargs["json"]
+            self.assertEqual(
+                payload.get("reasoning_effort"), "minimal",
+                f"{model} should inject reasoning_effort=minimal",
+            )
+
+        # Older OpenAI + non-OpenAI compat models must NOT get the
+        # field (some providers 400 on unknown extras).
+        for model in ("gpt-4o-mini", "gpt-4.1-mini", "gemini-2.0-flash"):
+            client = OpenAICompatibleClient(
+                settings,
+                base_url="https://api.openai.com/v1",
+                model=model,
+                api_key="sk-test",
+            )
+            with patch(
+                "app.llm.openai_compatible_client.requests.post",
+                return_value=fake,
+            ) as posted:
+                client.chat_with_tools(
+                    [{"role": "user", "content": "x"}],
+                    options={"num_predict": 512},
+                )
+            payload = posted.call_args.kwargs["json"]
+            self.assertNotIn(
+                "reasoning_effort", payload,
+                f"{model} must not get reasoning_effort injection",
+            )
+
+    def test_responses_api_family_no_default_temperature_without_options(
+        self,
+    ) -> None:
+        # When the caller passes no ``options`` dict at all, the
+        # client previously injected a default temperature from
+        # settings. That still 400s on the Responses-API family — so
+        # the default-injection path must skip temperature when the
+        # model belongs to that family.
+        settings = load_settings().ollama
+        fake = _fake_chat_response(content="ok")
+        client = OpenAICompatibleClient(
+            settings,
+            base_url="https://api.openai.com/v1",
+            model="gpt-5-mini",
+            api_key="sk-test",
+        )
+        with patch(
+            "app.llm.openai_compatible_client.requests.post",
+            return_value=fake,
+        ) as posted:
+            client.chat_with_tools(
+                [{"role": "user", "content": "x"}],
+                # No options dict at all.
+            )
+        payload = posted.call_args.kwargs["json"]
+        self.assertNotIn(
+            "temperature", payload,
+            "gpt-5-mini must not get an auto-injected temperature",
+        )
+
+    def test_ollama_only_options_are_dropped_from_payload(self) -> None:
+        # Regression: ``TurnRunner`` builds the per-turn options dict
+        # with ``num_ctx`` (an Ollama-only knob), and the rest of the
+        # codebase routes that same dict through whichever
+        # ``ChatClient`` is registered. OpenAI's
+        # ``/chat/completions`` 400s on unknown params
+        # (``Unknown parameter: 'num_ctx'``), so the OpenAI-compatible
+        # client MUST strip every Ollama-host / Ollama-only-sampling
+        # key before posting. Overlapping keys (``top_p``, ``top_k``,
+        # ``seed``, …) must still pass through so Gemini's
+        # OpenAI-compat layer keeps working.
+        fake = _fake_chat_response(content="ok")
+        with patch(
+            "app.llm.openai_compatible_client.requests.post",
+            return_value=fake,
+        ) as posted:
+            self.client.chat_with_tools(
+                [{"role": "user", "content": "x"}],
+                options={
+                    "temperature": 0.5,
+                    "num_predict": 64,
+                    # Ollama-only — MUST be stripped.
+                    "num_ctx": 32768,
+                    "num_keep": 24,
+                    "num_thread": 8,
+                    "num_batch": 512,
+                    "num_gpu": 1,
+                    "main_gpu": 0,
+                    "low_vram": False,
+                    "f16_kv": True,
+                    "vocab_only": False,
+                    "use_mmap": True,
+                    "use_mlock": False,
+                    "numa": False,
+                    "mirostat": 0,
+                    "mirostat_tau": 5.0,
+                    "mirostat_eta": 0.1,
+                    "tfs_z": 1.0,
+                    "typical_p": 1.0,
+                    "repeat_last_n": 64,
+                    "penalize_newline": True,
+                    # Shared with Gemini / Anthropic OpenAI-compat —
+                    # MUST pass through.
+                    "top_p": 0.9,
+                    "top_k": 40,
+                    "min_p": 0.05,
+                    "repeat_penalty": 1.1,
+                    "seed": 42,
+                },
+            )
+        payload = posted.call_args.kwargs["json"]
+        # Translated knobs landed in OpenAI vocabulary.
+        self.assertEqual(payload["temperature"], 0.5)
+        self.assertEqual(payload["max_tokens"], 64)
+        # Ollama-only keys are gone.
+        for key in (
+            "num_ctx", "num_keep", "num_thread", "num_batch",
+            "num_gpu", "main_gpu", "low_vram", "f16_kv",
+            "vocab_only", "use_mmap", "use_mlock", "numa",
+            "mirostat", "mirostat_tau", "mirostat_eta",
+            "tfs_z", "typical_p", "repeat_last_n",
+            "penalize_newline",
+        ):
+            self.assertNotIn(key, payload, f"{key} leaked into payload")
+        # Cross-provider sampling knobs survived the filter so Gemini
+        # / Anthropic OpenAI-compat routes still get them.
+        self.assertEqual(payload["top_p"], 0.9)
+        self.assertEqual(payload["top_k"], 40)
+        self.assertEqual(payload["min_p"], 0.05)
+        self.assertEqual(payload["repeat_penalty"], 1.1)
+        self.assertEqual(payload["seed"], 42)
+
 
 class ChatStreamTests(unittest.TestCase):
     def test_streams_content_and_captures_usage(self) -> None:
@@ -405,6 +719,128 @@ class ChatStreamTests(unittest.TestCase):
             "response truncated" in rec.getMessage()
             for rec in captured.records
         ))
+
+
+class PromptCachingUsageTests(unittest.TestCase):
+    """``prompt_tokens_details.cached_tokens`` parsing.
+
+    OpenAI returns prompt-cache hits as a nested counter on the usage
+    payload (see ``docs/prompt-caching.md``). Both the non-streaming
+    and the streaming code paths must lift it onto ``ChatUsage``
+    verbatim. Providers that omit the field (Ollama, most non-OpenAI
+    OpenAI-compatible endpoints) must read back ``0``.
+    """
+
+    def setUp(self) -> None:
+        self.settings = load_settings().ollama
+        self.client = OpenAICompatibleClient(
+            self.settings,
+            base_url="https://api.openai.com/v1",
+            model="gpt-4o-mini",
+            api_key="sk-test",
+        )
+
+    def test_non_streaming_lifts_cached_tokens_onto_usage(self) -> None:
+        fake = _fake_chat_response(
+            content="hi",
+            usage={
+                "prompt_tokens": 1200,
+                "completion_tokens": 50,
+                "prompt_tokens_details": {"cached_tokens": 1024},
+            },
+        )
+        with patch(
+            "app.llm.openai_compatible_client.requests.post", return_value=fake,
+        ):
+            self.client.chat_with_tools(
+                [{"role": "user", "content": "Hi"}],
+            )
+        usage = self.client.last_usage
+        self.assertEqual(usage.prompt_tokens, 1200)
+        self.assertEqual(usage.cached_tokens, 1024)
+        # The derived hit-rate property is rounded to 1 decimal.
+        self.assertAlmostEqual(usage.cached_tokens_pct, 85.3, places=1)
+
+    def test_non_streaming_defaults_cached_tokens_when_absent(self) -> None:
+        # Ollama / most non-OpenAI compatible providers don't ship the
+        # nested ``prompt_tokens_details`` block at all. Default must
+        # be 0, never an attribute error.
+        fake = _fake_chat_response(
+            content="hi",
+            usage={"prompt_tokens": 100, "completion_tokens": 20},
+        )
+        with patch(
+            "app.llm.openai_compatible_client.requests.post", return_value=fake,
+        ):
+            self.client.chat_with_tools(
+                [{"role": "user", "content": "Hi"}],
+            )
+        usage = self.client.last_usage
+        self.assertEqual(usage.prompt_tokens, 100)
+        self.assertEqual(usage.cached_tokens, 0)
+        self.assertEqual(usage.cached_tokens_pct, 0.0)
+
+    def test_streaming_lifts_cached_tokens_from_terminal_chunk(self) -> None:
+        # The terminal SSE chunk carries the usage payload (because
+        # the request opted in via ``stream_options.include_usage``).
+        sse_lines = [
+            'data: {"choices":[{"delta":{"content":"ok"}}]}',
+            (
+                'data: {"choices":[{"delta":{},"finish_reason":"stop"}],'
+                '"usage":{"prompt_tokens":1500,"completion_tokens":12,'
+                '"prompt_tokens_details":{"cached_tokens":1408}}}'
+            ),
+            "data: [DONE]",
+        ]
+        with patch(
+            "app.llm.openai_compatible_client.requests.post",
+            return_value=_sse_response(sse_lines),
+        ):
+            list(
+                self.client.chat_stream(
+                    [{"role": "user", "content": "go"}],
+                ),
+            )
+        usage = self.client.last_usage
+        self.assertEqual(usage.prompt_tokens, 1500)
+        self.assertEqual(usage.completion_tokens, 12)
+        self.assertEqual(usage.cached_tokens, 1408)
+        # 1408 / 1500 ≈ 93.87 -> 93.9 after one-decimal rounding.
+        self.assertAlmostEqual(usage.cached_tokens_pct, 93.9, places=1)
+
+    def test_streaming_defaults_cached_tokens_when_absent(self) -> None:
+        sse_lines = [
+            'data: {"choices":[{"delta":{"content":"ok"}}]}',
+            (
+                'data: {"choices":[{"delta":{},"finish_reason":"stop"}],'
+                '"usage":{"prompt_tokens":42,"completion_tokens":3}}'
+            ),
+            "data: [DONE]",
+        ]
+        with patch(
+            "app.llm.openai_compatible_client.requests.post",
+            return_value=_sse_response(sse_lines),
+        ):
+            list(
+                self.client.chat_stream(
+                    [{"role": "user", "content": "x"}],
+                ),
+            )
+        usage = self.client.last_usage
+        self.assertEqual(usage.cached_tokens, 0)
+        self.assertEqual(usage.cached_tokens_pct, 0.0)
+
+    def test_chat_usage_merge_sums_cached_tokens(self) -> None:
+        # The tool pre-pass + streaming reply pass both populate
+        # ``last_usage``; ``TurnRunner`` calls ``ChatUsage.merge`` to
+        # roll them into one row. Cached counts must add, not pick.
+        from app.llm.chat_client import ChatUsage
+
+        a = ChatUsage(prompt_tokens=900, cached_tokens=800)
+        b = ChatUsage(prompt_tokens=1000, cached_tokens=900)
+        merged = a.merge(b)
+        self.assertEqual(merged.prompt_tokens, 1900)
+        self.assertEqual(merged.cached_tokens, 1700)
 
 
 class ChatJsonTests(unittest.TestCase):

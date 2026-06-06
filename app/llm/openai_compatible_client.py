@@ -197,6 +197,100 @@ def _collapse_system_for_gemini(
     return out
 
 
+# Ollama exposes a wide ``options`` dict (``num_ctx``, ``num_keep``,
+# ``mirostat``, ``num_thread``, …) on top of the shared knobs
+# (``temperature``, ``top_p``, ``seed``, …). The rest of the codebase
+# speaks Ollama, so worker call sites send dicts like
+# ``{"temperature": 0.2, "num_predict": 512, "num_ctx": 32768}``.
+# OpenAI's ``/chat/completions`` strict-rejects unknown params with
+# HTTP 400 (``Unknown parameter: 'num_ctx'``), so this client drops
+# any Ollama-only key from the outbound payload before posting.
+#
+# Keep this list narrow: it only covers keys Ollama owns exclusively
+# (model-host knobs + sampling extensions that no major
+# OpenAI-compatible remote provider speaks). Overlapping keys —
+# ``temperature``, ``top_p``, ``top_k``, ``min_p``, ``repeat_penalty``,
+# ``seed``, ``frequency_penalty``, ``presence_penalty``, ``stop``,
+# ``logit_bias`` — fall through unchanged so Gemini's
+# OpenAI-compatible layer (which accepts ``top_k`` etc.) keeps
+# working. ``num_predict`` is translated separately to ``max_tokens``.
+_OLLAMA_ONLY_OPTION_KEYS: frozenset[str] = frozenset({
+    "num_ctx",
+    "num_keep",
+    "num_batch",
+    "num_gpu",
+    "main_gpu",
+    "num_thread",
+    "low_vram",
+    "f16_kv",
+    "vocab_only",
+    "use_mmap",
+    "use_mlock",
+    "numa",
+    "mirostat",
+    "mirostat_tau",
+    "mirostat_eta",
+    "tfs_z",
+    "typical_p",
+    "repeat_last_n",
+    "penalize_newline",
+})
+
+
+def _is_responses_api_family(model: str) -> bool:
+    """Return True if ``model`` belongs to OpenAI's newer
+    Responses-API parameter family (GPT-5 + o-series reasoning).
+
+    Two parameter-shape quirks distinguish this family from older
+    OpenAI models (and from all non-OpenAI compat providers):
+
+    * ``max_tokens`` is replaced by ``max_completion_tokens`` (legacy
+      field hard-400s with ``Unsupported parameter: 'max_tokens'``).
+    * The classic sampling knobs are LOCKED to their default value:
+      ``temperature`` must be ``1`` (or omitted), and ``top_p``,
+      ``presence_penalty``, ``frequency_penalty``, ``logprobs``,
+      ``top_logprobs``, ``logit_bias`` are not supported at all.
+      Sending any of them with a non-default value 400s with
+      ``Unsupported value: 'temperature' does not support 0.6 with
+      this model. Only the default (1) value is supported.`` or
+      ``Unsupported parameter: '<key>'``.
+
+    Older OpenAI models (``gpt-4o*``, ``gpt-4.1*``, ``gpt-4-turbo*``)
+    and every non-OpenAI compat provider (Gemini, Groq, OpenRouter,
+    llama.cpp …) accept the legacy shape, so we leave them alone for
+    cross-provider portability.
+    """
+    if not isinstance(model, str):
+        return False
+    name = model.strip().lower()
+    if not name:
+        return False
+    # GPT-5 family (gpt-5, gpt-5-mini, gpt-5-nano, gpt-5-pro, …).
+    if name.startswith("gpt-5"):
+        return True
+    # o-series reasoning models: o1, o1-mini, o1-preview, o3, o3-mini,
+    # o4, o4-mini, … Match the ``o<digit>`` prefix so future siblings
+    # auto-qualify.
+    if len(name) >= 2 and name[0] == "o" and name[1].isdigit():
+        return True
+    return False
+
+
+# Sampling knobs the Responses-API family (GPT-5 + o-series) does
+# NOT support. Dropping them entirely is preferred over forcing them
+# to "default" — omission lets the server pick its actual default
+# and avoids tripping the strict 400 gate on borderline values.
+_RESPONSES_API_UNSUPPORTED_OPTION_KEYS: frozenset[str] = frozenset({
+    "temperature",
+    "top_p",
+    "presence_penalty",
+    "frequency_penalty",
+    "logprobs",
+    "top_logprobs",
+    "logit_bias",
+})
+
+
 def _map_finish_reason(reason: object) -> str | None:
     """Translate OpenAI ``finish_reason`` to the Ollama-shaped vocabulary.
 
@@ -412,13 +506,35 @@ class OpenAICompatibleClient:
             # mid-stream; OpenAI added this param specifically for the
             # SSE case. Harmless on providers that ignore it.
             payload["stream_options"] = {"include_usage": True}
+        responses_api = _is_responses_api_family(model)
+        if responses_api:
+            # GPT-5 family + o-series consume part of the
+            # ``max_completion_tokens`` budget on hidden reasoning
+            # tokens before any visible output. With the default
+            # ``reasoning_effort="medium"`` and a tight budget (e.g.
+            # ``chat_llm.max_tokens=512``) every token can go to
+            # reasoning, leaving Aiko's visible reply empty. Set
+            # ``minimal`` so conversational turns get nearly all
+            # of the budget back for visible content. Users who
+            # want deeper reasoning can override the route to a
+            # higher ``max_tokens`` (the family still respects it).
+            payload["reasoning_effort"] = "minimal"
         if options:
             # Pull out the keys we know how to translate, pass the rest
             # through. The Ollama vocabulary leaks here on purpose — the
-            # codebase has hundreds of call sites built around it.
+            # codebase has hundreds of call sites built around it. We
+            # explicitly DROP keys that are Ollama-only (OpenAI strict-
+            # rejects unknown params with HTTP 400 — e.g. ``num_ctx``).
+            # Keys both engines understand (``top_p``, ``seed``,
+            # ``frequency_penalty``, ``presence_penalty``, ``stop``, …)
+            # fall through untouched, so new OpenAI params get picked
+            # up automatically without churn here. On the
+            # Responses-API model family (GPT-5 + o-series), the
+            # sampling knobs are locked to defaults so we drop them
+            # entirely — see ``_is_responses_api_family``.
             opts = dict(options)
             temp = opts.pop("temperature", None)
-            if temp is not None:
+            if temp is not None and not responses_api:
                 try:
                     payload["temperature"] = float(temp)
                 except (TypeError, ValueError):
@@ -426,13 +542,27 @@ class OpenAICompatibleClient:
             num_predict = opts.pop("num_predict", None)
             if num_predict is not None:
                 try:
-                    payload["max_tokens"] = int(num_predict)
+                    # GPT-5 family + o-series require
+                    # ``max_completion_tokens``; older OpenAI models
+                    # and non-OpenAI compat providers (Gemini, Groq,
+                    # OpenRouter) still want ``max_tokens``.
+                    token_key = (
+                        "max_completion_tokens"
+                        if responses_api
+                        else "max_tokens"
+                    )
+                    payload[token_key] = int(num_predict)
                 except (TypeError, ValueError):
                     pass
+            for key in _OLLAMA_ONLY_OPTION_KEYS:
+                opts.pop(key, None)
+            if responses_api:
+                for key in _RESPONSES_API_UNSUPPORTED_OPTION_KEYS:
+                    opts.pop(key, None)
             for key, value in opts.items():
                 if key not in payload:
                     payload[key] = value
-        else:
+        elif not responses_api:
             payload["temperature"] = float(self._settings.temperature)
         if _is_gemini_model(model):
             # Gemini clamps temperature into [0, 2]; values outside
@@ -609,6 +739,15 @@ class OpenAICompatibleClient:
                         usage.completion_tokens = int(
                             usage_payload.get("completion_tokens", 0) or 0,
                         )
+                        # OpenAI prompt-caching: see _build_usage above
+                        # for the equivalent non-streaming path. Field
+                        # is absent on most non-OpenAI providers, so
+                        # the default ``0`` is the right outcome there.
+                        details = usage_payload.get("prompt_tokens_details")
+                        if isinstance(details, dict):
+                            usage.cached_tokens = int(
+                                details.get("cached_tokens", 0) or 0,
+                            )
                     choices = chunk.get("choices") or []
                     if not isinstance(choices, list) or not choices:
                         continue
@@ -840,6 +979,17 @@ class OpenAICompatibleClient:
             usage.completion_tokens = int(
                 usage_dict.get("completion_tokens", 0) or 0,
             )
+            # OpenAI prompt-caching: ``prompt_tokens_details.cached_tokens``
+            # reports how many input tokens hit the server-side prefix
+            # cache (billed at ~10% of the uncached input rate). Field
+            # is absent on most non-OpenAI providers — defaults to 0
+            # there, which is the right answer. See
+            # ``docs/prompt-caching.md``.
+            details = usage_dict.get("prompt_tokens_details")
+            if isinstance(details, dict):
+                usage.cached_tokens = int(
+                    details.get("cached_tokens", 0) or 0,
+                )
         usage.done_reason = _map_finish_reason(finish_reason)
         return usage
 

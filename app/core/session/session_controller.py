@@ -479,6 +479,21 @@ class SessionController(
             or (settings.ollama.chat_model or "").strip()
             or "llama3.1:8b"
         )
+        # Workers route through ``self._worker_client``; when that's a
+        # separate local Ollama instance (the common "chat = OpenAI,
+        # workers = local" case) the worker model MUST come from
+        # ``settings.ollama.chat_model`` — sending the chat model
+        # name (e.g. ``gpt-5-mini``) to a local Ollama 404s with
+        # ``model 'gpt-5-mini' not found``. When the worker client
+        # IS the chat client (pure-Ollama or ``workers_use_local=False``),
+        # both models collapse to the same value.
+        if self._worker_client is self._chat_client:
+            self._effective_worker_model = self._effective_chat_model
+        else:
+            self._effective_worker_model = (
+                (settings.ollama.chat_model or "").strip()
+                or "llama3.1:8b"
+            )
 
         # Resolve context window: explicit config override > Ollama /api/show > fallback.
         # ``self._context_source`` records which path won (used for stats display).
@@ -980,7 +995,7 @@ class SessionController(
                 ollama=self._ollama,
                 memory_store=self._memory_store,
                 embedder=self._embedder,
-                model=self._effective_chat_model,
+                model=self._effective_worker_model,
                 min_seconds_between=settings.agent.reflection_min_seconds_between,
                 emotional_delta_threshold=settings.agent.reflection_emotional_delta_threshold,
                 user_display_name_provider=lambda: self.user_display_name,
@@ -1003,7 +1018,7 @@ class SessionController(
                     ollama=self._ollama,
                     memory_store=self._memory_store,
                     embedder=self._embedder,
-                    model=self._effective_chat_model,
+                    model=self._effective_worker_model,
                     chat_db=self._chat_db,
                     min_hours_since_last=float(
                         getattr(
@@ -1077,7 +1092,7 @@ class SessionController(
                     ollama=self._ollama,
                     memory_store=self._memory_store,
                     embedder=self._embedder,
-                    model=self._effective_chat_model,
+                    model=self._effective_worker_model,
                     min_turns_between=int(
                         getattr(settings.agent, "curiosity_worker_min_turns_between", 3),
                     ),
@@ -1125,7 +1140,7 @@ class SessionController(
             self._agenda_worker = AgendaWorker(
                 ollama=self._ollama,
                 store=self._agenda_store,
-                model=self._effective_chat_model,
+                model=self._effective_worker_model,
                 every_n_turns=settings.agent.agenda_groom_every_n_turns,
                 user_display_name_provider=lambda: self.user_display_name,
             )
@@ -1145,7 +1160,7 @@ class SessionController(
                 ollama=self._ollama,
                 memory_store=self._memory_store,
                 embedder=self._embedder,
-                model=self._effective_chat_model,
+                model=self._effective_worker_model,
                 user_display_name_provider=lambda: self.user_display_name,
             )
         except Exception:
@@ -1163,7 +1178,7 @@ class SessionController(
             self._dialogue_act_tagger = DialogueActTagger(
                 ollama=self._ollama,
                 chat_db=self._chat_db,
-                model=self._effective_chat_model,
+                model=self._effective_worker_model,
                 user_display_name_provider=lambda: self.user_display_name,
             )
         except Exception:
@@ -1191,7 +1206,7 @@ class SessionController(
                 ollama=self._ollama,
                 db=self._chat_db,
                 store=self._user_profile_store,
-                model=self._effective_chat_model,
+                model=self._effective_worker_model,
                 min_user_turns=settings.agent.user_profile_min_turns,
                 user_display_name_provider=lambda: self.user_display_name,
             )
@@ -1218,7 +1233,7 @@ class SessionController(
                     ollama=self._ollama,
                     memory_store=self._memory_store,
                     target_path=self_image_path,
-                    model=self._effective_chat_model,
+                    model=self._effective_worker_model,
                     max_tokens=settings.agent.self_image_max_tokens,
                 )
             except Exception:
@@ -1238,7 +1253,7 @@ class SessionController(
                     ollama=self._ollama,
                     memory_store=self._memory_store,
                     chat_db=self._chat_db,
-                    model=self._effective_chat_model,
+                    model=self._effective_worker_model,
                     chunk_size=settings.agent.consolidator_chunk_size,
                     similarity_threshold=settings.agent.consolidator_similarity_threshold,
                     min_cluster_size=settings.agent.consolidator_min_cluster_size,
@@ -1266,7 +1281,7 @@ class SessionController(
                     relationship_store=getattr(self, "_relationship_store", None),
                     chat_db=self._chat_db,
                     embedder=self._embedder,
-                    model=self._effective_chat_model,
+                    model=self._effective_worker_model,
                     min_hours=settings.agent.relationship_pulse_min_hours,
                     min_turns=settings.agent.relationship_pulse_min_turns,
                     max_tokens=settings.agent.relationship_pulse_max_tokens,
@@ -1406,7 +1421,7 @@ class SessionController(
 
                 self._moment_detector = MomentDetector(
                     ollama=self._ollama,
-                    model=self._effective_chat_model,
+                    model=self._effective_worker_model,
                     persist_callback=_persist_moment_candidate,
                     min_turn_gap=settings.agent.shared_moments_min_turn_gap,
                     cooldown_seconds=settings.agent.shared_moments_cooldown_seconds,
@@ -1563,7 +1578,7 @@ class SessionController(
                     self._memory_store,
                     self._embedder,
                     self._ollama,
-                    model=self._effective_chat_model,
+                    model=self._effective_worker_model,
                     user_display_name_provider=lambda: self.user_display_name,
                 )
                 self._memory_extractor.add_listener(self._notify_memory_added)
@@ -1588,7 +1603,7 @@ class SessionController(
         self._summary_worker = SummaryWorker(
             self._chat_db,
             self._ollama,
-            model=self._effective_chat_model,
+            model=self._effective_worker_model,
             is_busy=lambda: self._turn_in_progress,
             idle_seconds=settings.agent.summary_idle_seconds,
             min_unsummarized_messages=settings.agent.summary_min_unsummarized_messages,
@@ -1708,7 +1723,7 @@ class SessionController(
                                 agent_settings=settings.agent,
                                 memory_settings=self._memory_settings,
                                 ollama=self._ollama,
-                                chat_model=self._effective_chat_model,
+                                chat_model=self._effective_worker_model,
                                 web_search_tool=web_search_tool,
                                 rate_limiter=self._fact_check_rate_limiter,
                                 cancel_event=self._fact_check_cancel,
@@ -1798,7 +1813,7 @@ class SessionController(
                                 memory_store=self._memory_store,
                                 embedder=self._embedder,
                                 ollama=self._ollama,
-                                chat_model=self._effective_chat_model,
+                                chat_model=self._effective_worker_model,
                                 web_search_tool=curiosity_search_tool,
                                 rate_limiter=(
                                     self._idle_curiosity_rate_limiter
@@ -1959,7 +1974,7 @@ class SessionController(
                             topic_graph=self._topic_graph,
                             embedder=self._embedder,
                             ollama=self._ollama,
-                            chat_model=self._effective_chat_model,
+                            chat_model=self._effective_worker_model,
                             cancel_event=self._fact_check_cancel,
                             agent_settings=settings.agent,
                             memory_settings=self._memory_settings,
@@ -2048,7 +2063,7 @@ class SessionController(
                         self._goal_worker = GoalWorker(
                             goal_store=self._goal_store,
                             ollama=self._ollama,
-                            chat_model=self._effective_chat_model,
+                            chat_model=self._effective_worker_model,
                             cancel_event=self._fact_check_cancel,
                             agent_settings=settings.agent,
                             memory_settings=self._memory_settings,
@@ -2158,7 +2173,7 @@ class SessionController(
             self._arc_smoother = ArcSmootherWorker(
                 ollama=self._ollama,
                 store=self._arc_store,
-                model=self._effective_chat_model,
+                model=self._effective_worker_model,
                 every_n_turns=max(
                     1, int(settings.agent.arc_update_every_n_turns) * 6
                 ),
@@ -2185,7 +2200,7 @@ class SessionController(
                 store=self._prepared_nudge_store,
                 memory_store=self._memory_store,
                 agenda_store=getattr(self, "_agenda_store", None),
-                model=self._effective_chat_model,
+                model=self._effective_worker_model,
                 every_n_turns=4,
                 ttl_seconds=settings.agent.prepared_nudge_ttl_seconds,
                 user_display_name_provider=lambda: self.user_display_name,
@@ -2315,7 +2330,7 @@ class SessionController(
                     memory_store=self._memory_store,
                     conflict_store=self._memory_conflict_store,
                     ollama=self._ollama,
-                    chat_model=self._effective_chat_model,
+                    chat_model=self._effective_worker_model,
                     rate_limiter=self._memory_conflict_rate_limiter,
                     cancel_event=self._fact_check_cancel,
                     agent_settings=settings.agent,
@@ -2559,7 +2574,7 @@ class SessionController(
                     chat_db=self._chat_db,
                     embedder=self._embedder,
                     ollama=self._ollama,
-                    chat_model=self._effective_chat_model,
+                    chat_model=self._effective_worker_model,
                     rate_limiter=self._belief_rate_limiter,
                     cancel_event=self._fact_check_cancel,
                     agent_settings=settings.agent,
@@ -3260,14 +3275,28 @@ class SessionController(
         normalized = (model_name or "").strip()
         if not normalized:
             return
-        # The legacy field on ``OllamaSettings.chat_model`` is the
-        # canonical source of truth for the Ollama provider. For
-        # OpenAI-compatible we ALSO copy the choice onto
-        # ``chat_llm.model`` so a restart picks up the same model.
-        self._settings.ollama.chat_model = normalized
-        if (self._chat_provider or "ollama") != "ollama":
+        # Write the new model to the field that actually owns it:
+        # ``ollama.chat_model`` for the pure-Ollama setup, and
+        # ``chat_llm.model`` for the remote / OpenAI-compatible
+        # setup. Cross-writing both (the pre-PR2 behaviour) used to
+        # overwrite the WORKER model name on every chat-model change
+        # — when chat moved to ``gpt-5-mini``, ``ollama.chat_model``
+        # also became ``gpt-5-mini``, and on next boot the
+        # background workers tried to hit local Ollama with the
+        # remote model name (HTTP 404).
+        if (self._chat_provider or "ollama").strip().lower() == "ollama":
+            self._settings.ollama.chat_model = normalized
+        else:
             self._settings.chat_llm.model = normalized
         self._effective_chat_model = normalized
+        # The worker model only follows the chat model when the
+        # worker client IS the chat client (pure-Ollama OR
+        # ``workers_use_local=False``). When workers run on a
+        # separate local Ollama instance, the worker model stays
+        # pinned to whatever ``ollama.chat_model`` was at startup —
+        # it's a different model on a different backend.
+        if self._worker_client is self._chat_client:
+            self._effective_worker_model = normalized
         # Re-resolve the context window for the new model. Honour the explicit
         # config override if any; otherwise re-query /api/show.
         chat_llm = self._settings.chat_llm
@@ -3280,17 +3309,20 @@ class SessionController(
         self._turn_runner.update_runtime(
             model=normalized, context_window=self._context_window,
         )
-        # Update the cached model on workers too.
-        self._summary_worker._model = normalized  # type: ignore[attr-defined]
+        # Cascade the WORKER model (not the chat model) to active
+        # worker instances; the proactive director is on the chat
+        # path so it gets the chat model.
+        worker_model = self._effective_worker_model
+        self._summary_worker._model = worker_model  # type: ignore[attr-defined]
         self._proactive.update_runtime(model=normalized)
         if self._memory_extractor is not None:
             try:
-                self._memory_extractor.update_model(normalized)
+                self._memory_extractor.update_model(worker_model)
             except Exception:
                 log.debug("memory extractor model update failed", exc_info=True)
         if self._dialogue_act_tagger is not None:
             try:
-                self._dialogue_act_tagger.update_runtime(model=normalized)
+                self._dialogue_act_tagger.update_runtime(model=worker_model)
             except Exception:
                 log.debug(
                     "dialogue_act tagger model update failed", exc_info=True,
@@ -3419,6 +3451,23 @@ class SessionController(
             self._worker_client = self._chat_client
         self._ollama = self._worker_client  # back-compat alias
         self._chat_provider = (chat_llm.provider or "ollama").strip().lower()
+
+        # Recompute the worker model based on the new client topology:
+        # when the worker client is a separate local Ollama, the
+        # worker model is pinned to ``ollama.chat_model``; otherwise
+        # it tracks the chat model. ``set_chat_model`` below picks
+        # this up via ``self._effective_worker_model``.
+        if self._worker_client is self._chat_client:
+            self._effective_worker_model = (
+                chat_llm.model.strip()
+                or self._settings.ollama.chat_model.strip()
+                or "llama3.1:8b"
+            )
+        else:
+            self._effective_worker_model = (
+                (self._settings.ollama.chat_model or "").strip()
+                or "llama3.1:8b"
+            )
 
         # Re-resolve model + context window. ``set_chat_model`` does
         # the right cascade (TurnRunner / ProactiveDirector / workers).
