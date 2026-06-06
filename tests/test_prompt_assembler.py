@@ -1206,11 +1206,13 @@ class DayColorProviderSlotTests(unittest.TestCase):
             content = messages[0]["content"]
             self.assertIn("Your day's colour today: pensive", content)
 
-    def test_day_color_lands_after_circadian(self) -> None:
-        # Order encodes the K27 cluster -- circadian ("it's late
-        # evening locally") then day_color ("today is restless"). Both
-        # are slow ambient cues; the order mirrors the
-        # ``circadian -> mood_shell`` precedent.
+    def test_day_color_lands_before_circadian(self) -> None:
+        # Prompt-cache prefix-stability ladder: ``day_color`` is a T1
+        # semi-stable trend/phase block (only flips at local midnight),
+        # so it lives in the stable arc cluster ahead of T4 ambient
+        # blocks like ``circadian``. The reorder maximises the cached
+        # prefix (see docs/prompt-caching.md) — day_color's stability
+        # earns it a slot above the per-hour circadian cue.
         with _TempDb() as db:
             assembler = _make_assembler(db, persona_text="P")
             db.add_message(
@@ -1232,8 +1234,8 @@ class DayColorProviderSlotTests(unittest.TestCase):
             self.assertIn("Local time:", content)
             self.assertIn("Your day's colour today: restless", content)
             self.assertLess(
-                content.index("Local time:"),
                 content.index("Your day's colour today: restless"),
+                content.index("Local time:"),
             )
 
     def test_day_color_silent_when_provider_empty(self) -> None:
@@ -2506,6 +2508,252 @@ class WallClockHistoryPrefixTests(unittest.TestCase):
             # Specifically: no bracketed prefix on the prior message.
             prior = next(m for m in history_msgs if m["content"] != "now message")
             self.assertFalse(prior["content"].startswith("["))
+
+
+class _StubMemoryRetriever:
+    """Drop-in stand-in for :class:`MemoryRetriever` that returns a
+    fixed RAG block. Lets the prefix-ordering tests below render a
+    realistic T3 ``memory_block`` slot without spinning up the real
+    LanceDB-backed retriever (the contract we care about is the
+    block's position in the system prompt, not its content)."""
+
+    def __init__(self, block: str) -> None:
+        self._block = block
+
+    def block_for(
+        self, user_text: str, *, user_display_name: str = "",
+    ) -> str:
+        del user_text, user_display_name
+        return self._block
+
+
+class PromptCachePrefixOrderingTests(unittest.TestCase):
+    """Cross-tier invariants for the prompt-cache prefix-stability ladder.
+
+    OpenAI prompt caching matches on token prefix, so the order of
+    blocks in ``messages[0]["content"]`` is the actual contract — the
+    moment a per-turn block lands above a stable block, every token
+    after it is uncached. These tests lock the cross-tier boundaries
+    in place; in-tier ordering is covered by the per-block tests
+    above (``test_turning_over_lands_after_absence_curiosity`` etc.).
+
+    Each test wires up enough providers to force a representative
+    pair of blocks to appear in the system prompt, then asserts the
+    stable block's text comes before the volatile block's text.
+
+    Reference: ``_PROMPT_BLOCK_TIERS`` constant in
+    ``app/core/session/prompt_assembler.py`` + ``docs/prompt-caching.md``.
+    """
+
+    def _build(
+        self,
+        session_id: str,
+        *,
+        persona_text: str = "P_TEST_TOKEN",
+        summary_line: str | None = None,
+        memory_block: str | None = None,
+        **providers: object,
+    ) -> str:
+        """Assemble a turn with the given providers and return the
+        rendered system-prompt content (``messages[0]["content"]``)."""
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text=persona_text)
+            if summary_line is not None:
+                db.save_summary(
+                    session_id=session_id,
+                    summary=summary_line,
+                    summary_tokens=10,
+                    messages_summarized=0,
+                )
+            db.add_message(
+                session_id=session_id, role="user",
+                content="hi", token_count=2,
+            )
+            if memory_block is not None:
+                assembler.set_memory_retriever(
+                    _StubMemoryRetriever(memory_block),  # type: ignore[arg-type]
+                )
+            if providers:
+                assembler.set_inner_life_providers(**providers)  # type: ignore[arg-type]
+            messages, _ = assembler.assemble_with_budget(
+                session_id,
+                "x",
+                context_window=8192,
+                response_budget=256,
+            )
+            return messages[0]["content"]
+
+    def _assert_before(
+        self, content: str, earlier: str, later: str, *, why: str,
+    ) -> None:
+        e_idx = content.find(earlier)
+        l_idx = content.find(later)
+        self.assertGreaterEqual(
+            e_idx, 0, f"expected {earlier!r} in system prompt",
+        )
+        self.assertGreaterEqual(
+            l_idx, 0, f"expected {later!r} in system prompt",
+        )
+        self.assertLess(
+            e_idx, l_idx,
+            f"prompt-cache ladder broken: {why} "
+            f"({earlier!r} at {e_idx} must precede {later!r} at {l_idx})",
+        )
+
+    def test_persona_precedes_affect_block(self) -> None:
+        # T0 (persona) must precede T5 (affect) — the canonical
+        # "stable above volatile" invariant. Persona is the single
+        # cheapest reason a chat session caches well; an inversion
+        # here would drop OpenAI cache-hit-rate to ~0 across the
+        # entire turn.
+        content = self._build(
+            "p1",
+            affect=lambda: "Affect: arousal moderate, valence positive.",
+        )
+        self._assert_before(
+            content, "P_TEST_TOKEN", "Affect:",
+            why="persona (T0) must precede affect (T5)",
+        )
+
+    def test_profile_precedes_memory(self) -> None:
+        # T0 (profile) is stable user facts; T3 (memory_block) is
+        # per-turn RAG retrieval. The arc-cluster + summary cluster
+        # all sit above the memory block in the ladder.
+        content = self._build(
+            "p2",
+            profile=lambda: "User profile (P_PROFILE_LINE):\n- coffee.",
+            memory_block="Recent memories:\n- (P_MEMORY_LINE) yesterday.",
+        )
+        self._assert_before(
+            content, "P_PROFILE_LINE", "P_MEMORY_LINE",
+            why="profile (T0) must precede memory_block (T3)",
+        )
+
+    def test_relationship_precedes_memory(self) -> None:
+        # T1 (relationship) ahead of T3 (memory). Same reasoning as
+        # the profile case: semi-stable arc/relationship content
+        # caches across consecutive turns, but the moment it sits
+        # below RAG, that benefit evaporates.
+        content = self._build(
+            "p3",
+            relationship=lambda: "Relationship state: P_REL_LINE.",
+            memory_block="Recent memories:\n- (P_MEMORY_LINE) yesterday.",
+        )
+        self._assert_before(
+            content, "P_REL_LINE", "P_MEMORY_LINE",
+            why="relationship (T1) must precede memory_block (T3)",
+        )
+
+    def test_summary_precedes_memory(self) -> None:
+        # T2 (summary, compaction-only) before T3 (RAG). Summary
+        # rows only mutate when SummaryWorker collapses old history,
+        # so they're effectively static between compaction events
+        # and must sit above the per-turn RAG block.
+        content = self._build(
+            "p4",
+            summary_line="P_SUMMARY_LINE: earlier we discussed sushi.",
+            memory_block="Recent memories:\n- (P_MEMORY_LINE).",
+        )
+        self._assert_before(
+            content, "P_SUMMARY_LINE", "P_MEMORY_LINE",
+            why="summary (T2) must precede memory_block (T3)",
+        )
+
+    def test_memory_precedes_affect(self) -> None:
+        # T3 (RAG) ahead of T5 (affect). The per-turn affect cluster
+        # is one of the cache-killers; pushing it ahead of memory
+        # would invalidate every RAG hit in the prefix.
+        content = self._build(
+            "p5",
+            memory_block="Recent memories:\n- (P_MEMORY_LINE).",
+            affect=lambda: "Affect: P_AFFECT_LINE.",
+        )
+        self._assert_before(
+            content, "P_MEMORY_LINE", "P_AFFECT_LINE",
+            why="memory_block (T3) must precede affect (T5)",
+        )
+
+    def test_memory_precedes_detectors(self) -> None:
+        # T3 (RAG) ahead of T6 (any detector). novelty is a
+        # representative T6 block — fires on user_text distance,
+        # changes every turn.
+        content = self._build(
+            "p6",
+            memory_block="Recent memories:\n- (P_MEMORY_LINE).",
+            novelty=lambda _u: (
+                "Heads-up: Jacob just brought up P_NOVELTY_LINE."
+            ),
+        )
+        self._assert_before(
+            content, "P_MEMORY_LINE", "P_NOVELTY_LINE",
+            why="memory_block (T3) must precede novelty (T6)",
+        )
+
+    def test_affect_precedes_detectors(self) -> None:
+        # T5 (affect) ahead of T6 (detectors). Affect updates AFTER
+        # every reply; detectors fire on the live user_text just
+        # received. Both volatile, but the ladder still pins their
+        # relative order so a future contributor doesn't accidentally
+        # interleave new blocks.
+        content = self._build(
+            "p7",
+            affect=lambda: "Affect: P_AFFECT_LINE.",
+            knowledge_gaps=lambda _u: (
+                "Wondering about: P_KGAP_LINE."
+            ),
+        )
+        self._assert_before(
+            content, "P_AFFECT_LINE", "P_KGAP_LINE",
+            why="affect (T5) must precede knowledge_gaps (T6)",
+        )
+
+    def test_persona_precedes_world(self) -> None:
+        # T0 persona before T4 world. World/posture cues change when
+        # the user gives Aiko an item or she moves rooms; they
+        # mustn't displace the stable cache prefix.
+        content = self._build(
+            "p8",
+            world=lambda: "Room: P_WORLD_LINE (Aiko is at her desk).",
+        )
+        self._assert_before(
+            content, "P_TEST_TOKEN", "P_WORLD_LINE",
+            why="persona (T0) must precede world (T4)",
+        )
+
+    def test_full_ladder_round_trip(self) -> None:
+        # End-to-end: with one representative block from each tier
+        # rendered, confirm the assembled system prompt walks the
+        # tiers in order. Failure here means a tier is in the wrong
+        # slot in the cascade — read ``_PROMPT_BLOCK_TIERS`` next to
+        # the actual ``system_parts.append`` sequence to find the
+        # culprit.
+        content = self._build(
+            "p9",
+            persona_text="P_T0_LINE",
+            summary_line="P_T2_LINE: rolling summary.",
+            memory_block="Recent memories:\n- (P_T3_LINE).",
+            relationship=lambda: "Relationship: P_T1_LINE.",
+            ambient_noise=lambda: "Ambient noise: P_T4_LINE.",
+            affect=lambda: "Affect: P_T5_LINE.",
+            novelty=lambda _u: "Heads-up: P_T6_LINE.",
+        )
+        # Locate each tier's sentinel and assert they appear in order.
+        sentinels = [
+            "P_T0_LINE", "P_T1_LINE", "P_T2_LINE",
+            "P_T3_LINE", "P_T4_LINE", "P_T5_LINE", "P_T6_LINE",
+        ]
+        positions = [(s, content.find(s)) for s in sentinels]
+        for s, pos in positions:
+            self.assertGreaterEqual(
+                pos, 0, f"expected sentinel {s!r} in system prompt",
+            )
+        for (s_a, p_a), (s_b, p_b) in zip(positions, positions[1:]):
+            self.assertLess(
+                p_a, p_b,
+                f"prompt-cache ladder out of order at {s_a!r} (pos {p_a}) "
+                f"-> {s_b!r} (pos {p_b}); fix the system_parts cascade "
+                "in app/core/session/prompt_assembler.py",
+            )
 
 
 if __name__ == "__main__":

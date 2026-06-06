@@ -242,6 +242,7 @@ class ReconfigureChatLlmTests(unittest.TestCase):
         controller._worker_client = controller._chat_client
         controller._ollama = controller._chat_client
         controller._effective_chat_model = initial_model
+        controller._effective_worker_model = initial_model
         controller._context_window = 8192
         controller._context_source = "fallback"
         controller._models_cache = ["x"]
@@ -340,6 +341,65 @@ class ReconfigureChatLlmTests(unittest.TestCase):
         # Both clients are now the same Ollama instance.
         self.assertIs(controller._worker_client, controller._chat_client)
         self.assertEqual(controller._chat_provider, "ollama")
+
+    def test_remote_chat_keeps_worker_model_on_local_ollama(self) -> None:
+        # Regression: when chat moves to a remote provider AND
+        # ``workers_use_local=True``, the worker model must remain
+        # pinned to ``ollama.chat_model`` — sending the remote
+        # model name (``gpt-5-mini``) to local Ollama 404s with
+        # ``model 'gpt-5-mini' not found``. Symptom in production
+        # was the per-turn ``app.llm.ollama_client`` error cluster
+        # right after a successful chat reply.
+        controller = self._make_stub_controller()
+        controller._settings.ollama.chat_model = "llama3.1:8b"
+        with patch(
+            "app.core.session.session_controller.persist_user_overrides",
+        ), patch(
+            "app.core.session.session_controller.OllamaClient.get_context_length",
+            return_value=None,
+        ):
+            controller.reconfigure_chat_llm({
+                "provider": "openai_compatible",
+                "model": "gpt-5-mini",
+                "base_url": "https://api.openai.com/v1",
+                "api_key": "sk-test",
+                "workers_use_local": True,
+            })
+        # Chat model follows the route; worker model stays on local.
+        self.assertEqual(controller._effective_chat_model, "gpt-5-mini")
+        self.assertEqual(controller._effective_worker_model, "llama3.1:8b")
+        # Worker cascade propagates the WORKER model, not the chat one.
+        controller._summary_worker._model = "leftover-old-name"
+        controller.set_chat_model("gpt-5-nano")
+        self.assertEqual(controller._effective_chat_model, "gpt-5-nano")
+        # Worker model unchanged — gpt-5-nano is a remote-only name
+        # and local Ollama doesn't have it.
+        self.assertEqual(controller._effective_worker_model, "llama3.1:8b")
+        # Legacy ``ollama.chat_model`` not stomped by the remote name.
+        self.assertEqual(
+            controller._settings.ollama.chat_model, "llama3.1:8b",
+        )
+
+    def test_pure_ollama_chat_model_change_cascades_to_workers(self) -> None:
+        # Inverse of the regression above: when chat and workers share
+        # the same Ollama client, a chat-model change MUST also flip
+        # the worker model — the two are literally the same backend.
+        controller = self._make_stub_controller(
+            initial_provider="ollama",
+            initial_model="llama3.1:8b",
+        )
+        self.assertIs(controller._worker_client, controller._chat_client)
+        with patch(
+            "app.core.session.session_controller.OllamaClient.get_context_length",
+            return_value=None,
+        ):
+            controller.set_chat_model("llama3.1:70b")
+        self.assertEqual(controller._effective_chat_model, "llama3.1:70b")
+        self.assertEqual(controller._effective_worker_model, "llama3.1:70b")
+        # Pure-Ollama: legacy field tracks the chat model.
+        self.assertEqual(
+            controller._settings.ollama.chat_model, "llama3.1:70b",
+        )
 
 
 class ResolveContextWindowTests(unittest.TestCase):

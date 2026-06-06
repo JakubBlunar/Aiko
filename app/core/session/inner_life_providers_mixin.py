@@ -1752,7 +1752,7 @@ class InnerLifeProvidersMixin:
             return None
         return _llm.verify(
             ollama_client,
-            model=self._effective_chat_model,
+            model=self._effective_worker_model,
             user_text=user_text,
             stance_text=stance_text,
             cancel_event=getattr(self, "_fact_check_cancel", None),

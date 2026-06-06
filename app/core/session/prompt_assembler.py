@@ -401,6 +401,110 @@ _SAFETY_TOKENS = 256
 _MESSAGE_OVERHEAD = 4  # framing tokens per message (matches token_utils)
 
 
+# ── Prompt-cache prefix-stability ladder ─────────────────────────────
+#
+# OpenAI (and any vendor that ships compatible prompt caching) hashes
+# the request's token stream and returns "longest prefix that matches a
+# previous request in the last 5-10 min". Cache matching ends at the
+# FIRST differing token. To keep the cache hit-rate high we lay
+# ``system_parts`` out from most-stable (T0) to most-volatile (T6),
+# strictly. WITHIN each tier the relative order is preserved so the
+# existing behavioural cluster comments stay correct (e.g. "K28
+# turning_over lands right after K14 absence_curiosity" still holds —
+# both blocks are T6, the comment governs in-tier order).
+#
+# Contract: when adding a new prompt block, pick the tier that matches
+# its volatility and append it to that list. Never inline a per-turn
+# block above a stable one; that single byte change invalidates every
+# token after it (including history messages and the user message),
+# costing ~10x on the input side. See ``docs/prompt-caching.md``.
+#
+# This constant is purely documentation/audit — the actual ordering is
+# enforced by the explicit ``if block: system_parts.append(block)``
+# cascade in :meth:`PromptAssembler.assemble_with_budget`. Tests in
+# ``tests/test_prompt_assembler.py::PromptCachePrefixOrderingTests``
+# lock the cross-tier invariants in place.
+_PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
+    # T0 — stable across sessions. Persona file edit / config flip is
+    # the only thing that should ever invalidate this.
+    "T0_stable": (
+        "persona",
+        "speech_grammar_addendum",
+        "overlay_grammar_block",
+        "outfit_grammar_block",
+        "motion_grammar_block",
+        "touch_grammar_addendum",
+        "self_image_block",
+        "narrative_block",
+        "profile_block",
+        "petname_block",
+        "catchphrase_block",
+    ),
+    # T1 — per-arc / per-day. Changes a few times a day at most.
+    "T1_semi_stable": (
+        "relationship_block",
+        "axes_block",
+        "arc_block",
+        "agenda_block",
+        "goals_block",
+        "day_color_block",
+        "anniversary_block",
+    ),
+    # T2 — compaction only. Only mutates when a SummaryWorker run
+    # collapses old history into a new summary row.
+    "T2_summary": (
+        "summary_text",
+    ),
+    # T3 — per-turn but topic-stable. Same memories often surface on
+    # consecutive turns on the same thread.
+    "T3_rag": (
+        "memory_block",
+    ),
+    # T4 — ambient awareness. Hourly to per-turn changes.
+    "T4_ambient": (
+        "grounding_block",
+        "ambient",
+        "circadian_block",
+        "pajama_block",
+        "ambient_noise_block",
+        "world_block",
+        "activity_block",
+        "sensory_anchor_block",
+    ),
+    # T5 — per-turn affect / style. Updates after every reply.
+    "T5_affect_style": (
+        "affect_block",
+        "mood_hint",
+        "mood_shell_block",
+        "style_signal_block",
+        "user_state_block",
+        "vocal_tone_block",
+    ),
+    # T6 — live ``user_text``-dependent detectors. The freshest cues
+    # the LLM reads before the user message. Almost always change
+    # turn-to-turn.
+    "T6_detectors": (
+        "belief_gaps_block",
+        "clarification_block",
+        "calibration_block",
+        "rupture_block",
+        "misattunement_block",
+        "opinion_injection_block",
+        "absence_curiosity_block",
+        "turning_over_block",
+        "novelty_block",
+        "stagnation_block",
+        "style_pattern_block",
+        "self_noticing_block",
+        "vulnerability_budget_block",
+        "touch_state_block",
+        "user_reactions_block",
+        "curiosity_seeds_block",
+        "knowledge_gaps_block",
+    ),
+}
+
+
 @dataclass(slots=True)
 class PromptTelemetry:
     """Accounting for how the next prompt's budget was spent.
@@ -1870,7 +1974,19 @@ class PromptAssembler:
                 motion_names = []
         motion_grammar_block = _build_motion_grammar_addendum(motion_names)
 
+        # Layout follows the prompt-cache prefix-stability ladder (see
+        # ``_PROMPT_BLOCK_TIERS`` near the top of the file and
+        # ``docs/prompt-caching.md``). Strictly: T0 stable -> T6
+        # per-turn detectors. Within each tier the existing behavioural
+        # cluster comments still apply (e.g. K28 turning_over must
+        # follow K14 absence_curiosity — both T6).
         system_parts: list[str] = []
+
+        # ── T0: STABLE ────────────────────────────────────────────────
+        # Persona + grammar addenda + self_image + narrative + profile +
+        # petname + catchphrase. THIS IS THE CACHE PREFIX — adding any
+        # per-turn content above this point invalidates the prefix and
+        # collapses the OpenAI cache hit-rate to ~0.
         if persona:
             system_parts.append(persona)
             # Phase 1c: speech grammar addendum sits immediately after the
@@ -1898,38 +2014,20 @@ class PromptAssembler:
             system_parts.append(self_image_block)
         if narrative_block:
             system_parts.append(narrative_block)
-        # K16: unified ambient grounding line. Lands immediately after
-        # narrative so the LLM reads "where we are right now" before
-        # any of the granular ambient blocks (circadian, world,
-        # activity, affect, etc.). Empty in mode ``off``; non-empty
-        # in ``replace`` and ``split`` (the granular blocks above are
-        # then suppressed by the matrix applied above when this block
-        # rendered). The mode gate is defensive: even if a provider
-        # misbehaves and returns text while the mode is ``off``, the
-        # assembler refuses to append.
-        if grounding_block and grounding_mode in ("replace", "split"):
-            system_parts.append(grounding_block)
-        if ambient:
-            system_parts.append(ambient)
-        if circadian_block:
-            system_parts.append(circadian_block)
-        if day_color_block:
-            # K27 -- daily personality colour. Lands right after the
-            # circadian cue so "what time of day" + "what colour today"
-            # cluster together. Never suppressed by K16 grounding-line
-            # mode (trend/phase block, not situational).
-            system_parts.append(day_color_block)
-        if pajama_block:
-            # Pajama-aware cue lands right next to the circadian block
-            # so the LLM sees both pieces of "what time is it / what
-            # are you wearing" in one neighbourhood.
-            system_parts.append(pajama_block)
-        if ambient_noise_block:
-            system_parts.append(ambient_noise_block)
-        if affect_block:
-            system_parts.append(affect_block)
-        if mood_hint:
-            system_parts.append(mood_hint)
+        if profile_block:
+            system_parts.append(profile_block)
+        if petname_block:
+            system_parts.append(petname_block)
+        # K9 catchphrases live in T0: they're an extracted-from-history
+        # stable user fact ("Jacob says 'lol no'") that only mutates
+        # when the catchphrase miner runs (hourly idle worker). Sits
+        # next to petname because both encode "how this person talks".
+        if catchphrase_block:
+            system_parts.append(catchphrase_block)
+
+        # ── T1: SEMI-STABLE (per-arc / per-day) ──────────────────────
+        # Relationship / axes / arc / agenda / goals / day_color /
+        # anniversary. Changes a few times a day at most.
         if relationship_block:
             system_parts.append(relationship_block)
         # Anniversary + axes sit right after the relationship block so
@@ -1939,29 +2037,6 @@ class PromptAssembler:
             system_parts.append(anniversary_block)
         if axes_block:
             system_parts.append(axes_block)
-        if mood_shell_block:
-            # K5 mood-shell tilt: one-line emotional directive (e.g.
-            # "Lean affectionate and steady; let warmth show.") sits
-            # right after the axes block because it derives FROM the
-            # axes + affect colour the assistant just read. Empty on
-            # most turns (silenced unless something crosses the gate)
-            # and dropped in K16 ``replace`` mode (the unified
-            # grounding line subsumes it).
-            system_parts.append(mood_shell_block)
-        if petname_block:
-            system_parts.append(petname_block)
-        if profile_block:
-            system_parts.append(profile_block)
-        if style_signal_block:
-            # K13: "How Jacob writes lately: terse, casual, asks back
-            # often." Sits next to the profile/relationship cluster
-            # since it's a stable user fact, not a per-turn cue. NOT
-            # gated on aggressive (register shaping is a budget
-            # priority). Empty during warmup or when every axis is
-            # default.
-            system_parts.append(style_signal_block)
-        if user_state_block:
-            system_parts.append(user_state_block)
         if arc_block:
             system_parts.append(arc_block)
         if agenda_block:
@@ -1976,6 +2051,104 @@ class PromptAssembler:
             # bootstrap or a manual write seeds the ring; dropped
             # in aggressive mode alongside agenda.
             system_parts.append(goals_block)
+        if day_color_block:
+            # K27 -- daily personality colour. Trend/phase block (slow
+            # daily under-current), not a situational block, so it
+            # survives K16 ``split``/``replace``. Lives in T1 because
+            # the kv_meta row only flips at local midnight.
+            system_parts.append(day_color_block)
+
+        # ── T2: SUMMARY (compaction-only) ────────────────────────────
+        # Only mutates when SummaryWorker collapses old history into a
+        # new summary row. Stable across consecutive turns until the
+        # next compaction event, so it caches for the whole arc.
+        if summary_text:
+            system_parts.append(summary_text)
+
+        # ── T3: RAG MEMORY ────────────────────────────────────────────
+        # Per-turn retrieval but topic-stable: the same surfaced
+        # memories often repeat on consecutive turns within one
+        # thread, so this layer caches well in practice even though
+        # it's nominally "rebuilt each turn".
+        if memory_block:
+            system_parts.append(memory_block)
+
+        # ── T4: AMBIENT AWARENESS ────────────────────────────────────
+        # Hourly to per-turn changes (clock, posture, foreground app).
+        # K16: unified ambient grounding line. Lands at the head of the
+        # ambient cluster so the LLM reads "where we are right now"
+        # before the granular ambient cues. Empty in mode ``off``;
+        # non-empty in ``replace`` and ``split`` (the granular blocks
+        # are then suppressed by the matrix applied above when this
+        # block rendered). The mode gate is defensive: even if a
+        # provider misbehaves and returns text while the mode is
+        # ``off``, the assembler refuses to append.
+        if grounding_block and grounding_mode in ("replace", "split"):
+            system_parts.append(grounding_block)
+        if ambient:
+            system_parts.append(ambient)
+        if circadian_block:
+            system_parts.append(circadian_block)
+        if pajama_block:
+            # Pajama-aware cue lands right next to the circadian block
+            # so the LLM sees both pieces of "what time is it / what
+            # are you wearing" in one neighbourhood.
+            system_parts.append(pajama_block)
+        if ambient_noise_block:
+            system_parts.append(ambient_noise_block)
+        if world_block:
+            system_parts.append(world_block)
+        # Activity block lands right after world so the two
+        # "ambient awareness" cues (where Aiko is, what the user is
+        # doing) sit next to each other in the system prompt.
+        if activity_block:
+            system_parts.append(activity_block)
+        if sensory_anchor_block:
+            # K24: sensory anchor sits right after the ambient
+            # awareness cluster (world + activity). The body beat
+            # is texture on top of the room location -- it tells
+            # Aiko "you could touch the {item}" while the world
+            # block grounds where she is. Intentionally NOT added
+            # to the K16 grounding-line suppression matrix above:
+            # the fused grounding paragraph never mentions specific
+            # items + verb classes, so the cue is always additive
+            # rather than redundant.
+            system_parts.append(sensory_anchor_block)
+
+        # ── T5: AFFECT / STYLE (per-turn) ────────────────────────────
+        # AffectState updates after every reply, so this whole cluster
+        # is uncached on every turn — but it sits AFTER the stable
+        # prefix so the cache covers everything up to here.
+        if affect_block:
+            system_parts.append(affect_block)
+        if mood_hint:
+            system_parts.append(mood_hint)
+        if mood_shell_block:
+            # K5 mood-shell tilt: one-line emotional directive (e.g.
+            # "Lean affectionate and steady; let warmth show.") sits
+            # right after affect/mood because it derives from the
+            # axes + affect colour the assistant just read. Empty on
+            # most turns (silenced unless something crosses the gate)
+            # and dropped in K16 ``replace`` mode (the unified
+            # grounding line subsumes it).
+            system_parts.append(mood_shell_block)
+        if style_signal_block:
+            # K13: "How Jacob writes lately: terse, casual, asks back
+            # often." NOT gated on aggressive (register shaping is a
+            # budget priority). Empty during warmup or when every
+            # axis is default. Sits in T5 because the style tracker
+            # updates after every user turn (axes drift per message).
+            system_parts.append(style_signal_block)
+        if user_state_block:
+            system_parts.append(user_state_block)
+        if vocal_tone_block:
+            system_parts.append(vocal_tone_block)
+
+        # ── T6: DETECTORS (per-turn, live ``user_text``-dependent) ───
+        # The freshest cues the LLM reads before the user message.
+        # Almost always change turn-to-turn. WITHIN this tier the
+        # existing relative ordering preserves the behavioural
+        # clusters (noticing cues / pacing cues / reaction cluster).
         if belief_gaps_block:
             # K2: surface up to two "your read on X doesn't match the
             # room" lines right alongside the knowledge-gap block.
@@ -2109,32 +2282,6 @@ class PromptAssembler:
             # agenda. Keeps the "things on Aiko's mind" cluster
             # together in the system prompt.
             system_parts.append(knowledge_gaps_block)
-        if world_block:
-            system_parts.append(world_block)
-        # Activity block lands right after world so the two
-        # "ambient awareness" cues (where Aiko is, what the user is
-        # doing) sit next to each other in the system prompt.
-        if activity_block:
-            system_parts.append(activity_block)
-        if sensory_anchor_block:
-            # K24: sensory anchor sits right after the ambient
-            # awareness cluster (world + activity). The body beat
-            # is texture on top of the room location -- it tells
-            # Aiko "you could touch the {item}" while the world
-            # block grounds where she is. Intentionally NOT added
-            # to the K16 grounding-line suppression matrix above:
-            # the fused grounding paragraph never mentions specific
-            # items + verb classes, so the cue is always additive
-            # rather than redundant.
-            system_parts.append(sensory_anchor_block)
-        if catchphrase_block:
-            system_parts.append(catchphrase_block)
-        if vocal_tone_block:
-            system_parts.append(vocal_tone_block)
-        if memory_block:
-            system_parts.append(memory_block)
-        if summary_text:
-            system_parts.append(summary_text)
 
         system_prompt = "\n\n---\n\n".join(p for p in system_parts if p)
 

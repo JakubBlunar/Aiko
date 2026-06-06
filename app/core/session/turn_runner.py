@@ -777,8 +777,16 @@ class TurnRunner:
                 embed_calls, embed_ms = (0, 0.0)
             telemetry.embed_calls = int(embed_calls)
             telemetry.embed_ms = round(float(embed_ms), 2)
+        # Prompt-cache observability: ``cached`` is the absolute count
+        # of prompt tokens that hit the provider's prefix cache (only
+        # populated by OpenAI today; Ollama / Gemini / Groq / OpenRouter
+        # leave it at 0). ``cached_pct`` is the hit-rate against
+        # ``prompt_tokens``. Healthy OpenAI sessions settle around 80-95
+        # after the second turn; a number stuck near 0 on OpenAI points
+        # at a misplaced prompt block — see ``docs/prompt-caching.md``.
         log.info(
-            "turn done: chars=%d mood=%s prompt=%d completion=%d ctx_pct=%.1f "
+            "turn done: chars=%d mood=%s prompt=%d completion=%d "
+            "cached=%d cached_pct=%.1f ctx_pct=%.1f "
             "first_token_ms=%s total_ms=%.0f eval_ms=%.0f tools=%d "
             "compactions=%d filler=%s aborted=%s mood_fallback=%s "
             "rag_prefetch=%s prebuild=%s listen_extensions=%d "
@@ -787,6 +795,8 @@ class TurnRunner:
             mood or "neutral",
             usage.prompt_tokens,
             usage.completion_tokens,
+            usage.cached_tokens,
+            usage.cached_tokens_pct,
             ctx_pct,
             f"{first_token_ms:.0f}" if first_token_ms is not None else "-",
             duration_ms,

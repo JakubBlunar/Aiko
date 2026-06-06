@@ -218,5 +218,48 @@ class TurnDoneLogFieldsTests(unittest.TestCase):
         self.assertIn("rag_lookup_ms=", haystack)
 
 
+class TurnDoneCachedFieldsTests(unittest.TestCase):
+    """Prompt-caching observability: the ``turn done:`` INFO log line
+    must carry both ``cached=`` (absolute prompt tokens that hit the
+    provider prefix cache) and ``cached_pct=`` (hit-rate). See
+    ``docs/prompt-caching.md`` for the prefix-stability contract that
+    drives these numbers up on consecutive OpenAI turns.
+    """
+
+    def test_log_includes_cached_and_cached_pct_with_zero_default(self) -> None:
+        # Cold turn (or non-OpenAI provider): cached_tokens stays at 0
+        # but the FIELD must still appear in the log so a grep over
+        # historical turns reads consistently.
+        usage = OllamaUsage(prompt_tokens=1000, completion_tokens=42)
+        runner, _, _ = _build_runner()
+        runner._ollama.last_usage = usage  # type: ignore[attr-defined]
+        with self.assertLogs("app.turn_runner", level="INFO") as cm:
+            runner.run(session_key="default:main", user_text="hi")
+        haystack = "\n".join(cm.output)
+        self.assertIn("turn done:", haystack)
+        self.assertIn("cached=0", haystack)
+        self.assertIn("cached_pct=0.0", haystack)
+
+    def test_log_includes_cached_and_cached_pct_when_warm(self) -> None:
+        # Warm OpenAI turn: 800 of 1000 prompt tokens hit the prefix
+        # cache -> cached_pct = 80.0. Values come from
+        # ``ChatUsage.cached_tokens_pct`` (which rounds to one
+        # decimal); a regression in the formatter or the field
+        # surfaces here before reaching prod.
+        usage = OllamaUsage(
+            prompt_tokens=1000,
+            completion_tokens=42,
+            cached_tokens=800,
+        )
+        runner, _, _ = _build_runner()
+        runner._ollama.last_usage = usage  # type: ignore[attr-defined]
+        with self.assertLogs("app.turn_runner", level="INFO") as cm:
+            runner.run(session_key="default:main", user_text="hi")
+        haystack = "\n".join(cm.output)
+        self.assertIn("turn done:", haystack)
+        self.assertIn("cached=800", haystack)
+        self.assertIn("cached_pct=80.0", haystack)
+
+
 if __name__ == "__main__":
     unittest.main()

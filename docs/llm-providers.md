@@ -399,20 +399,36 @@ A realistic per-turn cost at 50 k context + 250 output tokens
 | `gpt-4.1-mini` | ~$0.0058 | ~$0.58 |
 
 No code change required — caching is transparent on OpenAI's
-side. Two ergonomic notes:
+side. The prompt assembler is laid out specifically to maximise the
+cached prefix, and the per-turn telemetry surfaces the hit-rate so
+you can verify it. Three ergonomic notes:
 
 - **Cache TTL is 5–10 min.** A long silence triggers a full-price
   re-warm on the next turn. Aiko's proactive nudges in
   typed-silence mode keep the cache warm "by accident".
 - **`prompt_tokens_details.cached_tokens`** is the field the API
-  returns to tell you how many input tokens hit the cache. Future
-  observability work (a `cached_tokens=` field on the turn-done
-  log line) would let you eyeball cache-warm rate from `app.log`
-  directly.
+  returns to tell you how many input tokens hit the cache. It is
+  lifted onto `ChatUsage.cached_tokens` and surfaces in two places:
+  the `turn done:` INFO line as `cached=N cached_pct=%.1f` (grep
+  `data/app.log` for `cached_pct=` to chart hit-rate over time),
+  and the MCP `get_last_response_detail` tool under
+  `usage.cached_tokens` / `usage.cached_tokens_pct`.
+- **Prefix-stability is enforced in code.** The prompt assembler
+  arranges `system_parts` from most-stable (T0) to most-volatile
+  (T6); adding a new block in the wrong tier is the single most
+  common reason cache-hit-rate stays low. The contract +
+  contributor guide live in [`docs/prompt-caching.md`](prompt-caching.md);
+  cross-tier invariants are pinned by
+  `tests/test_prompt_assembler.py::PromptCachePrefixOrderingTests`.
 
 ## See also
 
 - [configuration.md](configuration.md) — cheatsheet for every
   `config/default.json` key.
+- [prompt-caching.md](prompt-caching.md) — the prefix-stability
+  ladder that drives the cached-input column above, plus the
+  contributor guide for adding new prompt blocks without breaking
+  the cache.
 - [AGENTS.md](../AGENTS.md) — top-level project conventions (the
-  "Debugging via logs" section covers the wrong-provider symptom).
+  "Debugging via logs" section covers the wrong-provider symptom
+  and the "Low cache-hit rate on OpenAI" diagnosis flow).

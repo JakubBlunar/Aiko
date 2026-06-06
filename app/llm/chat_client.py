@@ -61,10 +61,21 @@ class ChatUsage:
     ``"length"`` truncated against ``num_predict`` / ``max_tokens``);
     Ollama reports it natively and the OpenAI-compatible client maps
     ``finish_reason`` onto the same vocabulary.
+
+    ``cached_tokens`` is the OpenAI prompt-caching field — number of
+    ``prompt_tokens`` that hit the server-side prefix cache and were
+    billed at the ~90% discounted "cached input" rate. Ollama doesn't
+    expose this signal (leaves it at ``0``), and most OpenAI-compatible
+    providers other than OpenAI itself (Gemini, Groq, OpenRouter, …)
+    also leave it at ``0`` because they don't return
+    ``prompt_tokens_details.cached_tokens`` in the usage payload. See
+    ``docs/prompt-caching.md`` for the prefix-stability contract that
+    drives this number up.
     """
 
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    cached_tokens: int = 0
     total_duration_ms: float = 0.0
     eval_duration_ms: float = 0.0
     prompt_eval_duration_ms: float = 0.0
@@ -79,6 +90,18 @@ class ChatUsage:
         if self.eval_duration_ms <= 0 or self.completion_tokens <= 0:
             return 0.0
         return round((self.completion_tokens * 1000.0) / self.eval_duration_ms, 1)
+
+    @property
+    def cached_tokens_pct(self) -> float:
+        """Percentage of ``prompt_tokens`` that hit the provider cache.
+
+        Returns ``0.0`` on cold / unsupported providers. Returns
+        ``100.0`` in the unrealistic case where every prompt token
+        was cached (used only for log-line formatting).
+        """
+        if self.prompt_tokens <= 0 or self.cached_tokens <= 0:
+            return 0.0
+        return round(100.0 * self.cached_tokens / self.prompt_tokens, 1)
 
     def merge(self, other: "ChatUsage") -> "ChatUsage":
         """Return a new usage that adds another pass on top of this one.
@@ -96,6 +119,7 @@ class ChatUsage:
         return type(self)(
             prompt_tokens=self.prompt_tokens + other.prompt_tokens,
             completion_tokens=self.completion_tokens + other.completion_tokens,
+            cached_tokens=self.cached_tokens + other.cached_tokens,
             total_duration_ms=self.total_duration_ms + other.total_duration_ms,
             eval_duration_ms=self.eval_duration_ms + other.eval_duration_ms,
             prompt_eval_duration_ms=(
