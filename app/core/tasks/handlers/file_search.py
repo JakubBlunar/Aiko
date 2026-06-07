@@ -126,6 +126,24 @@ def _parse_args(args: dict[str, Any]) -> _SearchArgs | str:
     )
 
 
+_SUMMARY_NAMES_SHOWN = 5
+
+
+def _match_summary(
+    query: str, matches: list[dict[str, Any]], truncated: bool
+) -> str:
+    """One-line summary of the search result for the task cue."""
+    if not matches:
+        return f"no files matched {query!r}"
+    names = ", ".join(
+        str(m.get("relative_path", "")) for m in matches[:_SUMMARY_NAMES_SHOWN]
+    )
+    extra = len(matches) - _SUMMARY_NAMES_SHOWN
+    tail = f" (+{extra} more)" if extra > 0 else ""
+    more = " — more available" if truncated else ""
+    return f"found {len(matches)} file(s) for {query!r}: {names}{tail}{more}"
+
+
 def _pick_roots(
     actives: list[ValidatedRoot], label: str
 ) -> list[ValidatedRoot] | str:
@@ -267,6 +285,10 @@ class FileSearchHandler:
             "truncated": truncated,
             "elapsed_ms": round(elapsed_ms, 2),
             "roots_searched": [vr.root.label for vr in roots],
+            # ``summary`` feeds the orchestrator's terse T6 cue (else it
+            # degrades to ``result keys=...``). Give it the match list
+            # so the passive cue path tells Aiko what was found.
+            "summary": _match_summary(parsed.query, matches, truncated),
         }
         notify_aiko = len(matches) > 0  # silent on zero hits — see doc
         log.info(

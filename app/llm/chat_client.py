@@ -254,6 +254,7 @@ class ChatClient(Protocol):
         *,
         options: dict[str, object] | None = None,
         tools: list[dict[str, Any]] | None = None,
+        tool_choice: "str | dict[str, Any] | None" = None,
         model: str | None = None,
         think: bool = False,
         keep_alive: str | None = None,
@@ -265,6 +266,12 @@ class ChatClient(Protocol):
         client passes it through unchanged because Ollama adopts the
         same schema. ``keep_alive`` is honoured natively by Ollama and
         silently ignored by remote providers.
+
+        ``tool_choice`` is the OpenAI knob (``"auto"`` / ``"none"`` /
+        ``"required"`` / an explicit ``{"type": "function", ...}``)
+        that controls whether the model *must* emit a tool call. It is
+        forwarded to OpenAI-compatible providers and ignored by
+        backends that don't support it.
         """
 
     def chat_stream(

@@ -47,6 +47,22 @@ _SUCCESS_HEADER = "Tasks that finished since your last message:"
 _FAILURE_HEADER = "Tasks that ran into trouble since your last message:"
 _QUESTION_HEADER = "Tasks waiting on your call since your last message:"
 
+# Reply-on-complete block (the duration-hybrid "slow" half): a task
+# the user asked for has finished and its FULL result is below. The
+# wording tells Aiko to answer from it directly and NOT re-run the
+# task — the exact failure we saw before this block existed. Keep the
+# header stable: ``turn_runner`` keys off it (and the success header
+# above) to relax the forced tool-choice so she narrates instead of
+# re-calling the tool.
+_REPLY_HEADER = (
+    "You just finished what the user asked for — reply now using the "
+    "result below. Do NOT start the task again; the answer is right here."
+)
+# Per-task content budget in the reply block. Generous (this is a real
+# answer, not a terse cue) but bounded so a huge file can't blow the
+# prompt. The handler already clamps the read to task_file_read_max_bytes.
+_REPLY_CONTENT_CHARS = 4000
+
 
 def render_cue_block(
     cues: Iterable[TaskCue],
@@ -134,6 +150,41 @@ def render_cue_block(
     return "\n".join(lines)
 
 
+def render_reply_block(
+    items: Iterable[dict[str, str]],
+    *,
+    max_content_chars: int = _REPLY_CONTENT_CHARS,
+) -> str:
+    """Render finished ``reply_when_done`` tasks with their full result.
+
+    ``items`` is a list of dicts with keys ``title`` (task title),
+    ``origin_prompt`` (what the user originally asked, optional), and
+    ``content`` (the full result text to narrate). Returns an empty
+    string for an empty list so callers can concat without a guard.
+
+    This is intentionally NOT a bullet list like :func:`render_cue_block`
+    — it carries the real content (indented) so the next turn can
+    answer the user from it directly.
+    """
+    rendered: list[str] = []
+    for item in items:
+        title = (item.get("title") or "the task").strip() or "the task"
+        origin = (item.get("origin_prompt") or "").strip()
+        content = (item.get("content") or "").strip() or "(no content)"
+        if len(content) > max_content_chars:
+            content = content[:max_content_chars].rstrip() + "\n…(truncated)"
+        block: list[str] = []
+        if origin:
+            block.append(f'- They asked: "{origin}"')
+        block.append(f"  {title}:")
+        for line in content.splitlines() or [""]:
+            block.append(f"    {line}")
+        rendered.append("\n".join(block))
+    if not rendered:
+        return ""
+    return "\n".join([_REPLY_HEADER, *rendered])
+
+
 # ── per-cue bullet formatters ───────────────────────────────────────
 
 
@@ -175,4 +226,4 @@ def _format_question_bullet(cue: TaskCue) -> str:
     return f"- {title} — {question}"
 
 
-__all__ = ["render_cue_block"]
+__all__ = ["render_cue_block", "render_reply_block"]

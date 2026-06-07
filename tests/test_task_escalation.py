@@ -137,6 +137,40 @@ class ArmCancelTests(unittest.TestCase):
         finally:
             mgr.shutdown()
 
+    def test_arm_after_seconds_override_fires_promptly(self) -> None:
+        """A ``reply_when_done`` task passes a near-zero window so the
+        proactive reply fires almost immediately (well before the
+        configured 10 s completion window)."""
+        import time as _time
+
+        mgr, store, captured = _make_manager(completion_after_seconds=10.0)
+        try:
+            cue = store.park(
+                task_id="t1", session_key="u",
+                kind=CUE_KIND_RESULT, summary="x",
+            )
+            mgr.arm(cue, after_seconds=0.02)
+            deadline = _time.monotonic() + 2.0
+            while not captured and _time.monotonic() < deadline:
+                _time.sleep(0.01)
+            self.assertEqual(len(captured), 1)
+            self.assertEqual(captured[0][0], "u")
+            self.assertEqual(captured[0][1], ("t1",))
+        finally:
+            mgr.shutdown()
+
+    def test_arm_after_seconds_clamps_negative_to_zero(self) -> None:
+        mgr, store, _ = _make_manager(completion_after_seconds=10.0)
+        try:
+            cue = store.park(
+                task_id="t1", session_key="u",
+                kind=CUE_KIND_RESULT, summary="x",
+            )
+            # Negative override must not raise; clamped to 0.0.
+            mgr.arm(cue, after_seconds=-5.0)
+        finally:
+            mgr.shutdown()
+
     def test_arm_rejects_empty_task_id(self) -> None:
         mgr, store, _ = _make_manager()
         try:

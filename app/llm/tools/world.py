@@ -91,7 +91,10 @@ class LookAroundTool:
                 "specific detail the ambient summary skipped. Skip it on "
                 "ordinary turns -- your context already includes a passive "
                 "room summary, so don't call look_around just to know where "
-                "you are."
+                "you are. This is YOUR ROOM (cookies, blanket, monitors, the "
+                "garden) -- it is NOT the user's files or folders on disk. If "
+                "the user asks what files/folders/documents you can see or "
+                "access, use list_file_roots instead, never look_around."
             ),
             parameters={"type": "object", "properties": {}, "required": []},
         )

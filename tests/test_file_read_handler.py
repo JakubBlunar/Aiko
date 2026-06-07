@@ -185,6 +185,11 @@ class SingleRootReadTests(_SingleRootFixture):
         self.assertGreater(result["size_bytes"], 0)
         self.assertGreater(result["read_bytes"], 0)
         self.assertGreaterEqual(result["line_count"], 1)
+        # The cue ``summary`` carries a readable content preview (not a
+        # ``result keys=...`` fallback) so the passive cue path can tell
+        # Aiko what the file said without a re-read.
+        self.assertIn("summary", result)
+        self.assertIn("Hello", result["summary"])
         # State should be terminal-shaped.
         self.assertEqual(state["phase"], "done")
         self.assertEqual(state["label"], "Docs")

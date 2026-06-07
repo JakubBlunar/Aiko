@@ -78,6 +78,238 @@ def _orchestrator(session: "SessionController") -> Any | None:
     return getattr(session, "_task_orchestrator", None)
 
 
+def _mark_inline_resolved(session: "SessionController", task_id: int) -> None:
+    """Tell the controller this task already reported its result inline.
+
+    The completion ``task_result`` event still fires on the brain queue;
+    the suppression set checked in ``_on_task_result_event`` stops it
+    from parking a duplicate cue / firing a second proactive reply.
+    """
+    fn = getattr(session, "mark_task_inline_resolved", None)
+    if callable(fn):
+        try:
+            fn(int(task_id))
+        except Exception:  # pragma: no cover - defensive
+            log.debug("mark_task_inline_resolved failed", exc_info=True)
+
+
+def _spawn_file_task(
+    session: "SessionController",
+    orch: Any,
+    *,
+    handler_name: str,
+    args: dict[str, Any],
+    title: str,
+) -> tuple[int | None, Any | None, str]:
+    """Spawn a file task, folding a fast result into the same turn.
+
+    Returns ``(task_id, terminal_row_or_None, disposition)`` where
+    ``disposition`` is one of ``"inline_done"`` / ``"inline_failed"`` /
+    ``"inline_cancelled"`` / ``"async"`` / ``"rejected"``.
+
+    The task is always created with ``metadata.reply_when_done`` set to
+    the master-switch value plus the originating user text. Then, when
+    ``agent.task_inline_grace_seconds > 0``, we block up to that long
+    for a terminal status (the duration-hybrid "fast" half). If the
+    handler finishes in time we return the persisted row and mark the
+    id inline-resolved so the later event doesn't double-report; if it
+    is still running (or went to ``awaiting_input``) we leave it to the
+    reply-on-complete path.
+    """
+    from app.core.tasks.task_handler import (
+        STATUS_CANCELLED,
+        STATUS_DONE,
+        STATUS_FAILED,
+    )
+
+    settings = getattr(session, "_settings", None)
+    agent_cfg = getattr(settings, "agent", None) if settings else None
+    reply_on_complete = bool(
+        getattr(agent_cfg, "task_reply_on_complete_enabled", True)
+    )
+    try:
+        grace = float(getattr(agent_cfg, "task_inline_grace_seconds", 3.0) or 0.0)
+    except (TypeError, ValueError):
+        grace = 3.0
+    grace = max(0.0, grace)
+
+    metadata: dict[str, Any] = {"reply_when_done": reply_on_complete}
+    origin = (getattr(session, "_active_turn_user_text", "") or "").strip()
+    if origin:
+        metadata["origin_prompt"] = origin[:500]
+
+    task_id = orch.start_task(
+        user_id=_user_id(session),
+        handler_name=handler_name,
+        args=args,
+        title=title,
+        initiated_by="aiko",
+        metadata=metadata,
+    )
+    if task_id is None:
+        return None, None, "rejected"
+
+    if grace <= 0.0:
+        return task_id, None, "async"
+    try:
+        status = orch.wait_for_task(task_id, timeout=grace)
+    except Exception:  # pragma: no cover - defensive
+        log.debug(
+            "inline wait_for_task failed: task_id=%s", task_id, exc_info=True
+        )
+        return task_id, None, "async"
+    if status == STATUS_DONE:
+        _mark_inline_resolved(session, task_id)
+        return task_id, orch.get(task_id), "inline_done"
+    if status == STATUS_FAILED:
+        _mark_inline_resolved(session, task_id)
+        return task_id, orch.get(task_id), "inline_failed"
+    if status == STATUS_CANCELLED:
+        _mark_inline_resolved(session, task_id)
+        return task_id, orch.get(task_id), "inline_cancelled"
+    # "timeout" or a mid-flight "awaiting_input" → reply-on-complete path.
+    return task_id, None, "async"
+
+
+def _result_of(row: Any) -> dict[str, Any]:
+    """Best-effort extract the persisted result dict off a task row."""
+    result = getattr(row, "result", None) if row is not None else None
+    return result if isinstance(result, dict) else {}
+
+
+# Cap the file content folded back into the tool result so a huge read
+# doesn't blow the chat context on the inline path. The read handler
+# already clamps to ``task_file_read_max_bytes``; this is a second,
+# tighter belt for the in-turn narration specifically.
+_INLINE_CONTENT_CHARS = 6000
+
+
+def _file_read_payload(task_id: int, row: Any, disposition: str) -> str:
+    """Build the ``start_file_read`` tool result JSON for a disposition."""
+    if disposition == "inline_done":
+        result = _result_of(row)
+        content = str(result.get("content", ""))
+        clipped = len(content) > _INLINE_CONTENT_CHARS
+        if clipped:
+            content = content[:_INLINE_CONTENT_CHARS]
+        return json.dumps(
+            {
+                "task_id": task_id,
+                "handler": "file_read",
+                "status": "done",
+                "label": result.get("label"),
+                "relative_path": result.get("relative_path"),
+                "content": content,
+                "line_count": result.get("line_count"),
+                "truncated": bool(result.get("truncated")) or clipped,
+                "note": (
+                    "File read complete — the content is right here. Tell "
+                    "the user what it says now; do NOT start another read."
+                ),
+            },
+            ensure_ascii=False,
+        )
+    if disposition == "inline_failed":
+        result = _result_of(row)
+        return json.dumps(
+            {
+                "task_id": task_id,
+                "handler": "file_read",
+                "status": "failed",
+                "error": (getattr(row, "error", None) or "read failed"),
+                "note": (
+                    "The read failed — tell the user what went wrong; do "
+                    "not silently retry."
+                ),
+            },
+            ensure_ascii=False,
+        )
+    if disposition == "inline_cancelled":
+        return json.dumps(
+            {
+                "task_id": task_id,
+                "handler": "file_read",
+                "status": "cancelled",
+                "note": "The read was cancelled.",
+            },
+            ensure_ascii=False,
+        )
+    # async
+    return json.dumps(
+        {
+            "task_id": task_id,
+            "handler": "file_read",
+            "status": "running",
+            "note": (
+                "Read started; it's taking a moment. I'll report the "
+                "result to the user automatically as soon as it's ready — "
+                "tell them you're opening it and move on. Do NOT start "
+                "another read for the same file."
+            ),
+        },
+        ensure_ascii=False,
+    )
+
+
+def _file_search_payload(task_id: int, row: Any, disposition: str) -> str:
+    """Build the ``start_file_search`` tool result JSON for a disposition."""
+    if disposition == "inline_done":
+        result = _result_of(row)
+        matches = result.get("matches")
+        return json.dumps(
+            {
+                "task_id": task_id,
+                "handler": "file_search",
+                "status": "done",
+                "match_count": result.get("match_count", 0),
+                "matches": matches if isinstance(matches, list) else [],
+                "truncated": bool(result.get("truncated")),
+                "summary": result.get("summary"),
+                "note": (
+                    "Search complete — the matches are right here. Tell the "
+                    "user what you found now; do NOT start another search."
+                ),
+            },
+            ensure_ascii=False,
+        )
+    if disposition == "inline_failed":
+        return json.dumps(
+            {
+                "task_id": task_id,
+                "handler": "file_search",
+                "status": "failed",
+                "error": (getattr(row, "error", None) or "search failed"),
+                "note": "The search failed — tell the user what went wrong.",
+            },
+            ensure_ascii=False,
+        )
+    if disposition == "inline_cancelled":
+        return json.dumps(
+            {
+                "task_id": task_id,
+                "handler": "file_search",
+                "status": "cancelled",
+                "note": "The search was cancelled.",
+            },
+            ensure_ascii=False,
+        )
+    # async
+    return json.dumps(
+        {
+            "task_id": task_id,
+            "handler": "file_search",
+            "status": "running",
+            "note": (
+                "Search started; it's taking a moment. I'll report the "
+                "matches to the user automatically as soon as they're ready "
+                "— tell them you're searching and move on. Do NOT start "
+                "another search for the same query."
+            ),
+        },
+        ensure_ascii=False,
+    )
+
+
 # ── list_file_roots ──────────────────────────────────────────────────────
 
 # Top-level preview cap per root. Small enough to keep the tool
@@ -177,19 +409,24 @@ class ListFileRootsTool:
         return ToolSchema(
             name="list_file_roots",
             description=(
-                "List the user's configured file roots that you have "
-                "read access to, with a shallow preview of each "
-                "root's top-level contents. SYNCHRONOUS — returns "
-                "the result inline; no task is spawned. Use this "
-                "first when the user asks what files / folders you "
-                "can see, or before you guess a path with "
-                "start_file_search / start_file_read. Each preview "
-                "is capped at 20 entries; if a root has more, "
-                "preview_truncated will be true and you should "
-                "follow up with start_file_search for that root. "
-                "Returns JSON: {roots: [{label, path, active, "
-                "read_only, warnings, reason, preview, "
-                "preview_truncated}], total_roots, active_roots}."
+                "List the user's configured file roots (folders on "
+                "disk) that you have read access to, with a shallow "
+                "preview of each root's top-level contents. This is "
+                "the USER'S FILES / FOLDERS / DOCUMENTS on disk -- it "
+                "is NOT your room; for your room (cookies, monitors, "
+                "the garden) use look_around, never this. ALWAYS use "
+                "this tool -- not look_around -- whenever the user "
+                "asks what files / folders / documents you can see or "
+                "access. SYNCHRONOUS: returns the result inline, no "
+                "task is spawned, so narrate what you found in the "
+                "same reply. Also use it before you guess a path for "
+                "start_file_search / start_file_read. Each preview is "
+                "capped at 20 entries; if a root has more, "
+                "preview_truncated will be true and you should follow "
+                "up with start_file_search for that root. Returns "
+                "JSON: {roots: [{label, path, active, read_only, "
+                "warnings, reason, preview, preview_truncated}], "
+                "total_roots, active_roots}."
             ),
             parameters={
                 "type": "object",
@@ -293,12 +530,15 @@ class StartFileSearchTool:
             name="start_file_search",
             description=(
                 "Search the user's configured file roots for files whose "
-                "filename contains a substring. Runs ASYNCHRONOUSLY in the "
-                "background — the call returns a task id immediately and "
-                "the actual matches arrive in a later turn as a 'task cue' "
-                "in your prompt. Tell the user you're searching, then "
-                "MOVE ON; do not pretend you already have the result. "
-                "Returns JSON: {task_id, handler, note}."
+                "filename contains a substring. If it finishes quickly the "
+                "call returns the matches inline (status='done' with a "
+                "'matches' list) — report them right away. If it takes "
+                "longer the call returns status='running' and the matches "
+                "are delivered to the user automatically when ready; tell "
+                "the user you're searching and move on. EITHER WAY, read "
+                "the returned JSON and never start a second search for the "
+                "same query, and never invent results. Returns JSON: "
+                "{task_id, handler, status, matches?, summary?, note}."
             ),
             parameters={
                 "type": "object",
@@ -369,8 +609,9 @@ class StartFileSearchTool:
         if root_label:
             title += f" (in {root_label})"
         try:
-            task_id = orch.start_task(
-                user_id=_user_id(self._session),
+            task_id, row, disposition = _spawn_file_task(
+                self._session,
+                orch,
                 handler_name="file_search",
                 args={
                     "query": query,
@@ -379,7 +620,6 @@ class StartFileSearchTool:
                     "case_sensitive": case_sensitive,
                 },
                 title=title,
-                initiated_by="aiko",
             )
         except Exception as exc:
             log.exception(
@@ -396,25 +636,15 @@ class StartFileSearchTool:
             )
         log.info(
             "start_file_search spawned: task_id=%d query=%r root=%r "
-            "max_results=%d case_sensitive=%s",
+            "max_results=%d case_sensitive=%s disposition=%s",
             task_id,
             query,
             root_label,
             max_results,
             case_sensitive,
+            disposition,
         )
-        return json.dumps(
-            {
-                "task_id": task_id,
-                "handler": "file_search",
-                "note": (
-                    "Search started. Results will arrive in a later turn "
-                    "as a task cue. Tell the user you're searching; do not "
-                    "invent results."
-                ),
-            },
-            ensure_ascii=False,
-        )
+        return _file_search_payload(task_id, row, disposition)
 
 
 # ── cancel_file_task ─────────────────────────────────────────────────────
@@ -531,15 +761,19 @@ class StartFileReadTool:
             name="start_file_read",
             description=(
                 "Read a text file from one of the user's configured "
-                "file roots. Runs ASYNCHRONOUSLY in the background — "
-                "the call returns a task id immediately and the file "
-                "content arrives in a later turn as a 'task cue' in "
-                "your prompt. Tell the user you're opening it, then "
-                "MOVE ON; do not pretend to already know the content. "
-                "If the path is ambiguous (matches multiple roots), "
-                "you'll get an awaiting-input cue NEXT turn — ask the "
-                "user which root they meant and call answer_file_task "
-                "with their reply. Returns JSON: {task_id, handler, note}."
+                "file roots. If it finishes quickly the call returns the "
+                "file content inline (status='done' with a 'content' "
+                "field) — read it and tell the user what it says right "
+                "away. If it takes longer the call returns "
+                "status='running' and the content is delivered to the "
+                "user automatically when ready; tell the user you're "
+                "opening it and move on. EITHER WAY, read the returned "
+                "JSON and never start a second read for the same file, "
+                "and never invent the content. If the path is ambiguous "
+                "(matches multiple roots) you'll get an awaiting-input "
+                "cue NEXT turn — ask which root they meant and call "
+                "answer_file_task with their reply. Returns JSON: "
+                "{task_id, handler, status, content?, note}."
             ),
             parameters={
                 "type": "object",
@@ -589,12 +823,12 @@ class StartFileReadTool:
         if max_bytes > 0:
             args["max_bytes"] = max_bytes
         try:
-            task_id = orch.start_task(
-                user_id=_user_id(self._session),
+            task_id, row, disposition = _spawn_file_task(
+                self._session,
+                orch,
                 handler_name="file_read",
                 args=args,
                 title=title,
-                initiated_by="aiko",
             )
         except Exception as exc:
             log.exception(
@@ -608,25 +842,14 @@ class StartFileReadTool:
                 "missing handler)"
             )
         log.info(
-            "start_file_read spawned: task_id=%d path=%r max_bytes=%d",
+            "start_file_read spawned: task_id=%d path=%r max_bytes=%d "
+            "disposition=%s",
             task_id,
             path,
             max_bytes,
+            disposition,
         )
-        return json.dumps(
-            {
-                "task_id": task_id,
-                "handler": "file_read",
-                "note": (
-                    "Read started. Content will arrive in a later turn "
-                    "as a task cue. If the path is ambiguous, you'll "
-                    "get an awaiting-input cue asking which root the "
-                    "user meant — ask them, then call "
-                    "answer_file_task with their reply."
-                ),
-            },
-            ensure_ascii=False,
-        )
+        return _file_read_payload(task_id, row, disposition)
 
 
 # ── answer_file_task ─────────────────────────────────────────────────────

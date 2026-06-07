@@ -56,6 +56,62 @@ _REMEMBER_TAG_RE = re.compile(
     flags=re.IGNORECASE,
 )
 
+# ── forced-choice escape tool ─────────────────────────────────────────
+# Chatty models (gpt-5-mini at any reasoning_effort) lose the implicit
+# "text vs tool" coin-flip on ``tool_choice="auto"``: they narrate their
+# intent ("I'll list the folders") instead of emitting the call. The fix
+# is to force ``tool_choice="required"`` so the model MUST pick a tool,
+# and to add this synthetic no-op tool as the "I don't actually need a
+# tool" escape hatch. That reframes the decision from "text vs tool"
+# (which the conversational prior always wins) to "which tool" (where the
+# right tool for "what files can you see?" is obviously list_file_roots).
+# It is never registered in the ToolRegistry; the turn pass strips it out
+# and, when it's the only call, proceeds straight to narration.
+_RESPOND_DIRECTLY_TOOL = "respond_directly"
+_RESPOND_DIRECTLY_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": _RESPOND_DIRECTLY_TOOL,
+        "description": (
+            "Select this when NO other tool is needed and you can reply to "
+            "the user directly from the conversation -- normal chat, "
+            "opinions, banter, reactions, or anything you already know. "
+            "This is the 'no tool needed' choice and does nothing on its "
+            "own. Pick a real tool instead ONLY when the user needs "
+            "information or an action you cannot produce yourself: listing "
+            "or reading files, the current time/date, web facts, your saved "
+            "memories, or changing your room."
+        ),
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
+
+
+# Stable header fragments emitted by ``app.core.tasks.cue_render``. When
+# one is present in the system prompt a finished-task result is already
+# in front of the model, so we relax ``tool_choice`` from "required" to
+# "auto" — forcing a pick there just tempts the model to re-run the task
+# it already finished (the exact bug the reply-on-complete work fixes).
+_FINISHED_TASK_SENTINELS = (
+    "reply now using the result below",
+    "Tasks that finished since your last message",
+)
+
+
+def _messages_have_finished_task_block(
+    messages: list[dict[str, Any]],
+) -> bool:
+    """True when a finished-task cue/reply block is in the system prompt."""
+    for msg in messages:
+        if msg.get("role") != "system":
+            continue
+        content = msg.get("content")
+        if isinstance(content, str) and any(
+            sentinel in content for sentinel in _FINISHED_TASK_SENTINELS
+        ):
+            return True
+    return False
+
 
 log = logging.getLogger("app.turn_runner")
 
@@ -862,6 +918,20 @@ class TurnRunner:
         tool_schemas = registry.to_ollama_tools()
         if not tool_schemas:
             return total_usage
+        # Force-pick a tool every round, with the synthetic
+        # ``respond_directly`` escape hatch as the "no tool needed"
+        # option (see ``_RESPOND_DIRECTLY_SCHEMA``). This is the lever
+        # that actually fixes chatty-model under-calling; reasoning
+        # effort does not move the decision.
+        tool_schemas = [*tool_schemas, _RESPOND_DIRECTLY_SCHEMA]
+        # ...except when a finished-task result is already in the prompt:
+        # forcing a pick then just tempts the model to re-run the task it
+        # already completed. Relax to "auto" so it narrates the result.
+        tool_choice = (
+            "auto"
+            if _messages_have_finished_task_block(messages)
+            else "required"
+        )
 
         for round_idx in range(max_rounds):
             if self._is_stop_requested(stop_requested) or self._stop.is_set():
@@ -872,10 +942,15 @@ class TurnRunner:
                     options={
                         "temperature": self._temperature,
                         "num_ctx": self._context_window,
-                        # Tool selection rarely needs a long completion.
-                        "num_predict": min(self._max_tokens, 256),
+                        # Tool selection emits a tiny visible payload (a
+                        # function name + small JSON args). 512 is plenty
+                        # of headroom; the reasoning_effort on this pass is
+                        # kept at "minimal" (raising it did not change the
+                        # tool-vs-text decision, see openai_compatible_client).
+                        "num_predict": min(self._max_tokens, 512),
                     },
                     tools=tool_schemas,
+                    tool_choice=tool_choice,
                     model=self._model,
                     surface="tool_pass",
                 )
@@ -886,7 +961,16 @@ class TurnRunner:
             tool_call_usage = getattr(self._ollama, "last_usage", None)
             if isinstance(tool_call_usage, OllamaUsage):
                 total_usage = total_usage.merge(tool_call_usage)
-            if not response.tool_calls:
+            # Drop the synthetic escape tool: when it's the only pick (or
+            # nothing was picked), the model is signalling "just answer" --
+            # return WITHOUT appending the tool_calls message, otherwise the
+            # streaming pass would carry a dangling tool_call with no
+            # matching result and 400 on strict providers.
+            real_calls = [
+                call for call in (response.tool_calls or [])
+                if call.name != _RESPOND_DIRECTLY_TOOL
+            ]
+            if not real_calls:
                 return total_usage
 
             # Tool-call messages are emitted in a "neutral" shape that
@@ -903,7 +987,7 @@ class TurnRunner:
             # references stay valid.
             tool_call_ids = [
                 (call.call_id or f"call_{round_idx}_{idx}")
-                for idx, call in enumerate(response.tool_calls)
+                for idx, call in enumerate(real_calls)
             ]
             assistant_msg: dict[str, Any] = {
                 "role": "assistant",
@@ -917,12 +1001,12 @@ class TurnRunner:
                             "arguments": call.arguments,
                         },
                     }
-                    for idx, call in enumerate(response.tool_calls)
+                    for idx, call in enumerate(real_calls)
                 ],
             }
             messages.append(assistant_msg)
 
-            for idx, call in enumerate(response.tool_calls):
+            for idx, call in enumerate(real_calls):
                 if self._on_tool_call is not None:
                     try:
                         self._on_tool_call(call.name, dict(call.arguments))

@@ -169,6 +169,17 @@ class SearchSemanticsTests(unittest.TestCase):
             names,
             [("Docs", "beta.txt"), ("Notes", "beta.md")],
         )
+        # The cue ``summary`` lists the matches so the passive cue path
+        # tells Aiko what was found instead of a ``result keys=...`` fallback.
+        summary = emit.terminal.result["summary"]
+        self.assertIn("found 2 file(s)", summary)
+        self.assertIn("beta", summary)
+
+    def test_no_match_summary_says_none(self) -> None:
+        emit = _CollectingEmit()
+        self.handler.start({"query": "zzz_no_such_file"}, emit)
+        assert isinstance(emit.terminal, TaskCompleted)
+        self.assertIn("no files matched", emit.terminal.result["summary"])
 
     def test_case_insensitive_by_default(self) -> None:
         emit = _CollectingEmit()

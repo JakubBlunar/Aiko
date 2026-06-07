@@ -1152,6 +1152,24 @@ class AgentSettings:
     # but get dropped from the prompt to keep T6 cheap (the most
     # volatile tier, no cache hits). Clamped to ``[1, 20]``.
     task_cue_max_aggregated: int = 5
+    # ── Duration-hybrid task replies (fold-fast + reply-on-complete) ──
+    # Master switch for the reply-on-complete behaviour. When True the
+    # ``start_file_*`` tools fold a fast result into the same turn and
+    # flag slower tasks ``reply_when_done`` so their result surfaces as
+    # a proactive reply the moment Aiko is free. Off = legacy behaviour
+    # (terse cue + 45 s completion escalation only).
+    task_reply_on_complete_enabled: bool = True
+    # How long a ``start_file_read`` / ``start_file_search`` call blocks
+    # waiting for the handler to finish so the result can be folded into
+    # the SAME reply (the "fast" half of the duration hybrid). Tasks
+    # that don't finish in this window fall back to the reply-on-complete
+    # path. Clamped to ``[0, 30]``; 0 disables the inline fast path.
+    task_inline_grace_seconds: float = 3.0
+    # Escalation window for ``reply_when_done`` tasks — near-zero so the
+    # result surfaces as a proactive reply as soon as the free-to-speak
+    # gate clears, rather than waiting out the full completion window.
+    # Clamped to ``[0, 60]``.
+    task_reply_when_free_seconds: float = 1.0
     # Configured roots for the read-only filesystem task handlers
     # (``file_search`` / ``file_read``). Each entry is a dict with
     # ``label`` (human-readable id used in path prefixes like
@@ -3277,6 +3295,23 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                 min(
                     20,
                     int(agent_raw.get("task_cue_max_aggregated", 5)),
+                ),
+            ),
+            task_reply_on_complete_enabled=bool(
+                agent_raw.get("task_reply_on_complete_enabled", True)
+            ),
+            task_inline_grace_seconds=max(
+                0.0,
+                min(
+                    30.0,
+                    float(agent_raw.get("task_inline_grace_seconds", 3.0)),
+                ),
+            ),
+            task_reply_when_free_seconds=max(
+                0.0,
+                min(
+                    60.0,
+                    float(agent_raw.get("task_reply_when_free_seconds", 1.0)),
                 ),
             ),
             task_file_allowed_roots=_parse_task_file_allowed_roots(
