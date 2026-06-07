@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import unittest
-from unittest.mock import Mock, patch
+from dataclasses import replace
+from unittest.mock import MagicMock, Mock, patch
 
 from app.core.infra.settings import load_settings
 from app.llm.ollama_client import OllamaClient
@@ -166,6 +168,149 @@ class OllamaClientShowTests(unittest.TestCase):
             "app.llm.ollama_client.requests.post", return_value=fake_response,
         ):
             self.assertIsNone(client.get_context_length("weird-model"))
+
+
+class OllamaClientNumCtxInjectionTests(unittest.TestCase):
+    """Regression for the VRAM-spillover bug.
+
+    Ollama allocates the kv-cache on the first call after a cold load
+    based on whatever ``num_ctx`` is in that call's ``options`` (or
+    the model's built-in default, often 256k for big models, if
+    omitted). Without explicit injection a 30B model loads at 256k
+    even when the user has configured ``ollama.context_window=32768``
+    — and the load straddles VRAM + RAM with ~10x slower tokens/s
+    (visible in ``ollama ps`` as a CPU/GPU split).
+
+    These tests pin the default-injection contract for all three
+    public call paths.
+    """
+
+    def setUp(self) -> None:
+        settings = load_settings()
+        self._base_settings = settings.ollama
+
+    def _fake_chat_response(self) -> Mock:
+        fake = Mock()
+        fake.ok = True
+        fake.raise_for_status.return_value = None
+        fake.json.return_value = {"message": {"content": "ok"}}
+        return fake
+
+    def _fake_stream_response(self) -> MagicMock:
+        fake = MagicMock()
+        fake.ok = True
+        fake.raise_for_status.return_value = None
+        fake.__enter__.return_value = fake
+        fake.__exit__.return_value = None
+        fake.iter_lines.return_value = iter([
+            json.dumps({
+                "message": {"content": "ok"},
+                "done": True,
+                "done_reason": "stop",
+            }).encode("utf-8"),
+        ])
+        return fake
+
+    # ── chat_with_tools ──────────────────────────────────────────────
+
+    def test_chat_with_tools_injects_num_ctx_from_settings(self) -> None:
+        settings = replace(self._base_settings, context_window=32768)
+        client = OllamaClient(settings)
+        fake = self._fake_chat_response()
+        with patch(
+            "app.llm.ollama_client.requests.post", return_value=fake,
+        ) as posted:
+            client.chat_with_tools([{"role": "user", "content": "x"}])
+        payload = posted.call_args.kwargs["json"]
+        self.assertEqual(payload["options"].get("num_ctx"), 32768)
+
+    def test_chat_with_tools_omits_num_ctx_when_context_window_is_none(
+        self,
+    ) -> None:
+        # ``None`` is the documented "auto-detect from Ollama" sentinel
+        # — preserve the pre-fix behaviour and let Ollama pick.
+        settings = replace(self._base_settings, context_window=None)
+        client = OllamaClient(settings)
+        fake = self._fake_chat_response()
+        with patch(
+            "app.llm.ollama_client.requests.post", return_value=fake,
+        ) as posted:
+            client.chat_with_tools([{"role": "user", "content": "x"}])
+        payload = posted.call_args.kwargs["json"]
+        self.assertNotIn("num_ctx", payload["options"])
+
+    def test_chat_with_tools_caller_options_win_on_merge(self) -> None:
+        # Explicit ``num_ctx`` in the caller's options dict must win
+        # over the settings default. TurnRunner depends on this.
+        settings = replace(self._base_settings, context_window=32768)
+        client = OllamaClient(settings)
+        fake = self._fake_chat_response()
+        with patch(
+            "app.llm.ollama_client.requests.post", return_value=fake,
+        ) as posted:
+            client.chat_with_tools(
+                [{"role": "user", "content": "x"}],
+                options={"num_ctx": 4096},
+            )
+        payload = posted.call_args.kwargs["json"]
+        self.assertEqual(payload["options"]["num_ctx"], 4096)
+
+    def test_chat_with_tools_omits_num_ctx_on_zero_or_negative(
+        self,
+    ) -> None:
+        # Defensive: ``context_window=0`` is malformed config; treat
+        # it the same as ``None`` rather than sending a nonsense value
+        # to Ollama.
+        for bad_value in (0, -1):
+            settings = replace(
+                self._base_settings, context_window=bad_value,
+            )
+            client = OllamaClient(settings)
+            fake = self._fake_chat_response()
+            with patch(
+                "app.llm.ollama_client.requests.post", return_value=fake,
+            ) as posted:
+                client.chat_with_tools(
+                    [{"role": "user", "content": "x"}],
+                )
+            payload = posted.call_args.kwargs["json"]
+            self.assertNotIn(
+                "num_ctx", payload["options"],
+                f"num_ctx should be omitted for context_window={bad_value}",
+            )
+
+    # ── chat_stream ──────────────────────────────────────────────────
+
+    def test_chat_stream_injects_num_ctx_from_settings(self) -> None:
+        settings = replace(self._base_settings, context_window=8192)
+        client = OllamaClient(settings)
+        fake = self._fake_stream_response()
+        with patch(
+            "app.llm.ollama_client.requests.post", return_value=fake,
+        ) as posted:
+            stream = client.chat_stream([{"role": "user", "content": "x"}])
+            list(stream)
+        payload = posted.call_args.kwargs["json"]
+        self.assertEqual(payload["options"].get("num_ctx"), 8192)
+
+    # ── chat_json ────────────────────────────────────────────────────
+
+    def test_chat_json_injects_num_ctx_from_settings(self) -> None:
+        # Worker JSON calls (summary, learner profile, …) are the
+        # specific code path that hit the cold-load pathology in
+        # production — they never passed ``num_ctx`` themselves.
+        settings = replace(self._base_settings, context_window=16384)
+        client = OllamaClient(settings)
+        fake = self._fake_chat_response()
+        with patch(
+            "app.llm.ollama_client.requests.post", return_value=fake,
+        ) as posted:
+            client.chat_json([{"role": "user", "content": "x"}])
+        payload = posted.call_args.kwargs["json"]
+        self.assertEqual(payload["options"].get("num_ctx"), 16384)
+        # ``chat_json`` overrides temperature to 0.0 for determinism;
+        # confirm we didn't accidentally regress that.
+        self.assertEqual(payload["options"].get("temperature"), 0.0)
 
 
 if __name__ == "__main__":

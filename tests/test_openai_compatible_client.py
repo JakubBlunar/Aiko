@@ -21,6 +21,7 @@ from app.llm.openai_compatible_client import (
     _is_gemini_model,
     _iter_sse_data_lines,
     _map_finish_reason,
+    _normalize_tool_messages_for_openai,
 )
 
 
@@ -102,6 +103,163 @@ class GeminiQuirkTests(unittest.TestCase):
         collapsed = _collapse_system_for_gemini(messages)
         self.assertEqual(collapsed[0]["role"], "user")
         self.assertIn("Just be.", collapsed[0]["content"])
+
+
+class ToolMessageNormalizationTests(unittest.TestCase):
+    """The neutral tool-call shape that ``TurnRunner`` emits must be
+    rewritten into strict OpenAI shape before posting — otherwise OpenAI
+    400s with ``Missing required parameter: messages[N].tool_calls[0].type``.
+    Regression for the gpt-5-mini failure where a successful local tool
+    dispatch (``look_around``) was followed by a 400 on the narration
+    round-trip.
+    """
+
+    def test_assistant_tool_calls_get_type_id_and_string_arguments(self) -> None:
+        # The neutral shape ``TurnRunner`` emits: dict arguments, optional id.
+        messages = [
+            {"role": "user", "content": "What's in the room?"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_abc",
+                        "type": "function",
+                        "function": {
+                            "name": "look_around",
+                            "arguments": {"detail": "full"},
+                        },
+                    },
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_abc",
+                "name": "look_around",
+                "content": "a desk, a bed",
+            },
+        ]
+        normalized = _normalize_tool_messages_for_openai(messages)
+        assistant = normalized[1]
+        call = assistant["tool_calls"][0]
+        self.assertEqual(call["id"], "call_abc")
+        self.assertEqual(call["type"], "function")
+        # arguments must be a JSON string for OpenAI.
+        self.assertIsInstance(call["function"]["arguments"], str)
+        self.assertEqual(
+            json.loads(call["function"]["arguments"]),
+            {"detail": "full"},
+        )
+        # tool result keeps tool_call_id.
+        self.assertEqual(normalized[2]["tool_call_id"], "call_abc")
+
+    def test_missing_id_gets_synthesised(self) -> None:
+        # Older paths may omit id entirely; OpenAI 400s without it.
+        messages = [{
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"function": {"name": "x", "arguments": {}}},
+            ],
+        }]
+        normalized = _normalize_tool_messages_for_openai(messages)
+        call = normalized[0]["tool_calls"][0]
+        self.assertTrue(call["id"].startswith("call_"))
+        self.assertEqual(call["type"], "function")
+        self.assertEqual(call["function"]["arguments"], "{}")
+
+    def test_already_string_arguments_pass_through(self) -> None:
+        messages = [{
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {
+                        "name": "x",
+                        "arguments": '{"already": "string"}',
+                    },
+                },
+            ],
+        }]
+        normalized = _normalize_tool_messages_for_openai(messages)
+        self.assertEqual(
+            normalized[0]["tool_calls"][0]["function"]["arguments"],
+            '{"already": "string"}',
+        )
+
+    def test_non_serialisable_args_fall_back_to_empty_object(self) -> None:
+        # Defensive: never let a serialisation bug propagate as a 400.
+        class _Unserialisable:
+            pass
+
+        messages = [{
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "function": {
+                        "name": "x",
+                        "arguments": {"bad": _Unserialisable()},
+                    },
+                },
+            ],
+        }]
+        normalized = _normalize_tool_messages_for_openai(messages)
+        args = normalized[0]["tool_calls"][0]["function"]["arguments"]
+        # ``default=str`` catches arbitrary objects; the string should
+        # still parse back to a dict.
+        self.assertIsInstance(args, str)
+        self.assertIsInstance(json.loads(args), dict)
+
+    def test_non_tool_messages_pass_through_unchanged(self) -> None:
+        messages = [
+            {"role": "system", "content": "be kind"},
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hi back"},
+        ]
+        normalized = _normalize_tool_messages_for_openai(messages)
+        self.assertEqual(normalized, messages)
+
+    def test_assistant_null_content_becomes_empty_string(self) -> None:
+        # Models often return ``content: null`` on a pure-tool turn;
+        # some OpenAI-compat routes reject null content in re-sent
+        # history.
+        messages = [{
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {"id": "c1", "function": {"name": "x", "arguments": {}}},
+            ],
+        }]
+        normalized = _normalize_tool_messages_for_openai(messages)
+        self.assertEqual(normalized[0]["content"], "")
+
+    def test_tool_message_id_field_migrates_to_tool_call_id(self) -> None:
+        # Defensive: if a legacy caller still uses ``id`` on the tool
+        # message, lift it onto ``tool_call_id``.
+        messages = [{
+            "role": "tool",
+            "id": "legacy_id",
+            "name": "x",
+            "content": "ok",
+        }]
+        normalized = _normalize_tool_messages_for_openai(messages)
+        self.assertEqual(normalized[0]["tool_call_id"], "legacy_id")
+
+    def test_caller_list_not_mutated(self) -> None:
+        original = [{
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "function": {"name": "x", "arguments": {"a": 1}},
+            }],
+        }]
+        snapshot = json.dumps(original)
+        _normalize_tool_messages_for_openai(original)
+        self.assertEqual(json.dumps(original), snapshot)
 
 
 class FinishReasonMappingTests(unittest.TestCase):
@@ -250,6 +408,57 @@ class ChatWithToolsTests(unittest.TestCase):
         self.assertEqual(result.tool_calls[0].name, "calc.add")
         self.assertEqual(result.tool_calls[0].arguments, {"a": 1, "b": 2})
         self.assertEqual(result.tool_calls[1].arguments, {"name": "John"})
+
+    def test_neutral_tool_history_is_normalised_on_the_wire(self) -> None:
+        """Regression: re-sending a prior tool round must emit
+        ``tool_calls[i].type=function`` + string ``arguments`` +
+        ``tool_call_id``. Without this OpenAI 400s with
+        ``Missing required parameter: messages[N].tool_calls[0].type``
+        (the gpt-5-mini ``look_around`` failure).
+        """
+        # The neutral shape ``TurnRunner._maybe_run_tool_pass`` appends
+        # to the message history: dict arguments + name on the tool
+        # result + id on the assistant tool_call.
+        history = [
+            {"role": "user", "content": "what do you see?"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_abc",
+                        "type": "function",
+                        "function": {
+                            "name": "look_around",
+                            "arguments": {"detail": "full"},
+                        },
+                    },
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_abc",
+                "name": "look_around",
+                "content": "a desk, a mug",
+            },
+            {"role": "user", "content": "narrate it"},
+        ]
+        fake = _fake_chat_response(content="Aiko sees a desk and a mug.")
+        with patch(
+            "app.llm.openai_compatible_client.requests.post",
+            return_value=fake,
+        ) as posted:
+            self.client.chat_with_tools(history)
+        wire_messages = posted.call_args.kwargs["json"]["messages"]
+        assistant = wire_messages[1]
+        call = assistant["tool_calls"][0]
+        self.assertEqual(call["id"], "call_abc")
+        self.assertEqual(call["type"], "function")
+        self.assertEqual(
+            json.loads(call["function"]["arguments"]),
+            {"detail": "full"},
+        )
+        self.assertEqual(wire_messages[2]["tool_call_id"], "call_abc")
 
     def test_truncation_warning_fires_on_length(self) -> None:
         fake = _fake_chat_response(
@@ -551,6 +760,96 @@ class ChatWithToolsTests(unittest.TestCase):
             self.assertNotIn(
                 "reasoning_effort", payload,
                 f"{model} must not get reasoning_effort injection",
+            )
+
+    def test_responses_api_family_bumps_reasoning_effort_when_tools_present(
+        self,
+    ) -> None:
+        """Regression for the gpt-5-mini *"I'll list the folders"* deferral.
+
+        With ``reasoning_effort=minimal`` we observed gpt-5-mini
+        verbally promise to call a tool ("I'll list...") instead of
+        actually emitting a tool call. The fix is surface-aware:
+        bump to ``low`` only on the tool-decision pass (when
+        ``tools`` is passed), keep ``minimal`` on every other surface
+        so the narration pass doesn't get its visible output starved
+        by hidden reasoning tokens.
+        """
+        settings = load_settings().ollama
+        fake = _fake_chat_response(content="ok")
+        tool_schema = [{
+            "type": "function",
+            "function": {
+                "name": "list_file_roots",
+                "description": "List configured file roots.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }]
+        for model in ("gpt-5", "gpt-5-mini", "gpt-5-nano", "o3-mini"):
+            client = OpenAICompatibleClient(
+                settings,
+                base_url="https://api.openai.com/v1",
+                model=model,
+                api_key="sk-test",
+            )
+            # WITH tools → low (enough budget to commit to a call).
+            with patch(
+                "app.llm.openai_compatible_client.requests.post",
+                return_value=fake,
+            ) as posted:
+                client.chat_with_tools(
+                    [{"role": "user", "content": "what can you see?"}],
+                    tools=tool_schema,
+                    options={"num_predict": 256},
+                )
+            payload = posted.call_args.kwargs["json"]
+            self.assertEqual(
+                payload.get("reasoning_effort"), "low",
+                f"{model} should get reasoning_effort=low when tools "
+                "are passed (decision pass)",
+            )
+            self.assertEqual(payload.get("tools"), tool_schema)
+
+            # WITHOUT tools → minimal (narration pass; protect the
+            # visible-output budget on a tight ``max_tokens``).
+            with patch(
+                "app.llm.openai_compatible_client.requests.post",
+                return_value=fake,
+            ) as posted:
+                client.chat_with_tools(
+                    [{"role": "user", "content": "x"}],
+                    options={"num_predict": 256},
+                )
+            payload = posted.call_args.kwargs["json"]
+            self.assertEqual(
+                payload.get("reasoning_effort"), "minimal",
+                f"{model} should keep reasoning_effort=minimal "
+                "without tools (narration / Q&A pass)",
+            )
+
+        # Older OpenAI + non-OpenAI compat models still get no
+        # ``reasoning_effort`` injection regardless of tools.
+        for model in ("gpt-4o-mini", "gemini-2.0-flash"):
+            client = OpenAICompatibleClient(
+                settings,
+                base_url="https://api.openai.com/v1",
+                model=model,
+                api_key="sk-test",
+            )
+            with patch(
+                "app.llm.openai_compatible_client.requests.post",
+                return_value=fake,
+            ) as posted:
+                client.chat_with_tools(
+                    [{"role": "user", "content": "x"}],
+                    tools=tool_schema,
+                    options={"num_predict": 256},
+                )
+            payload = posted.call_args.kwargs["json"]
+            self.assertNotIn(
+                "reasoning_effort", payload,
+                f"{model} must not get reasoning_effort injection "
+                "even with tools present",
             )
 
     def test_responses_api_family_no_default_temperature_without_options(

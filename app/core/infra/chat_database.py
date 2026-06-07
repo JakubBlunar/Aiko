@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_SCHEMA_VERSION = 15
+_SCHEMA_VERSION = 17
 
 _CREATE_TABLES = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -360,6 +360,117 @@ CREATE TABLE IF NOT EXISTS user_calibration_state (
     state_json TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+-- Schema v16: brain-orchestration tasks. One row per long-running
+-- background task initiated by Aiko (or a background system process).
+-- The handler owns ``state`` (an opaque JSON blob it reads/writes via
+-- the orchestrator on every named transition). The orchestrator owns
+-- every other column. Status walks:
+--     running -> awaiting_input -> running -> done|failed|cancelled
+--     running -> done|failed|cancelled
+--     <any non-terminal at app exit> -> interrupted (on next boot, via
+--                                       TaskStore.recover_interrupted_on_boot)
+-- Visibility flags:
+--   ``notify_aiko``      1 = park a cue on Aiko's next turn when the task ends
+--                        0 = silent background work (e.g. internal maintenance)
+--   ``visible_to_user``  1 = surface in /api/tasks + TaskStrip
+--                        0 = orchestrator-only (e.g. system-spawned probes)
+-- ``initiated_by`` ('aiko' | 'background' | 'system') distinguishes Aiko's
+-- LLM-tool spawns from internal worker spawns and admin/MCP spawns.
+-- ``metadata`` is a handler-extensibility JSON blob with a STRICT role:
+-- handler-specific config, debugging flags, non-critical hints ONLY.
+-- It MUST NOT carry conversational / lifecycle state -- that belongs
+-- in ``state`` (hot blob) or ``task_events`` (append-only audit).
+-- Schema v17: three new columns + two new sibling tables.
+--   ``phase``           free-text per-handler phase label (e.g.
+--                       "browsing_results"). Promoted to a column so
+--                       every WS / prompt / cue site can read it
+--                       without parsing the ``state`` JSON.
+--   ``parent_task_id``  optional parent in a task tree. Single column
+--                       (not a join table) because real agent
+--                       dependencies are tree-shaped -- if multi-parent
+--                       ever lands, add a ``task_dependencies`` table.
+--                       No SQL FK so cascade-cancel can be explicit
+--                       and log-friendly. ``ON DELETE`` semantics live
+--                       in the cleanup worker.
+--   ``heartbeat_at``    ISO timestamp bumped by the orchestrator on
+--                       every emit. The heartbeat sweep flags rows
+--                       whose ``heartbeat_at`` is stale (handler alive
+--                       in-process but stuck on a syscall / network).
+-- Full design lives in ``docs/brain-orchestration.md``.
+CREATE TABLE IF NOT EXISTS tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    handler_name TEXT NOT NULL,
+    args TEXT NOT NULL,
+    state TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'running',
+    title TEXT NOT NULL,
+    progress REAL,
+    last_message TEXT,
+    input_request TEXT,
+    result TEXT,
+    error TEXT,
+    notify_aiko INTEGER NOT NULL DEFAULT 1,
+    visible_to_user INTEGER NOT NULL DEFAULT 1,
+    initiated_by TEXT NOT NULL DEFAULT 'aiko',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT,
+    metadata TEXT,
+    phase TEXT,
+    parent_task_id INTEGER,
+    heartbeat_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_user_status ON tasks(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_heartbeat ON tasks(status, heartbeat_at);
+
+-- Schema v17: append-only per-task event log. One row per emit (and
+-- per orchestrator-internal lifecycle moment). The handler treats
+-- ``state`` as the hot decision blob (a few hundred bytes); long-form
+-- audit ("I visited URL X then URL Y then ...") goes here so it can
+-- be paginated + replayed without bloating ``tasks.state``. The
+-- orchestrator appends on every emit; handlers can also append custom
+-- entries via ``TaskEvent`` outcome. ``type`` is a free-text label
+-- (see ``app/core/tasks/task_events.py`` for the stable constants);
+-- ``data`` is an opaque JSON blob owned by the producer.
+CREATE TABLE IF NOT EXISTS task_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL,
+    type TEXT NOT NULL,
+    data TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_task_events_task ON task_events(task_id, id);
+
+-- Schema v17: dedicated input/answer history. One row per question
+-- the handler asked. The legacy ``tasks.input_request`` column stays
+-- as a denormalised view of the latest pending row for backward
+-- compat; the new table is the source of truth. Status walks:
+--     pending -> answered      (user supplied an answer)
+--     pending -> superseded    (another question was asked first,
+--                               or the task was cancelled)
+--     pending -> cancelled     (handler-initiated cancel of the
+--                               question)
+-- ``kind`` is a hint for the UI ("choice" / "free_text" / "confirm"),
+-- ``options`` is a jsonable list when ``kind="choice"``. Both are
+-- nullable. ``response`` carries the raw user text (or the resolved
+-- option label). Indexed on ``(task_id, status)`` so
+-- ``latest_pending`` is an index-only lookup.
+CREATE TABLE IF NOT EXISTS task_inputs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL,
+    prompt TEXT NOT NULL,
+    kind TEXT,
+    options TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    response TEXT,
+    created_at TEXT NOT NULL,
+    answered_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_task_inputs_task_status ON task_inputs(task_id, status);
 """
 
 # Tables that existed in earlier schemas but are no longer used.
@@ -694,6 +805,56 @@ class ChatDatabase:
         for stmt in (
             "ALTER TABLE messages ADD COLUMN gestures TEXT",
             "ALTER TABLE messages ADD COLUMN reactions TEXT",
+        ):
+            try:
+                conn.execute(stmt)
+            except sqlite3.OperationalError:
+                pass
+        # v15 -> v16: brain-orchestration ``tasks`` table. The CREATE
+        # TABLE above is idempotent, so on upgrade there's nothing to
+        # ALTER -- the executescript already added the table + indices.
+        # The migration entry exists for the audit trail. New
+        # ``status`` values surface immediately because the column is
+        # plain TEXT (validation lives in Python, not SQLite CHECK).
+        # Defensive index creates mirror the v11 pattern so legacy
+        # databases that pre-date the CREATE INDEX statements pick
+        # them up on upgrade.
+        for stmt in (
+            "CREATE INDEX IF NOT EXISTS idx_tasks_user_status "
+            "ON tasks(user_id, status)",
+            "CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)",
+        ):
+            try:
+                conn.execute(stmt)
+            except sqlite3.OperationalError:
+                pass
+        # v16 -> v17: brain-orchestration phase 2. Three new ``tasks``
+        # columns + two new sibling tables (``task_events``,
+        # ``task_inputs``) + two new indices on ``tasks``. The CREATE
+        # TABLE / CREATE INDEX statements above are idempotent so on a
+        # fresh DB they land in one pass; on upgrade the ALTERs below
+        # add the columns to the existing ``tasks`` table. Each ALTER
+        # is wrapped in try/except OperationalError so a legacy DB
+        # that's already been partially upgraded (e.g. one column
+        # added by a hand-edit) doesn't trip the boot path.
+        for stmt in (
+            "ALTER TABLE tasks ADD COLUMN phase TEXT",
+            "ALTER TABLE tasks ADD COLUMN parent_task_id INTEGER",
+            "ALTER TABLE tasks ADD COLUMN heartbeat_at TEXT",
+        ):
+            try:
+                conn.execute(stmt)
+            except sqlite3.OperationalError:
+                pass
+        for stmt in (
+            "CREATE INDEX IF NOT EXISTS idx_tasks_parent "
+            "ON tasks(parent_task_id)",
+            "CREATE INDEX IF NOT EXISTS idx_tasks_heartbeat "
+            "ON tasks(status, heartbeat_at)",
+            "CREATE INDEX IF NOT EXISTS idx_task_events_task "
+            "ON task_events(task_id, id)",
+            "CREATE INDEX IF NOT EXISTS idx_task_inputs_task_status "
+            "ON task_inputs(task_id, status)",
         ):
             try:
                 conn.execute(stmt)

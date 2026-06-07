@@ -1099,6 +1099,106 @@ class AgentSettings:
     # or unknown kinds are silently ignored. Falls back to the
     # taxonomy defaults in :data:`app.core.touch.touch_gestures`.
     touch_per_kind_overrides: dict[str, Any] = field(default_factory=dict)
+
+    # ── Brain orchestration: long-running tasks (schema v16) ──────────
+    # Master switch for the whole task subsystem. Off disables the
+    # ``start_*`` tools, the ``TaskOrchestrator`` rejects spawns, and
+    # the cue / escalation paths stay silent. See
+    # :mod:`app.core.tasks` and ``docs/brain-orchestration.md``.
+    tasks_enabled: bool = True
+    # Max concurrent ``running`` + ``awaiting_input`` rows per user.
+    # ``TaskOrchestrator.start_task`` rejects with
+    # ``reason=per_user_cap`` past this. Tuning up = more parallel
+    # tasks per user (and more memory + WS chatter). Tuning down =
+    # tighter back-pressure on long-running work.
+    tasks_per_user_cap: int = 8
+    # When True, non-terminal task rows surviving a restart get
+    # surfaced to Aiko as a one-line cue on her next turn ("the X
+    # task stopped when we last talked -- want me to retry?"). Off
+    # silently demotes interrupted rows without prompting Aiko.
+    # Implemented by ``recover_interrupted_tasks`` in
+    # ``app/core/tasks/recovery.py``.
+    tasks_resume_on_boot: bool = True
+    # When True, ``InnerLifeProvidersMixin._render_running_tasks_block``
+    # renders a T6 block listing live tasks for the active user. Off
+    # hides the block entirely (Aiko has no inner-prompt awareness of
+    # her own running work; only the TaskStrip in the UI does).
+    tasks_running_block_enabled: bool = True
+    # ``BrainLoop`` deferred-event poll interval in milliseconds.
+    # Smaller = deferred items retry sooner when the free-to-speak
+    # gate clears (lower latency on the no-interrupt invariant), but
+    # the consumer thread wakes more often on idle. Clamped to
+    # ``[10, 5000]``. Default 100 = a tenth of a second.
+    brain_loop_deferred_grace_ms: int = 100
+    # Seconds of silence after a ``task_result`` cue parks before the
+    # escalation timer enqueues a ``ProactiveEvent`` (Aiko speaks
+    # unprompted to surface the completion). Tuning up = Aiko stays
+    # quieter for longer, lets the user pivot. Tuning down = task
+    # completions surface as proactive turns more aggressively. Clamped
+    # to ``[5, 600]``.
+    task_completion_proactive_after_seconds: int = 45
+    # Shorter sibling of the above for ``task_input_needed`` cues — a
+    # blocked task is more pressing than a finished one. Default
+    # ``20`` seconds. Clamped to ``[5, 600]``.
+    task_input_needed_proactive_after_seconds: int = 20
+    # Wall-clock age (in seconds) above which a parked cue is
+    # silently dropped on the next dequeue / sweep. Protects against
+    # awkward stale-context messages ("the YouTube tab I opened 3
+    # hours ago is still going") if the user vanished. Clamped to
+    # ``[60, 86400]``. Default ``1800`` = 30 minutes.
+    task_cue_max_age_seconds: int = 1800
+    # Hard cap on cues rendered into a single turn's prompt T6 block.
+    # Excess cues stay in the DB / WS strip so the user sees them,
+    # but get dropped from the prompt to keep T6 cheap (the most
+    # volatile tier, no cache hits). Clamped to ``[1, 20]``.
+    task_cue_max_aggregated: int = 5
+    # Configured roots for the read-only filesystem task handlers
+    # (``file_search`` / ``file_read``). Each entry is a dict with
+    # ``label`` (human-readable id used in path prefixes like
+    # ``"Documents:notes.md"``), ``path`` (absolute or relative to
+    # the app root), and an optional ``read_only`` flag reserved
+    # for phase 2. Empty default = no filesystem access; the
+    # handlers run but every resolve returns ``no_match``. Validate
+    # at boot via :func:`app.core.tasks.sandbox.validate_roots`;
+    # missing / wrong-type roots get a WARNING but stay in the
+    # list so a temporarily-unmounted external drive doesn't auto-
+    # disappear from the config. See ``docs/brain-orchestration.md``.
+    task_file_allowed_roots: tuple[dict[str, Any], ...] = ()
+    # ── Chunk 12: file_read handler safety caps ────────────────────────
+    # ``FileReadHandler`` is the first phase-1 handler that emits a
+    # ``TaskInputNeeded`` (multi-root disambiguation: a bare path that
+    # matches in more than one configured root). It also opens and
+    # reads file contents, so a small set of safety caps gate what
+    # actually reaches the LLM as a tool result.
+    #
+    # ``task_file_read_max_bytes`` — hard cap on bytes read off disk
+    # per call. Files larger than this are truncated at the byte
+    # boundary and the result row sets ``truncated=True``. Default
+    # 256 KiB — big enough for a Markdown doc, small enough that a
+    # rogue 4 GB log can't OOM Aiko's process.
+    task_file_read_max_bytes: int = 262144
+    # ``task_file_read_max_lines`` — secondary cap applied after the
+    # byte read so a 256 KiB single-line minified blob can still be
+    # rejected. Default 2000 lines.
+    task_file_read_max_lines: int = 2000
+    # ``task_file_read_allowed_extensions`` — case-insensitive
+    # extension allow-list. Empty tuple = "allow everything that
+    # passes the magic-byte text check". When non-empty, anything
+    # outside the list is rejected up-front (the magic-byte check
+    # still runs as a secondary filter). Defaults to a sensible
+    # text-only catalogue so the LLM can't accidentally read a PDF
+    # or a database file.
+    task_file_read_allowed_extensions: tuple[str, ...] = (
+        ".txt", ".md", ".rst", ".log",
+        ".py", ".js", ".ts", ".tsx", ".jsx",
+        ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf",
+        ".html", ".css", ".xml",
+        ".csv", ".tsv",
+        ".sh", ".bat", ".ps1",
+        ".sql",
+        ".go", ".rs", ".c", ".h", ".cpp", ".hpp", ".java", ".kt",
+        ".rb", ".lua",
+    )
     # Master switch for the K32 user-reaction tray. When off, the
     # REST endpoints reject with 503 and the inner-life cue stays
     # silent. The frontend hides the hover tray when the connection
@@ -1127,6 +1227,61 @@ class AgentSettings:
     # banner permanently. Default 20s -- long enough for a glance
     # + a reaction click, short enough not to clutter the overlay.
     persona_touch_banner_duration_seconds: int = 20
+    # Chunk 15 (brain orchestration): master switch for the
+    # ``PersonaTaskBanner`` -- the persona-window mirror of the
+    # ``TaskStrip`` chip in the main chat. Surfaces an
+    # ``awaiting_input`` task as a transient pill near the avatar
+    # so the user can click an option (or type a free-text answer)
+    # without switching back to the chat window. The banner never
+    # cancels the underlying task on dismiss; it only hides the
+    # surface so the chat-channel answer path still works. Off
+    # hides the banner entirely; the strip in the chat window is
+    # unaffected.
+    persona_task_banner_enabled: bool = True
+
+    # ── Brain orchestration phase 2 (schema v17): lifecycle safety ────
+    # Sweep interval for the in-process heartbeat zombie detector
+    # (:class:`HeartbeatChecker`). The detector wakes every N seconds,
+    # asks the task store for ``status='running'`` rows whose
+    # ``heartbeat_at`` is older than :attr:`task_stalled_seconds`, and
+    # either logs a WARNING or moves them to ``failed`` depending on
+    # :attr:`task_stalled_action`. Clamped to ``[5, 3600]`` in
+    # :func:`_parse_agent` so a typo can't either spin the CPU or
+    # silently disable the sweep.
+    task_heartbeat_check_interval_seconds: int = 30
+    # Wall-clock age above which a ``running`` row is considered
+    # stalled. The orchestrator bumps ``heartbeat_at`` on every emit
+    # so a healthy handler comfortably stays under this threshold.
+    # Tune up for long-running, low-emit handlers (e.g. a research
+    # task that spends 10 minutes inside one network call); tune down
+    # for the agent-y workloads where 5-minute silence is itself a
+    # failure signal. Clamped to ``[60, 86400]``.
+    task_stalled_seconds: int = 300
+    # What :class:`HeartbeatChecker` does with stalled rows. ``"warn"``
+    # logs a WARNING + appends an ``EVENT_HEARTBEAT_STALLED`` event
+    # but leaves the row running; ``"fail"`` additionally promotes
+    # the row to ``failed`` with a "stalled" error. Default is the
+    # conservative ``"warn"`` so an aggressive threshold can't kill
+    # legitimate slow handlers. See
+    # :class:`app.core.tasks.task_heartbeat.HeartbeatChecker`.
+    task_stalled_action: str = "warn"
+    # Cascade-cancel toggle. When True (the default),
+    # :meth:`TaskOrchestrator.cancel` recursively cancels every
+    # active child in the task tree. Off keeps the legacy phase-1
+    # behaviour (cancel only the named row; children keep running
+    # until they emit a terminal outcome themselves).
+    task_cascade_cancel_children: bool = True
+    # Wall-clock retention window for terminal task rows. The
+    # :class:`TaskCleanupWorker` deletes terminal rows whose
+    # ``completed_at`` is older than this. Cascade-deletes the
+    # associated event log + input history. Clamped to
+    # ``[1, 3650]`` so the cleanup never accidentally targets
+    # rows that just finished, and never proposes "retain forever".
+    task_cleanup_retention_days: int = 30
+    # How often the cleanup worker runs (idle scheduler tick gating
+    # applies on top). Default 6h. Clamped to ``[600, 604800]``
+    # (10 minutes to a week).
+    task_cleanup_interval_seconds: int = 21600
 
     # ── K29: opinion injection (push back when she has a stance) ──────
     # Master switch for the per-turn detector that fires a one-line
@@ -1835,6 +1990,15 @@ class ToolsSettings:
     # untouched (the tools themselves no-op because the store is unset).
     # See :mod:`app.llm.tools.goals`.
     goals: bool = True
+    # Brain-orchestration filesystem tools (chunk 10):
+    # ``start_file_search`` / ``cancel_file_task``. Returns a task
+    # id immediately so Aiko can say "I'm searching for that, I'll
+    # let you know" while the orchestrator walks the configured
+    # roots in the background. Gated independently from
+    # ``agent.tasks_enabled`` so a developer can keep the
+    # subsystem on but hide the tools from the LLM during prompt
+    # experiments. See :mod:`app.llm.tools.file_tasks`.
+    file_tasks: bool = True
 
 
 @dataclass(slots=True)
@@ -1993,6 +2157,104 @@ def _parse_grounding_line_mode(value: Any) -> str:
         value,
     )
     return "off"
+
+
+def _parse_task_file_allowed_roots(value: Any) -> tuple[dict[str, Any], ...]:
+    """Normalise ``agent.task_file_allowed_roots`` into a tuple of dicts.
+
+    Each entry must be a dict with at least ``label`` (non-empty
+    string) + ``path`` (non-empty string). Optional ``read_only``
+    defaults to ``True`` (phase 1 is read-only; the flag is plumbed
+    for phase 2). Malformed entries are dropped with a debug log so
+    a stray dict in user config never crashes the parser — boot-time
+    validation in :func:`app.core.tasks.sandbox.validate_roots` is
+    what surfaces the WARNING for bad paths. We deliberately *don't*
+    validate ``label`` characters here (the sandbox does that
+    consistently across boot + runtime config updates).
+
+    Returns a tuple so the dataclass field is hashable, matching the
+    convention used elsewhere in :class:`AgentSettings`.
+    """
+    if value is None:
+        return ()
+    if not isinstance(value, (list, tuple)):
+        log.debug(
+            "settings: agent.task_file_allowed_roots ignored "
+            "(not a list/tuple): %r",
+            type(value).__name__,
+        )
+        return ()
+    out: list[dict[str, Any]] = []
+    for entry in value:
+        if not isinstance(entry, dict):
+            log.debug(
+                "settings: agent.task_file_allowed_roots entry skipped "
+                "(not a dict): %r",
+                entry,
+            )
+            continue
+        label = entry.get("label", "")
+        path = entry.get("path", "")
+        if not isinstance(label, str) or not label.strip():
+            log.debug(
+                "settings: agent.task_file_allowed_roots entry skipped "
+                "(missing/empty label): %r",
+                entry,
+            )
+            continue
+        if not isinstance(path, str) or not path.strip():
+            log.debug(
+                "settings: agent.task_file_allowed_roots entry skipped "
+                "(missing/empty path): %r",
+                entry,
+            )
+            continue
+        out.append(
+            {
+                "label": label.strip(),
+                "path": path.strip(),
+                "read_only": bool(entry.get("read_only", True)),
+            }
+        )
+    return tuple(out)
+
+
+def _parse_extension_list(value: Any) -> tuple[str, ...]:
+    """Normalise an extension allow-list into a tuple of ``.ext`` strings.
+
+    Accepts any iterable of strings. Strings are lowercased, stripped,
+    and prefixed with ``.`` if missing. An empty string or non-string
+    is silently dropped. Returns a tuple so the dataclass field stays
+    hashable. An empty input tuple is the documented sentinel for
+    "allow everything that passes the magic-byte text check".
+    """
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        # A bare string is ambiguous; treat as a single extension to
+        # be forgiving toward config typos.
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        log.debug(
+            "settings: extension list ignored (not iterable): %r",
+            type(value).__name__,
+        )
+        return ()
+    out: list[str] = []
+    seen: set[str] = set()
+    for entry in value:
+        if not isinstance(entry, str):
+            continue
+        ext = entry.strip().lower()
+        if not ext:
+            continue
+        if not ext.startswith("."):
+            ext = "." + ext
+        if ext in seen:
+            continue
+        seen.add(ext)
+        out.append(ext)
+    return tuple(out)
 
 
 def _parse_chat_llm(raw: dict[str, Any]) -> ChatLlmSettings:
@@ -2962,6 +3224,96 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                 )
                 else {}
             ),
+            tasks_enabled=bool(agent_raw.get("tasks_enabled", True)),
+            tasks_per_user_cap=max(
+                1, int(agent_raw.get("tasks_per_user_cap", 8))
+            ),
+            tasks_resume_on_boot=bool(
+                agent_raw.get("tasks_resume_on_boot", True)
+            ),
+            tasks_running_block_enabled=bool(
+                agent_raw.get("tasks_running_block_enabled", True)
+            ),
+            brain_loop_deferred_grace_ms=max(
+                10,
+                min(
+                    5000,
+                    int(agent_raw.get("brain_loop_deferred_grace_ms", 100)),
+                ),
+            ),
+            task_completion_proactive_after_seconds=max(
+                5,
+                min(
+                    600,
+                    int(
+                        agent_raw.get(
+                            "task_completion_proactive_after_seconds", 45,
+                        ),
+                    ),
+                ),
+            ),
+            task_input_needed_proactive_after_seconds=max(
+                5,
+                min(
+                    600,
+                    int(
+                        agent_raw.get(
+                            "task_input_needed_proactive_after_seconds", 20,
+                        ),
+                    ),
+                ),
+            ),
+            task_cue_max_age_seconds=max(
+                60,
+                min(
+                    86400,
+                    int(
+                        agent_raw.get("task_cue_max_age_seconds", 1800)
+                    ),
+                ),
+            ),
+            task_cue_max_aggregated=max(
+                1,
+                min(
+                    20,
+                    int(agent_raw.get("task_cue_max_aggregated", 5)),
+                ),
+            ),
+            task_file_allowed_roots=_parse_task_file_allowed_roots(
+                agent_raw.get("task_file_allowed_roots", ())
+            ),
+            task_file_read_max_bytes=max(
+                1024,
+                min(
+                    16 * 1024 * 1024,
+                    int(agent_raw.get("task_file_read_max_bytes", 262144)),
+                ),
+            ),
+            task_file_read_max_lines=max(
+                10,
+                min(
+                    50000,
+                    int(agent_raw.get("task_file_read_max_lines", 2000)),
+                ),
+            ),
+            task_file_read_allowed_extensions=_parse_extension_list(
+                agent_raw.get(
+                    "task_file_read_allowed_extensions",
+                    (
+                        ".txt", ".md", ".rst", ".log",
+                        ".py", ".js", ".ts", ".tsx", ".jsx",
+                        ".json", ".yaml", ".yml", ".toml",
+                        ".ini", ".cfg", ".conf",
+                        ".html", ".css", ".xml",
+                        ".csv", ".tsv",
+                        ".sh", ".bat", ".ps1",
+                        ".sql",
+                        ".go", ".rs", ".c", ".h", ".cpp", ".hpp",
+                        ".java", ".kt",
+                        ".rb", ".lua",
+                    ),
+                )
+            ),
             user_reactions_enabled=bool(
                 agent_raw.get("user_reactions_enabled", True),
             ),
@@ -2985,6 +3337,52 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                         agent_raw.get(
                             "persona_touch_banner_duration_seconds", 20,
                         )
+                    ),
+                ),
+            ),
+            persona_task_banner_enabled=bool(
+                agent_raw.get("persona_task_banner_enabled", True),
+            ),
+            task_heartbeat_check_interval_seconds=max(
+                5,
+                min(
+                    3600,
+                    int(
+                        agent_raw.get(
+                            "task_heartbeat_check_interval_seconds", 30
+                        )
+                    ),
+                ),
+            ),
+            task_stalled_seconds=max(
+                60,
+                min(
+                    86400,
+                    int(agent_raw.get("task_stalled_seconds", 300)),
+                ),
+            ),
+            task_stalled_action=(
+                str(agent_raw.get("task_stalled_action", "warn")).strip().lower()
+                if str(agent_raw.get("task_stalled_action", "warn")).strip().lower()
+                in ("warn", "fail")
+                else "warn"
+            ),
+            task_cascade_cancel_children=bool(
+                agent_raw.get("task_cascade_cancel_children", True),
+            ),
+            task_cleanup_retention_days=max(
+                1,
+                min(
+                    3650,
+                    int(agent_raw.get("task_cleanup_retention_days", 30)),
+                ),
+            ),
+            task_cleanup_interval_seconds=max(
+                600,
+                min(
+                    604800,
+                    int(
+                        agent_raw.get("task_cleanup_interval_seconds", 21600)
                     ),
                 ),
             ),
@@ -3590,6 +3988,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             web_search=bool(tools_raw.get("web_search", True)),
             world=bool(tools_raw.get("world", True)),
             goals=bool(tools_raw.get("goals", True)),
+            file_tasks=bool(tools_raw.get("file_tasks", True)),
         ),
         endpointing=EndpointingSettings(
             enabled=bool(endpointing_raw.get("enabled", True)),

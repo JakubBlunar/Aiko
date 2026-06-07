@@ -102,6 +102,9 @@ compound across every K-series entry:
 - **P10.** Schedule-learner missing index.
 - **P11.** Reclaim background-worker `num_predict` from reasoning
   leakage (try `/no_think` on qwen3-family workers).
+- **P13.** Route-driven worker model + context — make
+  `routes.worker_default` actually drive worker resolution
+  (resolution precedence + full cascade across all ~12 workers).
 
 (P1 per-turn embed budget + timing, P2 prompt-build phase
 telemetry, P8 idle-worker queue visibility + multi-worker drain,

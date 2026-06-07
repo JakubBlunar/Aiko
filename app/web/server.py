@@ -2164,6 +2164,330 @@ def create_web_app(session: "SessionController") -> FastAPI:
             raise HTTPException(503, "world store unavailable")
         return JSONResponse(result)
 
+    # ── REST + WS bridge: Background tasks (chunk 13) ───────────────
+    #
+    # ``/api/tasks`` is read-mostly: paginated history, single-row
+    # snapshot, cancel, and answer. There's deliberately NO
+    # ``POST /api/tasks`` to spawn new tasks — spawning is exclusively
+    # Aiko's job (``start_*`` LLM tools) or system code's job (idle
+    # workers, MCP debug). The frontend's role is observation +
+    # cancel + answer. See ``docs/brain-orchestration.md`` for the
+    # rationale.
+    #
+    # The WS listener bridge fans every orchestrator event out as a
+    # JSON frame so the frontend can keep its local task cache in
+    # sync without polling. ``visible_to_user=false`` rows are
+    # filtered at the bridge — system-internal tasks never reach the
+    # wire.
+
+    def _resolve_task_user_id() -> str:
+        """Mirror ``app.llm.tools.file_tasks._user_id``.
+
+        Lifts ``session._user_id`` (set by the identity layer) so
+        REST + LLM tool calls land on the same task rows. Falls back
+        to ``"default"`` so a brand-new install before onboarding
+        still has a coherent user_id stamp.
+        """
+        return str(getattr(session, "_user_id", "default") or "default")
+
+    # Tracks task IDs whose ``task_started`` was suppressed because
+    # ``visible_to_user=false``. ``task_progress`` events for those
+    # IDs must also be filtered (the orchestrator dispatches them
+    # regardless of visibility); ``task_completed`` clears the entry.
+    # The set lives in the bridge closure so it doesn't survive a
+    # listener resubscribe — that's intentional since the orchestrator
+    # itself doesn't persist anything we don't want to lose.
+    _hidden_task_ids: set[int] = set()
+    _hidden_lock = threading.Lock()
+
+    def _on_task_event(kind: str, payload: dict[str, Any]) -> None:
+        """Broadcast every task lifecycle event to connected WS clients.
+
+        Runs on the orchestrator's worker thread (or the caller's
+        thread for ``task_started`` / cancel). Must stay cheap —
+        ``hub.broadcast`` queues to each client's send loop.
+
+        ``visible_to_user=false`` snapshots are dropped here so the
+        wire only ever carries user-visible tasks. The orchestrator
+        still fans the event out so future metric / audit listeners
+        can opt in to system-internal traffic.
+        """
+        try:
+            if kind == "task_progress":
+                task_id = int(payload.get("task_id", 0) or 0)
+                with _hidden_lock:
+                    if task_id in _hidden_task_ids:
+                        return
+                hub.broadcast(
+                    {
+                        "type": "task_progress",
+                        "task_id": task_id,
+                        "patch": dict(payload.get("patch", {}) or {}),
+                    }
+                )
+                return
+            task = payload.get("task") if isinstance(payload, dict) else None
+            if not isinstance(task, dict):
+                return
+            visible = bool(task.get("visible_to_user", True))
+            task_id = int(task.get("id", 0) or 0)
+            if kind == "task_started" and not visible and task_id:
+                with _hidden_lock:
+                    _hidden_task_ids.add(task_id)
+            if kind == "task_completed" and task_id:
+                # Always clear so the set doesn't grow unbounded
+                # across long sessions; visibility filter still
+                # blocks the broadcast below for hidden rows.
+                with _hidden_lock:
+                    _hidden_task_ids.discard(task_id)
+            if not visible:
+                return
+            hub.broadcast({"type": kind, "task": dict(task)})
+        except Exception:
+            log.debug("task event broadcast failed: kind=%s", kind, exc_info=True)
+
+    try:
+        orchestrator = getattr(session, "_task_orchestrator", None)
+        if orchestrator is not None:
+            orchestrator.add_task_listener(_on_task_event)
+    except Exception:
+        log.debug("task listener subscribe failed", exc_info=True)
+
+    @app.get("/api/tasks")
+    def list_tasks(
+        limit: int = 50,
+        offset: int = 0,
+        status: str | None = None,
+    ) -> JSONResponse:
+        """Paginated task history for the current user.
+
+        Filters ``visible_to_user=false`` rows. ``status`` accepts
+        one of the canonical task statuses (``running``,
+        ``awaiting_input``, ``paused``, ``done``, ``failed``,
+        ``cancelled``, ``interrupted``) or omitted for all. ``limit``
+        is clamped to ``[1, 200]``.
+        """
+        from app.core.tasks import task_snapshot as _snapshot
+        from app.core.tasks.task_handler import VALID_STATUSES
+
+        store = getattr(session, "_task_store", None)
+        if store is None:
+            return JSONResponse(
+                {"tasks": [], "count": 0, "total": 0, "enabled": False}
+            )
+        clamped_limit = max(1, min(int(limit), 200))
+        clamped_offset = max(0, int(offset))
+        status_norm: str | None = None
+        if status is not None:
+            candidate = str(status).strip().lower()
+            if candidate:
+                if candidate not in VALID_STATUSES:
+                    raise HTTPException(
+                        400,
+                        f"status must be one of {sorted(VALID_STATUSES)}",
+                    )
+                status_norm = candidate
+        user_id = _resolve_task_user_id()
+        try:
+            rows = store.list_for_user(
+                user_id,
+                status=status_norm,
+                limit=clamped_limit,
+                offset=clamped_offset,
+                visible_only=True,
+            )
+            total = store.count_for_user(
+                user_id, status=status_norm, visible_only=True
+            )
+        except Exception as exc:
+            log.exception("list_tasks failed: status=%s", status_norm)
+            raise HTTPException(500, f"list failed: {exc}") from exc
+        items = [_snapshot(r) for r in rows]
+        return JSONResponse(
+            {
+                "tasks": items,
+                "count": len(items),
+                "total": int(total),
+                "enabled": True,
+            }
+        )
+
+    @app.get("/api/tasks/{task_id}")
+    def get_task(task_id: int) -> JSONResponse:
+        """Single-row snapshot. 404 when row missing or hidden."""
+        from app.core.tasks import task_snapshot as _snapshot
+
+        store = getattr(session, "_task_store", None)
+        if store is None:
+            raise HTTPException(503, "task subsystem unavailable")
+        row = store.get(int(task_id))
+        if row is None or not bool(row.visible_to_user):
+            raise HTTPException(404, "task not found")
+        return JSONResponse({"task": _snapshot(row)})
+
+    @app.post("/api/tasks/{task_id}/cancel")
+    def cancel_task_rest(task_id: int) -> JSONResponse:
+        """User-initiated cancel.
+
+        Idempotent: cancelling an already-terminal task returns 200
+        with ``cancelled=False`` so the UI can render "already done"
+        without a noisy error.
+        """
+        orch = getattr(session, "_task_orchestrator", None)
+        if orch is None:
+            raise HTTPException(503, "task subsystem unavailable")
+        store = getattr(session, "_task_store", None)
+        if store is not None:
+            row = store.get(int(task_id))
+            if row is None or not bool(row.visible_to_user):
+                raise HTTPException(404, "task not found")
+        try:
+            cancelled = orch.cancel(int(task_id))
+        except Exception as exc:
+            log.exception("task cancel failed: task=%d", task_id)
+            raise HTTPException(500, f"cancel failed: {exc}") from exc
+        return JSONResponse(
+            {"task_id": int(task_id), "cancelled": bool(cancelled)}
+        )
+
+    @app.post("/api/tasks/{task_id}/answer")
+    async def answer_task_rest(
+        task_id: int, payload: dict[str, Any]
+    ) -> JSONResponse:
+        """Resolve an ``awaiting_input`` task with a user-supplied answer.
+
+        Body shape: ``{"input": str}``. Mirrors the
+        :class:`TaskInputNeeded` -> ``answer`` semantics in
+        :class:`TaskOrchestrator`. Returns 409 when the task is not
+        currently ``awaiting_input`` so the UI can refresh and show
+        the new state.
+        """
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "expected JSON object body")
+        answer = payload.get("input")
+        if answer is None:
+            answer = payload.get("answer")  # forgiving alias
+        if not isinstance(answer, str) or not answer.strip():
+            raise HTTPException(400, "input must be a non-empty string")
+        orch = getattr(session, "_task_orchestrator", None)
+        if orch is None:
+            raise HTTPException(503, "task subsystem unavailable")
+        store = getattr(session, "_task_store", None)
+        if store is not None:
+            row = store.get(int(task_id))
+            if row is None or not bool(row.visible_to_user):
+                raise HTTPException(404, "task not found")
+        try:
+            accepted = orch.answer(int(task_id), answer)
+        except Exception as exc:
+            log.exception("task answer failed: task=%d", task_id)
+            raise HTTPException(500, f"answer failed: {exc}") from exc
+        if not accepted:
+            raise HTTPException(
+                409,
+                "task did not accept the answer (wrong status or handler "
+                "unregistered)",
+            )
+        return JSONResponse({"task_id": int(task_id), "accepted": True})
+
+    @app.get("/api/tasks/{task_id}/events")
+    def list_task_events(
+        task_id: int,
+        limit: int = 100,
+        offset: int = 0,
+        order: str = "asc",
+    ) -> JSONResponse:
+        """Paginated event log for a single task (schema v17).
+
+        Returns the audit trail the orchestrator + handlers appended
+        via the event-log path. ``order`` is ``asc`` (default,
+        chronological replay) or ``desc`` (newest first).
+        Clamped to ``[1, 1000]`` per page.
+        """
+        store = getattr(session, "_task_store", None)
+        event_store = getattr(session, "_task_event_store", None)
+        if store is None or event_store is None:
+            raise HTTPException(503, "task subsystem unavailable")
+        row = store.get(int(task_id))
+        if row is None or not bool(row.visible_to_user):
+            raise HTTPException(404, "task not found")
+        order_norm = str(order or "").strip().lower()
+        if order_norm not in ("asc", "desc"):
+            order_norm = "asc"
+        clamped_limit = max(1, min(int(limit), 1000))
+        clamped_offset = max(0, int(offset))
+        try:
+            events = event_store.list_for_task(
+                int(task_id),
+                limit=clamped_limit,
+                offset=clamped_offset,
+                ascending=order_norm == "asc",
+            )
+            total = event_store.count_for_task(int(task_id))
+        except Exception as exc:
+            log.exception("list_task_events failed: task=%d", task_id)
+            raise HTTPException(500, f"list failed: {exc}") from exc
+        return JSONResponse(
+            {
+                "task_id": int(task_id),
+                "events": [
+                    {
+                        "id": int(e.id),
+                        "task_id": int(e.task_id),
+                        "type": str(e.type),
+                        "data": (dict(e.data) if e.data is not None else None),
+                        "created_at": str(e.created_at),
+                    }
+                    for e in events
+                ],
+                "count": len(events),
+                "total": int(total),
+            }
+        )
+
+    @app.get("/api/tasks/{task_id}/inputs")
+    def list_task_inputs(task_id: int) -> JSONResponse:
+        """Full input/answer history for a task (schema v17).
+
+        Returns one row per question the handler asked (pending /
+        answered / superseded / cancelled). Chronological. No
+        pagination — the per-task volume is bounded.
+        """
+        store = getattr(session, "_task_store", None)
+        input_store = getattr(session, "_task_input_store", None)
+        if store is None or input_store is None:
+            raise HTTPException(503, "task subsystem unavailable")
+        row = store.get(int(task_id))
+        if row is None or not bool(row.visible_to_user):
+            raise HTTPException(404, "task not found")
+        try:
+            inputs = input_store.list_for_task(int(task_id), ascending=True)
+        except Exception as exc:
+            log.exception("list_task_inputs failed: task=%d", task_id)
+            raise HTTPException(500, f"list failed: {exc}") from exc
+        return JSONResponse(
+            {
+                "task_id": int(task_id),
+                "inputs": [
+                    {
+                        "id": int(inp.id),
+                        "task_id": int(inp.task_id),
+                        "prompt": str(inp.prompt),
+                        "kind": inp.kind,
+                        "options": (
+                            list(inp.options) if inp.options is not None else None
+                        ),
+                        "status": str(inp.status),
+                        "response": inp.response,
+                        "created_at": str(inp.created_at),
+                        "answered_at": inp.answered_at,
+                    }
+                    for inp in inputs
+                ],
+                "count": len(inputs),
+            }
+        )
+
     # ── REST: Shared moments + Together (schema v7) ─────────────────
 
     def _on_shared_moment(patch: dict[str, Any]) -> None:
@@ -2811,7 +3135,28 @@ def _spawn_chat_turn(
     text: str,
     done_event: threading.Event,
 ) -> None:
-    """Run a chat turn on a worker thread, streaming tokens via the hub."""
+    """Run a chat turn on a worker thread, streaming tokens via the hub.
+
+    Chunk 8 of the brain-orchestration refactor: this routes through
+    :meth:`SessionController.enqueue_user_message` rather than calling
+    :meth:`SessionController.chat_once_streaming` directly. The
+    worker thread blocks on the queue's reply future, but the actual
+    turn (LLM stream, TTS dispatch, post-turn jobs) runs on the
+    brain-loop thread. This is the contract the design doc calls
+    "the queue is the single consumer for chat" — two WS clients
+    typing at the same time can no longer race a turn against each
+    other. Whichever message lands on the queue first wins; the
+    second waits its turn.
+
+    The streaming callbacks (per-token broadcast, generation-status
+    progress, user-side stop button via ``done_event``) ride the new
+    ``on_token`` / ``on_generation_status`` / ``stop_requested``
+    kwargs which the mixin bundles into a
+    :class:`ProducerCallbacks` and stashes on the queued event. The
+    handler unbundles them on the brain-loop thread and threads
+    them straight into ``chat_once_streaming`` — the hub broadcast
+    is already thread-safe so this works without further locking.
+    """
 
     def _run() -> None:
         try:
@@ -2827,12 +3172,17 @@ def _spawn_chat_turn(
             def stop_requested() -> bool:
                 return done_event.is_set()
 
-            reply = session.chat_once_streaming(
-                user_text=text,
+            reply = session.enqueue_user_message(
+                text=text,
+                mode="typed",
+                wait_for_reply=True,
+                # Generous: post-turn workers can push to a minute or
+                # so on slow boxes. The WS client doesn't have a
+                # tighter expectation than the legacy direct call did.
+                timeout=180.0,
                 on_token=on_token,
                 on_generation_status=on_status,
                 stop_requested=stop_requested,
-                mode="typed",
             )
             session._notify_message("Assistant", reply or "")
             hub.broadcast({

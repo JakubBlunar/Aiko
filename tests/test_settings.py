@@ -1345,5 +1345,330 @@ class ChatLlmSettingsTests(unittest.TestCase):
         self.assertEqual(result.chat_llm.provider, "ollama")
 
 
+class TaskOrchestrationSettingsTests(unittest.TestCase):
+    """Chunk 4: 9 agent knobs round-trip with the documented clamps.
+
+    Mirrors the doc table in ``docs/configuration.md`` under
+    "Brain orchestration — long-running tasks (schema v16)". Each
+    field has its own min/max contract pinned here so a typo in
+    ``user.json`` can never crash boot or pin a runaway value.
+    """
+
+    _TASK_KEYS = (
+        "tasks_enabled",
+        "tasks_per_user_cap",
+        "tasks_resume_on_boot",
+        "tasks_running_block_enabled",
+        "brain_loop_deferred_grace_ms",
+        "task_completion_proactive_after_seconds",
+        "task_input_needed_proactive_after_seconds",
+        "task_cue_max_age_seconds",
+        "task_cue_max_aggregated",
+    )
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(
+        self,
+        agent_extra: dict | None = None,
+        strip_keys: bool = True,
+    ) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(
+            json.loads(default_path.read_text(encoding="utf-8"))
+        )
+        if strip_keys:
+            for k in self._TASK_KEYS:
+                cfg.get("agent", {}).pop(k, None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults_load_when_keys_missing(self) -> None:
+        path = self._write_config()
+        a = load_settings(config_path=path).agent
+        self.assertTrue(a.tasks_enabled)
+        self.assertEqual(a.tasks_per_user_cap, 8)
+        self.assertTrue(a.tasks_resume_on_boot)
+        self.assertTrue(a.tasks_running_block_enabled)
+        self.assertEqual(a.brain_loop_deferred_grace_ms, 100)
+        self.assertEqual(a.task_completion_proactive_after_seconds, 45)
+        self.assertEqual(a.task_input_needed_proactive_after_seconds, 20)
+        self.assertEqual(a.task_cue_max_age_seconds, 1800)
+        self.assertEqual(a.task_cue_max_aggregated, 5)
+
+    def test_overrides_round_trip(self) -> None:
+        path = self._write_config(
+            agent_extra={
+                "tasks_enabled": False,
+                "tasks_per_user_cap": 4,
+                "tasks_resume_on_boot": False,
+                "tasks_running_block_enabled": False,
+                "brain_loop_deferred_grace_ms": 250,
+                "task_completion_proactive_after_seconds": 90,
+                "task_input_needed_proactive_after_seconds": 30,
+                "task_cue_max_age_seconds": 3600,
+                "task_cue_max_aggregated": 10,
+            },
+        )
+        a = load_settings(config_path=path).agent
+        self.assertFalse(a.tasks_enabled)
+        self.assertEqual(a.tasks_per_user_cap, 4)
+        self.assertFalse(a.tasks_resume_on_boot)
+        self.assertFalse(a.tasks_running_block_enabled)
+        self.assertEqual(a.brain_loop_deferred_grace_ms, 250)
+        self.assertEqual(a.task_completion_proactive_after_seconds, 90)
+        self.assertEqual(a.task_input_needed_proactive_after_seconds, 30)
+        self.assertEqual(a.task_cue_max_age_seconds, 3600)
+        self.assertEqual(a.task_cue_max_aggregated, 10)
+
+    def test_tasks_per_user_cap_floor(self) -> None:
+        path = self._write_config(agent_extra={"tasks_per_user_cap": 0})
+        a = load_settings(config_path=path).agent
+        # Floor is 1 -- the orchestrator needs at least one slot.
+        self.assertEqual(a.tasks_per_user_cap, 1)
+        # Negative clamps up too.
+        path = self._write_config(agent_extra={"tasks_per_user_cap": -5})
+        a = load_settings(config_path=path).agent
+        self.assertEqual(a.tasks_per_user_cap, 1)
+
+    def test_brain_loop_grace_floor_and_ceiling(self) -> None:
+        path = self._write_config(
+            agent_extra={"brain_loop_deferred_grace_ms": 1}
+        )
+        a = load_settings(config_path=path).agent
+        self.assertEqual(a.brain_loop_deferred_grace_ms, 10)
+        path = self._write_config(
+            agent_extra={"brain_loop_deferred_grace_ms": 99999}
+        )
+        a = load_settings(config_path=path).agent
+        self.assertEqual(a.brain_loop_deferred_grace_ms, 5000)
+
+    def test_completion_proactive_floor_and_ceiling(self) -> None:
+        path = self._write_config(
+            agent_extra={"task_completion_proactive_after_seconds": -10}
+        )
+        a = load_settings(config_path=path).agent
+        self.assertEqual(a.task_completion_proactive_after_seconds, 5)
+        path = self._write_config(
+            agent_extra={"task_completion_proactive_after_seconds": 9999}
+        )
+        a = load_settings(config_path=path).agent
+        self.assertEqual(a.task_completion_proactive_after_seconds, 600)
+
+    def test_input_needed_proactive_floor_and_ceiling(self) -> None:
+        path = self._write_config(
+            agent_extra={"task_input_needed_proactive_after_seconds": -10}
+        )
+        a = load_settings(config_path=path).agent
+        self.assertEqual(a.task_input_needed_proactive_after_seconds, 5)
+        path = self._write_config(
+            agent_extra={"task_input_needed_proactive_after_seconds": 9999}
+        )
+        a = load_settings(config_path=path).agent
+        self.assertEqual(a.task_input_needed_proactive_after_seconds, 600)
+
+    def test_cue_max_age_floor_and_ceiling(self) -> None:
+        path = self._write_config(
+            agent_extra={"task_cue_max_age_seconds": 1}
+        )
+        a = load_settings(config_path=path).agent
+        self.assertEqual(a.task_cue_max_age_seconds, 60)
+        path = self._write_config(
+            agent_extra={"task_cue_max_age_seconds": 999999}
+        )
+        a = load_settings(config_path=path).agent
+        self.assertEqual(a.task_cue_max_age_seconds, 86400)
+
+    def test_cue_max_aggregated_floor_and_ceiling(self) -> None:
+        path = self._write_config(
+            agent_extra={"task_cue_max_aggregated": 0}
+        )
+        a = load_settings(config_path=path).agent
+        self.assertEqual(a.task_cue_max_aggregated, 1)
+        path = self._write_config(
+            agent_extra={"task_cue_max_aggregated": 99}
+        )
+        a = load_settings(config_path=path).agent
+        self.assertEqual(a.task_cue_max_aggregated, 20)
+
+    def test_bool_fields_accept_truthy_values(self) -> None:
+        path = self._write_config(
+            agent_extra={
+                "tasks_enabled": 1,
+                "tasks_resume_on_boot": 0,
+                "tasks_running_block_enabled": "",
+            },
+        )
+        a = load_settings(config_path=path).agent
+        self.assertTrue(a.tasks_enabled)
+        self.assertFalse(a.tasks_resume_on_boot)
+        self.assertFalse(a.tasks_running_block_enabled)
+
+
+class PersonaTaskBannerSettingsTests(unittest.TestCase):
+    """Chunk 15: ``agent.persona_task_banner_enabled`` is the master
+    switch for the persona-window mirror of the task strip. Pure
+    boolean round-trip + default + truthy coercion."""
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(
+        self,
+        agent_extra: dict | None = None,
+        strip_key: bool = True,
+    ) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(
+            json.loads(default_path.read_text(encoding="utf-8"))
+        )
+        if strip_key:
+            cfg.get("agent", {}).pop("persona_task_banner_enabled", None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_default_is_enabled_when_key_missing(self) -> None:
+        path = self._write_config()
+        a = load_settings(config_path=path).agent
+        self.assertTrue(a.persona_task_banner_enabled)
+
+    def test_explicit_false_round_trips(self) -> None:
+        path = self._write_config(
+            agent_extra={"persona_task_banner_enabled": False}
+        )
+        a = load_settings(config_path=path).agent
+        self.assertFalse(a.persona_task_banner_enabled)
+
+    def test_truthy_coercion(self) -> None:
+        # Mirrors ``test_bool_fields_accept_truthy_values`` in the
+        # task-orchestration block: a typo like ``0`` or ``""`` in
+        # ``user.json`` should resolve to ``False`` cleanly.
+        path = self._write_config(
+            agent_extra={"persona_task_banner_enabled": 0}
+        )
+        a = load_settings(config_path=path).agent
+        self.assertFalse(a.persona_task_banner_enabled)
+        path = self._write_config(
+            agent_extra={"persona_task_banner_enabled": 1}
+        )
+        a = load_settings(config_path=path).agent
+        self.assertTrue(a.persona_task_banner_enabled)
+
+
+class TaskLifecycleSafetySettingsTests(unittest.TestCase):
+    """Schema v17 (Brain Orchestration Phase 2): six new agent settings
+    for heartbeat / stalled / cleanup / cascade. Pin defaults + clamps.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(
+        self,
+        agent_extra: dict | None = None,
+        strip_keys: tuple[str, ...] = (),
+    ) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(
+            json.loads(default_path.read_text(encoding="utf-8"))
+        )
+        for k in strip_keys:
+            cfg.get("agent", {}).pop(k, None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults_match_design(self) -> None:
+        path = self._write_config(
+            strip_keys=(
+                "task_heartbeat_check_interval_seconds",
+                "task_stalled_seconds",
+                "task_stalled_action",
+                "task_cleanup_retention_days",
+                "task_cleanup_interval_seconds",
+                "task_cascade_cancel_children",
+            ),
+        )
+        a = load_settings(config_path=path).agent
+        self.assertEqual(a.task_heartbeat_check_interval_seconds, 30)
+        self.assertEqual(a.task_stalled_seconds, 300)
+        self.assertEqual(a.task_stalled_action, "warn")
+        self.assertEqual(a.task_cleanup_retention_days, 30)
+        self.assertEqual(a.task_cleanup_interval_seconds, 21600)
+        self.assertTrue(a.task_cascade_cancel_children)
+
+    def test_floor_clamps(self) -> None:
+        path = self._write_config(
+            agent_extra={
+                "task_heartbeat_check_interval_seconds": 1,
+                "task_stalled_seconds": 10,
+                "task_cleanup_retention_days": 0,
+                "task_cleanup_interval_seconds": 1,
+            },
+        )
+        a = load_settings(config_path=path).agent
+        self.assertGreaterEqual(a.task_heartbeat_check_interval_seconds, 5)
+        self.assertGreaterEqual(a.task_stalled_seconds, 60)
+        self.assertGreaterEqual(a.task_cleanup_retention_days, 1)
+        self.assertGreaterEqual(a.task_cleanup_interval_seconds, 600)
+
+    def test_action_unknown_value_falls_back_to_warn(self) -> None:
+        path = self._write_config(
+            agent_extra={"task_stalled_action": "nuke"},
+        )
+        a = load_settings(config_path=path).agent
+        self.assertEqual(a.task_stalled_action, "warn")
+
+    def test_action_fail_round_trips(self) -> None:
+        path = self._write_config(
+            agent_extra={"task_stalled_action": "fail"},
+        )
+        a = load_settings(config_path=path).agent
+        self.assertEqual(a.task_stalled_action, "fail")
+
+    def test_cascade_disable_round_trips(self) -> None:
+        path = self._write_config(
+            agent_extra={"task_cascade_cancel_children": False},
+        )
+        a = load_settings(config_path=path).agent
+        self.assertFalse(a.task_cascade_cancel_children)
+
+
 if __name__ == "__main__":
     unittest.main()

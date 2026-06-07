@@ -31,6 +31,59 @@ from app.core.affect import circadian as _circadian
 log = logging.getLogger("app.session")
 
 
+# Brain-orchestration chunk 6: helper for the running-tasks block.
+# Pulled out so the rendering rules can be tested in isolation
+# (``tests/test_running_tasks_provider.py``) without spinning up a
+# full :class:`SessionController`. Pure function — takes a TaskRow,
+# returns the formatted bullet line.
+def _format_running_task_line(row: Any) -> str:
+    """Format one :class:`TaskRow` as a bullet for the running-tasks block.
+
+    Shape: ``- {label} ({status}[, {N}%][, "{last_message}"])``
+
+    * ``label`` is ``row.title`` when set, else ``row.handler_name``.
+      Long titles are truncated to 40 chars (with an ellipsis) so a
+      title bomb can't blow past the block budget.
+    * ``status`` is the raw status string (``running`` /
+      ``awaiting_input``). Stays lowercase — Aiko's persona block
+      teaches her to read these casually, not formally.
+    * ``N%`` only appears when ``row.progress`` is a finite float in
+      ``[0, 1]``; clamped + rounded to whole percent.
+    * ``last_message`` appears when set, truncated to 60 chars. The
+      ``awaiting_input`` cue's question text lives in the parallel
+      task-cues block, so we don't repeat it here — the
+      ``last_message`` is the handler's progress narration ("scanning
+      directory tree", etc.).
+    """
+    handler = str(getattr(row, "handler_name", "") or "task")
+    title = str(getattr(row, "title", "") or "").strip()
+    label = title or handler
+    if len(label) > 40:
+        label = label[:39].rstrip() + "…"
+    status = str(getattr(row, "status", "") or "running")
+    parts: list[str] = [status]
+    progress = getattr(row, "progress", None)
+    if progress is not None:
+        try:
+            p = float(progress)
+        except (TypeError, ValueError):
+            p = None  # type: ignore[assignment]
+        else:
+            if p < 0.0:
+                p = 0.0
+            elif p > 1.0:
+                p = 1.0
+            parts.append(f"{int(round(p * 100))}%")
+    last = getattr(row, "last_message", None)
+    if last:
+        text = str(last).strip()
+        if text:
+            if len(text) > 60:
+                text = text[:59].rstrip() + "…"
+            parts.append(f'"{text}"')
+    return f"- {label} ({', '.join(parts)})"
+
+
 class InnerLifeProvidersMixin:
     """Per-turn prompt-block providers, grounding builder, avatar accessors."""
 
@@ -592,6 +645,75 @@ class InnerLifeProvidersMixin:
         except Exception:
             log.debug(
                 "K31 touch_state block render failed", exc_info=True,
+            )
+            return ""
+
+    def _render_running_tasks_block(self) -> str:
+        """Brain-orchestration chunk 6: list tasks currently in flight.
+
+        Renders one terse multi-line block so Aiko has live awareness
+        of what she has running in the background. Sibling of the
+        ``task_cues`` block — that one announces *deltas* (results
+        just landed / blocked on input), this one announces *state*
+        (still working).
+
+        Reads :meth:`TaskOrchestrator.list_running` for the active
+        user (filters to ``status in (running, awaiting_input)`` —
+        ``paused`` rows survive recovery but aren't actively
+        working, so they don't belong in the "currently doing"
+        cluster).
+
+        Empty string under any of these conditions:
+
+        * Master switch ``agent.tasks_running_block_enabled`` is
+          ``False`` (the off-switch).
+        * Master switch ``agent.tasks_enabled`` is ``False`` (the
+          orchestrator never built, so there's nothing to list).
+        * The orchestrator is missing (early boot or stub host).
+        * No active rows for the current user.
+
+        Best-effort exception handling — any failure path returns
+        ``""`` and logs at DEBUG. Matches the swallow-and-log
+        convention used by every other ``_render_*`` provider.
+        """
+        agent_settings = getattr(self._settings, "agent", None)
+        if agent_settings is None:
+            return ""
+        if not bool(getattr(agent_settings, "tasks_running_block_enabled", True)):
+            return ""
+        if not bool(getattr(agent_settings, "tasks_enabled", True)):
+            return ""
+        orchestrator = getattr(self, "_task_orchestrator", None)
+        if orchestrator is None:
+            return ""
+        try:
+            from app.core.tasks import STATUS_AWAITING_INPUT, STATUS_RUNNING
+
+            user_id = getattr(self, "_user_id", None)
+            rows = orchestrator.list_running(user_id=user_id)
+            active = [
+                r for r in rows
+                if r.status in (STATUS_RUNNING, STATUS_AWAITING_INPUT)
+            ]
+            if not active:
+                return ""
+            # Cap at 5 lines — same aggregation budget the cue
+            # block uses. A user with 10+ running tasks is already
+            # in a degenerate state; the LLM only needs the most
+            # recent handful for orientation.
+            cap = 5
+            head = active[:cap]
+            user_name = self.user_display_name
+            lines: list[str] = []
+            lines.append(f"Tasks running for {user_name} right now:")
+            for row in head:
+                lines.append(_format_running_task_line(row))
+            if len(active) > cap:
+                lines.append(f"...and {len(active) - cap} more")
+            return "\n".join(lines)
+        except Exception:
+            log.debug(
+                "running-tasks block render failed", exc_info=True,
             )
             return ""
 

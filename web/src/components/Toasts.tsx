@@ -45,12 +45,20 @@ export function Toasts() {
               ? "border-emerald-500/50 bg-emerald-950/80 text-emerald-100"
               : t.kind === "warning"
                 ? "border-amber-500/50 bg-amber-950/80 text-amber-100"
-                : "border-slate-500/50 bg-slate-900/80 text-slate-100"
+                : t.kind === "error"
+                  ? "border-rose-500/50 bg-rose-950/80 text-rose-100"
+                  : "border-slate-500/50 bg-slate-900/80 text-slate-100"
           }`}
         >
           <div className="flex items-start gap-2">
             <span className="select-none" aria-hidden>
-              {t.kind === "memory" ? "✦" : t.kind === "warning" ? "!" : "i"}
+              {t.kind === "memory"
+                ? "✦"
+                : t.kind === "warning"
+                  ? "!"
+                  : t.kind === "error"
+                    ? "⚠"
+                    : "i"}
             </span>
             <span className="flex-1 leading-snug">{t.text}</span>
             <button

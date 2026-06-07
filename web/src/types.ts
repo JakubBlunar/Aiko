@@ -426,6 +426,134 @@ export interface MemoryCounts {
  * ``GET /api/settings/identity`` and the ``identity`` key on the WS
  * ``hello`` snapshot.
  */
+// ── Background tasks (chunk 13/14) ────────────────────────────────
+//
+// One row in the ``tasks`` table, serialised by ``task_snapshot``
+// in ``app/core/tasks/task_orchestrator.py``. Field set is pinned
+// in ``tests/test_task_orchestrator.py::SnapshotHelperTests`` —
+// adding a field here is fine, renaming / dropping one is a
+// wire-protocol break.
+export type TaskStatus =
+  | "running"
+  | "awaiting_input"
+  | "paused"
+  | "done"
+  | "failed"
+  | "cancelled"
+  | "interrupted";
+
+export const ACTIVE_TASK_STATUSES: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
+  "running",
+  "awaiting_input",
+  "paused",
+]);
+
+export const TERMINAL_TASK_STATUSES: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
+  "done",
+  "failed",
+  "cancelled",
+  "interrupted",
+]);
+
+export interface TaskInputRequest {
+  prompt: string;
+  /** Pre-defined options for click-to-answer UI. ``undefined`` /
+   * empty array means the handler accepts free text. */
+  options?: string[] | null;
+}
+
+export interface TaskSnapshot {
+  id: number;
+  user_id: string;
+  handler_name: string;
+  title: string;
+  status: TaskStatus;
+  progress: number | null;
+  last_message: string | null;
+  /** Schema v17: free-text per-handler phase label (e.g.
+   * ``"scanning"`` -> ``"matching"``). Promoted from
+   * ``state["phase"]`` so the UI can render the human-readable
+   * phase next to the percent progress without parsing JSON. */
+  phase?: string | null;
+  initiated_by: string;
+  args: Record<string, unknown>;
+  input_request: TaskInputRequest | null;
+  result: Record<string, unknown> | null;
+  error: string | null;
+  notify_aiko: boolean;
+  visible_to_user: boolean;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+  /** Schema v17: ISO timestamp the orchestrator bumps on every
+   * emit. Stale = heartbeat sweep's "warn" target. ``null`` on
+   * legacy rows that pre-date the migration. */
+  heartbeat_at?: string | null;
+  /** Schema v17: parent task in a single-parent tree. ``null`` for
+   * top-level tasks. */
+  parent_task_id?: number | null;
+  metadata: Record<string, unknown> | null;
+}
+
+/** Patch payload carried by the ``task_progress`` WS event. The
+ * frontend merges these fields on top of the current snapshot
+ * instead of receiving a full re-broadcast on every percent tick. */
+export interface TaskProgressPatch {
+  status?: TaskStatus;
+  progress?: number;
+  last_message?: string;
+  /** Schema v17: phase changes ride on the same progress patch so
+   * the frontend doesn't need a second WS event for the label
+   * column. */
+  phase?: string | null;
+}
+
+export interface TasksListResponse {
+  tasks: TaskSnapshot[];
+  count: number;
+  total: number;
+  enabled: boolean;
+}
+
+/** One row of the per-task event log (schema v17). The orchestrator
+ * appends one row per emit (started / progress / phase_change /
+ * input_question / input_answer / completed / failed / cancelled /
+ * interrupted / heartbeat_stalled / child_spawned) plus optional
+ * handler-defined ``custom`` rows. */
+export interface TaskEvent {
+  id: number;
+  task_id: number;
+  type: string;
+  data: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface TaskEventsResponse {
+  task_id: number;
+  events: TaskEvent[];
+  count: number;
+  total: number;
+}
+
+/** One row of the per-task input/answer history (schema v17). */
+export interface TaskInput {
+  id: number;
+  task_id: number;
+  prompt: string;
+  kind: string | null;
+  options: string[] | null;
+  status: "pending" | "answered" | "superseded" | "cancelled";
+  response: string | null;
+  created_at: string;
+  answered_at: string | null;
+}
+
+export interface TaskInputsResponse {
+  task_id: number;
+  inputs: TaskInput[];
+  count: number;
+}
+
 export interface Identity {
   user_display_name: string;
   needs_onboarding: boolean;
@@ -1260,6 +1388,35 @@ export type WsServerEvent =
       type: "message_reaction_updated";
       message_id: number;
       reactions: Record<string, number>;
+    }
+  | {
+      /** Chunk 13: a new task row landed (visible_to_user=true).
+       * The strip + tasks tab prepend the snapshot immediately. */
+      type: "task_started";
+      task: TaskSnapshot;
+    }
+  | {
+      /** Chunk 13: handler emitted TaskProgress. ``task_id`` is the
+       * row id; ``patch`` carries only the changed fields so the
+       * frontend can merge cheaply on every percent tick. */
+      type: "task_progress";
+      task_id: number;
+      patch: TaskProgressPatch;
+    }
+  | {
+      /** Chunk 13: handler emitted TaskInputNeeded. The full
+       * snapshot is carried so ``status`` and ``input_request``
+       * land in the store in one pass. */
+      type: "task_input_needed";
+      task: TaskSnapshot;
+    }
+  | {
+      /** Chunk 13: terminal transition — ``status`` on the snapshot
+       * is one of ``done`` / ``failed`` / ``cancelled``. The strip
+       * keeps the chip visible for a short grace window so the
+       * user can see "done" before it slides out. */
+      type: "task_completed";
+      task: TaskSnapshot;
     }
   | { type: "audio_amplitude"; level: number }
   | {

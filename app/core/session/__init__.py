@@ -30,6 +30,7 @@ from app.core.session.inner_life_providers_mixin import InnerLifeProvidersMixin
 from app.core.session.memory_facade_mixin import MemoryFacadeMixin
 from app.core.session.post_turn_mixin import PostTurnMixin
 from app.core.session.speaking_window_jobs_mixin import SpeakingWindowJobsMixin
+from app.core.session.task_orchestration_mixin import TaskOrchestrationMixin
 from app.core.session.world_mixin import WorldMixin
 
 __all__ = [
@@ -38,5 +39,6 @@ __all__ = [
     "MemoryFacadeMixin",
     "PostTurnMixin",
     "SpeakingWindowJobsMixin",
+    "TaskOrchestrationMixin",
     "WorldMixin",
 ]

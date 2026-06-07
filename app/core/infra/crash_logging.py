@@ -13,13 +13,15 @@ import traceback
 from types import TracebackType
 from typing import Any
 
-from app.core.infra.log_context import get_turn_id
+from app.core.infra.log_context import get_task_id, get_turn_id
 
 
 DATA_DIR = Path(__file__).resolve().parents[3] / "data"
 CRASH_LOG_PATH = DATA_DIR / "crashlog.txt"
 
-LOG_FORMAT = "[%(asctime)s] %(levelname)s [%(name)s turn=%(turn)s] %(message)s"
+LOG_FORMAT = (
+    "[%(asctime)s] %(levelname)s [%(name)s turn=%(turn)s task=%(task)s] %(message)s"
+)
 RING_BUFFER_CAPACITY = 1000
 
 _lock = threading.Lock()
@@ -39,19 +41,32 @@ class _SpamFilter(logging.Filter):
 
 
 class _TurnIdFilter(logging.Filter):
-    """Stamp every record with ``record.turn`` from the contextvar.
+    """Stamp every record with ``record.turn`` and ``record.task`` from
+    the correlation contextvars.
 
-    The format string references ``%(turn)s`` so this filter MUST run
-    before the record is emitted, otherwise the formatter raises
-    ``KeyError``. We attach it directly to every handler we create, and
-    set ``record.turn = "-"`` when no turn is active so unrelated lines
-    (boot, shutdown, scheduler idle) stay clean.
+    The format string references both ``%(turn)s`` and ``%(task)s`` so
+    this filter MUST run before the record is emitted, otherwise the
+    formatter raises ``KeyError``. We attach it directly to every
+    handler we create, and set ``record.turn = "-"`` /
+    ``record.task = "-"`` when no correlation id is active so
+    unrelated lines (boot, shutdown, scheduler idle) stay clean.
+
+    Name retained for backwards-compatibility — see
+    :class:`_CorrelationFilter` alias below for new call sites.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
         if not hasattr(record, "turn") or not record.turn:  # type: ignore[attr-defined]
             record.turn = get_turn_id() or "-"
+        if not hasattr(record, "task") or not record.task:  # type: ignore[attr-defined]
+            record.task = get_task_id() or "-"
         return True
+
+
+_CorrelationFilter = _TurnIdFilter
+"""Forward-looking alias. Existing callers (tests, infra) import
+``_TurnIdFilter``; new code that touches the filter should reach for
+the alias since the filter now handles two correlation ids."""
 
 
 class _RingBufferHandler(logging.Handler):

@@ -1,8 +1,14 @@
 # Brain orchestration: BrainEventQueue, BrainLoop, and the Task system
 
-*Schema v16. Phase 1 of the brain-orchestration refactor. Lays the
-foundation for user-initiated long-running tasks while migrating every
-existing conversational producer through a single-consumer event queue.*
+*Schema v17 (Phase 2 — scaling foundations on top of phase 1). Phase 1
+introduced the queue, loop, and the v16 `tasks` table. Phase 2 keeps
+all of that intact and layers four new top-level concepts: an
+append-only **task event log**, a separate **task input store**,
+**phase / heartbeat / parent_task_id** as first-class columns on
+`tasks`, and a daemon **heartbeat sweep** plus an idle-scheduled
+**cleanup worker**. Everything in phase 1 still works the same way at
+the wire level — the public REST and WS payloads gained fields but
+removed none.*
 
 Today, every input that wants the brain's attention lives on its own
 thread with cooperative boolean gates. Typed messages enter on
@@ -244,6 +250,57 @@ failures vs the breezy success tone. Hard cap:
 in DB / WS so the strip is complete, but get dropped from the prompt
 block to keep T6 cheap.
 
+### Awaiting-input resolution paths
+
+When a handler emits `TaskInputNeeded`, the question reaches the user
+through **two parallel channels** — chat is the primary, UI click is a
+fallback for structured option-style questions.
+
+**Channel A — chat-first (primary).** The `task_input_needed` event
+parks on `_pending_task_cues` exactly like a task result. On Aiko's
+next turn, `PromptAssembler` renders the cue as a T6 system block, and
+Aiko weaves the question into her reply naturally ("I found *a lot* of
+meeting files — should I focus on recent ones, or a specific folder?").
+The user replies in chat. Aiko's next-turn LLM call reads the user's
+response, picks the right binding, and emits an
+`answer_task(task_id, "<binding>")` tool call. The orchestrator
+forwards the answer to `TaskHandler.on_input(state, answer, emit)`;
+the handler validates and resumes. If the handler returns
+`TaskInputNeeded` again with a validation error message, Aiko asks
+once more.
+
+**Channel B — UI click (fallback).** A `TaskStrip` chip lights up
+with an "Answer" affordance:
+
+- If `input_request.options=[...]` (structured choices — "which of these 3 files?"), the chip expands to show **clickable option buttons**. Click → `POST /api/tasks/{id}/answer` with the chosen value, bypasses Aiko entirely, task resumes immediately. The completion cue then arrives on Aiko's next turn just like any other.
+- If `options=None` (open-ended), the chip exposes a small inline text field. Submitting is equivalent to replying in chat — same answer-task path, just shorter to articulate.
+
+**Persona window.** Mirrors the chip but via a `PersonaActionBanner`
+matching the K31 touch-banner pattern in
+[`web/src/components/PersonaActionBanner.tsx`](../web/src/components/PersonaActionBanner.tsx).
+The banner shows the question with clickable options (if any), auto-
+dismisses if the user answers via voice instead.
+
+**Voice mode.** Only Channel A. Aiko speaks the question, the user
+replies verbally, STT → next-turn LLM → `answer_task` tool call.
+
+**Why chat-first.** Aiko is a companion, not a wizard. A modal popup
+that hijacks the screen to ask "pick A/B/C" breaks her presence. The
+LLM is also good at fuzzy binding ("the second one", "yeah the draft",
+"neither, try again with last week's"), so even questions with
+predefined options resolve naturally through speech or typing. The UI
+chip exists because *some questions are genuinely faster to click than
+to articulate* — a 3-way disambiguation between file paths is a real
+example — but the click path is a convenience layered on top of the
+conversational path, not the primary flow.
+
+**Cross-root file ambiguity is the canonical example.** When a bare
+filename matches in multiple `task_file_allowed_roots` entries, the
+handler emits `TaskInputNeeded` with the candidate list as options.
+The user can click in the strip, click the persona banner, or just
+say "the one from Documents" in chat. All three paths resolve to the
+same `answer_task` call.
+
 ### Stale-cue sweep
 
 Each cue is parked with an enqueue timestamp. On every BrainLoop
@@ -399,11 +456,79 @@ the orchestrator owns the row.
 
 ## Reference handler: filesystem (`file_search` + `file_read`)
 
-Phase 1 ships exactly two handlers. Read-only, sandboxed to a single
-configurable root (`agent.task_file_sandbox_root`, default
-`data/user_documents/`). Path safety lives in
+Phase 1 ships exactly two handlers. Read-only, sandboxed to a
+**configurable list of allowed roots**. Path safety lives in
 `app/core/tasks/sandbox.py` — normalize + reject `..` / symlink
-escapes / absolute paths outside root.
+escapes / absolute paths outside any configured root.
+
+### Allowed roots
+
+Each root is a labelled entry:
+
+```python
+@dataclass(slots=True)
+class FileTaskRoot:
+    label: str          # human-readable id, e.g. "Documents", "Notes", "Code"
+    path: str           # absolute path OR path relative to the app root
+    read_only: bool = True   # always true in phase 1; reserved for phase 2 write ops
+```
+
+Config (`agent.task_file_allowed_roots` in `config/default.json` or a
+user config override):
+
+```jsonc
+{
+  "agent": {
+    "task_file_allowed_roots": [
+      { "label": "Documents", "path": "C:/Users/bluna/Documents", "read_only": true },
+      { "label": "Notes",     "path": "data/user_documents",      "read_only": true }
+    ]
+  }
+}
+```
+
+Default is a single entry: `[{label: "user_documents", path: "data/user_documents", read_only: true}]`.
+
+The legacy single-string `agent.task_file_sandbox_root` is read on
+settings load and migrated to a single-entry list if
+`task_file_allowed_roots` is empty — back-compat for anyone who
+already wrote a config against the earlier doc.
+
+### Path resolution
+
+Aiko's tools accept paths in two shapes:
+
+- **Label-prefixed:** `"Documents:notes/q4.md"` — resolves only against the `Documents` root.
+- **Bare:** `"notes/q4.md"` — tries each root in config order. If the file exists in exactly one root, that's the resolved path. If it exists in *multiple* roots, the handler emits `TaskInputNeeded` with the candidate list as options so the user (via chat or click) disambiguates. This is the cross-root case the existing `awaiting_input` path handles for free.
+
+Result objects always carry both `label` and `relative_path` so the
+LLM sees which root a hit came from:
+
+```json
+{"matches": [
+  {"label": "Documents", "relative_path": "notes/q4.md", "size": 2048, "snippet": "..."},
+  {"label": "Notes", "relative_path": "drafts/q4-old.md", "size": 1024, "snippet": "..."}
+]}
+```
+
+### Validation + boot-time checks
+
+On settings load each root is validated:
+
+- **Path does not exist** → WARNING `file root '<label>' at <path> does not exist — skipping`, root is kept in config but flagged inactive (so a temporarily-unmounted network drive doesn't get auto-removed).
+- **Path is a file, not a directory** → WARNING + skip.
+- **Path is inside another configured root** → WARNING (overlapping roots produce ambiguous resolution).
+- **Path is a sensitive system directory** (heuristic check against `/etc`, `/sys`, `/proc`, `C:\Windows`, `C:\Program Files`, etc.) → WARNING but allowed; user might have a legit reason.
+
+Inactive roots surface in MCP `list_file_roots()` with their reason, so a developer can see at a glance why a search returned nothing.
+
+### MCP debug for roots
+
+| Tool | Purpose |
+|---|---|
+| `list_file_roots()` | Configured roots + their active/inactive status + path validation results |
+| `add_file_root(label, path)` | Temporarily add a root without restarting (dev/testing only — not persisted) |
+| `remove_file_root(label)` | Temporary remove (dev/testing) |
 
 Between them they exercise every terminal state:
 
@@ -422,8 +547,8 @@ Tools registered in `ToolRegistry`:
 
 | Tool | LLM-visible description |
 |---|---|
-| `start_file_search` | Search files in the user's sandboxed documents directory. Returns matching files asynchronously — you'll be told about results in a later turn. |
-| `start_file_read` | Read the contents of one file from the user's sandboxed documents directory. Returns the contents asynchronously — you'll be told about the result in a later turn. |
+| `start_file_search` | Search files across the user's configured root directories. Paths can use a `<root_label>:<relative_path>` prefix to scope to one root, or be bare to search across all. Returns matching files asynchronously — you'll be told about results in a later turn. |
+| `start_file_read` | Read the contents of one file from the user's configured roots. Paths can use a `<root_label>:<relative_path>` prefix; bare paths search all roots and ask you to disambiguate if multiple match. Returns the contents asynchronously — you'll be told about the result in a later turn. |
 | `cancel_task` | Cancel a running task by id. Use when the user clearly indicates they no longer want a task to finish. |
 
 The `start_*` tools return immediately with `{"task_id": …}` so Aiko
@@ -443,7 +568,8 @@ now"). The actual result lands as a cue on a later turn.
 | `task_input_needed_proactive_after_seconds` | `20` | Shorter escalation window for blocked tasks |
 | `task_cue_max_age_seconds` | `1800` | Cues older than this drop silently on next dequeue |
 | `task_cue_max_aggregated` | `5` | Hard cap on cues rendered per turn (excess stays in DB/WS) |
-| `task_file_sandbox_root` | `data/user_documents` | Single root the file handlers may access |
+| `task_file_allowed_roots` | `[{label: "user_documents", path: "data/user_documents", read_only: true}]` | List of `FileTaskRoot` entries the file handlers may access. Bare paths resolve across all roots; multi-root matches trigger `awaiting_input`. |
+| `task_file_sandbox_root` | `null` | **Deprecated.** Legacy single-string field. If set and `task_file_allowed_roots` is empty, migrated to a single-entry list at load time. |
 | `task_file_max_read_bytes` | `262144` | 256 KB cap on `file_read` (larger → `failed`) |
 | `task_file_search_max_results` | `25` | More matches → emit `awaiting_input` |
 
@@ -709,6 +835,318 @@ every debuggable invariant has a force-it tool and a query-it tool.
 - [`tests/test_file_search_handler.py`](../tests/test_file_search_handler.py)
 - [`tests/test_file_read_handler.py`](../tests/test_file_read_handler.py)
 - [`tests/test_chat_database_v16_migration.py`](../tests/test_chat_database_v16_migration.py)
+
+## Phase 2 — Schema v17: scaling foundations
+
+Phase 2 keeps the BrainEventQueue / BrainLoop / TaskHandler contracts
+from phase 1 byte-identical at the wire level. Everything below is
+additive — the SQL adds three columns + two tables, the orchestrator
+calls into three new stores, and the public REST / WS payloads gain
+fields but remove none. Disable any phase-2 feature in `config` (e.g.
+`task_heartbeat_check_interval_seconds=0`) and the system collapses
+back to phase-1 behaviour for that subsystem.
+
+### The four new top-level concepts
+
+1. **Append-only task event log** (`task_events` table). Every
+   meaningful moment in a task's lifecycle — `started`, `progress`,
+   `phase_change`, `input_question`, `input_answer`, `completed`,
+   `failed`, `cancelled`, `interrupted`, `heartbeat_stalled`,
+   `child_spawned`, plus handler-defined custom events via
+   `TaskEventEmit` — gets one row. Cheap to write, cheap to scan, hard
+   cap is `task_cleanup_retention_days`. This is what a future
+   "replay this task" feature reads from, what the TasksTab events
+   expander renders, and what an MCP debug tool reads to answer "what
+   actually happened with task 42 between 12:04 and 12:07?".
+2. **Dedicated input/answer history** (`task_inputs` table). Every
+   `TaskInputNeeded` creates a `pending` row; every `answer()` flips
+   it to `answered`; a fresh question from the same task supersedes
+   any still-pending row instead of overwriting. This unblocks
+   multi-clarification flows ("which folder?" → "the docs one" →
+   "I found 3 files, which?") which would be ambiguous against the
+   single-slot phase-1 `tasks.input_request` column. The latter is
+   still kept in sync as a denormalised "what's the current
+   question?" mirror for cheap WS / REST reads.
+3. **`phase` / `parent_task_id` / `heartbeat_at` as first-class
+   `tasks` columns.** `phase` is the free-text human label (e.g.
+   `"extracting_prices"`, `"awaiting_review"`) the LLM and the
+   TasksTab read instead of trying to make `progress=0.42` meaningful
+   for a discrete state machine. `parent_task_id` records the spawn
+   relationship as a single-parent tree (NOT a DAG — keep it simple)
+   so the cleanup cascade and the future "wait on all children"
+   feature can both walk it. `heartbeat_at` is bumped on every emit
+   so a daemon thread can flag "running but silent for 5 minutes"
+   without false positives.
+4. **Heartbeat sweep + cleanup worker — two independent daemons.**
+   The heartbeat sweep is a `daemon=True` thread checking every
+   `task_heartbeat_check_interval_seconds` whether any `running` row
+   has `heartbeat_at` older than `task_stalled_seconds`. Action is
+   `warn` (just log + emit `heartbeat_stalled`) or `fail` (also flip
+   to `status='failed'`). The cleanup worker is a regular
+   `IdleWorker` that runs in quiet windows, deletes terminal rows
+   older than `task_cleanup_retention_days`, and cascades to the
+   matching `task_events` + `task_inputs` rows.
+
+### Schema v17 DDL
+
+```sql
+ALTER TABLE tasks ADD COLUMN phase TEXT;
+ALTER TABLE tasks ADD COLUMN parent_task_id INTEGER;
+ALTER TABLE tasks ADD COLUMN heartbeat_at TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_heartbeat ON tasks(heartbeat_at);
+
+CREATE TABLE IF NOT EXISTS task_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL,
+    type TEXT NOT NULL,
+    data TEXT,                                  -- JSON, nullable
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_task_events_task ON task_events(task_id, id);
+
+CREATE TABLE IF NOT EXISTS task_inputs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL,
+    prompt TEXT NOT NULL,
+    kind TEXT,
+    options TEXT,                               -- JSON array, nullable
+    status TEXT NOT NULL DEFAULT 'pending',     -- pending | answered | superseded | cancelled
+    response TEXT,
+    created_at TEXT NOT NULL,
+    answered_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_task_inputs_task_status ON task_inputs(task_id, status);
+```
+
+Migration is idempotent — opening a v16 DB twice in a row produces
+zero `ALTER` / `CREATE` calls on the second open. Migration is
+covered by `tests/test_chat_database_v17.py`.
+
+### TaskEventStore
+
+[`app/core/tasks/task_events.py`](../app/core/tasks/task_events.py).
+Surface:
+
+```python
+class TaskEventStore:
+    def append(self, task_id: int, type: str, data: dict | None = None) -> int: ...
+    def list_for_task(self, task_id: int, *, limit: int = 100, offset: int = 0,
+                      type_in: Iterable[str] | None = None) -> list[TaskEvent]: ...
+    def count_for_task(self, task_id: int) -> int: ...
+    def latest_for_task(self, task_id: int, *, type_in: Iterable[str] | None = None) -> TaskEvent | None: ...
+    def delete_for_task(self, task_id: int) -> int: ...
+```
+
+Eleven stable event-type constants on the module (`EVENT_STARTED`,
+`EVENT_PROGRESS`, `EVENT_PHASE_CHANGE`, `EVENT_INPUT_QUESTION`,
+`EVENT_INPUT_ANSWER`, `EVENT_COMPLETED`, `EVENT_FAILED`,
+`EVENT_CANCELLED`, `EVENT_INTERRUPTED`, `EVENT_HEARTBEAT_STALLED`,
+`EVENT_CHILD_SPAWNED`). Handler-defined custom events use
+`TaskEventEmit(type=…, data=…)` as a `TaskOutcome` and reuse the
+same `append` path with a handler-chosen `type` string. Don't
+shadow a built-in `EVENT_*` constant — there's no enforcement, but
+the audit trail gets confusing when the same string means two
+different things.
+
+### TaskInputStore
+
+[`app/core/tasks/task_inputs.py`](../app/core/tasks/task_inputs.py).
+Surface:
+
+```python
+class TaskInputStore:
+    def create(self, task_id: int, prompt: str, *,
+               kind: str | None = None, options: list[str] | None = None) -> int: ...
+    def answer(self, input_id: int, response: str) -> bool: ...
+    def supersede_pending_for_task(self, task_id: int) -> int: ...
+    def cancel_pending_for_task(self, task_id: int) -> int: ...
+    def latest_pending(self, task_id: int) -> TaskInput | None: ...
+    def list_for_task(self, task_id: int) -> list[TaskInput]: ...
+    def get(self, input_id: int) -> TaskInput | None: ...
+    def delete_for_task(self, task_id: int) -> int: ...
+```
+
+Four status constants (`INPUT_STATUS_PENDING`,
+`INPUT_STATUS_ANSWERED`, `INPUT_STATUS_SUPERSEDED`,
+`INPUT_STATUS_CANCELLED`). The orchestrator calls
+`supersede_pending_for_task` *before* `create` on every
+`TaskInputNeeded` so a handler that re-asks (validation failure,
+narrower prompt) doesn't leak orphan `pending` rows. Recovery on
+boot calls `cancel_pending_for_task` for every row demoted from
+`running` to `interrupted` so the user never sees a pending
+question for a task they thought was done.
+
+### Heartbeat semantics
+
+[`app/core/tasks/task_heartbeat.py`](../app/core/tasks/task_heartbeat.py).
+The orchestrator bumps `tasks.heartbeat_at = _now_iso()` inside
+`_dispatch_outcome` so every emit (progress, input-needed,
+completion, failure, custom event) refreshes the timestamp.
+`HeartbeatChecker` is a `daemon=True` thread that wakes every
+`task_heartbeat_check_interval_seconds` (default `30`, floor `5`)
+and calls `TaskStore.list_stalled(stalled_seconds, statuses=("running",))`.
+Per stalled row:
+
+- `task_stalled_action == "warn"` (default): log a WARNING with
+  `task=<id> stalled_for_s=<n>` plus append
+  `EVENT_HEARTBEAT_STALLED` to the event log. The task stays
+  `running` — long file scans and slow HTTP calls are legitimate.
+- `task_stalled_action == "fail"`: same WARNING + event, plus
+  `TaskOrchestrator.fail(task_id, error="heartbeat stalled")`.
+  Use only when you know every handler in the registry is
+  emit-disciplined (every IO chunk emits at least once).
+- `task_stalled_action == "disabled"` OR the master switch
+  `task_heartbeat_check_interval_seconds=0`: thread doesn't start
+  at all. `awaiting_input` and `paused` rows are never flagged —
+  they're stalled *by design*.
+
+### TaskCleanupWorker
+
+[`app/core/tasks/task_cleanup_worker.py`](../app/core/tasks/task_cleanup_worker.py).
+A regular `IdleWorker` that lands in the existing
+`IdleWorkerScheduler` queue alongside `memory_decay`,
+`reflection`, etc. Runs in quiet windows (no turn in flight, no
+recent user activity). Per tick:
+
+1. `TaskStore.list_terminal_older_than(retention_days, limit=max_rows_per_tick)`
+   returns up to `task_cleanup_max_rows_per_tick` candidate ids.
+2. For each id, cascade-delete in this order:
+   `task_events` rows → `task_inputs` rows → the `tasks` row.
+3. Bump `kv_meta` `tasks.last_cleanup_run_at` so the next tick
+   doesn't re-run until `task_cleanup_interval_seconds` (floor
+   `600`) has elapsed.
+
+Default retention is 30 days. Cap can be raised with no schema
+change; the index on `(status, completed_at)` keeps the
+`list_terminal_older_than` query sub-millisecond even at 100K
+historical rows.
+
+### Cascade cancellation
+
+`TaskOrchestrator.cancel(task_id)` is unchanged at the surface but
+now optionally walks `parent_task_id` children. Gated by
+`task_cascade_cancel_children` (default `true`). Walks the tree
+depth-first, cancels every active descendant first (so the parent
+isn't briefly orphaned while a still-running child holds shared
+resources), then the parent. Every cancel appends `EVENT_CANCELLED`
+to the per-task event log with `data={"by_cascade": true}` on the
+descendants so the audit trail tells the full story.
+
+### TaskProgress.phase
+
+[`app/core/tasks/task_handler.py`](../app/core/tasks/task_handler.py)
+extends `TaskProgress` with `phase: str | None = None`. When a
+handler emits with `phase=…`, the orchestrator promotes the value
+to `tasks.phase` AND appends `EVENT_PHASE_CHANGE` if the new value
+differs from the prior. Setting `phase=None` doesn't clear the
+column — the phase persists across emits, so a one-time
+`emit(TaskProgress(phase="extracting"))` keeps that label until the
+next phase-bearing emit.
+
+### Six new agent settings
+
+| Field | Default | Floor | Purpose |
+|---|---|---|---|
+| `task_heartbeat_check_interval_seconds` | `30` | `5` | Sweep cadence. `0` disables the daemon. |
+| `task_stalled_seconds` | `300` | `60` | `running` rows older than this are stalled. |
+| `task_stalled_action` | `"warn"` | — | One of `warn` / `fail` / `disabled`. Unknown value falls back to `warn`. |
+| `task_cascade_cancel_children` | `true` | — | Boolean; coerces `0/1` / `"true"` etc. |
+| `task_cleanup_retention_days` | `30` | `1` | Terminal rows older than this are deleted. |
+| `task_cleanup_interval_seconds` | `21600` | `600` | Minimum gap between cleanup ticks (6h default). |
+
+All six live on `AgentSettings` in
+[`app/core/infra/settings.py`](../app/core/infra/settings.py) and
+default in [`config/default.json`](../config/default.json). Defaults
+pinned by `tests/test_settings.py::TaskLifecycleSafetySettingsTests`;
+floors clamped in `_parse_agent`.
+
+### REST surface (additions)
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/tasks/{id}/events?limit=&offset=&type=` | Paginated event log (chronological). Optional `type=` query string filters to one event type. 404 on unknown task. |
+| `GET` | `/api/tasks/{id}/inputs` | Full input history (pending + answered + superseded + cancelled), chronological. 404 on unknown task. |
+
+Both endpoints respect the same `visible_to_user` filter as
+`GET /api/tasks/{id}`. `GET /api/tasks/{id}` itself now returns
+`phase`, `parent_task_id`, and `heartbeat_at` in the snapshot.
+
+### WebSocket additions
+
+`task_progress` payloads now carry `phase` when present (it's the
+new fast-path for "what phase is this task in?" without an HTTP
+round-trip). No new event types — `task_event` is reserved for a
+potential phase-3 firehose but not wired in phase 2; subscribe to
+`/api/tasks/{id}/events` for now.
+
+### Frontend additions
+
+- [`web/src/types.ts`](../web/src/types.ts) — `TaskSnapshot` gains
+  `phase` / `parent_task_id` / `heartbeat_at`. New `TaskEvent` and
+  `TaskInput` interfaces matching the REST payload shape.
+- [`web/src/api.ts`](../web/src/api.ts) — `listTaskEvents(id, …)`
+  and `listTaskInputs(id)` client wrappers.
+- [`web/src/components/TaskStrip.tsx`](../web/src/components/TaskStrip.tsx)
+  — `TaskChip` renders `task.phase` next to the status label when
+  present.
+- [`web/src/components/settings/TasksTab.tsx`](../web/src/components/settings/TasksTab.tsx)
+  — `TaskRow` shows `phase` and `parent_task_id`; a new
+  `EventsExpander` sub-component lazy-loads the event log on click
+  so a 10K-task history doesn't materialise 10K event lists.
+
+### MCP debug surface (additions)
+
+| Tool | Purpose |
+|---|---|
+| `get_heartbeat_state()` | Per-task summary of `heartbeat_at` / `stalled_for_s` / current `task_stalled_action` config |
+| `force_heartbeat_sweep()` | Run one immediate sweep without waiting for the timer |
+| `force_run_idle_worker("task_cleanup")` | Run one immediate cleanup tick (re-uses the existing idle-worker MCP entry point) |
+| `list_task_events(task_id, limit=…)` | Read the event log without an HTTP round-trip |
+| `list_task_inputs(task_id)` | Read the input history likewise |
+| `emit_task_event(task_id, type, data)` | Hand-append a custom event for repro / audit-trail testing |
+| `cancel_task(task_id, cascade=True)` | Already exists; the `cascade` flag honours `task_cascade_cancel_children` |
+
+### Symptom → grep target (phase 2 extras)
+
+These extend the phase-1 table above. Same workflow — start with
+`tail_logs(module_contains="…")` and widen to
+`read_log_file(grep="task=<id>")`.
+
+| Symptom | First check |
+|---|---|
+| Stalled-task warning never fires | `tail_logs(module_contains="task_heartbeat")` for `heartbeat sweep:` ticks. Missing entirely → `task_heartbeat_check_interval_seconds=0` or the daemon failed to start (look for the `heartbeat checker thread started` INFO on boot). |
+| Stalled task got marked failed unexpectedly | `task_stalled_action="fail"` is aggressive; default is `warn`. Check `get_settings_agent()` over MCP, then look at `task=<id>` event log — `heartbeat_stalled` event lands before the orchestrator transitions to `failed`. |
+| Cleanup worker never runs | `tail_logs(module_contains="task_cleanup_worker")` for `task cleanup tick:` lines. If absent: the worker may not be ready (check `is_ready()` on the IdleWorker — `kv_meta` `tasks.last_cleanup_run_at` and `task_cleanup_interval_seconds`). Bump the interval down (`60` for testing) and call `force_run_idle_worker("task_cleanup")`. |
+| Cleanup left orphan events / inputs | This means the cascade delete order broke. Confirm with `SELECT COUNT(*) FROM task_events WHERE task_id NOT IN (SELECT id FROM tasks)`. The cleanup worker deletes `task_events` then `task_inputs` then `tasks` — if a SQL error mid-transaction broke the ordering the orphan rows survive. They're harmless (just storage) — drop them with a one-off `DELETE FROM task_events WHERE task_id NOT IN (SELECT id FROM tasks)`. |
+| Phase column is `None` despite handler emitting `phase=…` | `tail_logs(module_contains="task_orchestrator")` for `phase change:` lines. If the line fires but `tasks.phase` is still NULL → the SQL UPDATE failed (DB locked? read the WARNING). If the line doesn't fire → the handler didn't actually pass `phase=` (check the `app.task.<name>` DEBUG log). |
+| Child task never spawned | `EVENT_CHILD_SPAWNED` is appended on the parent's event log when the orchestrator's `start_task(parent_task_id=…)` runs. Missing event → the parent didn't pass `parent_task_id` (handler bug — handlers must thread the parent's id through their own `start_task` call). |
+| Input store has multiple `pending` rows for one task | Bug. `TaskInputNeeded` should always supersede before create. `SELECT id, status FROM task_inputs WHERE task_id=<n> AND status='pending'` — if more than one, the orchestrator's `_handle_input_needed` skipped the supersede call. |
+| TasksTab events expander shows nothing | Either the task is too young (the page-1 events fetch is `limit=50`; subsequent pages aren't wired to a "load more" yet) OR `/api/tasks/{id}/events` returned an error — check browser devtools network tab. |
+
+### Where to look (phase 2)
+
+- [`app/core/infra/chat_database.py`](../app/core/infra/chat_database.py)
+  — `_SCHEMA_VERSION = 17`, v16→v17 migration block.
+- [`app/core/tasks/task_events.py`](../app/core/tasks/task_events.py)
+  — `TaskEventStore` + 11 `EVENT_*` constants.
+- [`app/core/tasks/task_inputs.py`](../app/core/tasks/task_inputs.py)
+  — `TaskInputStore` + 4 status constants.
+- [`app/core/tasks/task_heartbeat.py`](../app/core/tasks/task_heartbeat.py)
+  — `HeartbeatChecker` daemon thread.
+- [`app/core/tasks/task_cleanup_worker.py`](../app/core/tasks/task_cleanup_worker.py)
+  — `TaskCleanupWorker` (IdleWorker).
+- [`app/core/tasks/handler_names.py`](../app/core/tasks/handler_names.py)
+  — stable string constants for handler names.
+- [`tests/test_chat_database_v17.py`](../tests/test_chat_database_v17.py)
+- [`tests/test_task_events_store.py`](../tests/test_task_events_store.py)
+- [`tests/test_task_inputs_store.py`](../tests/test_task_inputs_store.py)
+- [`tests/test_task_heartbeat.py`](../tests/test_task_heartbeat.py)
+- [`tests/test_task_cleanup_worker.py`](../tests/test_task_cleanup_worker.py)
+- [`tests/test_task_orchestrator_v17.py`](../tests/test_task_orchestrator_v17.py)
+- [`tests/test_recovery_with_inputs.py`](../tests/test_recovery_with_inputs.py)
+- [`tests/test_web_server_tasks_v17.py`](../tests/test_web_server_tasks_v17.py)
 
 ## See also
 

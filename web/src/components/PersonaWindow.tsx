@@ -8,6 +8,7 @@ import { Live2DAvatar } from "./Live2DAvatar";
 import { MicButton } from "./MicButton";
 import { PersonaActionBanner } from "./PersonaActionBanner";
 import { PersonaInput } from "./PersonaInput";
+import { PersonaTaskBanner } from "./PersonaTaskBanner";
 
 interface PersonaWindowProps {
   send: (cmd: WsClientCommand) => void;
@@ -127,6 +128,13 @@ export function PersonaWindow({ send, sendBytes }: PersonaWindowProps) {
             Configurable visibility lifetime threaded later via
             settings; defaults to the 20s plan baseline. */}
         <PersonaActionBanner />
+        {/* Chunk 15: persona-window mirror of ``TaskStrip``.
+            Surfaces an ``awaiting_input`` task as a transient
+            pill so the user can answer / cancel without
+            switching back to the chat window. Layered BELOW the
+            touch banner (``top-24`` vs ``top-12``) so the two
+            never overlap when both happen to be visible. */}
+        <PersonaTaskBanner />
       </div>
 
       <div className="flex shrink-0 items-center gap-2 rounded-t-lg bg-black/40 px-2 py-2 backdrop-blur">
