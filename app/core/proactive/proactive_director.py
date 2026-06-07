@@ -294,6 +294,87 @@ class ProactiveDirector:
             name="proactive-director-typed",
         ).start()
 
+    def notify_task_escalation(self, session_key: str) -> None:
+        """Brain-orchestration chunk 6: speak a parked task cue.
+
+        Fires when :class:`TaskEscalationManager`'s timer elapses and
+        the loop's gate cleared — i.e. the user has gone quiet long
+        enough that the parked ``task_result`` or
+        ``task_input_needed`` cue should surface as a proactive turn
+        rather than wait for a natural reply.
+
+        Differences from :meth:`notify_silence` / :meth:`notify_typed_silence`:
+
+        * **No cooldown gate.** The escalation manager already
+          enforces a per-cue silence window (45 s / 20 s) plus a
+          retry-with-backoff loop. The proactive cooldown is for
+          *boredom* nudges; a finished task is event-driven, not
+          time-driven, and would silently drop on a recent voice
+          ping otherwise.
+        * **No vent-detection skip.** The user explicitly asked for
+          the task earlier; surfacing the result is a follow-up to
+          their request, not a fix-it impulse on a fresh vent.
+        * **Picks voice vs typed by live-mode automatically.** The
+          escalation manager doesn't know whether the user is in
+          live voice or typed mode at fire time — that ownership
+          stays here.
+
+        Inflight gates from both modes are still consulted so we
+        never stack a task-escalation turn on top of a regular
+        proactive one (or vice versa). When both are inflight, the
+        call returns silently — the escalation manager will retry.
+
+        The parked cue itself lands in the proactive turn's prompt
+        via the existing :class:`TaskCueStore` T6 provider on
+        :class:`PromptAssembler` (drained on assembly, which also
+        cancels the matching escalation timer). This method only
+        needs to *trigger* the turn; it doesn't need to thread the
+        cue text through.
+        """
+        if not session_key:
+            return
+        if self._is_busy():
+            log.debug("proactive(task_escalation) skip: chat in progress")
+            return
+        live = False
+        try:
+            live = bool(self._is_live())
+        except Exception:
+            log.debug(
+                "proactive(task_escalation) is_live probe failed",
+                exc_info=True,
+            )
+        with self._lock:
+            if self._inflight or self._typed_inflight:
+                log.debug(
+                    "proactive(task_escalation) skip: already running "
+                    "(voice=%s typed=%s)",
+                    self._inflight,
+                    self._typed_inflight,
+                )
+                return
+            if live:
+                self._inflight = True
+            else:
+                self._typed_inflight = True
+        target = self._run_safe if live else self._run_typed_safe
+        thread_name = (
+            "proactive-director-task"
+            if live
+            else "proactive-director-task-typed"
+        )
+        log.info(
+            "proactive(task_escalation) dispatched: mode=%s session=%s",
+            "voice" if live else "typed",
+            session_key,
+        )
+        threading.Thread(
+            target=target,
+            args=(session_key,),
+            daemon=True,
+            name=thread_name,
+        ).start()
+
     def update_runtime(
         self,
         *,

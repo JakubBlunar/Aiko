@@ -445,6 +445,41 @@ export function useAssistantSocket(): {
         break;
       }
 
+      case "task_started":
+        // Chunk 14: a new task row landed. The strip prepends the
+        // chip; the tasks tab prepends to history when the user is
+        // on page 0 with a matching status filter. The
+        // ``visible_to_user=false`` filter is enforced server-side
+        // in ``app/web/server.py`` so anything reaching us is
+        // safe to surface.
+        store.applyTaskStarted(evt.task);
+        break;
+
+      case "task_progress":
+        // Progress events are UI-only by hard rule (see
+        // ``docs/brain-orchestration.md`` § "Progress events are
+        // UI-only"). They never park a prompt cue; the strip
+        // just moves the bar.
+        store.applyTaskProgress(evt.task_id, evt.patch || {});
+        break;
+
+      case "task_input_needed":
+        // The handler emitted ``TaskInputNeeded``; status flips to
+        // ``awaiting_input`` and ``input_request`` carries the
+        // prompt + click-options. The chat-first answer path
+        // (Aiko asks naturally in her next turn) is unaffected
+        // by this — the strip is the optional click-fallback.
+        store.applyTaskInputNeeded(evt.task);
+        break;
+
+      case "task_completed":
+        // Terminal transition — ``status`` is one of
+        // ``done`` / ``failed`` / ``cancelled``. The strip keeps
+        // the chip visible briefly; the sweep helper drops it
+        // after ``TASK_STRIP_FADE_MS``.
+        store.applyTaskCompleted(evt.task);
+        break;
+
       case "audio_amplitude":
         store.setAudioAmplitude(evt.level);
         break;

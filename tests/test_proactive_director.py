@@ -273,5 +273,133 @@ class TypedProactivePathTests(unittest.TestCase):
             f.close()
 
 
+class TaskEscalationTests(unittest.TestCase):
+    """Brain-orchestration chunk 6: notify_task_escalation.
+
+    Pins the contract for the task-driven proactive entry point:
+
+    * Bypasses both cooldown clocks — task results / questions are
+      event-driven (the escalation manager already ran a per-cue
+      silence window), not time-driven; a recent voice/typed
+      proactive must not silence them.
+    * Bypasses the vent-dialogue-act skip — the user asked for the
+      task earlier, surfacing the result is the follow-up they
+      requested.
+    * Still honours the busy gate (chat in progress) and the
+      inflight gate (one proactive at a time).
+    * Picks voice vs typed by ``is_live_mode``: voice routes
+      through ``_run_safe``, typed through ``_run_typed_safe``.
+    """
+
+    def _wait_for(self, predicate, *, timeout: float = 2.0) -> bool:
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            if predicate():
+                return True
+            time.sleep(0.02)
+        return False
+
+    def test_voice_mode_speaks(self) -> None:
+        f = _Fixture()
+        try:
+            f.seed_history()
+            f.live = True
+            f.director.notify_task_escalation("s1")
+            self.assertTrue(self._wait_for(lambda: bool(f.spoken)))
+            self.assertEqual(len(f.spoken), 1)
+            # Voice mode notifies as well (it always does for TTS-
+            # backed proactive nudges).
+            self.assertEqual(f.ollama.calls, 1)
+        finally:
+            f.close()
+
+    def test_typed_mode_text_only(self) -> None:
+        f = _Fixture()
+        try:
+            f.seed_history()
+            f.live = False
+            f.director.notify_task_escalation("s1")
+            self.assertTrue(
+                self._wait_for(lambda: bool(f.notified))
+            )
+            # Typed mode never speaks aloud — same as
+            # notify_typed_silence.
+            self.assertEqual(f.spoken, [])
+            self.assertEqual(len(f.notified), 1)
+            self.assertEqual(f.ollama.calls, 1)
+        finally:
+            f.close()
+
+    def test_bypasses_voice_cooldown(self) -> None:
+        # Run a voice proactive first to set the cooldown clock,
+        # then immediately fire a task_escalation — the second
+        # call must NOT be silenced by the cooldown gate.
+        f = _Fixture()
+        try:
+            f.seed_history()
+            # Make the cooldown big so the regular notify_silence
+            # path would refuse.
+            f.director._cooldown = 600.0
+            # Force the cooldown clock by setting last-run to "now".
+            f.director._last_run_monotonic = time.monotonic()
+            f.live = True
+            f.director.notify_task_escalation("s1")
+            self.assertTrue(self._wait_for(lambda: bool(f.spoken)))
+            self.assertEqual(len(f.spoken), 1)
+        finally:
+            f.close()
+
+    def test_skipped_when_busy(self) -> None:
+        f = _Fixture()
+        try:
+            f.seed_history()
+            f.busy = True
+            f.director.notify_task_escalation("s1")
+            time.sleep(0.2)
+            self.assertEqual(f.spoken, [])
+            self.assertEqual(f.notified, [])
+        finally:
+            f.close()
+
+    def test_skipped_when_inflight_voice(self) -> None:
+        # If a voice proactive is already in flight, a task
+        # escalation must NOT stack on top.
+        f = _Fixture()
+        try:
+            f.seed_history()
+            with f.director._lock:
+                f.director._inflight = True
+            f.live = True
+            f.director.notify_task_escalation("s1")
+            time.sleep(0.2)
+            self.assertEqual(f.spoken, [])
+        finally:
+            f.close()
+
+    def test_skipped_when_inflight_typed(self) -> None:
+        f = _Fixture()
+        try:
+            f.seed_history()
+            with f.director._lock:
+                f.director._typed_inflight = True
+            f.live = False
+            f.director.notify_task_escalation("s1")
+            time.sleep(0.2)
+            self.assertEqual(f.notified, [])
+        finally:
+            f.close()
+
+    def test_empty_session_key_is_noop(self) -> None:
+        f = _Fixture()
+        try:
+            f.seed_history()
+            f.director.notify_task_escalation("")
+            time.sleep(0.1)
+            self.assertEqual(f.spoken, [])
+            self.assertEqual(f.notified, [])
+        finally:
+            f.close()
+
+
 if __name__ == "__main__":
     unittest.main()

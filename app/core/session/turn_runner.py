@@ -889,22 +889,40 @@ class TurnRunner:
             if not response.tool_calls:
                 return total_usage
 
+            # Tool-call messages are emitted in a "neutral" shape that
+            # both Ollama and OpenAI-compatible clients can consume.
+            # Each call carries an ``id`` + ``type=function``; the tool
+            # result message carries a ``tool_call_id`` linking back.
+            # Ollama tolerates the extra fields (ignored); OpenAI
+            # *requires* them or 400s with ``missing_required_parameter``.
+            # ``arguments`` stays as a dict here — the OpenAI client
+            # JSON-encodes it just before posting, the Ollama client
+            # forwards it as-is. ``call_id`` may be empty when the
+            # upstream model didn't supply one (older Ollama models);
+            # synthesise a stable per-turn id so the round-trip
+            # references stay valid.
+            tool_call_ids = [
+                (call.call_id or f"call_{round_idx}_{idx}")
+                for idx, call in enumerate(response.tool_calls)
+            ]
             assistant_msg: dict[str, Any] = {
                 "role": "assistant",
                 "content": response.content or "",
                 "tool_calls": [
                     {
+                        "id": tool_call_ids[idx],
+                        "type": "function",
                         "function": {
                             "name": call.name,
                             "arguments": call.arguments,
-                        }
+                        },
                     }
-                    for call in response.tool_calls
+                    for idx, call in enumerate(response.tool_calls)
                 ],
             }
             messages.append(assistant_msg)
 
-            for call in response.tool_calls:
+            for idx, call in enumerate(response.tool_calls):
                 if self._on_tool_call is not None:
                     try:
                         self._on_tool_call(call.name, dict(call.arguments))
@@ -922,6 +940,7 @@ class TurnRunner:
                         log.exception("on_tool_result listener failed")
                 tool_msg: dict[str, Any] = {
                     "role": "tool",
+                    "tool_call_id": tool_call_ids[idx],
                     "name": result.name,
                     "content": result.content,
                 }

@@ -499,6 +499,22 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "vulnerability_budget_block",
         "touch_state_block",
         "user_reactions_block",
+        # Brain orchestration chunk 6 — running-tasks state block.
+        # Sibling of ``task_cues_block``: this block announces what's
+        # *still working*, the cue block announces *deltas*
+        # (results landed, blocked on input). State comes before
+        # delta so the prompt reads "you're doing A and B; A just
+        # finished" rather than the reverse. NOT dropped under
+        # ``aggressive`` — when the user asks "are you still working
+        # on X?" they expect Aiko to know, even on a tight budget.
+        "running_tasks_block",
+        # Brain orchestration chunk 5 — parked task cues (results,
+        # input-needed questions). T6 because the cue list is
+        # turn-specific (drained on each assembly) and clusters with
+        # the other "live read" blocks. NOT dropped under
+        # ``aggressive`` — a parked task waiting for an answer is
+        # exactly what tight prompts need to keep surfaced.
+        "task_cues_block",
         "curiosity_seeds_block",
         "knowledge_gaps_block",
     ),
@@ -885,6 +901,33 @@ class PromptAssembler:
         # ``""`` on the common case; not suppressed under aggressive
         # because it's a sub-line cue.
         self._touch_state_provider: Callable[[], str] | None = None
+        # Brain-orchestration chunk 6 — running-tasks state block.
+        # Sibling of ``_task_cues_provider`` below: this provider
+        # renders what's *still working* (state), the other renders
+        # *deltas* (results / blocked tasks). Reads
+        # :meth:`TaskOrchestrator.list_running` directly; the format
+        # is "Tasks running for {user_name} right now:" plus one
+        # bullet per active task (handler + status + progress%).
+        # Cap at 5 bullets so a task-bomb can't blow the budget.
+        # Empty when no tasks are running or the master switch
+        # ``agent.tasks_running_block_enabled`` is off (the common
+        # path on most turns). NOT suppressed under ``aggressive`` —
+        # "are you still working on X?" needs an honest answer even
+        # on a tight budget.
+        self._running_tasks_provider: Callable[[], str] | None = None
+        # Brain-orchestration chunk 5 — parked task cues. Provider
+        # drains :class:`TaskCueStore` on each assembly and renders a
+        # T6 block with success / failure / question sub-headers (see
+        # :func:`app.core.tasks.cue_render.render_cue_block`).
+        # ``SessionController`` installs this provider during init via
+        # :meth:`TaskOrchestrationMixin.drain_task_cues_for_render`,
+        # which also cancels any pending escalation timer so a cue
+        # that just surfaced doesn't double-fire as a proactive. The
+        # provider returns ``""`` when nothing is parked, so the
+        # common path costs one dict lookup. NOT suppressed under
+        # ``aggressive`` — a parked task waiting on an answer is
+        # exactly what a tight budget needs to keep visible.
+        self._task_cues_provider: Callable[[], str] | None = None
         # K9 personality backlog: "Quiet curiosity" inner-life bullet
         # listing 1-2 active curiosity seeds (topics Aiko has been
         # quietly wondering about that haven't come up yet). Cheap
@@ -1043,6 +1086,8 @@ class PromptAssembler:
         grounding_line: Callable[[], str] | None = None,
         user_reactions: Callable[[], str] | None = None,
         touch_state: Callable[[], str] | None = None,
+        task_cues: Callable[[], str] | None = None,
+        running_tasks: Callable[[], str] | None = None,
     ) -> None:
         """Register optional inner-life block providers.
 
@@ -1134,6 +1179,10 @@ class PromptAssembler:
             self._user_reactions_provider = user_reactions
         if touch_state is not None:
             self._touch_state_provider = touch_state
+        if task_cues is not None:
+            self._task_cues_provider = task_cues
+        if running_tasks is not None:
+            self._running_tasks_provider = running_tasks
 
     def set_last_reaction(self, reaction: str | None) -> None:
         if not reaction:
@@ -1862,6 +1911,43 @@ class PromptAssembler:
                     )
                     user_reactions_block = ""
 
+        # Brain-orchestration chunk 6: running-tasks state block.
+        # Sibling of the task_cues_block below. State first
+        # (what's still working), deltas after (what just finished
+        # or is blocked). Empty string is the common case (no
+        # tasks running) — typical turn pays a single dict lookup.
+        running_tasks_block = ""
+        if self._running_tasks_provider is not None:
+            with _timed_phase(provider_ms, "running_tasks"):
+                try:
+                    running_tasks_block = (
+                        self._running_tasks_provider() or ""
+                    )
+                except Exception:
+                    log.debug(
+                        "running_tasks provider failed", exc_info=True,
+                    )
+                    running_tasks_block = ""
+
+        # Brain-orchestration chunk 5: parked task cues. The
+        # provider drains :class:`TaskCueStore` (cancelling any
+        # pending escalation in the process so a cue that surfaces
+        # naturally doesn't also escalate) and returns a multi-line
+        # T6 block. Empty string is the common case (no tasks
+        # parked) — every other turn this is a one-line provider
+        # cost. The provider itself owns the rendering, so
+        # ``assemble_with_budget`` just shuttles the string through.
+        task_cues_block = ""
+        if self._task_cues_provider is not None:
+            with _timed_phase(provider_ms, "task_cues"):
+                try:
+                    task_cues_block = self._task_cues_provider() or ""
+                except Exception:
+                    log.debug(
+                        "task_cues provider failed", exc_info=True,
+                    )
+                    task_cues_block = ""
+
         # K31: physical-budget cue. Renders only when Aiko has been
         # physical with the user a lot today (intimate-gesture stack
         # hit or any kind's daily cap was hit). Sibling of K15.
@@ -2269,6 +2355,28 @@ class PromptAssembler:
             # the prompt context. Drained by the provider on
             # render so it never re-fires on the next turn.
             system_parts.append(user_reactions_block)
+        if running_tasks_block:
+            # Brain-orchestration chunk 6: running-tasks state
+            # block. Lands BEFORE task_cues_block so the prompt
+            # reads "you're currently doing A and B; B just
+            # finished" rather than the reverse. Read directly
+            # from :class:`TaskOrchestrator` (no draining) so the
+            # same task can stay surfaced across many turns until
+            # it actually terminates. Capped at 5 bullets by the
+            # provider so a task-bomb can't balloon the block.
+            system_parts.append(running_tasks_block)
+        if task_cues_block:
+            # Brain-orchestration chunk 5: parked task cues land in
+            # the T6 cluster right after the K32 reaction one-shot.
+            # Both are "live read on what just happened" beats —
+            # K32 says "Jacob reacted", this says "your background
+            # task finished / is blocked". The cue store enforces
+            # its own aggregation cap (default 5) so the block
+            # never balloons. Drained on every assembly so an old
+            # cue surfacing once doesn't re-fire next turn — the
+            # escalation manager owns the "if she stayed silent,
+            # nudge" path instead.
+            system_parts.append(task_cues_block)
         if curiosity_seeds_block:
             # K9: "Quiet curiosity" — at-most-two topics Aiko has
             # been wondering about that haven't come up yet. Sits

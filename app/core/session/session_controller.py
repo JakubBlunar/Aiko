@@ -52,6 +52,7 @@ from app.core.session import (
     MemoryFacadeMixin,
     PostTurnMixin,
     SpeakingWindowJobsMixin,
+    TaskOrchestrationMixin,
     WorldMixin,
 )
 from app.core.world.world_store import WorldStore
@@ -413,6 +414,7 @@ class SessionController(
     InnerLifeProvidersMixin,
     SpeakingWindowJobsMixin,
     PostTurnMixin,
+    TaskOrchestrationMixin,
 ):
     def __init__(self, settings: AppSettings) -> None:
         self._settings = settings
@@ -2949,6 +2951,37 @@ class SessionController(
             lambda _new_name: self._seed_onboarding_goal_if_first_time(),
         )
 
+        # ── Brain orchestration (chunk 5 of phase 1) ─────────────────
+        # Wire the task subsystem last so ``_init_task_orchestration``
+        # can read every dependency it needs (``_chat_db``, ``_tts``,
+        # ``_last_user_activity_at``, ``_settings.agent``) plus the
+        # ``self._prompt_assembler`` we'll hook the cue provider into
+        # below. The mixin is a clean no-op when
+        # ``agent.tasks_enabled`` is False — the subsystem stays
+        # dormant and ``self._brain_loop`` stays ``None``.
+        try:
+            self._init_task_orchestration()
+        except Exception:
+            log.exception("task-orchestration init failed")
+        # Install the T6 task-cues provider on the prompt assembler.
+        # Best-effort: a broken provider call lands as an empty
+        # block (the assembler swallows provider exceptions), but a
+        # missing assembler (very early shutdown / partial init)
+        # would crash here so we guard the install too.
+        if getattr(self, "_prompt_assembler", None) is not None:
+            try:
+                self._prompt_assembler.set_inner_life_providers(
+                    task_cues=lambda: self.drain_task_cues_for_render(
+                        turn_id=None,
+                    ),
+                    running_tasks=self._render_running_tasks_block,
+                )
+            except Exception:
+                log.debug(
+                    "task-orchestration provider install on prompt assembler failed",
+                    exc_info=True,
+                )
+
     # ── State ─────────────────────────────────────────────────────────
 
     @property
@@ -4441,17 +4474,117 @@ class SessionController(
             else:
                 report(f"Warming chat model: {effective}")
                 try:
+                    # Pass ``num_ctx`` explicitly so the FIRST load fits
+                    # the configured context window. Ollama allocates
+                    # the kv-cache on first call; if the warmup ping
+                    # omits ``num_ctx`` the model loads at its built-in
+                    # default (often 256k for big models) and a later
+                    # call with the right size triggers an expensive
+                    # reload.
                     self._chat_client.chat(
                         [{"role": "user", "content": "Reply with OK."}],
                         model=effective,
+                        options={"num_ctx": self._context_window},
                         surface="model_warmup",
                     )
                 except Exception as exc:
                     log.warning("chat model warmup failed: %s", exc)
 
+        # Pre-warm the worker model and the embedder even when the
+        # chat client is remote. The original warmup path only knew
+        # about the chat model, which on a remote chat provider
+        # (openai_compatible) skips the whole Ollama branch — and
+        # leaves the local worker model + embedder cold. The first
+        # turn then pays the cold-load cost on the embed call (and
+        # any background worker firing in parallel competes for the
+        # same Ollama instance). For a worker like
+        # ``qwen3-coder:30b`` the cold load alone is tens of
+        # seconds; the embedder is several seconds. Both are easy
+        # wins on boot.
+        self._prewarm_local_worker_model(report)
+        self._prewarm_embedder(report)
+
         report("Warming TTS models...")
         self.prewarm_tts()
         report("Warmup complete")
+
+    def _prewarm_local_worker_model(self, report: Callable[[str], None]) -> None:
+        """Warm the background-worker Ollama model when it's not the
+        same client as chat.
+
+        Skip cases:
+
+        * ``_worker_client is _chat_client`` — pure-Ollama mode, the
+          chat warmup at the top of :meth:`prewarm_runtime` already
+          loaded this model. Touching it again is wasted work.
+        * Worker client is not an :class:`OllamaClient` instance —
+          ``workers_use_local=False`` keeps workers on the remote
+          chat client; nothing local to warm.
+        * Effective worker model is empty — config edge case, log
+          and skip.
+        * Worker model ends in ``:cloud`` / ``-cloud`` — Ollama Cloud
+          loads server-side; the warmup ping is wasted.
+
+        Failures here are logged and swallowed (the worker call on
+        first real use will surface the actual error to the user).
+        """
+        if self._worker_client is self._chat_client:
+            return
+        if not isinstance(self._worker_client, OllamaClient):
+            return
+        model = (self._effective_worker_model or "").strip()
+        if not model:
+            return
+        if model.endswith("-cloud") or model.endswith(":cloud"):
+            report(f"Using Ollama Cloud worker model: {model} (no local warmup)")
+            return
+        report(f"Warming worker model: {model}")
+        # Source ``num_ctx`` from ``ollama.context_window`` — the same
+        # field :class:`OllamaClient._default_options` falls back to.
+        # Passing it explicitly here is belt-and-braces: the kv-cache
+        # MUST be sized correctly on the FIRST call, otherwise Ollama
+        # loads the model at its built-in default (often 256k tokens)
+        # and a subsequent worker call with a smaller ``num_ctx``
+        # triggers a full model reload — exactly the pathology you
+        # see in ``ollama ps`` as a CPU/GPU split.
+        worker_options: dict[str, object] = {}
+        worker_ctx = getattr(self._settings.ollama, "context_window", None)
+        if isinstance(worker_ctx, int) and worker_ctx > 0:
+            worker_options["num_ctx"] = int(worker_ctx)
+        try:
+            self._worker_client.chat(
+                [{"role": "user", "content": "Reply with OK."}],
+                model=model,
+                options=worker_options or None,
+                surface="model_warmup",
+            )
+        except Exception as exc:
+            log.warning("worker model warmup failed: %s", exc)
+
+    def _prewarm_embedder(self, report: Callable[[str], None]) -> None:
+        """Warm the embedding model into the Ollama loaded-models slot.
+
+        Single-character prompt; the cheapest possible ``/embeddings``
+        round-trip. Result is discarded — we only care that Ollama
+        has the embedder hot when RAG retrieval fires on the first
+        real turn.
+
+        Failures are logged and swallowed: a cold embedder is slow
+        but not fatal (RAG silently degrades when the embedder
+        raises), so a boot-time warmup miss should not block the
+        rest of startup.
+        """
+        embedder = getattr(self, "_embedder", None)
+        if embedder is None:
+            return
+        model = (getattr(embedder, "model", "") or "").strip()
+        if not model:
+            return
+        report(f"Warming embedder: {model}")
+        try:
+            embedder.embed(".")
+        except Exception as exc:
+            log.warning("embedder warmup failed: %s", exc)
 
     # ── Greetings + proactive ────────────────────────────────────────
 
@@ -4776,6 +4909,24 @@ class SessionController(
                         registry.register(tool)
                 except Exception:
                     log.warning("goal tools failed to register", exc_info=True)
+            # Chunk 10: filesystem task tools — ``start_file_search``
+            # and ``cancel_file_task``. Gated on ``tools.file_tasks``
+            # (default True) and skipped silently when the task
+            # subsystem itself is off (``agent.tasks_enabled=False``
+            # leaves ``_task_orchestrator`` as ``None``).
+            if (
+                getattr(tools_cfg, "file_tasks", True)
+                and getattr(self, "_task_orchestrator", None) is not None
+            ):
+                try:
+                    from app.llm.tools.file_tasks import build_file_task_tools
+
+                    for tool in build_file_task_tools(self):
+                        registry.register(tool)
+                except Exception:
+                    log.warning(
+                        "file task tools failed to register", exc_info=True
+                    )
         except Exception:
             log.warning("tool registry build failed", exc_info=True)
         self._tool_registry = registry
@@ -6168,34 +6319,50 @@ class SessionController(
                 )
                 merge_text = None
                 merge_user_message_id = None
+        # Chunk 11: route both the merge and the fresh-turn branches
+        # through the brain queue via ``enqueue_user_message``. The
+        # merge decision above already resolved which case we're in
+        # (DB row updated in place + ``_resume_message_id`` set, or a
+        # fresh turn). ``enqueue_user_message`` blocks on a Future
+        # until the brain-loop handler finishes the LLM stream so
+        # ``process_live_capture`` keeps its existing synchronous
+        # contract (the caller in ``live_session.py`` runs
+        # ``_wait_for_tts_drain`` immediately after we return). When
+        # the task subsystem is off / not wired, the helper degrades
+        # to a direct ``chat_once_streaming`` call so the legacy
+        # behaviour is byte-identical.
         if merge_text is not None and merge_user_message_id is not None:
             log.info(
                 "voice merge: restarting turn with combined text "
                 "(user_msg_id=%d combined_chars=%d)",
                 merge_user_message_id, len(merge_text),
             )
-            response = self.chat_once_streaming(
-                user_text=merge_text,
+            response = self.enqueue_user_message(
+                text=merge_text,
+                mode="voice",
+                wait_for_reply=True,
+                timeout=None,
                 on_token=on_token,
-                stop_requested=stop_requested,
                 on_generation_status=on_generation_status,
-                mode="live",
+                stop_requested=stop_requested,
+                resume_message_id=merge_user_message_id,
                 capture_ms=capture_ms,
                 stt_ms=stt_ms,
-                _resume_message_id=merge_user_message_id,
             )
-            return merge_text, response
+            return merge_text, response or ""
 
-        response = self.chat_once_streaming(
-            user_text=text,
+        response = self.enqueue_user_message(
+            text=text,
+            mode="voice",
+            wait_for_reply=True,
+            timeout=None,
             on_token=on_token,
-            stop_requested=stop_requested,
             on_generation_status=on_generation_status,
-            mode="live",
+            stop_requested=stop_requested,
             capture_ms=capture_ms,
             stt_ms=stt_ms,
         )
-        return text, response
+        return text, response or ""
 
     def run_stt_diagnostic(
         self,
@@ -6353,6 +6520,17 @@ class SessionController(
             self._disarm_typed_silence_timer()
         except Exception:
             log.debug("typed silence timer cancel on shutdown failed", exc_info=True)
+        # Brain orchestration first: stop the loop + escalation timers
+        # before downstream components disappear. The mixin is
+        # exception-safe internally; the outer guard is just for the
+        # case where ``_init_task_orchestration`` raised partway
+        # through and left the mixin in a half-built state.
+        try:
+            self._shutdown_task_orchestration()
+        except Exception:
+            log.debug(
+                "task-orchestration shutdown failed", exc_info=True
+            )
         if self._mcp_server_runner is not None:
             try:
                 self._mcp_server_runner.stop()

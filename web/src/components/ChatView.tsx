@@ -11,6 +11,7 @@ import {
 } from "../types";
 import { ContextBadge } from "./ContextBadge";
 import { MicButton } from "./MicButton";
+import { TaskStrip } from "./TaskStrip";
 
 interface ChatViewProps {
   send: (cmd: WsClientCommand) => void;
@@ -200,6 +201,12 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
           <ConnectionBadge />
         </div>
       </div>
+
+      {/* Chunk 14: live background-task strip. Renders only when at
+          least one task is active or recently completed; the
+          component returns null otherwise so the chat layout stays
+          unchanged when nothing is running. */}
+      <TaskStrip />
 
       <div className="flex min-h-0 flex-1 flex-col">
         {messages.length === 0 ? (

@@ -245,6 +245,103 @@ setting; the main turn still uses the reasoning model.
 tune ignore both? If it ignores, the cleaner path is the dual-
 model split (background_model setting), which is more code but
 also unlocks faster background-worker turnaround independently.
+Note: P13 below makes the dual-model split actually work; until
+that lands, the only way to change the worker model is editing
+`ollama.chat_model` in `user.json` directly.
 
 **Effort.** Small (just the prompt suffix + before/after token
 measurements). Medium if we need the dual-model split.
+
+---
+
+## P13. Route-driven worker model + context (catalogue isn't the source of truth yet)
+
+**Motivation.** The LLM provider catalogue + role mapping (see
+[`docs/llm-providers.md`](../llm-providers.md)) was shipped to let
+[`llm.routes`](../../app/core/infra/settings.py) be the source of
+truth for which model serves which role. The migration code
+([`_sync_llm_routes_from_legacy`](../../app/core/session/session_controller.py))
+mirrors the legacy `chat_llm` / `ollama` blocks **into** the
+routes one-way at boot, but no reverse path exists: editing
+`llm.routes.worker_default.model` in `user.json` (or via the
+forthcoming Settings UI) has zero effect at runtime. Workers
+resolve their model from `settings.ollama.chat_model` directly
+inside `_effective_worker_model`, both in the constructor and in
+`reconfigure_chat_llm`. The route table is cosmetic for the
+worker role today.
+
+A second, compounding gap: [`set_chat_model`](../../app/core/session/session_controller.py)
+fans `update_runtime(model=…)` out to **three** workers
+(`_summary_worker`, `_memory_extractor`, `_dialogue_act_tagger`)
+but not the other ~12 (`_relationship_pulse`, `_reflection_worker`,
+`_dream_worker`, `_belief_worker`, `_memory_conflict_worker`,
+`_curiosity_worker`, `_promise_extractor`,
+`_shared_moment_extractor`, `_self_image_worker`, `_goal_worker`,
+`_schedule_learner`, etc.). Even if route reads are wired
+correctly, only the cascaded three would pick up a hot-reload —
+the rest stay on the old model until process restart.
+
+Combined symptom (seen during phase-2 testing): user sets
+`routes.worker_default.model = "qwen3-coder:30b"` via the UI,
+log still emits `model=jaahas/qwen3.5-uncensored:9b` because (a)
+the route isn't read and (b) even if it were, only 3/12 workers
+would refresh.
+
+**Key files.**
+[`app/core/session/session_controller.py`](../../app/core/session/session_controller.py)
+— two resolution sites for `_effective_worker_model` (constructor
+around L466-474 and `reconfigure_chat_llm` around L3493-3503),
+plus the cascade in `set_chat_model` around L3349-3362.
+[`app/core/infra/settings.py`](../../app/core/infra/settings.py)
+— `LlmRoute` dataclass (already carries `model` /
+`context_window` / `max_tokens` / `temperature`).
+[`docs/llm-providers.md`](../llm-providers.md) — design doc for
+the route system.
+
+**Sketched approach.** Two parts, both surgical:
+
+1. **Resolution precedence.** Wherever `_effective_worker_model`
+   is computed, prefer
+   `settings.llm.routes[LLM_ROLE_WORKER_DEFAULT].model` when set,
+   fall back to `ollama.chat_model`. Same precedence for
+   `context_window` (route → legacy) so workers that honour it
+   (most do via the OllamaClient `options.num_ctx`) pick up the
+   route value. Also keep the mirror in
+   `_sync_llm_routes_from_legacy` (legacy → route) so a legacy
+   PATCH still produces a consistent route view; the read path
+   just trusts the route first.
+2. **Cascade completeness.** Replace the hand-coded three-worker
+   block in `set_chat_model` with a loop over a registry of
+   workers that have `update_runtime`. A simple
+   `self._worker_runtime_updaters: list[Callable[[str], None]]`
+   built in `__init__` keeps the cascade declarative — each
+   worker init appends its `update_runtime` closure to the list,
+   and `set_chat_model` iterates. Same pattern unlocks future
+   context-window cascades without another N-place edit.
+
+**Tests.** Pin both behaviours:
+
+- `tests/test_session_controller_provider_switch.py` — extend
+  with: set `routes.worker_default.model="X"` AND
+  `ollama.chat_model="Y"`, instantiate `SessionController`,
+  assert `_effective_worker_model == "X"`.
+- New test asserting every worker registered with
+  `_worker_runtime_updaters` receives the new model on
+  `set_chat_model`.
+
+**Open questions.** Should `routes.worker_default.max_tokens` be
+write-through to per-worker `max_tokens` overrides? Today every
+worker that calls the LLM passes its own `max_tokens` (sized to
+the prompt's expected output — relationship_pulse=256,
+self_image=320, reflection larger). A blanket route override
+would muddle that. Probably keep route `max_tokens` as a
+*ceiling* (workers may pass smaller, never larger) rather than a
+mandate. Same logic for `temperature`.
+
+**Effort.** Small. ~30 LoC for the resolution change, ~30 LoC
+for the cascade registry, ~50 LoC of tests. No schema, no
+migration, no UI change.
+
+**Pairs naturally with.** P11 — once P13 lands, the
+`background_model` / dual-model split P11 alludes to is just
+a different route value, no additional plumbing.

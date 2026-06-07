@@ -21,6 +21,9 @@ import type {
   RelationshipAxes,
   ResolvedOutfit,
   SharedMoment,
+  TaskProgressPatch,
+  TaskSnapshot,
+  TaskStatus,
   TogetherSummary,
   ToolEvent,
   VoiceMode,
@@ -197,6 +200,90 @@ interface AssistantState {
    * empties is owned by the caller (a re-fetch hook in the Memory
    * tab) so we don't spawn a refetch from the store. */
   applyMemoryDeleted: (id: number) => void;
+
+  // ── Background tasks (chunk 14) ──────────────────────────────────
+  //
+  // The brain orchestration tasks API surfaces in two places: a
+  // compact ``TaskStrip`` above the chat (the canonical live UI for
+  // running + recently-completed tasks) and a paginated
+  // ``TasksTab`` in the SettingsDrawer for full history.
+  //
+  // ``tasksById`` is the canonical map keyed by ``task.id``; both
+  // surfaces project from it. ``activeIds`` is the "show me right
+  // now" projection — running + awaiting_input + recently-completed
+  // (within ``TASK_RECENT_FADE_MS`` of ``completed_at``) — sorted
+  // newest-id-first. ``historyOrder`` is the current Settings tab
+  // page (REST-driven), preserving server order.
+  //
+  // The split lets a chip slide out 20 s after completion without
+  // dropping the row from the Tasks history viewer.
+  tasksView: {
+    /** Canonical map: every task seen by either WS event or REST
+     * fetch lives here. Never mutate in place. */
+    tasksById: Record<number, TaskSnapshot>;
+    /** Strip projection: active + recently-completed task ids,
+     * newest-first. Rotation owned by the WS reducers + a slow
+     * sweep when ``setTasksRecentSweep`` fires. */
+    activeIds: number[];
+    /** Settings tab page (REST). Newest-first by server order. */
+    historyOrder: number[];
+    /** Pagination math for the Settings tab. */
+    total: number;
+    page: number;
+    pageSize: number;
+    /** Currently-applied status filter on the Settings tab.
+     * ``null`` means "all statuses". */
+    statusFilter: TaskStatus | null;
+    /** Loading flag for the REST fetch. */
+    loading: boolean;
+    /** True iff the backend reported ``enabled: true``. False when
+     * the task subsystem is off (REST returns an empty list). */
+    enabled: boolean;
+    /** Wall-clock ms at which the latest broadcast landed. Used
+     * by the sweep helper to decide which recently-completed
+     * chips have lived past their grace window. */
+    lastEventAt: number;
+  };
+  /** Reducer for ``task_started`` WS event. Inserts the row in
+   * ``tasksById``; prepends to ``activeIds``; prepends to
+   * ``historyOrder`` only when the user is on page 0 with a
+   * matching status filter. Bumps ``total`` either way. */
+  applyTaskStarted: (task: TaskSnapshot) => void;
+  /** Reducer for ``task_progress``. Merges the patch onto the
+   * existing snapshot. No-op when the task id is unknown — the
+   * strip can render later when ``task_started`` lands. */
+  applyTaskProgress: (taskId: number, patch: TaskProgressPatch) => void;
+  /** Reducer for ``task_input_needed``. Replaces the snapshot.
+   * The full snapshot is broadcast so status flips to
+   * ``awaiting_input`` and ``input_request`` populates in one pass. */
+  applyTaskInputNeeded: (task: TaskSnapshot) => void;
+  /** Reducer for ``task_completed``. Replaces the snapshot, marks
+   * the row's ``completed_at`` so the strip's grace timer can
+   * fade it. Keeps the chip in ``activeIds`` until the next sweep
+   * or an explicit ``dismissTaskFromStrip(id)``. */
+  applyTaskCompleted: (task: TaskSnapshot) => void;
+  /** REST load: ``GET /api/tasks`` paginated. Replaces
+   * ``historyOrder`` for the current page and merges rows into
+   * ``tasksById``. Does NOT touch ``activeIds`` so a tab refresh
+   * doesn't clobber the strip projection. */
+  setTasksPage: (response: {
+    tasks: TaskSnapshot[];
+    total: number;
+    page: number;
+    pageSize: number;
+    enabled: boolean;
+  }) => void;
+  /** Settings tab user actions. */
+  setTaskStatusFilter: (status: TaskStatus | null) => void;
+  setTasksLoading: (loading: boolean) => void;
+  /** Explicitly drop a chip from the strip — used by the chip's
+   * dismiss button + the sweep helper. Idempotent. */
+  dismissTaskFromStrip: (taskId: number) => void;
+  /** Sweep the strip: drop terminal tasks whose ``completed_at``
+   * is older than ``maxAgeMs`` from the current wall clock. Used
+   * by the strip's mount-time interval so chips fade after a
+   * grace window. */
+  sweepRecentlyCompletedTasks: (maxAgeMs: number) => void;
 
   // Aiko's room (virtual world). Single in-memory snapshot — small
   // enough that we don't need pagination. ``world`` is null until the
@@ -378,7 +465,7 @@ export interface TogetherViewSlice {
   loading: boolean;
 }
 
-export type ToastKind = "memory" | "info" | "warning";
+export type ToastKind = "memory" | "info" | "warning" | "error";
 
 export interface Toast {
   id: string;
@@ -818,6 +905,217 @@ export const useAssistantStore = create<AssistantState>((set) => ({
           items: view.items.filter((m) => m.id !== id),
           total: wasOnPage ? Math.max(0, view.total - 1) : view.total,
         },
+      };
+    }),
+
+  // ── Background tasks (chunk 14) ──────────────────────────────────
+  tasksView: {
+    tasksById: {},
+    activeIds: [],
+    historyOrder: [],
+    total: 0,
+    page: 0,
+    pageSize: 50,
+    statusFilter: null,
+    loading: false,
+    enabled: true,
+    lastEventAt: 0,
+  },
+  applyTaskStarted: (task) =>
+    set((state) => {
+      const view = state.tasksView;
+      const nextById = { ...view.tasksById, [task.id]: task };
+      // Strip projection: prepend only if the id wasn't already
+      // present (a server-side double-fire would otherwise stack).
+      const nextActive = view.activeIds.includes(task.id)
+        ? view.activeIds
+        : [task.id, ...view.activeIds];
+      // History projection: prepend only when the user is on
+      // page 0 AND the filter matches (mirror of memory_added).
+      const filterMatches =
+        view.statusFilter === null || view.statusFilter === task.status;
+      const onFirstPage = view.page === 0;
+      const nextHistory =
+        onFirstPage && filterMatches && !view.historyOrder.includes(task.id)
+          ? [task.id, ...view.historyOrder].slice(0, view.pageSize)
+          : view.historyOrder;
+      // ``total`` always bumps so the pager updates even when the
+      // row didn't land on the visible page.
+      const nextTotal =
+        filterMatches ? view.total + 1 : view.total;
+      return {
+        tasksView: {
+          ...view,
+          tasksById: nextById,
+          activeIds: nextActive,
+          historyOrder: nextHistory,
+          total: nextTotal,
+          lastEventAt: Date.now(),
+        },
+      };
+    }),
+  applyTaskProgress: (taskId, patch) =>
+    set((state) => {
+      const view = state.tasksView;
+      const existing = view.tasksById[taskId];
+      if (!existing) return {};
+      const merged: TaskSnapshot = {
+        ...existing,
+        status: patch.status ?? existing.status,
+        progress:
+          typeof patch.progress === "number" ? patch.progress : existing.progress,
+        last_message:
+          typeof patch.last_message === "string"
+            ? patch.last_message
+            : existing.last_message,
+        // Schema v17: ``phase`` rides on the same patch.
+        // ``undefined`` = handler didn't supply one; ``null`` = clear
+        // the existing phase; a string = the new value.
+        phase:
+          patch.phase === undefined ? existing.phase ?? null : patch.phase,
+      };
+      return {
+        tasksView: {
+          ...view,
+          tasksById: { ...view.tasksById, [taskId]: merged },
+          lastEventAt: Date.now(),
+        },
+      };
+    }),
+  applyTaskInputNeeded: (task) =>
+    set((state) => {
+      const view = state.tasksView;
+      const previouslyKnown = task.id in view.tasksById;
+      // Keep the chip on the strip; ensure it's there if the row
+      // is somehow new to us (broadcast race between client init
+      // and a fast handler).
+      const nextActive =
+        view.activeIds.includes(task.id)
+          ? view.activeIds
+          : [task.id, ...view.activeIds];
+      // History: same prepend rule as ``applyTaskStarted`` but
+      // we don't bump ``total`` — the row already existed.
+      const filterMatches =
+        view.statusFilter === null || view.statusFilter === task.status;
+      const onFirstPage = view.page === 0;
+      const inHistory = view.historyOrder.includes(task.id);
+      const nextHistory =
+        onFirstPage && filterMatches && !inHistory && !previouslyKnown
+          ? [task.id, ...view.historyOrder].slice(0, view.pageSize)
+          : view.historyOrder;
+      return {
+        tasksView: {
+          ...view,
+          tasksById: { ...view.tasksById, [task.id]: task },
+          activeIds: nextActive,
+          historyOrder: nextHistory,
+          lastEventAt: Date.now(),
+        },
+      };
+    }),
+  applyTaskCompleted: (task) =>
+    set((state) => {
+      const view = state.tasksView;
+      // Keep the row in ``tasksById`` so the strip can render
+      // "done" / "failed" / "cancelled" briefly before the sweep
+      // drops it.
+      const nextActive =
+        view.activeIds.includes(task.id)
+          ? view.activeIds
+          : [task.id, ...view.activeIds];
+      // History: ensure terminal rows show up on a fresh load
+      // even when the user wasn't on page 0 when the start fired.
+      const filterMatches =
+        view.statusFilter === null || view.statusFilter === task.status;
+      const onFirstPage = view.page === 0;
+      const inHistory = view.historyOrder.includes(task.id);
+      const inTasksById = task.id in view.tasksById;
+      const nextHistory =
+        onFirstPage && filterMatches && !inHistory && !inTasksById
+          ? [task.id, ...view.historyOrder].slice(0, view.pageSize)
+          : view.historyOrder;
+      return {
+        tasksView: {
+          ...view,
+          tasksById: { ...view.tasksById, [task.id]: task },
+          activeIds: nextActive,
+          historyOrder: nextHistory,
+          lastEventAt: Date.now(),
+        },
+      };
+    }),
+  setTasksPage: ({ tasks, total, page, pageSize, enabled }) =>
+    set((state) => {
+      const view = state.tasksView;
+      const nextById = { ...view.tasksById };
+      for (const t of tasks) {
+        nextById[t.id] = t;
+      }
+      return {
+        tasksView: {
+          ...view,
+          tasksById: nextById,
+          historyOrder: tasks.map((t) => t.id),
+          total,
+          page,
+          pageSize,
+          enabled,
+          loading: false,
+        },
+      };
+    }),
+  setTaskStatusFilter: (status) =>
+    set((state) => ({
+      tasksView: {
+        ...state.tasksView,
+        statusFilter: status,
+        page: 0,
+      },
+    })),
+  setTasksLoading: (loading) =>
+    set((state) => ({
+      tasksView: { ...state.tasksView, loading },
+    })),
+  dismissTaskFromStrip: (taskId) =>
+    set((state) => {
+      const view = state.tasksView;
+      if (!view.activeIds.includes(taskId)) return {};
+      return {
+        tasksView: {
+          ...view,
+          activeIds: view.activeIds.filter((id) => id !== taskId),
+        },
+      };
+    }),
+  sweepRecentlyCompletedTasks: (maxAgeMs) =>
+    set((state) => {
+      const view = state.tasksView;
+      if (view.activeIds.length === 0) return {};
+      const now = Date.now();
+      // A task is sweep-eligible when it's terminal AND its
+      // ``completed_at`` (or our local lastEventAt as a fallback)
+      // is older than ``maxAgeMs``.
+      const TERMINAL = new Set<TaskStatus>([
+        "done",
+        "failed",
+        "cancelled",
+        "interrupted",
+      ]);
+      const remaining = view.activeIds.filter((id) => {
+        const row = view.tasksById[id];
+        if (!row) return false;
+        if (!TERMINAL.has(row.status)) return true;
+        const completedAt = row.completed_at
+          ? Date.parse(row.completed_at)
+          : NaN;
+        const referenceAt = Number.isFinite(completedAt)
+          ? completedAt
+          : view.lastEventAt || now;
+        return now - referenceAt < maxAgeMs;
+      });
+      if (remaining.length === view.activeIds.length) return {};
+      return {
+        tasksView: { ...view, activeIds: remaining },
       };
     }),
 

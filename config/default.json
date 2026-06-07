@@ -7,9 +7,9 @@
   },
   "ollama": {
     "base_url": "http://127.0.0.1:11434",
-    "chat_model": "jaahas/qwen3.5-uncensored:9b",
+    "chat_model": "qwen3-coder:30b",
     "temperature": 0.6,
-    "context_window": null
+    "context_window": 32768
   },
   "chat_llm": {
     "provider": "ollama",
@@ -162,6 +162,13 @@
     "user_reactions_daily_axis_cap": 0.15,
     "persona_touch_banner_enabled": true,
     "persona_touch_banner_duration_seconds": 20,
+    "persona_task_banner_enabled": true,
+    "task_heartbeat_check_interval_seconds": 30,
+    "task_stalled_seconds": 300,
+    "task_stalled_action": "warn",
+    "task_cascade_cancel_children": true,
+    "task_cleanup_retention_days": 30,
+    "task_cleanup_interval_seconds": 21600,
     "opinion_injection_enabled": true,
     "opinion_injection_require_definite": false,
     "turning_over_enabled": true,

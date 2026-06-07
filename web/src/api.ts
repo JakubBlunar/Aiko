@@ -19,6 +19,11 @@ import type {
   LlmTestConnectionResult,
   Memory,
   MemoriesResponse,
+  TaskEventsResponse,
+  TaskInputsResponse,
+  TasksListResponse,
+  TaskSnapshot,
+  TaskStatus,
   MemoryConflictsResponse,
   MemoryCounts,
   MemoryCreatePayload,
@@ -618,4 +623,69 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ user_display_name }),
     }),
+
+  // ── Background tasks (chunk 13/14) ──────────────────────────────
+  //
+  // Read-mostly: list / get / cancel / answer. There's deliberately
+  // no spawn endpoint — tasks are created exclusively from inside a
+  // turn via Aiko's ``start_*`` tools or system code. See
+  // ``docs/brain-orchestration.md`` for the design rationale.
+  listTasks: (
+    options: {
+      limit?: number;
+      offset?: number;
+      status?: TaskStatus | null;
+    } = {},
+  ) => {
+    const limit = options.limit ?? 50;
+    const offset = options.offset ?? 0;
+    const params = new URLSearchParams({
+      limit: String(limit),
+      offset: String(offset),
+    });
+    if (options.status) params.set("status", options.status);
+    return jsonFetch<TasksListResponse>(`/api/tasks?${params.toString()}`);
+  },
+  getTask: (id: number) =>
+    jsonFetch<{ task: TaskSnapshot }>(`/api/tasks/${id}`),
+  cancelTask: (id: number) =>
+    jsonFetch<{ task_id: number; cancelled: boolean }>(
+      `/api/tasks/${id}/cancel`,
+      { method: "POST" },
+    ),
+  /** Resolve an ``awaiting_input`` task with the user's answer. The
+   * REST endpoint forgivingly accepts ``input`` or ``answer`` as the
+   * body field name; we always send ``input`` to match the canonical
+   * docs. */
+  answerTask: (id: number, input: string) =>
+    jsonFetch<{ task_id: number; accepted: boolean }>(
+      `/api/tasks/${id}/answer`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ input }),
+      },
+    ),
+  /** Schema v17: per-task event log. ``order`` defaults to
+   * chronological replay; pass ``"desc"`` for newest-first. */
+  listTaskEvents: (
+    id: number,
+    options: { limit?: number; offset?: number; order?: "asc" | "desc" } = {},
+  ) => {
+    const limit = options.limit ?? 100;
+    const offset = options.offset ?? 0;
+    const order = options.order ?? "asc";
+    const params = new URLSearchParams({
+      limit: String(limit),
+      offset: String(offset),
+      order,
+    });
+    return jsonFetch<TaskEventsResponse>(
+      `/api/tasks/${id}/events?${params.toString()}`,
+    );
+  },
+  /** Schema v17: per-task input/answer history. No pagination —
+   * per-task volume is bounded. */
+  listTaskInputs: (id: number) =>
+    jsonFetch<TaskInputsResponse>(`/api/tasks/${id}/inputs`),
 };

@@ -147,6 +147,38 @@ class OllamaClient:
     def _request_headers(self) -> dict[str, str] | None:
         return dict(self._headers) if self._headers else None
 
+    def _default_options(self, default_temperature: float) -> dict[str, object]:
+        """Assemble the default ``options`` dict for an Ollama call.
+
+        Callers (chat / chat_with_tools / chat_stream / chat_json) all
+        start from this dict and then ``.update()`` the caller-supplied
+        options on top so caller values win. The defaults are:
+
+        * ``temperature`` — sourced from ``OllamaSettings.temperature``
+          for chat-style calls; the JSON-mode helper overrides to 0.0
+          for determinism.
+        * ``num_ctx`` — sourced from ``OllamaSettings.context_window``
+          when set. Critical because Ollama loads the model with the
+          context size of the *first* call after a cold start. Without
+          this default, big models like ``qwen3-coder:30b`` load with
+          their built-in default (often 256k tokens) and spill from
+          VRAM to RAM — the load reports as a CPU/GPU split and tokens
+          per second drop ~10x. Injecting the user's configured
+          ``context_window`` keeps the kv-cache the right size from
+          the first call onward. When ``context_window`` is ``None``
+          (the documented "auto-detect" sentinel) we omit the field
+          entirely so behaviour stays identical to the pre-fix code.
+
+        Any future model-host knobs (``num_gpu`` for layer split,
+        ``num_thread``, etc.) belong in this helper, not scattered
+        across the three call paths.
+        """
+        defaults: dict[str, object] = {"temperature": default_temperature}
+        ctx_value = self._settings.context_window
+        if isinstance(ctx_value, int) and ctx_value > 0:
+            defaults["num_ctx"] = int(ctx_value)
+        return defaults
+
     def _announce_connection(self, model: str) -> None:
         """Log one INFO line the first time we successfully reach this server."""
         key = self._base_url
@@ -201,7 +233,7 @@ class OllamaClient:
         keep_alive: str | None = None,
         surface: str = "chat_with_tools",
     ) -> OllamaChatResponse:
-        merged_options: dict[str, object] = {"temperature": self._settings.temperature}
+        merged_options = self._default_options(self._settings.temperature)
         if options:
             merged_options.update(options)
         use_model = (model or "").strip() or self._settings.chat_model
@@ -310,7 +342,7 @@ class OllamaClient:
         answer immediately. Pass ``think=True`` if you want the reasoning trace
         in ``message.thinking`` (we still only yield ``message.content`` here).
         """
-        merged_options: dict[str, object] = {"temperature": self._settings.temperature}
+        merged_options = self._default_options(self._settings.temperature)
         if options:
             merged_options.update(options)
         use_model = (model or "").strip() or self._settings.chat_model
@@ -408,7 +440,7 @@ class OllamaClient:
         responses (e.g. summarisation). ``think`` is False by default so
         reasoning models don't burn the response budget on chain-of-thought.
         """
-        merged_options: dict[str, object] = {"temperature": 0.0}
+        merged_options = self._default_options(0.0)
         if options:
             merged_options.update(options)
         use_model = (model or "").strip() or self._settings.chat_model

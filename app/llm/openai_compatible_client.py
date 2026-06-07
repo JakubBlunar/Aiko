@@ -197,6 +197,96 @@ def _collapse_system_for_gemini(
     return out
 
 
+def _normalize_tool_messages_for_openai(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Reshape tool-call traffic from neutral form to strict OpenAI shape.
+
+    The codebase emits a single neutral message format that Ollama and
+    OpenAI-compatible providers both consume (see ``TurnRunner``):
+
+    - assistant tool_calls carry ``id`` + ``type=function`` +
+      ``function: {name, arguments(dict)}``.
+    - tool result messages carry ``tool_call_id`` + ``name`` +
+      ``content``.
+
+    Ollama is permissive — it accepts dict ``arguments`` and ignores any
+    extras. OpenAI's ``/v1/chat/completions`` is strict and 400s if:
+
+    - ``tool_calls[i].type`` is missing,
+    - ``tool_calls[i].id`` is missing,
+    - ``tool_calls[i].function.arguments`` is not a JSON string,
+    - ``role=tool`` lacks ``tool_call_id``.
+
+    This pass walks ``messages`` and normalises just those four points.
+    Anything already in the right shape passes through. The caller's
+    list is never mutated — a fresh list is returned so retry buffers
+    keep working.
+    """
+    out: list[dict[str, Any]] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            out.append(msg)  # type: ignore[arg-type]
+            continue
+        role = msg.get("role")
+        if role == "assistant" and isinstance(msg.get("tool_calls"), list):
+            new_calls: list[dict[str, Any]] = []
+            for idx, call in enumerate(msg["tool_calls"]):
+                if not isinstance(call, dict):
+                    continue
+                fn = call.get("function") or {}
+                if not isinstance(fn, dict):
+                    fn = {}
+                args = fn.get("arguments")
+                if isinstance(args, str):
+                    args_str = args
+                elif args is None:
+                    args_str = "{}"
+                else:
+                    try:
+                        args_str = json.dumps(
+                            args, ensure_ascii=False, default=str,
+                        )
+                    except (TypeError, ValueError):
+                        args_str = "{}"
+                call_id = str(call.get("id", "") or "").strip()
+                if not call_id:
+                    call_id = f"call_{idx}"
+                new_calls.append({
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": str(fn.get("name", "") or ""),
+                        "arguments": args_str,
+                    },
+                })
+            new_msg = dict(msg)
+            new_msg["tool_calls"] = new_calls
+            # OpenAI rejects ``content: null`` only sometimes; an empty
+            # string is universally accepted.
+            if new_msg.get("content") is None:
+                new_msg["content"] = ""
+            out.append(new_msg)
+        elif role == "tool":
+            new_msg = dict(msg)
+            tool_call_id = new_msg.get("tool_call_id")
+            if not isinstance(tool_call_id, str) or not tool_call_id.strip():
+                # Fall back to ``id`` if a caller still uses the old name.
+                fallback = str(new_msg.get("id", "") or "").strip()
+                if fallback:
+                    new_msg["tool_call_id"] = fallback
+            # OpenAI doesn't read ``name`` on tool messages and some
+            # routes warn about unknown keys — keep it for Ollama
+            # compatibility; both providers ignore-or-tolerate it.
+            content = new_msg.get("content", "")
+            if not isinstance(content, str):
+                new_msg["content"] = "" if content is None else str(content)
+            out.append(new_msg)
+        else:
+            out.append(msg)
+    return out
+
+
 # Ollama exposes a wide ``options`` dict (``num_ctx``, ``num_keep``,
 # ``mirostat``, ``num_thread``, …) on top of the shared knobs
 # (``temperature``, ``top_p``, ``seed``, …). The rest of the codebase
@@ -491,10 +581,14 @@ class OpenAICompatibleClient:
         to know which client they're talking to. Unknown keys pass
         through as-is — providers ignore params they don't recognise.
         """
+        # First: normalize neutral tool-call traffic into strict OpenAI
+        # shape (id + type + JSON-string arguments + tool_call_id).
+        # Then: collapse system messages for Gemini's OpenAI-compat layer.
+        normalized = _normalize_tool_messages_for_openai(messages)
         merged_messages = (
-            _collapse_system_for_gemini(messages)
+            _collapse_system_for_gemini(normalized)
             if _is_gemini_model(model)
-            else list(messages)
+            else normalized
         )
         payload: dict[str, Any] = {
             "model": model,
@@ -513,12 +607,34 @@ class OpenAICompatibleClient:
             # tokens before any visible output. With the default
             # ``reasoning_effort="medium"`` and a tight budget (e.g.
             # ``chat_llm.max_tokens=512``) every token can go to
-            # reasoning, leaving Aiko's visible reply empty. Set
-            # ``minimal`` so conversational turns get nearly all
-            # of the budget back for visible content. Users who
-            # want deeper reasoning can override the route to a
-            # higher ``max_tokens`` (the family still respects it).
-            payload["reasoning_effort"] = "minimal"
+            # reasoning, leaving Aiko's visible reply empty.
+            #
+            # The right value is *surface-aware* — there are two
+            # very different shapes of call hitting this client:
+            #
+            # * Tool-decision pass (``chat_with_tools`` with ``tools``
+            #   set): the visible output is tiny — a function name
+            #   and a small JSON args object, ~30-80 tokens. The
+            #   bottleneck is *planning*, not budget. With
+            #   ``minimal`` we observed gpt-5-mini defer ("I'll list
+            #   the folders") instead of emitting a tool call.
+            #   Bumping to ``low`` gives it just enough reasoning
+            #   budget to commit to a tool selection — empirically
+            #   tens of reasoning tokens, well within
+            #   ``num_predict=256``.
+            # * Narration / streaming reply (``chat_stream``, no
+            #   ``tools``) — the visible output IS the user-facing
+            #   message and the budget matters most. Keep
+            #   ``minimal`` so prose isn't starved.
+            # * Plain ``chat`` / ``chat_json`` calls without tools —
+            #   no planning needed; keep ``minimal``.
+            #
+            # The split keys cleanly on ``tools is not None``: tools
+            # are passed only on decision passes, never on the
+            # streaming narration pass. Users who want deeper
+            # reasoning can still raise ``chat_llm.max_tokens`` and
+            # the family will spend it.
+            payload["reasoning_effort"] = "low" if tools else "minimal"
         if options:
             # Pull out the keys we know how to translate, pass the rest
             # through. The Ollama vocabulary leaks here on purpose — the

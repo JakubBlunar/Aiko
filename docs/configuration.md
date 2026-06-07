@@ -547,6 +547,22 @@ Cost: ~4–6 tokens per kept history message. Negligible against the configured 
 
 Verification: enable INFO logging on `app.core.session.prompt_assembler`; the rendered prompt's history messages start with `[…]` brackets. The `_format_age` ladder is unit-tested in `tests/test_prompt_assembler.py::WallClockHistoryPrefixTests`.
 
+### Brain orchestration — long-running tasks (schema v16)
+
+Phase 1 of the brain-orchestration refactor. Lets Aiko spawn user-initiated long-running work (file search / read for now; web browser + research in later phases) without blocking the conversation. Every input — typed message, voice turn, task completion, scheduler wake — flows through one priority queue (`BrainEventQueue`) drained by a single consumer thread (`BrainLoop`) whose free-to-speak gate guarantees task completions never cut Aiko off mid-sentence. See [`docs/brain-orchestration.md`](brain-orchestration.md) for the full design + data-flow diagram.
+
+- `agent.tasks_enabled` *(bool, `true`)* — master switch for the whole task subsystem. Off → the `start_*` tools are hidden from the LLM, `TaskOrchestrator.start_task` rejects with `reason=disabled`, and the cue / escalation paths stay silent. Existing rows in the `tasks` table are untouched.
+- `agent.tasks_per_user_cap` *(int, `8`, min `1`)* — max concurrent `running` + `awaiting_input` rows per user. Higher → more parallel tasks per user (and more memory + WS chatter). Lower → tighter back-pressure on long-running work. Hit a cap → WARNING line `task spawn rejected: reason=per_user_cap`.
+- `agent.tasks_resume_on_boot` *(bool, `true`)* — when on, non-terminal task rows surviving a restart get demoted to `interrupted` AND a cue is parked for Aiko's next turn ("the X task stopped — want me to retry?"). Off → rows still demote on boot but Aiko stays silent; user has to ask via REST / UI.
+- `agent.tasks_running_block_enabled` *(bool, `true`)* — when on, `InnerLifeProvidersMixin._render_running_tasks_block` renders a T6 prompt block listing live tasks for the active user. Off → block is silent; Aiko has no inner-prompt awareness of her own running work (only the TaskStrip in the UI does).
+- `agent.brain_loop_deferred_grace_ms` *(int, `100`, clamped `[10, 5000]`)* — `BrainLoop` poll interval in milliseconds. Smaller → deferred items retry sooner when the free-to-speak gate clears (lower latency on the no-interrupt invariant). Larger → consumer thread wakes less often on idle, at the cost of post-TTS escalation latency. Default `100` ms.
+- `agent.task_completion_proactive_after_seconds` *(int, `45`, clamped `[5, 600]`)* — seconds of silence after a `task_result` cue parks before the escalation timer enqueues a `ProactiveEvent`. Higher → Aiko stays quieter for longer, lets the user pivot. Lower → completions surface as proactive turns more aggressively.
+- `agent.task_input_needed_proactive_after_seconds` *(int, `20`, clamped `[5, 600]`)* — shorter sibling of the above for `task_input_needed` cues. A blocked task is more pressing than a finished one, so the default is half the completion window.
+- `agent.task_cue_max_age_seconds` *(int, `1800`, clamped `[60, 86400]`)* — wall-clock age above which a parked cue silently drops on the next dequeue / sweep. Protects against awkward stale-context messages ("the YouTube tab I opened 3 hours ago is still going") if the user vanished. Default `1800` = 30 minutes.
+- `agent.task_cue_max_aggregated` *(int, `5`, clamped `[1, 20]`)* — hard cap on cues rendered into a single turn's prompt T6 block. Excess cues stay in the DB / WS strip (so the user sees them in the UI), but get dropped from the prompt to keep T6 cheap. The most volatile tier never gets cache hits, so trimming pays off.
+
+Verification: `tail_logs(module_contains="brain_loop")` for dispatch / defer / escalation lines; `tail_logs(module_contains="task_orchestrator")` for spawn / transition / completion / cue lifecycle lines. MCP tools planned for chunk 5+: `list_tasks`, `get_brain_loop_state`, `get_brain_queue_state`. Tests cover settings clamps in `tests/test_settings.py::TaskOrchestrationSettingsTests`, cue-store invariants in `tests/test_task_cue_store.py`, escalation timer behaviour in `tests/test_task_escalation.py`, and the no-interrupt invariant end-to-end in `tests/test_brain_loop_gate.py`.
+
 ---
 
 ## `memory` — `MemorySettings`

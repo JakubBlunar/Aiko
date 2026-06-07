@@ -1434,6 +1434,274 @@ class VulnerabilityBudgetProviderSlotTests(unittest.TestCase):
             self.assertNotIn(self._CUE, messages[0]["content"])
 
 
+class TaskCuesProviderSlotTests(unittest.TestCase):
+    """Brain-orchestration chunk 5: parked task-cue provider lands
+    in the system prompt right after the K32 user-reactions block
+    in the T6 cluster.
+
+    The cue rendering is exhaustively tested in
+    ``tests/test_cue_render.py``; the provider plumbing in
+    ``tests/test_task_orchestration_mixin.py``. This class only
+    verifies the slot wiring + ordering + the "NOT dropped under
+    aggressive" invariant.
+    """
+
+    _CUE = (
+        "[parked task: file_search]\n"
+        "- done — found 3 matches"
+    )
+
+    def test_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="tc1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                task_cues=lambda: self._CUE,
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "tc1",
+                "what's up?",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertIn(self._CUE, messages[0]["content"])
+
+    def test_block_lands_after_user_reactions(self) -> None:
+        # The audit constant ``_PROMPT_BLOCK_TIERS["T6_detectors"]``
+        # places ``task_cues_block`` immediately after
+        # ``user_reactions_block``. Both are "live read on what just
+        # happened" beats -- K32 says "Jacob reacted", task cues
+        # says "your background task finished / is blocked".
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="tc2", role="user", content="hi", token_count=2,
+            )
+            reactions_cue = "Jacob just hearted your previous reply (heart)."
+            assembler.set_inner_life_providers(
+                user_reactions=lambda: reactions_cue,
+                task_cues=lambda: self._CUE,
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "tc2",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            content = messages[0]["content"]
+            self.assertIn(reactions_cue, content)
+            self.assertIn(self._CUE, content)
+            self.assertLess(
+                content.index(reactions_cue),
+                content.index(self._CUE),
+            )
+
+    def test_block_silent_when_provider_returns_empty(self) -> None:
+        # The common case -- no parked task cues -- renders nothing.
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="tc3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(task_cues=lambda: "")
+            messages, _ = assembler.assemble_with_budget(
+                "tc3",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertNotIn(self._CUE, messages[0]["content"])
+
+    def test_block_retained_under_aggressive(self) -> None:
+        # A parked task cue is exactly the kind of thing tight
+        # budgets must keep -- a blocked task waiting for an
+        # answer is more urgent than ambient grounding. Pinned in
+        # the audit constant as NOT droppable.
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="tc4", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(task_cues=lambda: self._CUE)
+            messages, _ = assembler.assemble_with_budget(
+                "tc4",
+                "x",
+                context_window=4096,
+                response_budget=256,
+                aggressive=True,
+            )
+            self.assertIn(self._CUE, messages[0]["content"])
+
+    def test_block_provider_exception_swallowed(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="tc5", role="user", content="hi", token_count=2,
+            )
+
+            def _boom() -> str:
+                raise RuntimeError("task_cues exploded")
+
+            assembler.set_inner_life_providers(task_cues=_boom)
+            messages, _ = assembler.assemble_with_budget(
+                "tc5",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            # The cue must not appear, and the assembler must not
+            # have raised -- prompt assembly proceeded normally.
+            self.assertNotIn(self._CUE, messages[0]["content"])
+
+    def test_audit_constant_lists_block_in_t6(self) -> None:
+        # Defense-in-depth: the contributor guide pins block names
+        # in ``_PROMPT_BLOCK_TIERS``. A future refactor that drops
+        # the entry would let new blocks slip into the wrong tier
+        # silently.
+        from app.core.session.prompt_assembler import _PROMPT_BLOCK_TIERS
+
+        t6 = _PROMPT_BLOCK_TIERS["T6_detectors"]
+        self.assertIn("task_cues_block", t6)
+        # Order: user_reactions_block before task_cues_block.
+        self.assertLess(
+            t6.index("user_reactions_block"),
+            t6.index("task_cues_block"),
+        )
+
+
+class RunningTasksProviderSlotTests(unittest.TestCase):
+    """Brain-orchestration chunk 6: running-tasks state block.
+
+    Sibling slot to :class:`TaskCuesProviderSlotTests`. The block
+    is rendered BEFORE the task-cues block so the prompt reads
+    "you're doing A; A just finished" in order. NOT dropped under
+    ``aggressive``: when the user asks "are you still working on
+    X?" they expect Aiko to know, even on a tight budget.
+    """
+
+    _BLOCK = (
+        "Tasks running for Jacob right now:\n"
+        "- file_search (running, 60%)"
+    )
+
+    def test_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="rt1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                running_tasks=lambda: self._BLOCK,
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "rt1",
+                "still working?",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertIn(self._BLOCK, messages[0]["content"])
+
+    def test_block_lands_before_task_cues(self) -> None:
+        # State (what's running) precedes deltas (what finished /
+        # is blocked) -- mirrors the audit constant order.
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="rt2", role="user", content="hi", token_count=2,
+            )
+            cues_block = "[parked task: file_read]\n- done — read 2.3kb"
+            assembler.set_inner_life_providers(
+                running_tasks=lambda: self._BLOCK,
+                task_cues=lambda: cues_block,
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "rt2",
+                "status?",
+                context_window=4096,
+                response_budget=256,
+            )
+            content = messages[0]["content"]
+            self.assertIn(self._BLOCK, content)
+            self.assertIn(cues_block, content)
+            self.assertLess(
+                content.index(self._BLOCK),
+                content.index(cues_block),
+            )
+
+    def test_block_silent_when_provider_returns_empty(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="rt3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(running_tasks=lambda: "")
+            messages, _ = assembler.assemble_with_budget(
+                "rt3",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertNotIn(self._BLOCK, messages[0]["content"])
+
+    def test_block_retained_under_aggressive(self) -> None:
+        # Pinned NOT in the aggressive-drop set: "are you still
+        # working on X?" needs an honest answer on every budget.
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="rt4", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                running_tasks=lambda: self._BLOCK,
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "rt4",
+                "x",
+                context_window=4096,
+                response_budget=256,
+                aggressive=True,
+            )
+            self.assertIn(self._BLOCK, messages[0]["content"])
+
+    def test_block_provider_exception_swallowed(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="rt5", role="user", content="hi", token_count=2,
+            )
+
+            def _boom() -> str:
+                raise RuntimeError("running_tasks exploded")
+
+            assembler.set_inner_life_providers(running_tasks=_boom)
+            messages, _ = assembler.assemble_with_budget(
+                "rt5",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertNotIn(self._BLOCK, messages[0]["content"])
+
+    def test_audit_constant_lists_block_in_t6(self) -> None:
+        from app.core.session.prompt_assembler import _PROMPT_BLOCK_TIERS
+
+        t6 = _PROMPT_BLOCK_TIERS["T6_detectors"]
+        self.assertIn("running_tasks_block", t6)
+        # Order: user_reactions_block < running_tasks_block <
+        # task_cues_block. State (running) precedes deltas
+        # (cues / results).
+        self.assertLess(
+            t6.index("user_reactions_block"),
+            t6.index("running_tasks_block"),
+        )
+        self.assertLess(
+            t6.index("running_tasks_block"),
+            t6.index("task_cues_block"),
+        )
+
+
 class GroundingLineModeTests(unittest.TestCase):
     """K16 unified ambient grounding line modes.
 

@@ -11,6 +11,7 @@ import type {
   MetricsResponse,
   RagDocument,
   SharedMoment,
+  TaskStatus,
   WorldItem,
   WorldKind,
   WorldLocation,
@@ -27,6 +28,7 @@ import { DiagnosticsSection } from "./settings/DiagnosticsSection";
 import { MemoryTab } from "./settings/MemoryTab";
 import { WorldTab } from "./settings/WorldTab";
 import { TogetherTab } from "./settings/TogetherTab";
+import { TasksTab } from "./settings/TasksTab";
 
 interface SettingsDrawerProps {
   open: boolean;
@@ -41,7 +43,8 @@ type SettingsTabId =
   | "memory"
   | "world"
   | "together"
-  | "knowledge";
+  | "knowledge"
+  | "tasks";
 
 interface TabSpec {
   id: SettingsTabId;
@@ -58,6 +61,7 @@ const SETTINGS_TABS: ReadonlyArray<TabSpec> = [
   { id: "world", label: "World", icon: "🏠" },
   { id: "together", label: "Together", icon: "💞" },
   { id: "knowledge", label: "Knowledge", icon: "📚" },
+  { id: "tasks", label: "Tasks", icon: "🧰" },
 ];
 
 const MEMORY_PAGE_SIZE = 50;
@@ -111,6 +115,16 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
     kind: string;
     salience: number;
   }>({ content: "", kind: "fact", salience: 0.6 });
+
+  // ── Tasks tab (chunk 14) ───────────────────────────────────────────
+  const tasksView = useAssistantStore((s) => s.tasksView);
+  const setTasksPage = useAssistantStore((s) => s.setTasksPage);
+  const setTaskStatusFilter = useAssistantStore((s) => s.setTaskStatusFilter);
+  const setTasksLoading = useAssistantStore((s) => s.setTasksLoading);
+  const dismissTaskFromStrip = useAssistantStore(
+    (s) => s.dismissTaskFromStrip,
+  );
+  const [tasksError, setTasksError] = useState<string | null>(null);
 
   const avatar = useAssistantStore((s) => s.avatar);
   const setAvatar = useAssistantStore((s) => s.setAvatar);
@@ -415,11 +429,92 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
     ],
   );
 
+  // ── Tasks refresh (chunk 14) ─────────────────────────────────────
+  //
+  // Mirrors ``refreshMemories``: paginated REST fetch with an
+  // optional override for page / status filter so the user actions
+  // (page → / ← / filter pill click) can pass the next desired
+  // value without waiting for the previous setState to flush.
+  const refreshTasks = useCallback(
+    async (overrides?: {
+      page?: number;
+      statusFilter?: TaskStatus | null;
+    }) => {
+      const page = overrides?.page ?? tasksView.page;
+      const statusFilter =
+        overrides?.statusFilter !== undefined
+          ? overrides.statusFilter
+          : tasksView.statusFilter;
+      setTasksLoading(true);
+      setTasksError(null);
+      try {
+        const data = await api.listTasks({
+          limit: tasksView.pageSize,
+          offset: page * tasksView.pageSize,
+          status: statusFilter,
+        });
+        setTasksPage({
+          tasks: data.tasks,
+          total: data.total,
+          page,
+          pageSize: tasksView.pageSize,
+          enabled: data.enabled,
+        });
+      } catch (err) {
+        setTasksError(String(err));
+        setTasksLoading(false);
+      }
+    },
+    [
+      tasksView.page,
+      tasksView.statusFilter,
+      tasksView.pageSize,
+      setTasksPage,
+      setTasksLoading,
+    ],
+  );
+
+  const handleTaskCancel = useCallback(
+    async (taskId: number) => {
+      setTasksError(null);
+      try {
+        await api.cancelTask(taskId);
+        // The orchestrator listener will fire ``task_completed``
+        // through the WS so the store updates without a refetch.
+      } catch (err) {
+        setTasksError(String(err));
+      }
+    },
+    [],
+  );
+
+  const handleTaskAnswer = useCallback(
+    async (taskId: number, answer: string) => {
+      setTasksError(null);
+      try {
+        await api.answerTask(taskId, answer);
+        // Server fires ``task_progress`` / ``task_completed`` once
+        // the handler resumes.
+      } catch (err) {
+        setTasksError(String(err));
+      }
+    },
+    [],
+  );
+
   useEffect(() => {
     if (open) {
       void refreshAll();
     }
   }, [open, refreshAll]);
+
+  // Refresh the tasks page whenever the user opens the Tasks tab or
+  // flips the status filter / page. Same shape as the memory hook.
+  useEffect(() => {
+    if (!open || activeTab !== "tasks") return;
+    void refreshTasks();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, activeTab, tasksView.page, tasksView.statusFilter]);
 
   // Hydrate the client-side audio device pickers + DSP toggles from
   // localStorage and the browser's device enumeration API. Devices
@@ -1341,6 +1436,54 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                   }}
                   onRefresh={() => {
                     void refreshTogether();
+                  }}
+                />
+              ) : null}
+
+              {activeTab === "tasks" ? (
+                <TasksTab
+                  tasks={tasksView.historyOrder
+                    .map((id) => tasksView.tasksById[id])
+                    .filter((t): t is NonNullable<typeof t> => Boolean(t))}
+                  total={tasksView.total}
+                  page={tasksView.page}
+                  pageSize={tasksView.pageSize}
+                  statusFilter={tasksView.statusFilter}
+                  loading={tasksView.loading}
+                  enabled={tasksView.enabled}
+                  error={tasksError}
+                  onSetStatusFilter={(status) => {
+                    setTaskStatusFilter(status);
+                  }}
+                  onSetPage={(p) => {
+                    // Page changes go through the store so the
+                    // effect-watcher re-fires the REST fetch with
+                    // the new offset on the next render tick.
+                    setTasksPage({
+                      tasks: tasksView.historyOrder
+                        .map((id) => tasksView.tasksById[id])
+                        .filter(
+                          (t): t is NonNullable<typeof t> => Boolean(t),
+                        ),
+                      total: tasksView.total,
+                      page: Math.max(0, p),
+                      pageSize: tasksView.pageSize,
+                      enabled: tasksView.enabled,
+                    });
+                  }}
+                  onCancel={(taskId) => {
+                    // Dismiss from strip optimistically so the chip
+                    // disappears even if the user is staring at the
+                    // strip; the broadcast-driven completion will
+                    // still drop the row through the regular path.
+                    dismissTaskFromStrip(taskId);
+                    void handleTaskCancel(taskId);
+                  }}
+                  onAnswer={(taskId, answer) => {
+                    void handleTaskAnswer(taskId, answer);
+                  }}
+                  onRefresh={() => {
+                    void refreshTasks();
                   }}
                 />
               ) : null}

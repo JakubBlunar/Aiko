@@ -36,15 +36,31 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
 
         The UI updates live (chat bubble, etc.). Set ``skip_tts=True`` to
         suppress audio playback during automated testing.
+
+        Chunk 7 of the brain-orchestration refactor: this tool now
+        routes through :meth:`SessionController.enqueue_user_message`
+        which puts a :class:`UserMessageEvent` on the brain queue
+        and blocks on a :class:`concurrent.futures.Future` for the
+        reply. The serialisation guarantees a real Cursor MCP call
+        can't race a user-typed message in the WS chat path —
+        whichever lands on the queue first gets the turn, the other
+        is dispatched on the next loop tick. The legacy
+        ``session.chat_once`` fallback is hit only when the task
+        subsystem is disabled (``agent.tasks_enabled=False``).
         """
         session._notify_message("You (MCP)", message)
-        original = session._settings.tts.enabled
-        if skip_tts:
-            session._settings.tts.enabled = False
-        try:
-            response = session.chat_once(message)
-        finally:
-            session._settings.tts.enabled = original
+        response = session.enqueue_user_message(
+            text=message,
+            mode="mcp",
+            skip_tts=bool(skip_tts),
+            wait_for_reply=True,
+            # MCP debug clients tolerate long blocking calls; a real
+            # turn rarely exceeds 30s but reflection + dream passes
+            # piggy-backed on the turn can push to a minute. 120s
+            # matches the mixin default — explicit here so the limit
+            # is documented at the call site.
+            timeout=120.0,
+        )
         session._notify_message("Assistant", response or "")
         return response or "(empty response)"
 
@@ -3012,6 +3028,220 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             "mcp_server_port": s.mcp_server.port,
         }
         return json.dumps(info, indent=2, default=str)
+
+    # ── Brain-orchestration task debug surface (chunk 9) ─────────────
+    #
+    # These tools let Cursor / VSCode MCP clients drive the
+    # filesystem reference handler end-to-end. Useful both as a
+    # smoke test for the queue path and as a real-world demo of
+    # the "Aiko does something in the background, surfaces the
+    # result on the next turn" flow described in
+    # ``docs/brain-orchestration.md``.
+
+    @mcp.tool()
+    def list_file_roots() -> str:
+        """List configured filesystem roots + their validation status.
+
+        Mirrors ``agent.task_file_allowed_roots`` after boot-time
+        validation. Each entry reports ``label``, ``path`` (the
+        normalised absolute form), ``active`` (False if the path
+        missing / not a directory / had an invalid label),
+        ``reason`` (stable short string when inactive), and
+        ``warnings`` (e.g. ``"sensitive_directory"``).
+        """
+        from app.core.tasks.sandbox import FileTaskRoot, validate_roots
+
+        roots_raw = getattr(
+            session._settings.agent, "task_file_allowed_roots", ()
+        ) or ()
+        roots: list[FileTaskRoot] = []
+        for entry in roots_raw:
+            if not isinstance(entry, dict):
+                continue
+            label = str(entry.get("label", "")).strip()
+            path = str(entry.get("path", "")).strip()
+            if not label or not path:
+                continue
+            roots.append(
+                FileTaskRoot(
+                    label=label,
+                    path=path,
+                    read_only=bool(entry.get("read_only", True)),
+                )
+            )
+        verdicts = validate_roots(roots)
+        out = [
+            {
+                "label": vr.root.label,
+                "path": vr.abs_path,
+                "active": vr.active,
+                "reason": vr.reason,
+                "warnings": list(vr.warnings),
+                "read_only": vr.root.read_only,
+            }
+            for vr in verdicts
+        ]
+        return json.dumps(out, indent=2, default=str)
+
+    @mcp.tool()
+    def start_file_search(
+        query: str, root_label: str = "", max_results: int = 50
+    ) -> str:
+        """Start an asynchronous file search task and return its id.
+
+        The search runs on the orchestrator's worker pool — this
+        call returns immediately with ``{"task_id": N}``. Results
+        land as a ``task_result`` cue on the brain queue and
+        surface in Aiko's next turn (or escalate to a proactive
+        turn after the silence window).
+
+        ``root_label`` scopes to a single configured root (empty =
+        all active roots). ``max_results`` caps the returned match
+        list; the handler stops walking once the cap is hit and
+        flags ``truncated=true`` on the result.
+        """
+        if session._task_orchestrator is None:
+            return json.dumps(
+                {"error": "task subsystem disabled (agent.tasks_enabled=False)"}
+            )
+        user_id = str(getattr(session, "_user_id", "default"))
+        title = f"file search: {query[:60]}"
+        if root_label:
+            title += f" (in {root_label})"
+        task_id = session._task_orchestrator.start_task(
+            user_id=user_id,
+            handler_name="file_search",
+            args={
+                "query": query,
+                "root_label": root_label,
+                "max_results": int(max_results),
+            },
+            title=title,
+            initiated_by="system",  # MCP path is admin-initiated
+        )
+        if task_id is None:
+            return json.dumps({"error": "task_spawn_rejected"})
+        return json.dumps({"task_id": task_id, "handler": "file_search"})
+
+    @mcp.tool()
+    def start_file_read(path: str, max_bytes: int = 0) -> str:
+        """Start an asynchronous file read task and return its id.
+
+        Reads a text file from one of the configured file roots
+        (``agent.task_file_allowed_roots``). Path can be label-
+        prefixed (``"Documents:notes/q4.md"``) or bare
+        (``"notes/q4.md"``); a bare path that matches in multiple
+        roots transitions the task to ``awaiting_input`` rather than
+        guessing — surface the candidate list via
+        :func:`list_active_tasks` and resolve with
+        :func:`answer_file_task`.
+
+        ``max_bytes`` of 0 (or omitted) uses the configured ceiling
+        ``agent.task_file_read_max_bytes`` (default 256 KiB).
+        """
+        if session._task_orchestrator is None:
+            return json.dumps(
+                {"error": "task subsystem disabled (agent.tasks_enabled=False)"}
+            )
+        user_id = str(getattr(session, "_user_id", "default"))
+        args: dict[str, Any] = {"path": path}
+        if max_bytes and int(max_bytes) > 0:
+            args["max_bytes"] = int(max_bytes)
+        task_id = session._task_orchestrator.start_task(
+            user_id=user_id,
+            handler_name="file_read",
+            args=args,
+            title=f"file read: {path[:80]}",
+            initiated_by="system",
+        )
+        if task_id is None:
+            return json.dumps({"error": "task_spawn_rejected"})
+        return json.dumps({"task_id": task_id, "handler": "file_read"})
+
+    @mcp.tool()
+    def answer_file_task(task_id: int, answer: str) -> str:
+        """Resolve an ``awaiting_input`` file task with the user's answer.
+
+        Used to disambiguate a bare-path read whose path matched in
+        multiple roots. ``answer`` should be one of the candidate
+        strings the handler emitted (typically
+        ``"<label>:<relative_path>"`` from
+        ``state.input_request.options``).
+
+        Returns ``{"answered": true, "task_id": N}`` when the
+        orchestrator accepted the answer; ``answered=false`` means
+        the task wasn't actually waiting, was unknown, or had
+        already terminated. A bad answer text may still flip the
+        task to another ``awaiting_input`` (the handler decides) —
+        check :func:`list_active_tasks` to verify the new status.
+        """
+        if session._task_orchestrator is None:
+            return json.dumps(
+                {"error": "task subsystem disabled (agent.tasks_enabled=False)"}
+            )
+        try:
+            ok = session._task_orchestrator.answer(int(task_id), str(answer))
+        except Exception as exc:
+            return json.dumps({"error": f"answer failed: {exc}"})
+        return json.dumps({"answered": bool(ok), "task_id": int(task_id)})
+
+    @mcp.tool()
+    def list_active_tasks() -> str:
+        """Return JSON of every task currently ``running`` or ``awaiting_input``.
+
+        Reads :meth:`TaskOrchestrator.list_running` for all users
+        (no per-user filter — debug-only). Each entry includes
+        ``id``, ``handler_name``, ``title``, ``status``,
+        ``progress``, ``last_message``, ``user_id``, ``initiated_by``,
+        and ``created_at``.
+        """
+        if session._task_orchestrator is None:
+            return json.dumps([])
+        try:
+            rows = session._task_orchestrator.list_running(user_id=None)
+        except Exception as exc:
+            return json.dumps({"error": f"list_running failed: {exc}"})
+        out = []
+        for row in rows:
+            entry: dict[str, Any] = {
+                "id": row.id,
+                "handler_name": row.handler_name,
+                "title": row.title,
+                "status": row.status,
+                "progress": row.progress,
+                "last_message": row.last_message,
+                "user_id": row.user_id,
+                "initiated_by": row.initiated_by,
+                "created_at": row.created_at,
+            }
+            # Surface input_request so the MCP user can see what
+            # answer the task is waiting for (chunk 12 file_read +
+            # any future awaiting-input handler benefits).
+            if row.input_request is not None:
+                entry["input_request"] = row.input_request
+            out.append(entry)
+        return json.dumps(out, indent=2, default=str)
+
+    @mcp.tool()
+    def cancel_task(task_id: int) -> str:
+        """Cancel an active task by id.
+
+        Returns ``{"cancelled": true, "task_id": N}`` on success,
+        ``{"error": ...}`` when the task subsystem is disabled or
+        the row isn't in an active state. Cancellation is a row
+        transition + ``handler.cancel`` callback; the handler is
+        expected to release external resources but may take a
+        moment to notice (the orchestrator does NOT block).
+        """
+        if session._task_orchestrator is None:
+            return json.dumps(
+                {"error": "task subsystem disabled (agent.tasks_enabled=False)"}
+            )
+        try:
+            ok = session._task_orchestrator.cancel(int(task_id))
+        except Exception as exc:
+            return json.dumps({"error": f"cancel failed: {exc}"})
+        return json.dumps({"cancelled": bool(ok), "task_id": int(task_id)})
 
     log.info("MCP server created (lean v1)")
     return mcp
