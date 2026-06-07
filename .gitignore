@@ -25,3 +25,5 @@ data/documents/
 data/personas/
 web/src-tauri/target/
 web/src-tauri/gen/
+.playwright-mcp/**
+tmp
