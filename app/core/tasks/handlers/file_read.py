@@ -234,12 +234,43 @@ def _read_file_safely(
         "label": resolved.label,
         "relative_path": resolved.relative_path,
         "content": final_text,
+        # ``summary`` is what the orchestrator's ``_summary_text`` lifts
+        # into the terse T6 task-cue (it falls back to a useless
+        # ``result keys=...`` string otherwise). Keep it a short,
+        # readable content preview so the passive cue path actually
+        # tells Aiko what the file said. The full ``content`` above is
+        # what the reply-on-complete turn renders verbatim.
+        "summary": _content_preview(final_text),
         "size_bytes": size_bytes,
         "read_bytes": min(len(raw), int(max_bytes)),
         "truncated": bool(byte_truncated or line_truncated),
         "encoding": "utf-8",
         "line_count": len(lines),
     }
+
+
+# Preview budget for the terse cue. The orchestrator re-caps to 200
+# chars; we keep a slightly larger head here so the cap lands on a
+# natural-ish boundary rather than mid-word every time.
+_PREVIEW_CHARS = 280
+
+
+def _content_preview(text: str) -> str:
+    """One-line-ish preview of file content for the task cue.
+
+    Empty / whitespace-only files report ``(empty file)`` so the cue
+    isn't a bare dash. Otherwise collapse interior runs of blank lines
+    and truncate to :data:`_PREVIEW_CHARS` with an ellipsis.
+    """
+    stripped = (text or "").strip()
+    if not stripped:
+        return "(empty file)"
+    # Collapse newlines to single spaces so the cue stays a tidy
+    # one-liner; the full content keeps its formatting.
+    flattened = " ".join(stripped.split())
+    if len(flattened) > _PREVIEW_CHARS:
+        return flattened[:_PREVIEW_CHARS].rstrip() + "…"
+    return flattened
 
 
 # ── candidate-list formatting for TaskInputNeeded ───────────────────────

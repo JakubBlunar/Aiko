@@ -206,19 +206,28 @@ class TaskEscalationManager:
 
     # ── public surface ───────────────────────────────────────────────
 
-    def arm(self, cue: TaskCue) -> None:
+    def arm(self, cue: TaskCue, *, after_seconds: float | None = None) -> None:
         """Arm an escalation timer for the given parked cue.
 
         If a timer for the same ``task_id`` already exists, cancels
         it first and installs a fresh one — the newer cue's window
         wins. Idempotent on the timer state.
 
+        ``after_seconds`` overrides the kind-derived first-fire delay.
+        The wiring passes a near-zero value for ``reply_when_done``
+        tasks so they surface as a proactive reply the moment the
+        free-to-speak gate clears (the duration-hybrid "slow" half),
+        rather than waiting out the full completion window.
+
         Silent no-op after :meth:`shutdown` so a late park doesn't
         leak a timer thread past process shutdown.
         """
         if not cue.task_id:
             raise ValueError("cue.task_id must be non-empty")
-        after_s = self._config.window_for_kind(cue.kind)
+        if after_seconds is not None:
+            after_s = max(0.0, float(after_seconds))
+        else:
+            after_s = self._config.window_for_kind(cue.kind)
         with self._lock:
             if self._shutdown:
                 log.debug(

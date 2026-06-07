@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import unittest
 
-from app.core.tasks.cue_render import render_cue_block
+from app.core.tasks.cue_render import render_cue_block, render_reply_block
 from app.core.tasks.task_cue_store import (
     CUE_KIND_INPUT_NEEDED,
     CUE_KIND_RESULT,
@@ -255,6 +255,49 @@ class AggregationCapTests(unittest.TestCase):
         cues = [_result(f"t{i}", title=f"task {i}", summary="ok") for i in range(7)]
         out = render_cue_block(cues)
         self.assertEqual(out.count("\n- "), 5)
+
+
+class RenderReplyBlockTests(unittest.TestCase):
+    """The reply-on-complete block renders full result content."""
+
+    def test_empty_items_returns_empty_string(self) -> None:
+        self.assertEqual(render_reply_block([]), "")
+
+    def test_renders_header_origin_title_and_content(self) -> None:
+        out = render_reply_block(
+            [
+                {
+                    "title": "file read: notes.md",
+                    "origin_prompt": "read my notes",
+                    "content": "line one\nline two",
+                }
+            ]
+        )
+        self.assertIn("reply now using the result below", out)
+        self.assertIn('They asked: "read my notes"', out)
+        self.assertIn("file read: notes.md:", out)
+        # Content is indented (4 spaces) so it reads as a block, not a bullet.
+        self.assertIn("    line one", out)
+        self.assertIn("    line two", out)
+
+    def test_origin_optional(self) -> None:
+        out = render_reply_block(
+            [{"title": "t", "origin_prompt": "", "content": "body"}]
+        )
+        self.assertNotIn("They asked", out)
+        self.assertIn("    body", out)
+
+    def test_content_truncated_to_cap(self) -> None:
+        big = "x" * 9000
+        out = render_reply_block(
+            [{"title": "t", "content": big}], max_content_chars=100
+        )
+        self.assertIn("…(truncated)", out)
+        self.assertNotIn("x" * 200, out)
+
+    def test_missing_content_falls_back(self) -> None:
+        out = render_reply_block([{"title": "t"}])
+        self.assertIn("(no content)", out)
 
 
 if __name__ == "__main__":  # pragma: no cover

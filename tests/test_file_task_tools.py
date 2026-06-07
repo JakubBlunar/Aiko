@@ -36,6 +36,21 @@ from app.llm.tools.file_tasks import (
 )
 
 
+class _FakeRow:
+    """Minimal task row exposing the fields the tools read."""
+
+    def __init__(
+        self,
+        *,
+        result: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> None:
+        self.result = result
+        self.metadata = metadata
+        self.error = error
+
+
 class _FakeOrchestrator:
     def __init__(self) -> None:
         self.start_calls: list[dict[str, Any]] = []
@@ -47,6 +62,13 @@ class _FakeOrchestrator:
         self.start_raise: Exception | None = None
         self.cancel_raise: Exception | None = None
         self.answer_raise: Exception | None = None
+        # Inline fast-path knobs. ``wait_status`` is what
+        # ``wait_for_task`` returns; default "timeout" keeps spawns on
+        # the async (reply-on-complete) path so the legacy tests that
+        # assert the running/async payload keep passing.
+        self.wait_status: str = "timeout"
+        self.wait_calls: int = 0
+        self.rows: dict[int, _FakeRow] = {}
         # Chunk 12: file_read joins file_search as a default handler.
         self._handlers: dict[str, Any] = {
             "file_search": object(),
@@ -64,6 +86,7 @@ class _FakeOrchestrator:
         args: dict[str, Any],
         title: str,
         initiated_by: str = "aiko",
+        metadata: dict[str, Any] | None = None,
     ) -> int | None:
         if self.start_raise is not None:
             raise self.start_raise
@@ -74,9 +97,17 @@ class _FakeOrchestrator:
                 "args": dict(args),
                 "title": title,
                 "initiated_by": initiated_by,
+                "metadata": dict(metadata) if metadata else None,
             }
         )
         return self.next_task_id
+
+    def wait_for_task(self, task_id: int, *, timeout: float = 5.0) -> str:
+        self.wait_calls += 1
+        return self.wait_status
+
+    def get(self, task_id: int) -> _FakeRow | None:
+        return self.rows.get(int(task_id))
 
     def cancel(self, task_id: int) -> bool:
         if self.cancel_raise is not None:
@@ -564,6 +595,117 @@ class ListFileRootsRunTests(unittest.TestCase):
         out = json.loads(tool.run({}))
         self.assertEqual(out["total_roots"], 0)
         self.assertEqual(out["active_roots"], 0)
+
+
+# ── duration-hybrid inline fast-path ─────────────────────────────────────
+
+
+class _AgentCfgGrace:
+    def __init__(
+        self,
+        *,
+        grace: float = 3.0,
+        reply_on_complete: bool = True,
+        when_free: float = 1.0,
+    ) -> None:
+        self.task_inline_grace_seconds = grace
+        self.task_reply_on_complete_enabled = reply_on_complete
+        self.task_reply_when_free_seconds = when_free
+
+
+class _SettingsGrace:
+    def __init__(self, agent: _AgentCfgGrace) -> None:
+        self.agent = agent
+
+
+class _SessionGrace(_FakeSession):
+    def __init__(
+        self,
+        *,
+        orchestrator: _FakeOrchestrator,
+        grace: float = 3.0,
+        reply_on_complete: bool = True,
+    ) -> None:
+        super().__init__(orchestrator=orchestrator)
+        self._settings = _SettingsGrace(
+            _AgentCfgGrace(grace=grace, reply_on_complete=reply_on_complete)
+        )
+        self._active_turn_user_text = ""
+
+
+class InlineFastPathTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.orch = _FakeOrchestrator()
+        self.session = _FakeSession(orchestrator=self.orch)
+        self.read = StartFileReadTool(self.session)
+        self.search = StartFileSearchTool(self.session)
+
+    def test_async_payload_when_wait_times_out(self) -> None:
+        out = json.loads(self.read.run({"path": "x.md"}))
+        self.assertEqual(out["status"], "running")
+        self.assertIn("automatically", out["note"])
+        # reply_when_done is flagged so the controller fires the
+        # aggregated proactive reply on completion.
+        meta = self.orch.start_calls[0]["metadata"]
+        self.assertTrue(meta["reply_when_done"])
+
+    def test_inline_done_folds_read_content(self) -> None:
+        self.orch.wait_status = "done"
+        self.orch.rows[7] = _FakeRow(
+            result={
+                "content": "hello world",
+                "line_count": 1,
+                "label": "Docs",
+                "relative_path": "x.md",
+            }
+        )
+        out = json.loads(self.read.run({"path": "Docs:x.md"}))
+        self.assertEqual(out["status"], "done")
+        self.assertEqual(out["content"], "hello world")
+        self.assertIn("do NOT start another read", out["note"])
+
+    def test_inline_done_folds_search_matches(self) -> None:
+        self.orch.wait_status = "done"
+        self.orch.rows[7] = _FakeRow(
+            result={
+                "match_count": 1,
+                "matches": [{"label": "Docs", "relative_path": "a.md"}],
+                "summary": "found 1 file(s)",
+                "truncated": False,
+            }
+        )
+        out = json.loads(self.search.run({"query": "a"}))
+        self.assertEqual(out["status"], "done")
+        self.assertEqual(out["match_count"], 1)
+        self.assertEqual(len(out["matches"]), 1)
+
+    def test_inline_failed_read_reports_error(self) -> None:
+        self.orch.wait_status = "failed"
+        self.orch.rows[7] = _FakeRow(error="boom")
+        out = json.loads(self.read.run({"path": "x.md"}))
+        self.assertEqual(out["status"], "failed")
+        self.assertEqual(out["error"], "boom")
+
+    def test_origin_prompt_recorded_in_metadata(self) -> None:
+        self.session._active_turn_user_text = "please read x.md"  # type: ignore[attr-defined]
+        self.read.run({"path": "x.md"})
+        meta = self.orch.start_calls[0]["metadata"]
+        self.assertEqual(meta["origin_prompt"], "please read x.md")
+
+    def test_grace_zero_skips_wait_entirely(self) -> None:
+        session = _SessionGrace(orchestrator=self.orch, grace=0.0)
+        self.orch.wait_status = "done"  # would fold if consulted
+        out = json.loads(StartFileReadTool(session).run({"path": "x.md"}))
+        self.assertEqual(out["status"], "running")
+        self.assertEqual(self.orch.wait_calls, 0)
+
+    def test_reply_on_complete_disabled_metadata(self) -> None:
+        session = _SessionGrace(
+            orchestrator=self.orch, grace=3.0, reply_on_complete=False
+        )
+        StartFileReadTool(session).run({"path": "x.md"})
+        meta = self.orch.start_calls[0]["metadata"]
+        self.assertFalse(meta["reply_when_done"])
 
 
 # ── factory ──────────────────────────────────────────────────────────────

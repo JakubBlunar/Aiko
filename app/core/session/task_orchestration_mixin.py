@@ -154,6 +154,11 @@ class TaskOrchestrationMixin:
         if getattr(self, "_task_orchestration_inited", False):
             log.debug("task-orchestration init ignored: already inited")
             return
+        # Ids of tasks whose result was folded into the spawning turn
+        # (inline fast path); consumed by ``_on_task_result_event`` to
+        # suppress the duplicate proactive reply. Lives regardless of
+        # the master switch so the tool helpers never hit a missing attr.
+        self._task_inline_resolved_ids: set[int] = set()
         agent = self._settings.agent  # type: ignore[attr-defined]
         if not bool(getattr(agent, "tasks_enabled", True)):
             # Master-switch off: install a thin "disabled" stub so
@@ -531,13 +536,130 @@ class TaskOrchestrationMixin:
         # Render via the pure cue_render module. Importing here
         # keeps the mixin's import cost minimal at boot — the
         # render function is only needed at turn-assembly time.
-        from app.core.tasks.cue_render import render_cue_block
+        from app.core.tasks.cue_render import (
+            render_cue_block,
+            render_reply_block,
+        )
+        from app.core.tasks.task_cue_store import CUE_KIND_RESULT
 
         agent = self._settings.agent  # type: ignore[attr-defined]
-        return render_cue_block(
-            result.surfaced,
-            max_aggregated=int(getattr(agent, "task_cue_max_aggregated", 5)),
-        )
+        # Split finished ``reply_when_done`` result cues (rendered with
+        # their FULL content so the turn can answer the user directly)
+        # from everything else (terse bullet cues). This is what stops
+        # the "task done but no content -> re-run the task" failure.
+        reply_items: list[dict[str, str]] = []
+        terse_cues = []
+        for cue in result.surfaced:
+            full = None
+            if cue.kind == CUE_KIND_RESULT and cue.status == "done":
+                full = self._reply_item_for_cue(cue)
+            if full is not None:
+                reply_items.append(full)
+            else:
+                terse_cues.append(cue)
+        parts: list[str] = []
+        if reply_items:
+            parts.append(render_reply_block(reply_items))
+        if terse_cues:
+            parts.append(
+                render_cue_block(
+                    terse_cues,
+                    max_aggregated=int(
+                        getattr(agent, "task_cue_max_aggregated", 5)
+                    ),
+                )
+            )
+        return "\n\n".join(p for p in parts if p)
+
+    def _reply_item_for_cue(self, cue: Any) -> dict[str, str] | None:
+        """Build a full-content reply item for a finished cue.
+
+        Returns ``None`` when the cue's task is not ``reply_when_done``
+        (so it falls back to the terse bullet render) or when the row /
+        result can't be loaded. The ``content`` prefers the result's
+        ``content`` field (file_read) and falls back to ``summary``
+        (file_search) so both handlers narrate naturally.
+        """
+        orch = getattr(self, "_task_orchestrator", None)
+        if orch is None:
+            return None
+        try:
+            row = orch.get(int(str(cue.task_id)))
+        except Exception:
+            return None
+        meta = getattr(row, "metadata", None) if row is not None else None
+        if not (isinstance(meta, dict) and meta.get("reply_when_done")):
+            return None
+        result = getattr(row, "result", None)
+        if not isinstance(result, dict):
+            return None
+        content = result.get("content")
+        if not isinstance(content, str) or not content.strip():
+            content = result.get("summary")
+        if not isinstance(content, str) or not content.strip():
+            content = cue.summary
+        return {
+            "title": cue.title or "",
+            "origin_prompt": str(meta.get("origin_prompt", "") or ""),
+            "content": str(content or ""),
+        }
+
+    # ── inline-resolution suppression ────────────────────────────────
+
+    def mark_task_inline_resolved(self, task_id: int) -> None:
+        """Record that a task already reported its result inline.
+
+        Called from the file-task tools when the inline grace window
+        caught a terminal status: the result was folded into the same
+        turn, so the later ``task_result`` brain event must NOT park a
+        duplicate cue or fire a second proactive reply. The set is
+        consumed (popped) by :meth:`_on_task_result_event`.
+        """
+        ids = getattr(self, "_task_inline_resolved_ids", None)
+        if ids is None:
+            ids = set()
+            self._task_inline_resolved_ids = ids  # type: ignore[attr-defined]
+        try:
+            ids.add(int(task_id))
+        except (TypeError, ValueError):
+            pass
+
+    def _consume_task_inline_resolved(self, task_id: Any) -> bool:
+        """Return True (and forget) if ``task_id`` was inline-resolved."""
+        ids = getattr(self, "_task_inline_resolved_ids", None)
+        if not ids:
+            return False
+        try:
+            tid = int(str(task_id))
+        except (TypeError, ValueError):
+            return False
+        if tid in ids:
+            ids.discard(tid)
+            return True
+        return False
+
+    def _reply_escalation_window(self, task_id: Any) -> float | None:
+        """Near-zero escalation window for ``reply_when_done`` tasks.
+
+        Returns ``None`` (use the default kind-derived window) for
+        ordinary tasks, or ``agent.task_reply_when_free_seconds`` for
+        tasks the spawning tool flagged ``reply_when_done`` in metadata.
+        """
+        orch = getattr(self, "_task_orchestrator", None)
+        if orch is None:
+            return None
+        try:
+            row = orch.get(int(str(task_id)))
+        except Exception:
+            return None
+        meta = getattr(row, "metadata", None) if row is not None else None
+        if not (isinstance(meta, dict) and meta.get("reply_when_done")):
+            return None
+        agent = self._settings.agent  # type: ignore[attr-defined]
+        try:
+            return max(0.0, float(getattr(agent, "task_reply_when_free_seconds", 1.0)))
+        except (TypeError, ValueError):
+            return 1.0
 
     # ── internal: brain-loop predicates + helpers ───────────────────
 
@@ -958,6 +1080,15 @@ class TaskOrchestrationMixin:
             return
         if not bool(getattr(event, "notify_aiko", True)):
             return
+        # Suppress the duplicate report when the spawning tool already
+        # folded this task's result into the same turn (inline fast
+        # path). The id was stashed by ``mark_task_inline_resolved``.
+        if self._consume_task_inline_resolved(event.task_id):
+            log.info(
+                "task reply suppressed (already reported inline): task=%s",
+                event.task_id,
+            )
+            return
         cue_store = getattr(self, "_task_cue_store", None)
         escalation = getattr(self, "_task_escalation_manager", None)
         if cue_store is None or escalation is None:
@@ -971,7 +1102,11 @@ class TaskOrchestrationMixin:
             summary=event.result_summary,
             error=event.error,
         )
-        escalation.arm(cue)
+        # ``reply_when_done`` tasks fire as soon as Aiko is free to
+        # speak (near-zero window) so the result surfaces promptly as
+        # an aggregated proactive reply; everything else keeps the
+        # passive completion window (45 s) and waits for a natural turn.
+        escalation.arm(cue, after_seconds=self._reply_escalation_window(event.task_id))
 
     def _on_task_input_needed_event(self, event: Any) -> None:
         """Handle a ``task_input_needed`` brain event.

@@ -228,6 +228,7 @@ class OllamaClient:
         *,
         options: dict[str, object] | None = None,
         tools: list[dict[str, Any]] | None = None,
+        tool_choice: "str | dict[str, Any] | None" = None,
         model: str | None = None,
         think: bool = False,
         keep_alive: str | None = None,
@@ -250,6 +251,11 @@ class OllamaClient:
             payload["keep_alive"] = effective_keep_alive
         if tools:
             payload["tools"] = tools
+        # Forwarded for parity; Ollama's Go server ignores unknown
+        # top-level fields, so this is a no-op on versions that don't
+        # support tool_choice and an honoured hint on versions that do.
+        if tools and tool_choice is not None:
+            payload["tool_choice"] = tool_choice
         if think:
             payload["think"] = True
         t0 = time.monotonic()

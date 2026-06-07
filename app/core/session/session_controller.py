@@ -2963,6 +2963,20 @@ class SessionController(
             self._init_task_orchestration()
         except Exception:
             log.exception("task-orchestration init failed")
+        # The initial ``rebuild_tool_registry()`` above ran before the
+        # orchestrator existed, so the filesystem task tools
+        # (``list_file_roots`` / ``start_file_search`` / …) were gated
+        # out (their gate is ``_task_orchestrator is not None``). Now
+        # that orchestration is wired, rebuild once more so those tools
+        # actually land in the registry the LLM sees. Cheap + idempotent.
+        if getattr(self, "_task_orchestrator", None) is not None:
+            try:
+                self.rebuild_tool_registry()
+            except Exception:
+                log.warning(
+                    "tool registry rebuild after orchestration init failed",
+                    exc_info=True,
+                )
         # Install the T6 task-cues provider on the prompt assembler.
         # Best-effort: a broken provider call lands as an empty
         # block (the assembler swallows provider exceptions), but a
@@ -5244,6 +5258,12 @@ class SessionController(
         # ``mode`` defaults to ``"typed"`` upstream so we never see an
         # empty string here, but normalise defensively.
         self._last_turn_mode = (mode or "typed").strip().lower() or "typed"
+        # Stash the live turn's user text so a file task spawned mid-turn
+        # (``start_file_read`` / ``start_file_search``) can record it as
+        # the ``origin_prompt`` on the task metadata — used by the
+        # reply-on-complete turn to remind Aiko what the user asked for.
+        # Best-effort and opportunistic; only read during the same turn.
+        self._active_turn_user_text = cleaned
         # Schema v8: refresh the activity timestamp so the idle worker
         # scheduler defers background sweeps while the user is actively
         # chatting (typed turns also count; voice paths touch the gate

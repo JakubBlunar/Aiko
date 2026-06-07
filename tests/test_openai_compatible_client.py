@@ -767,13 +767,14 @@ class ChatWithToolsTests(unittest.TestCase):
     ) -> None:
         """Regression for the gpt-5-mini *"I'll list the folders"* deferral.
 
-        With ``reasoning_effort=minimal`` we observed gpt-5-mini
-        verbally promise to call a tool ("I'll list...") instead of
-        actually emitting a tool call. The fix is surface-aware:
-        bump to ``low`` only on the tool-decision pass (when
-        ``tools`` is passed), keep ``minimal`` on every other surface
-        so the narration pass doesn't get its visible output starved
-        by hidden reasoning tokens.
+        We keep ``reasoning_effort="minimal"`` on every surface,
+        including the tool-decision pass. Raising it (low / medium)
+        did NOT change gpt-5-mini's tool-vs-text decision -- it
+        equally deferred ("I'll list the folders") instead of
+        emitting the call -- and only added latency. The reliable
+        lever for under-calling is ``tool_choice``, not reasoning
+        budget, so this test pins that the injection stays ``minimal``
+        regardless of whether ``tools`` is passed.
         """
         settings = load_settings().ollama
         fake = _fake_chat_response(content="ok")
@@ -792,7 +793,8 @@ class ChatWithToolsTests(unittest.TestCase):
                 model=model,
                 api_key="sk-test",
             )
-            # WITH tools → low (enough budget to commit to a call).
+            # WITH tools → still minimal (reasoning budget is not the
+            # lever for the tool-vs-text decision).
             with patch(
                 "app.llm.openai_compatible_client.requests.post",
                 return_value=fake,
@@ -800,13 +802,13 @@ class ChatWithToolsTests(unittest.TestCase):
                 client.chat_with_tools(
                     [{"role": "user", "content": "what can you see?"}],
                     tools=tool_schema,
-                    options={"num_predict": 256},
+                    options={"num_predict": 512},
                 )
             payload = posted.call_args.kwargs["json"]
             self.assertEqual(
-                payload.get("reasoning_effort"), "low",
-                f"{model} should get reasoning_effort=low when tools "
-                "are passed (decision pass)",
+                payload.get("reasoning_effort"), "minimal",
+                f"{model} should keep reasoning_effort=minimal even when "
+                "tools are passed (decision pass)",
             )
             self.assertEqual(payload.get("tools"), tool_schema)
 

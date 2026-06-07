@@ -609,32 +609,18 @@ class OpenAICompatibleClient:
             # ``chat_llm.max_tokens=512``) every token can go to
             # reasoning, leaving Aiko's visible reply empty.
             #
-            # The right value is *surface-aware* — there are two
-            # very different shapes of call hitting this client:
-            #
-            # * Tool-decision pass (``chat_with_tools`` with ``tools``
-            #   set): the visible output is tiny — a function name
-            #   and a small JSON args object, ~30-80 tokens. The
-            #   bottleneck is *planning*, not budget. With
-            #   ``minimal`` we observed gpt-5-mini defer ("I'll list
-            #   the folders") instead of emitting a tool call.
-            #   Bumping to ``low`` gives it just enough reasoning
-            #   budget to commit to a tool selection — empirically
-            #   tens of reasoning tokens, well within
-            #   ``num_predict=256``.
-            # * Narration / streaming reply (``chat_stream``, no
-            #   ``tools``) — the visible output IS the user-facing
-            #   message and the budget matters most. Keep
-            #   ``minimal`` so prose isn't starved.
-            # * Plain ``chat`` / ``chat_json`` calls without tools —
-            #   no planning needed; keep ``minimal``.
-            #
-            # The split keys cleanly on ``tools is not None``: tools
-            # are passed only on decision passes, never on the
-            # streaming narration pass. Users who want deeper
-            # reasoning can still raise ``chat_llm.max_tokens`` and
-            # the family will spend it.
-            payload["reasoning_effort"] = "low" if tools else "minimal"
+            # We keep ``minimal`` on *every* surface, including the
+            # tool-decision pass. Empirically, raising the tool-pass
+            # effort did NOT change gpt-5-mini's tool-vs-text
+            # decision: at minimal / low / medium it equally chose to
+            # narrate its intent ("I'll list the folders") instead of
+            # emitting the tool call. The decision is driven by
+            # ``tool_choice`` + the conversational prior in the
+            # system prompt, not by reasoning budget — so medium only
+            # bought ~8s of extra latency for no behavioural gain.
+            # The reliable lever for under-calling is ``tool_choice``
+            # (see ``turn_runner._maybe_run_tool_pass``), not this.
+            payload["reasoning_effort"] = "minimal"
         if options:
             # Pull out the keys we know how to translate, pass the rest
             # through. The Ollama vocabulary leaks here on purpose — the
@@ -718,6 +704,7 @@ class OpenAICompatibleClient:
         *,
         options: dict[str, object] | None = None,
         tools: list[dict[str, Any]] | None = None,
+        tool_choice: "str | dict[str, Any] | None" = None,
         model: str | None = None,
         think: bool = False,
         keep_alive: str | None = None,  # accepted for protocol parity
@@ -733,6 +720,12 @@ class OpenAICompatibleClient:
             stream=False,
             format_json=False,
         )
+        # ``tool_choice`` only makes sense alongside ``tools``. Forcing
+        # ``"required"`` (paired with a synthetic escape tool on the
+        # caller side) is how we stop chatty models from narrating
+        # their intent instead of emitting the call.
+        if tools and tool_choice is not None:
+            payload["tool_choice"] = tool_choice
         t0 = time.monotonic()
         try:
             response = requests.post(

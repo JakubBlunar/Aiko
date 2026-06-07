@@ -729,6 +729,104 @@ class DrainForRenderTests(unittest.TestCase):
         self.assertEqual(self.host.drain_task_cues_for_render(), "")
 
 
+class InlineResolutionSuppressionTests(unittest.TestCase):
+    """Duration-hybrid: an inline-resolved task must not double-report."""
+
+    def setUp(self) -> None:
+        self.fx = _Fixture()
+        self.addCleanup(self.fx.cleanup)
+        self.host = self.fx.host(
+            task_completion_proactive_after_seconds=3600,
+            task_input_needed_proactive_after_seconds=3600,
+        )
+        self.host._init_task_orchestration()
+        self.addCleanup(self.host._shutdown_task_orchestration)
+
+    def test_inline_resolved_suppresses_park_and_escalation(self) -> None:
+        self.host.mark_task_inline_resolved(42)
+        self.host._on_task_result_event(
+            TaskResultEvent(task_id="42", session_key="test-user")
+        )
+        self.assertEqual(self.host._task_cue_store.pending_count(), 0)
+        self.assertEqual(
+            self.host._task_escalation_manager.pending_count(), 0,
+        )
+
+    def test_suppression_is_one_shot(self) -> None:
+        self.host.mark_task_inline_resolved(42)
+        self.host._on_task_result_event(
+            TaskResultEvent(task_id="42", session_key="test-user")
+        )
+        # The id was consumed; a second result for the same id parks.
+        self.host._on_task_result_event(
+            TaskResultEvent(task_id="42", session_key="test-user")
+        )
+        self.assertEqual(self.host._task_cue_store.pending_count(), 1)
+
+
+class ReplyOnCompleteRenderTests(unittest.TestCase):
+    """Finished ``reply_when_done`` cues render with their full content."""
+
+    def setUp(self) -> None:
+        self.fx = _Fixture()
+        self.addCleanup(self.fx.cleanup)
+        self.host = self.fx.host(
+            task_completion_proactive_after_seconds=3600,
+            task_input_needed_proactive_after_seconds=3600,
+        )
+        self.host._init_task_orchestration()
+        self.addCleanup(self.host._shutdown_task_orchestration)
+
+    def test_reply_when_done_renders_full_content(self) -> None:
+        import types as _types
+
+        self.host._on_task_result_event(
+            TaskResultEvent(
+                task_id="7",
+                session_key="test-user",
+                status="done",
+                title="file read: notes.md",
+                result_summary="hi",
+            )
+        )
+        # The drain path looks up the row to decide full-content vs terse.
+        self.host._task_orchestrator.get = (  # type: ignore[attr-defined]
+            lambda tid: _types.SimpleNamespace(
+                metadata={
+                    "reply_when_done": True,
+                    "origin_prompt": "read my notes",
+                },
+                result={"content": "FULL FILE BODY", "line_count": 1},
+                error=None,
+            )
+        )
+        block = self.host.drain_task_cues_for_render()
+        self.assertIn("reply now using the result below", block)
+        self.assertIn("FULL FILE BODY", block)
+        self.assertIn("read my notes", block)
+
+    def test_non_reply_task_uses_terse_cue(self) -> None:
+        # Real orchestrator.get returns None for the unknown id, so the
+        # cue falls back to the terse bullet render.
+        self.host._on_task_result_event(
+            TaskResultEvent(
+                task_id="8",
+                session_key="test-user",
+                status="done",
+                title="file_search",
+                result_summary="found 3 matches",
+            )
+        )
+        block = self.host.drain_task_cues_for_render()
+        self.assertIn("Tasks that finished since your last message", block)
+        self.assertIn("found 3 matches", block)
+        self.assertNotIn("reply now using the result below", block)
+
+    def test_reply_escalation_window_none_for_plain_task(self) -> None:
+        # No row / no metadata -> None (use default kind-derived window).
+        self.assertIsNone(self.host._reply_escalation_window("999"))
+
+
 class BootRecoveryTests(unittest.TestCase):
     """Verify recovery surfaces stranded ``running`` rows on init."""
 
