@@ -13,6 +13,7 @@
  * just resets ahead of each new clip.
  */
 
+import { debugLog } from "../log";
 import {
   FRAME_AUDIO_END,
   FRAME_AUDIO_START,
@@ -24,6 +25,22 @@ import {
 } from "./protocol";
 
 type StreamTag = "tts" | "earcon";
+
+/**
+ * Extra lead time (seconds) seeded ahead of the *first* clip of a turn —
+ * i.e. when the previous schedule has already elapsed (the stream went
+ * idle between turns). A turn's first ``audio_start`` is immediately
+ * followed by a burst of PCM chunks while the main thread is also busy
+ * re-rendering the chat list / persona on message arrival. With only the
+ * old ``+0.005`` floor, that jank could push a buffer's computed start
+ * time behind ``ctx.currentTime`` by the time ``source.start()`` actually
+ * runs; Web Audio then clamps it to "now" and the burst stacks (echo +
+ * mumble on sentence one). A ~100 ms cushion absorbs that jitter. It only
+ * applies to the first clip after idle — steady-state chaining between
+ * sentences inside a turn is left tight, so there is no added mid-reply
+ * latency.
+ */
+const FIRST_CLIP_IDLE_MARGIN_SEC = 0.1;
 
 interface PerStream {
   sampleRate: number;
@@ -45,12 +62,37 @@ export class AudioOutputManager {
     tts: this._emptyState(),
     earcon: this._emptyState(),
   };
+  // Per-stream "audio_start applied" gate. ``_enqueuePcm`` awaits this
+  // before scheduling so PCM never reads a stale sample rate or a frozen
+  // clock — the sample rate / resume / carry-over set in ``_onAudioStart``
+  // is always live by the time the first chunk lands.
+  private _ready: Record<StreamTag, Promise<void> | null> = {
+    tts: null,
+    earcon: null,
+  };
   private _sinkId: string = "";
   // ``HTMLAudioElement`` companion used to route audio to a non-default
   // device. ``AudioContext.setSinkId`` exists in newer Chromes but is
   // not yet universal; we keep a sink-element pattern as a fallback.
   private _sinkElement: HTMLAudioElement | null = null;
   private _onError: ((err: unknown) => void) | null = null;
+  // Always-on inaudible keep-alive source. Chromium (and, worse,
+  // WebView2 in the Tauri shell) auto-suspends an idle AudioContext
+  // between turns and lets the OS audio endpoint spin down; the first
+  // clip of the next turn then plays into a cold/just-waking device and
+  // the first sentence comes out echoey/mumbled while later sentences
+  // (warm device) are clean. A continuous ~-90 dBFS loop keeps the
+  // context running and the endpoint open so every turn's first clip
+  // lands warm. Started lazily on the first context create/resume,
+  // stopped only on ``dispose``.
+  private _keepAlive: AudioBufferSourceNode | null = null;
+  // Diagnostics: when a clip's ``audio_start`` fires we arm this so the
+  // first PCM scheduled for that clip logs its ``startAt`` (the value
+  // that reveals overlap / past-scheduling). Cleared after the one log.
+  private _pendingFirstPcmLog: Record<StreamTag, boolean> = {
+    tts: false,
+    earcon: false,
+  };
 
   constructor(options: AudioOutputOptions = {}) {
     this._sinkId = options.sinkId ?? "";
@@ -70,6 +112,9 @@ export class AudioOutputManager {
         this._reportError(err);
       }
     }
+    // The gesture-gated warmup path satisfies autoplay, so this is the
+    // ideal moment to (re)start the keep-alive loop.
+    this._startKeepAlive(ctx);
   }
 
   /** Subscribe to playback errors (decode failures, sink misroutes, …). */
@@ -120,7 +165,15 @@ export class AudioOutputManager {
       if (!parsed) return null;
       const tag = streamName(parsed.stream);
       if (tag === "unknown") return null;
-      void this._onAudioStart(tag, parsed.sampleRate, parsed.channels);
+      // Store the in-flight promise so the PCM that follows this
+      // audio_start serializes behind it (resume + sample rate +
+      // carry-over all applied before the first chunk schedules).
+      this._ready[tag] = this._onAudioStart(
+        tag,
+        parsed.sampleRate,
+        parsed.channels,
+      );
+      void this._ready[tag];
       return tag;
     }
     if (type === FRAME_AUDIO_END) {
@@ -152,6 +205,14 @@ export class AudioOutputManager {
   /** Tear down the audio context entirely. */
   async dispose(): Promise<void> {
     this.flush();
+    if (this._keepAlive) {
+      try {
+        this._keepAlive.stop();
+      } catch {
+        /* already stopped / never started */
+      }
+      this._keepAlive = null;
+    }
     const ctx = this._ctx;
     this._ctx = null;
     if (this._sinkElement) {
@@ -169,15 +230,33 @@ export class AudioOutputManager {
   }
 
   private async _ensureContext(): Promise<AudioContext> {
-    if (this._ctx) return this._ctx;
-    const AC = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-    if (!AC) {
-      throw new Error("Web Audio API is not available in this browser.");
+    if (!this._ctx) {
+      const AC = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      if (!AC) {
+        throw new Error("Web Audio API is not available in this browser.");
+      }
+      this._ctx = new AC();
+      if (this._sinkId) {
+        await this.setSinkId(this._sinkId);
+      }
     }
-    this._ctx = new AC();
-    if (this._sinkId) {
-      await this.setSinkId(this._sinkId);
+    // Safety net: a WebView (WebView2 / WKWebView in the Tauri shell)
+    // auto-suspends an idle AudioContext between turns, which freezes
+    // ``currentTime``. If we schedule the next turn's pre-roll burst
+    // against a frozen clock every chunk computes the same start time
+    // and they play on top of each other (echo + mumble on the first
+    // sentence). Resume here so every caller gets a live clock before
+    // it reads ``currentTime`` or schedules a buffer.
+    if (this._ctx.state === "suspended") {
+      try {
+        await this._ctx.resume();
+      } catch (err) {
+        this._reportError(err);
+      }
     }
+    // Idempotent: keeps the context + audio endpoint warm so the first
+    // clip of every turn never plays into a cold device.
+    this._startKeepAlive(this._ctx);
     return this._ctx;
   }
 
@@ -186,8 +265,15 @@ export class AudioOutputManager {
     sampleRate: number,
     channels: number,
   ): Promise<void> {
+    // Capture the pre-resume state for diagnostics: this is the only
+    // place we can tell whether the context had idle-suspended between
+    // turns (the suspect behaviour) before ``_ensureContext`` resumes it.
+    const wasSuspended = this._ctx?.state === "suspended";
+    // ``_ensureContext`` resumes a suspended context, so ``currentTime``
+    // is guaranteed live below.
     const ctx = await this._ensureContext();
     const prev = this._streams[tag];
+    const now = ctx.currentTime;
     // Preserve the running schedule across back-to-back clips. The
     // server emits ``audio_end`` + ``audio_start`` between sentences
     // because :class:`PocketTtsService` fires its ``clip_end_listener``
@@ -195,11 +281,21 @@ export class AudioOutputManager {
     // ``nextStartTime`` to ``ctx.currentTime`` here, the next
     // sentence's chunks land before the previous one's tail finishes
     // and the user hears two sentences on top of each other. Carrying
-    // the previous schedule forward chains them seamlessly; the
-    // ``max(..., ctx.currentTime)`` guard keeps the value sane when
-    // a long pause between turns let the previous schedule fall into
-    // the past.
-    const carryOver = Math.max(prev.nextStartTime, ctx.currentTime);
+    // the previous schedule forward chains them seamlessly.
+    //
+    // ``idle`` is true when the previous schedule has already elapsed
+    // (the stream went quiet between turns, or this is the very first
+    // clip). For that *first clip after idle* we seed a small lead
+    // (``FIRST_CLIP_IDLE_MARGIN_SEC``) so a burst of main-thread work
+    // on message arrival can't push the first buffer's start into the
+    // past. While the previous clip is still queued ahead (mid-turn
+    // chaining) we keep the schedule tight at ``prev.nextStartTime`` so
+    // there is no added latency between sentences and the
+    // no-overlap invariant holds.
+    const idle = prev.nextStartTime <= now;
+    const carryOver = idle
+      ? now + FIRST_CLIP_IDLE_MARGIN_SEC
+      : prev.nextStartTime;
     this._streams[tag] = {
       sampleRate: Math.max(8000, sampleRate || ctx.sampleRate),
       channels: Math.max(1, channels || 1),
@@ -208,6 +304,26 @@ export class AudioOutputManager {
         (src) => (src as unknown as { _stopped?: boolean })._stopped !== true,
       ),
     };
+    // Arm the one-shot first-PCM startAt log for this clip.
+    this._pendingFirstPcmLog[tag] = true;
+    // Diagnostics (no-op unless Debug logging is on). The pre-resume
+    // ``state`` + ``resumed`` flag reveal whether the context had
+    // idle-suspended; ``idle`` + ``carryOver`` show which scheduling
+    // branch we took. Lands in data/app.log as ``[ui] audio clipStart``.
+    debugLog.log({
+      source: "audio",
+      kind: "clipStart",
+      payload: {
+        tag,
+        announcedRate: sampleRate,
+        ctxRate: ctx.sampleRate,
+        state: wasSuspended ? "suspended" : ctx.state,
+        resumed: wasSuspended,
+        currentTime: Number(now.toFixed(4)),
+        idle,
+        carryOver: Number(carryOver.toFixed(4)),
+      },
+    });
   }
 
   private _onAudioEnd(tag: StreamTag): void {
@@ -220,8 +336,55 @@ export class AudioOutputManager {
     );
   }
 
+  /**
+   * Start the always-on inaudible keep-alive loop. Idempotent — a
+   * second call while one is running is a no-op, so it's safe to invoke
+   * from both ``resume`` and ``_ensureContext``.
+   *
+   * A pure-silence (all-zero) buffer can be optimised away by the
+   * browser's silence detector, which still lets the context idle-
+   * suspend; we fill the buffer with ~-90 dBFS dither (nonzero but
+   * ~30 dB below anything audible) so the output graph keeps producing
+   * real samples and the audio endpoint stays open. Runs in both the
+   * browser and the Tauri shell: the browser shows a milder version of
+   * the same cold-start artifact, and an inaudible loop is harmless
+   * there (at worst the tab's "audio playing" indicator lights up).
+   */
+  private _startKeepAlive(ctx: AudioContext): void {
+    if (this._keepAlive) return;
+    try {
+      const frames = Math.max(1, Math.floor((ctx.sampleRate || 48000) * 0.5));
+      const buf = ctx.createBuffer(1, frames, ctx.sampleRate || 48000);
+      const ch = buf.getChannelData(0);
+      for (let i = 0; i < ch.length; i++) {
+        ch[i] = (Math.random() * 2 - 1) * 3e-5;
+      }
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.loop = true;
+      src.connect(ctx.destination);
+      src.start();
+      this._keepAlive = src;
+    } catch (err) {
+      this._reportError(err);
+    }
+  }
+
   private async _enqueuePcm(tag: StreamTag, body: Uint8Array): Promise<void> {
     if (body.byteLength < 2) return;
+    // Serialize behind the stream's ``audio_start`` so we never schedule
+    // against a stale sample rate or a frozen clock. The promise
+    // resolves once ``_onAudioStart`` has resumed the context and seeded
+    // ``nextStartTime``; if no audio_start preceded (earcon PCM before
+    // its start frame) ``_ready`` is null and we fall straight through.
+    const ready = this._ready[tag];
+    if (ready) {
+      try {
+        await ready;
+      } catch {
+        /* failure already surfaced via _reportError in _onAudioStart */
+      }
+    }
     const ctx = await this._ensureContext();
     const state = this._streams[tag];
     // PCM is signed 16-bit little-endian; respect the body's byteOffset
@@ -243,6 +406,23 @@ export class AudioOutputManager {
     // the Web Audio scheduler silently drops the buffer.
     const startAt = Math.max(state.nextStartTime, ctx.currentTime + 0.005);
     state.nextStartTime = startAt + buffer.duration;
+    // Diagnostics: log the first scheduled chunk of each clip. ``startAt``
+    // vs ``currentTime`` is the value that exposes overlap / past-
+    // scheduling (the echo signature). No-op unless Debug logging is on.
+    if (this._pendingFirstPcmLog[tag]) {
+      this._pendingFirstPcmLog[tag] = false;
+      debugLog.log({
+        source: "audio",
+        kind: "firstPcm",
+        payload: {
+          tag,
+          startAt: Number(startAt.toFixed(4)),
+          currentTime: Number(ctx.currentTime.toFixed(4)),
+          sampleRate: state.sampleRate,
+          lead: Number((startAt - ctx.currentTime).toFixed(4)),
+        },
+      });
+    }
     source.onended = () => {
       (source as unknown as { _stopped: boolean })._stopped = true;
     };

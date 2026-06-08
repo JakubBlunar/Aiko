@@ -68,6 +68,19 @@ interface AssistantState {
   setVoiceOwnerId: (ownerId: string | null) => void;
 
   /**
+   * The single client the server elected to play TTS / earcon audio.
+   * The desktop shell keeps the persona window's webview alive but
+   * hidden, so without this lock both it and the main window would
+   * play every clip ~tens of ms apart (audible as an echo on the
+   * first sentence). The audio frame handler only plays PCM when
+   * ``audioOwnerId`` is null (pre-election) or equals ``clientId``.
+   * Hydrated from the ``hello`` envelope and refreshed on every
+   * ``audio_owner_changed`` broadcast.
+   */
+  audioOwnerId: string | null;
+  setAudioOwnerId: (ownerId: string | null) => void;
+
+  /**
    * First-run identity. Hydrated from the WS ``hello`` snapshot and
    * the REST ``GET /api/settings/identity`` fallback, then refreshed
    * on every ``identity_changed`` broadcast. ``null`` only before the
@@ -96,7 +109,13 @@ interface AssistantState {
   appendAssistantBubble: () => string; // returns id
   appendAssistantToken: (chunk: string) => void;
   finishAssistantBubble: () => void;
-  appendProactiveMessage: (content: string) => void;
+  /** K32: stamp the just-finished assistant bubble with its persisted
+   * SQLite ``messages.id`` (delivered on ``turn_done``) so the reaction
+   * tray + "mark as moment" turn on without waiting for a history
+   * reload. No-op when ``backendId`` is null (empty/aborted turn) or the
+   * last message isn't a freshly-committed assistant bubble. */
+  stampAssistantBackendId: (backendId: number | null | undefined) => void;
+  appendProactiveMessage: (content: string, backendId?: number) => void;
   pushSystemMessage: (content: string) => void;
   clearMessages: () => void;
   /** K32: merge a fresh reactions counter map onto the matching
@@ -593,6 +612,8 @@ export const useAssistantStore = create<AssistantState>((set) => ({
   voiceOwnerId: null,
   setClientId: (clientId) => set({ clientId }),
   setVoiceOwnerId: (voiceOwnerId) => set({ voiceOwnerId }),
+  audioOwnerId: null,
+  setAudioOwnerId: (audioOwnerId) => set({ audioOwnerId }),
 
   identity: null,
   setIdentity: (identity) => set({ identity }),
@@ -700,6 +721,20 @@ export const useAssistantStore = create<AssistantState>((set) => ({
         streamingDraft: null,
       };
     }),
+  stampAssistantBackendId: (backendId) =>
+    set((state) => {
+      if (backendId == null || state.messages.length === 0) return state;
+      // Only the just-committed bubble (the last message) is a candidate.
+      // Guard against clobbering an already-stamped bubble (e.g. a
+      // proactive line that carried its id at append time) and against
+      // empty/aborted turns where the last message is the user's.
+      const idx = state.messages.length - 1;
+      const last = state.messages[idx];
+      if (last.role !== "assistant" || last.backendId != null) return state;
+      const messages = state.messages.slice();
+      messages[idx] = { ...last, backendId };
+      return { messages };
+    }),
   pushSystemMessage: (content) =>
     set((state) => ({
       messages: [
@@ -712,7 +747,7 @@ export const useAssistantStore = create<AssistantState>((set) => ({
         },
       ],
     })),
-  appendProactiveMessage: (content) =>
+  appendProactiveMessage: (content, backendId) =>
     set((state) => ({
       messages: [
         ...state.messages,
@@ -722,6 +757,9 @@ export const useAssistantStore = create<AssistantState>((set) => ({
           content: stripMetaMarkers(content),
           createdAt: new Date().toISOString(),
           kind: "proactive",
+          // K32: proactive bubbles carry their persisted id from the
+          // ``message`` WS event so reactions work on them immediately.
+          ...(backendId != null ? { backendId } : {}),
         },
       ],
     })),

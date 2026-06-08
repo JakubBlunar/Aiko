@@ -31,6 +31,14 @@ class FakeAudioBuffer {
 class FakeBufferSource {
   buffer: FakeAudioBuffer | null = null;
   startedAt: number | null = null;
+  // ``loop === true`` marks the always-on keep-alive source so the
+  // per-clip scheduling assertions can filter it out (it never stops
+  // and is not part of any clip's timeline).
+  loop = false;
+  // Context state captured at the moment ``start()`` ran — lets the
+  // resume-before-schedule test confirm the clock was live (not frozen)
+  // when the first chunk was actually scheduled.
+  stateAtStart: AudioContextState | null = null;
   stopped = false;
   onended: (() => void) | null = null;
   private _ctx: FakeAudioContext;
@@ -47,6 +55,7 @@ class FakeBufferSource {
   }
   start(when?: number) {
     this.startedAt = when ?? this._ctx.currentTime;
+    this.stateAtStart = this._ctx.state;
   }
   stop() {
     this.stopped = true;
@@ -54,12 +63,20 @@ class FakeBufferSource {
   }
 }
 
+// Every context the manager creates registers here so tests can reach
+// its scheduled sources without touching the manager's private state.
+const createdContexts: FakeAudioContext[] = [];
+
 class FakeAudioContext {
   currentTime = 0;
+  sampleRate = 48000;
   destination = { _isDestination: true };
   state: AudioContextState = "running";
   activeSources: FakeBufferSource[] = [];
   buffers: FakeAudioBuffer[] = [];
+  constructor() {
+    createdContexts.push(this);
+  }
   createBuffer(channels: number, length: number, sampleRate: number) {
     const buf = new FakeAudioBuffer(channels, length, sampleRate);
     this.buffers.push(buf);
@@ -76,7 +93,50 @@ class FakeAudioContext {
   }
 }
 
+/**
+ * A context that boots ``suspended`` with a frozen clock, exactly like a
+ * WebView auto-suspending an idle context. ``resume()`` flips to running
+ * AND advances ``currentTime`` so the test can prove scheduling happened
+ * against the live (post-resume) clock.
+ */
+class SuspendedAudioContext extends FakeAudioContext {
+  constructor() {
+    super();
+    this.state = "suspended";
+  }
+  async resume() {
+    this.state = "running";
+    // Frozen-while-suspended; the clock starts moving once resumed.
+    this.currentTime = 0.5;
+  }
+}
+
+/** Drain the manager's internal async chains (audio_start -> pcm). */
+async function flush(rounds = 12): Promise<void> {
+  for (let i = 0; i < rounds; i++) {
+    await Promise.resolve();
+  }
+}
+
+/** Build an ``audio_start`` frame for the TTS stream at ``rate`` Hz. */
+function ttsStartFrame(rate: number): ArrayBuffer {
+  const start = new Uint8Array(7);
+  start[0] = FRAME_AUDIO_START;
+  start[1] = FRAME_TTS_PCM;
+  new DataView(start.buffer).setUint32(2, rate, false);
+  start[6] = 1;
+  return start.buffer;
+}
+
+/** Build a TTS PCM frame carrying ``samples`` zero-valued Int16 samples. */
+function ttsPcmFrame(samples: number): ArrayBuffer {
+  const body = new Uint8Array(samples * 2 + 1);
+  body[0] = FRAME_TTS_PCM;
+  return body.buffer;
+}
+
 beforeEach(() => {
+  createdContexts.length = 0;
   (globalThis as unknown as { window: object }).window = {
     AudioContext: FakeAudioContext,
   };
@@ -191,16 +251,12 @@ describe("AudioOutputManager", () => {
     // 16000 samples = exactly 1.0 s at 16 kHz.
     expect(mgr.handleFrame(pcmFrame(16000))).toBe("tts");
     // Drain the async chain inside ``_enqueuePcm``.
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    await flush();
 
     // Second ``audio_start`` mid-clip; previous chunk hasn't finished.
     expect(mgr.handleFrame(startFrame(16000))).toBe("tts");
     expect(mgr.handleFrame(pcmFrame(8000))).toBe("tts");
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    await flush();
 
     // Inspect the manager's internal stream state via a
     // bracket-access cast — the second clip's ``startAt`` must be
@@ -213,6 +269,133 @@ describe("AudioOutputManager", () => {
     // give or take the small jitter epsilon. We just need to confirm
     // we did not rewind below 1.0 s.
     expect(streams.tts.nextStartTime).toBeGreaterThanOrEqual(1.0);
+  });
+
+  it("resumes a suspended context before the first PCM schedules", async () => {
+    // Regression: between turns the Tauri WebView auto-suspends the idle
+    // context, freezing ``currentTime`` so the first sentence's pre-roll
+    // burst all schedules on the same (stale) time -> echo + mumble. The
+    // manager must resume before reading the clock / scheduling.
+    (globalThis as unknown as { window: object }).window = {
+      AudioContext: SuspendedAudioContext,
+    };
+    const mgr = new AudioOutputManager();
+
+    expect(mgr.handleFrame(ttsStartFrame(16000))).toBe("tts");
+    expect(mgr.handleFrame(ttsPcmFrame(1600))).toBe("tts");
+    await flush();
+
+    const ctx = createdContexts[0];
+    expect(ctx).toBeDefined();
+    // The context was resumed (running) and its clock advanced past the
+    // frozen 0.0 before any source was scheduled.
+    expect(ctx.state).toBe("running");
+    // Filter out the looping keep-alive source — only the clip PCM
+    // source is a per-clip scheduled buffer.
+    const clipSources = ctx.activeSources.filter((s) => !s.loop);
+    expect(clipSources.length).toBe(1);
+    const src = clipSources[0];
+    expect(src.stateAtStart).toBe("running");
+    // Scheduled against the post-resume clock (0.5), not the frozen 0.0.
+    expect(src.startedAt).not.toBeNull();
+    expect(src.startedAt as number).toBeGreaterThanOrEqual(0.5);
+  });
+
+  it("waits for audio_start before scheduling PCM (sample rate applied)", async () => {
+    // If PCM scheduled before ``_onAudioStart`` set the stream's sample
+    // rate, the buffer would be built at the default 22050 Hz instead of
+    // the clip's announced rate. Serializing behind the audio_start
+    // promise guarantees the announced rate is live first.
+    const mgr = new AudioOutputManager();
+
+    expect(mgr.handleFrame(ttsStartFrame(16000))).toBe("tts");
+    expect(mgr.handleFrame(ttsPcmFrame(800))).toBe("tts");
+    await flush();
+
+    const ctx = createdContexts[0];
+    expect(ctx).toBeDefined();
+    // The clip buffer must carry the announced 16000 Hz, not the 22050
+    // default. (The keep-alive buffer is at ctx.sampleRate = 48000, so
+    // assert on presence/absence of specific rates rather than index.)
+    expect(ctx.buffers.some((b) => b.sampleRate === 16000)).toBe(true);
+    expect(ctx.buffers.some((b) => b.sampleRate === 22050)).toBe(false);
+  });
+
+  it("seeds the first clip after idle with a margin so the burst doesn't stack", async () => {
+    // A turn's first ``audio_start`` is followed by a burst of PCM chunks
+    // while the main thread re-renders the chat list / persona. Each
+    // chunk must get a distinct, monotonically increasing start time
+    // seeded from the widened margin (~0.1 s) rather than all clamping to
+    // ``currentTime + 0.005`` and stacking.
+    const mgr = new AudioOutputManager();
+
+    expect(mgr.handleFrame(ttsStartFrame(16000))).toBe("tts");
+    // Three 0.1 s chunks (1600 samples @ 16 kHz) arriving as a burst.
+    expect(mgr.handleFrame(ttsPcmFrame(1600))).toBe("tts");
+    expect(mgr.handleFrame(ttsPcmFrame(1600))).toBe("tts");
+    expect(mgr.handleFrame(ttsPcmFrame(1600))).toBe("tts");
+    await flush();
+
+    const ctx = createdContexts[0];
+    expect(ctx).toBeDefined();
+    // Exclude the looping keep-alive source; only inspect clip chunks.
+    const clipSources = ctx.activeSources.filter((s) => !s.loop);
+    expect(clipSources.length).toBe(3);
+    const starts = clipSources.map((s) => s.startedAt as number);
+    starts.forEach((t) => expect(t).not.toBeNull());
+    // First chunk seeded from the widened margin, not the +0.005 floor.
+    expect(starts[0]).toBeGreaterThanOrEqual(0.1 - 1e-9);
+    expect(starts[0]).toBeGreaterThan(0.005);
+    // Strictly increasing — no two chunks share a start time (no stack).
+    expect(starts[1]).toBeGreaterThan(starts[0]);
+    expect(starts[2]).toBeGreaterThan(starts[1]);
+  });
+
+  it("starts a single looping keep-alive on resume() and is idempotent", async () => {
+    // The keep-alive loop prevents Chromium/WebView2 from idle-
+    // suspending the context (frozen clock) and spinning down the
+    // audio endpoint between turns — the cold-start cause of the
+    // first-sentence echo. It must start exactly once and not stack on
+    // repeated resume()/context calls.
+    const mgr = new AudioOutputManager();
+    await mgr.resume();
+
+    const ctx = createdContexts[0];
+    expect(ctx).toBeDefined();
+    const loops = ctx.activeSources.filter((s) => s.loop);
+    expect(loops.length).toBe(1);
+    // Wired to the destination and actually started.
+    expect(loops[0].connectedTo).toBe(ctx.destination);
+    expect(loops[0].startedAt).not.toBeNull();
+    expect(loops[0].stopped).toBe(false);
+
+    // Idempotent across a second resume().
+    await mgr.resume();
+    expect(ctx.activeSources.filter((s) => s.loop).length).toBe(1);
+  });
+
+  it("starts the keep-alive lazily when frames arrive before any resume()", async () => {
+    // If audio frames arrive before the warmup gesture fired, the
+    // keep-alive must still come up via _ensureContext so the very
+    // first turn is protected.
+    const mgr = new AudioOutputManager();
+    expect(mgr.handleFrame(ttsStartFrame(16000))).toBe("tts");
+    await flush();
+
+    const ctx = createdContexts[0];
+    expect(ctx).toBeDefined();
+    expect(ctx.activeSources.filter((s) => s.loop).length).toBe(1);
+  });
+
+  it("tears down the keep-alive on dispose", async () => {
+    const mgr = new AudioOutputManager();
+    await mgr.resume();
+    const ctx = createdContexts[0];
+    const loop = ctx.activeSources.find((s) => s.loop);
+    expect(loop).toBeDefined();
+
+    await mgr.dispose();
+    expect((loop as FakeBufferSource).stopped).toBe(true);
   });
 });
 

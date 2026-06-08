@@ -118,6 +118,19 @@ class _Hub:
         self._lock = threading.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._voice_owner_id: str | None = None
+        # Single elected "audio owner" — the one client that actually
+        # plays TTS / earcon PCM. The desktop shell keeps the persona
+        # window's webview alive-but-hidden in the background (see
+        # ``hide_persona_window`` in ``src-tauri``); without an owner
+        # lock BOTH that hidden webview and the visible main window
+        # would receive the broadcast PCM and play it ~tens of ms apart,
+        # which the user hears as an echo/mumble on the first sentence
+        # of every turn. We elect one owner (preferring a visible
+        # window) and send binary audio frames only to it. ``None`` when
+        # no clients are connected. Lipsync ``audio_amplitude`` JSON
+        # still broadcasts to every window so a hidden persona can keep
+        # animating its mouth without playing sound.
+        self._audio_owner_id: str | None = None
         # Per-client visibility cache. The WS layer writes the latest
         # ``presence`` frame from each client here and folds the dict
         # via :meth:`any_client_visible` so the proactive director can
@@ -178,6 +191,84 @@ class _Hub:
     def snapshot(self) -> list[tuple[WebSocket, str]]:
         with self._lock:
             return list(self._sockets.items())
+
+    # ── Audio-playback owner election ──────────────────────────────
+
+    def _elect_audio_owner_locked(self) -> str | None:
+        """Pick the single client that should play audio. Caller holds
+        ``self._lock``.
+
+        Rules, in order:
+          1. Stability — if the current owner is still connected AND is
+             either visible OR nobody is visible, keep it (avoids
+             flip-flopping the owner mid-session).
+          2. Otherwise prefer the first-connected *visible* client (a
+             hidden persona webview reports ``visible=False`` so it is
+             never chosen while a real window is up).
+          3. Otherwise (no visible clients) fall back to the
+             first-connected client so audio is never silently lost.
+        """
+        client_ids = list(self._sockets.values())
+        if not client_ids:
+            return None
+        visible = [cid for cid in client_ids if self._visible_by_client.get(cid)]
+        current = self._audio_owner_id
+        if current is not None and current in client_ids:
+            if self._visible_by_client.get(current) or not visible:
+                return current
+        if visible:
+            return visible[0]
+        return client_ids[0]
+
+    def recompute_audio_owner(self) -> tuple[bool, str | None]:
+        """Re-elect the audio owner. Returns ``(changed, owner_id)``.
+
+        Call after any event that can change eligibility: connect,
+        disconnect, or a ``presence`` update.
+        """
+        with self._lock:
+            new_owner = self._elect_audio_owner_locked()
+            changed = new_owner != self._audio_owner_id
+            self._audio_owner_id = new_owner
+            return changed, new_owner
+
+    @property
+    def audio_owner_id(self) -> str | None:
+        with self._lock:
+            return self._audio_owner_id
+
+    def _audio_owner_socket_locked(self) -> WebSocket | None:
+        owner = self._audio_owner_id
+        if owner is None:
+            return None
+        for ws, cid in self._sockets.items():
+            if cid == owner:
+                return ws
+        return None
+
+    def send_audio_bytes(self, frame: bytes) -> None:
+        """Schedule a binary audio frame to the elected owner only.
+
+        Replaces :meth:`broadcast_bytes` for TTS / earcon PCM so only
+        one window plays the stream (see ``_audio_owner_id``).
+        """
+        if not frame:
+            return
+        self._schedule(self._send_audio_bytes_async(frame))
+
+    async def _send_audio_bytes_async(self, frame: bytes) -> None:
+        with self._lock:
+            ws = self._audio_owner_socket_locked()
+        if ws is None:
+            # No elected owner (no clients, or owner raced a disconnect).
+            return
+        try:
+            await ws.send_bytes(frame)
+        except Exception:
+            # Owner vanished mid-stream; drop it and re-elect so the
+            # next frame finds a live socket.
+            self.discard(ws)
+            self.recompute_audio_owner()
 
     @property
     def voice_owner_id(self) -> str | None:
@@ -305,7 +396,9 @@ def create_web_app(session: "SessionController") -> FastAPI:
 
     # ── SessionController -> hub bridges ────────────────────────────
 
-    def _on_message(speaker: str, text: str) -> None:
+    def _on_message(
+        speaker: str, text: str, message_id: int | None = None,
+    ) -> None:
         # Map the legacy "You / Assistant / You (MCP)" speaker convention to
         # an explicit role so the React store doesn't have to guess.
         lowered = (speaker or "").strip().lower()
@@ -326,6 +419,11 @@ def create_web_app(session: "SessionController") -> FastAPI:
         }
         if kind is not None:
             payload["kind"] = kind
+        # K32: proactive bubbles persist a row but bypass the streamed
+        # turn_done path, so carry the id here so the client can stamp
+        # backendId and enable the reaction tray on the new bubble.
+        if message_id is not None:
+            payload["message_id"] = int(message_id)
         hub.broadcast(payload)
 
     def _on_tts_state(event: str, **payload: Any) -> None:
@@ -404,21 +502,21 @@ def create_web_app(session: "SessionController") -> FastAPI:
         if stream_byte == 0:
             return
         if not _stream_started.get(stream, False):
-            hub.broadcast_bytes(
+            hub.send_audio_bytes(
                 _frames.build_audio_start(stream_byte, sample_rate, channels)
             )
             _stream_started[stream] = True
         if stream_byte == _frames.FRAME_TTS_PCM:
-            hub.broadcast_bytes(_frames.build_tts_pcm(pcm))
+            hub.send_audio_bytes(_frames.build_tts_pcm(pcm))
         elif stream_byte == _frames.FRAME_EARCON_PCM:
-            hub.broadcast_bytes(_frames.build_earcon_pcm(pcm))
+            hub.send_audio_bytes(_frames.build_earcon_pcm(pcm))
 
     def _on_audio_frame_end(stream: str) -> None:
         stream_byte = _frames.stream_byte(stream)
         if stream_byte == 0:
             return
         if _stream_started.get(stream, False):
-            hub.broadcast_bytes(_frames.build_audio_end(stream_byte))
+            hub.send_audio_bytes(_frames.build_audio_end(stream_byte))
             _stream_started[stream] = False
 
     try:
@@ -600,9 +698,14 @@ def create_web_app(session: "SessionController") -> FastAPI:
             if chunk:
                 hub.broadcast({"type": "token", "chunk": chunk})
         elif name == "turn_done":
+            _metrics = payload.get("metrics", {}) or {}
             hub.broadcast({
                 "type": "turn_done",
-                "metrics": payload.get("metrics", {}),
+                "metrics": _metrics,
+                # K32: lift the persisted assistant row id to the top
+                # level so the client can stamp the live bubble's
+                # backendId and enable reactions immediately.
+                "assistant_message_id": _metrics.get("assistant_message_id"),
             })
         elif name == "error":
             hub.broadcast({
@@ -658,14 +761,30 @@ def create_web_app(session: "SessionController") -> FastAPI:
     @app.get("/api/sessions/{session_id}/messages")
     def session_messages(session_id: str, limit: int = 200) -> JSONResponse:
         rows = session._chat_db.get_messages(session_id, limit=max(1, min(limit, 1000)))
+
+        def _json_or_none(raw: str | None) -> Any:
+            # Reactions / gestures persist as JSON strings; decode so the
+            # client can restore the reaction counters + gesture badges on
+            # a history reload. Bad/empty JSON degrades to None silently.
+            if not raw:
+                return None
+            try:
+                return json.loads(raw)
+            except (ValueError, TypeError):
+                return None
+
         # ``id`` is included for the schema-v7 "mark as moment" action;
-        # callers that don't need it can ignore the field.
+        # ``reactions`` / ``gestures`` (schema v15, K31/K32) are included so
+        # the counters + badges survive a reload. Callers that don't need
+        # them can ignore the fields.
         return JSONResponse([
             {
                 "id": int(r.id),
                 "role": r.role,
                 "content": r.content,
                 "created_at": r.created_at,
+                "reactions": _json_or_none(r.reactions),
+                "gestures": _json_or_none(r.gestures),
             }
             for r in rows
         ])
@@ -2890,6 +3009,25 @@ def create_web_app(session: "SessionController") -> FastAPI:
             except Exception:
                 hub.discard(sock)
 
+    async def _broadcast_audio_owner_async(owner_id: str | None) -> None:
+        """Tell every client which one owns audio playback.
+
+        Sent inline (not scheduled) for the same determinism reason as
+        :func:`_broadcast_voice_owner_async`. The client uses it as a
+        belt-and-suspenders gate on top of the server-side targeted
+        send: only the owner plays PCM, so even a stray broadcast can't
+        double up.
+        """
+        payload = json.dumps(
+            {"type": "audio_owner_changed", "owner_id": owner_id},
+            default=str,
+        )
+        for sock, _cid in hub.snapshot():
+            try:
+                await sock.send_text(payload)
+            except Exception:
+                hub.discard(sock)
+
     @app.websocket("/ws")
     async def websocket_endpoint(ws: WebSocket) -> None:
         await ws.accept()
@@ -2897,6 +3035,11 @@ def create_web_app(session: "SessionController") -> FastAPI:
         client_id = _uuid.uuid4().hex
         hub.add(ws, client_id)
         ws.client_id = client_id  # type: ignore[attr-defined]
+
+        # Elect the audio owner now that this socket is registered, so
+        # the hello below carries an accurate ``audio_owner_id`` and a
+        # change (e.g. the first client connecting) is announced to all.
+        audio_owner_changed, _audio_owner = hub.recompute_audio_owner()
 
         # On connect, prime the client with current state.
         try:
@@ -2908,6 +3051,7 @@ def create_web_app(session: "SessionController") -> FastAPI:
                 "tts_enabled": bool(session._settings.tts.enabled),
                 "voice_active": bool(live_session.is_active),
                 "voice_owner_id": hub.voice_owner_id,
+                "audio_owner_id": hub.audio_owner_id,
                 "context_window": session.context_window_size,
                 "context_source": session.context_window_source,
                 "avatar": session.avatar_payload(),
@@ -2920,6 +3064,15 @@ def create_web_app(session: "SessionController") -> FastAPI:
             }, default=str))
         except Exception:
             pass
+
+        # If this connection changed who owns audio (e.g. it's the first
+        # client, or it displaced a stale owner), tell everyone so the
+        # client-side gate stays in sync with the server's targeted send.
+        if audio_owner_changed:
+            try:
+                await _broadcast_audio_owner_async(hub.audio_owner_id)
+            except Exception:
+                log.debug("audio owner broadcast on connect failed", exc_info=True)
 
         active_turn: threading.Event | None = None
 
@@ -3074,6 +3227,16 @@ def create_web_app(session: "SessionController") -> FastAPI:
                         session.set_user_present(hub.any_client_visible())
                     except Exception:
                         log.debug("set_user_present failed", exc_info=True)
+                    # A visibility change can move audio ownership (e.g.
+                    # the main window became visible and should take over
+                    # from a hidden persona, or vice-versa). Re-elect and
+                    # announce only on an actual change.
+                    try:
+                        _changed, _owner = hub.recompute_audio_owner()
+                        if _changed:
+                            await _broadcast_audio_owner_async(_owner)
+                    except Exception:
+                        log.debug("audio owner recompute on presence failed", exc_info=True)
 
                 elif msg_type == "user_activity":
                     # Foreground app the user is in (Tauri shell only;
@@ -3109,6 +3272,15 @@ def create_web_app(session: "SessionController") -> FastAPI:
                 session.set_user_present(hub.any_client_visible())
             except Exception:
                 log.debug("set_user_present on disconnect failed", exc_info=True)
+            # Re-elect the audio owner: if the client that just left was
+            # the owner, hand playback to a remaining (preferably
+            # visible) window so the next turn still has sound.
+            try:
+                _audio_changed, _audio_owner = hub.recompute_audio_owner()
+                if _audio_changed:
+                    await _broadcast_audio_owner_async(_audio_owner)
+            except Exception:
+                log.debug("audio owner recompute on disconnect failed", exc_info=True)
             if released_owner is not None:
                 try:
                     session.feed_audio_end()
@@ -3185,9 +3357,14 @@ def _spawn_chat_turn(
                 stop_requested=stop_requested,
             )
             session._notify_message("Assistant", reply or "")
+            _metrics = session.get_last_metrics() or {}
             hub.broadcast({
                 "type": "turn_done",
-                "metrics": session.get_last_metrics(),
+                "metrics": _metrics,
+                # K32: lift the persisted assistant row id so the client
+                # can stamp the live bubble's backendId and enable the
+                # reaction tray without a history reload.
+                "assistant_message_id": _metrics.get("assistant_message_id"),
             })
         except Exception as exc:
             log.exception("chat turn failed")

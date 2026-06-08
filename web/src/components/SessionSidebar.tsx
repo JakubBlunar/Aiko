@@ -193,6 +193,12 @@ export function SessionSidebar({
           role: row.role === "user" ? "user" : row.role === "assistant" ? "assistant" : "system",
           content: row.content,
           createdAt: row.created_at,
+          // K31/K32: restore the persisted gesture badges + reaction
+          // counters so they survive a history reload / reconnect.
+          ...(row.reactions ? { reactions: row.reactions } : {}),
+          ...(row.gestures && row.gestures.length > 0
+            ? { gestures: row.gestures }
+            : {}),
         }));
         setMessages(mapped);
       })

@@ -103,6 +103,9 @@ export function useAssistantSocket(): {
         store.setVoiceOwnerId(
           typeof evt.voice_owner_id === "string" ? evt.voice_owner_id : null,
         );
+        store.setAudioOwnerId(
+          typeof evt.audio_owner_id === "string" ? evt.audio_owner_id : null,
+        );
         if (evt.context_window) {
           store.setContextInfo(
             evt.context_window,
@@ -168,7 +171,9 @@ export function useAssistantSocket(): {
           }
           store.clearToolActivity();
         } else if (evt.role === "assistant" && evt.kind === "proactive") {
-          store.appendProactiveMessage(evt.content);
+          // K32: carry the persisted id so reactions work on the
+          // proactive bubble immediately.
+          store.appendProactiveMessage(evt.content, evt.message_id);
         }
         break;
 
@@ -182,6 +187,9 @@ export function useAssistantSocket(): {
 
       case "turn_done":
         store.finishAssistantBubble();
+        // K32: stamp the just-finished bubble with its persisted id so
+        // the reaction tray + "mark as moment" enable without a reload.
+        store.stampAssistantBackendId(evt.assistant_message_id);
         store.setMetrics(evt.metrics || {});
         if (evt.metrics?.context_window) {
           store.setContextInfo(
@@ -533,9 +541,25 @@ export function useAssistantSocket(): {
         store.setVoiceOwnerId(evt.owner_id ?? null);
         break;
 
+      case "audio_owner_changed":
+        store.setAudioOwnerId(evt.owner_id ?? null);
+        break;
+
       case "pong":
         break;
     }
+  }, []);
+
+  // Gate for incoming TTS / earcon PCM. The server already targets the
+  // elected owner, so in practice a non-owner never receives audio
+  // frames — but this is a cheap belt-and-suspenders check so a stray
+  // broadcast (or a future code path that forgets to target) can't make
+  // two windows play the same clip. Play when the server hasn't elected
+  // anyone yet (single-client boot) or when we are the owner.
+  const shouldPlayAudio = useCallback((): boolean => {
+    const { audioOwnerId, clientId } = useAssistantStore.getState();
+    if (!audioOwnerId) return true;
+    return audioOwnerId === clientId;
   }, []);
 
   const connect = useCallback(() => {
@@ -578,7 +602,7 @@ export function useAssistantSocket(): {
       // the audio output manager. Text frames are JSON envelopes.
       if (event.data instanceof ArrayBuffer) {
         const out = audioOutputRef.current;
-        if (out) {
+        if (out && shouldPlayAudio()) {
           out.handleFrame(event.data);
         }
         return;
@@ -638,7 +662,7 @@ export function useAssistantSocket(): {
         lastError: hasEverConnected.current ? "websocket error" : null,
       });
     });
-  }, [handleEvent, setConnection]);
+  }, [handleEvent, setConnection, shouldPlayAudio]);
 
   useEffect(() => {
     closedByUser.current = false;

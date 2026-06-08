@@ -65,6 +65,10 @@ interface RawMessage {
   role: ChatMessage["role"];
   content: string;
   created_at: string;
+  /** K32: persisted user-reaction counts, restored on history reload. */
+  reactions?: Record<string, number> | null;
+  /** K31: persisted touch-gesture kinds Aiko emitted on this message. */
+  gestures?: string[] | null;
 }
 
 async function jsonFetch<T>(input: RequestInfo, init?: RequestInit): Promise<T> {

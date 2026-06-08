@@ -4954,14 +4954,31 @@ class SessionController(
     # ── World, shared moments, axes, get_together_summary ──────────
     # Methods now live in app/core/session/world_mixin.py.
 
-    def add_message_listener(self, callback: Callable[[str, str], None]) -> None:
+    def add_message_listener(
+        self, callback: Callable[..., None],
+    ) -> None:
         if callback and callback not in self._message_listeners:
             self._message_listeners.append(callback)
 
-    def _notify_message(self, speaker: str, text: str) -> None:
+    def _notify_message(
+        self, speaker: str, text: str, message_id: int | None = None,
+    ) -> None:
+        """Fan a chat line out to listeners.
+
+        ``message_id`` is the persisted SQLite ``messages.id`` when the
+        caller has it (proactive turns pass it so the client can enable
+        reactions on the new bubble); it stays ``None`` for callers that
+        don't (the streamed-turn path carries the id on ``turn_done``
+        instead). Listeners may accept two or three positional args; the
+        two-arg ones are called without the id for back-compat.
+        """
         for listener in list(self._message_listeners):
             try:
-                listener(speaker, text)
+                try:
+                    listener(speaker, text, message_id)
+                except TypeError:
+                    # Legacy two-arg listener — call without the id.
+                    listener(speaker, text)
             except Exception:
                 log.debug("message listener raised", exc_info=True)
 
@@ -5442,6 +5459,16 @@ class SessionController(
             "compactions_total": int(self._compactions_total),
             "first_token_ms": round(float(getattr(result, "first_token_ms", None) or 0.0), 1),
             "filler_emitted": bool(getattr(result, "filler_emitted", False)),
+            # K32: the SQLite ``messages.id`` of the assistant row just
+            # persisted, so the frontend can stamp the live bubble's
+            # ``backendId`` and enable the reaction tray without waiting
+            # for a history reload. ``None`` for empty / aborted turns
+            # (no row was written).
+            "assistant_message_id": (
+                int(result.assistant_message_id)
+                if getattr(result, "assistant_message_id", None) is not None
+                else None
+            ),
         }
         if telemetry is not None:
             tdict = telemetry.as_dict()
