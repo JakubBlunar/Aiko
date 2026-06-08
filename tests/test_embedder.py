@@ -170,5 +170,56 @@ class CallTimingTests(unittest.TestCase):
         self.assertEqual(ms, 0.0)
 
 
+class _FakeResponse:
+    def __init__(self, vector: list[float]) -> None:
+        self._vector = vector
+
+    def raise_for_status(self) -> None:  # noqa: D401 - test stub
+        return None
+
+    def json(self) -> dict:
+        return {"embedding": self._vector}
+
+
+class RequestOptionsTests(unittest.TestCase):
+    """The VRAM levers (``num_gpu`` / ``num_ctx``) reach the HTTP body."""
+
+    def _capture_payload(self, settings) -> dict:
+        emb = Embedder(settings)
+        captured: dict = {}
+
+        def _fake_post(url, json=None, timeout=None):  # noqa: A002
+            captured["url"] = url
+            captured["json"] = json
+            return _FakeResponse([1.0, 0.0, 0.0])
+
+        emb._session.post = _fake_post  # type: ignore[assignment]
+        emb.embed("hello world here")
+        return captured["json"]
+
+    def test_no_options_when_unset(self) -> None:
+        body = self._capture_payload(_settings())
+        self.assertNotIn("options", body)
+
+    def test_num_gpu_zero_forces_cpu(self) -> None:
+        settings = _settings()
+        settings.embedding_num_gpu = 0
+        body = self._capture_payload(settings)
+        self.assertEqual(body["options"], {"num_gpu": 0})
+
+    def test_num_ctx_is_passed(self) -> None:
+        settings = _settings()
+        settings.embedding_num_ctx = 2048
+        body = self._capture_payload(settings)
+        self.assertEqual(body["options"], {"num_ctx": 2048})
+
+    def test_both_options_combine(self) -> None:
+        settings = _settings()
+        settings.embedding_num_gpu = 0
+        settings.embedding_num_ctx = 2048
+        body = self._capture_payload(settings)
+        self.assertEqual(body["options"], {"num_gpu": 0, "num_ctx": 2048})
+
+
 if __name__ == "__main__":
     unittest.main()

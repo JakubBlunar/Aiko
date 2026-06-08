@@ -95,11 +95,13 @@ class FreshInstallTests(unittest.TestCase):
             f.close()
 
     def test_column_contract_pinned(self) -> None:
-        """The 19-column DDL is the contract TaskStore depends on.
+        """The tasks-table DDL is the contract TaskStore depends on.
 
         Failing this test means the table shape changed — every
         ``_SELECT_COLS`` and ``_row_to_task`` site needs the same
-        change in lockstep.
+        change in lockstep. Schema v17 added the final three columns
+        (``phase`` / ``parent_task_id`` / ``heartbeat_at``) for the
+        nested-task / goal-workflow work.
         """
         f = _Fixture()
         try:
@@ -131,6 +133,9 @@ class FreshInstallTests(unittest.TestCase):
                 "updated_at",
                 "completed_at",
                 "metadata",
+                "phase",
+                "parent_task_id",
+                "heartbeat_at",
             ],
         )
 

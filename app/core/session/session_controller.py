@@ -29,7 +29,7 @@ import time
 import uuid
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -61,10 +61,12 @@ from app.core.session.session_text_utils import (
     prepare_tts_text,
     sanitize_user_text,
 )
+from app.core.infra import secret_store
 from app.core.infra.settings import (
     AppSettings,
     LLM_ROLE_MAIN_CHAT,
     LLM_ROLE_WORKER_DEFAULT,
+    LLM_ROLE_WORKFLOW,
     LlmProvider,
     LlmRoute,
     _urls_match,
@@ -77,7 +79,15 @@ from app.core.voice.tts_queue import TtsQueue
 from app.core.session.turn_runner import TurnRunner
 from app.llm.chat_client import ChatClient
 from app.llm.embedder import Embedder
-from app.llm.factory import ClientCache
+from app.llm.factory import ClientCache, build_client_for_route
+from app.llm.llm_gate import (
+    CONVERSATION_WORKER,
+    MAINTENANCE_WORKER,
+    TASK,
+    GatedChatClient,
+    LlmPriorityGate,
+    tier_from_name,
+)
 from app.llm.ollama_client import OllamaClient
 from app.llm.openai_compatible_client import OpenAICompatibleClient
 from app.llm.token_utils import estimate_tokens
@@ -426,6 +436,15 @@ class SessionController(
         # the fallback chain.
         self._session_id = self._resolve_initial_session_id(default="main")
 
+        # ── Secret storage ───────────────────────────────────────────────
+        # Move any plaintext API keys out of ``user.json`` into the OS
+        # keychain, and hydrate in-memory keys from the keychain when the
+        # on-disk config has none. MUST run before the client builds below
+        # so the freshly-hydrated keys reach ``_build_chat_client`` /
+        # ``ClientCache``. Inert under pytest + when no keychain backend
+        # is present (the plaintext-config path is preserved verbatim).
+        self._init_secret_storage()
+
         # ── Chat LLM clients (provider-aware split) ──────────────────────
         # Two clients live side by side:
         #   - ``self._chat_client`` is the user-visible path (TurnRunner +
@@ -462,17 +481,22 @@ class SessionController(
             # Workers stay on a local Ollama instance with the configured
             # base_url ignored — we use the canonical OllamaSettings.base_url
             # (typically http://127.0.0.1:11434) so the user doesn't have
-            # to set two URLs.
-            self._worker_client: ChatClient = OllamaClient(
-                settings.ollama,
-                base_url=settings.ollama.base_url,
-                keep_alive=chat_llm.keep_alive,
+            # to set two URLs. The worker model + context window come from
+            # the ``worker_default`` route (P13), falling back to the
+            # legacy ``ollama.*`` block.
+            raw_worker_client: ChatClient = self._build_worker_ollama_client(
+                chat_llm.keep_alive
             )
         else:
             # Either pure Ollama (one client serves both roles) or the
             # user explicitly opted workers into the remote provider.
-            self._worker_client = self._chat_client
-        self._ollama = self._worker_client  # back-compat alias
+            raw_worker_client = self._chat_client
+        # Phase 6: wrap the raw worker client in the priority gate and
+        # expose the conversation / maintenance / workflow proxy views.
+        # Sets self._worker_client, self._ollama, self._maintenance_client,
+        # self._workflow_client, self._worker_llm_gate.
+        self._worker_client: ChatClient
+        self._install_worker_clients(raw_worker_client)
         self._chat_provider = (chat_llm.provider or "ollama").strip().lower()
 
         chat_model_override = (chat_llm.model or "").strip()
@@ -489,13 +513,11 @@ class SessionController(
         # ``model 'gpt-5-mini' not found``. When the worker client
         # IS the chat client (pure-Ollama or ``workers_use_local=False``),
         # both models collapse to the same value.
-        if self._worker_client is self._chat_client:
+        if self._worker_client_inner is self._chat_client:
             self._effective_worker_model = self._effective_chat_model
         else:
-            self._effective_worker_model = (
-                (settings.ollama.chat_model or "").strip()
-                or "llama3.1:8b"
-            )
+            # Route-first (P13): the worker_default route owns the model.
+            self._effective_worker_model, _ = self._worker_route_model_ctx()
 
         # Resolve context window: explicit config override > Ollama /api/show > fallback.
         # ``self._context_source`` records which path won (used for stats display).
@@ -1724,7 +1746,10 @@ class SessionController(
                                 memory_store=self._memory_store,
                                 agent_settings=settings.agent,
                                 memory_settings=self._memory_settings,
-                                ollama=self._ollama,
+                                # Idle-scheduler worker → maintenance tier
+                                # on the worker-LLM priority gate, so it
+                                # yields to per-turn conversation workers.
+                                ollama=self._maintenance_client,
                                 chat_model=self._effective_worker_model,
                                 web_search_tool=web_search_tool,
                                 rate_limiter=self._fact_check_rate_limiter,
@@ -1814,7 +1839,8 @@ class SessionController(
                             self._idle_curiosity = IdleCuriosityWorker(
                                 memory_store=self._memory_store,
                                 embedder=self._embedder,
-                                ollama=self._ollama,
+                                # Idle-scheduler worker → maintenance tier.
+                                ollama=self._maintenance_client,
                                 chat_model=self._effective_worker_model,
                                 web_search_tool=curiosity_search_tool,
                                 rate_limiter=(
@@ -1975,7 +2001,8 @@ class SessionController(
                             memory_store=self._memory_store,
                             topic_graph=self._topic_graph,
                             embedder=self._embedder,
-                            ollama=self._ollama,
+                            # Idle-scheduler worker → maintenance tier.
+                            ollama=self._maintenance_client,
                             chat_model=self._effective_worker_model,
                             cancel_event=self._fact_check_cancel,
                             agent_settings=settings.agent,
@@ -2064,7 +2091,8 @@ class SessionController(
 
                         self._goal_worker = GoalWorker(
                             goal_store=self._goal_store,
-                            ollama=self._ollama,
+                            # Idle-scheduler worker → maintenance tier.
+                            ollama=self._maintenance_client,
                             chat_model=self._effective_worker_model,
                             cancel_event=self._fact_check_cancel,
                             agent_settings=settings.agent,
@@ -2331,7 +2359,8 @@ class SessionController(
                 self._memory_conflict_worker = MemoryConflictWorker(
                     memory_store=self._memory_store,
                     conflict_store=self._memory_conflict_store,
-                    ollama=self._ollama,
+                    # Idle-scheduler worker → maintenance tier.
+                    ollama=self._maintenance_client,
                     chat_model=self._effective_worker_model,
                     rate_limiter=self._memory_conflict_rate_limiter,
                     cancel_event=self._fact_check_cancel,
@@ -2575,7 +2604,8 @@ class SessionController(
                     belief_store=self._belief_store,
                     chat_db=self._chat_db,
                     embedder=self._embedder,
-                    ollama=self._ollama,
+                    # Idle-scheduler worker → maintenance tier.
+                    ollama=self._maintenance_client,
                     chat_model=self._effective_worker_model,
                     rate_limiter=self._belief_rate_limiter,
                     cancel_event=self._fact_check_cancel,
@@ -3290,6 +3320,271 @@ class SessionController(
         except Exception:
             return 0
 
+    # ── P13b: declarative worker-model cascade ──────────────────────
+    # Every background worker that holds its own model name + talks to
+    # ``self._worker_client``. ``set_chat_model`` cascades the worker
+    # model to all of them (vs. the old hand-coded 3). Missing attrs
+    # and workers without a model knob are skipped harmlessly, so the
+    # list can stay generous as new workers land.
+    _WORKER_MODEL_CONSUMERS: tuple[str, ...] = (
+        "_summary_worker",
+        "_memory_extractor",
+        "_dialogue_act_tagger",
+        "_reflection_worker",
+        "_dream_worker",
+        "_curiosity_worker",
+        "_promise_extractor",
+        "_self_image_worker",
+        "_relationship_pulse",
+        "_idle_fact_checker",
+        "_curiosity_seed_worker",
+        "_goal_worker",
+        "_memory_conflict_worker",
+        "_belief_worker",
+        "_moment_detector",
+    )
+
+    @staticmethod
+    def _apply_model_to_worker(worker: Any, model: str) -> bool:
+        """Push ``model`` onto one worker via whatever knob it exposes.
+
+        Tries ``update_runtime(model=...)``, then ``update_model(...)``,
+        then a direct ``_model`` assignment. Returns True if any path
+        landed. All failures are swallowed -- a single odd worker must
+        not break the cascade.
+        """
+        if worker is None:
+            return False
+        fn = getattr(worker, "update_runtime", None)
+        if callable(fn):
+            try:
+                fn(model=model)
+                return True
+            except TypeError:
+                try:
+                    fn(model)
+                    return True
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        fn = getattr(worker, "update_model", None)
+        if callable(fn):
+            try:
+                fn(model)
+                return True
+            except Exception:
+                pass
+        if hasattr(worker, "_model"):
+            try:
+                worker._model = model  # type: ignore[attr-defined]
+                return True
+            except Exception:
+                pass
+        return False
+
+    def _build_worker_runtime_updaters(self) -> list[Callable[[str], None]]:
+        """Build the declarative cascade list once (lazy)."""
+        updaters: list[Callable[[str], None]] = []
+        for attr in self._WORKER_MODEL_CONSUMERS:
+            def _upd(model: str, _attr: str = attr) -> None:
+                self._apply_model_to_worker(getattr(self, _attr, None), model)
+
+            updaters.append(_upd)
+        return updaters
+
+    def _cascade_worker_model(self, worker_model: str) -> None:
+        """Apply ``worker_model`` to every registered worker consumer."""
+        if getattr(self, "_worker_runtime_updaters", None) is None:
+            self._worker_runtime_updaters = self._build_worker_runtime_updaters()
+        for upd in self._worker_runtime_updaters:
+            try:
+                upd(worker_model)
+            except Exception:
+                log.debug("worker runtime model cascade failed", exc_info=True)
+
+    def _worker_route_model_ctx(self) -> tuple[str, int | None]:
+        """Resolve the background-worker model + context window (P13).
+
+        The ``worker_default`` route is the source of truth: when its
+        ``model`` / ``context_window`` are set they win, falling back to
+        the legacy ``ollama.chat_model`` / ``ollama.context_window`` so
+        an un-customised install behaves exactly as before. Used at both
+        worker-client construction sites (``__init__`` + 
+        ``reconfigure_chat_llm``) so a route edit (which previously only
+        persisted the catalogue) actually retargets the workers.
+        """
+        legacy_model = (self._settings.ollama.chat_model or "").strip()
+        legacy_ctx = getattr(self._settings.ollama, "context_window", None)
+        try:
+            route = self._settings.llm.routes.get(LLM_ROLE_WORKER_DEFAULT)
+        except Exception:
+            route = None
+        model = legacy_model
+        ctx = legacy_ctx
+        if route is not None:
+            route_model = (getattr(route, "model", "") or "").strip()
+            if route_model:
+                model = route_model
+            if getattr(route, "context_window", None):
+                ctx = route.context_window
+        return (model or "llama3.1:8b"), ctx
+
+    def _build_worker_ollama_client(self, keep_alive: str) -> "ChatClient":
+        """Construct a dedicated local-Ollama worker client honouring the
+        worker route's context window (P13). The model is passed per-call
+        by each worker via ``_effective_worker_model``; we still seed the
+        client's default ``chat_model`` + ``num_ctx`` from the route so a
+        worker that omits an explicit model/num_ctx inherits the right
+        size.
+        """
+        worker_model, worker_ctx = self._worker_route_model_ctx()
+        base = self._settings.ollama
+        worker_settings = base
+        if (worker_ctx is not None and worker_ctx != base.context_window) or (
+            worker_model and worker_model != (base.chat_model or "").strip()
+        ):
+            worker_settings = replace(
+                base,
+                context_window=worker_ctx if worker_ctx is not None else base.context_window,
+                chat_model=worker_model or base.chat_model,
+            )
+        return OllamaClient(
+            worker_settings,
+            base_url=base.base_url,
+            keep_alive=keep_alive,
+        )
+
+    def _install_worker_clients(self, raw_worker_client: ChatClient) -> None:
+        """Wrap the raw worker client in the priority gate (Phase 6).
+
+        Builds ONE :class:`LlmPriorityGate` around the underlying worker
+        client and exposes three shared-gate proxy views:
+
+        * ``self._worker_client`` (+ the ``self._ollama`` alias) at
+          ``CONVERSATION_WORKER`` — the ~24 existing per-turn /
+          speaking-window sites keep using it unchanged.
+        * ``self._maintenance_client`` at ``MAINTENANCE_WORKER`` — for
+          idle-scheduler workers (decay, promotion, conflict, …).
+        * ``self._workflow_client`` at ``TASK`` — injected into the
+          ``GoalWorkflowHandler``.
+
+        Per-call acquire (inside the proxy) means the workflow daemon
+        releases the gate while waiting on its children — no priority
+        inversion. When the gate is disabled the proxies are
+        pass-through (``gate=None``).
+        """
+        agent = self._settings.agent
+        gate_enabled = bool(getattr(agent, "worker_llm_gate_enabled", True))
+        max_conc = max(1, int(getattr(agent, "worker_llm_max_concurrency", 1)))
+        overrides = dict(getattr(agent, "worker_llm_priority_overrides", {}) or {})
+        self._worker_client_inner = raw_worker_client
+        gate = (
+            LlmPriorityGate(max_concurrency=max_conc, name="worker")
+            if gate_enabled
+            else None
+        )
+        self._worker_llm_gate = gate
+        conv_prio = tier_from_name(overrides.get("conversation", ""), CONVERSATION_WORKER)
+        maint_prio = tier_from_name(overrides.get("maintenance", ""), MAINTENANCE_WORKER)
+        task_prio = tier_from_name(overrides.get("task", ""), TASK)
+        # On reconfigure, mutate the existing proxy objects in place so the
+        # ~24 worker references already holding them follow the new
+        # topology; on first build, create them.
+        existing_worker = getattr(self, "_worker_client", None)
+        if isinstance(existing_worker, GatedChatClient):
+            existing_worker.retarget(raw_worker_client, gate, conv_prio)
+        else:
+            self._worker_client = GatedChatClient(
+                raw_worker_client, gate, conv_prio, name="conversation"
+            )
+        existing_maint = getattr(self, "_maintenance_client", None)
+        if isinstance(existing_maint, GatedChatClient):
+            existing_maint.retarget(raw_worker_client, gate, maint_prio)
+        else:
+            self._maintenance_client = GatedChatClient(
+                raw_worker_client, gate, maint_prio, name="maintenance"
+            )
+        self._ollama = self._worker_client  # back-compat alias
+        existing_workflow = getattr(self, "_workflow_client", None)
+        new_workflow = self._build_workflow_client(gate, task_prio)
+        if isinstance(existing_workflow, GatedChatClient) and isinstance(
+            new_workflow, GatedChatClient
+        ):
+            existing_workflow.retarget(
+                new_workflow._inner, new_workflow._gate, task_prio
+            )
+        else:
+            self._workflow_client = new_workflow
+        log.info(
+            "worker-llm gate: enabled=%s max_concurrency=%d conv=%d maint=%d task=%d",
+            gate_enabled,
+            max_conc,
+            conv_prio,
+            maint_prio,
+            task_prio,
+        )
+
+    def _build_workflow_client(
+        self, worker_gate: "LlmPriorityGate | None", task_priority: int
+    ) -> ChatClient:
+        """Resolve the ``workflow`` route into a gated client.
+
+        Default case: the workflow route mirrors ``worker_default`` so it
+        resolves to the SAME underlying worker client — share the worker
+        gate at ``TASK`` priority (one Ollama instance, no extra VRAM).
+
+        Divergent case: the user repointed ``workflow`` at a different
+        provider. Resolve a dedicated client via the cache; a *remote*
+        provider has its own compute so it gets NO gate (it must not
+        inherit the local model's concurrency=1), while a divergent
+        *local* Ollama route still shares the worker gate.
+        """
+        try:
+            route = self._settings.llm.routes.get(LLM_ROLE_WORKFLOW)
+            worker_route = self._settings.llm.routes.get(LLM_ROLE_WORKER_DEFAULT)
+        except Exception:
+            route = None
+            worker_route = None
+        mirrors_worker = (
+            route is None
+            or worker_route is None
+            or (
+                route.provider_id == worker_route.provider_id
+                and (route.model or "") == (worker_route.model or "")
+                and route.context_window == worker_route.context_window
+            )
+        )
+        if mirrors_worker:
+            return GatedChatClient(
+                self._worker_client_inner, worker_gate, task_priority, name="task"
+            )
+        try:
+            client = build_client_for_route(
+                self._client_cache, route=route, settings=self._settings.llm
+            )
+            provider = self._find_llm_provider(route.provider_id)
+            is_local = (
+                provider is not None
+                and (provider.kind or "").strip().lower() == "ollama"
+            )
+            gate = worker_gate if is_local else None
+            log.info(
+                "workflow client: divergent route provider=%s model=%s local=%s",
+                route.provider_id,
+                route.model,
+                is_local,
+            )
+            return GatedChatClient(client, gate, task_priority, name="task")
+        except Exception:
+            log.warning(
+                "workflow client: route resolution failed, sharing worker client",
+                exc_info=True,
+            )
+            return GatedChatClient(
+                self._worker_client_inner, worker_gate, task_priority, name="task"
+            )
+
     def _resolve_context_window(
         self, override: int | None, model: str,
     ) -> tuple[int, str]:
@@ -3342,7 +3637,7 @@ class SessionController(
         # separate local Ollama instance, the worker model stays
         # pinned to whatever ``ollama.chat_model`` was at startup —
         # it's a different model on a different backend.
-        if self._worker_client is self._chat_client:
+        if self._worker_client_inner is self._chat_client:
             self._effective_worker_model = normalized
         # Re-resolve the context window for the new model. Honour the explicit
         # config override if any; otherwise re-query /api/show.
@@ -3356,24 +3651,14 @@ class SessionController(
         self._turn_runner.update_runtime(
             model=normalized, context_window=self._context_window,
         )
-        # Cascade the WORKER model (not the chat model) to active
-        # worker instances; the proactive director is on the chat
-        # path so it gets the chat model.
+        # Cascade the WORKER model (not the chat model) to every active
+        # worker instance via the declarative registry (P13b — replaces
+        # the old hand-coded 3-worker block that left ~12 workers on the
+        # stale model until restart). The proactive director is on the
+        # chat path so it gets the chat model.
         worker_model = self._effective_worker_model
-        self._summary_worker._model = worker_model  # type: ignore[attr-defined]
+        self._cascade_worker_model(worker_model)
         self._proactive.update_runtime(model=normalized)
-        if self._memory_extractor is not None:
-            try:
-                self._memory_extractor.update_model(worker_model)
-            except Exception:
-                log.debug("memory extractor model update failed", exc_info=True)
-        if self._dialogue_act_tagger is not None:
-            try:
-                self._dialogue_act_tagger.update_runtime(model=worker_model)
-            except Exception:
-                log.debug(
-                    "dialogue_act tagger model update failed", exc_info=True,
-                )
 
     def reconfigure_chat_llm(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Rebuild ``self._chat_client`` from a partial ``chat_llm`` patch.
@@ -3460,14 +3745,18 @@ class SessionController(
                     if str(k).strip() and v is not None
                 })
 
-        # Persist (drops api_key entirely if the user cleared it).
+        # Persist. The API key is routed into the OS keychain via
+        # ``store_or_passthrough`` (-> "" on disk) when a backend exists;
+        # otherwise it falls back to plaintext so the key isn't lost.
         try:
             persist_user_overrides({"chat_llm": {
                 "provider": chat_llm.provider,
                 "provider_preset": chat_llm.provider_preset,
                 "model": chat_llm.model,
                 "base_url": chat_llm.base_url,
-                "api_key": chat_llm.api_key,
+                "api_key": secret_store.store_or_passthrough(
+                    self._chat_llm_secret_account(), chat_llm.api_key
+                ),
                 "api_key_env": chat_llm.api_key_env,
                 "max_tokens": chat_llm.max_tokens,
                 "temperature": chat_llm.temperature,
@@ -3489,32 +3778,31 @@ class SessionController(
             (chat_llm.provider or "ollama").strip().lower() != "ollama"
             and bool(chat_llm.workers_use_local)
         ):
-            self._worker_client = OllamaClient(
-                self._settings.ollama,
-                base_url=self._settings.ollama.base_url,
-                keep_alive=chat_llm.keep_alive,
+            raw_worker_client: ChatClient = self._build_worker_ollama_client(
+                chat_llm.keep_alive
             )
         else:
-            self._worker_client = self._chat_client
-        self._ollama = self._worker_client  # back-compat alias
+            raw_worker_client = self._chat_client
+        # Phase 6: rebuild the gate + proxies in place. Existing worker
+        # references hold the proxy objects, which forward to whatever the
+        # gate wraps, so this transparently retargets every worker.
+        self._install_worker_clients(raw_worker_client)
         self._chat_provider = (chat_llm.provider or "ollama").strip().lower()
 
         # Recompute the worker model based on the new client topology:
         # when the worker client is a separate local Ollama, the
-        # worker model is pinned to ``ollama.chat_model``; otherwise
-        # it tracks the chat model. ``set_chat_model`` below picks
-        # this up via ``self._effective_worker_model``.
-        if self._worker_client is self._chat_client:
+        # worker model comes from the ``worker_default`` route (P13),
+        # falling back to ``ollama.chat_model``; otherwise it tracks the
+        # chat model. ``set_chat_model`` below picks this up via
+        # ``self._effective_worker_model``.
+        if self._worker_client_inner is self._chat_client:
             self._effective_worker_model = (
                 chat_llm.model.strip()
                 or self._settings.ollama.chat_model.strip()
                 or "llama3.1:8b"
             )
         else:
-            self._effective_worker_model = (
-                (self._settings.ollama.chat_model or "").strip()
-                or "llama3.1:8b"
-            )
+            self._effective_worker_model, _ = self._worker_route_model_ctx()
 
         # Re-resolve model + context window. ``set_chat_model`` does
         # the right cascade (TurnRunner / ProactiveDirector / workers).
@@ -4154,22 +4442,143 @@ class SessionController(
             max_tokens=int(chat_llm.max_tokens or 512),
             temperature=chat_llm.temperature,
         )
+        # P13: the worker route is the source of truth for the worker
+        # model + context. A chat-provider reconfigure must NOT clobber a
+        # hand-edited worker route, so preserve an existing route's
+        # model/context/budget; only seed from legacy ``ollama.*`` when
+        # the route is absent or un-customised.
+        existing_worker = self._settings.llm.routes.get(LLM_ROLE_WORKER_DEFAULT)
+        worker_model = (ollama.chat_model or "").strip()
+        worker_ctx = ollama.context_window
+        worker_max_tokens = 512
+        worker_temp = None
+        if existing_worker is not None:
+            if (getattr(existing_worker, "model", "") or "").strip():
+                worker_model = existing_worker.model
+            if getattr(existing_worker, "context_window", None):
+                worker_ctx = existing_worker.context_window
+            worker_max_tokens = int(getattr(existing_worker, "max_tokens", 512) or 512)
+            worker_temp = getattr(existing_worker, "temperature", None)
         self._settings.llm.routes[LLM_ROLE_WORKER_DEFAULT] = LlmRoute(
             provider_id="local_ollama",
-            model=(ollama.chat_model or "").strip(),
-            context_window=ollama.context_window,
-            max_tokens=512,
-            temperature=None,
+            model=worker_model,
+            context_window=worker_ctx,
+            max_tokens=worker_max_tokens,
+            temperature=worker_temp,
+        )
+        # Preserve a customised workflow route; otherwise mirror the
+        # worker route so it shares the same cached client (no VRAM).
+        existing_workflow = self._settings.llm.routes.get(LLM_ROLE_WORKFLOW)
+        if existing_workflow is None or not (
+            (getattr(existing_workflow, "model", "") or "").strip()
+        ):
+            self._settings.llm.routes[LLM_ROLE_WORKFLOW] = LlmRoute(
+                provider_id="local_ollama",
+                model=worker_model,
+                context_window=worker_ctx,
+                max_tokens=worker_max_tokens,
+                temperature=worker_temp,
+            )
+
+    # ── Secret storage (OS keychain) ────────────────────────────────
+    #
+    # API keys never touch ``user.json`` as plaintext once a keychain
+    # backend is available. The in-memory dataclasses (``provider.api_key``
+    # / ``chat_llm.api_key``) keep holding the resolved key for the life
+    # of the process, so every existing read / mask / cache-key path is
+    # untouched -- only *persistence* is redirected to the keychain.
+
+    def _chat_llm_secret_account(self) -> str:
+        """Keychain account the legacy ``chat_llm`` key is filed under.
+
+        ``chat_llm`` mirrors whatever provider ``main_chat`` points at,
+        so we bind its secret to that provider's account to avoid a
+        second, drift-prone copy. Falls back to a dedicated account when
+        no ``main_chat`` route exists (degenerate hand-edited config).
+        """
+        main_route = self._settings.llm.routes.get(LLM_ROLE_MAIN_CHAT)
+        if main_route is not None and (main_route.provider_id or "").strip():
+            return secret_store.provider_account(main_route.provider_id)
+        return secret_store.CHAT_LLM_ACCOUNT
+
+    def _init_secret_storage(self) -> None:
+        """Hydrate keys from the keychain + migrate plaintext off disk.
+
+        Best-effort and fully guarded: any failure leaves credentials
+        exactly as they were loaded from config. Inert under pytest.
+        """
+        if secret_store.running_under_test():
+            return
+        try:
+            self._migrate_and_hydrate_secrets()
+        except Exception:
+            log.warning(
+                "secret-store init failed; leaving credentials as-is",
+                exc_info=True,
+            )
+
+    def _migrate_and_hydrate_secrets(self) -> None:
+        moved = False
+        # Catalogue providers: plaintext on disk -> keychain (migrate);
+        # blank on disk -> pull from keychain into memory (hydrate).
+        for provider in self._settings.llm.providers:
+            account = secret_store.provider_account(provider.id)
+            plaintext = (provider.api_key or "").strip()
+            if plaintext:
+                if secret_store.set_secret(account, plaintext):
+                    moved = True
+            else:
+                hydrated = secret_store.get_secret(account)
+                if hydrated:
+                    provider.api_key = hydrated
+        # Legacy chat_llm block, bound to its main_chat provider account.
+        chat_llm = self._settings.chat_llm
+        chat_account = self._chat_llm_secret_account()
+        plaintext = (chat_llm.api_key or "").strip()
+        if plaintext:
+            if secret_store.set_secret(chat_account, plaintext):
+                moved = True
+        else:
+            hydrated = secret_store.get_secret(chat_account)
+            if hydrated:
+                chat_llm.api_key = hydrated
+        if not moved:
+            return
+        # We successfully stashed at least one plaintext key -> rewrite
+        # ``user.json`` with the keys blanked. ``_persist_llm_settings``
+        # routes provider keys through ``store_or_passthrough`` (-> "");
+        # the focused merge blanks the legacy ``chat_llm.api_key``.
+        try:
+            self._persist_llm_settings()
+        except Exception:
+            log.warning(
+                "secret-store: blanking provider keys on disk failed",
+                exc_info=True,
+            )
+        try:
+            persist_user_overrides({"chat_llm": {"api_key": ""}})
+        except Exception:
+            log.warning(
+                "secret-store: blanking chat_llm key on disk failed",
+                exc_info=True,
+            )
+        log.info(
+            "secret-store: moved plaintext API key(s) from user.json into "
+            "the OS keychain (backend=%s)",
+            secret_store.backend_name(),
         )
 
     def _persist_llm_settings(self) -> None:
         """Write the catalogue + routes to ``user.json``.
 
         Mirrors :func:`persist_user_overrides` for the ``chat_llm``
-        block. Credentials are NOT masked here — they live on disk in
-        ``user.json`` the same way the legacy ``chat_llm.api_key``
-        does. ``user.json`` has file-system permissions and is
-        gitignored; the masking only happens on the REST + WS layer.
+        block. API keys are routed through
+        :func:`secret_store.store_or_passthrough` — when an OS keychain
+        backend is available the secret is stashed there and ``""`` is
+        written to disk; when no backend exists the key falls back to
+        plaintext in ``user.json`` (gitignored, fs-permission-guarded)
+        so a key is never silently lost. Under pytest the passthrough is
+        inert, preserving the historical plaintext-config behaviour.
         """
         providers_payload: list[dict[str, Any]] = []
         for p in self._settings.llm.providers:
@@ -4178,7 +4587,9 @@ class SessionController(
                 "name": p.name,
                 "kind": p.kind,
                 "base_url": p.base_url,
-                "api_key": p.api_key,
+                "api_key": secret_store.store_or_passthrough(
+                    secret_store.provider_account(p.id), p.api_key
+                ),
                 "api_key_env": p.api_key_env,
                 "extra_headers": dict(p.extra_headers or {}),
                 "timeout_seconds": int(p.timeout_seconds or 300),
@@ -4542,9 +4953,9 @@ class SessionController(
         Failures here are logged and swallowed (the worker call on
         first real use will surface the actual error to the user).
         """
-        if self._worker_client is self._chat_client:
+        if self._worker_client_inner is self._chat_client:
             return
-        if not isinstance(self._worker_client, OllamaClient):
+        if not isinstance(self._worker_client_inner, OllamaClient):
             return
         model = (self._effective_worker_model or "").strip()
         if not model:
@@ -4887,16 +5298,19 @@ class SessionController(
 
         registry = ToolRegistry()
         try:
-            from app.llm.tools.builtins import GetTimeTool, RecallTool, WebSearchTool
+            from app.llm.tools.builtins import GetTimeTool, RecallTool
             if getattr(tools_cfg, "get_time", True):
                 registry.register(GetTimeTool())
             if getattr(tools_cfg, "recall", True) and getattr(self, "_rag_retriever", None) is not None:
                 registry.register(RecallTool(self._rag_retriever))
-            if getattr(tools_cfg, "web_search", True):
-                try:
-                    registry.register(WebSearchTool())
-                except Exception:
-                    log.info("web_search tool unavailable (duckduckgo-search missing?)")
+            # web_search is intentionally NOT a brain builtin anymore.
+            # A DuckDuckGo round-trip is too slow for the fast
+            # conversational lane, so it now lives only as a background
+            # workflow skill (``WorkflowSkillRegistry`` -> ``web_search``
+            # task handler). ``tools.web_search`` still gates whether the
+            # workflow offers the skill to its planner. The fact-checker
+            # and curiosity workers keep their own private WebSearchTool
+            # instances — those are background workers, not the brain.
             if (
                 getattr(tools_cfg, "world", True)
                 and getattr(self, "_world_store", None) is not None
@@ -4940,6 +5354,37 @@ class SessionController(
                 except Exception:
                     log.warning(
                         "file task tools failed to register", exc_info=True
+                    )
+            # Nested goal workflows — ``start_workflow`` / ``check_my_work``
+            # / ``cancel_work``. The brain-facing control surface for the
+            # background ``GoalWorkflowHandler`` (multi-step goals: search →
+            # read → summarise). Distinct from the fast file lane above:
+            # the file tools fold a single op into the turn, the workflow
+            # tools kick off a planned chain that reports asynchronously.
+            # Gated on ``tools.workflow`` AND a live orchestrator AND the
+            # handler actually being registered (``agent.workflow_enabled``).
+            if getattr(tools_cfg, "workflow", True) and (
+                getattr(self, "_task_orchestrator", None) is not None
+            ):
+                try:
+                    from app.core.tasks.handler_names import (
+                        HANDLER_GOAL_WORKFLOW,
+                    )
+                    from app.llm.tools.workflow_tools import (
+                        build_workflow_tools,
+                    )
+
+                    if (
+                        self._task_orchestrator.handler_for(
+                            HANDLER_GOAL_WORKFLOW
+                        )
+                        is not None
+                    ):
+                        for tool in build_workflow_tools(self):
+                            registry.register(tool)
+                except Exception:
+                    log.warning(
+                        "workflow tools failed to register", exc_info=True
                     )
         except Exception:
             log.warning("tool registry build failed", exc_info=True)

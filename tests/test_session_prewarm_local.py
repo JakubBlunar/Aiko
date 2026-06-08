@@ -90,6 +90,11 @@ def _make_stub_session(
 
     stub = _Stub()
     stub._worker_client = worker_client
+    # ``_prewarm_local_worker_model`` reads ``_worker_client_inner`` for
+    # its gate-checks (the GatedChatClient phase) and calls ``.chat`` on
+    # ``_worker_client``. In these tests the worker client isn't proxied,
+    # so the inner client is the same object.
+    stub._worker_client_inner = worker_client
     stub._chat_client = chat_client
     stub._effective_worker_model = effective_worker_model
     stub._embedder = embedder

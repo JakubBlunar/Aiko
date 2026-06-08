@@ -200,6 +200,13 @@ function TaskRow({
     typeof task.progress === "number"
       ? Math.round(Math.max(0, Math.min(1, task.progress)) * 100)
       : null;
+  // A goal workflow that hit a skill it doesn't have yet records the
+  // gap on its result. Surface it as a badge so "I couldn't do that
+  // bit" is visible at a glance, not buried in the narration.
+  const missingCapability =
+    task.result && typeof task.result.missing_capability === "string"
+      ? task.result.missing_capability
+      : "";
 
   return (
     <li className="rounded-md border border-white/5 bg-white/[0.02] p-3">
@@ -223,6 +230,14 @@ function TaskRow({
             ) : null}
             {progressPct !== null && task.status === "running" ? (
               <span className="text-xs text-ink-100/45">{progressPct}%</span>
+            ) : null}
+            {missingCapability ? (
+              <span
+                className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-200"
+                title={`Couldn't do this yet — needs: ${missingCapability}`}
+              >
+                can't do yet
+              </span>
             ) : null}
           </div>
           <PrimaryDetail task={task} />

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from app.core.tasks.handlers.file_read import FileReadHandler
 from app.core.tasks.handlers.file_search import FileSearchHandler
+from app.core.tasks.handlers.web_search import WebSearchHandler
 
 
-__all__ = ["FileSearchHandler", "FileReadHandler"]
+__all__ = ["FileSearchHandler", "FileReadHandler", "WebSearchHandler"]

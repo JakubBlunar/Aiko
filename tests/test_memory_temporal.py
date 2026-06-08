@@ -522,7 +522,18 @@ class TestRetrieverTemporalAnnotation(unittest.TestCase):
         # local-TZ conversion (the helper does ``astimezone()`` to
         # local for the wall-clock string). All assertions stay on
         # phrasing, not specific clock values.
-        now = datetime.now(timezone.utc)
+        #
+        # Anchor to local noon: ``_humanize_future`` buckets by LOCAL
+        # calendar-day difference, so running the test late in the
+        # evening would push ``now + 1 day + 2 h`` across two midnights
+        # and read as "on <weekday>" instead of "tomorrow". Noon keeps
+        # the +2h / +26h offsets inside today / tomorrow deterministically.
+        now = (
+            datetime.now()
+            .astimezone()
+            .replace(hour=12, minute=0, second=0, microsecond=0)
+            .astimezone(timezone.utc)
+        )
         # 2 hours from now -> later today phrasing (tonight / this
         # afternoon / this morning depending on local hour).
         out = _humanize_future((now + timedelta(hours=2)).isoformat(), now)

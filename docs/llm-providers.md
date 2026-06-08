@@ -220,15 +220,52 @@ Both directions are mirrored at runtime: editing the legacy
 external scripts that still read `chat_llm.*` keep working
 unchanged.
 
+## API key storage (OS keychain)
+
+API keys are **not** written as plaintext to `config/user.json`. They
+live in the operating system's secure credential store — Windows
+Credential Manager, macOS Keychain, or the Freedesktop Secret Service
+on Linux — via the [`keyring`](https://pypi.org/project/keyring/)
+package, wrapped by [`app/core/infra/secret_store.py`](../app/core/infra/secret_store.py).
+
+How it works:
+
+- **Write-through.** Every credential save (UI → `reconfigure_chat_llm`
+  / `update_provider_credentials` / `add_provider`) routes the key
+  through `secret_store.store_or_passthrough(account, key)`. When a
+  keychain backend is present the secret is stashed there and `""` is
+  written to disk. When **no** backend is usable (headless box, locked
+  keychain) the key falls back to plaintext in `user.json` so it is
+  never silently lost.
+- **In-memory only.** The resolved key still lives on the in-memory
+  `LlmProvider.api_key` / `chat_llm.api_key` dataclasses for the life of
+  the process, so every read / cache-key / `has_api_key` masking path is
+  unchanged — only *persistence* is redirected.
+- **Boot migration + hydration.** `SessionController._init_secret_storage`
+  (first thing in `__init__`) moves any leftover plaintext key from
+  `user.json` into the keychain and blanks it on disk, and conversely
+  hydrates an in-memory key from the keychain when the on-disk value is
+  blank. The legacy `chat_llm` key is bound to its `main_chat`
+  provider's keychain account (`provider:<id>`) so there is no second,
+  drift-prone copy.
+- **Accounts.** Service namespace `aiko-assistant`; one account per
+  credential — `provider:<id>` per catalogue row.
+- **Inert under pytest** so the test suite never touches the developer's
+  real keychain (the historical plaintext-config behaviour is preserved
+  in tests).
+
 ## API key resolution order
 
-When the chat client is built, the API key is sourced in this order:
+When the chat client is built, the in-memory `api_key` is sourced in
+this order (the keychain is consulted at boot to populate it — see
+above):
 
-1. **Explicit value** in `chat_llm.api_key` (typically populated via
-   `PUT /api/settings/llm-credentials` from the UI).
-2. **Environment variable** named in `chat_llm.api_key_env`. Empty
-   `api_key_env` falls back to a per-host hint (see
-   `_PROVIDER_ENV_HINTS` in `session_controller.py`):
+1. **Explicit value** in `chat_llm.api_key` / `provider.api_key`
+   (populated via the UI write-through, or hydrated from the keychain
+   at boot).
+2. **Environment variable** named in `api_key_env`. Empty `api_key_env`
+   falls back to a per-host hint (see `_PROVIDER_ENV_HINTS` in
+   `session_controller.py` / `factory.py`):
    - `api.openai.com` → `OPENAI_API_KEY`
    - `api.groq.com` → `GROQ_API_KEY`
    - `openrouter.ai` → `OPENROUTER_API_KEY`
@@ -236,10 +273,10 @@ When the chat client is built, the API key is sourced in this order:
    - `generativelanguage.googleapis.com` → `GEMINI_API_KEY`
    - `ollama.com` → `OLLAMA_API_KEY`
 
-Storing the key in an environment variable keeps it out of
-`config/user.json`. The drawer treats a populated env-var value the
-same as a typed-in key — both surface as `has_api_key: true` in the
-masked snapshot.
+Setting the key via an environment variable is still supported and also
+keeps it out of `config/user.json`. The drawer treats a populated
+env-var value the same as a typed-in key — both surface as
+`has_api_key: true` in the masked snapshot.
 
 ## REST surface
 

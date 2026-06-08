@@ -1,0 +1,538 @@
+"""GoalWorkflowHandler — the parent task that runs a nested workflow.
+
+This is the multi-step orchestrator the user asked for: "search for new
+files → decide what to do → read them → reply about what I found." It's
+a single :class:`TaskHandler` whose ``start`` launches a daemon thread
+running a plan→act→observe loop:
+
+1. **Plan** — ask the workflow planner (worker LLM, TASK priority) for
+   the next action given the goal + everything observed so far.
+2. **Act** — if the planner picked a skill, spawn it as a CHILD task
+   under this workflow via the :class:`WorkflowSkillRegistry`, then
+   block on the child's terminal status.
+3. **Observe** — fold a short summary of the child's result onto the
+   blackboard and loop.
+
+The loop ends when the planner picks ``finish`` (success / partial /
+nothing_found), declares a ``missing_capability`` (Aiko then says "I
+don't know how to do that yet" and names the gap), or a cap is hit
+(max iterations / max children / repeat guard).
+
+Why a self-spawned daemon thread rather than running inline on the
+orchestrator's worker thread? Because the loop *waits on child tasks*,
+which themselves run on the orchestrator's pool. Blocking a pool worker
+for the whole multi-minute workflow would starve the pool. The handler
+returns immediately (leaving the row ``running``) and emits the terminal
+outcome from the daemon thread — the documented "handler spawns its own
+threads and emits later" pattern.
+
+Cancellation is cooperative: the loop polls its own row status each
+iteration (and right after each child wait), so a user
+``cancel_work`` / cascade-cancel stops it at the next boundary. The
+orchestrator's cascade-cancel takes care of any in-flight child, which
+unblocks the parent's wait promptly.
+
+Gate behaviour: the planner calls go through the injected ``worker LLM``
+client (the TASK-tier gated proxy), and the proxy acquires the gate
+**per call** — so while the workflow is blocked waiting on a child, it
+holds NO gate slot and never inverts priority against the conversation
+workers.
+"""
+from __future__ import annotations
+
+import contextvars
+import json
+import logging
+import threading
+import time
+from typing import Any, Callable
+
+from app.core.infra.log_context import get_task_id
+from app.core.tasks.handler_names import HANDLER_GOAL_WORKFLOW
+from app.core.tasks.task_handler import (
+    TERMINAL_STATUSES,
+    TaskCompleted,
+    TaskEmitFn,
+    TaskFailed,
+    TaskProgress,
+    TaskState,
+)
+from app.core.tasks.workflow.skill_registry import (
+    SpawnContext,
+    WorkflowSkillRegistry,
+)
+from app.core.tasks.workflow.workflow_planner import (
+    OUTCOME_PARTIAL,
+    OUTCOME_SUCCESS,
+    PlannerInput,
+    PlannerStep,
+    decide_next_action,
+)
+
+
+log = logging.getLogger("app.tasks.workflow.handler")
+
+
+# Sentinel outcome stamped on the result when the workflow stopped
+# because it needs a capability no skill provides.
+OUTCOME_MISSING_CAPABILITY = "missing_capability"
+
+_CHILD_OBS_CAP = 500
+
+
+def _task_id_from_context() -> int | None:
+    """Recover the integer task id from the log-context contextvar.
+
+    The orchestrator sets it as an 8-char hex string before invoking
+    ``start``; we parse it back. Returns ``None`` when not running under
+    a task context (shouldn't happen in production, but keeps tests that
+    call ``start`` directly from crashing).
+    """
+    hex_id = get_task_id()
+    if not hex_id:
+        return None
+    try:
+        return int(str(hex_id), 16)
+    except (TypeError, ValueError):
+        return None
+
+
+def _summarize_child(row: Any, status: str) -> str:
+    """Build a short observation string from a finished child row."""
+    if row is None:
+        return f"[{status}] (no result row)"
+    result = getattr(row, "result", None)
+    if isinstance(result, dict):
+        summary = result.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            return summary.strip()[:_CHILD_OBS_CAP]
+        # file_read returns content; show a clipped preview.
+        content = result.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip()[:_CHILD_OBS_CAP]
+        # Generic: list the result keys.
+        keys = ", ".join(map(str, list(result.keys())[:8]))
+        return f"result keys: {keys}"[:_CHILD_OBS_CAP]
+    error = getattr(row, "error", None)
+    if isinstance(error, str) and error.strip():
+        return f"error: {error.strip()}"[:_CHILD_OBS_CAP]
+    return f"[{status}]"
+
+
+def _canonical_args(args: dict[str, Any]) -> str:
+    """Stable string key for the repeat guard."""
+    try:
+        return json.dumps(args or {}, sort_keys=True, ensure_ascii=False)
+    except Exception:
+        return str(sorted((args or {}).items()))
+
+
+class GoalWorkflowHandler:
+    """Parent task handler driving the plan→act→observe loop.
+
+    Dependencies are injected as *providers* (zero-arg callables) where
+    they can change at runtime (the worker client + model are rebuilt on
+    ``reconfigure_chat_llm``), and as direct refs where they're stable
+    (the orchestrator + skill registry).
+    """
+
+    name: str = HANDLER_GOAL_WORKFLOW
+
+    def __init__(
+        self,
+        *,
+        orchestrator: Any,
+        skill_registry: WorkflowSkillRegistry,
+        worker_client_provider: Callable[[], Any],
+        model_provider: Callable[[], str | None] | None = None,
+        user_name_provider: Callable[[], str] | None = None,
+        on_capability_gap: Callable[[dict[str, Any]], None] | None = None,
+        max_iterations: int = 6,
+        max_children: int = 8,
+        child_wait_timeout_seconds: float = 120.0,
+        planner_history_budget_chars: int = 4000,
+        planner_max_tokens: int = 512,
+    ) -> None:
+        self._orchestrator = orchestrator
+        self._skills = skill_registry
+        self._worker_client_provider = worker_client_provider
+        self._model_provider = model_provider
+        self._user_name_provider = user_name_provider
+        self._on_capability_gap = on_capability_gap
+        self._max_iterations = max(1, int(max_iterations))
+        self._max_children = max(1, int(max_children))
+        self._child_wait_timeout = max(1.0, float(child_wait_timeout_seconds))
+        self._history_budget = max(500, int(planner_history_budget_chars))
+        self._planner_max_tokens = max(64, int(planner_max_tokens))
+        # Per-task daemon threads, keyed by task id, for shutdown joins.
+        self._threads: dict[int, threading.Thread] = {}
+        self._lock = threading.Lock()
+
+    # ── lifecycle ────────────────────────────────────────────────────
+
+    def start(self, args: dict[str, Any], emit: TaskEmitFn) -> TaskState:
+        """Validate args + launch the loop thread; return immediately."""
+        goal = str((args or {}).get("goal", "") or "").strip()
+        if not goal:
+            emit(TaskFailed(error="workflow goal is empty"))
+            return {"args": args, "phase": "rejected"}
+        task_id = _task_id_from_context()
+        if task_id is None:
+            emit(TaskFailed(error="workflow could not resolve its task id"))
+            return {"args": args, "phase": "rejected"}
+        user_id = str((args or {}).get("user_id", "") or "").strip() or "default"
+        try:
+            max_iter = int((args or {}).get("max_iterations", self._max_iterations))
+        except (TypeError, ValueError):
+            max_iter = self._max_iterations
+        max_iter = max(1, min(self._max_iterations, max_iter))
+
+        # Copy the context so the daemon thread inherits the task_id for
+        # log correlation (plain threads don't inherit contextvars).
+        ctx = contextvars.copy_context()
+        thread = threading.Thread(
+            target=lambda: ctx.run(
+                self._run_loop, task_id, user_id, goal, max_iter, emit
+            ),
+            name=f"workflow-{task_id:08x}",
+            daemon=True,
+        )
+        with self._lock:
+            self._threads[task_id] = thread
+        log.info(
+            "workflow started: task=%d goal=%r max_iter=%d user=%s",
+            task_id,
+            goal[:80],
+            max_iter,
+            user_id,
+        )
+        thread.start()
+        # Return running state; the loop emits the terminal outcome.
+        return {"args": args, "phase": "planning", "goal": goal}
+
+    def resume(self, state: TaskState, emit: TaskEmitFn) -> TaskState:
+        # A workflow surviving a restart in ``running`` can't safely
+        # re-attach to its (now-orphaned) children, so fail gracefully.
+        # The orchestrator's cascade-cancel handles any child rows.
+        emit(
+            TaskFailed(
+                error=(
+                    "workflow does not support resume after restart; "
+                    "start it again"
+                )
+            )
+        )
+        return state
+
+    def on_input(
+        self, state: TaskState, answer: str, emit: TaskEmitFn
+    ) -> TaskState:
+        # The parent workflow doesn't ask the user for input directly in
+        # this phase (children may, but those are answered on the child).
+        emit(TaskFailed(error="workflow does not accept direct input"))
+        return state
+
+    def cancel(self, state: TaskState) -> None:
+        # Cooperative: the orchestrator has already marked the row
+        # ``cancelled`` and cascade-cancelled the children. The loop
+        # polls its row status each iteration and stops at the next
+        # boundary; the cancelled child unblocks any in-flight wait.
+        return None
+
+    # ── the loop ─────────────────────────────────────────────────────
+
+    def _run_loop(
+        self,
+        task_id: int,
+        user_id: str,
+        goal: str,
+        max_iter: int,
+        emit: TaskEmitFn,
+    ) -> None:
+        """Plan→act→observe until finish / gap / cap. Emits terminal."""
+        steps: list[PlannerStep] = []
+        seen: set[str] = set()
+        children_spawned = 0
+        try:
+            for iteration in range(max_iter):
+                if self._is_cancelled(task_id):
+                    log.info("workflow cancelled: task=%d (pre-plan)", task_id)
+                    return
+                # If we've hit the child cap, force a finish on the next
+                # plan by telling the planner there's no budget left.
+                if children_spawned >= self._max_children:
+                    log.info(
+                        "workflow child cap reached: task=%d children=%d",
+                        task_id,
+                        children_spawned,
+                    )
+                    self._emit_finish(
+                        emit, steps, OUTCOME_PARTIAL,
+                        "Reached the maximum number of sub-steps.",
+                    )
+                    return
+
+                emit(
+                    TaskProgress(
+                        message=f"thinking about step {iteration + 1}…",
+                        phase="planning",
+                    )
+                )
+                decision = decide_next_action(
+                    self._worker_client_provider(),
+                    PlannerInput(
+                        goal=goal,
+                        skills=self._skills.describe_for_planner(),
+                        steps=steps,
+                        iteration=iteration,
+                        max_iterations=max_iter,
+                        history_budget_chars=self._history_budget,
+                        user_name=self._user_name(),
+                    ),
+                    valid_skill_names=set(self._skills.names()),
+                    model=self._model(),
+                    max_tokens=self._planner_max_tokens,
+                )
+
+                if decision.is_missing_capability:
+                    self._record_gap(task_id, goal, decision.missing_capability)
+                    self._emit_finish(
+                        emit,
+                        steps,
+                        OUTCOME_MISSING_CAPABILITY,
+                        decision.findings
+                        or (
+                            "I don't know how to do that yet — I'd need to "
+                            f"{decision.missing_capability}."
+                        ),
+                        missing_capability=decision.missing_capability,
+                    )
+                    return
+
+                if decision.is_finish:
+                    self._emit_finish(
+                        emit,
+                        steps,
+                        decision.outcome or OUTCOME_SUCCESS,
+                        decision.findings,
+                    )
+                    return
+
+                # Skill action. Repeat guard: an exact (skill, args)
+                # repeat means the planner is spinning — stop cleanly.
+                key = f"{decision.skill}:{_canonical_args(decision.args)}"
+                if key in seen:
+                    log.info(
+                        "workflow repeat guard: task=%d skill=%s",
+                        task_id,
+                        decision.skill,
+                    )
+                    self._emit_finish(
+                        emit,
+                        steps,
+                        OUTCOME_PARTIAL,
+                        "Stopped because I was about to repeat a step.",
+                    )
+                    return
+                seen.add(key)
+
+                emit(
+                    TaskProgress(
+                        message=f"running {decision.skill}…",
+                        phase=decision.skill,
+                    )
+                )
+                child_id = self._skills.spawn_child(
+                    decision.skill,
+                    decision.args,
+                    SpawnContext(
+                        orchestrator=self._orchestrator,
+                        user_id=user_id,
+                        parent_task_id=task_id,
+                    ),
+                )
+                if child_id is None:
+                    steps.append(
+                        PlannerStep(
+                            skill=decision.skill,
+                            args=decision.args,
+                            status="rejected",
+                            observation=(
+                                "could not start this step (cap or "
+                                "missing handler)"
+                            ),
+                        )
+                    )
+                    continue
+                children_spawned += 1
+                status, row = self._wait_child(task_id, child_id)
+                observation = _summarize_child(row, status)
+                steps.append(
+                    PlannerStep(
+                        skill=decision.skill,
+                        args=decision.args,
+                        status=status,
+                        observation=observation,
+                    )
+                )
+                if self._is_cancelled(task_id):
+                    log.info("workflow cancelled: task=%d (post-act)", task_id)
+                    return
+
+            # Fell out of the loop without an explicit finish — cap hit.
+            log.info(
+                "workflow iteration cap reached: task=%d iters=%d",
+                task_id,
+                max_iter,
+            )
+            self._emit_finish(
+                emit,
+                steps,
+                OUTCOME_PARTIAL,
+                "Reached the step limit before fully finishing.",
+            )
+        except Exception:
+            log.exception("workflow loop crashed: task=%d", task_id)
+            try:
+                emit(TaskFailed(error="the workflow hit an unexpected error"))
+            except Exception:
+                log.debug("workflow terminal emit failed", exc_info=True)
+        finally:
+            with self._lock:
+                self._threads.pop(task_id, None)
+
+    # ── helpers ──────────────────────────────────────────────────────
+
+    def _wait_child(self, task_id: int, child_id: int) -> tuple[str, Any]:
+        """Block on a child's terminal status; cancel it on timeout.
+
+        Returns ``(status, row)``. On timeout the child is cancelled so
+        it doesn't keep running orphaned after the parent moved on.
+        """
+        try:
+            status = self._orchestrator.wait_for_task(
+                child_id, timeout=self._child_wait_timeout
+            )
+        except Exception:
+            log.exception(
+                "workflow wait_for_task failed: task=%d child=%d",
+                task_id,
+                child_id,
+            )
+            status = "failed"
+        if status == "timeout":
+            log.info(
+                "workflow child timed out: task=%d child=%d timeout=%.0fs",
+                task_id,
+                child_id,
+                self._child_wait_timeout,
+            )
+            try:
+                self._orchestrator.cancel(child_id)
+            except Exception:
+                log.debug("workflow child cancel failed", exc_info=True)
+            status = "timeout"
+        try:
+            row = self._orchestrator.get(child_id)
+        except Exception:
+            row = None
+        return status, row
+
+    def _is_cancelled(self, task_id: int) -> bool:
+        """True when this workflow's row reached a terminal status."""
+        try:
+            row = self._orchestrator.get(task_id)
+        except Exception:
+            return False
+        return row is not None and row.status in TERMINAL_STATUSES
+
+    def _emit_finish(
+        self,
+        emit: TaskEmitFn,
+        steps: list[PlannerStep],
+        outcome: str,
+        findings: str,
+        *,
+        missing_capability: str = "",
+    ) -> None:
+        """Emit the aggregated TaskCompleted result."""
+        narration = self._compose_narration(findings, steps, missing_capability)
+        result: dict[str, Any] = {
+            "outcome": outcome,
+            "summary": (findings or narration)[:280],
+            "content": narration,
+            "steps": [
+                {
+                    "skill": s.skill,
+                    "status": s.status,
+                    "observation": s.observation,
+                }
+                for s in steps
+            ],
+        }
+        if missing_capability:
+            result["missing_capability"] = missing_capability
+        emit(TaskCompleted(result=result))
+
+    def _compose_narration(
+        self, findings: str, steps: list[PlannerStep], missing_capability: str
+    ) -> str:
+        """Build the full reply-on-complete narration from the blackboard."""
+        parts: list[str] = []
+        if findings.strip():
+            parts.append(findings.strip())
+        if missing_capability:
+            parts.append(
+                "I don't know how to do that part yet — I'd need to be able "
+                f"to {missing_capability}."
+            )
+        if steps:
+            step_lines = []
+            for s in steps:
+                step_lines.append(
+                    f"- {s.skill} [{s.status}]: {s.observation}"
+                )
+            parts.append("What I did:\n" + "\n".join(step_lines))
+        return "\n\n".join(p for p in parts if p).strip() or (
+            "I worked through it but didn't find anything to report."
+        )
+
+    def _record_gap(self, task_id: int, goal: str, capability: str) -> None:
+        """Log + forward a capability gap so it's queryable later."""
+        log.info(
+            "workflow capability gap: task=%d capability=%r goal=%r",
+            task_id,
+            capability[:120],
+            goal[:80],
+        )
+        if self._on_capability_gap is not None:
+            try:
+                self._on_capability_gap(
+                    {
+                        "task_id": task_id,
+                        "capability": capability,
+                        "goal": goal,
+                        "at": time.time(),
+                    }
+                )
+            except Exception:
+                log.debug("capability gap sink raised", exc_info=True)
+
+    def _user_name(self) -> str:
+        if self._user_name_provider is None:
+            return "the user"
+        try:
+            return self._user_name_provider() or "the user"
+        except Exception:
+            return "the user"
+
+    def _model(self) -> str | None:
+        if self._model_provider is None:
+            return None
+        try:
+            return self._model_provider()
+        except Exception:
+            return None
+
+
+__all__ = ["GoalWorkflowHandler", "OUTCOME_MISSING_CAPABILITY"]

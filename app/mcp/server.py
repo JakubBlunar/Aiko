@@ -2996,6 +2996,27 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
         except Exception as exc:
             return f"Error reading client cache stats: {exc}"
 
+    @mcp.tool()
+    def get_worker_llm_gate_stats() -> str:
+        """Diagnostic snapshot of the worker-LLM priority gate.
+
+        Shows the single fair semaphore in front of the shared local
+        worker model: how many calls are in flight, how many are queued
+        per tier (conversation / maintenance / task), and cumulative
+        grant counts + wait-time stats per tier. First stop when a
+        background task or workflow seems to be starving the per-turn
+        conversation workers (or vice-versa). Returns ``{enabled:false}``
+        when the gate is disabled via ``agent.worker_llm_gate_enabled``.
+        """
+        try:
+            gate = getattr(session, "_worker_llm_gate", None)
+            if gate is None:
+                return json.dumps({"enabled": False}, indent=2)
+            payload = {"enabled": True, **gate.stats()}
+            return json.dumps(payload, indent=2, default=str)
+        except Exception as exc:
+            return f"Error reading worker LLM gate stats: {exc}"
+
     # ── Resources ────────────────────────────────────────────────────
 
     @mcp.resource("assistant://history")
@@ -3242,6 +3263,83 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
         except Exception as exc:
             return json.dumps({"error": f"cancel failed: {exc}"})
         return json.dumps({"cancelled": bool(ok), "task_id": int(task_id)})
+
+    @mcp.tool()
+    def get_workflow_state(task_id: int) -> str:
+        """Deep snapshot of one nested goal workflow + its children.
+
+        For the ``goal_workflow`` parent task ``task_id``: returns the
+        parent row (status / phase / progress / last_message / result)
+        plus every child task it spawned (file_search / file_read /
+        web_search / …) with each child's status + result. First stop
+        when "the workflow finished but the answer looks wrong" — you
+        can see exactly which sub-step produced which finding, and
+        whether any child failed or got cancelled. Returns
+        ``{"error": ...}`` when the task subsystem is off or the id
+        isn't a known task.
+        """
+        orch = getattr(session, "_task_orchestrator", None)
+        if orch is None:
+            return json.dumps(
+                {"error": "task subsystem disabled (agent.tasks_enabled=False)"}
+            )
+        try:
+            parent = orch.get(int(task_id))
+        except Exception as exc:
+            return json.dumps({"error": f"get failed: {exc}"})
+        if parent is None:
+            return json.dumps({"error": f"no task with id {task_id}"})
+
+        def _row(row: Any) -> dict[str, Any]:
+            return {
+                "id": row.id,
+                "handler_name": row.handler_name,
+                "title": row.title,
+                "status": row.status,
+                "phase": getattr(row, "phase", None),
+                "progress": row.progress,
+                "last_message": row.last_message,
+                "parent_task_id": getattr(row, "parent_task_id", None),
+                "result": row.result,
+                "error": row.error,
+            }
+
+        children: list[dict[str, Any]] = []
+        try:
+            store = getattr(orch, "_store", None)
+            if store is not None:
+                children = [
+                    _row(c) for c in store.list_children(int(task_id))
+                ]
+        except Exception as exc:
+            children = [{"error": f"list_children failed: {exc}"}]
+        payload = {
+            "parent": _row(parent),
+            "children": children,
+            "child_count": len(children),
+        }
+        return json.dumps(payload, indent=2, default=str)
+
+    @mcp.tool()
+    def list_capability_gaps() -> str:
+        """Things a goal workflow recently could NOT do (missing skills).
+
+        Returns the bounded ring of capability gaps recorded by the
+        :class:`GoalWorkflowHandler` whenever its planner declared a
+        ``missing_capability`` — i.e. the goal needed a skill that
+        isn't registered yet (send email, open a web page, run code,
+        …). Each entry is ``{capability, goal}``. This is the
+        backing data for Aiko's "I don't know how to do that yet"
+        honesty + a roadmap signal for which skills to build next.
+        Empty list when nothing has been blocked.
+        """
+        fn = getattr(session, "workflow_capability_gaps", None)
+        if not callable(fn):
+            return json.dumps([])
+        try:
+            return json.dumps(list(fn()), indent=2, default=str)
+        except Exception as exc:
+            return json.dumps({"error": f"capability gaps read failed: {exc}"})
 
     log.info("MCP server created (lean v1)")
     return mcp
