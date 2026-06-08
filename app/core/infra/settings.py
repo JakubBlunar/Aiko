@@ -211,7 +211,7 @@ class LoggingSettings:
     # they hit the rotating log.
     ui_log_enabled: bool = False
     ui_log_categories: list[str] = field(
-        default_factory=lambda: ["ws", "channel", "settings", "voice"],
+        default_factory=lambda: ["ws", "channel", "settings", "voice", "audio"],
     )
     ui_log_max_batch: int = 50
     ui_log_max_payload_bytes: int = 2048
@@ -3515,7 +3515,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                 str(token).strip().lower()
                 for token in (
                     logging_raw.get("ui_log_categories")
-                    or ["ws", "channel", "settings", "voice"]
+                    or ["ws", "channel", "settings", "voice", "audio"]
                 )
                 if str(token).strip()
             ],

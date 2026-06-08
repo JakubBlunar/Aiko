@@ -1276,13 +1276,27 @@ export type WsServerEvent =
       client_id?: string;
       /** Current voice owner id, if any. */
       voice_owner_id?: string | null;
+      /** Client elected to play TTS / earcon audio. Only this window
+       * plays PCM so a hidden persona webview can't echo the stream. */
+      audio_owner_id?: string | null;
     }
   | {
       type: "voice_owner_changed";
       owner_id: string | null;
     }
+  | {
+      type: "audio_owner_changed";
+      owner_id: string | null;
+    }
   | { type: "token"; chunk: string }
-  | { type: "turn_done"; metrics: MetricsSnapshot }
+  | {
+      type: "turn_done";
+      metrics: MetricsSnapshot;
+      /** K32: persisted SQLite ``messages.id`` of the assistant reply,
+       * so the client can stamp the live bubble's ``backendId`` and
+       * enable the reaction tray. Null on empty/aborted turns. */
+      assistant_message_id?: number | null;
+    }
   | { type: "metrics_update"; metrics: MetricsSnapshot }
   | {
       type: "context_window";
@@ -1319,6 +1333,10 @@ export type WsServerEvent =
       content: string;
       /** Subtype hint -- e.g. "proactive" for unsolicited Aiko nudges. */
       kind?: "proactive";
+      /** K32: persisted SQLite ``messages.id`` for proactive bubbles
+       * (which bypass the streamed ``turn_done`` path) so reactions
+       * work on them immediately. */
+      message_id?: number;
     }
   | { type: "session_changed"; session: string }
   | { type: "history_cleared"; session: string }

@@ -65,7 +65,7 @@ log = logging.getLogger("app.proactive")
 SpeakCallback = Callable[[str, str], None]
 """Signature: ``(prepared_text, reaction)``."""
 
-NotifyMessageCallback = Callable[[str, str], None]
+NotifyMessageCallback = Callable[..., None]
 """Signature: ``(speaker, text)`` -- routes the proactive line into the chat
 transcript so the React UI / desktop log show what Aiko said unprompted."""
 
@@ -192,6 +192,27 @@ class ProactiveDirector:
             if (row.role or "").lower() == "user":
                 return row.dialogue_act
         return None
+
+    def _emit_notify(
+        self, speaker: str, text: str, message_id: int | None,
+    ) -> None:
+        """Fan a proactive line out to the injected message listener.
+
+        Passes the persisted ``message_id`` so the client can enable
+        reactions on the new bubble (K32). Tolerant of legacy two-arg
+        callbacks: an arity ``TypeError`` (raised before the callback
+        body runs) falls back to the id-less signature.
+        """
+        cb = self._notify_message
+        if cb is None:
+            return
+        try:
+            try:
+                cb(speaker, text, message_id)
+            except TypeError:
+                cb(speaker, text)
+        except Exception:
+            log.debug("notify_message raised", exc_info=True)
 
     def _arc_cooldown_multiplier(self) -> float:
         """Return the cooldown scale based on the current arc.
@@ -457,7 +478,7 @@ class ProactiveDirector:
             return
 
         # Persist as an assistant turn so the model remembers what it said.
-        self._db.add_message(
+        message_id = self._db.add_message(
             session_id=session_key,
             role="assistant",
             content=cleaned,
@@ -465,11 +486,8 @@ class ProactiveDirector:
         )
         # Surface the line in the chat transcript using a distinguishable
         # speaker so the React UI can render it differently if it wants.
-        if self._notify_message is not None:
-            try:
-                self._notify_message("Assistant (proactive)", cleaned)
-            except Exception:
-                log.debug("notify_message raised", exc_info=True)
+        # Carry the persisted id so the client can enable reactions (K32).
+        self._emit_notify("Assistant (proactive)", cleaned, message_id)
         prepared = prepare_tts_text(cleaned)
         if prepared:
             self._speak(prepared, mood or "calm")
@@ -505,8 +523,9 @@ class ProactiveDirector:
         cleaned = sanitize_assistant_text(text)
         if not cleaned:
             return False
+        message_id: int | None = None
         try:
-            self._db.add_message(
+            message_id = self._db.add_message(
                 session_id=session_key,
                 role="assistant",
                 content=cleaned,
@@ -514,11 +533,7 @@ class ProactiveDirector:
             )
         except Exception:
             log.debug("prepared nudge persist failed", exc_info=True)
-        if self._notify_message is not None:
-            try:
-                self._notify_message("Assistant (proactive)", cleaned)
-            except Exception:
-                log.debug("notify_message raised", exc_info=True)
+        self._emit_notify("Assistant (proactive)", cleaned, message_id)
         prepared_text = prepare_tts_text(cleaned)
         if prepared_text:
             try:
@@ -597,17 +612,13 @@ class ProactiveDirector:
             log.debug("proactive(typed): empty output")
             return
 
-        self._db.add_message(
+        message_id = self._db.add_message(
             session_id=session_key,
             role="assistant",
             content=cleaned,
             token_count=usage.completion_tokens,
         )
-        if self._notify_message is not None:
-            try:
-                self._notify_message("Assistant (proactive)", cleaned)
-            except Exception:
-                log.debug("notify_message raised", exc_info=True)
+        self._emit_notify("Assistant (proactive)", cleaned, message_id)
         # Typed mode is text-only by design: the assumption is the
         # user is reading, not listening, so auto-speaking a 4-min-
         # later "pick up the thread" line just to fill the room would
@@ -638,8 +649,9 @@ class ProactiveDirector:
         cleaned = sanitize_assistant_text(text)
         if not cleaned:
             return False
+        message_id: int | None = None
         try:
-            self._db.add_message(
+            message_id = self._db.add_message(
                 session_id=session_key,
                 role="assistant",
                 content=cleaned,
@@ -647,11 +659,7 @@ class ProactiveDirector:
             )
         except Exception:
             log.debug("prepared nudge persist failed", exc_info=True)
-        if self._notify_message is not None:
-            try:
-                self._notify_message("Assistant (proactive)", cleaned)
-            except Exception:
-                log.debug("notify_message raised", exc_info=True)
+        self._emit_notify("Assistant (proactive)", cleaned, message_id)
         self._typed_prepared_consumed += 1
         log.info(
             "proactive(typed) wrote prepared nudge (kind=%s, %d chars)",
