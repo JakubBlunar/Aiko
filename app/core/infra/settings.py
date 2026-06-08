@@ -19,6 +19,27 @@ class OllamaSettings:
     context_window: int | None = None  # None = auto-detect from Ollama API
     embedding_model: str = "qwen3-embedding:0.6b"
     timeout: int = 300  # HTTP timeout in seconds (shared by all Ollama clients)
+    # GPU offload for the embedding model. ``None`` (default) leaves
+    # Ollama's own placement untouched; ``0`` forces the embedder onto
+    # CPU (passed as ``options.num_gpu=0`` on every /api/embeddings
+    # call), freeing the ~5.5 GB the small embed model otherwise pins
+    # in VRAM for the chat/worker model. The embedder is used almost
+    # entirely by latency-tolerant background workers, so CPU is a fine
+    # trade for the freed headroom. A positive value pins that many
+    # layers to GPU.
+    embedding_num_gpu: int | None = None
+    # Context window the embedding model is loaded with (passed as
+    # ``options.num_ctx`` on every /api/embeddings call). ``None``
+    # (default) leaves Ollama's model default -- which for
+    # ``qwen3-embedding`` is a 32k window that allocates a large KV
+    # buffer and bloats the resident model to ~5.8 GB. Aiko only ever
+    # embeds short texts (document chunks cap at ~1k chars / ~250
+    # tokens, memories are shorter), so a small window like ``2048`` is
+    # ample and shrinks the embedder's footprint dramatically -- handy
+    # when offloading it to CPU (``embedding_num_gpu=0``) or just to
+    # reclaim VRAM. Texts longer than the window are truncated by
+    # Ollama, so keep it comfortably above the largest chunk.
+    embedding_num_ctx: int | None = None
 
 
 @dataclass(slots=True)
@@ -137,6 +158,12 @@ class LlmSettings:
 # guaranteed-present roles after legacy migration.
 LLM_ROLE_MAIN_CHAT = "main_chat"
 LLM_ROLE_WORKER_DEFAULT = "worker_default"
+# Background nested-workflow planner + skills. Mirrors
+# ``worker_default`` by default (same provider/model/context) so it
+# shares the single local worker Ollama instance -- zero extra VRAM.
+# Only diverges when a user deliberately repoints it at a remote /
+# bigger-context provider where VRAM is not the constraint.
+LLM_ROLE_WORKFLOW = "workflow"
 
 
 @dataclass(slots=True)
@@ -1217,6 +1244,48 @@ class AgentSettings:
         ".go", ".rs", ".c", ".h", ".cpp", ".hpp", ".java", ".kt",
         ".rb", ".lua",
     )
+    # ── Nested goal workflows ──────────────────────────────────────────
+    # Master switch for the ``GoalWorkflowHandler`` + ``start_workflow``
+    # brain tool. When off, ``start_workflow`` is not registered and the
+    # workflow handler is never built; the fast-lane file tools still work.
+    workflow_enabled: bool = True
+    # Hard cap on planner iterations (plan->act->observe cycles) before a
+    # workflow force-finishes. Bounds runaway loops. Clamped ``[1, 30]``.
+    workflow_max_iterations: int = 6
+    # Hard cap on child tasks a single workflow may spawn. Clamped
+    # ``[1, 50]``.
+    workflow_max_children: int = 8
+    # Max number of workflows that may run concurrently per user.
+    # ``start_workflow`` refuses past this. Clamped ``[1, 8]``.
+    workflow_max_concurrent: int = 2
+    # Char budget for the planner blackboard (short observations folded
+    # back each iteration). Clamped ``[500, 20000]``.
+    workflow_planner_history_budget_chars: int = 4000
+    # Separate, larger char budget for the final aggregated reply
+    # (fuller child content, not the 200-char observations). Clamped
+    # ``[1000, 40000]``.
+    workflow_reply_budget_chars: int = 6000
+    # Max seconds the planner waits on a single child task to reach a
+    # terminal state before treating it as timed out. Clamped ``[5, 600]``.
+    workflow_child_wait_timeout_seconds: int = 120
+    # ``num_predict`` for the planner's JSON decision call. Small — the
+    # planner only emits a tiny ``{action, args, reason}`` object.
+    # Clamped ``[64, 2048]``.
+    workflow_planner_max_tokens: int = 512
+    # Cap on the per-task capability-gap log (missing_capability entries).
+    # Clamped ``[1, 500]``.
+    workflow_capability_gap_log_max: int = 50
+    # ── Worker-LLM priority gate ────────────────────────────────────────
+    # Master switch for the priority gate in front of the shared worker
+    # Ollama client. Off = pass-through proxies (zero behaviour change).
+    worker_llm_gate_enabled: bool = True
+    # Concurrency bound on the worker model. Default 1 (a 30B on one GPU
+    # serialises anyway). Clamped ``[1, 8]``.
+    worker_llm_max_concurrency: int = 1
+    # Optional per-consumer tier overrides: maps the proxy name
+    # (``"conversation"`` / ``"maintenance"`` / ``"task"``) to a tier
+    # name, letting any consumer be nudged up/down without code.
+    worker_llm_priority_overrides: dict[str, str] = field(default_factory=dict)
     # Master switch for the K32 user-reaction tray. When off, the
     # REST endpoints reject with 503 and the inner-life cue stays
     # silent. The frontend hides the hover tray when the connection
@@ -2017,6 +2086,13 @@ class ToolsSettings:
     # subsystem on but hide the tools from the LLM during prompt
     # experiments. See :mod:`app.llm.tools.file_tasks`.
     file_tasks: bool = True
+    # Nested goal workflows (``start_workflow`` / ``check_my_work`` /
+    # ``cancel_work``). The brain-facing control surface for the
+    # background ``GoalWorkflowHandler``. Gated independently from
+    # ``agent.workflow_enabled`` (which owns the handler itself) so the
+    # tools can be hidden during prompt experiments. See
+    # :mod:`app.llm.tools.workflow_tools`.
+    workflow: bool = True
 
 
 @dataclass(slots=True)
@@ -2575,6 +2651,16 @@ def _migrate_legacy_llm(
             max_tokens=512,
             temperature=None,
         ),
+        # Nested-workflow planner. Mirrors worker_default exactly so it
+        # resolves to the SAME cached client (ClientCache key is
+        # (kind, base_url, key)) -- one Ollama instance, no extra VRAM.
+        LLM_ROLE_WORKFLOW: LlmRoute(
+            provider_id=_LEGACY_LOCAL_OLLAMA_ID,
+            model=(ollama.chat_model or "").strip(),
+            context_window=ollama.context_window,
+            max_tokens=512,
+            temperature=None,
+        ),
     }
     return LlmSettings(providers=providers, routes=routes)
 
@@ -2682,6 +2768,16 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             context_window=(int(ollama["context_window"]) if ollama.get("context_window") is not None else None),
             embedding_model=str(ollama.get("embedding_model", "qwen3-embedding:0.6b")).strip() or "qwen3-embedding:0.6b",
             timeout=int(ollama.get("timeout", 300)),
+            embedding_num_gpu=(
+                int(ollama["embedding_num_gpu"])
+                if ollama.get("embedding_num_gpu") is not None
+                else None
+            ),
+            embedding_num_ctx=(
+                int(ollama["embedding_num_ctx"])
+                if ollama.get("embedding_num_ctx") is not None
+                else None
+            ),
         ),
         audio=AudioSettings(
             sample_rate=int(_required(audio, "sample_rate")),
@@ -3348,6 +3444,77 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                         ".rb", ".lua",
                     ),
                 )
+            ),
+            workflow_enabled=bool(agent_raw.get("workflow_enabled", True)),
+            workflow_max_iterations=max(
+                1, min(30, int(agent_raw.get("workflow_max_iterations", 6)))
+            ),
+            workflow_max_children=max(
+                1, min(50, int(agent_raw.get("workflow_max_children", 8)))
+            ),
+            workflow_max_concurrent=max(
+                1, min(8, int(agent_raw.get("workflow_max_concurrent", 2)))
+            ),
+            workflow_planner_history_budget_chars=max(
+                500,
+                min(
+                    20000,
+                    int(
+                        agent_raw.get(
+                            "workflow_planner_history_budget_chars", 4000
+                        )
+                    ),
+                ),
+            ),
+            workflow_reply_budget_chars=max(
+                1000,
+                min(
+                    40000,
+                    int(agent_raw.get("workflow_reply_budget_chars", 6000)),
+                ),
+            ),
+            workflow_child_wait_timeout_seconds=max(
+                5,
+                min(
+                    600,
+                    int(
+                        agent_raw.get(
+                            "workflow_child_wait_timeout_seconds", 120
+                        )
+                    ),
+                ),
+            ),
+            workflow_planner_max_tokens=max(
+                64,
+                min(
+                    2048,
+                    int(agent_raw.get("workflow_planner_max_tokens", 512)),
+                ),
+            ),
+            workflow_capability_gap_log_max=max(
+                1,
+                min(
+                    500,
+                    int(agent_raw.get("workflow_capability_gap_log_max", 50)),
+                ),
+            ),
+            worker_llm_gate_enabled=bool(
+                agent_raw.get("worker_llm_gate_enabled", True)
+            ),
+            worker_llm_max_concurrency=max(
+                1, min(8, int(agent_raw.get("worker_llm_max_concurrency", 1)))
+            ),
+            worker_llm_priority_overrides=(
+                {
+                    str(k): str(v)
+                    for k, v in agent_raw.get(
+                        "worker_llm_priority_overrides", {}
+                    ).items()
+                }
+                if isinstance(
+                    agent_raw.get("worker_llm_priority_overrides"), dict
+                )
+                else {}
             ),
             user_reactions_enabled=bool(
                 agent_raw.get("user_reactions_enabled", True),
@@ -4024,6 +4191,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             world=bool(tools_raw.get("world", True)),
             goals=bool(tools_raw.get("goals", True)),
             file_tasks=bool(tools_raw.get("file_tasks", True)),
+            workflow=bool(tools_raw.get("workflow", True)),
         ),
         endpointing=EndpointingSettings(
             enabled=bool(endpointing_raw.get("enabled", True)),
@@ -4078,6 +4246,23 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             chat_llm=settings.chat_llm,
             ollama=settings.ollama,
             timeout=settings.ollama.timeout,
+        )
+
+    # Backfill the workflow route for installs that migrated before the
+    # nested-workflow feature shipped (persisted routes without a
+    # ``workflow`` entry). Mirror ``worker_default`` so it shares the
+    # same cached client -- no extra VRAM, no behaviour change.
+    if (
+        LLM_ROLE_WORKFLOW not in settings.llm.routes
+        and LLM_ROLE_WORKER_DEFAULT in settings.llm.routes
+    ):
+        worker_route = settings.llm.routes[LLM_ROLE_WORKER_DEFAULT]
+        settings.llm.routes[LLM_ROLE_WORKFLOW] = LlmRoute(
+            provider_id=worker_route.provider_id,
+            model=worker_route.model,
+            context_window=worker_route.context_window,
+            max_tokens=worker_route.max_tokens,
+            temperature=worker_route.temperature,
         )
 
     return settings

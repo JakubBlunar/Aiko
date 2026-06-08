@@ -26,6 +26,13 @@ from app.core.session.session_controller import (
     SessionController,
     _build_chat_client,
 )
+from app.llm.factory import ClientCache
+from app.llm.llm_gate import (
+    CONVERSATION_WORKER,
+    MAINTENANCE_WORKER,
+    TASK,
+    GatedChatClient,
+)
 from app.llm.ollama_client import OllamaClient
 from app.llm.openai_compatible_client import OpenAICompatibleClient
 
@@ -239,8 +246,10 @@ class ReconfigureChatLlmTests(unittest.TestCase):
         controller._chat_provider = initial_provider
         # Build a real initial Ollama client; reconfigure() will replace it.
         controller._chat_client = OllamaClient(settings.ollama)
-        controller._worker_client = controller._chat_client
-        controller._ollama = controller._chat_client
+        controller._client_cache = ClientCache(settings.ollama)
+        # Mirror the real constructor's worker-client install (Phase 6):
+        # the worker references are gate proxies around the inner client.
+        controller._install_worker_clients(controller._chat_client)
         controller._effective_chat_model = initial_model
         controller._effective_worker_model = initial_model
         controller._context_window = 8192
@@ -253,6 +262,56 @@ class ReconfigureChatLlmTests(unittest.TestCase):
         controller._memory_extractor = None
         controller._dialogue_act_tagger = None
         return controller
+
+    def test_worker_client_proxies_have_distinct_tiers(self) -> None:
+        # The three shared-gate proxy views must carry the right
+        # priority so the idle-scheduler LLM workers (wired to
+        # ``_maintenance_client``) yield to the per-turn conversation
+        # workers (``_worker_client``), and both beat workflow TASK work.
+        controller = self._make_stub_controller()
+        self.assertIsInstance(controller._worker_client, GatedChatClient)
+        self.assertIsInstance(controller._maintenance_client, GatedChatClient)
+        self.assertIsInstance(controller._workflow_client, GatedChatClient)
+        self.assertEqual(controller._worker_client._priority, CONVERSATION_WORKER)
+        self.assertEqual(
+            controller._maintenance_client._priority, MAINTENANCE_WORKER
+        )
+        self.assertEqual(controller._workflow_client._priority, TASK)
+        # All three share the SAME inner client + gate (one model, one
+        # fair semaphore), differing only by priority.
+        self.assertIs(
+            controller._worker_client._inner,
+            controller._maintenance_client._inner,
+        )
+        self.assertIs(
+            controller._worker_client._gate,
+            controller._maintenance_client._gate,
+        )
+
+    def test_reconfigure_keeps_maintenance_tier_after_retarget(self) -> None:
+        # A provider switch retargets the proxies in place; the
+        # maintenance proxy must keep its tier so idle workers holding
+        # the reference still yield correctly.
+        controller = self._make_stub_controller()
+        maint_before = controller._maintenance_client
+        with patch(
+            "app.core.session.session_controller.persist_user_overrides",
+        ), patch(
+            "app.core.session.session_controller.OllamaClient.get_context_length",
+            return_value=None,
+        ):
+            controller.reconfigure_chat_llm({
+                "provider": "openai_compatible",
+                "model": "gpt-4o-mini",
+                "base_url": "https://api.openai.com/v1",
+                "api_key": "sk-test",
+                "workers_use_local": True,
+            })
+        # Same proxy object (retargeted in place), still maintenance tier.
+        self.assertIs(controller._maintenance_client, maint_before)
+        self.assertEqual(
+            controller._maintenance_client._priority, MAINTENANCE_WORKER
+        )
 
     def test_reconfigure_persists_and_rebuilds_clients(self) -> None:
         controller = self._make_stub_controller()
@@ -291,9 +350,12 @@ class ReconfigureChatLlmTests(unittest.TestCase):
         # New chat client is the OpenAI-compatible variant.
         self.assertIsInstance(controller._chat_client, OpenAICompatibleClient)
         # Worker client points at a fresh local OllamaClient because
-        # workers_use_local=True.
-        self.assertIsInstance(controller._worker_client, OllamaClient)
-        self.assertIsNot(controller._worker_client, controller._chat_client)
+        # workers_use_local=True. The public ``_worker_client`` is now a
+        # gate proxy (Phase 6); the underlying client lives on
+        # ``_worker_client_inner``.
+        self.assertIsInstance(controller._worker_client, GatedChatClient)
+        self.assertIsInstance(controller._worker_client_inner, OllamaClient)
+        self.assertIsNot(controller._worker_client_inner, controller._chat_client)
         # Back-compat alias.
         self.assertIs(controller._ollama, controller._worker_client)
         # TurnRunner + ProactiveDirector were pointed at the new client.
@@ -321,9 +383,9 @@ class ReconfigureChatLlmTests(unittest.TestCase):
                 "api_key": "sk-test",
                 "workers_use_local": False,
             })
-        # When ``workers_use_local=False`` the worker client is the
-        # same instance as the chat client.
-        self.assertIs(controller._worker_client, controller._chat_client)
+        # When ``workers_use_local=False`` the worker client wraps the
+        # chat client (same inner instance behind the gate proxy).
+        self.assertIs(controller._worker_client_inner, controller._chat_client)
 
     def test_reconfigure_back_to_ollama_resets_workers(self) -> None:
         controller = self._make_stub_controller(
@@ -338,8 +400,8 @@ class ReconfigureChatLlmTests(unittest.TestCase):
                 "model": "llama3.1:8b",
             })
         self.assertIsInstance(controller._chat_client, OllamaClient)
-        # Both clients are now the same Ollama instance.
-        self.assertIs(controller._worker_client, controller._chat_client)
+        # Both clients now share the same Ollama instance (behind the gate).
+        self.assertIs(controller._worker_client_inner, controller._chat_client)
         self.assertEqual(controller._chat_provider, "ollama")
 
     def test_remote_chat_keeps_worker_model_on_local_ollama(self) -> None:
@@ -350,8 +412,17 @@ class ReconfigureChatLlmTests(unittest.TestCase):
         # ``model 'gpt-5-mini' not found``. Symptom in production
         # was the per-turn ``app.llm.ollama_client`` error cluster
         # right after a successful chat reply.
+        from app.core.infra.settings import LLM_ROLE_WORKER_DEFAULT
+
         controller = self._make_stub_controller()
         controller._settings.ollama.chat_model = "llama3.1:8b"
+        # P13: the worker model is now resolved route-first. Pin the
+        # worker_default route to the local model so the regression
+        # (remote model name never reaches local Ollama) is exercised
+        # under the route-driven resolution.
+        worker_route = controller._settings.llm.routes.get(LLM_ROLE_WORKER_DEFAULT)
+        if worker_route is not None:
+            worker_route.model = "llama3.1:8b"
         with patch(
             "app.core.session.session_controller.persist_user_overrides",
         ), patch(
@@ -388,7 +459,7 @@ class ReconfigureChatLlmTests(unittest.TestCase):
             initial_provider="ollama",
             initial_model="llama3.1:8b",
         )
-        self.assertIs(controller._worker_client, controller._chat_client)
+        self.assertIs(controller._worker_client_inner, controller._chat_client)
         with patch(
             "app.core.session.session_controller.OllamaClient.get_context_length",
             return_value=None,

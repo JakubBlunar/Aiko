@@ -54,6 +54,16 @@ class Embedder:
         base = (settings.embedding_base_url or "").strip() or settings.base_url
         self._base_url = base.rstrip("/")
         self._timeout = float(timeout_seconds)
+        # VRAM lever: when ``embedding_num_gpu`` is set we pass it as
+        # ``options.num_gpu`` on every embed call. ``0`` forces CPU,
+        # freeing the small embed model's VRAM for the chat/worker
+        # model. ``None`` leaves Ollama's placement untouched.
+        self._num_gpu = getattr(settings, "embedding_num_gpu", None)
+        # VRAM lever: cap the context window the embed model loads with.
+        # ``qwen3-embedding`` defaults to a 32k window (~5.8 GB resident);
+        # Aiko only embeds short texts, so a small ``num_ctx`` shrinks the
+        # footprint dramatically. ``None`` leaves Ollama's default.
+        self._num_ctx = getattr(settings, "embedding_num_ctx", None)
         self._cache_size = max(0, int(cache_size))
         self._cache: OrderedDict[str, np.ndarray] = OrderedDict()
         self._lock = threading.Lock()
@@ -179,7 +189,14 @@ class Embedder:
 
     def _call_ollama(self, text: str) -> np.ndarray:
         url = f"{self._base_url}/api/embeddings"
-        payload = {"model": self._model, "prompt": text}
+        payload: dict[str, object] = {"model": self._model, "prompt": text}
+        options: dict[str, int] = {}
+        if self._num_gpu is not None:
+            options["num_gpu"] = int(self._num_gpu)
+        if self._num_ctx is not None:
+            options["num_ctx"] = int(self._num_ctx)
+        if options:
+            payload["options"] = options
         try:
             response = self._session.post(url, json=payload, timeout=self._timeout)
             response.raise_for_status()

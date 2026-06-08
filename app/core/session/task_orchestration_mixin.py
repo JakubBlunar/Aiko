@@ -96,6 +96,7 @@ from app.core.tasks import (
     TaskStore,
     recover_interrupted_tasks,
 )
+from app.core.tasks.file_snapshot import FileSnapshotStore
 from app.core.tasks.handlers import FileReadHandler, FileSearchHandler
 from app.core.tasks.sandbox import FileTaskRoot, validate_roots
 
@@ -159,6 +160,18 @@ class TaskOrchestrationMixin:
         # suppress the duplicate proactive reply. Lives regardless of
         # the master switch so the tool helpers never hit a missing attr.
         self._task_inline_resolved_ids: set[int] = set()
+        # Capability gaps recorded by the goal-workflow handler when the
+        # planner declares "missing_capability". Bounded ring so the
+        # MCP debug surface + ``check_my_work`` can surface "things I
+        # couldn't do yet" without unbounded growth. Always present so
+        # the workflow sink + tools never hit a missing attr.
+        import collections as _collections
+
+        agent_cfg = self._settings.agent  # type: ignore[attr-defined]
+        gap_max = max(1, int(getattr(agent_cfg, "workflow_capability_gap_log_max", 50)))
+        self._workflow_capability_gaps: "_collections.deque[dict[str, Any]]" = (
+            _collections.deque(maxlen=gap_max)
+        )
         agent = self._settings.agent  # type: ignore[attr-defined]
         if not bool(getattr(agent, "tasks_enabled", True)):
             # Master-switch off: install a thin "disabled" stub so
@@ -405,9 +418,15 @@ class TaskOrchestrationMixin:
             len(active),
             [vr.root.label for vr in active],
         )
+        # Per-root seen-file index backing ``only_new`` searches.
+        # Shared across the FileSearchHandler (brain fast-lane) and the
+        # workflow ``search_files`` skill so both diff against the same
+        # baseline. kv-backed on the shared chat DB.
+        snapshot_store = FileSnapshotStore(self._chat_db)  # type: ignore[attr-defined]
+        self._file_snapshot_store = snapshot_store
         try:
             self._task_orchestrator.register_handler(
-                FileSearchHandler(roots=roots)
+                FileSearchHandler(roots=roots, snapshot_store=snapshot_store)
             )
         except Exception as exc:
             log.warning(
@@ -440,6 +459,115 @@ class TaskOrchestrationMixin:
                 "task-handlers: failed to register file_read handler: %r",
                 exc,
             )
+
+        # ── nested goal workflows ────────────────────────────────────
+        # web_search runs as a background task handler (it's too slow
+        # for the conversational lane). Register it whenever the dep is
+        # present so the workflow ``web_search`` skill can spawn it.
+        try:
+            from app.core.tasks.handlers.web_search import (
+                DEFAULT_MAX_RESULTS,
+                WebSearchHandler,
+            )
+
+            self._task_orchestrator.register_handler(
+                WebSearchHandler(
+                    max_results=int(
+                        getattr(agent, "workflow_web_search_max_results", DEFAULT_MAX_RESULTS)
+                    )
+                )
+            )
+        except Exception as exc:
+            log.warning(
+                "task-handlers: failed to register web_search handler: %r",
+                exc,
+            )
+
+        # The parent GoalWorkflowHandler, gated on ``agent.workflow_enabled``.
+        if not bool(getattr(agent, "workflow_enabled", True)):
+            log.info(
+                "task-handlers: goal workflow disabled "
+                "(agent.workflow_enabled=False)"
+            )
+            self._workflow_skill_registry = None
+            return
+        try:
+            from app.core.tasks.workflow import (
+                GoalWorkflowHandler,
+                build_builtin_skill_registry,
+            )
+
+            tools_cfg = getattr(self._settings, "tools", None)  # type: ignore[attr-defined]
+            web_enabled = bool(getattr(tools_cfg, "web_search", True))
+            skill_registry = build_builtin_skill_registry(
+                web_search_enabled=web_enabled
+            )
+            # Future MCP-provided skills register onto this same object.
+            self._workflow_skill_registry = skill_registry
+            handler = GoalWorkflowHandler(
+                orchestrator=self._task_orchestrator,
+                skill_registry=skill_registry,
+                # Providers so a reconfigure that rebuilds the worker
+                # client / model is picked up on the next workflow.
+                worker_client_provider=lambda: getattr(
+                    self, "_workflow_client", None
+                ),
+                model_provider=lambda: getattr(
+                    self, "_effective_worker_model", None
+                ),
+                user_name_provider=lambda: getattr(
+                    self, "user_display_name", "the user"
+                ),
+                on_capability_gap=self._record_workflow_capability_gap,
+                max_iterations=int(
+                    getattr(agent, "workflow_max_iterations", 6)
+                ),
+                max_children=int(getattr(agent, "workflow_max_children", 8)),
+                child_wait_timeout_seconds=float(
+                    getattr(agent, "workflow_child_wait_timeout_seconds", 120.0)
+                ),
+                planner_history_budget_chars=int(
+                    getattr(agent, "workflow_planner_history_budget_chars", 4000)
+                ),
+                planner_max_tokens=int(
+                    getattr(agent, "workflow_planner_max_tokens", 512)
+                ),
+            )
+            self._task_orchestrator.register_handler(handler)
+            log.info(
+                "task-handlers: goal workflow registered (skills=%s)",
+                skill_registry.names(),
+            )
+        except Exception as exc:
+            log.warning(
+                "task-handlers: failed to register goal workflow: %r",
+                exc,
+            )
+            self._workflow_skill_registry = None
+
+    def _record_workflow_capability_gap(self, gap: dict[str, Any]) -> None:
+        """Sink for goal-workflow capability gaps (bounded ring).
+
+        Called from the :class:`GoalWorkflowHandler` daemon thread when
+        the planner declares a ``missing_capability``. Stored so the MCP
+        ``list_capability_gaps`` tool + the ``check_my_work`` brain tool
+        can report "things I couldn't do yet". Best-effort + thread-safe
+        enough for a deque append (CPython GIL makes the append atomic).
+        """
+        ring = getattr(self, "_workflow_capability_gaps", None)
+        if ring is None:
+            return
+        try:
+            ring.append(dict(gap))
+        except Exception:
+            log.debug("capability gap append failed", exc_info=True)
+
+    def workflow_capability_gaps(self) -> list[dict[str, Any]]:
+        """Snapshot of recorded capability gaps (most-recent-last)."""
+        ring = getattr(self, "_workflow_capability_gaps", None)
+        if ring is None:
+            return []
+        return list(ring)
 
     def _shutdown_task_orchestration(self) -> None:
         """Tear down the orchestration subsystem in safe order.

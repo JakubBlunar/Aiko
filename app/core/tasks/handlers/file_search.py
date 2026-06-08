@@ -44,6 +44,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from app.core.tasks.file_snapshot import FileSnapshotStore
 from app.core.tasks.handler_names import HANDLER_FILE_SEARCH
 from app.core.tasks.sandbox import (
     FileTaskRoot,
@@ -96,6 +97,7 @@ class _SearchArgs:
     root_label: str  # empty = search all active roots
     max_results: int
     case_sensitive: bool
+    only_new: bool  # filter to files new/modified since the last scan
 
 
 def _parse_args(args: dict[str, Any]) -> _SearchArgs | str:
@@ -103,13 +105,16 @@ def _parse_args(args: dict[str, Any]) -> _SearchArgs | str:
 
     ``args`` is jsonable; we accept it loosely (LLMs sometimes
     fumble field names) but reject empty queries hard because a
-    blank substring matches every file in the tree.
+    blank substring matches every file in the tree -- UNLESS
+    ``only_new`` is set, in which case an empty query means "any new
+    file in the root" and the snapshot diff keeps the result bounded.
     """
     raw_query = (args or {}).get("query", "") or ""
     if not isinstance(raw_query, str):
         return "query must be a string"
     query = raw_query.strip()
-    if not query:
+    only_new = bool((args or {}).get("only_new", False))
+    if not query and not only_new:
         return "query is empty"
     raw_label = (args or {}).get("root_label", "") or ""
     label = str(raw_label).strip()
@@ -123,6 +128,7 @@ def _parse_args(args: dict[str, Any]) -> _SearchArgs | str:
         root_label=label,
         max_results=max_results,
         case_sensitive=case_sensitive,
+        only_new=only_new,
     )
 
 
@@ -130,10 +136,23 @@ _SUMMARY_NAMES_SHOWN = 5
 
 
 def _match_summary(
-    query: str, matches: list[dict[str, Any]], truncated: bool
+    query: str,
+    matches: list[dict[str, Any]],
+    truncated: bool,
+    *,
+    only_new: bool = False,
+    baseline_established: bool = False,
 ) -> str:
     """One-line summary of the search result for the task cue."""
+    label = query if query else "any file"
+    if only_new and baseline_established:
+        return (
+            "first scan of this location — recorded a baseline, "
+            "nothing flagged as new yet"
+        )
     if not matches:
+        if only_new:
+            return f"no new or changed files for {label!r}"
         return f"no files matched {query!r}"
     names = ", ".join(
         str(m.get("relative_path", "")) for m in matches[:_SUMMARY_NAMES_SHOWN]
@@ -141,7 +160,8 @@ def _match_summary(
     extra = len(matches) - _SUMMARY_NAMES_SHOWN
     tail = f" (+{extra} more)" if extra > 0 else ""
     more = " — more available" if truncated else ""
-    return f"found {len(matches)} file(s) for {query!r}: {names}{tail}{more}"
+    lead = "found %d new/changed file(s)" if only_new else "found %d file(s)"
+    return f"{lead % len(matches)} for {label!r}: {names}{tail}{more}"
 
 
 def _pick_roots(
@@ -183,12 +203,17 @@ class FileSearchHandler:
         app_root: str | os.PathLike[str] | None = None,
         max_files_scanned: int = DEFAULT_MAX_FILES_SCANNED,
         progress_every_n_dirs: int = DEFAULT_PROGRESS_EVERY_N_DIRS,
+        snapshot_store: FileSnapshotStore | None = None,
     ) -> None:
         self._validated: list[ValidatedRoot] = validate_roots(
             roots or [], app_root=app_root
         )
         self._max_files_scanned = max(1, int(max_files_scanned))
         self._progress_every_n_dirs = max(1, int(progress_every_n_dirs))
+        # Optional per-root seen-file index backing ``only_new``. When
+        # absent, ``only_new`` degrades to a plain search (no filtering)
+        # so the handler stays usable without a database wired in.
+        self._snapshot_store = snapshot_store
 
     # ── lifecycle ────────────────────────────────────────────────────
 
@@ -208,7 +233,14 @@ class FileSearchHandler:
             return {"args": args, "phase": "rejected"}
 
         needle = parsed.query if parsed.case_sensitive else parsed.query.lower()
+        # ``only_new`` is only active when a snapshot store is wired in;
+        # otherwise it degrades to a plain (unfiltered) search.
+        only_new = parsed.only_new and self._snapshot_store is not None
         matches: list[dict[str, Any]] = []
+        # Per-root fingerprint of EVERY visited file (not just matches),
+        # used to diff against the stored snapshot. Only populated in
+        # ``only_new`` mode to keep the default path's I/O unchanged.
+        per_root_current: dict[str, dict[str, dict[str, float]]] = {}
         files_scanned = 0
         dirs_scanned = 0
         started_at = time.monotonic()
@@ -247,33 +279,77 @@ class FileSearchHandler:
                         truncated = True
                         break
                     haystack = name if parsed.case_sensitive else name.lower()
-                    if needle not in haystack:
+                    is_match = needle in haystack
+                    # In default mode we only stat matches. In only_new
+                    # mode we must fingerprint every file for the snapshot.
+                    if not is_match and not only_new:
                         continue
                     full = Path(current_dir) / name
                     try:
-                        size = full.stat().st_size
+                        st = full.stat()
+                        size = st.st_size
+                        mtime = float(st.st_mtime)
                     except OSError:
                         size = -1
+                        mtime = 0.0
                     try:
-                        rel = full.relative_to(Path(vr.abs_path))
+                        rel = str(full.relative_to(Path(vr.abs_path))).replace(
+                            os.sep, "/"
+                        )
                     except ValueError:
                         # Shouldn't happen — os.walk returned this
                         # under root_abs — but be defensive.
-                        rel = Path(name)
+                        rel = name
+                    if only_new:
+                        per_root_current.setdefault(vr.root.label, {})[rel] = {
+                            "mtime": mtime,
+                            "size": float(size),
+                        }
+                    if not is_match:
+                        continue
                     matches.append(
                         {
                             "label": vr.root.label,
-                            "relative_path": str(rel).replace(os.sep, "/"),
+                            "relative_path": rel,
                             "size": size,
+                            "mtime": mtime,
                         }
                     )
-                    if len(matches) >= parsed.max_results:
+                    # In only_new mode the result cap is applied AFTER
+                    # the snapshot diff (a query hit that isn't new gets
+                    # dropped), so don't break the walk early here.
+                    if not only_new and len(matches) >= parsed.max_results:
                         truncated = True
                         break
                 if truncated:
                     break
             if truncated:
                 break
+
+        # ── only_new: diff the visited set against the stored snapshot ──
+        baseline_established = False
+        if only_new:
+            assert self._snapshot_store is not None
+            changed_kind: dict[tuple[str, str], str] = {}
+            for label, current_map in per_root_current.items():
+                d = self._snapshot_store.diff_and_update(label, current_map)
+                if d.baseline_established:
+                    baseline_established = True
+                for rel in d.new:
+                    changed_kind[(label, rel)] = "new"
+                for rel in d.modified:
+                    changed_kind[(label, rel)] = "modified"
+            filtered: list[dict[str, Any]] = []
+            for m in matches:
+                key = (str(m.get("label")), str(m.get("relative_path")))
+                kind = changed_kind.get(key)
+                if kind is None:
+                    continue
+                m["change"] = kind
+                filtered.append(m)
+            if len(filtered) > parsed.max_results:
+                truncated = True
+            matches = filtered[: parsed.max_results]
 
         elapsed_ms = (time.monotonic() - started_at) * 1000.0
         result: dict[str, Any] = {
@@ -283,18 +359,30 @@ class FileSearchHandler:
             "files_scanned": files_scanned,
             "dirs_scanned": dirs_scanned,
             "truncated": truncated,
+            "only_new": only_new,
+            "baseline_established": baseline_established,
             "elapsed_ms": round(elapsed_ms, 2),
             "roots_searched": [vr.root.label for vr in roots],
             # ``summary`` feeds the orchestrator's terse T6 cue (else it
             # degrades to ``result keys=...``). Give it the match list
             # so the passive cue path tells Aiko what was found.
-            "summary": _match_summary(parsed.query, matches, truncated),
+            "summary": _match_summary(
+                parsed.query,
+                matches,
+                truncated,
+                only_new=only_new,
+                baseline_established=baseline_established,
+            ),
         }
-        notify_aiko = len(matches) > 0  # silent on zero hits — see doc
+        # Silent on zero hits (see doc) and on a first-run baseline —
+        # there's nothing new to surface yet.
+        notify_aiko = len(matches) > 0 and not baseline_established
         log.info(
-            "file_search done: query=%s matches=%d files_scanned=%d "
-            "dirs_scanned=%d truncated=%s elapsed_ms=%.1f",
+            "file_search done: query=%s only_new=%s baseline=%s matches=%d "
+            "files_scanned=%d dirs_scanned=%d truncated=%s elapsed_ms=%.1f",
             parsed.query,
+            only_new,
+            baseline_established,
             len(matches),
             files_scanned,
             dirs_scanned,

@@ -181,6 +181,16 @@ def prepare_tts_text(text: str) -> str:
     cleaned = re.sub(r"\d{7,}", "a large number", cleaned)
     # Strip tildes -- Kokoro reads them literally
     cleaned = cleaned.replace("~", "")
+    # Strip double quotes -- the TTS model occasionally vocalises a stray
+    # or empty pair ('""') as a glitchy artifact. Apostrophes (single
+    # quotes) are kept so contractions ("don't") survive.
+    cleaned = cleaned.replace('"', "")
+    # Speak filename / extension dots so the model doesn't read ".ext" as
+    # a sentence terminator and insert a pause ("report.txt" -> "report
+    # dot txt"). Only fires when a letter directly follows the dot, so
+    # decimals (3.14) and version numbers (v2.0) are left for the model
+    # to read normally.
+    cleaned = re.sub(r"(?<=[A-Za-z0-9])\.(?=[A-Za-z])", " dot ", cleaned)
     cleaned = " ".join(cleaned.split())
     return cleaned
 
@@ -213,7 +223,19 @@ def drain_tts_stream_chunks(buffer: str, *, flush: bool) -> tuple[list[str], str
     chunks: list[str] = []
     start = 0
     for index, ch in enumerate(text):
-        if ch not in ".!?\n":
+        if ch == "\n":
+            pass  # a newline is always a hard boundary
+        elif ch in ".!?":
+            nxt = text[index + 1] if index + 1 < len(text) else ""
+            # A terminator glued to a word char on the right is *inside*
+            # a token, not a sentence end: file.ext, 3.14, U.S.A,
+            # Yahoo!Inc. An empty ``nxt`` means the terminator is the
+            # last char streamed so far -- wait for the next delta to
+            # reveal whether it's "done. " or "report.txt" (the flush
+            # path emits any trailing remainder regardless).
+            if nxt == "" or nxt.isalnum():
+                continue
+        else:
             continue
 
         candidate = text[start : index + 1].strip()

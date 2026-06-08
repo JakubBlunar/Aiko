@@ -337,7 +337,11 @@ export function useAssistantSocket(): {
 
       case "memory_added": {
         store.applyMemoryAdded(evt.memory);
-        const text = (evt.memory.content || "").slice(0, 80);
+        // Keep the toast readable but don't chop a memory mid-thought:
+        // show up to ~220 chars and mark truncation with an ellipsis so
+        // it's clear there's more in the Memory tab.
+        const raw = (evt.memory.content || "").trim();
+        const text = raw.length > 220 ? `${raw.slice(0, 219).trimEnd()}…` : raw;
         store.pushToast(
           "memory",
           text ? `Aiko remembered: ${text}` : "Aiko remembered something",

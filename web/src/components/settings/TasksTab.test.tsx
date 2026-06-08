@@ -146,6 +146,24 @@ describe("TasksTab — task row rendering", () => {
     expect(html).toContain("id #7");
   });
 
+  it("renders a 'can't do yet' badge when a workflow recorded a capability gap", () => {
+    const html = renderTab({
+      tasks: [
+        makeTask({
+          id: 21,
+          title: "workflow: email the report",
+          handler_name: "goal_workflow",
+          status: "done",
+          completed_at: "2026-06-07T12:05:00Z",
+          result: { missing_capability: "send email" },
+        }),
+      ],
+      total: 1,
+    });
+    expect(html).toContain("can&#x27;t do yet");
+    expect(html).toContain("send email");
+  });
+
   it("renders awaiting_input prompt + clickable option buttons", () => {
     const html = renderTab({
       tasks: [

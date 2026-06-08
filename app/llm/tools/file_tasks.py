@@ -574,6 +574,17 @@ class StartFileSearchTool:
                             "Optional. Default false (case-insensitive)."
                         ),
                     },
+                    "only_new": {
+                        "type": "boolean",
+                        "description": (
+                            "Optional. Default false. When true, return "
+                            "only files that are new or modified since the "
+                            "last time this root was scanned (Aiko "
+                            "remembers a per-root snapshot). The first scan "
+                            "of a root just records a baseline and reports "
+                            "nothing new."
+                        ),
+                    },
                 },
                 "required": ["query"],
             },
@@ -590,6 +601,7 @@ class StartFileSearchTool:
             max_results = 50
         max_results = max(1, min(500, max_results))
         case_sensitive = bool(arguments.get("case_sensitive", False))
+        only_new = bool(arguments.get("only_new", False))
         orch = _orchestrator(self._session)
         if orch is None:
             raise ToolError(
@@ -618,6 +630,7 @@ class StartFileSearchTool:
                     "root_label": root_label,
                     "max_results": max_results,
                     "case_sensitive": case_sensitive,
+                    "only_new": only_new,
                 },
                 title=title,
             )
@@ -636,12 +649,13 @@ class StartFileSearchTool:
             )
         log.info(
             "start_file_search spawned: task_id=%d query=%r root=%r "
-            "max_results=%d case_sensitive=%s disposition=%s",
+            "max_results=%d case_sensitive=%s only_new=%s disposition=%s",
             task_id,
             query,
             root_label,
             max_results,
             case_sensitive,
+            only_new,
             disposition,
         )
         return _file_search_payload(task_id, row, disposition)

@@ -24,6 +24,10 @@ dependencies = [
   "pypdf>=4.0.0",
   # Web search tool
   "duckduckgo-search>=6.0.0",
+  # Secure API-key storage in the OS keychain (Windows Credential
+  # Manager / macOS Keychain / Freedesktop Secret Service). Falls back
+  # to plaintext config when no backend is present.
+  "keyring>=25.0.0",
 ]
 
 [project.optional-dependencies]

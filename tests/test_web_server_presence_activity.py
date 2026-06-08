@@ -43,9 +43,13 @@ class PresenceWsCommandTests(unittest.TestCase):
             _hello = ws.receive_text()
             ws.send_text(json.dumps({"type": "presence", "visible": True}))
             ws.send_text(json.dumps({"type": "ping"}))
-            self.assertEqual(
-                json.loads(ws.receive_text()), {"type": "pong"},
-            )
+            # On connect the server also emits an ``audio_owner_changed``
+            # frame (single-client owner election); skip any non-pong
+            # frames until our ping is answered.
+            frame = json.loads(ws.receive_text())
+            while frame.get("type") != "pong":
+                frame = json.loads(ws.receive_text())
+            self.assertEqual(frame, {"type": "pong"})
         session.set_user_present.assert_any_call(True)
 
     def test_presence_visible_false(self) -> None:

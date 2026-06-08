@@ -29,6 +29,18 @@ from __future__ import annotations
 HANDLER_FILE_SEARCH = "file_search"
 HANDLER_FILE_READ = "file_read"
 
+# Nested-workflow handlers.
+#
+# * ``web_search`` — background DuckDuckGo lookup. Lives as a task
+#   handler (not a brain builtin) because the network round-trip is
+#   too slow for the fast conversational lane; it's reachable only as
+#   a ``WorkflowSkill`` child of a goal workflow.
+# * ``goal_workflow`` — the parent multi-step orchestrator. Plans →
+#   spawns children (file_search / file_read / web_search / …) →
+#   observes → replies with an aggregated summary.
+HANDLER_WEB_SEARCH = "web_search"
+HANDLER_GOAL_WORKFLOW = "goal_workflow"
+
 
 # Every handler this build is aware of. Used by the MCP debug surface
 # + tests asserting "registered handlers match the canonical list".
@@ -38,11 +50,15 @@ HANDLER_FILE_READ = "file_read"
 KNOWN_HANDLER_NAMES: tuple[str, ...] = (
     HANDLER_FILE_SEARCH,
     HANDLER_FILE_READ,
+    HANDLER_WEB_SEARCH,
+    HANDLER_GOAL_WORKFLOW,
 )
 
 
 __all__ = [
     "HANDLER_FILE_SEARCH",
     "HANDLER_FILE_READ",
+    "HANDLER_WEB_SEARCH",
+    "HANDLER_GOAL_WORKFLOW",
     "KNOWN_HANDLER_NAMES",
 ]

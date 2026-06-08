@@ -54,7 +54,11 @@ interface AssistantState {
   setSessionKey: (key: string) => void;
   setModel: (model: string) => void;
   setTtsEnabled: (enabled: boolean) => void;
-  setTtsState: (state: "idle" | "speaking", text?: string, reaction?: string) => void;
+  setTtsState: (
+    state: "idle" | "speaking",
+    text?: string,
+    reaction?: string,
+  ) => void;
 
   /**
    * Per-connection WebSocket identity. ``clientId`` is the id the server
@@ -103,7 +107,11 @@ interface AssistantState {
    * ``clearMessages``, session change) clears the draft too.
    * ``null`` between turns.
    */
-  streamingDraft: { id: string; content: string; reaction: string | undefined } | null;
+  streamingDraft: {
+    id: string;
+    content: string;
+    reaction: string | undefined;
+  } | null;
   setMessages: (msgs: ChatMessage[]) => void;
   appendUserMessage: (content: string) => void;
   appendAssistantBubble: () => string; // returns id
@@ -123,7 +131,8 @@ interface AssistantState {
    * ``message_reaction_updated`` WS broadcast so a click in the
    * chat window updates the persona banner and vice versa. */
   applyMessageReactions: (
-    backendId: number, reactions: Record<string, number>,
+    backendId: number,
+    reactions: Record<string, number>,
   ) => void;
   /** K31: stamp the kinds Aiko emitted this turn onto an assistant
    * bubble. Driven by the ``avatar_touch`` WS event so the badge
@@ -382,13 +391,16 @@ interface AssistantState {
   // Phase 1a: transient backchannel hints from STT partials.
   /** ID of the latest backchannel; consumers compare to detect changes. */
   backchannelHint: BackchannelHint | null;
-  backchannelAt: number;  // Date.now() of last hint
+  backchannelAt: number; // Date.now() of last hint
   pushBackchannel: (hint: BackchannelHint) => void;
 
   // Toasts (transient corner notifications, e.g. "Aiko remembered something")
   toasts: Toast[];
   pushToast: (kind: ToastKind, text: string, ttlMs?: number) => void;
   dismissToast: (id: string) => void;
+  /** Push every live toast's deadline out by ``deltaMs`` -- used to
+   * "pause" auto-dismiss while the user is hovering the stack to read. */
+  extendToasts: (deltaMs: number) => void;
 
   // Tool activity strip (show "Aiko is checking the time / web / notebook")
   toolActivity: ToolEvent[];
@@ -809,7 +821,8 @@ export const useAssistantStore = create<AssistantState>((set) => ({
   setStatus: (status) => set({ status }),
   metrics: {},
   setMetrics: (metrics) => set({ metrics }),
-  mergeMetrics: (m) => set((state) => ({ metrics: { ...state.metrics, ...m } })),
+  mergeMetrics: (m) =>
+    set((state) => ({ metrics: { ...state.metrics, ...m } })),
   contextWindow: 0,
   contextSource: "fallback",
   setContextInfo: (window, source) =>
@@ -897,10 +910,8 @@ export const useAssistantStore = create<AssistantState>((set) => ({
   applyMemoryAdded: (memory) =>
     set((state) => {
       const view = state.memoryView;
-      const kindMatches =
-        !view.kindFilter || view.kindFilter === memory.kind;
-      const tierMatches =
-        !view.tierFilter || view.tierFilter === memory.tier;
+      const kindMatches = !view.kindFilter || view.kindFilter === memory.kind;
+      const tierMatches = !view.tierFilter || view.tierFilter === memory.tier;
       const filterMatches = kindMatches && tierMatches;
       const onFirstPageRecent = view.page === 0 && view.order === "recent";
       // Always bump total when the new row would belong in the
@@ -979,8 +990,7 @@ export const useAssistantStore = create<AssistantState>((set) => ({
           : view.historyOrder;
       // ``total`` always bumps so the pager updates even when the
       // row didn't land on the visible page.
-      const nextTotal =
-        filterMatches ? view.total + 1 : view.total;
+      const nextTotal = filterMatches ? view.total + 1 : view.total;
       return {
         tasksView: {
           ...view,
@@ -1001,7 +1011,9 @@ export const useAssistantStore = create<AssistantState>((set) => ({
         ...existing,
         status: patch.status ?? existing.status,
         progress:
-          typeof patch.progress === "number" ? patch.progress : existing.progress,
+          typeof patch.progress === "number"
+            ? patch.progress
+            : existing.progress,
         last_message:
           typeof patch.last_message === "string"
             ? patch.last_message
@@ -1010,7 +1022,7 @@ export const useAssistantStore = create<AssistantState>((set) => ({
         // ``undefined`` = handler didn't supply one; ``null`` = clear
         // the existing phase; a string = the new value.
         phase:
-          patch.phase === undefined ? existing.phase ?? null : patch.phase,
+          patch.phase === undefined ? (existing.phase ?? null) : patch.phase,
       };
       return {
         tasksView: {
@@ -1027,10 +1039,9 @@ export const useAssistantStore = create<AssistantState>((set) => ({
       // Keep the chip on the strip; ensure it's there if the row
       // is somehow new to us (broadcast race between client init
       // and a fast handler).
-      const nextActive =
-        view.activeIds.includes(task.id)
-          ? view.activeIds
-          : [task.id, ...view.activeIds];
+      const nextActive = view.activeIds.includes(task.id)
+        ? view.activeIds
+        : [task.id, ...view.activeIds];
       // History: same prepend rule as ``applyTaskStarted`` but
       // we don't bump ``total`` — the row already existed.
       const filterMatches =
@@ -1057,10 +1068,9 @@ export const useAssistantStore = create<AssistantState>((set) => ({
       // Keep the row in ``tasksById`` so the strip can render
       // "done" / "failed" / "cancelled" briefly before the sweep
       // drops it.
-      const nextActive =
-        view.activeIds.includes(task.id)
-          ? view.activeIds
-          : [task.id, ...view.activeIds];
+      const nextActive = view.activeIds.includes(task.id)
+        ? view.activeIds
+        : [task.id, ...view.activeIds];
       // History: ensure terminal rows show up on a fresh load
       // even when the user wasn't on page 0 when the start fired.
       const filterMatches =
@@ -1219,18 +1229,20 @@ export const useAssistantStore = create<AssistantState>((set) => ({
       if ("location" in patch) {
         const next = (patch as { location: WorldLocation }).location;
         const idx = current.locations.findIndex((l) => l.id === next.id);
-        const locations = idx >= 0
-          ? current.locations.map((l) => (l.id === next.id ? next : l))
-          : [...current.locations, next];
+        const locations =
+          idx >= 0
+            ? current.locations.map((l) => (l.id === next.id ? next : l))
+            : [...current.locations, next];
         locations.sort((a, b) => a.position - b.position || a.id - b.id);
         return { world: { ...current, locations } };
       }
       if ("item" in patch) {
         const next = (patch as { item: WorldItem }).item;
         const idx = current.items.findIndex((i) => i.id === next.id);
-        const items = idx >= 0
-          ? current.items.map((i) => (i.id === next.id ? next : i))
-          : [...current.items, next];
+        const items =
+          idx >= 0
+            ? current.items.map((i) => (i.id === next.id ? next : i))
+            : [...current.items, next];
         return { world: { ...current, items } };
       }
       if ("deleted_location_id" in patch) {
@@ -1326,11 +1338,12 @@ export const useAssistantStore = create<AssistantState>((set) => ({
     set({ backchannelHint: hint, backchannelAt: Date.now() }),
 
   toasts: [],
-  // Default toast lifetime. Bumped from the original 4.5s in 2026-05
-  // because users couldn't read the longer "Aiko remembered: ..." /
-  // memory-merged toasts before they vanished. Callers can still pass
-  // a shorter ttlMs explicitly if a toast should be quick.
-  pushToast: (kind, text, ttlMs = 9000) =>
+  // Default toast lifetime. Bumped over time because users couldn't
+  // read the longer "Aiko remembered: ..." / memory-merged toasts
+  // before they vanished. Hovering the stack now pauses the countdown
+  // (see ``extendToasts`` + ``Toasts.tsx``), so this is just the
+  // hands-off lifetime. Callers can still pass a shorter ttlMs.
+  pushToast: (kind, text, ttlMs = 12000) =>
     set((state) => ({
       toasts: [
         ...state.toasts,
@@ -1345,6 +1358,17 @@ export const useAssistantStore = create<AssistantState>((set) => ({
     })),
   dismissToast: (id) =>
     set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),
+  extendToasts: (deltaMs) =>
+    set((state) => {
+      if (deltaMs <= 0 || state.toasts.length === 0) {
+        return {};
+      }
+      return {
+        toasts: state.toasts.map((t) =>
+          t.ttlMs > 0 ? { ...t, createdAt: t.createdAt + deltaMs } : t,
+        ),
+      };
+    }),
 
   toolActivity: [],
   pushToolEvent: (event) =>
@@ -1412,7 +1436,11 @@ export const useAssistantStore = create<AssistantState>((set) => ({
           const next = tv.moments.slice();
           next.splice(existing, 1);
           return {
-            togetherView: { ...tv, moments: next, total: Math.max(0, tv.total - 1) },
+            togetherView: {
+              ...tv,
+              moments: next,
+              total: Math.max(0, tv.total - 1),
+            },
           };
         }
         return state;
@@ -1443,7 +1471,11 @@ export const useAssistantStore = create<AssistantState>((set) => ({
       const next = tv.moments.slice();
       next.splice(idx, 1);
       return {
-        togetherView: { ...tv, moments: next, total: Math.max(0, tv.total - 1) },
+        togetherView: {
+          ...tv,
+          moments: next,
+          total: Math.max(0, tv.total - 1),
+        },
       };
     }),
   setRelationshipAxes: (axes) =>

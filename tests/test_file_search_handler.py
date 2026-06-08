@@ -325,5 +325,97 @@ class LifecycleEntryPointTests(unittest.TestCase):
         self.handler.cancel({"args": {"query": "a"}})
 
 
+class _FakeKv:
+    def __init__(self) -> None:
+        self._d: dict[str, str] = {}
+
+    def kv_get(self, key: str) -> str | None:
+        return self._d.get(key)
+
+    def kv_set(self, key: str, value: str) -> None:
+        self._d[key] = value
+
+
+class OnlyNewTests(unittest.TestCase):
+    """only_new filters matches to files new/modified since last scan."""
+
+    def setUp(self) -> None:
+        from app.core.tasks.file_snapshot import FileSnapshotStore
+
+        self.fx = _Fixture()
+        self.addCleanup(self.fx.cleanup)
+        self.store = FileSnapshotStore(_FakeKv())
+        self.handler = self.fx.handler(snapshot_store=self.store)
+
+    def test_first_run_baseline_returns_nothing(self) -> None:
+        emit = _CollectingEmit()
+        self.handler.start({"query": "md", "only_new": True}, emit)
+        assert isinstance(emit.terminal, TaskCompleted)
+        result = emit.terminal.result
+        self.assertTrue(result["baseline_established"])
+        self.assertTrue(result["only_new"])
+        self.assertEqual(result["matches"], [])
+        # Baseline run should not notify Aiko.
+        self.assertFalse(emit.terminal.notify_aiko)
+
+    def test_second_run_surfaces_new_file(self) -> None:
+        # First scan establishes the baseline.
+        self.handler.start({"query": "md", "only_new": True}, _CollectingEmit())
+        # Add a new matching file.
+        (self.fx.base / "Docs" / "fresh_note.md").write_text("brand new")
+        emit = _CollectingEmit()
+        self.handler.start({"query": "md", "only_new": True}, emit)
+        assert isinstance(emit.terminal, TaskCompleted)
+        result = emit.terminal.result
+        self.assertFalse(result["baseline_established"])
+        rels = {m["relative_path"] for m in result["matches"]}
+        self.assertIn("fresh_note.md", rels)
+        for m in result["matches"]:
+            self.assertEqual(m.get("change"), "new")
+        self.assertTrue(emit.terminal.notify_aiko)
+
+    def test_unchanged_second_run_is_empty(self) -> None:
+        self.handler.start({"query": "md", "only_new": True}, _CollectingEmit())
+        emit = _CollectingEmit()
+        self.handler.start({"query": "md", "only_new": True}, emit)
+        assert isinstance(emit.terminal, TaskCompleted)
+        self.assertEqual(emit.terminal.result["matches"], [])
+
+    def test_empty_query_allowed_with_only_new(self) -> None:
+        # only_new makes an empty query mean "any new file".
+        emit = _CollectingEmit()
+        self.handler.start({"query": "", "only_new": True}, emit)
+        self.assertIsInstance(emit.terminal, TaskCompleted)
+
+    def test_only_new_without_store_degrades_to_plain_search(self) -> None:
+        # No snapshot store -> only_new flag is ignored, plain search.
+        handler = self.fx.handler()  # no snapshot_store
+        emit = _CollectingEmit()
+        handler.start({"query": "md", "only_new": True}, emit)
+        assert isinstance(emit.terminal, TaskCompleted)
+        self.assertFalse(emit.terminal.result["only_new"])
+        self.assertGreater(len(emit.terminal.result["matches"]), 0)
+
+    def test_modified_file_surfaces(self) -> None:
+        import os
+        import time as _time
+
+        self.handler.start({"query": "md", "only_new": True}, _CollectingEmit())
+        target = self.fx.base / "Docs" / "a.md"
+        # Bump mtime + size so the diff flags it modified.
+        _time.sleep(0.01)
+        target.write_text("doc a, now much longer content to change size")
+        future = _time.time() + 100
+        os.utime(target, (future, future))
+        emit = _CollectingEmit()
+        self.handler.start({"query": "a.md", "only_new": True}, emit)
+        assert isinstance(emit.terminal, TaskCompleted)
+        rels = {
+            m["relative_path"]: m.get("change")
+            for m in emit.terminal.result["matches"]
+        }
+        self.assertEqual(rels.get("a.md"), "modified")
+
+
 if __name__ == "__main__":
     unittest.main()
