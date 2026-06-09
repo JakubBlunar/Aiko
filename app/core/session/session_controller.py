@@ -1558,6 +1558,7 @@ class SessionController(
             opinion_injection=self._render_opinion_injection_block,
             absence_curiosity=self._render_absence_curiosity_block,
             turning_over=self._render_turning_over_block,
+            away_activities=self._render_away_activities_block,
             mood_shell=self._render_mood_shell_block,
             novelty=self._render_novelty_block,
             stagnation=self._render_stagnation_block,
@@ -2311,6 +2312,50 @@ class SessionController(
             except Exception:
                 log.warning("WorldNoticeWorker init failed", exc_info=True)
 
+        # K36 IdleAwayActivityWorker — Aiko's quiet room life. Mutates the
+        # world during idle windows + journals it; the away-activities
+        # provider surfaces one line on the first turn back. Shares the
+        # idle scheduler + world-store gate; no prepared-nudge dependency
+        # (it's a silent producer, not a proactive nudge). Failures only
+        # drop the away-activities path.
+        if (
+            self._idle_scheduler is not None
+            and getattr(self, "_world_store", None) is not None
+        ):
+            try:
+                from app.core.world.idle_activity_worker import (
+                    IdleAwayActivityWorker,
+                )
+
+                mem = self._memory_settings
+                self._away_activity_worker = IdleAwayActivityWorker(
+                    world_store=self._world_store,
+                    kv_get=self._chat_db.kv_get,
+                    kv_set=self._chat_db.kv_set,
+                    user_display_name_provider=(
+                        lambda: self.user_display_name
+                    ),
+                    enabled_provider=lambda: bool(
+                        getattr(
+                            self._settings.agent,
+                            "away_activities_enabled",
+                            True,
+                        )
+                    ),
+                    notify=self._notify_world,
+                    ollama=self._maintenance_client,
+                    model=self._effective_worker_model,
+                    interval_seconds=mem.away_activities_interval_seconds,
+                    cooldown_seconds=mem.away_activities_cooldown_seconds,
+                    daily_cap=mem.away_activities_daily_cap,
+                    journal_max=mem.away_activities_journal_max,
+                )
+                self._idle_scheduler.register(self._away_activity_worker)
+            except Exception:
+                log.warning(
+                    "IdleAwayActivityWorker init failed", exc_info=True
+                )
+
         # G2 — schedule learner. Independent of the FollowUpWorker
         # gate above (no prepared-nudge dependency), so wired after
         # the same idle scheduler. Reads only ``messages.created_at``
@@ -2522,6 +2567,17 @@ class SessionController(
         self._pending_turning_over_seconds: float | None = None
         self._turning_over_force_next: bool = False
         self._last_turning_over: Any = None
+        # K36 — "things I did while you were away". ``_pending_away_
+        # activities_seconds`` is armed by the post-turn tracker on a
+        # typed gap >= ``memory.away_activities_min_gap_hours`` (default
+        # 4h). The provider reads + clears the slot, reads the
+        # IdleAwayActivityWorker journal, and defers to turning_over via
+        # the shared ``_gap_cue_surfaced`` flag. ``_away_activities_
+        # force_next`` is the MCP debug bypass.
+        self._pending_away_activities_seconds: float | None = None
+        self._away_activities_force_next: bool = False
+        self._gap_cue_surfaced: bool = False
+        self._away_activity_worker: Any = None
         # K30 — self-noticing cues (agreement-streak / flat-affect /
         # repeated-thought). Three sub-detectors fan into one
         # ``self_noticing`` inner-life block. Agreement-streak is
@@ -3210,6 +3266,9 @@ class SessionController(
         self._pending_turning_over_seconds = None
         self._turning_over_force_next = False
         self._last_turning_over = None
+        # K36 — wipe the away-activities slot on session switch too.
+        self._pending_away_activities_seconds = None
+        self._away_activities_force_next = False
         # Best-effort: a write failure (read-only volume, locked file)
         # must not break the in-memory switch — the user just lands
         # back on whatever was previously persisted on next launch.
@@ -3281,6 +3340,9 @@ class SessionController(
         self._pending_turning_over_seconds = None
         self._turning_over_force_next = False
         self._last_turning_over = None
+        # K36 — clear the away-activities slot on a full history wipe.
+        self._pending_away_activities_seconds = None
+        self._away_activities_force_next = False
 
     def _clear_merge_buffer(self, session_key: str | None = None) -> None:
         """Drop the voice merge buffer (one specific session, or all).

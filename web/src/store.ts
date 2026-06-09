@@ -7,8 +7,12 @@ import type {
   AvatarSettingsKnobs,
   AvatarTouchPayload,
   BackchannelHint,
+  Belief,
+  BeliefKind,
+  BeliefStatus,
   ChatMessage,
   CircadianPeriod,
+  CompanionSettings,
   Identity,
   LlmProvider,
   LlmRoute,
@@ -92,6 +96,15 @@ interface AssistantState {
    */
   identity: Identity | null;
   setIdentity: (identity: Identity | null) => void;
+
+  /** Companion soft-physicality knobs (touch / reactions / persona
+   * banner). Seeded from the WS ``hello`` payload and kept live by
+   * ``companion_settings_changed``. The persona overlay reads the
+   * banner flags from here so they honour the master switch + duration
+   * instead of hardcoded defaults (I5). A partial because ``hello``
+   * only carries the soft-physicality subset. */
+  companionSettings: Partial<CompanionSettings> | null;
+  setCompanionSettings: (patch: Partial<CompanionSettings>) => void;
 
   // Chat transcript
   messages: ChatMessage[];
@@ -228,6 +241,53 @@ interface AssistantState {
    * empties is owned by the caller (a re-fetch hook in the Memory
    * tab) so we don't spawn a refetch from the store. */
   applyMemoryDeleted: (id: number) => void;
+
+  // ── K2 theory-of-mind beliefs ────────────────────────────────────
+  //
+  // The Beliefs sub-panel in the Memory tab reads this slice. Unlike
+  // ``memoryView`` it isn't paginated (the panel fetches up to 100
+  // rows at once), but it mirrors the same WS-reducer shape so the
+  // panel stays live as the K2 worker / ``[[predict:...]]`` self-tags
+  // / the gap detector flip beliefs in the background. ``kindFilter``
+  // and ``statusFilter`` live here (not in the panel) because the
+  // ``applyBelief*`` reducers need them to decide whether an incoming
+  // row belongs in the current view. ``counts`` stays server-provided
+  // (refetched on filter change / manual refresh); the reducers only
+  // maintain ``items`` — same trade-off memory's per-tier counts make.
+  beliefView: {
+    items: Belief[];
+    counts: {
+      active: number;
+      confirmed: number;
+      contradicted: number;
+      stale: number;
+    } | null;
+    enabled: boolean;
+    kindFilter: BeliefKind | "all";
+    statusFilter: BeliefStatus | "all";
+  };
+  setBeliefView: (view: {
+    items: Belief[];
+    counts?: {
+      active: number;
+      confirmed: number;
+      contradicted: number;
+      stale: number;
+    } | null;
+    enabled: boolean;
+  }) => void;
+  setBeliefKindFilter: (kind: BeliefKind | "all") => void;
+  setBeliefStatusFilter: (status: BeliefStatus | "all") => void;
+  /** Reducer for ``belief_added``: prepend if it matches the active
+   * kind + status filter and isn't already present; no-op otherwise. */
+  applyBeliefAdded: (belief: Belief) => void;
+  /** Reducer for ``belief_updated``: the high-value case is a status
+   * flip (active -> contradicted). Re-evaluates filter membership —
+   * replaces in place, prepends if it newly matches, or drops it if it
+   * no longer matches (e.g. flipped out of the "active" view). */
+  applyBeliefUpdated: (belief: Belief) => void;
+  /** Reducer for ``belief_deleted``: remove the row by id. */
+  applyBeliefDeleted: (id: number) => void;
 
   // ── Background tasks (chunk 14) ──────────────────────────────────
   //
@@ -603,6 +663,19 @@ function writePersonaPanelWidth(value: number): void {
   }
 }
 
+/** True when ``belief`` belongs in the currently-filtered Beliefs view.
+ * Used by the ``applyBelief*`` WS reducers so an incoming row is only
+ * shown / kept when it matches the active kind + status filter. */
+function beliefMatchesFilter(
+  belief: Belief,
+  view: { kindFilter: BeliefKind | "all"; statusFilter: BeliefStatus | "all" },
+): boolean {
+  const kindOk = view.kindFilter === "all" || belief.kind === view.kindFilter;
+  const statusOk =
+    view.statusFilter === "all" || belief.status === view.statusFilter;
+  return kindOk && statusOk;
+}
+
 export const useAssistantStore = create<AssistantState>((set) => ({
   connection: { status: "disconnected", lastError: null },
   setConnection: (next) =>
@@ -629,6 +702,11 @@ export const useAssistantStore = create<AssistantState>((set) => ({
 
   identity: null,
   setIdentity: (identity) => set({ identity }),
+  companionSettings: null,
+  setCompanionSettings: (patch) =>
+    set((state) => ({
+      companionSettings: { ...(state.companionSettings ?? {}), ...patch },
+    })),
 
   messages: [],
   streamingDraft: null,
@@ -953,6 +1031,71 @@ export const useAssistantStore = create<AssistantState>((set) => ({
           ...view,
           items: view.items.filter((m) => m.id !== id),
           total: wasOnPage ? Math.max(0, view.total - 1) : view.total,
+        },
+      };
+    }),
+
+  // ── K2 theory-of-mind beliefs ────────────────────────────────────
+  beliefView: {
+    items: [],
+    counts: null,
+    enabled: true,
+    kindFilter: "all",
+    statusFilter: "active",
+  },
+  setBeliefView: (view) =>
+    set((state) => ({
+      beliefView: {
+        ...state.beliefView,
+        items: view.items,
+        counts: view.counts ?? null,
+        enabled: view.enabled,
+      },
+    })),
+  setBeliefKindFilter: (kind) =>
+    set((state) => ({
+      beliefView: { ...state.beliefView, kindFilter: kind },
+    })),
+  setBeliefStatusFilter: (status) =>
+    set((state) => ({
+      beliefView: { ...state.beliefView, statusFilter: status },
+    })),
+  applyBeliefAdded: (belief) =>
+    set((state) => {
+      const view = state.beliefView;
+      const matches = beliefMatchesFilter(belief, view);
+      if (!matches || view.items.some((b) => b.id === belief.id)) return {};
+      return { beliefView: { ...view, items: [belief, ...view.items] } };
+    }),
+  applyBeliefUpdated: (belief) =>
+    set((state) => {
+      const view = state.beliefView;
+      const matches = beliefMatchesFilter(belief, view);
+      const idx = view.items.findIndex((b) => b.id === belief.id);
+      if (matches) {
+        const next = view.items.slice();
+        if (idx >= 0) next[idx] = belief;
+        else next.unshift(belief);
+        return { beliefView: { ...view, items: next } };
+      }
+      // No longer matches the current view (e.g. flipped out of
+      // "active"): drop it if it was visible, otherwise nothing to do.
+      if (idx < 0) return {};
+      return {
+        beliefView: {
+          ...view,
+          items: view.items.filter((b) => b.id !== belief.id),
+        },
+      };
+    }),
+  applyBeliefDeleted: (id) =>
+    set((state) => {
+      const view = state.beliefView;
+      if (!view.items.some((b) => b.id === id)) return {};
+      return {
+        beliefView: {
+          ...view,
+          items: view.items.filter((b) => b.id !== id),
         },
       };
     }),

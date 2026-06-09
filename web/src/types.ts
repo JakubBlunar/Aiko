@@ -205,6 +205,24 @@ export interface LlmTestConnectionResult {
   content_preview?: string;
 }
 
+/** Grounding-line modes (K16). ``off`` keeps every granular ambient
+ * block; ``replace`` fuses them into one line; ``split`` fuses the
+ * situational blocks but keeps the trend/phase ones standalone. */
+export type GroundingLineMode = "off" | "replace" | "split";
+
+export interface CompanionSettings {
+  world_notice_enabled: boolean;
+  world_notice_interval_seconds: number;
+  world_notice_cooldown_seconds: number;
+  world_notice_daily_cap: number;
+  world_notice_ttl_seconds: number;
+  grounding_line_mode: GroundingLineMode;
+  touch_enabled: boolean;
+  user_reactions_enabled: boolean;
+  persona_touch_banner_enabled: boolean;
+  persona_touch_banner_duration_seconds: number;
+}
+
 export interface AssistantSettings {
   chat: {
     model: string;
@@ -228,10 +246,10 @@ export interface AssistantSettings {
     vad_silence_seconds: number;
     barge_in_enabled: boolean;
     /**
-     * Client-side toggles for the browser DSP stack. Persisted in
-     * ``localStorage`` and used as ``getUserMedia`` constraints; the
-     * server only sees them via the ``mic_start`` frame's
-     * ``dsp_flags`` byte so it can record what the client claimed.
+     * Server-side gate for stage-direction earcons (the side-channel
+     * ``[[laugh]]`` / ``[[sigh]]`` tones, separate from TTS). When off,
+     * ``EarconPlayer`` swallows every tone request. Toggled from the
+     * Voice tab; persisted to ``config/user.json``.
      */
     earcons_enabled?: boolean;
   };
@@ -280,6 +298,11 @@ export interface AssistantSettings {
   relationship_axes?: {
     enabled: boolean;
   };
+  /** Companion-feel knobs surfaced from config: proactive room/gift
+   * nudges (world_notice_*), the K16 ambient grounding-line mode, and
+   * the K31/K32 soft-physicality switches (touch / user reactions /
+   * persona banner). */
+  companion?: CompanionSettings;
   endpointing?: {
     enabled: boolean;
     use_partial_transcript: boolean;
@@ -1279,6 +1302,16 @@ export type WsServerEvent =
       /** Client elected to play TTS / earcon audio. Only this window
        * plays PCM so a hidden persona webview can't echo the stream. */
       audio_owner_id?: string | null;
+      /** Companion soft-physicality knobs (touch / reactions / persona
+       * banner) so the persona overlay honours the master switches on
+       * connect (I5). Optional for backwards compatibility. */
+      companion?: Pick<
+        CompanionSettings,
+        | "touch_enabled"
+        | "user_reactions_enabled"
+        | "persona_touch_banner_enabled"
+        | "persona_touch_banner_duration_seconds"
+      >;
     }
   | {
       type: "voice_owner_changed";
@@ -1345,6 +1378,9 @@ export type WsServerEvent =
   | { type: "memory_added"; memory: Memory }
   | { type: "memory_updated"; memory: Memory }
   | { type: "memory_deleted"; id: number }
+  | { type: "belief_added"; belief: Belief }
+  | { type: "belief_updated"; belief: Belief }
+  | { type: "belief_deleted"; id: number }
   | { type: "world_updated"; patch: WorldPatch }
   | {
       /** Schema v7. ``patch.moment`` is the typed row dict for a create
@@ -1460,6 +1496,13 @@ export type WsServerEvent =
        * bridge without a follow-up REST fetch. */
       type: "logging_settings_changed";
       logging: LoggingSettings;
+    }
+  | {
+      /** Broadcast on a successful ``companion`` PATCH so every window —
+       * notably the persona overlay reading the touch-banner flags —
+       * reconciles live. */
+      type: "companion_settings_changed";
+      companion: CompanionSettings;
     }
   | { type: "pong" };
 

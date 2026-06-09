@@ -137,6 +137,10 @@ export function useAssistantSocket(): {
               /* identity endpoint missing -- treat as already configured */
             });
         }
+        // Companion soft-physicality flags for the persona overlay (I5).
+        if (evt.companion) {
+          store.setCompanionSettings(evt.companion);
+        }
         break;
 
       case "session_changed":
@@ -357,6 +361,18 @@ export function useAssistantSocket(): {
         store.applyMemoryDeleted(evt.id);
         break;
 
+      case "belief_added":
+        store.applyBeliefAdded(evt.belief);
+        break;
+
+      case "belief_updated":
+        store.applyBeliefUpdated(evt.belief);
+        break;
+
+      case "belief_deleted":
+        store.applyBeliefDeleted(evt.id);
+        break;
+
       case "world_updated":
         store.applyWorldPatch(evt.patch);
         break;
@@ -539,6 +555,12 @@ export function useAssistantSocket(): {
             Number(evt.logging.ui_log_max_payload_bytes) || 2048,
         });
         debugLog.setEnabled(Boolean(evt.logging.ui_log_enabled));
+        break;
+
+      case "companion_settings_changed":
+        // A companion knob changed in another window; mirror the
+        // persona-banner / touch flags so the overlay reconciles live.
+        store.setCompanionSettings(evt.companion);
         break;
 
       case "voice_owner_changed":

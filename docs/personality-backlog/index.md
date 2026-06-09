@@ -49,6 +49,20 @@ prompt for the next brainstorm, not a queue.
 New worker ideas show up in [`patterns.md`](patterns.md) until they
 earn a G-letter; several (K1, K8, K10, K14, K21) are worker-shaped.
 
+### I. Integration / wiring gaps — [`integration.md`](integration.md)
+
+Shipped-but-under-wired features (no UI, no live WS update, or a
+silent failure path). Cheap individually, compounding in aggregate.
+
+- ~~**I1.** Beliefs tab doesn't live-update (WS handlers missing).~~ **Shipped** → [`shipped.md`](shipped.md#reliability-pass--i1--i2--i4--i5-finish-the-wiring-batch).
+- ~~**I2.** MessageIndexer silently drops messages on embed failure.~~ **Shipped**.
+- **I3.** Agenda has no REST endpoint or UI.
+- ~~**I4.** Settings-drawer coverage gaps for shipped knobs.~~ **Shipped**.
+- ~~**I5.** Persona-window banners ignore their master switches.~~ **Shipped**.
+- **I6.** Chat history hard-capped at 200 with no "load older".
+- **I7.** Embedding-model swap wipes LanceDB with only a log line.
+- **I8.** No React error boundary.
+
 ### H. Immersion polish — [`immersion.md`](immersion.md)
 
 - **H1.** Conversation-arc surfacing via `[[arc:...]]` tag.
@@ -85,8 +99,8 @@ K18 topic stagnation, K20 metacognitive calibration,
 K22 callback / inside-joke detector, K23 subtle misattunement
 detection, K24 sensory anchoring layer, K25 memory
 confidence time-decay, K28 "what I've been turning over",
-and K29 opinion injection have shipped — see
-[`shipped.md`](shipped.md).)
+K29 opinion injection, and K36 "things I did while you were
+away" have shipped — see [`shipped.md`](shipped.md).)
 
 ### P. Performance + observability — [`perf.md`](perf.md)
 

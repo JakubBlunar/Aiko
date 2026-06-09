@@ -31,6 +31,16 @@ log = logging.getLogger("app.message_indexer")
 # Skip messages that aren't worth indexing -- pure single-token replies, etc.
 _MIN_INDEX_LENGTH = 8
 
+# Retry policy for transient embed / write failures. A flaky embedding
+# endpoint used to permanently drop the message from RAG recall (the old
+# code logged at DEBUG and returned). We now re-attempt a bounded number
+# of times with backoff; if every attempt fails we log at WARNING (so the
+# rot is visible in ``tail_logs``) and lean on the idempotent startup
+# backfill as the long-term safety net. Bounded so a permanently-broken
+# embedder can't build an unbounded backlog of pending timers.
+_MAX_INDEX_ATTEMPTS = 3
+_RETRY_BACKOFF_SECONDS = (2.0, 8.0, 30.0)
+
 
 class MessageIndexer:
     """Embed-and-store pipeline driven off ``ChatDatabase`` writes."""
@@ -44,12 +54,19 @@ class MessageIndexer:
         self._db = db
         self._rag = rag
         self._embedder = embedder
-        self._queue: "queue.Queue[Optional[MessageRow]]" = queue.Queue()
+        # Each queue element is ``(row, attempt)``; the ``None`` sentinel
+        # still means "shut down". ``attempt`` is the 0-based retry count.
+        self._queue: "queue.Queue[Optional[tuple[MessageRow, int]]]" = queue.Queue()
         self._stop = threading.Event()
         self._worker = threading.Thread(
             target=self._run, name="MessageIndexer", daemon=True
         )
         self._backfill_thread: threading.Thread | None = None
+        # Outstanding retry timers, so ``stop()`` can cancel them and the
+        # daemon process can exit promptly instead of waiting out a 30 s
+        # backoff.
+        self._retry_timers: set[threading.Timer] = set()
+        self._retry_lock = threading.Lock()
         self._db.add_message_listener(self._enqueue)
 
     # ── lifecycle ───────────────────────────────────────────────────────
@@ -69,6 +86,16 @@ class MessageIndexer:
             self._db.remove_message_listener(self._enqueue)
         except Exception:
             pass
+        # Cancel any pending retry timers so a long backoff doesn't keep
+        # a thread alive past shutdown.
+        with self._retry_lock:
+            timers = list(self._retry_timers)
+            self._retry_timers.clear()
+        for timer in timers:
+            try:
+                timer.cancel()
+            except Exception:
+                pass
         # Wake the worker so it can exit.
         try:
             self._queue.put_nowait(None)
@@ -81,7 +108,7 @@ class MessageIndexer:
         if not _should_index(row):
             return
         try:
-            self._queue.put_nowait(row)
+            self._queue.put_nowait((row, 0))
         except Exception:
             log.debug("indexer queue full; dropping message", exc_info=True)
 
@@ -93,9 +120,10 @@ class MessageIndexer:
                 continue
             if item is None:
                 return
-            self._index_one(item)
+            row, attempt = item
+            self._index_one(row, attempt)
 
-    def _index_one(self, row: MessageRow) -> None:
+    def _index_one(self, row: MessageRow, attempt: int = 0) -> None:
         try:
             if self._rag.has_message(row.session_id, row.id):
                 return
@@ -107,7 +135,8 @@ class MessageIndexer:
         try:
             vec = self._embedder.embed(text)
         except Exception:
-            log.debug("embed failed for msg %d", row.id, exc_info=True)
+            log.debug("embed failed for msg %d (attempt %d)", row.id, attempt)
+            self._handle_failure(row, attempt, stage="embed")
             return
         try:
             self._rag.add_message(
@@ -119,7 +148,61 @@ class MessageIndexer:
                 created_at=row.created_at,
             )
         except Exception:
-            log.debug("rag.add_message failed for msg %d", row.id, exc_info=True)
+            log.debug(
+                "rag.add_message failed for msg %d (attempt %d)", row.id, attempt
+            )
+            self._handle_failure(row, attempt, stage="write")
+
+    # ── retry ───────────────────────────────────────────────────────────
+
+    def _handle_failure(self, row: MessageRow, attempt: int, *, stage: str) -> None:
+        """Schedule a bounded retry, or give up loudly on the last attempt."""
+        if self._stop.is_set():
+            return
+        next_attempt = attempt + 1
+        if next_attempt >= _MAX_INDEX_ATTEMPTS:
+            # Visible at WARNING so silent RAG rot shows up in ``tail_logs``.
+            # The startup backfill re-attempts on the next boot.
+            log.warning(
+                "message indexer gave up on msg %d after %d attempts (%s stage); "
+                "RAG recall will miss it until the next startup backfill",
+                row.id,
+                _MAX_INDEX_ATTEMPTS,
+                stage,
+            )
+            return
+        delay = _RETRY_BACKOFF_SECONDS[
+            min(attempt, len(_RETRY_BACKOFF_SECONDS) - 1)
+        ]
+        log.debug(
+            "message indexer retry scheduled msg=%d next_attempt=%d stage=%s delay=%.0fs",
+            row.id,
+            next_attempt,
+            stage,
+            delay,
+        )
+        self._schedule_retry(row, next_attempt, delay)
+
+    def _schedule_retry(self, row: MessageRow, attempt: int, delay: float) -> None:
+        def _fire() -> None:
+            with self._retry_lock:
+                self._retry_timers.discard(timer)
+            if self._stop.is_set():
+                return
+            try:
+                self._queue.put_nowait((row, attempt))
+            except Exception:
+                log.debug(
+                    "indexer retry requeue failed msg=%d", row.id, exc_info=True
+                )
+
+        timer = threading.Timer(delay, _fire)
+        timer.daemon = True
+        with self._retry_lock:
+            if self._stop.is_set():
+                return
+            self._retry_timers.add(timer)
+        timer.start()
 
     # ── backfill ────────────────────────────────────────────────────────
 

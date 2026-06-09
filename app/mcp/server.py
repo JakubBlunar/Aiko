@@ -2722,6 +2722,134 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"force_turning_over raised: {exc}"
 
     @mcp.tool()
+    def get_away_activities_state() -> str:
+        """K36 — dump the idle away-activity worker + surfacing state.
+
+        Returns a JSON dict with:
+
+        - ``enabled``: ``agent.away_activities_enabled`` master switch.
+        - ``worker_registered``: whether the IdleAwayActivityWorker
+          actually wired up (needs a loaded WorldStore + idle scheduler).
+        - ``pending_seconds`` / ``force_next``: the surfacing slot armed
+          by the post-turn tracker on a long typed gap, and the MCP
+          one-shot bypass flag.
+        - ``min_gap_hours``: the typed-absence threshold the provider
+          gates on.
+        - ``journal``: the kv ring of recent activities (newest last).
+        - ``last_surfaced_at``: watermark of the last journal entry the
+          provider folded into a reply.
+        """
+        try:
+            from app.core.world.idle_activity_worker import (
+                load_journal,
+                _KV_LAST_FIRED_AT,
+                _KV_DAY,
+                _KV_DAY_COUNT,
+            )
+
+            kv = session._chat_db.kv_get
+            journal = load_journal(kv)
+            return json.dumps(
+                {
+                    "enabled": bool(
+                        getattr(
+                            session._settings.agent,
+                            "away_activities_enabled",
+                            True,
+                        )
+                    ),
+                    "worker_registered": getattr(
+                        session, "_away_activity_worker", None
+                    )
+                    is not None,
+                    "pending_seconds": getattr(
+                        session, "_pending_away_activities_seconds", None
+                    ),
+                    "force_next": bool(
+                        getattr(
+                            session, "_away_activities_force_next", False
+                        )
+                    ),
+                    "min_gap_hours": float(
+                        getattr(
+                            session._memory_settings,
+                            "away_activities_min_gap_hours",
+                            4.0,
+                        )
+                    ),
+                    "journal": journal,
+                    "last_surfaced_at": kv("away_activity.last_surfaced_at"),
+                    "last_fired_at": kv(_KV_LAST_FIRED_AT),
+                    "day": kv(_KV_DAY),
+                    "day_count": kv(_KV_DAY_COUNT),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"get_away_activities_state raised: {exc}"
+
+    @mcp.tool()
+    def force_away_activity(key: str = "") -> str:
+        """K36 — run the idle away-activity worker once, right now.
+
+        Bypasses the worker's cooldown + daily-cap + quiet-window gates
+        by calling ``run()`` directly, so it mutates the world and
+        appends a fresh journal entry immediately. Pass ``key`` to force
+        a specific activity (``snack`` / ``read_book`` / ``move_cat`` /
+        ``look_outside`` / ``tidy_desk`` / ``doodle`` / ``wander``);
+        leave blank for a random pick from what's in the room.
+
+        Pairs with ``force_away_activities_surface`` for the end-to-end
+        repro: call this to produce a journal entry, then that to make
+        the next turn fold it into Aiko's reply.
+        """
+        try:
+            worker = getattr(session, "_away_activity_worker", None)
+            if worker is None:
+                return json.dumps(
+                    {"error": "worker not registered (no WorldStore?)"},
+                    indent=2,
+                )
+            if key:
+                worker.force_activity(key)
+            result = worker.run()
+            return json.dumps({"ran": True, "result": result}, indent=2)
+        except Exception as exc:
+            return f"force_away_activity raised: {exc}"
+
+    @mcp.tool()
+    def force_away_activities_surface() -> str:
+        """K36 — arm a one-shot bypass on the away-activities gates.
+
+        Sets ``_away_activities_force_next`` so the next provider call
+        ignores the pending-slot gate, the gap-threshold double-check,
+        the one-of ``turning_over`` guard, AND the last-surfaced
+        watermark. The journal still has to be non-empty (run
+        ``force_away_activity`` first if it isn't). Bypass is consumed
+        on the next assembly regardless.
+
+        Repro: ``force_away_activity()`` -> ``force_away_activities_
+        surface()`` -> ``send_message(skip_tts=true)`` -> confirm the
+        "While ... was away, you ..." line in
+        ``get_last_response_detail.system_prompt``.
+        """
+        try:
+            session._away_activities_force_next = True
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next provider call ignores the slot, threshold, "
+                        "turning_over guard, and watermark; journal must "
+                        "be non-empty or the cue silently expires"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_away_activities_surface raised: {exc}"
+
+    @mcp.tool()
     def get_confidence_decay_state(limit: int = 20) -> str:
         """K25 — preview which memory rows would currently render
         with the ``(distant)`` suffix.

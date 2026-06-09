@@ -1411,6 +1411,16 @@ class AgentSettings:
     # [`app/core/session/inner_life/turning_over.py`](../session/inner_life/turning_over.py).
     turning_over_enabled: bool = True
 
+    # ── K36: "things I did while you were away" ───────────────────────
+    # Master switch for the idle-activity producer + its surfacing cue.
+    # Off → the IdleAwayActivityWorker never registers and the
+    # away-activities prompt block never lands. On (default) → the worker
+    # gives Aiko a small autonomous room life during quiet windows
+    # (sip the tea, read a book, move the cat, …) and the first turn
+    # after a long typed gap may surface one casual line about it. The
+    # cadence + gap knobs live on ``MemorySettings.away_activities_*``.
+    away_activities_enabled: bool = True
+
     # ── K25: memory confidence time-decay ─────────────────────────────
     # Master switch for the ``(distant)`` suffix the RAG retriever
     # stamps on age-decayed memory rows. The three numeric knobs that
@@ -1908,6 +1918,18 @@ class MemorySettings:
     world_notice_cooldown_seconds: int = 3600
     world_notice_daily_cap: int = 4
     world_notice_ttl_seconds: int = 1800
+    # K36 IdleAwayActivityWorker cadence + pacing. The worker runs during
+    # quiet windows (default every 20 min) and, paced by a per-fire
+    # cooldown (default 90 min) + daily cap, performs one small room
+    # activity, mutating the world + journaling it. ``min_gap_hours`` is
+    # the typed-absence threshold the surfacing provider gates on (only
+    # mention "while you were away" after a real gap). ``journal_max``
+    # bounds the kv ring of recent activities.
+    away_activities_interval_seconds: int = 1200
+    away_activities_cooldown_seconds: int = 5400
+    away_activities_daily_cap: int = 6
+    away_activities_min_gap_hours: float = 4.0
+    away_activities_journal_max: int = 8
     # Output-token ceiling for the memory extractor's JSON response.
     # The old hardcoded 512 truncated the ``"memories": [...]`` array
     # mid-object on longer transcripts, losing the whole batch; 1024
@@ -3624,6 +3646,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             turning_over_enabled=bool(
                 agent_raw.get("turning_over_enabled", True),
             ),
+            away_activities_enabled=bool(
+                agent_raw.get("away_activities_enabled", True),
+            ),
             confidence_time_decay_enabled=bool(
                 agent_raw.get("confidence_time_decay_enabled", True),
             ),
@@ -4056,6 +4081,26 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             world_notice_ttl_seconds=max(
                 60,
                 int(memory_raw.get("world_notice_ttl_seconds", 1800)),
+            ),
+            away_activities_interval_seconds=max(
+                30,
+                int(memory_raw.get("away_activities_interval_seconds", 1200)),
+            ),
+            away_activities_cooldown_seconds=max(
+                0,
+                int(memory_raw.get("away_activities_cooldown_seconds", 5400)),
+            ),
+            away_activities_daily_cap=max(
+                0,
+                int(memory_raw.get("away_activities_daily_cap", 6)),
+            ),
+            away_activities_min_gap_hours=max(
+                0.0,
+                float(memory_raw.get("away_activities_min_gap_hours", 4.0)),
+            ),
+            away_activities_journal_max=max(
+                1,
+                int(memory_raw.get("away_activities_journal_max", 8)),
             ),
             memory_extractor_max_tokens=max(
                 256,

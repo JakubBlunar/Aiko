@@ -216,6 +216,9 @@ describe("PersonaWindow — mount contract", () => {
   });
 
   it("keeps the K31 touch banner mounted (chunk 15 does not displace it)", () => {
-    expect(personaWindowSource).toMatch(/<PersonaActionBanner\s*\/>/);
+    // The banner now receives the companion master-switch + duration
+    // props (I5), so match the opening tag rather than the old
+    // self-closing form.
+    expect(personaWindowSource).toMatch(/<PersonaActionBanner[\s>]/);
   });
 });

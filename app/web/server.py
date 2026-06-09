@@ -36,7 +36,11 @@ if TYPE_CHECKING:
 
 from app.core.infra import crash_logging
 from app.core.session.live_session import LiveSession
-from app.core.infra.settings import OUTFIT_MODES
+from app.core.infra.settings import (
+    OUTFIT_MODES,
+    _parse_grounding_line_mode,
+    persist_user_overrides,
+)
 from app.web import audio_frames as _frames
 
 
@@ -874,6 +878,9 @@ def create_web_app(session: "SessionController") -> FastAPI:
                 "vad_level_threshold": session.vad_level_threshold,
                 "vad_silence_seconds": session.vad_silence_seconds,
                 "barge_in_enabled": session.barge_in_enabled(),
+                "earcons_enabled": bool(
+                    getattr(s.audio, "earcons_enabled", True),
+                ),
             },
             "proactive": {
                 "silence_seconds": float(getattr(s.agent, "proactive_silence_seconds", 45.0)),
@@ -918,6 +925,62 @@ def create_web_app(session: "SessionController") -> FastAPI:
             "relationship_axes": {
                 "enabled": bool(
                     getattr(s.agent, "relationship_axes_enabled", True),
+                ),
+            },
+            # Companion-feel knobs that previously lived only in
+            # config.json: proactive room/gift nudges (world_notice_*),
+            # the K16 ambient grounding-line mode, and the K31/K32
+            # soft-physicality switches (touch / user reactions / persona
+            # banner). Grouped under one block the Settings drawer + the
+            # persona window both read from.
+            "companion": {
+                "world_notice_enabled": bool(
+                    getattr(s.agent, "world_notice_enabled", True),
+                ),
+                "world_notice_interval_seconds": int(
+                    getattr(
+                        getattr(s, "memory", None),
+                        "world_notice_interval_seconds",
+                        300,
+                    ),
+                ),
+                "world_notice_cooldown_seconds": int(
+                    getattr(
+                        getattr(s, "memory", None),
+                        "world_notice_cooldown_seconds",
+                        3600,
+                    ),
+                ),
+                "world_notice_daily_cap": int(
+                    getattr(
+                        getattr(s, "memory", None),
+                        "world_notice_daily_cap",
+                        4,
+                    ),
+                ),
+                "world_notice_ttl_seconds": int(
+                    getattr(
+                        getattr(s, "memory", None),
+                        "world_notice_ttl_seconds",
+                        1800,
+                    ),
+                ),
+                "grounding_line_mode": str(
+                    getattr(s.agent, "grounding_line_mode", "off"),
+                ),
+                "touch_enabled": bool(
+                    getattr(s.agent, "touch_enabled", True),
+                ),
+                "user_reactions_enabled": bool(
+                    getattr(s.agent, "user_reactions_enabled", True),
+                ),
+                "persona_touch_banner_enabled": bool(
+                    getattr(s.agent, "persona_touch_banner_enabled", True),
+                ),
+                "persona_touch_banner_duration_seconds": int(
+                    getattr(
+                        s.agent, "persona_touch_banner_duration_seconds", 20,
+                    ),
                 ),
             },
             "endpointing": {
@@ -1010,6 +1073,17 @@ def create_web_app(session: "SessionController") -> FastAPI:
             session.set_vad_silence_seconds(float(audio["vad_silence_seconds"]))
         if "barge_in_enabled" in audio:
             session.set_barge_in_enabled(bool(audio["barge_in_enabled"]))
+        if "earcons_enabled" in audio:
+            earcons_on = bool(audio["earcons_enabled"])
+            session._settings.audio.earcons_enabled = earcons_on
+            try:
+                session._earcons.enabled = earcons_on
+            except Exception:
+                log.debug("earcons enable toggle failed", exc_info=True)
+            try:
+                persist_user_overrides({"audio": {"earcons_enabled": earcons_on}})
+            except Exception:
+                log.debug("persist earcons override failed", exc_info=True)
         proactive = payload.get("proactive") or {}
         if "silence_seconds" in proactive:
             try:
@@ -1210,6 +1284,110 @@ def create_web_app(session: "SessionController") -> FastAPI:
                         "ui_log_categories": list(lcfg.ui_log_categories),
                         "ui_log_max_batch": int(lcfg.ui_log_max_batch),
                         "ui_log_max_payload_bytes": int(lcfg.ui_log_max_payload_bytes),
+                    },
+                })
+        companion = payload.get("companion") or {}
+        if companion:
+            agent = session._settings.agent
+            mem = session._settings.memory
+            # Build the persistence patch as we go so each knob survives
+            # a restart (matching avatar/identity durability). Empty
+            # sub-dicts are pruned before writing.
+            persist_patch: dict[str, Any] = {"agent": {}, "memory": {}}
+            if "world_notice_enabled" in companion:
+                v = bool(companion["world_notice_enabled"])
+                agent.world_notice_enabled = v
+                persist_patch["agent"]["world_notice_enabled"] = v
+            # world_notice_* cadence lives on MemorySettings; clamp to the
+            # same floors load_settings applies.
+            for key, floor, default in (
+                ("world_notice_interval_seconds", 30, 300),
+                ("world_notice_cooldown_seconds", 0, 3600),
+                ("world_notice_daily_cap", 0, 4),
+                ("world_notice_ttl_seconds", 60, 1800),
+            ):
+                if key in companion:
+                    try:
+                        v = max(floor, int(companion[key]))
+                    except (TypeError, ValueError):
+                        v = default
+                    setattr(mem, key, v)
+                    persist_patch["memory"][key] = v
+            if "grounding_line_mode" in companion:
+                mode = _parse_grounding_line_mode(companion["grounding_line_mode"])
+                agent.grounding_line_mode = mode
+                try:
+                    session._prompt_assembler.set_grounding_line_mode(mode)
+                except Exception:
+                    log.debug("set_grounding_line_mode failed", exc_info=True)
+                persist_patch["agent"]["grounding_line_mode"] = mode
+            for flag in (
+                "touch_enabled",
+                "user_reactions_enabled",
+                "persona_touch_banner_enabled",
+            ):
+                if flag in companion:
+                    v = bool(companion[flag])
+                    setattr(agent, flag, v)
+                    persist_patch["agent"][flag] = v
+            if "persona_touch_banner_duration_seconds" in companion:
+                try:
+                    v = max(
+                        1,
+                        min(
+                            120,
+                            int(companion["persona_touch_banner_duration_seconds"]),
+                        ),
+                    )
+                except (TypeError, ValueError):
+                    v = 20
+                agent.persona_touch_banner_duration_seconds = v
+                persist_patch["agent"]["persona_touch_banner_duration_seconds"] = v
+            persist_patch = {k: v for k, v in persist_patch.items() if v}
+            if persist_patch:
+                try:
+                    persist_user_overrides(persist_patch)
+                except Exception:
+                    log.debug("persist companion overrides failed", exc_info=True)
+                # Broadcast so other windows (notably the persona overlay,
+                # which reads the touch-banner flags) reconcile live.
+                hub.broadcast({
+                    "type": "companion_settings_changed",
+                    "companion": {
+                        "world_notice_enabled": bool(
+                            getattr(agent, "world_notice_enabled", True),
+                        ),
+                        "world_notice_interval_seconds": int(
+                            getattr(mem, "world_notice_interval_seconds", 300),
+                        ),
+                        "world_notice_cooldown_seconds": int(
+                            getattr(mem, "world_notice_cooldown_seconds", 3600),
+                        ),
+                        "world_notice_daily_cap": int(
+                            getattr(mem, "world_notice_daily_cap", 4),
+                        ),
+                        "world_notice_ttl_seconds": int(
+                            getattr(mem, "world_notice_ttl_seconds", 1800),
+                        ),
+                        "grounding_line_mode": str(
+                            getattr(agent, "grounding_line_mode", "off"),
+                        ),
+                        "touch_enabled": bool(
+                            getattr(agent, "touch_enabled", True),
+                        ),
+                        "user_reactions_enabled": bool(
+                            getattr(agent, "user_reactions_enabled", True),
+                        ),
+                        "persona_touch_banner_enabled": bool(
+                            getattr(agent, "persona_touch_banner_enabled", True),
+                        ),
+                        "persona_touch_banner_duration_seconds": int(
+                            getattr(
+                                agent,
+                                "persona_touch_banner_duration_seconds",
+                                20,
+                            ),
+                        ),
                     },
                 })
         return get_settings()
@@ -3060,6 +3238,35 @@ def create_web_app(session: "SessionController") -> FastAPI:
                         session._settings.assistant.user_display_name or ""
                     ),
                     "needs_onboarding": bool(session.needs_onboarding),
+                },
+                # Persona-overlay banners (K31/K32) read these on connect so
+                # they honour the master switch + duration instead of the
+                # hardcoded defaults they used before (I5).
+                "companion": {
+                    "touch_enabled": bool(
+                        getattr(session._settings.agent, "touch_enabled", True),
+                    ),
+                    "user_reactions_enabled": bool(
+                        getattr(
+                            session._settings.agent,
+                            "user_reactions_enabled",
+                            True,
+                        ),
+                    ),
+                    "persona_touch_banner_enabled": bool(
+                        getattr(
+                            session._settings.agent,
+                            "persona_touch_banner_enabled",
+                            True,
+                        ),
+                    ),
+                    "persona_touch_banner_duration_seconds": int(
+                        getattr(
+                            session._settings.agent,
+                            "persona_touch_banner_duration_seconds",
+                            20,
+                        ),
+                    ),
                 },
             }, default=str))
         except Exception:

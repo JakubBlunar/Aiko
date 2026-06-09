@@ -1219,6 +1219,10 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                   onPatchPersonaWindow={onPatchPersonaWindow}
                   onResetPersonaWindow={onResetPersonaWindow}
                   tauri={tauri}
+                  companion={settings.companion ?? null}
+                  onPatchCompanion={(patch) => {
+                    void apply({ companion: patch });
+                  }}
                 />
               ) : null}
 
@@ -1390,6 +1394,10 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                   }}
                   onReseedWorld={() => {
                     void onReseedWorld();
+                  }}
+                  companion={settings.companion ?? null}
+                  onPatchCompanion={(patch) => {
+                    void apply({ companion: patch });
                   }}
                 />
               ) : null}

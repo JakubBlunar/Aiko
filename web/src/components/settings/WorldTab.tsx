@@ -6,6 +6,8 @@ import {
   WORLD_POSTURES,
 } from "../../types";
 import type {
+  CompanionSettings,
+  GroundingLineMode,
   WorldActivity,
   WorldItem,
   WorldKind,
@@ -76,6 +78,10 @@ export interface WorldTabProps {
   onSaveLocationEdit: (loc: WorldLocation) => void;
   onDeleteLocation: (loc: WorldLocation) => void;
   onReseedWorld: () => void;
+  /** Companion-feel knobs (proactive room nudges + grounding-line mode).
+   * ``null`` until the settings snapshot loads. */
+  companion: CompanionSettings | null;
+  onPatchCompanion: (patch: Partial<CompanionSettings>) => void;
 }
 
 export function buildQuickGivePresets(
@@ -164,6 +170,8 @@ export function WorldTab({
   onSaveLocationEdit,
   onDeleteLocation,
   onReseedWorld,
+  companion,
+  onPatchCompanion,
 }: WorldTabProps) {
   const identity = useAssistantStore((s) => s.identity);
   const quickGivePresets = useMemo(
@@ -420,6 +428,90 @@ export function WorldTab({
           </div>
         ) : null}
       </Section>
+
+      {companion ? (
+        <Section title="Proactive room notices">
+          <p className="text-[11px] text-ink-100/50">
+            When on, Aiko occasionally reaches out about her room — when
+            you've left her something, or after a long quiet stretch.
+            Cooldown + daily cap keep it subtle, not chatty.
+          </p>
+          <label className="flex items-center gap-2 text-xs text-ink-100/70">
+            <input
+              type="checkbox"
+              checked={companion.world_notice_enabled}
+              onChange={(e) =>
+                onPatchCompanion({ world_notice_enabled: e.target.checked })
+              }
+            />
+            Enable proactive room / gift notices
+          </label>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="flex items-center justify-between gap-2 rounded-md bg-white/[0.02] px-3 py-1.5 text-[11px] text-ink-100/60">
+              <span>Daily cap</span>
+              <input
+                type="number"
+                min={0}
+                max={24}
+                value={companion.world_notice_daily_cap}
+                disabled={!companion.world_notice_enabled}
+                onChange={(e) =>
+                  onPatchCompanion({
+                    world_notice_daily_cap: Math.max(
+                      0,
+                      Number(e.target.value) || 0,
+                    ),
+                  })
+                }
+                className="w-16 rounded border border-white/10 bg-black/30 px-2 py-1 text-right text-ink-100/80 disabled:opacity-40"
+              />
+            </label>
+            <label className="flex items-center justify-between gap-2 rounded-md bg-white/[0.02] px-3 py-1.5 text-[11px] text-ink-100/60">
+              <span>Cooldown (s)</span>
+              <input
+                type="number"
+                min={0}
+                step={60}
+                value={companion.world_notice_cooldown_seconds}
+                disabled={!companion.world_notice_enabled}
+                onChange={(e) =>
+                  onPatchCompanion({
+                    world_notice_cooldown_seconds: Math.max(
+                      0,
+                      Number(e.target.value) || 0,
+                    ),
+                  })
+                }
+                className="w-20 rounded border border-white/10 bg-black/30 px-2 py-1 text-right text-ink-100/80 disabled:opacity-40"
+              />
+            </label>
+          </div>
+        </Section>
+      ) : null}
+
+      {companion ? (
+        <Section title="Companion feel">
+          <label className="flex flex-col gap-1 text-[11px] text-ink-100/60">
+            <span>
+              Ambient grounding line — how Aiko's surroundings / mood are
+              woven into her prompt.
+            </span>
+            <select
+              value={companion.grounding_line_mode}
+              onChange={(e) =>
+                onPatchCompanion({
+                  grounding_line_mode: e.target.value as GroundingLineMode,
+                })
+              }
+              className="rounded border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-ink-100/80"
+            >
+              <option value="off">off — granular blocks (default)</option>
+              <option value="replace">replace — one fused line</option>
+              <option value="split">split — fuse situational only</option>
+            </select>
+          </label>
+        </Section>
+      ) : null}
 
       {error ? (
         <div className="rounded-md border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
