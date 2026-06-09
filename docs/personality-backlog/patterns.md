@@ -319,21 +319,9 @@ without performing it. Key files:
 
 ---
 
-## K38. Self-correction "actually..." — mid-stream contradiction catch
+## K38. Self-correction "actually..." — next-turn contradiction catch
 
-Reuses K22's callback-detector cosine plumbing in a streaming variant:
-as Aiko's reply streams, cheap cosine pass against `(fact | preference)`
-memories; if a hit ≥ threshold *contradicts* the current sentence
-(heuristic flip / antonym table — F5 already has this in
-[`conflict_heuristics.py`](../../app/core/affect/conflict_heuristics.py)),
-arm a one-shot "she's about to correct herself" flag for the NEXT
-sentence. The persona block teaches the shape — "wait, actually, I had
-that wrong --". Adds a real human beat: realising you got something
-wrong as you say it. Key files: new
-`app/core/conversation/self_correction_detector.py`,
-[`TurnRunner`](../../app/core/session/turn_runner.py) streaming hook
-between sentences, persona addendum, MCP `force_self_correction()`
-debug tool.
+**Shipped.** See [`shipped.md`](shipped.md#k38-self-correction-cue--next-turn-contradiction-catch). The pure, embedding-free [`detect_self_correction`](../../app/core/conversation/self_correction_detector.py) runs post-turn over Aiko's just-finished reply: a content-word overlap shortlist picks candidate `fact`/`preference` memories (confidence ≥ floor), then the shared F5 [`conflict_heuristics.classify_pair`](../../app/core/memory/conflict_heuristics.py) decides whether a reply sentence actually contradicts one. On a hit, [`_maybe_arm_self_correction`](../../app/core/session/post_turn_mixin.py) stashes a one-shot `_pending_self_correction` slot (gated by a per-fire cooldown), and the [`_render_self_correction_block`](../../app/core/session/inner_life_providers_mixin.py) provider surfaces a gentle "oh wait — earlier I said X, that's not right" cue on the NEXT turn. Independent of the gap-cue family. The streaming same-reply "wait, actually" beat (abort + splice mid-stream) is deferred to **K41** below.
 
 ---
 
@@ -365,3 +353,42 @@ Pairs with K33 cozy mode (where the silence is the point). Key files:
 new `app/core/conversation/silence_detector.py`, grammar / system
 prompt addendum carving out the "one-token presence beat" path,
 persona block, MCP `get_silence_state()` for repro.
+
+---
+
+## K41. Same-reply mid-stream self-correction (embedding variant)
+
+The deferred Option A from K38. Where K38 catches a contradiction
+*after* the reply is finished and surfaces the fix on the NEXT turn,
+K41 aims for the genuine in-the-moment beat: realising you got
+something wrong *as you say it*, in the same bubble.
+
+Mechanism: hook [`TurnRunner`](../../app/core/session/turn_runner.py)'s
+sentence segmentation (`drain_tts_stream_chunks`). As each sentence
+completes mid-stream, embed it (shared `Embedder`) and run a cheap
+cosine pass against the `fact`/`preference` memory vectors; if a hit
+≥ threshold *contradicts* the just-spoken sentence (reuse K38's
+[`conflict_heuristics.classify_pair`](../../app/core/memory/conflict_heuristics.py)
+on the shortlist), **abort the rest of the stream** and fire a short
+second LLM continuation ("wait, actually — I had that backwards, it's
+…") spliced onto the same chat bubble + TTS stream for a true
+"wait, actually" beat.
+
+Why it's a follow-up to K38's next-turn cue, not a replacement:
+
+- **+1 LLM call per fire** (the continuation), on the hot reply path.
+- **Added latency**: the per-sentence embed + cosine sits inline in the
+  stream loop; needs to stay well under the inter-sentence gap or it
+  stalls TTS.
+- **TurnRunner streaming-splice complexity**: aborting a stream
+  mid-flight and grafting a second generation onto the same bubble (and
+  the same TTS queue, lip-sync, earcon side-channel) is a real surgery
+  on the most latency-sensitive code path. K38 ships the behaviour with
+  none of this risk; K41 is the polish pass once the next-turn cue has
+  proven the detection quality in production.
+
+Key files: new streaming hook in `TurnRunner`, the existing
+[`self_correction_detector.py`](../../app/core/conversation/self_correction_detector.py)
+extended with an embedding-shortlist entry point, a TTS/bubble splice
+path, MCP `force_self_correction(reply_text=)` (already exists from K38)
+for repro.

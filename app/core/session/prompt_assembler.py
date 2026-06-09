@@ -488,6 +488,7 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "clarification_block",
         "calibration_block",
         "rupture_block",
+        "self_correction_block",
         "misattunement_block",
         "opinion_injection_block",
         "absence_curiosity_block",
@@ -775,6 +776,11 @@ class PromptAssembler:
         # K8 — affect-rupture one-shot. Sibling of the clarification
         # provider above; same one-shot contract.
         self._rupture_provider: Callable[[], str] | None = None
+        # K38 — self-correction one-shot. Post-turn detector stashes a
+        # SelfCorrectionHit when Aiko's reply contradicted one of her own
+        # high-confidence fact/preference memories; this provider renders
+        # the cue once on the next turn and clears the slot.
+        self._self_correction_provider: Callable[[], str] | None = None
         # K23 — subtle misattunement detector. Per-turn detector that
         # fires ``mild_disengagement`` when {user} goes very short or
         # pivots topics right after a substantial Aiko reply. Unlike
@@ -1084,6 +1090,7 @@ class PromptAssembler:
         calibration: Callable[[], str] | None = None,
         sensory_anchor: Callable[[], str] | None = None,
         rupture: Callable[[], str] | None = None,
+        self_correction: Callable[[], str] | None = None,
         misattunement: Callable[[str], str] | None = None,
         opinion_injection: Callable[[str], str] | None = None,
         absence_curiosity: Callable[[], str] | None = None,
@@ -1164,6 +1171,8 @@ class PromptAssembler:
             self._sensory_anchor_provider = sensory_anchor
         if rupture is not None:
             self._rupture_provider = rupture
+        if self_correction is not None:
+            self._self_correction_provider = self_correction
         if misattunement is not None:
             self._misattunement_provider = misattunement
         if opinion_injection is not None:
@@ -1723,6 +1732,19 @@ class PromptAssembler:
                 except Exception:
                     log.debug("rupture provider raised", exc_info=True)
                     rupture_block = ""
+
+        # K38 — self-correction one-shot. Sibling of the rupture
+        # provider; same one-shot contract and same not-gated-on-
+        # aggressive policy (an owed correction must land even when the
+        # prompt is trimmed).
+        self_correction_block = ""
+        if self._self_correction_provider is not None:
+            with _timed_phase(provider_ms, "self_correction"):
+                try:
+                    self_correction_block = self._self_correction_provider() or ""
+                except Exception:
+                    log.debug("self-correction provider raised", exc_info=True)
+                    self_correction_block = ""
 
         # K23 — subtle misattunement detector. Per-turn detector
         # reading the last assistant reply length, this user message
@@ -2319,6 +2341,13 @@ class PromptAssembler:
             # clarification cue tells Aiko what to fix while the
             # rupture cue tells her how to soften.
             system_parts.append(rupture_block)
+        if self_correction_block:
+            # K38: self-correction sits right after the rupture cue.
+            # Both are one-shot post-turn detectors that steer this
+            # turn's opening: rupture = "soften, his mood dipped",
+            # self-correction = "own the slip you just made". Survives
+            # aggressive mode -- an owed correction must land.
+            system_parts.append(self_correction_block)
         if misattunement_block:
             # K23: subtle-misattunement sits in the same noticing-Jacob
             # cluster as K17/K20/K8. K17 = "you misread him"; K20 =

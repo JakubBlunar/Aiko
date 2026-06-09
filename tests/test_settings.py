@@ -266,6 +266,99 @@ class ForwardCuriositySettingsTests(unittest.TestCase):
         self.assertEqual(result.memory.forward_curiosity_journal_max, 1)
 
 
+class SelfCorrectionSettingsTests(unittest.TestCase):
+    """K38: agent master switch + memory threshold knobs round-trip + clamps."""
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(
+        self, agent_extra: dict | None = None, memory_extra: dict | None = None,
+    ) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(json.loads(default_path.read_text(encoding="utf-8")))
+        cfg.get("agent", {}).pop("self_correction_enabled", None)
+        for k in (
+            "self_correction_min_confidence",
+            "self_correction_min_overlap",
+            "self_correction_max_candidates",
+            "self_correction_cooldown_turns",
+        ):
+            cfg.get("memory", {}).pop(k, None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        if memory_extra is not None:
+            cfg["memory"] = {**cfg.get("memory", {}), **memory_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults_load_when_keys_missing(self) -> None:
+        path = self._write_config()
+        result = load_settings(config_path=path)
+        self.assertTrue(result.agent.self_correction_enabled)
+        self.assertAlmostEqual(
+            result.memory.self_correction_min_confidence, 0.6,
+        )
+        self.assertEqual(result.memory.self_correction_min_overlap, 2)
+        self.assertEqual(result.memory.self_correction_max_candidates, 50)
+        self.assertEqual(result.memory.self_correction_cooldown_turns, 3)
+
+    def test_overrides_round_trip(self) -> None:
+        path = self._write_config(
+            agent_extra={"self_correction_enabled": False},
+            memory_extra={
+                "self_correction_min_confidence": 0.8,
+                "self_correction_min_overlap": 3,
+                "self_correction_max_candidates": 20,
+                "self_correction_cooldown_turns": 5,
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.self_correction_enabled)
+        self.assertAlmostEqual(
+            result.memory.self_correction_min_confidence, 0.8,
+        )
+        self.assertEqual(result.memory.self_correction_min_overlap, 3)
+        self.assertEqual(result.memory.self_correction_max_candidates, 20)
+        self.assertEqual(result.memory.self_correction_cooldown_turns, 5)
+
+    def test_clamps_out_of_range_values(self) -> None:
+        path = self._write_config(
+            memory_extra={
+                "self_correction_min_confidence": 2.5,  # ceil 1.0
+                "self_correction_min_overlap": 0,  # floor 1
+                "self_correction_max_candidates": 0,  # floor 1
+                "self_correction_cooldown_turns": -3,  # floor 0
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertAlmostEqual(
+            result.memory.self_correction_min_confidence, 1.0,
+        )
+        self.assertEqual(result.memory.self_correction_min_overlap, 1)
+        self.assertEqual(result.memory.self_correction_max_candidates, 1)
+        self.assertEqual(result.memory.self_correction_cooldown_turns, 0)
+
+    def test_negative_confidence_clamps_to_zero(self) -> None:
+        path = self._write_config(
+            memory_extra={"self_correction_min_confidence": -1.0},
+        )
+        result = load_settings(config_path=path)
+        self.assertAlmostEqual(
+            result.memory.self_correction_min_confidence, 0.0,
+        )
+
+
 class ConsolidationSettingsTests(unittest.TestCase):
     """K35: agent master switch + caps + memory knobs round-trip + clamps."""
 

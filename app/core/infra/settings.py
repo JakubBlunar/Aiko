@@ -1446,6 +1446,15 @@ class AgentSettings:
     # ``MemorySettings.forward_curiosity_*``.
     forward_curiosity_enabled: bool = True
 
+    # ── K38: self-correction cue ──────────────────────────────────────
+    # Master switch for the next-turn self-correction cue. When ON, a
+    # post-turn lexical detector checks whether Aiko's just-finished
+    # reply contradicted one of her own high-confidence fact/preference
+    # memories and, if so, arms a one-shot cue so she owns the slip on
+    # her next turn. Thresholds + cooldown live on
+    # ``MemorySettings.self_correction_*``.
+    self_correction_enabled: bool = True
+
     # ── K25: memory confidence time-decay ─────────────────────────────
     # Master switch for the ``(distant)`` suffix the RAG retriever
     # stamps on age-decayed memory rows. The three numeric knobs that
@@ -1967,6 +1976,18 @@ class MemorySettings:
     forward_curiosity_daily_cap: int = 4
     forward_curiosity_min_gap_hours: float = 4.0
     forward_curiosity_journal_max: int = 8
+    # ── K38: self-correction cue thresholds ───────────────────────────
+    # ``min_confidence`` is the floor a fact/preference memory must clear
+    # to count as a durable claim worth correcting toward. ``min_overlap``
+    # is the number of shared content words a reply sentence and a memory
+    # must have before the contradiction heuristic runs (lexical
+    # shortlist). ``max_candidates`` caps the candidate pool per turn.
+    # ``cooldown_turns`` is the per-fire suppression window so a single
+    # slip doesn't nag every turn.
+    self_correction_min_confidence: float = 0.6
+    self_correction_min_overlap: int = 2
+    self_correction_max_candidates: int = 50
+    self_correction_cooldown_turns: int = 3
     # Output-token ceiling for the memory extractor's JSON response.
     # The old hardcoded 512 truncated the ``"memories": [...]`` array
     # mid-object on longer transcripts, losing the whole batch; 1024
@@ -3716,6 +3737,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             forward_curiosity_enabled=bool(
                 agent_raw.get("forward_curiosity_enabled", True),
             ),
+            self_correction_enabled=bool(
+                agent_raw.get("self_correction_enabled", True),
+            ),
             confidence_time_decay_enabled=bool(
                 agent_raw.get("confidence_time_decay_enabled", True),
             ),
@@ -4188,6 +4212,25 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             forward_curiosity_journal_max=max(
                 1,
                 int(memory_raw.get("forward_curiosity_journal_max", 8)),
+            ),
+            self_correction_min_confidence=min(
+                1.0,
+                max(
+                    0.0,
+                    float(memory_raw.get("self_correction_min_confidence", 0.6)),
+                ),
+            ),
+            self_correction_min_overlap=max(
+                1,
+                int(memory_raw.get("self_correction_min_overlap", 2)),
+            ),
+            self_correction_max_candidates=max(
+                1,
+                int(memory_raw.get("self_correction_max_candidates", 50)),
+            ),
+            self_correction_cooldown_turns=max(
+                0,
+                int(memory_raw.get("self_correction_cooldown_turns", 3)),
             ),
             memory_extractor_max_tokens=max(
                 256,
