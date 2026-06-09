@@ -116,6 +116,7 @@ def _build_system_prompt(
     user_display_name: str = "the user",
     *,
     today: datetime | None = None,
+    max_memories: int = 5,
 ) -> str:
     """System prompt for the memory extractor, name- and date-templated.
 
@@ -171,6 +172,10 @@ def _build_system_prompt(
         "  not recurring.\n"
         "- Skip anything already in the existing memory list.\n"
         "- If nothing is worth remembering, return an empty array.\n"
+        f"- Return AT MOST {max(1, int(max_memories))} memories — only the most "
+        "  durable / important ones. Fewer is better than padding.\n"
+        "- Keep each 'content' to a single short sentence under ~120 "
+        "  characters. Do not write paragraphs.\n"
         "- 'kind' must be one of: fact, preference, event, relationship, self. "
         "  Use 'self' only for Aiko's first-person notes.\n"
         f"- 'temporal_type' must be one of: {valid_types}. Default to "
@@ -187,6 +192,64 @@ def _build_system_prompt(
         '"kind": "...", "salience": 0.5, "temporal_type": "...", '
         '"event_time": "ISO-8601 or null"}]}'
     )
+
+
+def _salvage_memories(text: str) -> list[dict]:
+    """Recover complete memory objects from a truncated JSON response.
+
+    When the model hits its ``num_predict`` cap the ``"memories": [...]``
+    array is cut off inside the last object, so :func:`json.loads` on the
+    whole blob fails. This walks the characters after the array's opening
+    ``[``, tracks brace depth (string-/escape-aware), and parses each
+    fully-closed ``{...}`` object on its own. The trailing incomplete
+    object is silently dropped — everything before it is preserved.
+
+    Returns the list of successfully-parsed dicts (possibly empty).
+    """
+    if not text:
+        return []
+    # Anchor on the memories array; fall back to the first '[' if the
+    # key spelling drifted. Without an array there's nothing to salvage.
+    key_pos = text.find('"memories"')
+    bracket = text.find("[", key_pos if key_pos >= 0 else 0)
+    if bracket < 0:
+        return []
+    out: list[dict] = []
+    depth = 0
+    start = -1
+    in_str = False
+    escape = False
+    for i in range(bracket + 1, len(text)):
+        ch = text[i]
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+            continue
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and start >= 0:
+                fragment = text[start : i + 1]
+                try:
+                    obj = json.loads(fragment)
+                    if isinstance(obj, dict):
+                        out.append(obj)
+                except Exception:
+                    pass
+                start = -1
+        elif ch == "]" and depth == 0:
+            break
+    return out
 
 
 # Back-compat constant for callers that imported the module-level prompt
@@ -207,6 +270,7 @@ class MemoryExtractor:
         min_window_messages: int = 4,
         max_window_messages: int = 30,
         max_new_per_run: int = 5,
+        max_tokens: int = 1024,
         timeout_seconds: float = 60.0,
         user_display_name_provider: "Callable[[], str] | None" = None,
     ) -> None:
@@ -218,6 +282,12 @@ class MemoryExtractor:
         self._min_window = max(2, int(min_window_messages))
         self._max_window = max(self._min_window, int(max_window_messages))
         self._max_new_per_run = max(1, int(max_new_per_run))
+        # Output token ceiling for the JSON response. The old hardcoded
+        # 512 truncated the array mid-object on longer transcripts (the
+        # model emits multiple verbose ``content`` strings), so every
+        # such run lost its whole batch. 1024 fits the capped output and
+        # the salvage parser recovers anything that still clips.
+        self._max_tokens = max(256, int(max_tokens))
         self._timeout = float(timeout_seconds)
         self._lock = threading.Lock()
         self._on_added_listeners: list = []
@@ -281,6 +351,7 @@ class MemoryExtractor:
                 "content": _build_system_prompt(
                     self._resolve_user_name(),
                     today=now,
+                    max_memories=self._max_new_per_run,
                 ),
             },
             {"role": "user", "content": user_prompt},
@@ -292,13 +363,24 @@ class MemoryExtractor:
                 messages,
                 model=self._model,
                 timeout_seconds=self._timeout,
-                options={"temperature": 0.2, "num_predict": 512},
+                options={"temperature": 0.2, "num_predict": self._max_tokens},
                 format_json=True,
                 surface="memory_extractor",
             )
         except Exception as exc:
             log.warning("memory extractor LLM call failed: %s", exc)
             return 0
+
+        # The OllamaClient already WARNs on a length-truncated response;
+        # note it here too so the extractor log line explains why the
+        # salvage path may have kicked in (and hints at bumping the cap).
+        if getattr(usage, "done_reason", None) == "length":
+            log.warning(
+                "memory extractor response truncated at num_predict=%d "
+                "(completion=%d tokens); salvaging complete objects. Raise "
+                "memory.memory_extractor_max_tokens if this is frequent.",
+                self._max_tokens, getattr(usage, "completion_tokens", 0),
+            )
 
         candidates = self._parse_response(content)
         if not candidates:
@@ -390,6 +472,17 @@ class MemoryExtractor:
         try:
             parsed = json.loads(text)
         except json.JSONDecodeError:
+            # The single most common failure is a length-truncated
+            # response: the ``"memories": [...]`` array is cut mid-object
+            # so the whole blob won't parse. Salvage the complete leading
+            # objects instead of dropping the entire batch.
+            salvaged = _salvage_memories(text)
+            if salvaged:
+                log.info(
+                    "extractor: salvaged %d complete memory object(s) from "
+                    "a truncated/invalid response", len(salvaged),
+                )
+                return self._validate_entries(salvaged)
             log.warning("extractor: response was not valid JSON: %r", text[:200])
             return []
         if not isinstance(parsed, dict):
@@ -397,6 +490,10 @@ class MemoryExtractor:
         memories = parsed.get("memories")
         if not isinstance(memories, list):
             return []
+        return self._validate_entries(memories)
+
+    def _validate_entries(self, memories: list) -> list[dict]:
+        """Normalise + filter a list of raw memory dicts into candidates."""
         out: list[dict] = []
         for entry in memories:
             if not isinstance(entry, dict):

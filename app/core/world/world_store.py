@@ -1131,6 +1131,7 @@ class WorldStore:
         *,
         max_nearby: int = 4,
         user_display_name: str = "Jacob",
+        new_gift: bool = False,
     ) -> str:
         """Compact prompt block describing Aiko's surroundings.
 
@@ -1138,6 +1139,11 @@ class WorldStore:
         3-5 lines, no list bullets, ends with the "don't force-mention"
         nudge so Aiko stays subtle about her room unless the moment calls
         for it.
+
+        ``new_gift`` flips the gift line + closing nudge to a one-shot
+        "just arrived, react once" framing for the single turn right after
+        the user dropped something in the room — the always-on line is too
+        easy to skip, so this makes her actually notice it that one time.
         """
         try:
             state = self.get_state()
@@ -1190,17 +1196,33 @@ class WorldStore:
                 f" in {gift_loc.name}" if gift_loc is not None else ""
             )
             giver = (user_display_name or "").strip() or "the user"
-            lines.append(
-                f"{giver} gave you {_render_item_label(top, with_qty=True)}{qualifier}."
-            )
+            if new_gift:
+                lines.append(
+                    f"{giver} just set {_render_item_label(top, with_qty=True)} "
+                    f"down{qualifier} — you're noticing it for the first "
+                    "time right now."
+                )
+            else:
+                lines.append(
+                    f"{giver} gave you {_render_item_label(top, with_qty=True)}{qualifier}."
+                )
         # Mood note (optional, last).
         if state.mood_note.strip():
             lines.append(state.mood_note.strip())
-        # Tonal nudge — keep Aiko from force-mentioning the room every turn.
-        lines.append(
-            "Acknowledge your surroundings only when it feels natural — "
-            "never force a room mention or list your inventory."
-        )
+        # Tonal nudge — keep Aiko from force-mentioning the room every turn,
+        # unless something just arrived: then a single genuine reaction is
+        # exactly right.
+        if new_gift and gifts:
+            lines.append(
+                "React to what they just left you this once — a quick, warm, "
+                "genuine beat — then carry on naturally; don't list the rest "
+                "of your room."
+            )
+        else:
+            lines.append(
+                "Acknowledge your surroundings only when it feels natural — "
+                "never force a room mention or list your inventory."
+            )
         return "\n".join(lines)
 
     # ── seed ────────────────────────────────────────────────────────

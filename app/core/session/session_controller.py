@@ -1603,6 +1603,7 @@ class SessionController(
                     self._embedder,
                     self._ollama,
                     model=self._effective_worker_model,
+                    max_tokens=self._memory_settings.memory_extractor_max_tokens,
                     user_display_name_provider=lambda: self.user_display_name,
                 )
                 self._memory_extractor.add_listener(self._notify_memory_added)
@@ -2266,6 +2267,49 @@ class SessionController(
                 )
             except Exception:
                 log.warning("FollowUpWorker init failed", exc_info=True)
+
+        # WorldNoticeWorker — proactive "I noticed my room / the thing you
+        # left me" nudges. Rides the same idle scheduler + prepared-nudge
+        # store as the FollowUpWorker, and composes its line on the local
+        # worker LLM (``_maintenance_client``) so it's free and non-blocking.
+        # A no-op when the WorldStore never loaded; failures only drop the
+        # proactive room path.
+        if (
+            self._idle_scheduler is not None
+            and getattr(self, "_world_store", None) is not None
+            and self._prepared_nudge_store is not None
+        ):
+            try:
+                from app.core.world.world_notice_worker import WorldNoticeWorker
+
+                mem = self._memory_settings
+                self._idle_scheduler.register(
+                    WorldNoticeWorker(
+                        world_store=self._world_store,
+                        prepared_nudge_store=self._prepared_nudge_store,
+                        kv_get=self._chat_db.kv_get,
+                        kv_set=self._chat_db.kv_set,
+                        user_id_provider=lambda: self._user_id,
+                        user_display_name_provider=(
+                            lambda: self.user_display_name
+                        ),
+                        enabled_provider=lambda: bool(
+                            getattr(
+                                self._settings.agent,
+                                "world_notice_enabled",
+                                True,
+                            )
+                        ),
+                        ollama=self._maintenance_client,
+                        model=self._effective_worker_model,
+                        interval_seconds=mem.world_notice_interval_seconds,
+                        cooldown_seconds=mem.world_notice_cooldown_seconds,
+                        daily_cap=mem.world_notice_daily_cap,
+                        ttl_seconds=mem.world_notice_ttl_seconds,
+                    )
+                )
+            except Exception:
+                log.warning("WorldNoticeWorker init failed", exc_info=True)
 
         # G2 — schedule learner. Independent of the FollowUpWorker
         # gate above (no prepared-nudge dependency), so wired after

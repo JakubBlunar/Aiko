@@ -11,6 +11,9 @@ config/*.user.json
 config/user.json
 data/conversation_memory.jsonl
 data/crashlog.txt
+# Generated daily by SelfImageWorker (LLM pulse) — runtime artifact, not
+# source. The human-authored persona (aiko_companion.txt) stays tracked.
+data/persona/self_image.txt
 data/*.db
 data/*.db-shm
 data/*.db-wal

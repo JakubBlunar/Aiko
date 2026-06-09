@@ -63,7 +63,9 @@ class StartWorkflowTool:
             name="start_workflow",
             description=(
                 "Start a MULTI-STEP background task to accomplish a goal "
-                "that needs several actions chained together — e.g. 'find "
+                "that needs several actions chained together. Reach for "
+                "this WHENEVER fulfilling a file/research request takes "
+                "more than one step — e.g. 'find "
                 "any new files and tell me what's in them', 'look up X "
                 "online and summarise it', 'search my notes for Y then "
                 "read the best match'. I'll plan the steps, run them in "

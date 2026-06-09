@@ -2491,8 +2491,14 @@ class InnerLifeProvidersMixin:
         if store is None:
             return ""
         try:
+            # One-shot strong cue on the turn right after the user dropped
+            # something in the room (flag set by ``add_world_item`` /
+            # ``note_gift_received``, cleared post-turn) so she actually
+            # reacts instead of skipping the always-on line.
+            new_gift = bool(getattr(self, "_last_turn_gift_received", False))
             return store.render_block(
                 user_display_name=self.user_display_name,
+                new_gift=new_gift,
             )
         except Exception:
             log.debug("world block render failed", exc_info=True)
