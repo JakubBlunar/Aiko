@@ -1559,6 +1559,7 @@ class SessionController(
             absence_curiosity=self._render_absence_curiosity_block,
             turning_over=self._render_turning_over_block,
             away_activities=self._render_away_activities_block,
+            forward_curiosity=self._render_forward_curiosity_block,
             mood_shell=self._render_mood_shell_block,
             novelty=self._render_novelty_block,
             stagnation=self._render_stagnation_block,
@@ -2356,6 +2357,52 @@ class SessionController(
                     "IdleAwayActivityWorker init failed", exc_info=True
                 )
 
+        # K34 ForwardCuriosityWorker — drafts "I've been wondering ..."
+        # questions about the user's life during quiet windows. No world
+        # dependency (reads memory + profile only); shares the idle
+        # scheduler + the gap-return surfacing path. Failures only drop
+        # the forward-curiosity path.
+        if (
+            self._idle_scheduler is not None
+            and getattr(self, "_memory_store", None) is not None
+        ):
+            try:
+                from app.core.proactive.forward_curiosity_worker import (
+                    ForwardCuriosityWorker,
+                )
+
+                mem = self._memory_settings
+                self._forward_curiosity_worker = ForwardCuriosityWorker(
+                    memory_store=self._memory_store,
+                    kv_get=self._chat_db.kv_get,
+                    kv_set=self._chat_db.kv_set,
+                    user_id_provider=lambda: self._user_id,
+                    user_display_name_provider=(
+                        lambda: self.user_display_name
+                    ),
+                    user_profile_store=getattr(
+                        self, "_user_profile_store", None
+                    ),
+                    enabled_provider=lambda: bool(
+                        getattr(
+                            self._settings.agent,
+                            "forward_curiosity_enabled",
+                            True,
+                        )
+                    ),
+                    ollama=self._maintenance_client,
+                    model=self._effective_worker_model,
+                    interval_seconds=mem.forward_curiosity_interval_seconds,
+                    cooldown_seconds=mem.forward_curiosity_cooldown_seconds,
+                    daily_cap=mem.forward_curiosity_daily_cap,
+                    journal_max=mem.forward_curiosity_journal_max,
+                )
+                self._idle_scheduler.register(self._forward_curiosity_worker)
+            except Exception:
+                log.warning(
+                    "ForwardCuriosityWorker init failed", exc_info=True
+                )
+
         # G2 — schedule learner. Independent of the FollowUpWorker
         # gate above (no prepared-nudge dependency), so wired after
         # the same idle scheduler. Reads only ``messages.created_at``
@@ -2578,6 +2625,16 @@ class SessionController(
         self._away_activities_force_next: bool = False
         self._gap_cue_surfaced: bool = False
         self._away_activity_worker: Any = None
+        # K34 — "forward curiosity". ``_pending_forward_curiosity_
+        # seconds`` is armed by the post-turn tracker on a typed gap >=
+        # ``memory.forward_curiosity_min_gap_hours`` (default 4h). The
+        # provider reads + clears the slot, reads the ForwardCuriosity
+        # question ring, and defers to turning_over / away_activities via
+        # the shared ``_gap_cue_surfaced`` flag. ``_forward_curiosity_
+        # force_next`` is the MCP debug bypass.
+        self._pending_forward_curiosity_seconds: float | None = None
+        self._forward_curiosity_force_next: bool = False
+        self._forward_curiosity_worker: Any = None
         # K30 — self-noticing cues (agreement-streak / flat-affect /
         # repeated-thought). Three sub-detectors fan into one
         # ``self_noticing`` inner-life block. Agreement-streak is
@@ -3269,6 +3326,9 @@ class SessionController(
         # K36 — wipe the away-activities slot on session switch too.
         self._pending_away_activities_seconds = None
         self._away_activities_force_next = False
+        # K34 — wipe the forward-curiosity slot on session switch too.
+        self._pending_forward_curiosity_seconds = None
+        self._forward_curiosity_force_next = False
         # Best-effort: a write failure (read-only volume, locked file)
         # must not break the in-memory switch — the user just lands
         # back on whatever was previously persisted on next launch.
@@ -3343,6 +3403,9 @@ class SessionController(
         # K36 — clear the away-activities slot on a full history wipe.
         self._pending_away_activities_seconds = None
         self._away_activities_force_next = False
+        # K34 — clear the forward-curiosity slot on a full history wipe.
+        self._pending_forward_curiosity_seconds = None
+        self._forward_curiosity_force_next = False
 
     def _clear_merge_buffer(self, session_key: str | None = None) -> None:
         """Drop the voice merge buffer (one specific session, or all).

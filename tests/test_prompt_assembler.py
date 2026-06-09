@@ -779,6 +779,105 @@ class AwayActivitiesProviderTests(unittest.TestCase):
             )
 
 
+class ForwardCuriosityProviderTests(unittest.TestCase):
+    """K34 forward-curiosity provider lands in the system prompt after
+    the K36 away-activities block, survives aggressive context-mode, and
+    defers to the higher-priority gap cues via the shared
+    ``_gap_cue_surfaced`` flag (set by turning_over / away_activities)."""
+
+    def test_forward_curiosity_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="fc1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                forward_curiosity=lambda: (
+                    "You've been wondering how the espresso machine is going."
+                ),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "fc1",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertIn(
+                "You've been wondering", messages[0]["content"],
+            )
+
+    def test_forward_curiosity_silent_when_empty(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="fc2", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                forward_curiosity=lambda: "",
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "fc2",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertNotIn(
+                "You've been wondering", messages[0]["content"],
+            )
+
+    def test_forward_curiosity_lands_after_away_activities(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="fc3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                away_activities=lambda: (
+                    "While Jacob was away, you read for a while."
+                ),
+                forward_curiosity=lambda: (
+                    "You've been wondering how the move went."
+                ),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "fc3",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            sys_text = messages[0]["content"]
+            aa_idx = sys_text.find("While Jacob was away")
+            fc_idx = sys_text.find("You've been wondering")
+            self.assertGreaterEqual(aa_idx, 0)
+            self.assertGreaterEqual(fc_idx, 0)
+            self.assertLess(
+                aa_idx, fc_idx,
+                "away_activities must precede forward_curiosity",
+            )
+
+    def test_forward_curiosity_survives_aggressive_mode(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="fc4", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                forward_curiosity=lambda: (
+                    "You've been wondering how the interview went."
+                ),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "fc4",
+                "x",
+                context_window=4096,
+                response_budget=256,
+                aggressive=True,
+            )
+            self.assertIn(
+                "You've been wondering", messages[0]["content"],
+            )
+
+
 class MoodShellProviderTests(unittest.TestCase):
     """K5 mood-shell tilt: lands in the system prompt, survives
     ``aggressive=True`` (tonal cue is exactly what aggressive mode

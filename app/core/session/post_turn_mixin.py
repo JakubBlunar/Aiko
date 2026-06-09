@@ -128,6 +128,50 @@ class PostTurnMixin:
         if latency_f >= min_gap_s:
             self._pending_away_activities_seconds = latency_f
 
+    def _maybe_arm_forward_curiosity_slot(self, engagement: Any) -> None:
+        """K34: stash ``latency_seconds`` on
+        ``_pending_forward_curiosity_seconds`` when the turn follows a
+        long typed gap.
+
+        Mirror of :meth:`_maybe_arm_away_activities_slot` with its own
+        master switch (``agent.forward_curiosity_enabled``) and threshold
+        (``memory.forward_curiosity_min_gap_hours``, default 4h). Voice
+        turns never arm K34. The provider
+        (:meth:`InnerLifeProvidersMixin._render_forward_curiosity_block`)
+        reads + clears the slot and defers to ``turning_over`` /
+        ``away_activities`` so at most one gap cue surfaces per return.
+        """
+        if engagement is None:
+            return
+        if not bool(
+            getattr(self._settings.agent, "forward_curiosity_enabled", True)
+        ):
+            return
+        mode = getattr(engagement, "mode", None)
+        if mode != "typed":
+            return
+        latency = getattr(engagement, "latency_seconds", None)
+        if latency is None:
+            return
+        try:
+            latency_f = float(latency)
+        except (TypeError, ValueError):
+            return
+        if latency_f <= 0.0:
+            return
+        min_gap_s = (
+            float(
+                getattr(
+                    self._memory_settings,
+                    "forward_curiosity_min_gap_hours",
+                    4.0,
+                )
+            )
+            * 3600.0
+        )
+        if latency_f >= min_gap_s:
+            self._pending_forward_curiosity_seconds = latency_f
+
     def _resolve_curiosity_seeds(  # noqa: C901
         self,
         *,
@@ -1511,6 +1555,7 @@ class PostTurnMixin:
                 # the same typed-gap signal (own 4h threshold). The
                 # provider defers to turning_over so only one fires.
                 self._maybe_arm_away_activities_slot(engagement)
+                self._maybe_arm_forward_curiosity_slot(engagement)
                 log.info(
                     "engagement: mode=%s label=%s delta=%+.4f "
                     "latency_s=%s length_z=%s warmed=%s",

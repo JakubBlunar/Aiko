@@ -176,6 +176,96 @@ class CuriositySeedSettingsTests(unittest.TestCase):
         )
 
 
+class ForwardCuriositySettingsTests(unittest.TestCase):
+    """K34: agent master switch + memory cadence/cap knobs round-trip + clamps."""
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(
+        self, agent_extra: dict | None = None, memory_extra: dict | None = None,
+    ) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(json.loads(default_path.read_text(encoding="utf-8")))
+        cfg.get("agent", {}).pop("forward_curiosity_enabled", None)
+        for k in (
+            "forward_curiosity_interval_seconds",
+            "forward_curiosity_cooldown_seconds",
+            "forward_curiosity_daily_cap",
+            "forward_curiosity_min_gap_hours",
+            "forward_curiosity_journal_max",
+        ):
+            cfg.get("memory", {}).pop(k, None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        if memory_extra is not None:
+            cfg["memory"] = {**cfg.get("memory", {}), **memory_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults_load_when_keys_missing(self) -> None:
+        path = self._write_config()
+        result = load_settings(config_path=path)
+        self.assertTrue(result.agent.forward_curiosity_enabled)
+        self.assertEqual(
+            result.memory.forward_curiosity_interval_seconds, 1800,
+        )
+        self.assertEqual(
+            result.memory.forward_curiosity_cooldown_seconds, 3600,
+        )
+        self.assertEqual(result.memory.forward_curiosity_daily_cap, 4)
+        self.assertAlmostEqual(
+            result.memory.forward_curiosity_min_gap_hours, 4.0,
+        )
+        self.assertEqual(result.memory.forward_curiosity_journal_max, 8)
+
+    def test_overrides_round_trip(self) -> None:
+        path = self._write_config(
+            agent_extra={"forward_curiosity_enabled": False},
+            memory_extra={
+                "forward_curiosity_interval_seconds": 900,
+                "forward_curiosity_daily_cap": 2,
+                "forward_curiosity_min_gap_hours": 6.0,
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.forward_curiosity_enabled)
+        self.assertEqual(
+            result.memory.forward_curiosity_interval_seconds, 900,
+        )
+        self.assertEqual(result.memory.forward_curiosity_daily_cap, 2)
+        self.assertAlmostEqual(
+            result.memory.forward_curiosity_min_gap_hours, 6.0,
+        )
+
+    def test_clamps_out_of_range_values(self) -> None:
+        path = self._write_config(
+            memory_extra={
+                "forward_curiosity_interval_seconds": 1,  # floor 30
+                "forward_curiosity_min_gap_hours": -5.0,  # floor 0.0
+                "forward_curiosity_journal_max": 0,  # floor 1
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertEqual(
+            result.memory.forward_curiosity_interval_seconds, 30,
+        )
+        self.assertAlmostEqual(
+            result.memory.forward_curiosity_min_gap_hours, 0.0,
+        )
+        self.assertEqual(result.memory.forward_curiosity_journal_max, 1)
+
+
 class CallbackDetectorSettingsTests(unittest.TestCase):
     """K22: agent master switch + 6 memory knobs round-trip with clamps."""
 

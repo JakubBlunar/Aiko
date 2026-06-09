@@ -493,6 +493,7 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "absence_curiosity_block",
         "turning_over_block",
         "away_activities_block",
+        "forward_curiosity_block",
         "novelty_block",
         "stagnation_block",
         "style_pattern_block",
@@ -814,6 +815,11 @@ class PromptAssembler:
         # turning_over via the shared _gap_cue_surfaced flag so only one
         # gap cue fires per return.
         self._away_activities_provider: Callable[[], str] | None = None
+        # K34 "forward curiosity" one-shot. Consumer of the
+        # ForwardCuriosityWorker question ring; runs LAST of the three
+        # gap-return cues so it defers to turning_over + away_activities
+        # via the shared _gap_cue_surfaced flag.
+        self._forward_curiosity_provider: Callable[[], str] | None = None
         # K5 mood-shell tilt. NOT one-shot -- derived fresh every turn
         # from current affect / relationship axes / pending moments,
         # so the renderer is stateless from the assembler's POV.
@@ -1083,6 +1089,7 @@ class PromptAssembler:
         absence_curiosity: Callable[[], str] | None = None,
         turning_over: Callable[[], str] | None = None,
         away_activities: Callable[[], str] | None = None,
+        forward_curiosity: Callable[[], str] | None = None,
         mood_shell: Callable[[], str] | None = None,
         novelty: Callable[[str], str] | None = None,
         stagnation: Callable[[str], str] | None = None,
@@ -1167,6 +1174,8 @@ class PromptAssembler:
             self._turning_over_provider = turning_over
         if away_activities is not None:
             self._away_activities_provider = away_activities
+        if forward_curiosity is not None:
+            self._forward_curiosity_provider = forward_curiosity
         if mood_shell is not None:
             self._mood_shell_provider = mood_shell
         if novelty is not None:
@@ -1819,6 +1828,24 @@ class PromptAssembler:
                     )
                     away_activities_block = ""
 
+        # K34 "forward curiosity" one-shot. Runs AFTER turning_over and
+        # away_activities so it reads their _gap_cue_surfaced flag and
+        # defers (only one of the three gap cues surfaces per return).
+        forward_curiosity_block = ""
+        if (
+            getattr(self, "_forward_curiosity_provider", None) is not None
+        ):
+            with _timed_phase(provider_ms, "forward_curiosity"):
+                try:
+                    forward_curiosity_block = (
+                        self._forward_curiosity_provider() or ""
+                    )
+                except Exception:
+                    log.debug(
+                        "forward_curiosity provider raised", exc_info=True,
+                    )
+                    forward_curiosity_block = ""
+
         # K5 mood-shell tilt. Stateless: derives a one-line emotional
         # directive from current affect + relationship axes + pending
         # moments every turn, returns "" when nothing is notable. NOT
@@ -2336,6 +2363,12 @@ class PromptAssembler:
             # provider's _gap_cue_surfaced guard ensures only one of the
             # two actually renders per return. One-shot.
             system_parts.append(away_activities_block)
+        if forward_curiosity_block:
+            # K34: "You've been wondering ..." sits right after the K36
+            # away-activities block — the third gap-return cue. The
+            # provider's _gap_cue_surfaced guard ensures only one of the
+            # three renders per return. One-shot.
+            system_parts.append(forward_curiosity_block)
         if novelty_block:
             # K6: surface the "Heads-up: Jacob just brought up
             # something new" line right after belief_gaps so reaction
