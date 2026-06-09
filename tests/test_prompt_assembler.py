@@ -878,6 +878,88 @@ class ForwardCuriosityProviderTests(unittest.TestCase):
             )
 
 
+class SelfCorrectionProviderTests(unittest.TestCase):
+    """K38 self-correction provider lands in the system prompt, is silent
+    when nothing is pending, and survives aggressive context-mode (an owed
+    correction must still land)."""
+
+    _CUE = "Heads-up: a moment ago you said"
+
+    def test_self_correction_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="sc1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                self_correction=lambda: (
+                    'Heads-up: a moment ago you said "X", but you\'d noted Y.'
+                ),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "sc1", "x", context_window=4096, response_budget=256,
+            )
+            self.assertIn(self._CUE, messages[0]["content"])
+
+    def test_self_correction_silent_when_empty(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="sc2", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(self_correction=lambda: "")
+            messages, _ = assembler.assemble_with_budget(
+                "sc2", "x", context_window=4096, response_budget=256,
+            )
+            self.assertNotIn(self._CUE, messages[0]["content"])
+
+    def test_self_correction_one_shot_clear(self) -> None:
+        # A real one-shot provider clears its pending slot after firing.
+        # Simulate that with a closure that returns the cue once.
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="sc3", role="user", content="hi", token_count=2,
+            )
+            fired = {"n": 0}
+
+            def _provider() -> str:
+                if fired["n"] == 0:
+                    fired["n"] += 1
+                    return (
+                        'Heads-up: a moment ago you said "X", but '
+                        "you'd noted Y."
+                    )
+                return ""
+
+            assembler.set_inner_life_providers(self_correction=_provider)
+            messages_a, _ = assembler.assemble_with_budget(
+                "sc3", "x", context_window=4096, response_budget=256,
+            )
+            messages_b, _ = assembler.assemble_with_budget(
+                "sc3", "x", context_window=4096, response_budget=256,
+            )
+            self.assertIn(self._CUE, messages_a[0]["content"])
+            self.assertNotIn(self._CUE, messages_b[0]["content"])
+
+    def test_self_correction_survives_aggressive_mode(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="sc4", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                self_correction=lambda: (
+                    'Heads-up: a moment ago you said "X", but you\'d noted Y.'
+                ),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "sc4", "x", context_window=4096, response_budget=256,
+                aggressive=True,
+            )
+            self.assertIn(self._CUE, messages[0]["content"])
+
+
 class MoodShellProviderTests(unittest.TestCase):
     """K5 mood-shell tilt: lands in the system prompt, survives
     ``aggressive=True`` (tonal cue is exactly what aggressive mode

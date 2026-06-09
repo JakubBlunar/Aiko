@@ -172,6 +172,86 @@ class PostTurnMixin:
         if latency_f >= min_gap_s:
             self._pending_forward_curiosity_seconds = latency_f
 
+    def _maybe_arm_self_correction(self, assistant_text: str) -> None:
+        """K38: catch when Aiko's just-finished reply contradicts one of
+        her own high-confidence ``fact`` / ``preference`` memories and arm
+        a one-shot self-correction cue for the next turn.
+
+        Embedding-free: the detector
+        (:func:`app.core.conversation.self_correction_detector.detect_self_correction`)
+        runs a content-word overlap shortlist + the shared F5 contradiction
+        heuristic. Gated by ``agent.self_correction_enabled`` and a
+        per-fire cooldown (``memory.self_correction_cooldown_turns``) so a
+        single slip doesn't nag every turn. The cooldown counter decrements
+        on every post-turn call; the detector only runs when it reaches 0.
+        Independent of the gap-return cue family -- does NOT touch
+        ``_gap_cue_surfaced``.
+        """
+        if not bool(
+            getattr(self._settings.agent, "self_correction_enabled", True)
+        ):
+            return
+        if getattr(self, "_self_correction_cooldown_remaining", 0) > 0:
+            self._self_correction_cooldown_remaining -= 1
+            return
+        memory_store = getattr(self, "_memory_store", None)
+        if memory_store is None:
+            return
+        text = (assistant_text or "").strip()
+        if not text:
+            return
+        try:
+            from app.core.conversation import self_correction_detector
+
+            memories = list(memory_store.iter_by_kind("fact"))
+            memories.extend(memory_store.iter_by_kind("preference"))
+            if not memories:
+                return
+            hit = self_correction_detector.detect_self_correction(
+                text,
+                memories,
+                min_confidence=float(
+                    getattr(
+                        self._memory_settings,
+                        "self_correction_min_confidence",
+                        0.6,
+                    )
+                ),
+                min_overlap=int(
+                    getattr(
+                        self._memory_settings,
+                        "self_correction_min_overlap",
+                        2,
+                    )
+                ),
+                max_candidates=int(
+                    getattr(
+                        self._memory_settings,
+                        "self_correction_max_candidates",
+                        50,
+                    )
+                ),
+            )
+            if hit is not None:
+                self._pending_self_correction = hit
+                self._self_correction_cooldown_remaining = int(
+                    getattr(
+                        self._memory_settings,
+                        "self_correction_cooldown_turns",
+                        3,
+                    )
+                )
+                log.info(
+                    "self-correction fire: memory_id=%s label=%s overlap=%d "
+                    "snippet=%r",
+                    hit.memory_id,
+                    hit.label,
+                    hit.overlap,
+                    hit.reply_snippet,
+                )
+        except Exception:
+            log.debug("self-correction detector raised", exc_info=True)
+
     def _resolve_curiosity_seeds(  # noqa: C901
         self,
         *,
@@ -583,6 +663,14 @@ class PostTurnMixin:
                     )
             except Exception:
                 log.debug("rupture detector raised", exc_info=True)
+
+        # K38 — self-correction. Catch when this reply contradicted one
+        # of Aiko's own high-confidence fact/preference memories so she
+        # can own the slip on her next turn. One-shot slot + cooldown.
+        try:
+            self._maybe_arm_self_correction(assistant_text)
+        except Exception:
+            log.debug("self-correction arming failed", exc_info=True)
 
         self._notify_mood_state({
             "label": state.mood_label,

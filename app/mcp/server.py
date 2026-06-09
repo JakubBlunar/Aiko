@@ -2979,6 +2979,153 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"force_forward_curiosity_surface raised: {exc}"
 
     @mcp.tool()
+    def get_self_correction_state() -> str:
+        """K38 — dump the self-correction cue state.
+
+        Returns a JSON dict with:
+
+        - ``enabled``: ``agent.self_correction_enabled`` master switch.
+        - ``pending``: the armed ``SelfCorrectionHit`` (memory_id /
+          label / overlap / snippet) waiting for the next turn, or
+          ``null``.
+        - ``cooldown_remaining``: turns left before the detector runs
+          again (decrements each post-turn).
+        - ``thresholds``: the ``memory.self_correction_*`` knobs the
+          detector reads (min_confidence / min_overlap / max_candidates /
+          cooldown_turns).
+        """
+        try:
+            mem = session._memory_settings
+            pending = getattr(session, "_pending_self_correction", None)
+            pending_json = None
+            if pending is not None:
+                pending_json = {
+                    "memory_id": getattr(pending, "memory_id", None),
+                    "label": getattr(pending, "label", None),
+                    "overlap": getattr(pending, "overlap", None),
+                    "reply_snippet": getattr(pending, "reply_snippet", None),
+                    "memory_content": getattr(
+                        pending, "memory_content", None
+                    ),
+                }
+            return json.dumps(
+                {
+                    "enabled": bool(
+                        getattr(
+                            session._settings.agent,
+                            "self_correction_enabled",
+                            True,
+                        )
+                    ),
+                    "pending": pending_json,
+                    "cooldown_remaining": int(
+                        getattr(
+                            session,
+                            "_self_correction_cooldown_remaining",
+                            0,
+                        )
+                    ),
+                    "thresholds": {
+                        "min_confidence": float(
+                            getattr(
+                                mem, "self_correction_min_confidence", 0.6
+                            )
+                        ),
+                        "min_overlap": int(
+                            getattr(mem, "self_correction_min_overlap", 2)
+                        ),
+                        "max_candidates": int(
+                            getattr(
+                                mem, "self_correction_max_candidates", 50
+                            )
+                        ),
+                        "cooldown_turns": int(
+                            getattr(
+                                mem, "self_correction_cooldown_turns", 3
+                            )
+                        ),
+                    },
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"get_self_correction_state raised: {exc}"
+
+    @mcp.tool()
+    def force_self_correction(reply_text: str = "") -> str:
+        """K38 — run the self-correction detector and arm the cue.
+
+        Runs ``detect_self_correction`` against ``reply_text`` (or the
+        last assistant message if blank) over Aiko's current ``fact`` /
+        ``preference`` memories, bypassing the per-fire cooldown. On a
+        hit it stashes the result on ``_pending_self_correction`` so the
+        next turn's provider folds the correction into Aiko's reply.
+
+        Repro: ``force_self_correction(reply_text="My favorite color is
+        blue.")`` (with a stored "favorite color is green" memory) ->
+        ``send_message(skip_tts=true)`` -> confirm the "Heads-up: a
+        moment ago you said ..." line in
+        ``get_last_response_detail.system_prompt``.
+        """
+        try:
+            from app.core.conversation import self_correction_detector
+
+            text = (reply_text or "").strip()
+            if not text:
+                history = session._chat_db.get_messages(
+                    session.session_key, limit=20
+                )
+                for row in reversed(history):
+                    if getattr(row, "role", "") == "assistant":
+                        text = (getattr(row, "content", "") or "").strip()
+                        break
+            if not text:
+                return json.dumps(
+                    {"error": "no reply_text and no recent assistant message"},
+                    indent=2,
+                )
+            store = getattr(session, "_memory_store", None)
+            if store is None:
+                return json.dumps({"error": "no MemoryStore"}, indent=2)
+            mem = session._memory_settings
+            memories = list(store.iter_by_kind("fact"))
+            memories.extend(store.iter_by_kind("preference"))
+            hit = self_correction_detector.detect_self_correction(
+                text,
+                memories,
+                min_confidence=float(
+                    getattr(mem, "self_correction_min_confidence", 0.6)
+                ),
+                min_overlap=int(
+                    getattr(mem, "self_correction_min_overlap", 2)
+                ),
+                max_candidates=int(
+                    getattr(mem, "self_correction_max_candidates", 50)
+                ),
+            )
+            if hit is None:
+                return json.dumps(
+                    {"armed": False, "hit": None, "note": "no contradiction"},
+                    indent=2,
+                )
+            session._pending_self_correction = hit
+            return json.dumps(
+                {
+                    "armed": True,
+                    "hit": {
+                        "memory_id": hit.memory_id,
+                        "label": hit.label,
+                        "overlap": hit.overlap,
+                        "reply_snippet": hit.reply_snippet,
+                        "memory_content": hit.memory_content,
+                    },
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_self_correction raised: {exc}"
+
+    @mcp.tool()
     def get_memory_consolidation_state() -> str:
         """K35 — dump the memory-consolidation worker state.
 

@@ -1554,6 +1554,7 @@ class SessionController(
             calibration=self._render_calibration_block,
             sensory_anchor=self._render_sensory_anchor_block,
             rupture=self._render_rupture_block,
+            self_correction=self._render_self_correction_block,
             misattunement=self._render_misattunement_block,
             opinion_injection=self._render_opinion_injection_block,
             absence_curiosity=self._render_absence_curiosity_block,
@@ -2639,6 +2640,13 @@ class SessionController(
         # K8 — one-shot affect-rupture slot. Same shape as above:
         # post-turn detector fills, next-turn provider clears.
         self._pending_rupture: Any = None
+        # K38 — one-shot self-correction slot + per-fire cooldown.
+        # Post-turn detector fills the slot when Aiko's reply
+        # contradicted one of her own high-confidence fact/preference
+        # memories; the next-turn provider clears it. The cooldown
+        # counter keeps a single slip from nagging every turn.
+        self._pending_self_correction: Any = None
+        self._self_correction_cooldown_remaining: int = 0
         # K23 — misattunement detector state. Unlike K8/K17 the
         # detector runs provider-time (same-turn reaction), so we
         # only need a cooldown counter -- no pending-result slot.
@@ -3394,6 +3402,9 @@ class SessionController(
         # K34 — wipe the forward-curiosity slot on session switch too.
         self._pending_forward_curiosity_seconds = None
         self._forward_curiosity_force_next = False
+        # K38 — wipe the self-correction slot + cooldown on switch.
+        self._pending_self_correction = None
+        self._self_correction_cooldown_remaining = 0
         # Best-effort: a write failure (read-only volume, locked file)
         # must not break the in-memory switch — the user just lands
         # back on whatever was previously persisted on next launch.
@@ -3471,6 +3482,9 @@ class SessionController(
         # K34 — clear the forward-curiosity slot on a full history wipe.
         self._pending_forward_curiosity_seconds = None
         self._forward_curiosity_force_next = False
+        # K38 — clear the self-correction slot + cooldown on a wipe.
+        self._pending_self_correction = None
+        self._self_correction_cooldown_remaining = 0
 
     def _clear_merge_buffer(self, session_key: str | None = None) -> None:
         """Drop the voice merge buffer (one specific session, or all).

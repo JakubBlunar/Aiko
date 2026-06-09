@@ -1722,6 +1722,43 @@ class InnerLifeProvidersMixin:
             log.debug("rupture render failed", exc_info=True)
             return ""
 
+    def _render_self_correction_block(self) -> str:
+        """K38: surface a one-shot self-correction cue.
+
+        The post-turn detector
+        (:meth:`PostTurnMixin._maybe_arm_self_correction`) stashes a
+        :class:`SelfCorrectionHit` on the controller when Aiko's last
+        reply contradicted one of her own high-confidence
+        ``fact`` / ``preference`` memories. We render it once and clear
+        the slot so she owns the slip naturally on this turn. Independent
+        of the gap-return cue family -- does NOT read or set
+        ``_gap_cue_surfaced``. Survives ``aggressive=True`` (an owed
+        correction must still land).
+        """
+        if not bool(
+            getattr(self._settings.agent, "self_correction_enabled", True)
+        ):
+            return ""
+        hit = getattr(self, "_pending_self_correction", None)
+        if hit is None:
+            return ""
+        self._pending_self_correction = None
+        try:
+            snippet = (hit.reply_snippet or "").strip()
+            memory = (hit.memory_content or "").strip()
+            if not snippet or not memory:
+                return ""
+            return (
+                f'Heads-up: a moment ago you said "{snippet}", but you\'d '
+                f"noted {memory}. If it still fits, own the correction "
+                "naturally and once -- 'oh wait, I think I had that "
+                "backwards' -- never a grovel, and drop it if it no longer "
+                "matters."
+            )
+        except Exception:
+            log.debug("self-correction render failed", exc_info=True)
+            return ""
+
     def _render_misattunement_block(self, user_text: str) -> str:
         """K23: surface a per-turn ``mild_disengagement`` cue.
 
