@@ -545,6 +545,20 @@ class AgentSettings:
     # versa).
     conflict_detector_per_hour_cap: int = 6
     conflict_detector_per_day_cap: int = 30
+    # ── K35 personality backlog: memory consolidation worker ─────────
+    # Master switch for
+    # :class:`app.core.memory.memory_consolidation_worker.MemoryConsolidationWorker`.
+    # When disabled the worker never registers its idle tick. The
+    # per-hour / per-day caps bound the worker-LLM merge calls (one per
+    # cluster), persisted to ``kv_meta`` via a dedicated
+    # :class:`FactCheckRateLimiter` with
+    # ``state_key='memory_consolidation.rate_state'`` so the merge
+    # budget is independent of F1 / F5 / G3. Clusters that can't get a
+    # token fall back to the deterministic "keep the strongest member
+    # verbatim" path, so a starved budget never blocks consolidation.
+    memory_consolidation_enabled: bool = True
+    memory_consolidation_per_hour_cap: int = 6
+    memory_consolidation_per_day_cap: int = 30
     # ── K2 personality backlog: theory-of-mind / belief tracking ─────
     # Master switch for the whole K2 surface (worker + gap detector +
     # tag parser + REST + UI). When disabled the worker never runs,
@@ -2012,6 +2026,24 @@ class MemorySettings:
     # contradictions doesn't burn the per-day LLM budget on one run.
     conflict_detector_max_corpus: int = 1000
     conflict_detector_max_pairs_per_run: int = 50
+    # ── K35 personality backlog: memory consolidation worker ─────────
+    # Nightly-ish cadence (default 6h so it gets several chances to land
+    # in a quiet window per day; caps keep the cost bounded regardless).
+    consolidation_interval_seconds: int = 21600
+    # Only scratchpad rows created within this many days are scanned —
+    # the noisy auto-extracted backlog, not durable long_term anchors.
+    consolidation_lookback_days: int = 30
+    # Cosine at/above which two same-kind, non-contradicting rows are
+    # treated as near-duplicates and fused. Sits just under the 0.92
+    # insert-dedupe so it catches the band that escaped write-time
+    # merge.
+    consolidation_similarity_threshold: float = 0.90
+    # O(n^2) corpus cap + per-run cluster cap. ``max_clusters_per_run``
+    # bounds the worker-LLM merge calls per tick; ``min_cluster_size``
+    # is the smallest group worth merging (2 = a single duplicate pair).
+    consolidation_max_corpus: int = 1000
+    consolidation_max_clusters_per_run: int = 20
+    consolidation_min_cluster_size: int = 2
     # ── K2 personality backlog: theory-of-mind / belief tracking ─────
     # Background inference worker cadence. The worker spends one LLM
     # call per tick to extract beliefs from the last
@@ -2930,6 +2962,15 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             ),
             conflict_detector_per_day_cap=max(
                 0, int(agent_raw.get("conflict_detector_per_day_cap", 30)),
+            ),
+            memory_consolidation_enabled=bool(
+                agent_raw.get("memory_consolidation_enabled", True),
+            ),
+            memory_consolidation_per_hour_cap=max(
+                0, int(agent_raw.get("memory_consolidation_per_hour_cap", 6)),
+            ),
+            memory_consolidation_per_day_cap=max(
+                0, int(agent_raw.get("memory_consolidation_per_day_cap", 30)),
             ),
             belief_tracking_enabled=bool(
                 agent_raw.get("belief_tracking_enabled", True),
@@ -4212,6 +4253,39 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                         "conflict_detector_max_pairs_per_run", 50,
                     ),
                 ),
+            ),
+            consolidation_interval_seconds=max(
+                60,
+                int(memory_raw.get("consolidation_interval_seconds", 21600)),
+            ),
+            consolidation_lookback_days=max(
+                0,
+                int(memory_raw.get("consolidation_lookback_days", 30)),
+            ),
+            consolidation_similarity_threshold=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get(
+                            "consolidation_similarity_threshold", 0.90
+                        ),
+                    ),
+                ),
+            ),
+            consolidation_max_corpus=max(
+                10,
+                int(memory_raw.get("consolidation_max_corpus", 1000)),
+            ),
+            consolidation_max_clusters_per_run=max(
+                1,
+                int(
+                    memory_raw.get("consolidation_max_clusters_per_run", 20),
+                ),
+            ),
+            consolidation_min_cluster_size=max(
+                2,
+                int(memory_raw.get("consolidation_min_cluster_size", 2)),
             ),
             belief_worker_interval_seconds=max(
                 60,

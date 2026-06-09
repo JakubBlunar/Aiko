@@ -2512,6 +2512,71 @@ class SessionController(
                 self._memory_conflict_worker = None
                 self._memory_conflict_rate_limiter = None
 
+        # K35 — memory consolidation worker. Fuses near-duplicate
+        # scratchpad rows into one long_term memory during quiet
+        # windows. Needs the embedder (re-embeds merged text) + a worker
+        # LLM (rate-limited merge with deterministic fallback). Its own
+        # FactCheckRateLimiter state_key keeps the merge budget
+        # independent of F1 / F5 / G3. Failures only drop consolidation.
+        self._memory_consolidation_worker = None
+        self._memory_consolidation_rate_limiter = None
+        if (
+            self._idle_scheduler is not None
+            and getattr(self, "_memory_store", None) is not None
+            and self._embedder is not None
+            and self._fact_check_cancel is not None
+            and bool(
+                getattr(settings.agent, "memory_consolidation_enabled", True)
+            )
+        ):
+            try:
+                from app.core.memory.fact_check_rate_limiter import (
+                    FactCheckRateLimiter,
+                )
+                from app.core.memory.memory_consolidation_worker import (
+                    MemoryConsolidationWorker,
+                )
+
+                self._memory_consolidation_rate_limiter = FactCheckRateLimiter(
+                    self._chat_db,
+                    per_hour_cap=int(
+                        getattr(
+                            settings.agent,
+                            "memory_consolidation_per_hour_cap",
+                            6,
+                        )
+                    ),
+                    per_day_cap=int(
+                        getattr(
+                            settings.agent,
+                            "memory_consolidation_per_day_cap",
+                            30,
+                        )
+                    ),
+                    state_key="memory_consolidation.rate_state",
+                )
+                self._memory_consolidation_worker = MemoryConsolidationWorker(
+                    memory_store=self._memory_store,
+                    embedder=self._embedder,
+                    # Idle-scheduler worker → maintenance tier.
+                    ollama=self._maintenance_client,
+                    chat_model=self._effective_worker_model,
+                    rate_limiter=self._memory_consolidation_rate_limiter,
+                    cancel_event=self._fact_check_cancel,
+                    agent_settings=settings.agent,
+                    memory_settings=self._memory_settings,
+                    notify_memory_updated=self._notify_memory_updated,
+                )
+                self._idle_scheduler.register(
+                    self._memory_consolidation_worker
+                )
+            except Exception:
+                log.warning(
+                    "MemoryConsolidationWorker init failed", exc_info=True,
+                )
+                self._memory_consolidation_worker = None
+                self._memory_consolidation_rate_limiter = None
+
         # K29 — opinion-injection rate limiter (LLM YES/NO gate on
         # borderline-heuristic stance contradictions). Independent
         # ``state_key`` so the budget can't be exhausted by the F5

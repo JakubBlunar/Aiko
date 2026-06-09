@@ -294,17 +294,7 @@ the voice toggle in `ChatView.tsx`.
 
 ## K35. Memory consolidation worker — nightly merge of near-duplicates
 
-Nightly idle job that scans scratchpad memories from the last 7-30 days,
-cosine-merges near-duplicates (threshold ~0.92), and promotes the
-consolidated version to `long_term` with combined provenance
-(`metadata.source_ids = [12, 47, 89]`). Reduces RAG noise that
-accumulates over weeks; complements F5 (conflict detection) which only
-handles *contradicting* pairs. Cap per run + per-day so a chatty week
-can't trigger a cascade. Key files: new
-`app/core/memory/memory_consolidation_worker.py`,
-[`MemoryStore`](../../app/core/memory/memory_store.py) extension for the
-merge operation (writes new row, archives sources), MCP debug tool
-`force_run("memory_consolidation")`.
+**Shipped.** See [`shipped.md`](shipped.md#k35-memory-consolidation-worker--nightly-near-duplicate-merge). The [`MemoryConsolidationWorker`](../../app/core/memory/memory_consolidation_worker.py) clusters near-duplicate scratchpad rows (same-kind, non-contradicting, cosine >= `consolidation_similarity_threshold`) during quiet windows, fuses each cluster into its strongest member via a rate-limited worker-LLM merge (deterministic fallback), promotes that primary to `long_term` with `metadata.source_ids` provenance + a re-embedded vector, and archives the absorbed duplicates with `metadata.consolidated_into`. Complements F5 (which only handles contradicting pairs); the F5 contradiction heuristic is reused as a guard so the two workers never fight over a pair.
 
 ---
 
