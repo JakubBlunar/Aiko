@@ -1568,10 +1568,128 @@ class InnerLifeProvidersMixin:
             log.debug("away_activities watermark write failed", exc_info=True)
 
         name = self.user_display_name
+        # Mark the gap-cue slot consumed so the K34 forward-curiosity
+        # provider (which runs after this one) defers — at most one of
+        # {turning_over, away_activities, forward_curiosity} surfaces
+        # per return.
+        self._gap_cue_surfaced = True
         log.info("away-activities fire: at=%s key=%s", at, newest.get("key"))
         return (
             f"While {name} was away, you {summary}. If it fits naturally, "
             "you can mention it in passing — drop it if it doesn't."
+        )
+
+    def _render_forward_curiosity_block(self) -> str:
+        """K34: surface one "you've been wondering ..." line after a gap.
+
+        Consumer side of the :class:`ForwardCuriosityWorker` producer.
+        Same typed-gap arming as K28 ``turning_over`` / K36
+        ``away_activities`` (via
+        ``post_turn_mixin._maybe_arm_forward_curiosity_slot``), but reads
+        the worker's kv question ring.
+
+        One-shot contract: reads + clears
+        ``self._pending_forward_curiosity_seconds``, re-checks the gap,
+        reads the ring, and surfaces the newest entry that's newer than
+        the ``forward_curiosity.last_surfaced_at`` watermark. The
+        watermark advances so the same question never resurfaces.
+
+        Runs LAST of the three gap-return cues, so it defers to both
+        ``turning_over`` and ``away_activities`` via the shared
+        ``_gap_cue_surfaced`` flag — at most one of the three fires per
+        return.
+
+        MCP debug: ``force_forward_curiosity_surface`` arms
+        ``_forward_curiosity_force_next`` to bypass the slot + watermark
+        + one-of gates (the ring still has to be non-empty).
+        """
+        if not bool(
+            getattr(self._settings.agent, "forward_curiosity_enabled", True)
+        ):
+            return ""
+
+        force_next = bool(
+            getattr(self, "_forward_curiosity_force_next", False)
+        )
+        if force_next:
+            self._forward_curiosity_force_next = False
+
+        # One-of guard: a higher-priority gap cue already surfaced this
+        # assembly. Stand down (unless explicitly forced).
+        if not force_next and getattr(self, "_gap_cue_surfaced", False):
+            return ""
+
+        seconds = getattr(self, "_pending_forward_curiosity_seconds", None)
+        if not force_next and seconds is None:
+            return ""
+        self._pending_forward_curiosity_seconds = None
+
+        if not force_next and seconds is not None:
+            try:
+                seconds_f = float(seconds)
+            except (TypeError, ValueError):
+                return ""
+            min_gap_s = (
+                float(
+                    getattr(
+                        self._memory_settings,
+                        "forward_curiosity_min_gap_hours",
+                        4.0,
+                    )
+                )
+                * 3600.0
+            )
+            if seconds_f < min_gap_s:
+                return ""
+
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is None or not hasattr(chat_db, "kv_get"):
+            return ""
+
+        try:
+            from app.core.proactive.forward_curiosity_worker import (
+                load_questions,
+            )
+        except Exception:
+            log.debug("forward_curiosity import failed", exc_info=True)
+            return ""
+
+        ring = load_questions(chat_db.kv_get)
+        if not ring:
+            log.debug("forward_curiosity silent: empty ring")
+            return ""
+
+        newest = ring[-1]
+        at = str(newest.get("at") or "")
+        question = str(newest.get("question") or "").strip()
+        if not question:
+            return ""
+
+        watermark_key = "forward_curiosity.last_surfaced_at"
+        if not force_next:
+            try:
+                last_surfaced = chat_db.kv_get(watermark_key)
+            except Exception:
+                last_surfaced = None
+            if last_surfaced and str(last_surfaced) == at:
+                log.debug(
+                    "forward_curiosity silent: already surfaced %s", at,
+                )
+                return ""
+
+        # Advance the watermark so this question doesn't resurface.
+        try:
+            chat_db.kv_set(watermark_key, at)
+        except Exception:
+            log.debug(
+                "forward_curiosity watermark write failed", exc_info=True,
+            )
+
+        self._gap_cue_surfaced = True
+        log.info("forward-curiosity fire: at=%s source=%s", at, newest.get("source"))
+        return (
+            f"You've been wondering {question}. If it comes up naturally, "
+            "you can ask — drop it if it doesn't fit."
         )
 
     def _render_rupture_block(self) -> str:

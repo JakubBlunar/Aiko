@@ -288,17 +288,7 @@ the voice toggle in `ChatView.tsx`.
 
 ## K34. Forward curiosity worker — "I've been wondering"
 
-Different from shipped G3 (which answers factual `open_question`s via web
-search) and K28 (rumination over past conversation). K34 drafts
-forward-looking *things Aiko wants to ask Jacob*: "how did your sister's
-move go", "did the new espresso machine arrive yet". Pulls from
-`future_plan` / `goal` memory rows where Aiko stamped a follow-up
-intent, plus K3 routine-awareness signals ("Mondays you usually mention
-work"). Surfaces through a new "I've been wondering..." inner-life cue
-when Jacob comes back after a ≥4h gap. Key files: new
-`app/core/proactive/forward_curiosity_worker.py` (IdleWorker with the
-existing protocol), inner-life provider, persona addendum, MCP debug
-tools.
+**Shipped.** See [`shipped.md`](shipped.md#k34-forward-curiosity-worker--ive-been-wondering). The [`ForwardCuriosityWorker`](../../app/core/proactive/forward_curiosity_worker.py) drafts one forward question about the user's life (from their `future_plan` + `callback` memories, biased by K3 routines) into a `kv_meta` ring during quiet windows; the [`_render_forward_curiosity_block`](../../app/core/session/inner_life_providers_mixin.py) provider surfaces one casual "you've been wondering ..." line on the first turn after a ≥4h typed gap, deferring to K28 turning-over + K36 away-activities so only one gap cue fires per return.
 
 ---
 

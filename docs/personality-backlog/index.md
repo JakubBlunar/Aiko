@@ -99,8 +99,9 @@ K18 topic stagnation, K20 metacognitive calibration,
 K22 callback / inside-joke detector, K23 subtle misattunement
 detection, K24 sensory anchoring layer, K25 memory
 confidence time-decay, K28 "what I've been turning over",
-K29 opinion injection, and K36 "things I did while you were
-away" have shipped — see [`shipped.md`](shipped.md).)
+K29 opinion injection, K34 forward curiosity worker, and
+K36 "things I did while you were away" have shipped — see
+[`shipped.md`](shipped.md).)
 
 ### P. Performance + observability — [`perf.md`](perf.md)
 

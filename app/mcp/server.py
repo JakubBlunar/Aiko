@@ -2850,6 +2850,135 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"force_away_activities_surface raised: {exc}"
 
     @mcp.tool()
+    def get_forward_curiosity_state() -> str:
+        """K34 — dump the forward-curiosity worker + surfacing state.
+
+        Returns a JSON dict with:
+
+        - ``enabled``: ``agent.forward_curiosity_enabled`` master switch.
+        - ``worker_registered``: whether the ForwardCuriosityWorker wired
+          up (needs a loaded MemoryStore + idle scheduler).
+        - ``pending_seconds`` / ``force_next``: the surfacing slot armed
+          by the post-turn tracker on a long typed gap, and the MCP
+          one-shot bypass flag.
+        - ``min_gap_hours``: the typed-absence threshold the provider
+          gates on.
+        - ``questions``: the kv ring of drafted questions (newest last).
+        - ``last_surfaced_at``: watermark of the last question the
+          provider folded into a reply.
+        """
+        try:
+            from app.core.proactive.forward_curiosity_worker import (
+                load_questions,
+                _KV_LAST_FIRED_AT,
+                _KV_DAY,
+                _KV_DAY_COUNT,
+            )
+
+            kv = session._chat_db.kv_get
+            ring = load_questions(kv)
+            return json.dumps(
+                {
+                    "enabled": bool(
+                        getattr(
+                            session._settings.agent,
+                            "forward_curiosity_enabled",
+                            True,
+                        )
+                    ),
+                    "worker_registered": getattr(
+                        session, "_forward_curiosity_worker", None
+                    )
+                    is not None,
+                    "pending_seconds": getattr(
+                        session, "_pending_forward_curiosity_seconds", None
+                    ),
+                    "force_next": bool(
+                        getattr(
+                            session, "_forward_curiosity_force_next", False
+                        )
+                    ),
+                    "min_gap_hours": float(
+                        getattr(
+                            session._memory_settings,
+                            "forward_curiosity_min_gap_hours",
+                            4.0,
+                        )
+                    ),
+                    "questions": ring,
+                    "last_surfaced_at": kv(
+                        "forward_curiosity.last_surfaced_at"
+                    ),
+                    "last_fired_at": kv(_KV_LAST_FIRED_AT),
+                    "day": kv(_KV_DAY),
+                    "day_count": kv(_KV_DAY_COUNT),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"get_forward_curiosity_state raised: {exc}"
+
+    @mcp.tool()
+    def force_forward_curiosity_draft(source_id: str = "") -> str:
+        """K34 — run the forward-curiosity worker once, right now.
+
+        Bypasses the worker's cooldown + daily-cap + quiet-window gates
+        by calling ``run()`` directly, so it drafts a fresh question and
+        appends it to the ring immediately. Pass ``source_id`` to force a
+        specific memory (a ``future_plan`` or ``callback`` row id) as the
+        topic; leave blank for a random pick among undrafted candidates.
+
+        Pairs with ``force_forward_curiosity_surface`` for the end-to-end
+        repro: call this to produce a question, then that to make the
+        next turn fold it into Aiko's reply.
+        """
+        try:
+            worker = getattr(session, "_forward_curiosity_worker", None)
+            if worker is None:
+                return json.dumps(
+                    {"error": "worker not registered (no MemoryStore?)"},
+                    indent=2,
+                )
+            if source_id:
+                worker.force_source(source_id)
+            result = worker.run()
+            return json.dumps({"ran": True, "result": result}, indent=2)
+        except Exception as exc:
+            return f"force_forward_curiosity_draft raised: {exc}"
+
+    @mcp.tool()
+    def force_forward_curiosity_surface() -> str:
+        """K34 — arm a one-shot bypass on the forward-curiosity gates.
+
+        Sets ``_forward_curiosity_force_next`` so the next provider call
+        ignores the pending-slot gate, the gap-threshold double-check,
+        the one-of {turning_over, away_activities} guard, AND the
+        last-surfaced watermark. The ring still has to be non-empty (run
+        ``force_forward_curiosity_draft`` first if it isn't). Bypass is
+        consumed on the next assembly regardless.
+
+        Repro: ``force_forward_curiosity_draft()`` ->
+        ``force_forward_curiosity_surface()`` ->
+        ``send_message(skip_tts=true)`` -> confirm the "You've been
+        wondering ..." line in ``get_last_response_detail.system_prompt``.
+        """
+        try:
+            session._forward_curiosity_force_next = True
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next provider call ignores the slot, threshold, "
+                        "one-of guard, and watermark; ring must be "
+                        "non-empty or the cue silently expires"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_forward_curiosity_surface raised: {exc}"
+
+    @mcp.tool()
     def get_confidence_decay_state(limit: int = 20) -> str:
         """K25 — preview which memory rows would currently render
         with the ``(distant)`` suffix.
