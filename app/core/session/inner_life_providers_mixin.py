@@ -1295,6 +1295,13 @@ class InnerLifeProvidersMixin:
         double-check. The picker still runs, so a forced bypass
         on an empty reflection corpus still silently expires.
         """
+        # K36 one-of guard: reset the shared "a gap cue already fired
+        # this assembly" flag at the top of the turn (this provider runs
+        # before ``away_activities`` in the T6 cluster). Set it True only
+        # when this block actually fires, so ``away_activities`` defers
+        # and at most one of the two surfaces per return.
+        self._gap_cue_surfaced = False
+
         if not bool(
             getattr(self._settings.agent, "turning_over_enabled", True)
         ):
@@ -1438,6 +1445,9 @@ class InnerLifeProvidersMixin:
 
         # Stash diagnostics for the MCP debug tool.
         self._last_turning_over = result
+        # K36 one-of guard: mark that a gap cue surfaced this assembly so
+        # ``away_activities`` defers to this (reflection-based) cue.
+        self._gap_cue_surfaced = True
 
         log.info(
             "turning-over fire: memory_id=%d age_h=%.1f topical=%.3f "
@@ -1457,6 +1467,112 @@ class InnerLifeProvidersMixin:
         except Exception:
             log.debug("turning-over render failed", exc_info=True)
             return ""
+
+    def _render_away_activities_block(self) -> str:
+        """K36: surface one "while you were away I …" line after a gap.
+
+        Consumer side of the :class:`IdleAwayActivityWorker` producer.
+        Same typed-gap arming as K28 ``turning_over`` (via
+        ``post_turn_mixin._maybe_arm_away_activities_slot``), but reads
+        the worker's kv journal instead of the reflection corpus.
+
+        One-shot contract: reads + clears
+        ``self._pending_away_activities_seconds``, re-checks the gap,
+        reads the journal ring, and surfaces the newest entry that's
+        newer than the ``away_activity.last_surfaced_at`` watermark. The
+        watermark advances so the same beat never resurfaces.
+
+        Defers to ``turning_over`` via the shared ``_gap_cue_surfaced``
+        flag so at most one of the two gap cues fires per return —
+        ``turning_over`` runs first and wins when it has a reflection to
+        share; this fills in otherwise.
+
+        MCP debug: ``force_away_activities_surface`` arms
+        ``_away_activities_force_next`` to bypass the slot + watermark
+        gates (the journal still has to be non-empty).
+        """
+        if not bool(
+            getattr(self._settings.agent, "away_activities_enabled", True)
+        ):
+            return ""
+
+        force_next = bool(
+            getattr(self, "_away_activities_force_next", False)
+        )
+        if force_next:
+            self._away_activities_force_next = False
+
+        # One-of guard: turning_over already surfaced a gap cue this
+        # assembly. Stand down (unless explicitly forced).
+        if not force_next and getattr(self, "_gap_cue_surfaced", False):
+            return ""
+
+        seconds = getattr(self, "_pending_away_activities_seconds", None)
+        if not force_next and seconds is None:
+            return ""
+        self._pending_away_activities_seconds = None
+
+        if not force_next and seconds is not None:
+            try:
+                seconds_f = float(seconds)
+            except (TypeError, ValueError):
+                return ""
+            min_gap_s = (
+                float(
+                    getattr(
+                        self._memory_settings,
+                        "away_activities_min_gap_hours",
+                        4.0,
+                    )
+                )
+                * 3600.0
+            )
+            if seconds_f < min_gap_s:
+                return ""
+
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is None or not hasattr(chat_db, "kv_get"):
+            return ""
+
+        try:
+            from app.core.world.idle_activity_worker import load_journal
+        except Exception:
+            log.debug("away_activities import failed", exc_info=True)
+            return ""
+
+        journal = load_journal(chat_db.kv_get)
+        if not journal:
+            log.debug("away_activities silent: empty journal")
+            return ""
+
+        newest = journal[-1]
+        at = str(newest.get("at") or "")
+        summary = str(newest.get("summary") or "").strip()
+        if not summary:
+            return ""
+
+        watermark_key = "away_activity.last_surfaced_at"
+        if not force_next:
+            try:
+                last_surfaced = chat_db.kv_get(watermark_key)
+            except Exception:
+                last_surfaced = None
+            if last_surfaced and str(last_surfaced) == at:
+                log.debug("away_activities silent: already surfaced %s", at)
+                return ""
+
+        # Advance the watermark so this beat doesn't resurface.
+        try:
+            chat_db.kv_set(watermark_key, at)
+        except Exception:
+            log.debug("away_activities watermark write failed", exc_info=True)
+
+        name = self.user_display_name
+        log.info("away-activities fire: at=%s key=%s", at, newest.get("key"))
+        return (
+            f"While {name} was away, you {summary}. If it fits naturally, "
+            "you can mention it in passing — drop it if it doesn't."
+        )
 
     def _render_rupture_block(self) -> str:
         """K8: surface a one-shot affect-rupture cue.

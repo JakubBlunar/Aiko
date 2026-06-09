@@ -492,6 +492,7 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "opinion_injection_block",
         "absence_curiosity_block",
         "turning_over_block",
+        "away_activities_block",
         "novelty_block",
         "stagnation_block",
         "style_pattern_block",
@@ -807,6 +808,12 @@ class PromptAssembler:
         # "and I was thinking about X" content in the system prompt
         # so the two cues read naturally together.
         self._turning_over_provider: Callable[[], str] | None = None
+        # K36 "things I did while you were away" one-shot. Consumer of the
+        # IdleAwayActivityWorker journal; same post-turn-armed slot as K28
+        # turning_over but reads the kv journal ring. Defers to
+        # turning_over via the shared _gap_cue_surfaced flag so only one
+        # gap cue fires per return.
+        self._away_activities_provider: Callable[[], str] | None = None
         # K5 mood-shell tilt. NOT one-shot -- derived fresh every turn
         # from current affect / relationship axes / pending moments,
         # so the renderer is stateless from the assembler's POV.
@@ -1075,6 +1082,7 @@ class PromptAssembler:
         opinion_injection: Callable[[str], str] | None = None,
         absence_curiosity: Callable[[], str] | None = None,
         turning_over: Callable[[], str] | None = None,
+        away_activities: Callable[[], str] | None = None,
         mood_shell: Callable[[], str] | None = None,
         novelty: Callable[[str], str] | None = None,
         stagnation: Callable[[str], str] | None = None,
@@ -1157,6 +1165,8 @@ class PromptAssembler:
             self._absence_curiosity_provider = absence_curiosity
         if turning_over is not None:
             self._turning_over_provider = turning_over
+        if away_activities is not None:
+            self._away_activities_provider = away_activities
         if mood_shell is not None:
             self._mood_shell_provider = mood_shell
         if novelty is not None:
@@ -1791,6 +1801,24 @@ class PromptAssembler:
                     )
                     turning_over_block = ""
 
+        # K36 "things I did while you were away" one-shot. Runs AFTER
+        # turning_over so it can read the just-set _gap_cue_surfaced flag
+        # and defer (only one of the two gap cues surfaces per return).
+        away_activities_block = ""
+        if (
+            getattr(self, "_away_activities_provider", None) is not None
+        ):
+            with _timed_phase(provider_ms, "away_activities"):
+                try:
+                    away_activities_block = (
+                        self._away_activities_provider() or ""
+                    )
+                except Exception:
+                    log.debug(
+                        "away_activities provider raised", exc_info=True,
+                    )
+                    away_activities_block = ""
+
         # K5 mood-shell tilt. Stateless: derives a one-line emotional
         # directive from current affect + relationship axes + pending
         # moments every turn, returns "" when nothing is notable. NOT
@@ -2302,6 +2330,12 @@ class PromptAssembler:
             # combined cue to read naturally on a 90 min - 4h gap
             # (where both K14 and K28 fire). One-shot, same as K14.
             system_parts.append(turning_over_block)
+        if away_activities_block:
+            # K36: "While you were away you ..." sits right after the K28
+            # turning_over block — both are gap-return cues, but the
+            # provider's _gap_cue_surfaced guard ensures only one of the
+            # two actually renders per return. One-shot.
+            system_parts.append(away_activities_block)
         if novelty_block:
             # K6: surface the "Heads-up: Jacob just brought up
             # something new" line right after belief_gaps so reaction

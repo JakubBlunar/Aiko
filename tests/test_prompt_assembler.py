@@ -678,6 +678,107 @@ class TurningOverProviderTests(unittest.TestCase):
             )
 
 
+class AwayActivitiesProviderTests(unittest.TestCase):
+    """K36 away-activities provider lands in the system prompt right
+    after the K28 turning_over block, survives aggressive context-mode,
+    and is NOT suppressed by the K16 ``replace`` grounding mode."""
+
+    def test_away_activities_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="aa1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                away_activities=lambda: (
+                    "While Jacob was away, you had some of the cookies."
+                ),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "aa1",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertIn(
+                "While Jacob was away", messages[0]["content"],
+            )
+
+    def test_away_activities_silent_when_empty(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="aa2", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                away_activities=lambda: "",
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "aa2",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertNotIn(
+                "While Jacob was away", messages[0]["content"],
+            )
+
+    def test_away_activities_lands_after_turning_over(self) -> None:
+        """Both are gap-return cues; the provider-level _gap_cue_surfaced
+        guard normally lets only one fire, but at the assembler level the
+        away block must sit AFTER turning_over when both render."""
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="aa3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                turning_over=lambda: (
+                    "Turning over: thinking about the interview prep."
+                ),
+                away_activities=lambda: (
+                    "While Jacob was away, you read for a while."
+                ),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "aa3",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            sys_text = messages[0]["content"]
+            to_idx = sys_text.find("Turning over")
+            aa_idx = sys_text.find("While Jacob was away")
+            self.assertGreaterEqual(to_idx, 0)
+            self.assertGreaterEqual(aa_idx, 0)
+            self.assertLess(
+                to_idx, aa_idx,
+                "turning_over must precede away_activities",
+            )
+
+    def test_away_activities_survives_aggressive_mode(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="aa4", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                away_activities=lambda: (
+                    "While Jacob was away, you doodled for a while."
+                ),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "aa4",
+                "x",
+                context_window=4096,
+                response_budget=256,
+                aggressive=True,
+            )
+            self.assertIn(
+                "While Jacob was away", messages[0]["content"],
+            )
+
+
 class MoodShellProviderTests(unittest.TestCase):
     """K5 mood-shell tilt: lands in the system prompt, survives
     ``aggressive=True`` (tonal cue is exactly what aggressive mode

@@ -48,6 +48,7 @@ export function PersonaWindow({ send, sendBytes }: PersonaWindowProps) {
   const ttsState = useAssistantStore((s) => s.ttsState);
   const clientId = useAssistantStore((s) => s.clientId);
   const voiceOwnerId = useAssistantStore((s) => s.voiceOwnerId);
+  const companionSettings = useAssistantStore((s) => s.companionSettings);
   const remotelyOwned = Boolean(
     voiceOwnerId && clientId && voiceOwnerId !== clientId,
   );
@@ -125,9 +126,17 @@ export function PersonaWindow({ send, sendBytes }: PersonaWindowProps) {
         )}
         {/* K31 + K32: transient gesture banner. Sits absolutely
             positioned over the avatar so it never displaces the rig.
-            Configurable visibility lifetime threaded later via
-            settings; defaults to the 20s plan baseline. */}
-        <PersonaActionBanner />
+            Master switch + visibility lifetime threaded from the
+            companion settings snapshot (WS hello +
+            ``companion_settings_changed``); defaults to enabled / 20s
+            when no snapshot has arrived yet. */}
+        <PersonaActionBanner
+          enabled={companionSettings?.persona_touch_banner_enabled ?? true}
+          durationMs={
+            (companionSettings?.persona_touch_banner_duration_seconds ?? 20) *
+            1000
+          }
+        />
         {/* Chunk 15: persona-window mirror of ``TaskStrip``.
             Surfaces an ``awaiting_input`` task as a transient
             pill so the user can answer / cancel without

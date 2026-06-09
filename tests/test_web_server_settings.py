@@ -21,7 +21,7 @@ from __future__ import annotations
 import unittest
 from dataclasses import dataclass, field
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -37,6 +37,13 @@ class _AgentBlock:
     proactive_cooldown_seconds_typed: float = 600.0
     proactive_typed_when_away: bool = False
     activity_awareness_enabled: bool = False
+    # Companion-feel knobs (I4).
+    world_notice_enabled: bool = True
+    grounding_line_mode: str = "off"
+    touch_enabled: bool = True
+    user_reactions_enabled: bool = True
+    persona_touch_banner_enabled: bool = True
+    persona_touch_banner_duration_seconds: int = 20
 
 
 @dataclass
@@ -81,7 +88,15 @@ class _TtsBlock:
 
 @dataclass
 class _AudioBlock:
-    pass
+    earcons_enabled: bool = True
+
+
+@dataclass
+class _MemoryBlock:
+    world_notice_interval_seconds: int = 300
+    world_notice_cooldown_seconds: int = 3600
+    world_notice_daily_cap: int = 4
+    world_notice_ttl_seconds: int = 1800
 
 
 @dataclass
@@ -104,6 +119,7 @@ class _SettingsStub:
     stt: _SttBlock = field(default_factory=_SttBlock)
     tts: _TtsBlock = field(default_factory=_TtsBlock)
     audio: _AudioBlock = field(default_factory=_AudioBlock)
+    memory: _MemoryBlock = field(default_factory=_MemoryBlock)
     logging: _LoggingBlock = field(default_factory=_LoggingBlock)
 
 
@@ -172,6 +188,93 @@ class GetSettingsTests(unittest.TestCase):
         self.assertEqual(
             body["activity"], {"awareness_enabled": False},
         )
+
+
+class CompanionSettingsTests(unittest.TestCase):
+    """I4: the new ``companion`` block + ``audio.earcons_enabled``."""
+
+    def test_get_surfaces_companion_and_earcons(self) -> None:
+        client, _session, _settings = _build_client()
+        body = client.get("/api/settings").json()
+        self.assertIn("companion", body)
+        comp = body["companion"]
+        self.assertEqual(comp["world_notice_enabled"], True)
+        self.assertEqual(comp["world_notice_daily_cap"], 4)
+        self.assertEqual(comp["world_notice_cooldown_seconds"], 3600)
+        self.assertEqual(comp["grounding_line_mode"], "off")
+        self.assertEqual(comp["touch_enabled"], True)
+        self.assertEqual(comp["persona_touch_banner_duration_seconds"], 20)
+        self.assertTrue(body["audio"]["earcons_enabled"])
+
+    def test_patch_grounding_line_mode_runs_hook(self) -> None:
+        client, session, settings = _build_client()
+        with patch("app.web.server.persist_user_overrides") as persist:
+            response = client.patch(
+                "/api/settings",
+                json={"companion": {"grounding_line_mode": "replace"}},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(settings.agent.grounding_line_mode, "replace")
+        session._prompt_assembler.set_grounding_line_mode.assert_called_with(
+            "replace",
+        )
+        persist.assert_called_once()
+
+    def test_patch_grounding_line_mode_invalid_falls_back(self) -> None:
+        client, _session, settings = _build_client()
+        with patch("app.web.server.persist_user_overrides"):
+            client.patch(
+                "/api/settings",
+                json={"companion": {"grounding_line_mode": "bogus"}},
+            )
+        self.assertEqual(settings.agent.grounding_line_mode, "off")
+
+    def test_patch_world_notice_clamps_and_persists(self) -> None:
+        client, _session, settings = _build_client()
+        with patch("app.web.server.persist_user_overrides") as persist:
+            client.patch(
+                "/api/settings",
+                json={
+                    "companion": {
+                        "world_notice_enabled": False,
+                        "world_notice_interval_seconds": 5,
+                        "world_notice_daily_cap": 9,
+                    },
+                },
+            )
+        self.assertFalse(settings.agent.world_notice_enabled)
+        # interval floor is 30s.
+        self.assertEqual(settings.memory.world_notice_interval_seconds, 30)
+        self.assertEqual(settings.memory.world_notice_daily_cap, 9)
+        persist.assert_called_once()
+
+    def test_patch_banner_duration_clamps(self) -> None:
+        client, _session, settings = _build_client()
+        with patch("app.web.server.persist_user_overrides"):
+            client.patch(
+                "/api/settings",
+                json={
+                    "companion": {
+                        "persona_touch_banner_duration_seconds": 9999,
+                    },
+                },
+            )
+        self.assertEqual(
+            settings.agent.persona_touch_banner_duration_seconds, 120,
+        )
+
+    def test_patch_earcons_runs_runtime_hook(self) -> None:
+        client, session, settings = _build_client()
+        with patch("app.web.server.persist_user_overrides") as persist:
+            response = client.patch(
+                "/api/settings",
+                json={"audio": {"earcons_enabled": False}},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(settings.audio.earcons_enabled)
+        # The runtime hook flips the live EarconPlayer too.
+        self.assertFalse(session._earcons.enabled)
+        persist.assert_called_once()
 
 
 class PatchSettingsTests(unittest.TestCase):

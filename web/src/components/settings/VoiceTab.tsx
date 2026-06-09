@@ -199,6 +199,18 @@ export function VoiceTab({
           />
           Allow barge-in (interrupt while Aiko is speaking)
         </label>
+        <label className="mt-3 flex items-center gap-2 text-xs text-ink-100/70">
+          <input
+            type="checkbox"
+            checked={settings.audio.earcons_enabled ?? true}
+            onChange={(e) =>
+              void apply({
+                audio: { earcons_enabled: e.target.checked },
+              })
+            }
+          />
+          Earcons (little [[laugh]] / [[sigh]] sound effects)
+        </label>
       </Section>
 
       <Section title="Microphone DSP">

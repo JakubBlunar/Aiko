@@ -320,18 +320,7 @@ merge operation (writes new row, archives sources), MCP debug tool
 
 ## K36. "Things I did while you were away" — idle-time world activities
 
-Idle-time micro-activities that mutate the world store (Aiko reads a
-book, the cat moves spots, she makes tea, she rearranges her desk).
-Surfaces as one optional line in the greeting after a ≥4h absence ("hey
--- finished the book I started yesterday, btw"). Already half-built via
-the shipped `garden_visit` / `plant_growth` workers; this generalises
-the pattern with a small action pool tied to world-store inventory.
-Pairs with K28 turning-over: K28 surfaces what Aiko has been *thinking*
-about, K36 surfaces what she's been *doing*. Key files: new
-`app/core/world/idle_activity_worker.py`, extension to
-[`WorldStore`](../../app/core/world_store.py) for activity logging,
-inner-life provider that picks at most one activity to mention per
-greeting, settings cap on activities per day.
+**Shipped.** See [`shipped.md`](shipped.md#k36-things-i-did-while-you-were-away--idle-time-world-activities). The [`IdleAwayActivityWorker`](../../app/core/world/idle_activity_worker.py) mutates the world during quiet windows + journals each beat to a `kv_meta` ring; the [`_render_away_activities_block`](../../app/core/session/inner_life_providers_mixin.py) provider surfaces one casual line on the first turn after a ≥4h typed gap, deferring to K28 turning-over so only one gap cue fires per return.
 
 ---
 

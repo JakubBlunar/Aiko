@@ -1,11 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../../../api";
-import type {
-  Belief,
-  BeliefKind,
-  BeliefStatus,
-  BeliefsResponse,
-} from "../../../types";
+import { useAssistantStore } from "../../../store";
+import type { Belief, BeliefKind, BeliefStatus } from "../../../types";
 import { formatRelative } from "../SettingsSection";
 
 const BELIEF_STATUS_FILTERS: { id: BeliefStatus | "all"; label: string }[] = [
@@ -17,11 +13,20 @@ const BELIEF_STATUS_FILTERS: { id: BeliefStatus | "all"; label: string }[] = [
 ];
 
 export function BeliefsPanel() {
-  const [data, setData] = useState<BeliefsResponse | null>(null);
+  // Items + filters live in the global store so the panel stays live as
+  // the K2 worker / ``[[predict:...]]`` tags / the gap detector flip
+  // beliefs over WebSocket (see ``applyBelief*`` reducers). Only the
+  // transient request status stays local.
+  const beliefView = useAssistantStore((s) => s.beliefView);
+  const setBeliefView = useAssistantStore((s) => s.setBeliefView);
+  const kindFilter = beliefView.kindFilter;
+  const statusFilter = beliefView.statusFilter;
+  const setKindFilter = useAssistantStore((s) => s.setBeliefKindFilter);
+  const setStatusFilter = useAssistantStore((s) => s.setBeliefStatusFilter);
+  const applyBeliefUpdated = useAssistantStore((s) => s.applyBeliefUpdated);
+  const applyBeliefDeleted = useAssistantStore((s) => s.applyBeliefDeleted);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [statusFilter, setStatusFilter] = useState<BeliefStatus | "all">("active");
-  const [kindFilter, setKindFilter] = useState<BeliefKind | "all">("all");
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -32,13 +37,17 @@ export function BeliefsPanel() {
         kind: kindFilter === "all" ? undefined : kindFilter,
         status: statusFilter === "all" ? undefined : statusFilter,
       });
-      setData(snapshot);
+      setBeliefView({
+        items: snapshot.beliefs,
+        counts: snapshot.counts ?? null,
+        enabled: snapshot.enabled,
+      });
     } catch (err) {
       setError(String(err));
     } finally {
       setLoading(false);
     }
-  }, [kindFilter, statusFilter]);
+  }, [kindFilter, statusFilter, setBeliefView]);
 
   useEffect(() => {
     void refresh();
@@ -47,42 +56,44 @@ export function BeliefsPanel() {
   const handleContradict = useCallback(
     async (belief: Belief) => {
       try {
-        await api.updateBelief(belief.id, { status: "contradicted" });
-        void refresh();
+        const res = await api.updateBelief(belief.id, {
+          status: "contradicted",
+        });
+        applyBeliefUpdated(res.belief);
       } catch (err) {
         setError(String(err));
       }
     },
-    [refresh],
+    [applyBeliefUpdated],
   );
 
   const handleConfirm = useCallback(
     async (belief: Belief) => {
       try {
-        await api.updateBelief(belief.id, { status: "confirmed" });
-        void refresh();
+        const res = await api.updateBelief(belief.id, { status: "confirmed" });
+        applyBeliefUpdated(res.belief);
       } catch (err) {
         setError(String(err));
       }
     },
-    [refresh],
+    [applyBeliefUpdated],
   );
 
   const handleDelete = useCallback(
     async (belief: Belief) => {
       try {
         await api.deleteBelief(belief.id);
-        void refresh();
+        applyBeliefDeleted(belief.id);
       } catch (err) {
         setError(String(err));
       }
     },
-    [refresh],
+    [applyBeliefDeleted],
   );
 
-  const beliefs = data?.beliefs ?? [];
-  const counts = data?.counts;
-  const enabled = data?.enabled ?? true;
+  const beliefs = beliefView.items;
+  const counts = beliefView.counts ?? undefined;
+  const enabled = beliefView.enabled;
   const grouped = useMemo(() => {
     const mood: Belief[] = [];
     const opinion: Belief[] = [];

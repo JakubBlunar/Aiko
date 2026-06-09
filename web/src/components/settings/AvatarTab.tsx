@@ -6,6 +6,7 @@ import type {
   AccessoryCatalogue,
   AvatarProfile,
   AvatarSettingsKnobs,
+  CompanionSettings,
 } from "../../types";
 import { Section } from "./SettingsSection";
 
@@ -20,6 +21,9 @@ export interface AvatarTabProps {
   onPatchPersonaWindow: (alwaysOnTop: boolean) => Promise<void>;
   onResetPersonaWindow: () => Promise<void>;
   tauri: boolean;
+  /** K31/K32 soft-physicality switches. ``null`` until settings load. */
+  companion: CompanionSettings | null;
+  onPatchCompanion: (patch: Partial<CompanionSettings>) => void;
 }
 
 function prettyAccessoryLabel(key: string): string {
@@ -214,6 +218,8 @@ export function AvatarTab({
   onPatchPersonaWindow,
   onResetPersonaWindow,
   tauri,
+  companion,
+  onPatchCompanion,
 }: AvatarTabProps) {
   return (
     <>
@@ -487,6 +493,72 @@ export function AvatarTab({
           </button>
         </div>
       </Section>
+
+      {companion ? (
+        <Section title="Touch & reactions">
+          <p className="text-[11px] text-ink-100/50">
+            Soft-physicality round-trip: Aiko can send little gestures
+            (a wave, a hug) and you can react to her messages with
+            emoji. The persona overlay shows gestures as a banner.
+          </p>
+          <label className="flex items-center gap-2 text-xs text-ink-100/70">
+            <input
+              type="checkbox"
+              checked={companion.touch_enabled}
+              onChange={(e) =>
+                onPatchCompanion({ touch_enabled: e.target.checked })
+              }
+              className="accent-ink-400"
+            />
+            Aiko can send touch gestures
+          </label>
+          <label className="flex items-center gap-2 text-xs text-ink-100/70">
+            <input
+              type="checkbox"
+              checked={companion.user_reactions_enabled}
+              onChange={(e) =>
+                onPatchCompanion({
+                  user_reactions_enabled: e.target.checked,
+                })
+              }
+              className="accent-ink-400"
+            />
+            Emoji reactions on Aiko's messages
+          </label>
+          <label className="flex items-center gap-2 text-xs text-ink-100/70">
+            <input
+              type="checkbox"
+              checked={companion.persona_touch_banner_enabled}
+              onChange={(e) =>
+                onPatchCompanion({
+                  persona_touch_banner_enabled: e.target.checked,
+                })
+              }
+              className="accent-ink-400"
+            />
+            Show gesture banner in the persona window
+          </label>
+          <label className="ml-6 flex items-center justify-between gap-2 rounded-md bg-white/[0.02] px-3 py-1.5 text-[11px] text-ink-100/60">
+            <span>Banner duration (s)</span>
+            <input
+              type="number"
+              min={1}
+              max={120}
+              value={companion.persona_touch_banner_duration_seconds}
+              disabled={!companion.persona_touch_banner_enabled}
+              onChange={(e) =>
+                onPatchCompanion({
+                  persona_touch_banner_duration_seconds: Math.max(
+                    1,
+                    Math.min(120, Number(e.target.value) || 20),
+                  ),
+                })
+              }
+              className="w-16 rounded border border-white/10 bg-black/30 px-2 py-1 text-right text-ink-100/80 disabled:opacity-40"
+            />
+          </label>
+        </Section>
+      ) : null}
     </>
   );
 }
