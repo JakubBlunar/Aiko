@@ -266,6 +266,103 @@ class ForwardCuriositySettingsTests(unittest.TestCase):
         self.assertEqual(result.memory.forward_curiosity_journal_max, 1)
 
 
+class ConsolidationSettingsTests(unittest.TestCase):
+    """K35: agent master switch + caps + memory knobs round-trip + clamps."""
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(
+        self, agent_extra: dict | None = None, memory_extra: dict | None = None,
+    ) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(json.loads(default_path.read_text(encoding="utf-8")))
+        for k in (
+            "memory_consolidation_enabled",
+            "memory_consolidation_per_hour_cap",
+            "memory_consolidation_per_day_cap",
+        ):
+            cfg.get("agent", {}).pop(k, None)
+        for k in (
+            "consolidation_interval_seconds",
+            "consolidation_lookback_days",
+            "consolidation_similarity_threshold",
+            "consolidation_max_corpus",
+            "consolidation_max_clusters_per_run",
+            "consolidation_min_cluster_size",
+        ):
+            cfg.get("memory", {}).pop(k, None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        if memory_extra is not None:
+            cfg["memory"] = {**cfg.get("memory", {}), **memory_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults_load_when_keys_missing(self) -> None:
+        path = self._write_config()
+        result = load_settings(config_path=path)
+        self.assertTrue(result.agent.memory_consolidation_enabled)
+        self.assertEqual(result.agent.memory_consolidation_per_hour_cap, 6)
+        self.assertEqual(result.agent.memory_consolidation_per_day_cap, 30)
+        self.assertEqual(result.memory.consolidation_interval_seconds, 21600)
+        self.assertEqual(result.memory.consolidation_lookback_days, 30)
+        self.assertAlmostEqual(
+            result.memory.consolidation_similarity_threshold, 0.90,
+        )
+        self.assertEqual(result.memory.consolidation_max_corpus, 1000)
+        self.assertEqual(result.memory.consolidation_max_clusters_per_run, 20)
+        self.assertEqual(result.memory.consolidation_min_cluster_size, 2)
+
+    def test_overrides_round_trip(self) -> None:
+        path = self._write_config(
+            agent_extra={
+                "memory_consolidation_enabled": False,
+                "memory_consolidation_per_day_cap": 10,
+            },
+            memory_extra={
+                "consolidation_interval_seconds": 3600,
+                "consolidation_similarity_threshold": 0.95,
+                "consolidation_max_clusters_per_run": 5,
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.memory_consolidation_enabled)
+        self.assertEqual(result.agent.memory_consolidation_per_day_cap, 10)
+        self.assertEqual(result.memory.consolidation_interval_seconds, 3600)
+        self.assertAlmostEqual(
+            result.memory.consolidation_similarity_threshold, 0.95,
+        )
+        self.assertEqual(result.memory.consolidation_max_clusters_per_run, 5)
+
+    def test_clamps_out_of_range_values(self) -> None:
+        path = self._write_config(
+            memory_extra={
+                "consolidation_interval_seconds": 1,  # floor 60
+                "consolidation_similarity_threshold": 9.0,  # cap 1.0
+                "consolidation_min_cluster_size": 0,  # floor 2
+                "consolidation_max_corpus": 1,  # floor 10
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertEqual(result.memory.consolidation_interval_seconds, 60)
+        self.assertAlmostEqual(
+            result.memory.consolidation_similarity_threshold, 1.0,
+        )
+        self.assertEqual(result.memory.consolidation_min_cluster_size, 2)
+        self.assertEqual(result.memory.consolidation_max_corpus, 10)
+
+
 class CallbackDetectorSettingsTests(unittest.TestCase):
     """K22: agent master switch + 6 memory knobs round-trip with clamps."""
 

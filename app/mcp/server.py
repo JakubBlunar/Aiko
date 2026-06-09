@@ -2979,6 +2979,93 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"force_forward_curiosity_surface raised: {exc}"
 
     @mcp.tool()
+    def get_memory_consolidation_state() -> str:
+        """K35 — dump the memory-consolidation worker state.
+
+        Returns a JSON dict with the master switch, whether the worker
+        wired up (needs MemoryStore + embedder + idle scheduler), the
+        cadence + threshold + cap knobs, and the current merge-LLM
+        rate-limiter budget (``hour_used`` / ``day_used`` vs caps).
+        """
+        try:
+            worker = getattr(session, "_memory_consolidation_worker", None)
+            limiter = getattr(
+                session, "_memory_consolidation_rate_limiter", None
+            )
+            mem = session._memory_settings
+            return json.dumps(
+                {
+                    "enabled": bool(
+                        getattr(
+                            session._settings.agent,
+                            "memory_consolidation_enabled",
+                            True,
+                        )
+                    ),
+                    "worker_registered": worker is not None,
+                    "interval_seconds": int(
+                        getattr(mem, "consolidation_interval_seconds", 21600)
+                    ),
+                    "lookback_days": int(
+                        getattr(mem, "consolidation_lookback_days", 30)
+                    ),
+                    "similarity_threshold": float(
+                        getattr(
+                            mem, "consolidation_similarity_threshold", 0.90
+                        )
+                    ),
+                    "max_corpus": int(
+                        getattr(mem, "consolidation_max_corpus", 1000)
+                    ),
+                    "max_clusters_per_run": int(
+                        getattr(
+                            mem, "consolidation_max_clusters_per_run", 20
+                        )
+                    ),
+                    "min_cluster_size": int(
+                        getattr(mem, "consolidation_min_cluster_size", 2)
+                    ),
+                    "rate_limiter": (
+                        limiter.snapshot() if limiter is not None else None
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"get_memory_consolidation_state raised: {exc}"
+
+    @mcp.tool()
+    def force_memory_consolidation() -> str:
+        """K35 — run the consolidation worker once, right now.
+
+        Bypasses the idle scheduler's quiet-window + interval gates by
+        calling ``run()`` directly. The per-run cluster cap + the merge
+        LLM rate limiter still apply (so a forced run won't fuse the
+        whole store at once). Returns the worker's run summary
+        (``corpus_size`` / ``clusters`` / ``merged`` / ``absorbed`` /
+        ``llm_used``). Repro: insert a few near-identical scratchpad
+        memories, call this, then confirm one survives as ``long_term``
+        with ``metadata.source_ids`` and the rest are ``archive`` with
+        ``metadata.consolidated_into``.
+        """
+        try:
+            worker = getattr(session, "_memory_consolidation_worker", None)
+            if worker is None:
+                return json.dumps(
+                    {
+                        "error": (
+                            "worker not registered (no MemoryStore / "
+                            "embedder / disabled?)"
+                        ),
+                    },
+                    indent=2,
+                )
+            result = worker.run()
+            return json.dumps({"ran": True, "result": result}, indent=2)
+        except Exception as exc:
+            return f"force_memory_consolidation raised: {exc}"
+
+    @mcp.tool()
     def get_confidence_decay_state(limit: int = 20) -> str:
         """K25 — preview which memory rows would currently render
         with the ``(distant)`` suffix.
