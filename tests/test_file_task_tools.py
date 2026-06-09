@@ -156,6 +156,14 @@ class StartFileSearchSchemaTests(unittest.TestCase):
         for key in ("root_label", "max_results", "case_sensitive"):
             self.assertIn(key, props)
 
+    def test_schema_cross_references_workflow(self) -> None:
+        # Routing fix: the fast search tool must point multi-step requests
+        # at start_workflow so the model stops hand-chaining.
+        tool = StartFileSearchTool(_FakeSession(orchestrator=_FakeOrchestrator()))
+        desc = tool.schema().description.lower()
+        self.assertIn("start_workflow", desc)
+        self.assertIn("one search only", desc)
+
 
 class StartFileSearchRunTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -305,6 +313,12 @@ class StartFileReadSchemaTests(unittest.TestCase):
         params = tool.schema().parameters
         self.assertIn("path", params["properties"])
         self.assertEqual(params["required"], ["path"])
+
+    def test_schema_cross_references_workflow(self) -> None:
+        tool = StartFileReadTool(_FakeSession(orchestrator=_FakeOrchestrator()))
+        desc = tool.schema().description.lower()
+        self.assertIn("start_workflow", desc)
+        self.assertIn("one file only", desc)
 
     def test_schema_optional_max_bytes(self) -> None:
         tool = StartFileReadTool(_FakeSession(orchestrator=_FakeOrchestrator()))

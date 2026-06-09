@@ -168,6 +168,68 @@ class RenderBlockTests(unittest.TestCase):
         self.assertEqual(snap["items"], [])
 
 
+class GiftSignalTests(unittest.TestCase):
+    """add_world_item must arm the gift signal + watermark for user gifts.
+
+    The UI's "give" surface (POST /api/world/items) calls add_world_item
+    directly, bypassing give_item — so the signal has to live here.
+    """
+
+    def _make_with_db(self):
+        tmp = tempfile.TemporaryDirectory()
+        db_path = Path(tmp.name) / "gift.db"
+        db = ChatDatabase(db_path)
+        store = WorldStore(db_path)
+        store.seed_default()
+        controller = SessionController.__new__(SessionController)
+        controller._world_store = store
+        controller._world_listeners = []
+        controller._chat_db = db
+        controller._last_turn_gift_received = False
+        controller._settings = _SettingsStub(assistant=_AssistantStub())  # type: ignore[attr-defined]
+        return controller, db, tmp
+
+    def test_user_gift_sets_signal_and_watermark(self) -> None:
+        import json as _json
+
+        from app.core.session.world_mixin import WORLD_LAST_USER_GIFT_KEY
+
+        controller, db, tmp = self._make_with_db()
+        snap = controller.add_world_item(
+            name="green tea", kind="food", consumable=True, given_by="user",
+        )
+        self.assertIsNotNone(snap)
+        self.assertTrue(controller._last_turn_gift_received)
+        raw = db.kv_get(WORLD_LAST_USER_GIFT_KEY)
+        self.assertIsNotNone(raw)
+        blob = _json.loads(raw)
+        self.assertEqual(blob["name"], "green tea")
+        self.assertTrue(blob.get("at"))
+        _cleanup(tmp, controller)
+
+    def test_non_user_item_does_not_arm_signal(self) -> None:
+        from app.core.session.world_mixin import WORLD_LAST_USER_GIFT_KEY
+
+        controller, db, tmp = self._make_with_db()
+        controller.add_world_item(name="loose rock", kind="other")
+        self.assertFalse(controller._last_turn_gift_received)
+        self.assertIsNone(db.kv_get(WORLD_LAST_USER_GIFT_KEY))
+        _cleanup(tmp, controller)
+
+    def test_new_gift_render_is_one_shot_strong_cue(self) -> None:
+        controller, _db, tmp = self._make_with_db()
+        controller.add_world_item(
+            name="paper crane", kind="other", given_by="user",
+        )
+        strong = controller._world_store.render_block(new_gift=True)
+        self.assertIn("just set", strong.lower())
+        self.assertIn("first time", strong.lower())
+        calm = controller._world_store.render_block(new_gift=False)
+        self.assertIn("gave you", calm.lower())
+        self.assertIn("never force a room mention", calm.lower())
+        _cleanup(tmp, controller)
+
+
 class ResetTests(unittest.TestCase):
     def test_reseed_world_emits_snapshot(self) -> None:
         controller, _, tmp = _make_controller()

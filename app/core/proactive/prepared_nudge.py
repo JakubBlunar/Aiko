@@ -64,6 +64,11 @@ VALID_SOURCE_KINDS: tuple[str, ...] = (
     # weaver short-circuits the LLM step and uses it verbatim. Tagged
     # so the typed-mode proactive director can label it correctly.
     "curiosity_seed",
+    # WorldNoticeWorker: a proactive line about Aiko's room — something the
+    # user just left her, or a small thing she's doing in the room after a
+    # quiet stretch. Pre-rendered by the worker (deterministic or local-LLM
+    # composed) so the proactive director speaks it verbatim.
+    "world",
 )
 
 

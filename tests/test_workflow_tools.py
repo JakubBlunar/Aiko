@@ -115,6 +115,14 @@ class StartWorkflowSchemaTests(unittest.TestCase):
         self.assertEqual(params["required"], ["goal"])
         self.assertIn("goal", params["properties"])
 
+    def test_schema_signals_multistep_trigger(self) -> None:
+        # The routing fix leans entirely on the description: a forced-choice
+        # model must see an unmissable "more than one step -> me" cue.
+        tool = StartWorkflowTool(_FakeSession(orchestrator=_FakeOrchestrator()))
+        desc = tool.schema().description.lower()
+        self.assertIn("multi-step", desc)
+        self.assertIn("more than one step", desc)
+
 
 class StartWorkflowRunTests(unittest.TestCase):
     def setUp(self) -> None:

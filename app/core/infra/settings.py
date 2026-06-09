@@ -445,6 +445,13 @@ class AgentSettings:
     # conversation even when away from the screen) so this flag does
     # not affect it.
     proactive_typed_when_away: bool = False
+    # ── World-notice proactive (Aiko reaches out about her room) ──────
+    # Master switch for the WorldNoticeWorker, which primes a proactive
+    # nudge when the user has left something in Aiko's room or after a
+    # long quiet stretch. The actual cadence / cooldown / daily-cap live
+    # in ``MemorySettings.world_notice_*`` alongside the other idle
+    # workers; this just turns the whole behaviour on or off.
+    world_notice_enabled: bool = True
     # ── Activity awareness (desktop opt-in) ───────────────────────────
     # When enabled and running inside the Tauri desktop shell, the
     # foreground application name is forwarded over WebSocket so Aiko
@@ -1889,6 +1896,23 @@ class MemorySettings:
     # store is at ``curiosity_seed_max_active`` so the cadence is a
     # ceiling, not a floor.
     curiosity_seed_interval_seconds: int = 3600
+    # WorldNoticeWorker cadence + pacing. The worker checks for a freshly
+    # user-given item (kv watermark) or a long-enough quiet stretch and
+    # primes a single proactive "I noticed my room" nudge. Runs often
+    # (default 5 min) because it's cheap and quiet-gated, but a
+    # per-fire cooldown (default 1h) plus a daily cap keep the actual
+    # nudges rare so she stays subtle rather than chatty. ``ttl`` bounds
+    # how long a primed nudge stays fresh before the proactive director
+    # drops it unspoken.
+    world_notice_interval_seconds: int = 300
+    world_notice_cooldown_seconds: int = 3600
+    world_notice_daily_cap: int = 4
+    world_notice_ttl_seconds: int = 1800
+    # Output-token ceiling for the memory extractor's JSON response.
+    # The old hardcoded 512 truncated the ``"memories": [...]`` array
+    # mid-object on longer transcripts, losing the whole batch; 1024
+    # fits the capped output and the salvage parser recovers the rest.
+    memory_extractor_max_tokens: int = 1024
     # K1: cap on simultaneously-active long-term goals Aiko carries.
     # When :meth:`GoalStore.add_goal` would push past the cap, the
     # oldest un-pinned active goal is archived (its progress history
@@ -2816,6 +2840,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             ),
             proactive_typed_when_away=bool(
                 agent_raw.get("proactive_typed_when_away", False),
+            ),
+            world_notice_enabled=bool(
+                agent_raw.get("world_notice_enabled", True),
             ),
             activity_awareness_enabled=bool(
                 agent_raw.get("activity_awareness_enabled", False),
@@ -4013,6 +4040,26 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             curiosity_seed_interval_seconds=max(
                 60,
                 int(memory_raw.get("curiosity_seed_interval_seconds", 3600)),
+            ),
+            world_notice_interval_seconds=max(
+                30,
+                int(memory_raw.get("world_notice_interval_seconds", 300)),
+            ),
+            world_notice_cooldown_seconds=max(
+                0,
+                int(memory_raw.get("world_notice_cooldown_seconds", 3600)),
+            ),
+            world_notice_daily_cap=max(
+                0,
+                int(memory_raw.get("world_notice_daily_cap", 4)),
+            ),
+            world_notice_ttl_seconds=max(
+                60,
+                int(memory_raw.get("world_notice_ttl_seconds", 1800)),
+            ),
+            memory_extractor_max_tokens=max(
+                256,
+                int(memory_raw.get("memory_extractor_max_tokens", 1024)),
             ),
             goal_max_active=max(
                 1, int(memory_raw.get("goal_max_active", 5)),

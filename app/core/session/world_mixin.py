@@ -18,9 +18,16 @@ just calls ``self.*``.
 """
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
+
+# kv_meta key the WorldNoticeWorker watches for a freshly user-given item.
+# Holds a small JSON blob ``{"id", "name", "at"}`` stamped by
+# ``add_world_item`` whenever ``given_by == "user"``.
+WORLD_LAST_USER_GIFT_KEY = "world.last_user_gift"
 
 if TYPE_CHECKING:  # pragma: no cover - import-cycle guard
     from app.core.world.world_store import WorldStore
@@ -760,6 +767,31 @@ class WorldMixin:
         item, _created = result
         snap = item.to_dict()
         self._notify_world({"item": snap})
+        # When the user drops something in Aiko's room (the UI's "give"
+        # surface hits this path directly via POST /api/world/items, NOT
+        # ``give_item``), arm the single-turn gift signal so the next
+        # post-turn axes update + moment detector see it, and stamp a
+        # kv watermark the WorldNoticeWorker reads to prime a proactive
+        # "I noticed what you left me" nudge. Best-effort: never let a
+        # bookkeeping hiccup break the item insert.
+        if (given_by or "").strip().lower() == "user":
+            try:
+                self.note_gift_received()
+            except Exception:
+                log.debug("note_gift_received failed", exc_info=True)
+            try:
+                self._chat_db.kv_set(
+                    WORLD_LAST_USER_GIFT_KEY,
+                    json.dumps({
+                        "id": snap.get("id"),
+                        "name": snap.get("name") or name,
+                        "at": datetime.now(timezone.utc).isoformat(
+                            timespec="seconds"
+                        ),
+                    }),
+                )
+            except Exception:
+                log.debug("world gift watermark write failed", exc_info=True)
         return snap
 
     def update_world_item(
