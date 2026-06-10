@@ -48,15 +48,9 @@ Shipped — see [`shipped.md`](shipped.md) "K8. Affect rupture-and-repair
 
 ## K9. Topic-graph / interest-network browser
 
-Build a lightweight cosine-cluster graph of memories so Aiko can
-notice "this topic touches three threads we've been on" and surface
-connections naturally. Reuses the embeddings already in
-[`app/core/rag/rag_store.py`](../../app/core/rag/rag_store.py); the graph
-itself is computed lazily and cached. UI side: a minimal "topic
-graph" sub-tab in the Memory tab that visualises clusters so the user
-can see what Aiko sees. Key files: new
-`app/core/conversation/topic_graph.py`, [`app/core/rag/rag_retriever.py`](../../app/core/rag/rag_retriever.py)
-(graph-aware multi-hop retrieval), Memory tab.
+**Shipped (browser surface).** See [`shipped.md`](shipped.md#k9-topic-graph-browser--observability-surface). The lazy cosine-cluster engine ([`topic_graph.py`](../../app/core/conversation/topic_graph.py)) and the `CuriositySeedWorker` that consumes it shipped earlier; the observability surface ships now: [`build_topic_graph_snapshot`](../../app/core/conversation/topic_graph.py) backs a read-only `GET /api/topic-graph` REST endpoint, `get_topic_graph` / `force_topic_graph_rebuild` MCP tools, and a "Topic graph" cluster-list panel in the Memory drawer tab so the user can see what Aiko sees.
+
+**Deferred follow-up:** the **graph-aware multi-hop retrieval** half of the original K9 spec (expanding [`rag_retriever.py`](../../app/core/rag/rag_retriever.py) hits along the topic graph for "this touches three threads we've been on") is intentionally NOT built yet -- it changes prompt content + retrieval behaviour and is a separate, riskier project from the inspection browser.
 
 ---
 

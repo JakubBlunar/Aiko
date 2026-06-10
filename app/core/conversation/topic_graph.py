@@ -352,7 +352,109 @@ class TopicGraph:
         return _normalise(mean)
 
 
+def _trim_member(text: str, *, max_chars: int) -> str:
+    """Collapse whitespace and hard-cap a member's content for the UI."""
+    flat = " ".join(str(text or "").split())
+    if len(flat) > max_chars:
+        return flat[: max_chars - 1].rstrip(",;: ") + "\u2026"
+    return flat
+
+
+def build_topic_graph_snapshot(
+    topic_graph: "TopicGraph | None",
+    memory_store: "MemoryStore | None",
+    *,
+    max_member_chars: int = 160,
+) -> dict:
+    """Serialise the K9 topic graph into a JSON-friendly dict.
+
+    This is the single source of truth behind the ``GET /api/topic-graph``
+    REST endpoint and the ``get_topic_graph`` MCP tool. It is pure (no
+    I/O beyond reading the in-process mirror), so it is unit-testable
+    without a full :class:`SessionController`.
+
+    When ``topic_graph`` or ``memory_store`` is ``None`` (feature
+    disabled, init failed, or memory subsystem absent) it returns an
+    empty-but-valid shape with ``enabled=False`` so callers never have
+    to special-case the disabled path.
+
+    Each cluster joins its ``member_ids`` back to the live
+    :class:`Memory` rows for content / kind / salience / tier; missing
+    rows (deleted between cluster build and snapshot) are skipped.
+    Clusters are sorted by size descending so the densest topic
+    knots -- the ones most worth eyeballing -- sit at the top.
+    """
+    if topic_graph is None or memory_store is None:
+        return {
+            "enabled": False,
+            "total_memories": 0,
+            "total_clusters": 0,
+            "clustered_memories": 0,
+            "similarity": 0.0,
+            "min_cluster_size": 0,
+            "filter_threshold": 0.0,
+            "clusters": [],
+        }
+
+    clusters_out: list[dict] = []
+    clustered_memories = 0
+    for cluster in topic_graph.topic_clusters():
+        members: list[dict] = []
+        kind_counts: dict[str, int] = {}
+        for mid in cluster.member_ids:
+            mem = memory_store.get(int(mid))
+            if mem is None:
+                continue
+            kind = str(mem.kind)
+            kind_counts[kind] = kind_counts.get(kind, 0) + 1
+            members.append({
+                "id": int(mem.id),
+                "content": _trim_member(mem.content, max_chars=max_member_chars),
+                "kind": kind,
+                "salience": float(mem.salience),
+                "tier": str(mem.tier),
+            })
+        if not members:
+            continue
+        clustered_memories += len(members)
+        clusters_out.append({
+            "cluster_id": int(cluster.cluster_id),
+            "summary": cluster.summary,
+            "size": len(members),
+            "representative_id": int(cluster.representative_id),
+            "kind_counts": kind_counts,
+            "members": members,
+        })
+
+    clusters_out.sort(key=lambda c: c["size"], reverse=True)
+
+    # Total memories with a usable embedding -- the denominator for the
+    # "what fraction of memory has clustered" readout in the UI header.
+    total_memories = 0
+    try:
+        with memory_store._lock:  # type: ignore[attr-defined]
+            total_memories = sum(
+                1
+                for m in memory_store._mirror.values()  # type: ignore[attr-defined]
+                if m.embedding is not None and m.embedding.size > 0
+            )
+    except Exception:
+        total_memories = clustered_memories
+
+    return {
+        "enabled": True,
+        "total_memories": total_memories,
+        "total_clusters": len(clusters_out),
+        "clustered_memories": clustered_memories,
+        "similarity": float(getattr(topic_graph, "_similarity", 0.0)),
+        "min_cluster_size": int(getattr(topic_graph, "_min_cluster_size", 0)),
+        "filter_threshold": float(getattr(topic_graph, "_filter_threshold", 0.0)),
+        "clusters": clusters_out,
+    }
+
+
 __all__ = [
     "TopicCluster",
     "TopicGraph",
+    "build_topic_graph_snapshot",
 ]

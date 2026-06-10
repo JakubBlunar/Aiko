@@ -783,6 +783,36 @@ export interface MemoryConflictsResponse {
   };
 }
 
+// ── K9 topic-graph browser ──────────────────────────────────────────
+
+export interface TopicGraphMember {
+  id: number;
+  content: string;
+  kind: string;
+  salience: number;
+  tier: string;
+}
+
+export interface TopicGraphCluster {
+  cluster_id: number;
+  summary: string;
+  size: number;
+  representative_id: number;
+  kind_counts: Record<string, number>;
+  members: TopicGraphMember[];
+}
+
+export interface TopicGraphSnapshot {
+  enabled: boolean;
+  total_memories: number;
+  total_clusters: number;
+  clustered_memories: number;
+  similarity: number;
+  min_cluster_size: number;
+  filter_threshold: number;
+  clusters: TopicGraphCluster[];
+}
+
 // ── K2 theory-of-mind beliefs ───────────────────────────────────────
 
 export type BeliefKind = "mood" | "opinion";
