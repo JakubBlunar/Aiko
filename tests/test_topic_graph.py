@@ -14,7 +14,11 @@ from typing import Any
 
 import numpy as np
 
-from app.core.conversation.topic_graph import TopicGraph, _normalise
+from app.core.conversation.topic_graph import (
+    TopicGraph,
+    _normalise,
+    build_topic_graph_snapshot,
+)
 
 
 # ── stub mirror ──────────────────────────────────────────────────────
@@ -45,6 +49,10 @@ class _StubMemoryStore:
     def add(self, mem: _StubMemory) -> None:
         with self._lock:
             self._mirror[mem.id] = mem
+
+    def get(self, memory_id: int) -> _StubMemory | None:
+        with self._lock:
+            return self._mirror.get(int(memory_id))
 
 
 def _vec(seed: list[float]) -> np.ndarray:
@@ -199,6 +207,86 @@ class CacheInvalidationTests(unittest.TestCase):
         second = graph.topic_clusters()
         if first and second:
             self.assertIsNot(first[0], second[0])
+
+
+class SnapshotTests(unittest.TestCase):
+    """K9 browser surface: ``build_topic_graph_snapshot`` shape + joins."""
+
+    def test_disabled_when_topic_graph_none(self) -> None:
+        snap = build_topic_graph_snapshot(None, _StubMemoryStore())
+        self.assertFalse(snap["enabled"])
+        self.assertEqual(snap["clusters"], [])
+        self.assertEqual(snap["total_clusters"], 0)
+
+    def test_disabled_when_memory_store_none(self) -> None:
+        store = _build_two_cluster_store()
+        graph = TopicGraph(store, similarity=0.55, min_cluster_size=2)
+        snap = build_topic_graph_snapshot(graph, None)
+        self.assertFalse(snap["enabled"])
+
+    def test_snapshot_shape_and_joins(self) -> None:
+        store = _build_two_cluster_store()
+        graph = TopicGraph(
+            store, similarity=0.55, min_cluster_size=2, filter_threshold=0.65,
+        )
+        snap = build_topic_graph_snapshot(graph, store)
+        self.assertTrue(snap["enabled"])
+        self.assertEqual(snap["total_clusters"], 2)
+        self.assertEqual(snap["total_memories"], 6)
+        self.assertEqual(snap["clustered_memories"], 6)
+        self.assertAlmostEqual(snap["similarity"], 0.55)
+        self.assertEqual(snap["min_cluster_size"], 2)
+        # Each cluster carries joined member details.
+        for cluster in snap["clusters"]:
+            self.assertEqual(cluster["size"], len(cluster["members"]))
+            self.assertIn("kind_counts", cluster)
+            for member in cluster["members"]:
+                self.assertIn("id", member)
+                self.assertIn("content", member)
+                self.assertIn("kind", member)
+                self.assertIn("tier", member)
+                self.assertIn("salience", member)
+
+    def test_clusters_sorted_by_size_desc(self) -> None:
+        store = _StubMemoryStore()
+        # Cluster A: 4 members; cluster B: 2 members.
+        for i, off in enumerate([0.30, 0.32, 0.28, 0.34]):
+            store.add(
+                _StubMemory(
+                    id=i + 1,
+                    content=f"cat fact {i}",
+                    embedding=_vec([0.95, off, 0.0, 0.0]),
+                )
+            )
+        for i, off in enumerate([0.30, 0.34]):
+            store.add(
+                _StubMemory(
+                    id=100 + i,
+                    content=f"herb fact {i}",
+                    embedding=_vec([0.0, 0.0, 0.95, off]),
+                )
+            )
+        graph = TopicGraph(store, similarity=0.55, min_cluster_size=2)
+        snap = build_topic_graph_snapshot(graph, store)
+        sizes = [c["size"] for c in snap["clusters"]]
+        self.assertEqual(sizes, sorted(sizes, reverse=True))
+        self.assertEqual(sizes[0], 4)
+
+    def test_member_content_trimmed(self) -> None:
+        store = _StubMemoryStore()
+        long_text = "x" * 500
+        for i in range(2):
+            store.add(
+                _StubMemory(
+                    id=i + 1,
+                    content=long_text,
+                    embedding=_vec([0.95, 0.30 + i * 0.01, 0.0, 0.0]),
+                )
+            )
+        graph = TopicGraph(store, similarity=0.55, min_cluster_size=2)
+        snap = build_topic_graph_snapshot(graph, store, max_member_chars=160)
+        member = snap["clusters"][0]["members"][0]
+        self.assertLessEqual(len(member["content"]), 160)
 
 
 if __name__ == "__main__":

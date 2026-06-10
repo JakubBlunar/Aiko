@@ -3812,3 +3812,19 @@ The missing third corner of the contradiction family. F5 finds two *stored* memo
 
 Tests: [`tests/test_self_correction_detector.py`](../../tests/test_self_correction_detector.py) (contradiction found/not, confidence gate, kind allow-list, overlap shortlist, strongest-hit, hit shape), [`tests/test_post_turn_self_correction.py`](../../tests/test_post_turn_self_correction.py) (master switch + cooldown + hit/no-hit arming), `SelfCorrectionProviderTests` in [`tests/test_prompt_assembler.py`](../../tests/test_prompt_assembler.py) (lands / silent / one-shot / aggressive), `SelfCorrectionSettingsTests` in [`tests/test_settings.py`](../../tests/test_settings.py).
 
+---
+
+## K9. Topic-graph browser — observability surface
+
+The cosine-cluster engine ([`TopicGraph`](../../app/core/conversation/topic_graph.py)) and the `CuriositySeedWorker` that uses it as a "we've already covered that" filter shipped earlier; the graph was internal-only. K9 here ships the **browser** the engine's own docstring always promised ("a Memory tab UI panel [that] surfaces a flat-list cluster view so the user can see what Aiko sees") — a read-only debugging surface, no retrieval behaviour change.
+
+**Snapshot helper** ([`topic_graph.py`](../../app/core/conversation/topic_graph.py)). New pure `build_topic_graph_snapshot(topic_graph, memory_store, *, max_member_chars=160) -> dict`: calls `topic_graph.topic_clusters()`, joins each `member_id` back to its live `Memory` via `memory_store.get(id)` (dropping rows deleted since the cluster build), and returns `{enabled, total_memories, total_clusters, clustered_memories, similarity, min_cluster_size, filter_threshold, clusters[]}`. Clusters are sorted by size desc (densest knots first); each carries `summary` / `size` / `representative_id` / `kind_counts` / `members[{id, content (trimmed), kind, salience, tier}]`. Returns an `enabled=False` empty-but-valid shape when the graph or memory store is absent, so no caller special-cases the disabled path.
+
+**Controller + REST + MCP**. [`memory_facade_mixin.py`](../../app/core/session/memory_facade_mixin.py) adds `SessionController.topic_graph_snapshot()` (delegates to the helper, try/except -> disabled shape). [`server.py`](../../app/web/server.py) adds read-only `GET /api/topic-graph` (no body, no WS event — the graph is advisory + lazily rebuilt, the panel fetches on open + manual refresh). [`app/mcp/server.py`](../../app/mcp/server.py) adds `get_topic_graph()` (dump the snapshot) and `force_topic_graph_rebuild()` (invalidate the cache + return a fresh build — useful after hand-inserting memories). Trace via `tail_logs(module_contains="topic_graph")` (`topic_graph rebuilt:`).
+
+**Frontend** ([`TopicGraphPanel.tsx`](../../web/src/components/settings/memory/TopicGraphPanel.tsx)). A read-only panel stacked in the Memory drawer tab ([`MemoryTab.tsx`](../../web/src/components/settings/MemoryTab.tsx)) mirroring `MemoryConflictsPanel`: fetch-on-mount + refresh button, a header readout (`clustered/total` memories, `sim`, `min size`), and expandable cluster rows (summary + kind-count chips, expanding to the member list). `TopicGraphMember` / `TopicGraphCluster` / `TopicGraphSnapshot` types + `api.getTopicGraph()`.
+
+**Deferred:** the graph-aware multi-hop retrieval half of the original K9 spec (expanding RAG hits along the topic graph) is intentionally NOT built — it changes prompt content and is a separate, riskier project from this inspection browser.
+
+Tests: `SnapshotTests` in [`tests/test_topic_graph.py`](../../tests/test_topic_graph.py) (disabled paths, shape + member joins, size-desc sort, content trimming), [`tests/test_web_server_topic_graph.py`](../../tests/test_web_server_topic_graph.py) (`GET 200` + enabled/disabled shapes), and [`web/src/components/TopicGraphPanel.test.tsx`](../../web/src/components/TopicGraphPanel.test.tsx) (source wiring: fetch + mount + member render).
+

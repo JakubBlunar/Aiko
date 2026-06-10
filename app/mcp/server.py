@@ -3126,6 +3126,53 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"force_self_correction raised: {exc}"
 
     @mcp.tool()
+    def get_topic_graph() -> str:
+        """K9 — dump the memory topic-cluster graph ("what Aiko sees").
+
+        Returns the same JSON snapshot that backs ``GET /api/topic-graph``
+        and the Memory-tab browser panel:
+
+        - ``enabled``: whether the TopicGraph wired up (needs a loaded
+          MemoryStore + embedder + ``agent.topic_graph_enabled``).
+        - ``total_memories`` / ``clustered_memories`` / ``total_clusters``:
+          the density readout.
+        - ``similarity`` / ``min_cluster_size`` / ``filter_threshold``:
+          the live clustering knobs.
+        - ``clusters``: sorted by size desc, each with ``summary`` /
+          ``size`` / ``kind_counts`` / ``members`` (id, trimmed content,
+          kind, salience, tier).
+
+        The graph rebuilds lazily; the ``topic_graph rebuilt:`` DEBUG
+        line is grep-able via ``tail_logs(module_contains="topic_graph")``.
+        """
+        try:
+            return json.dumps(session.topic_graph_snapshot(), indent=2)
+        except Exception as exc:
+            return f"get_topic_graph raised: {exc}"
+
+    @mcp.tool()
+    def force_topic_graph_rebuild() -> str:
+        """K9 — drop the cached cluster snapshot and rebuild immediately.
+
+        Handy after hand-inserting memories during debugging: the graph
+        is normally cache-keyed on the mirror identity, so a manual
+        ``MemoryStore`` poke that doesn't bump the key won't show up
+        until the next real write. This invalidates the cache and
+        returns the freshly-built snapshot.
+        """
+        try:
+            graph = getattr(session, "_topic_graph", None)
+            if graph is None:
+                return json.dumps(
+                    {"error": "topic graph not registered (disabled?)"},
+                    indent=2,
+                )
+            graph.invalidate()
+            return json.dumps(session.topic_graph_snapshot(), indent=2)
+        except Exception as exc:
+            return f"force_topic_graph_rebuild raised: {exc}"
+
+    @mcp.tool()
     def get_memory_consolidation_state() -> str:
         """K35 — dump the memory-consolidation worker state.
 

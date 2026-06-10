@@ -751,6 +751,38 @@ class MemoryFacadeMixin:
             "counts": counts,
         }
 
+    def topic_graph_snapshot(self) -> dict[str, Any]:
+        """K9: serialise the topic-cluster graph for the browser surface.
+
+        Backs ``GET /api/topic-graph`` + the ``get_topic_graph`` MCP
+        tool. Delegates to the pure
+        :func:`app.core.conversation.topic_graph.build_topic_graph_snapshot`
+        helper, which returns an empty-but-valid shape (``enabled=False``)
+        when the graph is disabled / failed to init or the memory store
+        is absent. Best-effort: any failure collapses to the same
+        disabled shape rather than raising into the request handler.
+        """
+        topic_graph = getattr(self, "_topic_graph", None)
+        memory_store = getattr(self, "_memory_store", None)
+        try:
+            from app.core.conversation.topic_graph import (
+                build_topic_graph_snapshot,
+            )
+
+            return build_topic_graph_snapshot(topic_graph, memory_store)
+        except Exception:
+            log.debug("topic graph snapshot failed", exc_info=True)
+            return {
+                "enabled": False,
+                "total_memories": 0,
+                "total_clusters": 0,
+                "clustered_memories": 0,
+                "similarity": 0.0,
+                "min_cluster_size": 0,
+                "filter_threshold": 0.0,
+                "clusters": [],
+            }
+
     def resolve_memory_conflict(
         self,
         pair_id: int,

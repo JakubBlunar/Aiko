@@ -36,6 +36,7 @@ import type {
   SharedMoment,
   SharedMomentsResponse,
   TogetherSummary,
+  TopicGraphSnapshot,
   UploadDocumentResponse,
   WorldItem,
   WorldItemPayload,
@@ -365,6 +366,8 @@ export const api = {
       `/api/memory-conflicts/${pairId}/dismiss`,
       { method: "POST" },
     ),
+  // ── Topic-graph browser (K9) ─────────────────────────────────────
+  getTopicGraph: () => jsonFetch<TopicGraphSnapshot>("/api/topic-graph"),
   // ── Theory-of-mind beliefs (K2) ──────────────────────────────────
   listBeliefs: (
     options: {

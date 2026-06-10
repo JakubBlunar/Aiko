@@ -2101,6 +2101,16 @@ def create_web_app(session: "SessionController") -> FastAPI:
         )
         return JSONResponse(snapshot)
 
+    @app.get("/api/topic-graph")
+    def get_topic_graph() -> JSONResponse:
+        """K9: read-only snapshot of the memory topic-cluster graph.
+
+        Advisory + lazily rebuilt from the in-process memory mirror, so
+        there's no body and no WS event -- the Memory-tab panel fetches
+        on open and on manual refresh.
+        """
+        return JSONResponse(session.topic_graph_snapshot())
+
     @app.post("/api/memory-conflicts/{pair_id}/resolve")
     async def resolve_memory_conflict(
         pair_id: int, payload: dict[str, Any] | None = None,
