@@ -367,6 +367,80 @@ class AffectUpdater:
 # ── prompt block ────────────────────────────────────────────────────────
 
 
+# K44 — felt-language grid. 5 valence bands x 3 arousal bands, mapped to
+# direct, forward emotion words (circumplex style) rather than poetic
+# texture: "excited" is a word Aiko can naturally echo back in speech
+# ("I'm kind of excited today" is a feature); literal floats — and
+# purple phrases like "quietly glowing" — are exactly what a model
+# parrots badly. The raw valence/arousal floats stay on AffectState for
+# MCP / REST / logs; the prompt only ever sees these words.
+#
+# Rows: valence band (very positive → very negative).
+# Columns: arousal band (low / mid / high energy).
+_FELT_PHRASES: dict[str, tuple[str, str, str]] = {
+    "very_positive": (
+        "happy in a quiet, settled way",
+        "really good today",
+        "genuinely excited, lots of energy",
+    ),
+    "positive": (
+        "mellow and content",
+        "in a good mood",
+        "upbeat, a little buzzed",
+    ),
+    "neutral": (
+        "calm, unhurried",
+        "pretty even",
+        "antsy, hard to sit still",
+    ),
+    "negative": (
+        "a bit drained, low energy",
+        "a little flat",
+        "restless and off",
+    ),
+    "very_negative": (
+        "down and low on energy",
+        "heavy-hearted",
+        "upset and wound up",
+    ),
+}
+
+
+def _valence_band(valence: float) -> str:
+    if valence <= -0.5:
+        return "very_negative"
+    if valence <= -0.15:
+        return "negative"
+    if valence < 0.15:
+        return "neutral"
+    if valence < 0.5:
+        return "positive"
+    return "very_positive"
+
+
+def _arousal_index(arousal: float) -> int:
+    """0 = low energy, 1 = mid, 2 = high."""
+    if arousal < 0.35:
+        return 0
+    if arousal <= 0.65:
+        return 1
+    return 2
+
+
+def felt_phrase(valence: float, arousal: float) -> str:
+    """Direct felt-language description of a (valence, arousal) point.
+
+    Pure and clamp-tolerant: out-of-range inputs just land in the outer
+    bands. Always returns a non-empty phrase.
+    """
+    try:
+        v = float(valence)
+        a = float(arousal)
+    except (TypeError, ValueError):
+        v, a = 0.0, 0.5
+    return _FELT_PHRASES[_valence_band(v)][_arousal_index(a)]
+
+
 def render_ambient_block(
     state: AffectState,
     *,
@@ -377,11 +451,17 @@ def render_ambient_block(
     Phrased as a private feeling, never as a directive: the persona is
     responsible for tone. The "lately" trend line is suppressed when the
     delta is too small to be meaningful.
+
+    K44: the valence/arousal scalars render as felt-language, never as
+    floats. The ``mood_label`` opener is kept alongside the phrase on
+    purpose — the label tracks the fast per-turn reaction tags while the
+    phrase tracks the smoothed scalars, so a disagreement between them
+    ("content" but reading flat) is real signal, not redundancy.
     """
     label = (state.mood_label or "content").replace("_", " ")
     primary = (
-        f"You're feeling {label} (valence {state.valence:+.2f}, "
-        f"arousal {state.arousal:.2f})."
+        f"You're feeling {label} — "
+        f"{felt_phrase(state.valence, state.arousal)}."
     )
     trend_phrase = _trend_phrase(state.valence_trend_24h, trend_threshold)
     if trend_phrase:

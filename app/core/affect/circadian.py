@@ -53,7 +53,13 @@ class CircadianState:
     is_weekend: bool = False
 
     def ambient_line(self) -> str:
-        """Render the small one-line cue we paste into the system prompt."""
+        """Render the small one-line cue we paste into the system prompt.
+
+        K44: the energy scalar renders as a felt word ("running low" /
+        "dipping" / "steady" / "bright"), never as a float — numeric
+        coordinates are exactly what a model parrots back. The raw
+        ``energy`` float stays on the state for MCP / logs / prosody.
+        """
         period_phrase = _PERIOD_PHRASES.get(self.period, self.period)
         time_part = _format_clock(self.hour, self.minute)
         # Phase 4a: blend a day-of-week phrase into the cue when it
@@ -64,10 +70,25 @@ class CircadianState:
         prefix = f"It's {day_phrase}, {time_part} ({period_phrase})"
         if self.drowsy:
             return (
-                f"{prefix}; your energy is low "
-                f"({self.energy:.2f}) and you feel a bit drowsy."
+                f"{prefix}; your energy is running low and you feel "
+                "a bit drowsy."
             )
-        return f"{prefix}; your energy is {self.energy:.2f}."
+        return f"{prefix}; your energy is {_energy_phrase(self.energy)}."
+
+
+def _energy_phrase(energy: float) -> str:
+    """Band the 0..1 energy curve into a felt word (K44)."""
+    try:
+        e = float(energy)
+    except (TypeError, ValueError):
+        e = 0.5
+    if e < 0.25:
+        return "running low"
+    if e < 0.45:
+        return "dipping"
+    if e < 0.7:
+        return "steady"
+    return "bright"
 
 
 _PERIOD_PHRASES: dict[CircadianPeriod, str] = {
