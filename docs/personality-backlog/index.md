@@ -96,8 +96,7 @@ K46 stance persistence (don't cave on taste pushback) ·
 K47 question/share balance (stop interviewing) ·
 K48 tease rhythm budget ·
 K49 messiness permission (typed imperfection) ·
-K50 typed-mode delivery pacing ·
-K51 cue-register rotation (de-"Heads-up" the inner life).
+K50 typed-mode delivery pacing.
 
 (K1 long-term goals, K2 theory-of-mind, K3 routine awareness,
 K4 dialogue-act tagging, K5 mood-shell tilt, K6 novelty
@@ -115,8 +114,8 @@ K31 + K32 soft physicality, K34 forward curiosity worker,
 K35 memory consolidation worker, K36 "things I did
 while you were away", K38 self-correction cue,
 K43 promise follow-through, K44 felt-language affect
-block, and K45 mood inertia have shipped — see
-[`shipped.md`](shipped.md).)
+block, K45 mood inertia, and K51 cue-register rotation
+have shipped — see [`shipped.md`](shipped.md).)
 
 ### P. Performance + observability — [`perf.md`](perf.md)
 

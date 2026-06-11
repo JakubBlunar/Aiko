@@ -4187,5 +4187,29 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
         except Exception as exc:
             return json.dumps({"error": f"capability gaps read failed: {exc}"})
 
+    @mcp.tool()
+    def get_approvals_state() -> str:
+        """Dump the task-approval policy + every registered capability.
+
+        Returns a JSON dict: the global ``mode`` (ask|auto), the
+        per-capability ``overrides`` map, the in-memory
+        ``session_approved`` set (capabilities the user clicked
+        "approve all" on this session), and a ``capabilities`` list —
+        each ``{id, label, destructive, effective_mode}`` so you can
+        see at a glance what would gate vs. proceed right now. First
+        stop for "did my file_write override take?" / "is approve-all
+        still active?". Destructive task handlers (file_write today)
+        read the same ``effective_mode`` before acting.
+        """
+        fn = getattr(session, "approvals_state", None)
+        if not callable(fn):
+            return json.dumps(
+                {"error": "approvals state unavailable (tasks disabled?)"}
+            )
+        try:
+            return json.dumps(fn(), indent=2, default=str)
+        except Exception as exc:
+            return json.dumps({"error": f"approvals state read failed: {exc}"})
+
     log.info("MCP server created (lean v1)")
     return mcp

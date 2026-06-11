@@ -29,6 +29,14 @@ from __future__ import annotations
 HANDLER_FILE_SEARCH = "file_search"
 HANDLER_FILE_READ = "file_read"
 
+# File-write handler — the first *destructive* capability. Creates /
+# overwrites / appends / find-replaces text files inside a writable
+# root (``read_only=false``), gated by the reusable approval layer
+# (:mod:`app.core.tasks.approval` + :mod:`app.core.tasks.capabilities`).
+# Reachable only as a ``WorkflowSkill`` child of a goal workflow, never
+# as a fast brain tool.
+HANDLER_FILE_WRITE = "file_write"
+
 # Nested-workflow handlers.
 #
 # * ``web_search`` — background DuckDuckGo lookup. Lives as a task
@@ -50,6 +58,7 @@ HANDLER_GOAL_WORKFLOW = "goal_workflow"
 KNOWN_HANDLER_NAMES: tuple[str, ...] = (
     HANDLER_FILE_SEARCH,
     HANDLER_FILE_READ,
+    HANDLER_FILE_WRITE,
     HANDLER_WEB_SEARCH,
     HANDLER_GOAL_WORKFLOW,
 )
@@ -58,6 +67,7 @@ KNOWN_HANDLER_NAMES: tuple[str, ...] = (
 __all__ = [
     "HANDLER_FILE_SEARCH",
     "HANDLER_FILE_READ",
+    "HANDLER_FILE_WRITE",
     "HANDLER_WEB_SEARCH",
     "HANDLER_GOAL_WORKFLOW",
     "KNOWN_HANDLER_NAMES",

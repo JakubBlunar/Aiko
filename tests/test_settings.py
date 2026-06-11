@@ -548,6 +548,44 @@ class MoodInertiaSettingsTests(unittest.TestCase):
         self.assertEqual(result.memory.mood_inertia_cooldown_turns, 0)
 
 
+class CueRegisterRotationSettingsTests(unittest.TestCase):
+    """K51: agent master switch for cue-register rotation."""
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(self, agent_extra: dict | None = None) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(json.loads(default_path.read_text(encoding="utf-8")))
+        cfg.get("agent", {}).pop("cue_register_rotation_enabled", None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_default_on_when_key_missing(self) -> None:
+        path = self._write_config()
+        result = load_settings(config_path=path)
+        self.assertTrue(result.agent.cue_register_rotation_enabled)
+
+    def test_override_round_trip(self) -> None:
+        path = self._write_config(
+            agent_extra={"cue_register_rotation_enabled": False},
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.cue_register_rotation_enabled)
+
+
 class ConsolidationSettingsTests(unittest.TestCase):
     """K35: agent master switch + caps + memory knobs round-trip + clamps."""
 
@@ -2154,6 +2192,97 @@ class TaskLifecycleSafetySettingsTests(unittest.TestCase):
         )
         a = load_settings(config_path=path).agent
         self.assertFalse(a.task_cascade_cancel_children)
+
+
+class TaskApprovalAndFileWriteSettingsTests(unittest.TestCase):
+    """``agent.task_approval_*`` + the nested ``agent.file_write`` block."""
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(
+        self,
+        agent_extra: dict | None = None,
+        strip_keys: tuple[str, ...] = (),
+    ) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(
+            json.loads(default_path.read_text(encoding="utf-8"))
+        )
+        for k in strip_keys:
+            cfg.get("agent", {}).pop(k, None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults(self) -> None:
+        path = self._write_config(
+            strip_keys=(
+                "task_approval_mode",
+                "task_approval_overrides",
+                "file_write",
+            ),
+        )
+        a = load_settings(config_path=path).agent
+        self.assertEqual(a.task_approval_mode, "ask")
+        self.assertEqual(a.task_approval_overrides, {})
+        self.assertFalse(a.file_write.enabled)
+        self.assertEqual(a.file_write.max_bytes, 262144)
+        self.assertIn(".md", a.file_write.allowed_extensions)
+
+    def test_dataclass_default_matches_config(self) -> None:
+        path = self._write_config()
+        a = load_settings(config_path=path).agent
+        self.assertEqual(a.task_approval_mode, "ask")
+        self.assertFalse(a.file_write.enabled)
+
+    def test_approval_mode_invalid_falls_back(self) -> None:
+        path = self._write_config(agent_extra={"task_approval_mode": "bogus"})
+        a = load_settings(config_path=path).agent
+        self.assertEqual(a.task_approval_mode, "ask")
+
+    def test_approval_mode_auto_round_trips(self) -> None:
+        path = self._write_config(agent_extra={"task_approval_mode": "auto"})
+        a = load_settings(config_path=path).agent
+        self.assertEqual(a.task_approval_mode, "auto")
+
+    def test_overrides_drop_invalid_modes(self) -> None:
+        path = self._write_config(
+            agent_extra={
+                "task_approval_overrides": {
+                    "file_write": "auto",
+                    "shell_exec": "nonsense",
+                }
+            }
+        )
+        a = load_settings(config_path=path).agent
+        self.assertEqual(a.task_approval_overrides, {"file_write": "auto"})
+
+    def test_file_write_enabled_and_clamp(self) -> None:
+        path = self._write_config(
+            agent_extra={
+                "file_write": {
+                    "enabled": True,
+                    "max_bytes": 5,  # below 1 KiB floor
+                    "allowed_extensions": ["TXT", ".md"],
+                }
+            }
+        )
+        a = load_settings(config_path=path).agent
+        self.assertTrue(a.file_write.enabled)
+        self.assertEqual(a.file_write.max_bytes, 1024)
+        self.assertEqual(a.file_write.allowed_extensions, (".txt", ".md"))
 
 
 if __name__ == "__main__":

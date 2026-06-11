@@ -52,6 +52,11 @@ exists to keep them in lock-step.
 | Push back when she has a stance (K29 opinion injection) | `agent.opinion_injection_enabled` | `true` |
 | Surface "what I've been turning over" between sessions (K28) | `agent.turning_over_enabled` | `true` |
 | Wall-clock prefixes on chat history (K-time1) | `agent.history_age_prefix_enabled` | `true` |
+| Cue-register rotation (K51 de-"Heads-up") | `agent.cue_register_rotation_enabled` | `true` |
+| Destructive-task approval mode | `agent.task_approval_mode` | `"ask"` (`"ask"` / `"auto"`) |
+| Per-capability approval overrides | `agent.task_approval_overrides` | `{}` (e.g. `{"file_write": "auto"}`) |
+| Let Aiko write files (workflow skill) | `agent.file_write.enabled` | `false` |
+| Exact-arithmetic tool | `tools.calculate` | `true` |
 | Master memory switch | `memory.enabled` | `true` |
 | RAG recall depth per turn | `memory.top_k` | `6` |
 | Long-term memory cap | `memory.max_memories` | `5000` |
@@ -338,6 +343,12 @@ Fires post-turn when the fresh `[[reaction:X]]` tag's implied affect target stro
 - `memory.mood_inertia_mismatch_threshold` *(float, `0.45`, floor `0.1`)* — effective mismatch (whiplash bonus included) at or above which the cue arms. Higher → only extreme face/feeling gaps fire.
 - `memory.mood_inertia_cooldown_turns` *(int, `3`, floor `0`)* — post-turn assessments skipped after a fire so one big swing doesn't nag on consecutive turns.
 - `avatar.mood_inertia_damping` *(bool, `true`)* — avatar half: `ExpressionChannel` scales non-mouth expression params by `1 − 0.45·mismatch` (floored at `0.55`). Rides the `avatar_settings_changed` WS payload like `expressiveness`.
+
+### K51 — cue-register rotation
+
+Inner-life cue producers all emit lines opening with the literal `Heads-up:`. At prompt-assembly time the prefix is rotated across four register shapes (`Heads-up:` / `Quiet note:` / `Noticing:` / bare) on a deterministic per-turn seed, so the model never reads the same coach template several times in one prompt. Producers are untouched; the rotation lives entirely in `PromptAssembler`. A shared-prefix lint (`cue-lint:` INFO line when >2 blocks open with the same two words) runs regardless of the switch.
+
+- `agent.cue_register_rotation_enabled` *(bool, `true`)* — master switch. Off → cue blocks land byte-identical to their producer output (literal `Heads-up:`), useful for A/B comparison. No prompt-cache impact either way: the rotated blocks live in the uncached T5/T6 prompt tail.
 
 ### Resume opener
 
@@ -810,6 +821,21 @@ Agent tool registry switches. Each toggles a single tool; `tools.enabled = false
 - `tools.web_search` *(bool, `true`)* — DuckDuckGo-backed web search tool.
 - `tools.world` *(bool, `true`)* — Aiko's room tools (`look_around`, `move_to`, `change_posture`, `inspect_item`, `consume_item`). Off → her room is still alive in the world store but she can't act on it.
 - `tools.goals` *(bool, `true`)* — K1 goal tools (`list_goals`, `add_goal`, `update_goal_progress`, `archive_goal`). Off → Aiko's prompt block + worker still surface goals but she can't *act* on them mid-turn. Independent from `agent.goals_enabled`: if the master switch is off the tools are wired but no-op because the store is unset.
+- `tools.calculate` *(bool, `true`)* — synchronous exact-arithmetic tool. Evaluates an expression through an AST whitelist (no `eval`) and returns the result in the same turn so Aiko never guesses a number. See [`docs/task-approvals.md`](task-approvals.md) for the broader task/skill picture.
+
+---
+
+## Task approvals + `file_write`
+
+Destructive task capabilities (file writes today; shell exec / http post later) are gated by a **reusable** approval layer. The policy is generic; each capability owns a small resource block.
+
+- `agent.task_approval_mode` *(str, `"ask"`)* — global default. `"ask"` gates every destructive action behind a TaskStrip approval prompt; `"auto"` performs without asking.
+- `agent.task_approval_overrides` *(dict, `{}`)* — per-capability override map, e.g. `{"file_write": "auto"}` to stop asking for writes only. Invalid modes are dropped (never coerced).
+- `agent.file_write.enabled` *(bool, `false`)* — master switch for the `write_file` workflow skill + handler. Off → the skill is never offered to the planner. Requires at least one **writable** root (a `agent.task_file_allowed_roots` entry with `read_only: false`).
+- `agent.file_write.max_bytes` *(int, `262144`, clamped `[1 KiB, 16 MiB]`)* — cap on the resulting file size.
+- `agent.file_write.allowed_extensions` *(list, text-only default)* — case-insensitive write allow-list (empty = allow all).
+
+A session "approve all" click rides on top of both fields in-memory and is never persisted (cleared on restart). Full design + how to add a new destructive capability: [`docs/task-approvals.md`](task-approvals.md).
 
 ---
 

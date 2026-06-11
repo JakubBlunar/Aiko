@@ -2,6 +2,41 @@
 
 ---
 
+## D-approval. Spoken / Aiko-voiced task approvals
+
+**Motivation.** The task-approval framework ([`docs/task-approvals.md`](../task-approvals.md))
+ships UI-only: a destructive action (file overwrite today; shell exec /
+http post later) parks an `awaiting_input` approval that shows up as a
+clickable prompt in the TaskStrip, and Aiko stays silent (background
+children are `notify_aiko=False`, so `_on_task_input_needed_event` skips
+the chat cue). That's the simple, safe v1. The natural follow-up is to
+let Aiko *ask in her own voice* — "I'd like to overwrite your todo list,
+that okay?" — so approvals feel conversational instead of a popup, while
+the TaskStrip buttons stay as the fast path.
+
+**Key files (existing).**
+- [`task_orchestration_mixin.py`](../../app/core/session/task_orchestration_mixin.py)
+  `_on_task_input_needed_event` / `_input_needed_should_notify` — the
+  gate that currently suppresses the spoken cue for `notify_aiko=False`
+  children. This is the single point to flip (per-capability, or per a
+  new `agent.spoken_approvals_enabled` flag).
+- [`approval.py`](../../app/core/tasks/approval.py) `build_request` — the
+  prompt copy Aiko would voice.
+- [`prompt_assembler.py`](../../app/core/session/prompt_assembler.py) /
+  the T6 task-cue provider — where a spoken approval cue would render.
+
+**Open questions.**
+- Per-capability opt-in (voice `file_write` but not a future `payment`)
+  vs. one global switch.
+- How to keep the chat reply and the TaskStrip in sync when the user
+  answers in prose ("yeah go for it") vs. clicks — `parse_decision`
+  already handles both, but the answer needs to route back to
+  `orchestrator.answer(task_id, ...)` from the chat path.
+- Escalation: a spoken approval should probably reuse the existing
+  input-needed escalation window so a silent user still gets nudged.
+
+---
+
 ## D1. Calendar / reminders tool
 
 **Motivation.** `promise` memories already capture "I'll do X" but they

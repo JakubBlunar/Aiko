@@ -50,6 +50,7 @@ from typing import Any, Callable
 from app.core.infra.log_context import get_task_id
 from app.core.tasks.handler_names import HANDLER_GOAL_WORKFLOW
 from app.core.tasks.task_handler import (
+    STATUS_AWAITING_INPUT,
     TERMINAL_STATUSES,
     TaskCompleted,
     TaskEmitFn,
@@ -404,23 +405,60 @@ class GoalWorkflowHandler:
     # ── helpers ──────────────────────────────────────────────────────
 
     def _wait_child(self, task_id: int, child_id: int) -> tuple[str, Any]:
-        """Block on a child's terminal status; cancel it on timeout.
+        """Block on a child's terminal status; cancel it on a real timeout.
 
-        Returns ``(status, row)``. On timeout the child is cancelled so
-        it doesn't keep running orphaned after the parent moved on.
+        Returns ``(status, row)``. The wait loops across timeout windows
+        as long as the child is parked in ``awaiting_input`` — that's a
+        child legitimately blocked on the user (e.g. a destructive-write
+        approval the user answers in the TaskStrip), NOT a stalled child,
+        so cancelling it would defeat the whole interactive-approval
+        point. The child runs on the orchestrator pool; while it waits it
+        holds no worker thread, so this is a cheap park. A genuine
+        timeout (child still ``running``, no progress) cancels the child
+        so it doesn't run orphaned after the parent moved on; a parent
+        cancellation while waiting on an ``awaiting_input`` child cancels
+        the child and reports ``cancelled``.
         """
-        try:
-            status = self._orchestrator.wait_for_task(
-                child_id, timeout=self._child_wait_timeout
-            )
-        except Exception:
-            log.exception(
-                "workflow wait_for_task failed: task=%d child=%d",
-                task_id,
-                child_id,
-            )
-            status = "failed"
-        if status == "timeout":
+        while True:
+            try:
+                status = self._orchestrator.wait_for_task(
+                    child_id, timeout=self._child_wait_timeout
+                )
+            except Exception:
+                log.exception(
+                    "workflow wait_for_task failed: task=%d child=%d",
+                    task_id,
+                    child_id,
+                )
+                return "failed", self._safe_get_row(child_id)
+            if status != "timeout":
+                return status, self._safe_get_row(child_id)
+            # ``timeout`` — distinguish "stalled" from "waiting on the
+            # user". An ``awaiting_input`` child is the latter.
+            row = self._safe_get_row(child_id)
+            child_status = getattr(row, "status", "") if row is not None else ""
+            if child_status == STATUS_AWAITING_INPUT:
+                if self._is_cancelled(task_id):
+                    log.info(
+                        "workflow cancelled while child awaiting input: "
+                        "task=%d child=%d",
+                        task_id,
+                        child_id,
+                    )
+                    try:
+                        self._orchestrator.cancel(child_id)
+                    except Exception:
+                        log.debug(
+                            "workflow child cancel failed", exc_info=True
+                        )
+                    return "cancelled", self._safe_get_row(child_id)
+                log.info(
+                    "workflow child awaiting input: task=%d child=%d "
+                    "(waiting through for the user's answer)",
+                    task_id,
+                    child_id,
+                )
+                continue
             log.info(
                 "workflow child timed out: task=%d child=%d timeout=%.0fs",
                 task_id,
@@ -431,12 +469,14 @@ class GoalWorkflowHandler:
                 self._orchestrator.cancel(child_id)
             except Exception:
                 log.debug("workflow child cancel failed", exc_info=True)
-            status = "timeout"
+            return "timeout", self._safe_get_row(child_id)
+
+    def _safe_get_row(self, child_id: int) -> Any:
+        """Fetch a child row, swallowing errors into ``None``."""
         try:
-            row = self._orchestrator.get(child_id)
+            return self._orchestrator.get(child_id)
         except Exception:
-            row = None
-        return status, row
+            return None
 
     def _is_cancelled(self, task_id: int) -> bool:
         """True when this workflow's row reached a terminal status."""

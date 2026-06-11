@@ -97,7 +97,11 @@ from app.core.tasks import (
     recover_interrupted_tasks,
 )
 from app.core.tasks.file_snapshot import FileSnapshotStore
-from app.core.tasks.handlers import FileReadHandler, FileSearchHandler
+from app.core.tasks.handlers import (
+    FileReadHandler,
+    FileSearchHandler,
+    FileWriteHandler,
+)
 from app.core.tasks.sandbox import FileTaskRoot, validate_roots
 
 
@@ -160,6 +164,15 @@ class TaskOrchestrationMixin:
         # suppress the duplicate proactive reply. Lives regardless of
         # the master switch so the tool helpers never hit a missing attr.
         self._task_inline_resolved_ids: set[int] = set()
+        # Session-scoped "approve all" set for destructive task
+        # capabilities. Populated when the user clicks "approve all" on
+        # an approval prompt (or answers a workflow approval with an
+        # approve-all decision). Holds capability ids (e.g. "file_write")
+        # or the ``"all"`` sentinel. Never persisted — cleared on
+        # restart, so a blanket approval can't silently outlive the
+        # session. Lives regardless of the master switch so the handler
+        # callbacks never hit a missing attr.
+        self._approved_capabilities: set[str] = set()
         # Capability gaps recorded by the goal-workflow handler when the
         # planner declares "missing_capability". Bounded ring so the
         # MCP debug surface + ``check_my_work`` can surface "things I
@@ -460,6 +473,50 @@ class TaskOrchestrationMixin:
                 exc,
             )
 
+        # File-write handler — the first destructive capability. Only
+        # registered when ``agent.file_write.enabled`` is on AND at least
+        # one writable root (``read_only=false``) exists. The approval
+        # gate is injected as two callbacks so the handler stays
+        # decoupled from the settings + session-approve-all state.
+        file_write_cfg = getattr(agent, "file_write", None)
+        file_write_enabled = bool(getattr(file_write_cfg, "enabled", False))
+        writable_roots = [r for r in roots if not r.read_only]
+        if file_write_enabled and writable_roots:
+            try:
+                self._task_orchestrator.register_handler(
+                    FileWriteHandler(
+                        roots=roots,
+                        max_bytes=int(
+                            getattr(file_write_cfg, "max_bytes", 262144)
+                        ),
+                        allowed_extensions=tuple(
+                            getattr(file_write_cfg, "allowed_extensions", ())
+                            or ()
+                        ),
+                        resolve_approval=self._resolve_task_approval,
+                        mark_session_approved=(
+                            self._mark_capability_session_approved
+                        ),
+                    )
+                )
+                log.info(
+                    "task-handlers: file_write handler registered "
+                    "(writable_roots=%d max_bytes=%d)",
+                    len(writable_roots),
+                    int(getattr(file_write_cfg, "max_bytes", 262144)),
+                )
+            except Exception as exc:
+                log.warning(
+                    "task-handlers: failed to register file_write handler: %r",
+                    exc,
+                )
+        elif file_write_enabled and not writable_roots:
+            log.info(
+                "task-handlers: file_write enabled but no writable root "
+                "configured (every task_file_allowed_roots entry is "
+                "read_only) -- skill not offered"
+            )
+
         # ── nested goal workflows ────────────────────────────────────
         # web_search runs as a background task handler (it's too slow
         # for the conversational lane). Register it whenever the dep is
@@ -499,8 +556,12 @@ class TaskOrchestrationMixin:
 
             tools_cfg = getattr(self._settings, "tools", None)  # type: ignore[attr-defined]
             web_enabled = bool(getattr(tools_cfg, "web_search", True))
+            # The destructive write skill is offered to the planner only
+            # when the master switch is on AND a writable root exists —
+            # otherwise the planner would pick a skill that always fails.
             skill_registry = build_builtin_skill_registry(
-                web_search_enabled=web_enabled
+                web_search_enabled=web_enabled,
+                file_write_enabled=file_write_enabled and bool(writable_roots),
             )
             # Future MCP-provided skills register onto this same object.
             self._workflow_skill_registry = skill_registry
@@ -568,6 +629,79 @@ class TaskOrchestrationMixin:
         if ring is None:
             return []
         return list(ring)
+
+    # ── approval policy (reusable across destructive capabilities) ────
+
+    def _resolve_task_approval(self, capability_id: str) -> str:
+        """Resolve the effective approval mode for ``capability_id``.
+
+        Injected into every destructive handler. Reads the persistent
+        policy (``agent.task_approval_mode`` + ``task_approval_overrides``)
+        and layers the in-memory session approve-all set on top. Returns
+        ``"auto"`` (proceed silently) or ``"ask"`` (gate). Best-effort:
+        any failure reads as ``"ask"`` so a config glitch never silently
+        skips an approval.
+        """
+        from app.core.tasks.approval import MODE_ASK, resolve_approval
+
+        try:
+            agent = self._settings.agent  # type: ignore[attr-defined]
+            mode = str(getattr(agent, "task_approval_mode", "ask") or "ask")
+            overrides = dict(getattr(agent, "task_approval_overrides", {}) or {})
+            session_approved = getattr(self, "_approved_capabilities", None)
+            return resolve_approval(
+                capability_id,
+                mode=mode,
+                overrides=overrides,
+                session_approved=session_approved or (),
+            )
+        except Exception:
+            log.debug("approval resolve failed; defaulting to ask", exc_info=True)
+            return MODE_ASK
+
+    def _mark_capability_session_approved(self, capability_id: str) -> None:
+        """Record an 'approve all' click for ``capability_id`` this session.
+
+        Adds the capability id to the in-memory set so
+        :meth:`_resolve_task_approval` returns ``"auto"`` for it for the
+        rest of the session. Never persisted.
+        """
+        approved = getattr(self, "_approved_capabilities", None)
+        if approved is None:
+            approved = set()
+            self._approved_capabilities = approved  # type: ignore[attr-defined]
+        try:
+            approved.add(str(capability_id))
+            log.info(
+                "task approval: session approve-all set for capability=%s",
+                capability_id,
+            )
+        except Exception:
+            log.debug("mark session approved failed", exc_info=True)
+
+    def approvals_state(self) -> dict[str, Any]:
+        """Diagnostic snapshot for the MCP ``get_approvals_state`` tool."""
+        from app.core.tasks.capabilities import all_capabilities
+
+        agent = getattr(self._settings, "agent", None)  # type: ignore[attr-defined]
+        return {
+            "mode": str(getattr(agent, "task_approval_mode", "ask") or "ask"),
+            "overrides": dict(
+                getattr(agent, "task_approval_overrides", {}) or {}
+            ),
+            "session_approved": sorted(
+                getattr(self, "_approved_capabilities", set()) or set()
+            ),
+            "capabilities": [
+                {
+                    "id": cap.id,
+                    "label": cap.label,
+                    "destructive": cap.destructive,
+                    "effective_mode": self._resolve_task_approval(cap.id),
+                }
+                for cap in all_capabilities()
+            ],
+        }
 
     def _shutdown_task_orchestration(self) -> None:
         """Tear down the orchestration subsystem in safe order.
@@ -1282,6 +1416,20 @@ class TaskOrchestrationMixin:
                 type(event).__name__,
             )
             return
+        # UI-only path for background children (``notify_aiko=False``):
+        # the TaskStrip already surfaces the awaiting-input row via the
+        # orchestrator's input-needed listener, so a destructive-write
+        # approval (and any other background-child question) shows up as
+        # a clickable prompt in the strip WITHOUT Aiko speaking it. We
+        # skip parking the chat cue + arming escalation for these. A
+        # spoken approval surface is a future, opt-in addition (backlog).
+        if not self._input_needed_should_notify(event.task_id):
+            log.info(
+                "task_input_needed UI-only (background task, not spoken): "
+                "task=%s",
+                event.task_id,
+            )
+            return
         cue_store = getattr(self, "_task_cue_store", None)
         escalation = getattr(self, "_task_escalation_manager", None)
         if cue_store is None or escalation is None:
@@ -1295,6 +1443,36 @@ class TaskOrchestrationMixin:
             options=event.options,
         )
         escalation.arm(cue)
+
+    def _input_needed_should_notify(self, task_id: Any) -> bool:
+        """Whether an awaiting-input task should make Aiko speak.
+
+        ``True`` (the default) for foreground / Aiko-initiated tasks
+        whose ``notify_aiko`` flag is set — these park a chat cue so
+        Aiko surfaces the question naturally (the existing file_read
+        multi-root disambiguation). ``False`` for background children
+        (``notify_aiko=False``, e.g. a workflow's destructive-write
+        approval) — those are UI-only via the TaskStrip.
+
+        Best-effort: any lookup failure reads as ``True`` so we never
+        accidentally swallow a question Aiko ought to ask. The event's
+        ``task_id`` is the 8-char hex render (see ``_format_task_id``),
+        so we parse base-16 before the integer row lookup.
+        """
+        orch = getattr(self, "_task_orchestrator", None)
+        if orch is None:
+            return True
+        try:
+            tid = int(str(task_id), 16)
+        except (TypeError, ValueError):
+            return True
+        try:
+            row = orch.get(tid)
+        except Exception:
+            return True
+        if row is None:
+            return True
+        return bool(getattr(row, "notify_aiko", True))
 
     def _on_task_progress_event(self, event: Any) -> None:
         """Handle a ``task_progress`` brain event.
