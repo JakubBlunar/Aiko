@@ -131,6 +131,7 @@
     "clarification_repair_enabled": true,
     "rupture_repair_enabled": true,
     "rupture_valence_drop_threshold": 0.12,
+    "mood_inertia_enabled": true,
     "misattunement_detection_enabled": true,
     "misattunement_shrink_min_prev_words": 30,
     "misattunement_shrink_max_user_words": 8,
@@ -311,6 +312,8 @@
     "stagnation_strong_threshold": 0.10,
     "stagnation_cooldown_turns": 3,
     "stagnation_post_novelty_suppression_turns": 3,
+    "mood_inertia_mismatch_threshold": 0.45,
+    "mood_inertia_cooldown_turns": 3,
     "curiosity_seed_interval_seconds": 3600,
     "goal_max_active": 5,
     "goal_max_progress_per_goal": 12,
@@ -342,6 +345,7 @@
     "entry_filename": "Alexia.model3.json",
     "scale_multiplier": 1.0,
     "auto_outfit": "auto",
-    "expressiveness": 1.0
+    "expressiveness": 1.0,
+    "mood_inertia_damping": true
   }
 }

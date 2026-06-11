@@ -1111,3 +1111,172 @@ describe("ExpressionChannel — _REACTION_NEIGHBOURS parity with Python", () => 
     expect(offenders).toEqual([]);
   });
 });
+
+/** K45 mood-inertia harness: ``cheerful`` -> ``lzx`` carrying three
+ * binding classes — a mouth-overlay grin (``Param54``), a lip-sync
+ * param (``ParamMouthOpenY``, defensive case where an expression
+ * file touches it), and a plain non-mouth param (``Param80``). The
+ * mood snapshot defaults to a heavy/flat state far from cheerful's
+ * implied target so the mismatch is large. */
+function makeInertiaDeps(initialSnap: Partial<ChannelStoreSnapshot> = {}) {
+  const clock = new FakeClock(1_000);
+  const engineState = createEngineState();
+  let snapshot: ChannelStoreSnapshot = {
+    reaction: "cheerful",
+    ttsState: "idle",
+    voiceMode: "off",
+    turnInProgress: false,
+    audioAmplitude: 0,
+    avatarOverlay: null,
+    avatarMotion: null,
+    // Far from cheerful's implied [0.8, 0.7] target.
+    mood: { label: "melancholy", intensity: 0.7, valence: -0.8, arousal: 0.2 },
+    resolvedOutfit: "",
+    backchannelHint: "",
+    expressiveness: 1,
+    moodInertiaDamping: true,
+    ...initialSnap,
+  };
+  const manifest = buildManifest({
+    reaction_mapping: { cheerful: "lzx", neutral: "n" },
+    expressions: [
+      { name: "lzx", file: "lzx.exp3.json" },
+      { name: "n", file: "n.exp3.json" },
+    ],
+    expression_params: {
+      lzx: [
+        { param_id: "Param54", on_value: 30 },
+        { param_id: "ParamMouthOpenY", on_value: 30 },
+        { param_id: "Param80", on_value: 30 },
+      ],
+    },
+    mouth_overlay_param_ids: ["Param54"],
+    lip_sync_ids: ["ParamMouthOpenY"],
+    // Mirrors the backend-derived map: cheerful impulse (+0.12, +0.10)
+    // -> [0.8, 0.7].
+    reaction_affect_targets: { cheerful: [0.8, 0.7] },
+  });
+  return {
+    clock,
+    engineState,
+    deps: {
+      now: clock.now,
+      manifest,
+      engineState,
+      getStoreSnapshot: () => snapshot,
+    },
+    setSnapshot: (next: Partial<ChannelStoreSnapshot>) => {
+      snapshot = { ...snapshot, ...next };
+    },
+  };
+}
+
+describe("ExpressionChannel — K45 mood-inertia damping", () => {
+  it("damps non-mouth params proportionally to the reaction/mood mismatch", () => {
+    const adapter = new FakeAdapter();
+    const channel = new ExpressionChannel();
+    const { deps, clock } = makeInertiaDeps();
+    channel.attach(adapter, deps);
+    runPreModel(channel, adapter, clock, 240, 1 / 60);
+    const damped = adapter.params.get("Param80") ?? 0;
+
+    const adapterOff = new FakeAdapter();
+    const channelOff = new ExpressionChannel();
+    const off = makeInertiaDeps({ moodInertiaDamping: false });
+    channelOff.attach(adapterOff, off.deps);
+    runPreModel(channelOff, adapterOff, off.clock, 240, 1 / 60);
+    const undamped = adapterOff.params.get("Param80") ?? 0;
+
+    expect(damped).toBeLessThan(undamped * 0.85);
+    // Floor keeps the expression readable even at max mismatch.
+    expect(damped).toBeGreaterThan(undamped * 0.5);
+    expect(channel.inertiaFactor).toBeLessThan(1);
+    expect(channelOff.inertiaFactor).toBe(1);
+  });
+
+  it("never inertia-damps the mouth-overlay grin param", () => {
+    const adapter = new FakeAdapter();
+    const channel = new ExpressionChannel();
+    const { deps, clock } = makeInertiaDeps();
+    channel.attach(adapter, deps);
+    runPreModel(channel, adapter, clock, 240, 1 / 60);
+    const grinDamped = adapter.params.get("Param54") ?? 0;
+
+    const adapterOff = new FakeAdapter();
+    const channelOff = new ExpressionChannel();
+    const off = makeInertiaDeps({ moodInertiaDamping: false });
+    channelOff.attach(adapterOff, off.deps);
+    runPreModel(channelOff, adapterOff, off.clock, 240, 1 / 60);
+    const grinUndamped = adapterOff.params.get("Param54") ?? 0;
+
+    // Silent audio, so mouthScale is 1 in both runs — the grin must
+    // be byte-identical with and without inertia damping.
+    expect(grinDamped).toBeCloseTo(grinUndamped, 5);
+  });
+
+  it("never inertia-damps lip-sync-id bindings", () => {
+    const adapter = new FakeAdapter();
+    const channel = new ExpressionChannel();
+    const { deps, clock } = makeInertiaDeps();
+    channel.attach(adapter, deps);
+    runPreModel(channel, adapter, clock, 240, 1 / 60);
+    const mouthOpen = adapter.params.get("ParamMouthOpenY") ?? 0;
+    const nonMouth = adapter.params.get("Param80") ?? 0;
+    // The lip-sync binding keeps the full arousal-scaled amplitude
+    // while the sibling non-mouth binding on the SAME expression is
+    // inertia-damped below it.
+    expect(mouthOpen).toBeGreaterThan(nonMouth);
+  });
+
+  it("mouth-overlay keeps its lipsync-suppression taper while inertia is active", () => {
+    const adapter = new FakeAdapter();
+    const channel = new ExpressionChannel();
+    const { deps, clock } = makeInertiaDeps({ audioAmplitude: 0.3 });
+    channel.attach(adapter, deps);
+    runPreModel(channel, adapter, clock, 240, 1 / 60);
+    // Speaking: the grin must still taper out (suppression path
+    // intact) even while non-mouth params are inertia-damped.
+    expect(adapter.params.get("Param54") ?? 0).toBeLessThan(1);
+    expect(adapter.params.get("Param80") ?? 0).toBeGreaterThan(5);
+  });
+
+  it("no damping when the manifest ships no reaction_affect_targets", () => {
+    const adapter = new FakeAdapter();
+    const channel = new ExpressionChannel();
+    const bundle = makeInertiaDeps();
+    delete (bundle.deps.manifest as { reaction_affect_targets?: unknown })
+      .reaction_affect_targets;
+    channel.attach(adapter, bundle.deps);
+    runPreModel(channel, adapter, bundle.clock, 240, 1 / 60);
+    expect(channel.inertiaFactor).toBe(1);
+  });
+
+  it("no damping when the reaction has no implied target", () => {
+    const adapter = new FakeAdapter();
+    const channel = new ExpressionChannel();
+    const bundle = makeInertiaDeps();
+    channel.attach(adapter, bundle.deps);
+    bundle.setSnapshot({ reaction: "neutral" });
+    channel.onReaction("neutral");
+    runPreModel(channel, adapter, bundle.clock, 240, 1 / 60);
+    expect(channel.inertiaFactor).toBe(1);
+  });
+
+  it("relaxes back toward 1 as the smoothed mood catches up", () => {
+    const adapter = new FakeAdapter();
+    const channel = new ExpressionChannel();
+    const { deps, clock, setSnapshot } = makeInertiaDeps();
+    channel.attach(adapter, deps);
+    runPreModel(channel, adapter, clock, 240, 1 / 60);
+    const whileMismatched = channel.inertiaFactor;
+    expect(whileMismatched).toBeLessThan(0.8);
+
+    // Post-turn mood_state lands: the felt state has caught up with
+    // the face. The damping factor must recover.
+    setSnapshot({
+      mood: { label: "cheerful", intensity: 0.7, valence: 0.8, arousal: 0.7 },
+    });
+    runPreModel(channel, adapter, clock, 240, 1 / 60);
+    expect(channel.inertiaFactor).toBeGreaterThan(0.99);
+  });
+});

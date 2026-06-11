@@ -171,6 +171,14 @@ export interface ChannelStoreSnapshot {
    * that pre-date this field — channels default to ``1`` when
    * absent. */
   expressiveness?: number;
+  /** K45 mood-inertia damping toggle, mirroring
+   * ``avatar.mood_inertia_damping``. When true (the default for
+   * absent snapshots is FALSE — the channel only damps when the
+   * flag is explicitly on), ``ExpressionChannel`` scales non-mouth
+   * expression params by the gap between the fresh reaction's
+   * implied affect target and the smoothed mood. Mouth params
+   * (lipsync ids + mouth-overlay grin) are never damped. */
+  moodInertiaDamping?: boolean;
 }
 
 /** Base channel contract. Each method is optional — channels opt in

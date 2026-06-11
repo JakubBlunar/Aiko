@@ -330,6 +330,87 @@ class PostTurnMixin:
         except Exception:
             log.debug("self-correction detector raised", exc_info=True)
 
+    def _maybe_arm_mood_inertia(
+        self,
+        *,
+        reaction: str,
+        affect_before: Any,
+    ) -> None:
+        """K45: arm the one-shot mood-inertia cue when the fresh reaction
+        tag strongly outruns the pre-impulse smoothed affect.
+
+        ``affect_before`` is the PRE-turn :class:`AffectState` snapshot
+        (what Aiko still actually feels); the fresh tag's own impulse
+        must not shrink its own mismatch. The reaction ring feeds
+        whiplash detection and always advances, even on gated turns, so
+        a swing across a cooldown window is still seen.
+        """
+        from app.core.affect import mood_inertia
+
+        ring = getattr(self, "_mood_inertia_reactions", None)
+        if ring is not None and reaction:
+            ring.append(reaction)
+        if not bool(
+            getattr(self._settings.agent, "mood_inertia_enabled", True)
+        ):
+            return
+        if affect_before is None or not reaction:
+            return
+        if getattr(self, "_mood_inertia_cooldown_remaining", 0) > 0:
+            self._mood_inertia_cooldown_remaining -= 1
+            return
+        result = mood_inertia.assess(
+            reaction,
+            float(getattr(affect_before, "valence", 0.0)),
+            float(getattr(affect_before, "arousal", 0.4)),
+            list(ring or []),
+            strong_threshold=float(
+                getattr(
+                    self._memory_settings,
+                    "mood_inertia_mismatch_threshold",
+                    mood_inertia.DEFAULT_STRONG_THRESHOLD,
+                )
+            ),
+        )
+        self._mood_inertia_last = {
+            "reaction": reaction,
+            "mismatch": result.mismatch,
+            "raw_mismatch": result.raw_mismatch,
+            "whiplash": result.whiplash,
+            "band": result.band,
+            "valence_before": float(getattr(affect_before, "valence", 0.0)),
+            "arousal_before": float(getattr(affect_before, "arousal", 0.4)),
+        }
+        if result.band != "strong":
+            return
+        cue = mood_inertia.render_cue(
+            result,
+            reaction,
+            float(getattr(affect_before, "valence", 0.0)),
+            float(getattr(affect_before, "arousal", 0.4)),
+        )
+        if not cue:
+            return
+        self._pending_mood_inertia = cue
+        self._mood_inertia_cooldown_remaining = max(
+            0,
+            int(
+                getattr(
+                    self._memory_settings,
+                    "mood_inertia_cooldown_turns",
+                    3,
+                )
+            ),
+        )
+        log.info(
+            "mood-inertia fire: mismatch=%.2f band=%s whiplash=%s "
+            "reaction=%s",
+            result.mismatch,
+            result.band,
+            result.whiplash,
+            reaction,
+        )
+
     def _resolve_curiosity_seeds(  # noqa: C901
         self,
         *,
@@ -741,6 +822,19 @@ class PostTurnMixin:
                     )
             except Exception:
                 log.debug("rupture detector raised", exc_info=True)
+
+        # K45 — mood inertia. Compare the fresh reaction tag's implied
+        # affect target against the PRE-impulse smoothed state
+        # (``affect_before``): the avatar already jumped to the tag,
+        # but if the felt state is still far away, arm a one-shot cue
+        # so the *words* carry the residue. Ring + cooldown live on
+        # the controller; the assessment itself is pure.
+        try:
+            self._maybe_arm_mood_inertia(
+                reaction=reaction, affect_before=affect_before,
+            )
+        except Exception:
+            log.debug("mood-inertia arming failed", exc_info=True)
 
         # K38 — self-correction. Catch when this reply contradicted one
         # of Aiko's own high-confidence fact/preference memories so she

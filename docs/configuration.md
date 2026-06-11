@@ -330,6 +330,15 @@ Fires when Jacob's valence drops sharply between pre- and post-turn affect snaps
 - `agent.rupture_repair_enabled` *(bool, `true`)* — master switch.
 - `agent.rupture_valence_drop_threshold` *(float, `0.12`, clamped `[0, 2]`)* — minimum valence drop that counts as a rupture. Higher → fires only on big mood swings; lower → fires on subtler dips. `0.12` sits comfortably above the `AffectUpdater` smoothing-noise floor.
 
+### K45 — mood inertia (instant face, lagging heart)
+
+Fires post-turn when the fresh `[[reaction:X]]` tag's implied affect target strongly outruns the pre-impulse smoothed `AffectState`. The next turn renders a one-shot "your face just jumped to X, but underneath you're still Y — let the words catch up" cue; the Live2D renderer also damps non-mouth expression amplitude proportionally to the same mismatch (mouth params — lipsync ids + the grin overlay — are never damped so talking animation and TTS pauses stay intact).
+
+- `agent.mood_inertia_enabled` *(bool, `true`)* — master switch for the prompt-cue half.
+- `memory.mood_inertia_mismatch_threshold` *(float, `0.45`, floor `0.1`)* — effective mismatch (whiplash bonus included) at or above which the cue arms. Higher → only extreme face/feeling gaps fire.
+- `memory.mood_inertia_cooldown_turns` *(int, `3`, floor `0`)* — post-turn assessments skipped after a fire so one big swing doesn't nag on consecutive turns.
+- `avatar.mood_inertia_damping` *(bool, `true`)* — avatar half: `ExpressionChannel` scales non-mouth expression params by `1 − 0.45·mismatch` (floored at `0.55`). Rides the `avatar_settings_changed` WS payload like `expressiveness`.
+
 ### Resume opener
 
 - `agent.resume_opener_min_hours` *(float, `4.0`, min `0`)* — when the gap since the last assistant turn exceeds this, schedule a one-shot "welcome back" line. `0` disables.
@@ -786,6 +795,7 @@ Live2D (Alexia) rendering knobs. The avatar files live at `avatar.root_dir` (git
 - `avatar.scale_multiplier` *(float, `1.0`, clamped `[0.1, 8.0]`)* — global render scale. Higher → bigger Aiko.
 - `avatar.auto_outfit` *(string, `"auto"`)* — one of `"auto"` (circadian: pajamas at night when supported), `"day"`, `"pajamas"`, `"pajamas_hooded"`. Anything else clamps to `"auto"`.
 - `avatar.expressiveness` *(float, `1.0`, clamped `[0.0, 1.5]`)* — body-language intensity multiplier. `0.0` mutes every mood-driven amplitude (breath sway, body tilts, expression strength, sass bursts); `1.0` is the authored default; `1.5` exaggerates within safe rig limits. See `web/src/live2d/AmbientBodyChannel.ts` + `ExpressionChannel.ts`.
+- `avatar.mood_inertia_damping` *(bool, `true`)* — K45: damp non-mouth expression params proportionally to the gap between the fresh reaction tag's implied affect and the smoothed mood. Mouth params (lipsync ids + grin overlay) are never damped. See the K45 section above.
 - `avatar.accessory_state` *(object, `{}`)* — persistent accessory toggles. Boolean keys: `lollipop`, `eyeglasses`, `head_sunglasses`, `crossed_arms`. Enum key `eye_color`: `"default"` / `"both_purple"` / `"left_purple"` / `"right_purple"`. Unknown keys are silently dropped at load time so a downgrade can't promote junk into the namespace.
 
 ---

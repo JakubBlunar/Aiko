@@ -934,6 +934,14 @@ export interface AvatarSettingsKnobs {
    */
   auto_outfit: "auto" | "day" | "pajamas" | "pajamas_hooded";
   /**
+   * K45 mood inertia: when true, the renderer damps non-mouth
+   * expression params proportionally to the gap between the fresh
+   * reaction tag's implied affect and the smoothed mood. Mouth
+   * params (lipsync ids + mouth-overlay grin) are never damped.
+   * Optional in the wire payload so older backends keep working.
+   */
+  mood_inertia_damping?: boolean;
+  /**
    * Phase 4 (expression overhaul) persistent accessory state. Keys
    * are accessory capability stems from the loaded rig
    * (``lollipop`` / ``eyeglasses`` / ``head_sunglasses`` /
@@ -1030,6 +1038,14 @@ export interface AvatarProfile {
    * neighbour chain when the gate fails. Optional for backwards
    * compatibility. */
   outfit_gated_expressions?: Record<string, string[]>;
+  /** K45 mood inertia: reaction tag → implied ``[valence, arousal]``
+   * target derived server-side from the affect impulse table.
+   * ``ExpressionChannel`` compares the fresh reaction's target
+   * against the smoothed mood and damps non-mouth expression params
+   * proportionally to the gap. Directionless reactions (neutral /
+   * thoughtful) are absent. Optional for backwards compatibility
+   * with cached payloads — missing map disables damping. */
+  reaction_affect_targets?: Record<string, [number, number]>;
   /** All cat-tail param IDs in declaration order. Empty when the
    * loaded model isn't a cat-girl rig. */
   cat_tail_param_ids: string[];

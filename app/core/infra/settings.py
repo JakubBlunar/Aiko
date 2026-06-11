@@ -400,6 +400,13 @@ class AvatarSettings:
     # strength, sass burst, …); ``1.0`` is the authored default;
     # ``1.5`` exaggerates within safe rig limits. Clamped on load.
     expressiveness: float = 1.0
+    # K45 mood inertia: when true, ExpressionChannel damps non-mouth
+    # expression params proportionally to the gap between the fresh
+    # reaction tag's implied affect and the smoothed mood — so the
+    # face carries the residue too. Mouth params (lipsync ids +
+    # mouth-overlay grin) are NEVER damped: lipsync and the grin
+    # taper keep owning the mouth while she talks.
+    mood_inertia_damping: bool = True
     # Phase 4 (expression overhaul): persistent accessory toggles.
     # Each key is an accessory capability name from the loaded rig
     # (``lollipop`` / ``eyeglasses`` / ``head_sunglasses`` /
@@ -999,6 +1006,17 @@ class AgentSettings:
     # [`app/core/affect/affect_rupture_detector.py`](affect_rupture_detector.py).
     rupture_repair_enabled: bool = True
     rupture_valence_drop_threshold: float = 0.12
+
+    # ── K45: mood inertia (instant face, lagging heart) ───────────────
+    # Master switch for the one-shot "your face jumped to X but
+    # underneath you're still Y — let the words catch up" cue armed
+    # post-turn when the fresh ``[[reaction:...]]`` tag's implied
+    # affect target strongly outruns the smoothed AffectState.
+    # Thresholds + cooldown live on ``MemorySettings.mood_inertia_*``;
+    # the avatar-side damping flag is ``AvatarSettings
+    # .mood_inertia_damping``. See
+    # [`app/core/affect/mood_inertia.py`](mood_inertia.py).
+    mood_inertia_enabled: bool = True
 
     # ── K23: subtle misattunement detection ──────────────────────────
     # Per-turn detector that fires ``mild_disengagement`` when {user}
@@ -2027,6 +2045,12 @@ class MemorySettings:
     self_correction_min_overlap: int = 2
     self_correction_max_candidates: int = 50
     self_correction_cooldown_turns: int = 3
+    # K45 mood inertia: effective-mismatch score (whiplash bonus
+    # included) at or above which the one-shot cue arms (floor 0.1),
+    # and how many post-turn assessments to skip after a fire so one
+    # big mood swing doesn't nag on consecutive turns.
+    mood_inertia_mismatch_threshold: float = 0.45
+    mood_inertia_cooldown_turns: int = 3
     # Output-token ceiling for the memory extractor's JSON response.
     # The old hardcoded 512 truncated the ``"memories": [...]`` array
     # mid-object on longer transcripts, losing the whole batch; 1024
@@ -3783,6 +3807,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             self_correction_enabled=bool(
                 agent_raw.get("self_correction_enabled", True),
             ),
+            mood_inertia_enabled=bool(
+                agent_raw.get("mood_inertia_enabled", True),
+            ),
             confidence_time_decay_enabled=bool(
                 agent_raw.get("confidence_time_decay_enabled", True),
             ),
@@ -4307,6 +4334,16 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                 0,
                 int(memory_raw.get("self_correction_cooldown_turns", 3)),
             ),
+            mood_inertia_mismatch_threshold=max(
+                0.1,
+                float(
+                    memory_raw.get("mood_inertia_mismatch_threshold", 0.45)
+                ),
+            ),
+            mood_inertia_cooldown_turns=max(
+                0,
+                int(memory_raw.get("mood_inertia_cooldown_turns", 3)),
+            ),
             memory_extractor_max_tokens=max(
                 256,
                 int(memory_raw.get("memory_extractor_max_tokens", 1024)),
@@ -4560,6 +4597,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                 else "auto"
             ),
             expressiveness=max(0.0, min(1.5, float(avatar_raw.get("expressiveness", 1.0) or 1.0))),
+            mood_inertia_damping=bool(
+                avatar_raw.get("mood_inertia_damping", True),
+            ),
             accessory_state=_load_accessory_state(avatar_raw.get("accessory_state")),
         ),
     )

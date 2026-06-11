@@ -2990,6 +2990,9 @@ def create_web_app(session: "SessionController") -> FastAPI:
         scale = payload.get("scale_multiplier")
         outfit = payload.get("auto_outfit")
         expressiveness = payload.get("expressiveness")
+        mood_inertia_damping = payload.get("mood_inertia_damping")
+        if mood_inertia_damping is not None:
+            mood_inertia_damping = bool(mood_inertia_damping)
         if scale is not None:
             try:
                 scale_value = float(scale)
@@ -3023,6 +3026,7 @@ def create_web_app(session: "SessionController") -> FastAPI:
             scale_multiplier=scale,
             auto_outfit=outfit,
             expressiveness=expressiveness,
+            mood_inertia_damping=mood_inertia_damping,
         )
         hub.broadcast({
             "type": "avatar_settings_changed",

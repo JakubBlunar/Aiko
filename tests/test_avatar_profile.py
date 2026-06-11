@@ -55,6 +55,22 @@ class FromDiskTests(unittest.TestCase):
             profile.eye_blink_ids, ["ParamEyeLOpen", "ParamEyeROpen"],
         )
 
+    def test_reaction_affect_targets_on_manifest(self) -> None:
+        # K45: rig-independent map shipped to ExpressionChannel so the
+        # renderer can damp non-mouth expression params without a TS
+        # mirror of the Python impulse table.
+        profile = from_disk(_MIN)
+        targets = profile.reaction_affect_targets
+        self.assertIn("excited", targets)
+        self.assertIn("sad", targets)
+        # Directionless reactions are intentionally absent.
+        self.assertNotIn("neutral", targets)
+        for valence, arousal in targets.values():
+            self.assertGreaterEqual(valence, -1.0)
+            self.assertLessEqual(valence, 1.0)
+            self.assertGreaterEqual(arousal, 0.0)
+            self.assertLessEqual(arousal, 1.0)
+
     def test_missing_root_raises(self) -> None:
         with self.assertRaises(AvatarProfileError):
             from_disk(_FIXTURES / "does_not_exist")

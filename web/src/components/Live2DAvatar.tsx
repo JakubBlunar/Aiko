@@ -167,6 +167,8 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
               backchannelHint: s.backchannelHint ?? "",
               circadianPeriod: s.avatar?.circadian_period ?? "",
               expressiveness: s.avatar?.settings?.expressiveness ?? 1,
+              moodInertiaDamping:
+                s.avatar?.settings?.mood_inertia_damping ?? true,
             };
           },
         });

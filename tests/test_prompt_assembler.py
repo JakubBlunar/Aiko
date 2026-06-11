@@ -1556,6 +1556,136 @@ class SelfNoticingProviderSlotTests(unittest.TestCase):
             self.assertNotIn("Heads-up", messages[0]["content"])
 
 
+class MoodInertiaProviderSlotTests(unittest.TestCase):
+    """K45 mood-inertia provider lands in the T5 cluster directly
+    after the mood carryover hint (both are reaction-shaping beats),
+    survives ``aggressive=True`` (one-shot already consumed the
+    pending slot), and swallows provider exceptions."""
+
+    def test_mood_inertia_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="mi1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                mood_inertia=lambda: (
+                    "Heads-up: your face just jumped to excited"
+                ),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "mi1",
+                "what's up?",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertIn(
+                "your face just jumped to excited", messages[0]["content"],
+            )
+
+    def test_mood_inertia_lands_after_mood_hint(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="mi2", role="user", content="hi", token_count=2,
+            )
+            assembler.set_last_reaction("excited")
+            assembler.set_inner_life_providers(
+                mood_inertia=lambda: "Heads-up: face outran the feeling",
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "mi2",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            content = messages[0]["content"]
+            self.assertIn("Your last reaction was", content)
+            self.assertIn("face outran the feeling", content)
+            self.assertLess(
+                content.index("Your last reaction was"),
+                content.index("face outran the feeling"),
+            )
+
+    def test_mood_inertia_lands_before_mood_shell(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="mi3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                mood_inertia=lambda: "Heads-up: face outran the feeling",
+                mood_shell=lambda: "Lean affectionate and steady.",
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "mi3",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            content = messages[0]["content"]
+            self.assertLess(
+                content.index("face outran the feeling"),
+                content.index("Lean affectionate"),
+            )
+
+    def test_mood_inertia_block_silent_when_provider_empty(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="mi4", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(mood_inertia=lambda: "")
+            messages, _ = assembler.assemble_with_budget(
+                "mi4",
+                "anything",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertNotIn("Heads-up", messages[0]["content"])
+
+    def test_mood_inertia_survives_aggressive(self) -> None:
+        # One-shot contract: the provider already cleared the pending
+        # slot when it rendered, so dropping the block under a tight
+        # budget would silently lose the owed beat. Same policy as
+        # the rupture / self-correction one-shots.
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="mi5", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                mood_inertia=lambda: "Heads-up: face outran the feeling",
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "mi5",
+                "x",
+                context_window=4096,
+                response_budget=256,
+                aggressive=True,
+            )
+            self.assertIn("face outran the feeling", messages[0]["content"])
+
+    def test_mood_inertia_provider_exception_swallowed(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="mi6", role="user", content="hi", token_count=2,
+            )
+
+            def _boom() -> str:
+                raise RuntimeError("mood inertia exploded")
+
+            assembler.set_inner_life_providers(mood_inertia=_boom)
+            messages, _ = assembler.assemble_with_budget(
+                "mi6",
+                "x",
+                context_window=4096,
+                response_budget=256,
+            )
+            self.assertNotIn("Heads-up", messages[0]["content"])
+
+
 class DayColorProviderSlotTests(unittest.TestCase):
     """K27 day-color provider lands in the system prompt right after
     the circadian block (same ambient cluster), is NOT dropped under

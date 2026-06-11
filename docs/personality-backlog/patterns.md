@@ -432,22 +432,9 @@ in every Aiko-facing prompt)".
 
 ## K45. Mood inertia — instant face, lagging heart
 
-`[[reaction:X]]` can jump excited → sad → calm on consecutive turns;
-the avatar and TTS follow the *instant* tag while `AffectState`
-smooths with α=0.35 — so the face teleports and the underlying
-feeling lags a turn behind, which is exactly backwards from humans
-(expressions are fast but residue *lingers*; nobody snaps from hurt
-to chipper in one beat). Track a short reaction-impulse ring; when
-the fresh tag disagrees strongly with smoothed affect, render a T5
-cue ("your face jumped to cheerful but you're still tender
-underneath — let the words catch up") and optionally damp the
-Live2D reaction amplitude proportionally to the mismatch so the
-body language carries the residue too. Complements H3 (multi-session
-drift narration) at turn-scale rather than week-scale. Key files:
-new `app/core/affect/mood_inertia.py`,
-[`app/core/session/post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py),
-[`app/core/session/inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py),
-[`app/core/session/avatar_mixin.py`](../../app/core/session/avatar_mixin.py).
+Shipped — see [`shipped.md`](shipped.md) "K45. Mood inertia
+(reaction/affect mismatch cue + mouth-safe Live2D expression
+damping)".
 
 ---
 

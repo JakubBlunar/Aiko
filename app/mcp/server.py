@@ -1506,6 +1506,100 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"force_misattunement raised: {exc}"
 
     @mcp.tool()
+    def get_mood_inertia_state() -> str:
+        """K45 — dump the live mood-inertia detector state.
+
+        Returns a JSON dict with the master switch (cue side), the
+        avatar-side damping flag, the mismatch threshold + cooldown
+        knobs, the recent reaction ring (whiplash input), the current
+        cooldown remainder, whether a one-shot cue is pending, the
+        force flag, and the last assessment (mismatch / band /
+        whiplash / pre-impulse scalars) regardless of whether it
+        armed.
+        """
+        try:
+            last = getattr(session, "_mood_inertia_last", None)
+            return json.dumps(
+                {
+                    "enabled": bool(
+                        getattr(
+                            session._settings.agent,
+                            "mood_inertia_enabled",
+                            True,
+                        )
+                    ),
+                    "avatar_damping_enabled": bool(
+                        getattr(
+                            session._settings.avatar,
+                            "mood_inertia_damping",
+                            True,
+                        )
+                    ),
+                    "mismatch_threshold": float(
+                        getattr(
+                            session._settings.memory,
+                            "mood_inertia_mismatch_threshold",
+                            0.45,
+                        )
+                    ),
+                    "cooldown_turns": int(
+                        getattr(
+                            session._settings.memory,
+                            "mood_inertia_cooldown_turns",
+                            3,
+                        )
+                    ),
+                    "cooldown_remaining": int(
+                        getattr(
+                            session, "_mood_inertia_cooldown_remaining", 0,
+                        )
+                    ),
+                    "recent_reactions": list(
+                        getattr(session, "_mood_inertia_reactions", []) or []
+                    ),
+                    "pending_cue": getattr(
+                        session, "_pending_mood_inertia", None,
+                    ),
+                    "force_next": bool(
+                        getattr(session, "_mood_inertia_force", False)
+                    ),
+                    "last_assessment": dict(last) if last else None,
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"get_mood_inertia_state raised: {exc}"
+
+    @mcp.tool()
+    def force_mood_inertia() -> str:
+        """K45 — arm a one-shot forced mood-inertia cue.
+
+        Sets ``_mood_inertia_force`` so the next provider call renders
+        a synthetic strong-band cue built from the live affect state
+        and the most recent reaction tag, bypassing the mismatch
+        threshold and the cooldown. The flag is consumed on the next
+        provider call whether or not a real turn follows.
+
+        End-to-end repro: call this tool, then ``send_message``
+        (skip_tts=true) and verify the "your face just jumped to ..."
+        line lands via ``get_last_response_detail``'s system_prompt.
+        """
+        try:
+            session._mood_inertia_force = True
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next provider call renders a synthetic strong-band "
+                        "cue from the live affect state"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_mood_inertia raised: {exc}"
+
+    @mcp.tool()
     def get_opinion_injection_state() -> str:
         """K29 — dump the in-memory opinion-injection detector state.
 

@@ -575,6 +575,7 @@ class SessionController(
             "scale_multiplier": float(settings.avatar.scale_multiplier),
             "auto_outfit": str(settings.avatar.auto_outfit),
             "expressiveness": float(settings.avatar.expressiveness),
+            "mood_inertia_damping": bool(settings.avatar.mood_inertia_damping),
             "accessory_state": dict(settings.avatar.accessory_state or {}),
         }
         self._avatar_settings_listeners: list[Callable[[dict[str, Any]], None]] = []
@@ -1554,6 +1555,7 @@ class SessionController(
             calibration=self._render_calibration_block,
             sensory_anchor=self._render_sensory_anchor_block,
             rupture=self._render_rupture_block,
+            mood_inertia=self._render_mood_inertia_block,
             self_correction=self._render_self_correction_block,
             promise_followthrough=self._render_promise_followthrough_block,
             misattunement=self._render_misattunement_block,
@@ -2689,6 +2691,19 @@ class SessionController(
         # K8 — one-shot affect-rupture slot. Same shape as above:
         # post-turn detector fills, next-turn provider clears.
         self._pending_rupture: Any = None
+        # K45 — mood inertia. ``_mood_inertia_reactions`` is a short
+        # oldest-first ring of recent reaction tags (whiplash
+        # detection); ``_pending_mood_inertia`` is the one-shot cue
+        # slot (post-turn detector fills, next-turn provider clears);
+        # the cooldown counter keeps one big mood swing from nagging
+        # on consecutive turns. ``_mood_inertia_last`` is a debug
+        # snapshot for the MCP state dump. ``_mood_inertia_force``
+        # mirrors the K23/K29 one-shot bypass for MCP repro.
+        self._mood_inertia_reactions: deque[str] = deque(maxlen=3)
+        self._pending_mood_inertia: Any = None
+        self._mood_inertia_cooldown_remaining: int = 0
+        self._mood_inertia_last: dict[str, Any] | None = None
+        self._mood_inertia_force: bool = False
         # K38 — one-shot self-correction slot + per-fire cooldown.
         # Post-turn detector fills the slot when Aiko's reply
         # contradicted one of her own high-confidence fact/preference
