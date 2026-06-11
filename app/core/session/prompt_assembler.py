@@ -475,6 +475,7 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
     "T5_affect_style": (
         "affect_block",
         "mood_hint",
+        "mood_inertia_block",
         "mood_shell_block",
         "style_signal_block",
         "user_state_block",
@@ -788,6 +789,12 @@ class PromptAssembler:
         # K8 — affect-rupture one-shot. Sibling of the clarification
         # provider above; same one-shot contract.
         self._rupture_provider: Callable[[], str] | None = None
+        # K45 — mood-inertia one-shot. Post-turn detector stashes a
+        # rendered cue when the fresh reaction tag strongly outran the
+        # smoothed felt state; this provider surfaces it once on the
+        # next turn and clears the slot. T5 (reaction-shaping family,
+        # sits right after the mood carryover hint).
+        self._mood_inertia_provider: Callable[[], str] | None = None
         # K38 — self-correction one-shot. Post-turn detector stashes a
         # SelfCorrectionHit when Aiko's reply contradicted one of her own
         # high-confidence fact/preference memories; this provider renders
@@ -1107,6 +1114,7 @@ class PromptAssembler:
         calibration: Callable[[], str] | None = None,
         sensory_anchor: Callable[[], str] | None = None,
         rupture: Callable[[], str] | None = None,
+        mood_inertia: Callable[[], str] | None = None,
         self_correction: Callable[[], str] | None = None,
         promise_followthrough: Callable[[], str] | None = None,
         misattunement: Callable[[str], str] | None = None,
@@ -1189,6 +1197,8 @@ class PromptAssembler:
             self._sensory_anchor_provider = sensory_anchor
         if rupture is not None:
             self._rupture_provider = rupture
+        if mood_inertia is not None:
+            self._mood_inertia_provider = mood_inertia
         if self_correction is not None:
             self._self_correction_provider = self_correction
         if promise_followthrough is not None:
@@ -1752,6 +1762,20 @@ class PromptAssembler:
                 except Exception:
                     log.debug("rupture provider raised", exc_info=True)
                     rupture_block = ""
+
+        # K45 — mood-inertia one-shot. Same one-shot contract as the
+        # rupture provider and same not-gated-on-aggressive policy:
+        # the provider clears the pending slot when it renders, so
+        # dropping the block after the read would silently lose the
+        # "let the words catch up" beat.
+        mood_inertia_block = ""
+        if self._mood_inertia_provider is not None:
+            with _timed_phase(provider_ms, "mood_inertia"):
+                try:
+                    mood_inertia_block = self._mood_inertia_provider() or ""
+                except Exception:
+                    log.debug("mood-inertia provider raised", exc_info=True)
+                    mood_inertia_block = ""
 
         # K38 — self-correction one-shot. Sibling of the rupture
         # provider; same one-shot contract and same not-gated-on-
@@ -2324,6 +2348,11 @@ class PromptAssembler:
             system_parts.append(affect_block)
         if mood_hint:
             system_parts.append(mood_hint)
+        if mood_inertia_block:
+            # K45: mood-inertia sits directly after the carryover hint —
+            # both are reaction-shaping beats ("carry the mood" vs
+            # "your face outran the feeling, let the words catch up").
+            system_parts.append(mood_inertia_block)
         if mood_shell_block:
             # K5 mood-shell tilt: one-line emotional directive (e.g.
             # "Lean affectionate and steady; let warmth show.") sits

@@ -61,6 +61,23 @@
  *     Non-mouth bindings (cheek tilts, eye squint params on the
  *     same expression) are unaffected, so the rest of the smile
  *     keeps reading while the toothy overlay tapers out.
+ *
+ * Mood-inertia damping (K45):
+ *   - The fresh reaction tag is *instant* while the backend's
+ *     smoothed AffectState lags a turn behind. When the manifest's
+ *     ``reaction_affect_targets[reaction]`` sits far from the live
+ *     ``snap.mood`` (valence-weighted distance), the face has
+ *     outrun the feeling — we damp the expression amplitude
+ *     proportionally so the body language carries the residue.
+ *   - **Mouth params are NEVER inertia-damped.** Bindings whose id
+ *     is in ``mouth_overlay_param_ids`` keep only the lip-sync
+ *     suppression taper above, and bindings in ``lip_sync_ids``
+ *     are excluded defensively (LipsyncChannel owns those and
+ *     writes after us anyway). Damping the mouth would freeze the
+ *     grin / fight the lip-synced jaw while she's talking.
+ *   - Gated on ``snap.moodInertiaDamping``; an absent flag or a
+ *     missing ``reaction_affect_targets`` map disables the path
+ *     (factor pinned to 1, zero cost on minimal rigs).
  */
 import type {
   BackchannelHint,
@@ -194,6 +211,25 @@ const LIPSYNC_SUPPRESSION_GAIN = 6;
  * synchronous with the mouth flapping) and re-emerges at a similar
  * rate once she falls silent. */
 const LIPSYNC_SUPPRESSION_TIME_CONSTANT_S = 0.15;
+/** K45 mood inertia: how hard a full-scale reaction/mood mismatch
+ * damps the (non-mouth) expression amplitude. Sized so the factor
+ * at mismatch=1 lands exactly on ``INERTIA_FLOOR``. */
+const INERTIA_DAMP_STRENGTH = 0.45;
+/** Floor on the inertia factor — even a maximal mismatch keeps the
+ * expression readable (a damped smile, not a blank face). */
+const INERTIA_FLOOR = 0.55;
+/** Mismatch weighting mirrors the Python ``mood_inertia`` module:
+ * valence disagreement reads as a bigger lie than arousal
+ * disagreement. Valence spans 2.0, arousal spans 1.0. */
+const INERTIA_VALENCE_WEIGHT = 1.0;
+const INERTIA_AROUSAL_WEIGHT = 0.5;
+const INERTIA_DISTANCE_NORM = Math.hypot(
+  INERTIA_VALENCE_WEIGHT * 2,
+  INERTIA_AROUSAL_WEIGHT * 1,
+);
+/** Time constant for smoothing the inertia factor — same family as
+ * the amplitude scale so the damping ramps rather than pops. */
+const INERTIA_TIME_CONSTANT_S = 0.4;
 
 export interface ExpressionChannelOptions {
   /** Optional schedule + cancel pair, defaulting to setTimeout /
@@ -240,6 +276,17 @@ export class ExpressionChannel implements AvatarChannel {
    * time from ``manifest.mouth_overlay_param_ids`` so the per-frame
    * write loop avoids re-allocating the Set. */
   private _mouthOverlayIds: Set<string> = new Set();
+  /** K45: cached set of the rig's lip-sync param IDs (Alexia:
+   * ``["ParamMouthOpenY"]``). The inertia damping below must never
+   * touch these — ``LipsyncChannel`` owns them — so any expression
+   * binding whose id lands here is excluded defensively. */
+  private _lipSyncIds: Set<string> = new Set();
+  /** K45: critically-damped mood-inertia factor in
+   * ``[INERTIA_FLOOR, 1]``. ``1`` = no damping (reaction agrees
+   * with the smoothed mood, or the feature is off). Multiplied into
+   * every NON-mouth binding write; mouth bindings keep only the
+   * lip-sync suppression taper. */
+  private _inertiaFactor = 1;
   /** Monotonic timestamp of the last ``tickPreModel`` call. ``0``
    * before the first tick; used to derive a frame ``dt`` since the
    * engine's ``beforeModelUpdate`` doesn't pass one. */
@@ -279,8 +326,10 @@ export class ExpressionChannel implements AvatarChannel {
     this._activeExpressionName = "";
     this._amplitudeScale = 0;
     this._lipsyncSuppression = 0;
+    this._inertiaFactor = 1;
     this._lastPreModelAt = 0;
     this._mouthOverlayIds = new Set(deps.manifest.mouth_overlay_param_ids ?? []);
+    this._lipSyncIds = new Set(deps.manifest.lip_sync_ids ?? []);
     // Apply the initial reaction once at attach so a fresh model
     // doesn't pop in with the default expression while the engine
     // is still wiring channels.
@@ -295,8 +344,10 @@ export class ExpressionChannel implements AvatarChannel {
     this._activeExpressionName = "";
     this._amplitudeScale = 0;
     this._lipsyncSuppression = 0;
+    this._inertiaFactor = 1;
     this._lastPreModelAt = 0;
     this._mouthOverlayIds = new Set();
+    this._lipSyncIds = new Set();
     this._cancelRestore();
     this._backchannelSeq = 0;
   }
@@ -434,18 +485,21 @@ export class ExpressionChannel implements AvatarChannel {
       // back from the overlay's amplitude.
       this._amplitudeScale = 0;
       this._lipsyncSuppression = 0;
+      this._inertiaFactor = 1;
       return;
     }
     const expressionName = this._activeExpressionName;
     if (!expressionName) {
       this._amplitudeScale = 0;
       this._lipsyncSuppression = 0;
+      this._inertiaFactor = 1;
       return;
     }
     const bindings = pickExpressionBindings(deps.manifest, expressionName);
     if (!bindings || bindings.length === 0) {
       this._amplitudeScale = 0;
       this._lipsyncSuppression = 0;
+      this._inertiaFactor = 1;
       return;
     }
 
@@ -482,14 +536,71 @@ export class ExpressionChannel implements AvatarChannel {
     const mouthScale =
       this._mouthOverlayIds.size > 0 ? 1 - this._lipsyncSuppression : 1;
 
+    // K45 mood inertia: damp the (non-mouth) expression amplitude
+    // proportionally to how far the fresh reaction's implied affect
+    // target sits from the smoothed mood. The smoothed mood updates
+    // post-turn, so the factor naturally relaxes back toward 1 as
+    // the felt state catches up with the face.
+    const inertiaTarget = this._computeInertiaTarget(deps);
+    const inertiaRate = dt > 0 ? dt / INERTIA_TIME_CONSTANT_S : 0;
+    this._inertiaFactor = approach(
+      this._inertiaFactor,
+      inertiaTarget,
+      inertiaRate,
+    );
+
     for (const binding of bindings) {
+      // Mouth params are NEVER inertia-damped: the grin overlay keeps
+      // only its lip-sync suppression taper, and lip-sync ids are
+      // excluded outright (LipsyncChannel owns them). Damping the
+      // mouth would freeze the expression against the talking jaw.
       const isMouthOverlay = this._mouthOverlayIds.has(binding.param_id);
+      const isLipSync = this._lipSyncIds.has(binding.param_id);
+      const inertia = isMouthOverlay || isLipSync ? 1 : this._inertiaFactor;
       const value =
         binding.on_value *
         this._amplitudeScale *
-        (isMouthOverlay ? mouthScale : 1);
+        (isMouthOverlay ? mouthScale : 1) *
+        inertia;
       adapter.setParam(binding.param_id, value);
     }
+  }
+
+  /** K45: target inertia factor for this frame. ``1`` (no damping)
+   * when the feature flag is off, the manifest ships no
+   * ``reaction_affect_targets``, the current reaction has no implied
+   * target (neutral / unknown), or the mood snapshot is missing. */
+  private _computeInertiaTarget(deps: ChannelDeps): number {
+    const snap = deps.getStoreSnapshot();
+    if (!snap.moodInertiaDamping) {
+      return 1;
+    }
+    const targets = deps.manifest.reaction_affect_targets;
+    if (!targets) {
+      return 1;
+    }
+    const target = targets[this._currentReaction];
+    if (!target || target.length < 2) {
+      return 1;
+    }
+    const mood = snap.mood;
+    if (!mood) {
+      return 1;
+    }
+    const valence = clamp(
+      Number.isFinite(mood.valence) ? mood.valence : 0,
+      -1,
+      1,
+    );
+    const arousal = clamp01(
+      Number.isFinite(mood.arousal) ? mood.arousal : 0.4,
+    );
+    const distance = Math.hypot(
+      INERTIA_VALENCE_WEIGHT * (target[0] - valence),
+      INERTIA_AROUSAL_WEIGHT * (target[1] - arousal),
+    );
+    const mismatch = clamp01(distance / INERTIA_DISTANCE_NORM);
+    return clamp(1 - INERTIA_DAMP_STRENGTH * mismatch, INERTIA_FLOOR, 1);
   }
 
   // ── internals ────────────────────────────────────────────────────
@@ -646,6 +757,14 @@ export class ExpressionChannel implements AvatarChannel {
    * ``""`` when the active reaction unmapped to nothing. */
   get activeExpressionName(): string {
     return this._activeExpressionName;
+  }
+
+  /** K45: smoothed mood-inertia factor currently multiplying every
+   * non-mouth expression write. ``1`` = no damping. Tests assert it
+   * converges proportionally to the reaction/mood mismatch and is
+   * never applied to mouth bindings. */
+  get inertiaFactor(): number {
+    return this._inertiaFactor;
   }
 }
 

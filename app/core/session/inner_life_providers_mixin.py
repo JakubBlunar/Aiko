@@ -1812,6 +1812,44 @@ class InnerLifeProvidersMixin:
             log.debug("rupture render failed", exc_info=True)
             return ""
 
+    def _render_mood_inertia_block(self) -> str:
+        """K45: surface a one-shot mood-inertia cue.
+
+        Same one-shot contract as :meth:`_render_rupture_block` — the
+        post-turn detector (:meth:`PostTurnMixin._maybe_arm_mood_inertia`)
+        stashes a rendered cue on the controller when the fresh reaction
+        tag strongly outran the smoothed felt state; we surface it once
+        and clear the slot. The MCP ``force_mood_inertia`` flag bypasses
+        the detector with a synthetic cue built from the live state.
+        """
+        if not bool(
+            getattr(self._settings.agent, "mood_inertia_enabled", True)
+        ):
+            return ""
+        if getattr(self, "_mood_inertia_force", False):
+            self._mood_inertia_force = False
+            try:
+                from app.core.affect import mood_inertia
+
+                state = self._affect_store.get(self._user_id)
+                ring = list(getattr(self, "_mood_inertia_reactions", []) or [])
+                reaction = ring[-1] if ring else "excited"
+                forced = mood_inertia.InertiaResult(
+                    mismatch=1.0, raw_mismatch=1.0,
+                    whiplash=False, band="strong",
+                )
+                return mood_inertia.render_cue(
+                    forced, reaction, state.valence, state.arousal,
+                )
+            except Exception:
+                log.debug("forced mood-inertia render failed", exc_info=True)
+                return ""
+        cue = getattr(self, "_pending_mood_inertia", None)
+        if not cue:
+            return ""
+        self._pending_mood_inertia = None
+        return str(cue)
+
     def _render_self_correction_block(self) -> str:
         """K38: surface a one-shot self-correction cue.
 

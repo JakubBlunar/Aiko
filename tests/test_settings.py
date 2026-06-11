@@ -467,6 +467,87 @@ class SelfCorrectionSettingsTests(unittest.TestCase):
         )
 
 
+class MoodInertiaSettingsTests(unittest.TestCase):
+    """K45: agent master switch + memory knobs + avatar damping flag."""
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(
+        self,
+        agent_extra: dict | None = None,
+        memory_extra: dict | None = None,
+        avatar_extra: dict | None = None,
+    ) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(json.loads(default_path.read_text(encoding="utf-8")))
+        cfg.get("agent", {}).pop("mood_inertia_enabled", None)
+        for k in (
+            "mood_inertia_mismatch_threshold",
+            "mood_inertia_cooldown_turns",
+        ):
+            cfg.get("memory", {}).pop(k, None)
+        cfg.get("avatar", {}).pop("mood_inertia_damping", None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        if memory_extra is not None:
+            cfg["memory"] = {**cfg.get("memory", {}), **memory_extra}
+        if avatar_extra is not None:
+            cfg["avatar"] = {**cfg.get("avatar", {}), **avatar_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults_load_when_keys_missing(self) -> None:
+        path = self._write_config()
+        result = load_settings(config_path=path)
+        self.assertTrue(result.agent.mood_inertia_enabled)
+        self.assertAlmostEqual(
+            result.memory.mood_inertia_mismatch_threshold, 0.45,
+        )
+        self.assertEqual(result.memory.mood_inertia_cooldown_turns, 3)
+        self.assertTrue(result.avatar.mood_inertia_damping)
+
+    def test_overrides_round_trip(self) -> None:
+        path = self._write_config(
+            agent_extra={"mood_inertia_enabled": False},
+            memory_extra={
+                "mood_inertia_mismatch_threshold": 0.6,
+                "mood_inertia_cooldown_turns": 5,
+            },
+            avatar_extra={"mood_inertia_damping": False},
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.mood_inertia_enabled)
+        self.assertAlmostEqual(
+            result.memory.mood_inertia_mismatch_threshold, 0.6,
+        )
+        self.assertEqual(result.memory.mood_inertia_cooldown_turns, 5)
+        self.assertFalse(result.avatar.mood_inertia_damping)
+
+    def test_clamps_out_of_range_values(self) -> None:
+        path = self._write_config(
+            memory_extra={
+                "mood_inertia_mismatch_threshold": 0.0,  # floor 0.1
+                "mood_inertia_cooldown_turns": -2,  # floor 0
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertAlmostEqual(
+            result.memory.mood_inertia_mismatch_threshold, 0.1,
+        )
+        self.assertEqual(result.memory.mood_inertia_cooldown_turns, 0)
+
+
 class ConsolidationSettingsTests(unittest.TestCase):
     """K35: agent master switch + caps + memory knobs round-trip + clamps."""
 

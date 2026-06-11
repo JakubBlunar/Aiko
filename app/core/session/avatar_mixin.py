@@ -132,6 +132,7 @@ class AvatarMixin:
         scale_multiplier: float | None = None,
         auto_outfit: str | None = None,
         expressiveness: float | None = None,
+        mood_inertia_damping: bool | None = None,
     ) -> dict[str, Any]:
         """Patch the user-tunable avatar knobs and notify listeners.
 
@@ -168,6 +169,15 @@ class AvatarMixin:
                 self._avatar_settings_runtime["expressiveness"] = value
                 self._settings.avatar.expressiveness = value
                 persist_patch["expressiveness"] = value
+                changed = True
+        if mood_inertia_damping is not None:
+            value = bool(mood_inertia_damping)
+            if value != self._avatar_settings_runtime.get(
+                "mood_inertia_damping", True,
+            ):
+                self._avatar_settings_runtime["mood_inertia_damping"] = value
+                self._settings.avatar.mood_inertia_damping = value
+                persist_patch["mood_inertia_damping"] = value
                 changed = True
         snapshot = dict(self._avatar_settings_runtime)
         if changed:

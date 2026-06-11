@@ -207,6 +207,17 @@ class AvatarProfile:
     # gesture in the renderer; an empty list means the model has no
     # animatable ear segments and the gesture silently no-ops.
     cat_ear_param_ids: list[str] = field(default_factory=list)
+    # K45 mood inertia: reaction tag → implied (valence, arousal)
+    # target, derived from the Python ``_REACTION_IMPULSE`` table via
+    # ``mood_inertia.reaction_affect_targets()``. Shipping it on the
+    # manifest keeps the backend the single source of truth — the
+    # renderer's ``ExpressionChannel`` reads it to damp non-mouth
+    # expression params proportionally to the gap between the fresh
+    # reaction and the smoothed mood, with NO TS mirror table.
+    # Directionless reactions (neutral / thoughtful) are absent.
+    reaction_affect_targets: dict[str, tuple[float, float]] = field(
+        default_factory=dict,
+    )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -630,10 +641,27 @@ def from_disk(root: Path | str, *, display_name: str = "") -> AvatarProfile:
         outfit_gated_expressions=outfit_gated_expressions,
         cat_tail_param_ids=cat_tail_param_ids,
         cat_ear_param_ids=cat_ear_param_ids,
+        reaction_affect_targets=_build_reaction_affect_targets(),
     )
 
 
 # ── Internals ───────────────────────────────────────────────────────────
+
+
+def _build_reaction_affect_targets() -> dict[str, tuple[float, float]]:
+    """K45: implied affect targets for the manifest, rig-independent.
+
+    Pure pass-through to ``mood_inertia.reaction_affect_targets()``;
+    wrapped so a refactor of the affect module can't crash avatar
+    loading (best-effort: an empty dict just disables frontend
+    damping).
+    """
+    try:
+        from app.core.affect.mood_inertia import reaction_affect_targets
+
+        return reaction_affect_targets()
+    except Exception:
+        return {}
 
 
 def _find_entry(root: Path) -> Path | None:

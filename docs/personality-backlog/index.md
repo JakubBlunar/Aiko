@@ -92,7 +92,6 @@ K33 cozy mode · K37 emotional contagion ·
 K39 energy / spoons model · K40 comfortable silence ·
 K41 mid-stream self-correction ·
 K42 multi-bubble reply bursts (texting rhythm) ·
-K45 mood inertia (instant face, lagging heart) ·
 K46 stance persistence (don't cave on taste pushback) ·
 K47 question/share balance (stop interviewing) ·
 K48 tease rhythm budget ·
@@ -115,8 +114,8 @@ turning over", K29 opinion injection, K30 self-noticing cues,
 K31 + K32 soft physicality, K34 forward curiosity worker,
 K35 memory consolidation worker, K36 "things I did
 while you were away", K38 self-correction cue,
-K43 promise follow-through, and K44 felt-language affect
-block have shipped — see
+K43 promise follow-through, K44 felt-language affect
+block, and K45 mood inertia have shipped — see
 [`shipped.md`](shipped.md).)
 
 ### P. Performance + observability — [`perf.md`](perf.md)
