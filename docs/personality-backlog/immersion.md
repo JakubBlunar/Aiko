@@ -77,6 +77,51 @@ narratively useful.
 
 ---
 
+## H6. Audible backchannels — "mm-hm" while the user speaks
+
+While the user talks in voice mode, the `BackchannelGate` can
+flicker a micro-expression — but Aiko never makes a *sound*, so
+long user turns feel like speaking into a void. Humans backchannel
+audibly ("mm-hm", "yeah", a soft laugh) every few clauses. The
+earcon side-channel player already exists and is exactly the right
+transport: on a backchannel hint, optionally play a short low-volume
+continuer earcon (ducked under the user's mic level, never TTS)
+gated by a new `agent.backchannel_audio_enabled` toggle, the
+existing `min_repeat_seconds` rate limit, and a "not while user is
+mid-word" energy check. Pick the continuer from the vocal-tone /
+arc context (a soft "mm" for support arcs, a chuckle for playful).
+Key files:
+[`app/core/session/session_controller.py`](../../app/core/session/session_controller.py)
+(`feed_stt_partial` backchannel path),
+[`app/web/server.py`](../../app/web/server.py) (backchannel
+broadcast), the earcon player frontend path, new settings knob.
+
+---
+
+## H7. Listen while speaking — soften the half-duplex turn lock
+
+Voice mode is strictly half-duplex: `_capture_loop` skips capture
+while `_processing` is set, and the session only returns to
+"listening" after `_wait_for_tts_drain` (polls up to 30 s against
+the *server's* pacing clock, not actual client playback). The user
+cannot even *begin* the next phrase until the system believes it
+has finished talking — so natural overlap ("yeah—", "oh wait")
+is dropped on the floor. Incremental path: (a) keep capturing into
+a ring buffer during playback so the first words of an overlap
+aren't lost once barge-in lands; (b) replace the drain poll with a
+client-playback-completion signal (the client knows exactly when
+the last buffer ends); (c) full duplex + echo cancellation as the
+end state. Pairs with the barge-in default flip and P25 (client
+audio flush) — all three together are what make voice conversation
+feel interruptible and alive. Key files:
+[`app/core/session/live_session.py`](../../app/core/session/live_session.py)
+(`_capture_loop`, `_wait_for_tts_drain`),
+[`web/src/audio/AudioOutputManager.ts`](../../web/src/audio/AudioOutputManager.ts)
+(playback-complete signal),
+[`app/audio/client_mic_source.py`](../../app/audio/client_mic_source.py).
+
+---
+
 ## Minor polish
 
 These were in the bottom "Other ideas considered" of the legacy
@@ -102,4 +147,7 @@ forgotten.
   `audio.barge_in_enabled: false` in [`config/default.json`](../../config/default.json).
   The plumbing is there in [`app/core/session/live_session.py`](../../app/core/session/live_session.py);
   flip the flag and validate against the existing
-  `barge_in_min_speech_seconds` floor.
+  `barge_in_min_speech_seconds` floor. **Do P25 first** (client-side
+  audio flush, see [`perf.md`](perf.md#p25-client-keeps-playing-scheduled-audio-after-server-side-tts-stop)) —
+  server-side barge-in without the client flush still talks over
+  the user for up to a few seconds of already-scheduled audio.

@@ -813,6 +813,17 @@ class AgentSettings:
     filler_enabled: bool = True
     filler_first_token_ms: int = 800
 
+    # ── P14: heuristic tool-pass gate ─────────────────────────────────
+    # When true (default), turns with no tool-shaped signal skip the
+    # forced ``chat_with_tools`` decision pass entirely — the largest
+    # avoidable time-to-first-token contributor when tools are enabled.
+    # Continuity signals (finished-task block, active tasks, previous
+    # turn dispatched a tool) always run the pass. Set to false to
+    # restore the old always-run behaviour (the kill-switch if tool
+    # recall ever regresses). See
+    # [`app/core/session/tool_pass_gate.py`](../session/tool_pass_gate.py).
+    tool_pass_gate_enabled: bool = True
+
     # ── Memory consolidation (Phase 4b) ───────────────────────────────
     # MemoryConsolidator merges near-cosine clusters in the SQLite store
     # so we don't drown in tiny redundant fact-rows. Runs in chunks during
@@ -1446,6 +1457,18 @@ class AgentSettings:
     # ``MemorySettings.forward_curiosity_*``.
     forward_curiosity_enabled: bool = True
 
+    # ── K43: promise follow-through ───────────────────────────────────
+    # Master switch for the promise lifecycle + follow-through cue. When
+    # ON, assistant-side ``kind="promise"`` memories carry an
+    # open → surfaced → fulfilled | dropped state machine: the
+    # PromiseFollowthroughWorker arms a one-shot "you said you'd look
+    # into X — close the loop (or own that you haven't)" cue during
+    # quiet windows, the post-turn hook auto-fulfils promises Aiko's
+    # reply delivered on, and finished background tasks auto-fulfil
+    # matching promises. Off → no cue, no lifecycle writes. Cadence +
+    # age knobs live on ``MemorySettings.promise_followthrough_*``.
+    promise_followthrough_enabled: bool = True
+
     # ── K38: self-correction cue ──────────────────────────────────────
     # Master switch for the next-turn self-correction cue. When ON, a
     # post-turn lexical detector checks whether Aiko's just-finished
@@ -1976,6 +1999,22 @@ class MemorySettings:
     forward_curiosity_daily_cap: int = 4
     forward_curiosity_min_gap_hours: float = 4.0
     forward_curiosity_journal_max: int = 8
+    # K43 PromiseFollowthroughWorker cadence + pacing. The worker runs
+    # during quiet windows (default every 30 min). ``min_age_hours`` is
+    # how long an assistant promise must sit open before the cue arms
+    # (closing the loop 5 minutes later reads robotic, not attentive).
+    # ``cooldown_hours`` paces consecutive cues so a backlog of old
+    # promises doesn't turn every turn into loop-closing.
+    # ``drop_after_days`` ages out promises nobody followed up on (a
+    # 3-week-old "I'll check" resurfacing is weirder than letting it
+    # go). ``fulfil_min_overlap`` is the content-word overlap a reply /
+    # finished task must share with the promise body to count as
+    # fulfilled.
+    promise_followthrough_interval_seconds: int = 1800
+    promise_followthrough_min_age_hours: float = 4.0
+    promise_followthrough_cooldown_hours: float = 6.0
+    promise_followthrough_drop_after_days: float = 14.0
+    promise_fulfil_min_overlap: int = 3
     # ── K38: self-correction cue thresholds ───────────────────────────
     # ``min_confidence`` is the floor a fact/preference memory must clear
     # to count as a durable claim worth correcting toward. ``min_overlap``
@@ -3099,6 +3138,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             prepared_nudge_ttl_seconds=max(30.0, float(agent_raw.get("prepared_nudge_ttl_seconds", 600.0))),
             filler_enabled=bool(agent_raw.get("filler_enabled", True)),
             filler_first_token_ms=max(150, int(agent_raw.get("filler_first_token_ms", 800))),
+            tool_pass_gate_enabled=bool(agent_raw.get("tool_pass_gate_enabled", True)),
             consolidator_enabled=bool(agent_raw.get("consolidator_enabled", True)),
             consolidator_min_hours_between=max(0.5, float(agent_raw.get("consolidator_min_hours_between", 18.0))),
             consolidator_chunk_size=max(8, int(agent_raw.get("consolidator_chunk_size", 40))),
@@ -3737,6 +3777,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             forward_curiosity_enabled=bool(
                 agent_raw.get("forward_curiosity_enabled", True),
             ),
+            promise_followthrough_enabled=bool(
+                agent_raw.get("promise_followthrough_enabled", True),
+            ),
             self_correction_enabled=bool(
                 agent_raw.get("self_correction_enabled", True),
             ),
@@ -4212,6 +4255,38 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             forward_curiosity_journal_max=max(
                 1,
                 int(memory_raw.get("forward_curiosity_journal_max", 8)),
+            ),
+            promise_followthrough_interval_seconds=max(
+                30,
+                int(
+                    memory_raw.get(
+                        "promise_followthrough_interval_seconds", 1800,
+                    )
+                ),
+            ),
+            promise_followthrough_min_age_hours=max(
+                0.0,
+                float(
+                    memory_raw.get("promise_followthrough_min_age_hours", 4.0)
+                ),
+            ),
+            promise_followthrough_cooldown_hours=max(
+                0.0,
+                float(
+                    memory_raw.get("promise_followthrough_cooldown_hours", 6.0)
+                ),
+            ),
+            promise_followthrough_drop_after_days=max(
+                1.0,
+                float(
+                    memory_raw.get(
+                        "promise_followthrough_drop_after_days", 14.0,
+                    )
+                ),
+            ),
+            promise_fulfil_min_overlap=max(
+                1,
+                int(memory_raw.get("promise_fulfil_min_overlap", 3)),
             ),
             self_correction_min_confidence=min(
                 1.0,

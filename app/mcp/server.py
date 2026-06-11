@@ -117,6 +117,71 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             )
 
     @mcp.tool()
+    def get_tool_gate_state() -> str:
+        """P14 — dump the heuristic tool-pass gate state.
+
+        Returns a JSON dict with the master switch
+        (``agent.tool_pass_gate_enabled``), the one-shot
+        ``force_next`` flag, the last gate decision (``run`` /
+        ``reason`` / matched pattern families), the per-process
+        counters (``turns_gated`` / ``passes_skipped`` /
+        ``passes_run``), the rolling average cost of a real pass
+        (``avg_pass_ms``), the estimated total ms saved by skips,
+        and the ``last_turn_dispatched_tool`` continuity flag.
+
+        First stop when "Aiko stopped using tools" comes up: a
+        ``last_decision.reason`` of ``no_signal`` on a turn that
+        *should* have used a tool means the signal-pattern table in
+        ``app/core/session/tool_pass_gate.py`` is missing a shape —
+        either extend the family patterns or flip
+        ``agent.tool_pass_gate_enabled=false`` as the kill-switch.
+        Per-decision tracing: ``tail_logs(module_contains=
+        "tool_pass_gate")`` shows one ``tool-gate:`` line per turn.
+        """
+        try:
+            runner = getattr(session, "_turn_runner", None)
+            if runner is None:
+                return json.dumps({"error": "turn runner not built yet"})
+            return json.dumps(runner.get_tool_gate_state(), indent=2)
+        except Exception as exc:
+            return f"get_tool_gate_state raised: {exc}"
+
+    @mcp.tool()
+    def force_tool_pass() -> str:
+        """P14 — arm a one-shot bypass on the tool-pass gate.
+
+        Sets the runner's ``_tool_gate_force_next`` flag so the next
+        turn runs the forced tool-decision pass regardless of the
+        text heuristic (``reason="force"``). Consumed on the next
+        turn whether or not a tool is actually dispatched — strictly
+        one-shot.
+
+        End-to-end repro: call this, then ``send_message`` with pure
+        banter ("hey, how are you?", ``skip_tts=true``) and read
+        ``get_last_response_detail`` — ``tool_gate_event`` should be
+        ``run:force`` with a non-zero ``tool_pass_ms``. Without the
+        flag the same message lands ``skip:no_signal`` and
+        ``tool_pass_ms=0``.
+        """
+        try:
+            runner = getattr(session, "_turn_runner", None)
+            if runner is None:
+                return json.dumps({"error": "turn runner not built yet"})
+            runner._tool_gate_force_next = True
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next turn runs the tool-decision pass "
+                        "unconditionally; one-shot"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_tool_pass raised: {exc}"
+
+    @mcp.tool()
     def feed_stt_partial(partial_text: str) -> str:
         """Inject a fake STT partial transcript for testing backchannel hints.
 
@@ -3124,6 +3189,155 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             )
         except Exception as exc:
             return f"force_self_correction raised: {exc}"
+
+    @mcp.tool()
+    def get_promise_followthrough_state() -> str:
+        """K43 — dump the promise-lifecycle + follow-through state.
+
+        Returns a JSON dict with:
+
+        - ``enabled``: ``agent.promise_followthrough_enabled`` switch.
+        - ``status_counts``: promise memories bucketed by lifecycle
+          status (``open`` / ``surfaced`` / ``fulfilled`` / ``dropped``),
+          split by side (assistant vs user).
+        - ``pending``: the armed kv cue waiting for the next turn
+          (memory_id / what / age_hours / at), or ``null``.
+        - ``last_fired_at``: the worker's per-fire cooldown watermark.
+        - ``settings``: the live cadence/age knobs.
+        - ``open_assistant_promises``: up to 10 oldest open rows
+          (id, what, age_hours) — the worker's candidate pool.
+        """
+        try:
+            from app.core.memory import promise_lifecycle as lifecycle
+            from app.core.proactive.promise_followthrough_worker import (
+                load_pending,
+            )
+
+            store = getattr(session, "_memory_store", None)
+            mem_settings = session._memory_settings
+            status_counts: dict[str, dict[str, int]] = {}
+            open_assistant: list[dict] = []
+            if store is not None:
+                for m in store.iter_by_kind("promise"):
+                    side = (
+                        "assistant"
+                        if lifecycle.is_assistant_promise(m)
+                        else "user"
+                    )
+                    status = lifecycle.promise_status(m)
+                    status_counts.setdefault(side, {})
+                    status_counts[side][status] = (
+                        status_counts[side].get(status, 0) + 1
+                    )
+                    if side == "assistant" and status == "open":
+                        open_assistant.append({
+                            "id": m.id,
+                            "what": lifecycle.promise_what(m)[:100],
+                            "age_hours": lifecycle.promise_age_hours(m),
+                        })
+            open_assistant.sort(
+                key=lambda d: d.get("age_hours") or 0.0, reverse=True,
+            )
+            return json.dumps(
+                {
+                    "enabled": bool(
+                        getattr(
+                            session._settings.agent,
+                            "promise_followthrough_enabled",
+                            True,
+                        )
+                    ),
+                    "status_counts": status_counts,
+                    "pending": load_pending(session._chat_db.kv_get),
+                    "last_fired_at": session._chat_db.kv_get(
+                        "promise_followthrough.last_fired_at"
+                    ),
+                    "settings": {
+                        "interval_seconds": int(
+                            getattr(
+                                mem_settings,
+                                "promise_followthrough_interval_seconds",
+                                1800,
+                            )
+                        ),
+                        "min_age_hours": float(
+                            getattr(
+                                mem_settings,
+                                "promise_followthrough_min_age_hours",
+                                4.0,
+                            )
+                        ),
+                        "cooldown_hours": float(
+                            getattr(
+                                mem_settings,
+                                "promise_followthrough_cooldown_hours",
+                                6.0,
+                            )
+                        ),
+                        "drop_after_days": float(
+                            getattr(
+                                mem_settings,
+                                "promise_followthrough_drop_after_days",
+                                14.0,
+                            )
+                        ),
+                        "fulfil_min_overlap": int(
+                            getattr(
+                                mem_settings,
+                                "promise_fulfil_min_overlap",
+                                3,
+                            )
+                        ),
+                    },
+                    "open_assistant_promises": open_assistant[:10],
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"get_promise_followthrough_state raised: {exc}"
+
+    @mcp.tool()
+    def force_promise_followthrough() -> str:
+        """K43 — bypass the age/cooldown gates and arm the cue now.
+
+        Calls ``PromiseFollowthroughWorker.force_arm()``: picks the
+        oldest active (open or surfaced) assistant-side promise, stamps
+        it ``surfaced``, and writes the one-shot pending cue into
+        kv_meta. The next turn's provider renders the "close the loop"
+        line and clears the slot.
+
+        Repro: send a message that makes Aiko say "I'll look into X"
+        (or insert a ``kind=promise`` memory whose content starts with
+        "Aiko promised: ...") -> call this tool -> confirm ``pending``
+        in ``get_promise_followthrough_state`` -> ``send_message(
+        skip_tts=true)`` -> check ``tail_logs(module_contains=
+        "promise")`` for ``promise-followthrough fire:`` and the
+        Heads-up line in ``get_last_response_detail.system_prompt``.
+        """
+        try:
+            worker = getattr(session, "_promise_followthrough_worker", None)
+            if worker is None:
+                return json.dumps(
+                    {"error": "worker not registered (no MemoryStore?)"},
+                    indent=2,
+                )
+            payload = worker.force_arm()
+            if payload is None:
+                return json.dumps(
+                    {
+                        "armed": False,
+                        "note": (
+                            "no active assistant-side promise found; make "
+                            "Aiko promise something first or insert a "
+                            "kind=promise memory starting with "
+                            "'Aiko promised: ...'"
+                        ),
+                    },
+                    indent=2,
+                )
+            return json.dumps({"armed": True, "pending": payload}, indent=2)
+        except Exception as exc:
+            return f"force_promise_followthrough raised: {exc}"
 
     @mcp.tool()
     def get_topic_graph() -> str:

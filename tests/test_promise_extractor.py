@@ -38,6 +38,7 @@ class _FakeMemoryStore:
         source_message_id=None,
         tier=None,
         confidence=None,
+        metadata=None,
     ):
         self.calls.append({
             "content": content,
@@ -45,6 +46,7 @@ class _FakeMemoryStore:
             "salience": salience,
             "tier": tier,
             "confidence": confidence,
+            "metadata": metadata,
         })
         if self.fail:
             return None
@@ -100,6 +102,33 @@ class ExtractRegexTests(unittest.TestCase):
             assistant_text="Let me know how the interview goes!",
         )
         self.assertTrue(any("the interview" in p.text for p in ps))
+
+    def test_assistant_look_into_pattern(self):
+        # K43: the exact phrasing that used to slip through.
+        ps = extract_regex(
+            user_text="",
+            assistant_text="Hm, good question — I'll look into that tonight.",
+        )
+        self.assertEqual(len(ps), 1)
+        self.assertEqual(ps[0].who, "assistant")
+        self.assertIn("look into", ps[0].text)
+
+    def test_assistant_get_back_to_you_pattern(self):
+        ps = extract_regex(
+            user_text="",
+            assistant_text="I'll get back to you about the GPU prices.",
+        )
+        self.assertEqual(len(ps), 1)
+        self.assertEqual(ps[0].who, "assistant")
+        self.assertIn("get back to you", ps[0].text)
+
+    def test_assistant_find_out_pattern(self):
+        ps = extract_regex(
+            user_text="",
+            assistant_text="No idea yet, but I will find out for you.",
+        )
+        self.assertEqual(len(ps), 1)
+        self.assertEqual(ps[0].who, "assistant")
 
     def test_no_false_positives(self):
         ps = extract_regex(
@@ -184,6 +213,21 @@ class PromiseExtractorTests(unittest.TestCase):
         self.assertEqual(len(store.calls), 1)
         self.assertEqual(store.calls[0]["kind"], "promise")
         self.assertGreaterEqual(ext.stats()["regex_persisted"], 1)
+
+    def test_extract_post_turn_stamps_lifecycle_metadata(self):
+        # K43: new rows carry sidedness + an explicit open status so the
+        # follow-through worker never needs the content-prefix fallback.
+        ext, _ollama, store = self._make()
+        ext.extract_post_turn(
+            user_text="",
+            assistant_text="I'll look into the LanceDB indexing options.",
+            session_key="s",
+        )
+        self.assertEqual(len(store.calls), 1)
+        self.assertEqual(
+            store.calls[0]["metadata"],
+            {"promise_who": "assistant", "promise_status": "open"},
+        )
 
     def test_extract_post_turn_no_promises_no_writes(self):
         ext, _ollama, store = self._make()

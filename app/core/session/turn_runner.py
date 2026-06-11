@@ -43,6 +43,11 @@ from app.core.session.session_text_utils import (
     sanitize_user_text,
 )
 from app.core.proactive.summary_worker import SummaryWorker
+from app.core.session.tool_pass_gate import (
+    GateContext,
+    GateDecision,
+    should_run_tool_pass,
+)
 from app.llm.ollama_client import OllamaClient, OllamaUsage
 from app.llm.token_utils import estimate_tokens
 
@@ -199,6 +204,8 @@ class TurnRunner:
         filler_threshold_ms: int = 800,
         filler_enabled: bool = True,
         listen_extensions_provider: Callable[[], int] | None = None,
+        tool_pass_gate_enabled: bool = True,
+        tasks_active_provider: Callable[[], bool] | None = None,
     ) -> None:
         self._ollama = ollama
         self._db = db
@@ -230,6 +237,31 @@ class TurnRunner:
         # log line can show how often hesitation extended the listening
         # window. Returns 0 when not in live voice mode.
         self._listen_extensions_provider = listen_extensions_provider
+        # ── P14: heuristic tool-pass gate ─────────────────────────────
+        # When enabled, banter turns with no tool-shaped signal skip the
+        # forced ``chat_with_tools`` decision pass entirely (the largest
+        # avoidable TTFT contributor). ``tasks_active_provider`` is an
+        # optional continuity hook injected by SessionController — True
+        # when any task is running / awaiting_input / paused, in which
+        # case the pass always runs (the user's message may be the
+        # answer a pending task is waiting for).
+        self._tool_pass_gate_enabled = bool(tool_pass_gate_enabled)
+        self._tasks_active_provider = tasks_active_provider
+        # True when the *previous* turn dispatched at least one real
+        # tool — follow-ups like "and the other folder?" carry no
+        # tool-shaped token of their own, so the gate lets them through.
+        self._last_turn_dispatched_tool = False
+        # One-shot MCP bypass (``force_tool_pass``): consumed on the
+        # next turn whether or not the pass dispatches anything.
+        self._tool_gate_force_next = False
+        # Observability counters for the MCP ``get_tool_gate_state``
+        # surface. ``_tool_pass_ms_total`` / ``_tool_pass_count`` give a
+        # rolling average pass cost so skipped passes can be priced.
+        self._tool_gate_last: GateDecision | None = None
+        self._tool_gate_turns = 0
+        self._tool_gate_skips = 0
+        self._tool_pass_ms_total = 0.0
+        self._tool_pass_count = 0
 
     def set_tool_registry(self, registry: "Any | None") -> None:
         self._tool_registry = registry
@@ -259,6 +291,7 @@ class TurnRunner:
         max_prompt_tokens_pct: float | None = None,
         filler_threshold_ms: int | None = None,
         filler_enabled: bool | None = None,
+        tool_pass_gate_enabled: bool | None = None,
     ) -> None:
         # ``client`` lets ``SessionController.reconfigure_chat_llm`` swap
         # the chat-LLM backend (e.g. Ollama -> Gemini) without recreating
@@ -282,6 +315,8 @@ class TurnRunner:
                 threshold_ms=filler_threshold_ms,
                 enabled=filler_enabled,
             )
+        if tool_pass_gate_enabled is not None:
+            self._tool_pass_gate_enabled = bool(tool_pass_gate_enabled)
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -512,19 +547,42 @@ class TurnRunner:
             resume_user_message_id if resume_user_message_id is not None else "-",
         )
 
-        # ── Pass 1: tool calling (optional) ──────────────────────────────
+        # ── Pass 1: tool calling (optional, P14-gated) ───────────────────
         # If a tool registry is attached we let the model decide whether it
         # wants to call any tools before producing the spoken reply. Tool
         # results are appended as ``role="tool"`` messages and the prompt is
         # then sent through ``chat_stream`` for the user-facing reply.
+        #
+        # P14: the heuristic gate skips the decision pass entirely on turns
+        # with no tool-shaped signal (the pass is a full non-streaming LLM
+        # round-trip — the largest avoidable TTFT contributor). Continuity
+        # signals (finished-task block, active tasks, previous turn used a
+        # tool, MCP force flag) always run the pass; the kill-switch
+        # ``agent.tool_pass_gate_enabled=false`` restores the old
+        # always-run behaviour.
         tool_usage = OllamaUsage()
         if self._tool_registry is not None and len(self._tool_registry) > 0:
-            try:
-                tool_usage = self._maybe_run_tool_pass(
-                    messages, stop_requested=stop_requested,
+            gate_decision = self._gate_tool_pass(cleaned_user, messages)
+            telemetry.tool_gate_event = gate_decision.as_event()
+            if gate_decision.run:
+                tool_pass_t0 = time.monotonic()
+                try:
+                    tool_usage = self._maybe_run_tool_pass(
+                        messages, stop_requested=stop_requested,
+                    )
+                except Exception:
+                    log.exception("tool pre-pass failed; falling back to plain stream")
+                telemetry.tool_pass_ms = round(
+                    (time.monotonic() - tool_pass_t0) * 1000.0, 2,
                 )
-            except Exception:
-                log.exception("tool pre-pass failed; falling back to plain stream")
+                self._tool_pass_ms_total += telemetry.tool_pass_ms
+                self._tool_pass_count += 1
+            else:
+                # Pass skipped: this turn dispatches nothing, so the
+                # continuity flag for the NEXT turn clears here
+                # (``_maybe_run_tool_pass`` owns it on the run path).
+                self._last_turn_dispatched_tool = False
+                self._tool_gate_skips += 1
             # Tool-pass appendments grow the prompt; refresh telemetry so the
             # post-turn metrics reflect what actually got streamed.
             if tool_usage.prompt_tokens or tool_usage.completion_tokens:
@@ -846,7 +904,8 @@ class TurnRunner:
             "first_token_ms=%s total_ms=%.0f eval_ms=%.0f tools=%d "
             "compactions=%d filler=%s aborted=%s mood_fallback=%s "
             "rag_prefetch=%s prebuild=%s listen_extensions=%d "
-            "embed_calls=%d embed_ms=%.0f assemble_ms=%.0f rag_lookup_ms=%.0f",
+            "embed_calls=%d embed_ms=%.0f assemble_ms=%.0f rag_lookup_ms=%.0f "
+            "tool_gate=%s tool_pass_ms=%.0f",
             len(cleaned),
             mood or "neutral",
             usage.prompt_tokens,
@@ -869,6 +928,8 @@ class TurnRunner:
             telemetry.embed_ms,
             telemetry.assemble_ms,
             telemetry.rag_lookup_ms,
+            telemetry.tool_gate_event,
+            telemetry.tool_pass_ms,
         )
 
         # Carry-over for the *next* turn's filler tone.
@@ -891,6 +952,84 @@ class TurnRunner:
 
     # ── helpers ───────────────────────────────────────────────────────
 
+    def _gate_tool_pass(
+        self,
+        user_text: str,
+        messages: list[dict[str, Any]],
+    ) -> GateDecision:
+        """P14: decide whether the tool-decision pass runs this turn.
+
+        Consumes the one-shot ``_tool_gate_force_next`` flag, stamps the
+        decision + counters for the MCP ``get_tool_gate_state`` surface,
+        and never raises (any failure degrades to "run" — the status
+        quo).
+        """
+        self._tool_gate_turns += 1
+        if not self._tool_pass_gate_enabled:
+            decision = GateDecision(run=True, reason="disabled")
+            self._tool_gate_last = decision
+            return decision
+        force = self._tool_gate_force_next
+        self._tool_gate_force_next = False
+        tasks_active = False
+        if self._tasks_active_provider is not None:
+            try:
+                tasks_active = bool(self._tasks_active_provider())
+            except Exception:
+                log.debug("tasks_active_provider raised", exc_info=True)
+        try:
+            registry = self._tool_registry
+            tool_names = (
+                list(registry.names()) if registry is not None else []
+            )
+            decision = should_run_tool_pass(
+                user_text,
+                tool_names,
+                context=GateContext(
+                    finished_task_block=_messages_have_finished_task_block(
+                        messages,
+                    ),
+                    last_turn_dispatched_tool=self._last_turn_dispatched_tool,
+                    tasks_active=tasks_active,
+                    force=force,
+                ),
+            )
+        except Exception:
+            log.exception("tool-pass gate raised; defaulting to run")
+            decision = GateDecision(run=True, reason="gate_error")
+        self._tool_gate_last = decision
+        return decision
+
+    def get_tool_gate_state(self) -> dict[str, Any]:
+        """Snapshot for the MCP ``get_tool_gate_state`` debug tool."""
+        avg_pass_ms = (
+            self._tool_pass_ms_total / self._tool_pass_count
+            if self._tool_pass_count
+            else 0.0
+        )
+        last = self._tool_gate_last
+        return {
+            "enabled": bool(self._tool_pass_gate_enabled),
+            "force_next": bool(self._tool_gate_force_next),
+            "last_decision": (
+                {
+                    "run": last.run,
+                    "reason": last.reason,
+                    "matched": list(last.matched),
+                }
+                if last is not None
+                else None
+            ),
+            "turns_gated": int(self._tool_gate_turns),
+            "passes_skipped": int(self._tool_gate_skips),
+            "passes_run": int(self._tool_pass_count),
+            "avg_pass_ms": round(avg_pass_ms, 2),
+            "est_ms_saved": round(avg_pass_ms * self._tool_gate_skips, 2),
+            "last_turn_dispatched_tool": bool(
+                self._last_turn_dispatched_tool,
+            ),
+        }
+
     def _maybe_run_tool_pass(
         self,
         messages: list[dict[str, Any]],
@@ -912,6 +1051,10 @@ class TurnRunner:
         is fine).
         """
         total_usage = OllamaUsage()
+        # P14: the run path owns the continuity flag — it flips True only
+        # when a real tool is dispatched below, so an escape-only pick or
+        # an early bail correctly reads as "no tool used this turn".
+        self._last_turn_dispatched_tool = False
         registry = self._tool_registry
         if registry is None:
             return total_usage
@@ -1033,6 +1176,9 @@ class TurnRunner:
                     "tool dispatch: name=%s ok=%s len=%d",
                     result.name, result.ok, len(result.content),
                 )
+                # P14: a real tool ran — the next turn's gate lets
+                # follow-ups through without a tool-shaped token.
+                self._last_turn_dispatched_tool = True
         return total_usage
 
     @staticmethod

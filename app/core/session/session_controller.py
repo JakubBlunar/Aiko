@@ -1555,6 +1555,7 @@ class SessionController(
             sensory_anchor=self._render_sensory_anchor_block,
             rupture=self._render_rupture_block,
             self_correction=self._render_self_correction_block,
+            promise_followthrough=self._render_promise_followthrough_block,
             misattunement=self._render_misattunement_block,
             opinion_injection=self._render_opinion_injection_block,
             absence_curiosity=self._render_absence_curiosity_block,
@@ -2184,6 +2185,11 @@ class SessionController(
             listen_extensions_provider=lambda: int(
                 getattr(self, "_last_listen_extensions", 0) or 0
             ),
+            tool_pass_gate_enabled=settings.agent.tool_pass_gate_enabled,
+            # P14 continuity hook: the gate always runs the tool pass
+            # while any task is running / awaiting_input / paused (the
+            # user's message may be the answer a pending task needs).
+            tasks_active_provider=self._any_tasks_active,
         )
         self._tool_event_listeners: list[Callable[[str, dict[str, Any]], None]] = []
         self._tool_registry = None
@@ -2402,6 +2408,49 @@ class SessionController(
             except Exception:
                 log.warning(
                     "ForwardCuriosityWorker init failed", exc_info=True
+                )
+
+        # K43 PromiseFollowthroughWorker — closes the loop on Aiko's own
+        # "I'll look into that" commitments. Scans assistant-side promise
+        # memories during quiet windows, arms a one-shot follow-through
+        # cue, and ages out stale promises. Failures only drop the
+        # follow-through path.
+        if (
+            self._idle_scheduler is not None
+            and getattr(self, "_memory_store", None) is not None
+        ):
+            try:
+                from app.core.proactive.promise_followthrough_worker import (
+                    PromiseFollowthroughWorker,
+                )
+
+                mem = self._memory_settings
+                self._promise_followthrough_worker = PromiseFollowthroughWorker(
+                    memory_store=self._memory_store,
+                    kv_get=self._chat_db.kv_get,
+                    kv_set=self._chat_db.kv_set,
+                    enabled_provider=lambda: bool(
+                        getattr(
+                            self._settings.agent,
+                            "promise_followthrough_enabled",
+                            True,
+                        )
+                    ),
+                    interval_seconds=(
+                        mem.promise_followthrough_interval_seconds
+                    ),
+                    min_age_hours=mem.promise_followthrough_min_age_hours,
+                    cooldown_hours=mem.promise_followthrough_cooldown_hours,
+                    drop_after_days=(
+                        mem.promise_followthrough_drop_after_days
+                    ),
+                )
+                self._idle_scheduler.register(
+                    self._promise_followthrough_worker
+                )
+            except Exception:
+                log.warning(
+                    "PromiseFollowthroughWorker init failed", exc_info=True
                 )
 
         # G2 — schedule learner. Independent of the FollowUpWorker
@@ -6184,6 +6233,9 @@ class SessionController(
                 "provider_ms": tdict["provider_ms"],
                 "rag_lookup_ms": tdict["rag_lookup_ms"],
                 "assemble_ms": tdict["assemble_ms"],
+                # P14: tool-pass gate decision + pass cost.
+                "tool_gate_event": tdict["tool_gate_event"],
+                "tool_pass_ms": tdict["tool_pass_ms"],
             })
         self._set_last_metrics(metrics)
 

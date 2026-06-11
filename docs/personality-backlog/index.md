@@ -70,8 +70,10 @@ silent failure path). Cheap individually, compounding in aggregate.
 - **H3.** Mood drift narrator.
 - **H4.** Document-recall recency boost.
 - **H5.** Second scene / travel semantics.
+- **H6.** Audible backchannels ("mm-hm" while the user speaks).
+- **H7.** Listen-while-speaking — soften the half-duplex voice lock.
 - *Minor polish* — second TTS provider, SSML prosody, barge-in
-  default flip.
+  default flip (do P25 first).
 
 ### J. Shared-moments follow-ups — [`moments.md`](moments.md)
 
@@ -83,27 +85,39 @@ silent failure path). Cheap individually, compounding in aggregate.
 
 K10 persona regression tests ·
 K11 counterfactual cache · K12 calendar-linked anticipation ·
-K15 self-disclosure / vulnerability budget ·
 K19 cold-start companion onboarding ·
 K21 fresh-eyes thread re-summary ·
 K26 Aiko-side voice evolution ·
-K27 Aiko's day (daily personality colour) ·
-K30 self-noticing cues (agreement-streak / flat-affect / repeated-thought).
+K33 cozy mode · K37 emotional contagion ·
+K39 energy / spoons model · K40 comfortable silence ·
+K41 mid-stream self-correction ·
+K42 multi-bubble reply bursts (texting rhythm) ·
+K44 felt-language affect block (drop numeric valence/arousal) ·
+K45 mood inertia (instant face, lagging heart) ·
+K46 stance persistence (don't cave on taste pushback) ·
+K47 question/share balance (stop interviewing) ·
+K48 tease rhythm budget ·
+K49 messiness permission (typed imperfection) ·
+K50 typed-mode delivery pacing ·
+K51 cue-register rotation (de-"Heads-up" the inner life).
 
 (K1 long-term goals, K2 theory-of-mind, K3 routine awareness,
 K4 dialogue-act tagging, K5 mood-shell tilt, K6 novelty
 detector, K7 forgetting protocol, K8 affect rupture-and-repair,
 K9 topic-graph browser, K13 stylometric mirror,
 K14 implicit engagement signals,
+K15 vulnerability budget,
 K16 unified ambient grounding line, K17 clarification-repair,
 K18 topic stagnation, K20 metacognitive calibration,
 K22 callback / inside-joke detector, K23 subtle misattunement
 detection, K24 sensory anchoring layer, K25 memory
-confidence time-decay, K28 "what I've been turning over",
-K29 opinion injection, K34 forward curiosity worker,
+confidence time-decay, K27 day colour, K28 "what I've been
+turning over", K29 opinion injection, K30 self-noticing cues,
+K31 + K32 soft physicality, K34 forward curiosity worker,
 K35 memory consolidation worker, K36 "things I did
-while you were away", and K38 self-correction cue have
-shipped — see [`shipped.md`](shipped.md).)
+while you were away", K38 self-correction cue, and
+K43 promise follow-through have shipped — see
+[`shipped.md`](shipped.md).)
 
 ### P. Performance + observability — [`perf.md`](perf.md)
 
@@ -119,14 +133,29 @@ compound across every K-series entry:
 - **P10.** Schedule-learner missing index.
 - **P11.** Reclaim background-worker `num_predict` from reasoning
   leakage (try `/no_think` on qwen3-family workers).
-- **P13.** Route-driven worker model + context — make
-  `routes.worker_default` actually drive worker resolution
-  (resolution precedence + full cascade across all ~12 workers).
+- **P15.** One user-text embed per turn, shared across RAG /
+  novelty / opinion / gaps + the post-turn burst.
+- **P16.** Post-turn inner-life blocks the brain loop.
+- **P17.** K22 callback detector scans the full memory mirror
+  every turn.
+- **P18.** Streaming accumulator rebuilds the full reply per delta
+  (O(n²)).
+- **P19.** RAG: one global lock + three sequential Lance searches.
+- **P20.** Synchronous LLM compaction stalls the turn mid-flight.
+- **P21.** K29 borderline LLM gate runs during prompt assembly.
+- **P22.** Inner-life provider sweep: tiering + shared reads.
+- **P23.** K28 turning-over full Lance scan on the hot path
+  (P5 sibling).
+- **P24.** Voice latency batch: reaction-tag TTS gate, double STT
+  pass, first-chunk threshold.
+- **P25.** Client audio flush on TTS stop (barge-in prerequisite).
+- **P26.** Lip-sync rides the server clock, not the playback clock.
 
 (P1 per-turn embed budget + timing, P2 prompt-build phase
 telemetry, P8 idle-worker queue visibility + multi-worker drain,
-and P12 bulk memory-mirror on startup have shipped — see
-[`shipped.md`](shipped.md).)
+P12 bulk memory-mirror on startup, P13 route-driven worker
+model + context, and P14 heuristic tool-pass gate have shipped —
+see [`shipped.md`](shipped.md).)
 
 ---
 

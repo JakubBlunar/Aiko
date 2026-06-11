@@ -1,7 +1,7 @@
 """Tests for the tool-decision pass on
 :class:`app.core.session.turn_runner.TurnRunner`.
 
-Two contracts are pinned here:
+Three contracts are pinned here:
 
 1. **Budget** — the tool-decision pass caps ``num_predict`` at
    ``min(max_tokens, 512)`` and tags the call ``surface="tool_pass"``.
@@ -16,6 +16,12 @@ Two contracts are pinned here:
    dispatched and no dangling tool-call message is left on ``messages``;
    when it picks a real tool, the escape tool is filtered out and only
    the real call is dispatched.
+
+3. **P14 heuristic gate** — pure-banter turns skip the decision pass
+   entirely (``chat_with_tools`` never fires); tool-shaped turns,
+   continuity signals (previous turn dispatched a tool, active tasks,
+   force flag), and the ``agent.tool_pass_gate_enabled=false``
+   kill-switch all run the pass exactly as before.
 """
 from __future__ import annotations
 
@@ -188,6 +194,214 @@ class ForcedChoiceEscapeToolTests(unittest.TestCase):
         tool_msgs = [m for m in messages if m.get("role") == "tool"]
         self.assertEqual(len(tool_msgs), 1)
         self.assertEqual(tool_msgs[0]["name"], "list_file_roots")
+
+
+def _build_full_runner(
+    *,
+    tool_calls: list[Any] | None = None,
+    gate_enabled: bool = True,
+    tasks_active: bool | None = None,
+) -> tuple[TurnRunner, MagicMock, MagicMock]:
+    """Construct a TurnRunner whose ``run()`` works end-to-end.
+
+    Unlike :func:`_build_runner` (which only exercises
+    ``_maybe_run_tool_pass`` directly), this stubs the streaming pass
+    and the prompt assembler too so the P14 gate path inside
+    ``_run_inner`` is covered. The stub registry exposes ``names()``
+    + ``__len__`` (both consulted by the gate) and one real tool,
+    ``get_time``.
+    """
+    from app.core.session.prompt_assembler import PromptTelemetry
+
+    ollama = MagicMock()
+    response = MagicMock()
+    response.content = ""
+    response.tool_calls = tool_calls or []
+    ollama.chat_with_tools = MagicMock(return_value=response)
+    # Fresh iterator per call so multi-turn tests don't share a stream.
+    ollama.chat_stream = MagicMock(
+        side_effect=lambda *a, **k: iter(["[[reaction:neutral]] hi there."]),
+    )
+    ollama.last_usage = OllamaUsage()
+
+    db = MagicMock()
+    db.add_message = MagicMock(return_value=1)
+
+    prompt = MagicMock()
+    prompt.assemble_with_budget = MagicMock(
+        side_effect=lambda *a, **k: ([], PromptTelemetry()),
+    )
+
+    registry = MagicMock()
+    registry.__len__ = MagicMock(return_value=1)
+    registry.names = MagicMock(return_value=["get_time"])
+    registry.to_ollama_tools = MagicMock(
+        return_value=[{
+            "type": "function",
+            "function": {
+                "name": "get_time",
+                "description": "Current time.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }],
+    )
+    registry.dispatch = MagicMock(
+        return_value=types.SimpleNamespace(
+            name="get_time", content="12:00", ok=True,
+        ),
+    )
+
+    runner = TurnRunner(
+        ollama=ollama,
+        db=db,
+        prompt_assembler=prompt,
+        model="test-model",
+        context_window=8192,
+        max_tokens=512,
+        temperature=0.7,
+        filler_enabled=False,
+        tool_registry=registry,
+        tool_pass_gate_enabled=gate_enabled,
+        tasks_active_provider=(
+            (lambda: tasks_active) if tasks_active is not None else None
+        ),
+    )
+    return runner, ollama, registry
+
+
+class ToolPassGateTests(unittest.TestCase):
+    """P14: the heuristic gate decides whether the decision pass runs."""
+
+    def test_banter_skips_tool_pass_entirely(self) -> None:
+        runner, ollama, _ = _build_full_runner()
+        result = runner.run(
+            session_key="default:main", user_text="hey, how are you?",
+        )
+        ollama.chat_with_tools.assert_not_called()
+        # Stream still ran and produced the reply.
+        ollama.chat_stream.assert_called_once()
+        self.assertIn("hi there", result.text)
+        assert result.telemetry is not None
+        self.assertEqual(result.telemetry.tool_gate_event, "skip:no_signal")
+        self.assertEqual(result.telemetry.tool_pass_ms, 0.0)
+
+    def test_tool_shaped_text_runs_pass(self) -> None:
+        runner, ollama, _ = _build_full_runner()
+        result = runner.run(
+            session_key="default:main", user_text="what time is it?",
+        )
+        ollama.chat_with_tools.assert_called()
+        assert result.telemetry is not None
+        self.assertEqual(
+            result.telemetry.tool_gate_event, "run:signal_time",
+        )
+
+    def test_kill_switch_restores_always_run(self) -> None:
+        runner, ollama, _ = _build_full_runner(gate_enabled=False)
+        result = runner.run(
+            session_key="default:main", user_text="hey, how are you?",
+        )
+        ollama.chat_with_tools.assert_called()
+        assert result.telemetry is not None
+        self.assertEqual(result.telemetry.tool_gate_event, "run:disabled")
+
+    def test_tasks_active_runs_pass_on_banter(self) -> None:
+        runner, ollama, _ = _build_full_runner(tasks_active=True)
+        result = runner.run(
+            session_key="default:main", user_text="the second one",
+        )
+        ollama.chat_with_tools.assert_called()
+        assert result.telemetry is not None
+        self.assertEqual(
+            result.telemetry.tool_gate_event, "run:tasks_active",
+        )
+
+    def test_force_flag_is_one_shot(self) -> None:
+        runner, ollama, _ = _build_full_runner()
+        runner._tool_gate_force_next = True
+        result = runner.run(
+            session_key="default:main", user_text="hey!",
+        )
+        ollama.chat_with_tools.assert_called()
+        assert result.telemetry is not None
+        self.assertEqual(result.telemetry.tool_gate_event, "run:force")
+        self.assertFalse(runner._tool_gate_force_next)
+        # Second banter turn: flag consumed -> back to skipping.
+        ollama.chat_with_tools.reset_mock()
+        result2 = runner.run(
+            session_key="default:main", user_text="hey again!",
+        )
+        ollama.chat_with_tools.assert_not_called()
+        assert result2.telemetry is not None
+        self.assertEqual(
+            result2.telemetry.tool_gate_event, "skip:no_signal",
+        )
+
+    def test_last_turn_tool_continuity(self) -> None:
+        # Turn 1 dispatches a real tool -> turn 2's banter follow-up
+        # still runs the pass via the continuity flag. Turn 2 picks
+        # the escape tool (no dispatch) -> turn 3 banter skips again.
+        runner, ollama, _ = _build_full_runner(
+            tool_calls=[_tool_call("get_time", call_id="c1")],
+        )
+        runner.run(session_key="default:main", user_text="what time is it?")
+        self.assertTrue(runner._last_turn_dispatched_tool)
+
+        # Turn 2: model now picks only the escape tool.
+        escape_response = MagicMock()
+        escape_response.content = ""
+        escape_response.tool_calls = [
+            _tool_call(_RESPOND_DIRECTLY_TOOL, call_id="c2"),
+        ]
+        ollama.chat_with_tools = MagicMock(return_value=escape_response)
+        result2 = runner.run(
+            session_key="default:main", user_text="and the other one?",
+        )
+        ollama.chat_with_tools.assert_called()
+        assert result2.telemetry is not None
+        self.assertEqual(
+            result2.telemetry.tool_gate_event, "run:last_turn_tool",
+        )
+        # Escape-only pick clears the continuity flag...
+        self.assertFalse(runner._last_turn_dispatched_tool)
+
+        # ...so turn 3's banter skips.
+        ollama.chat_with_tools.reset_mock()
+        result3 = runner.run(
+            session_key="default:main", user_text="haha nice",
+        )
+        ollama.chat_with_tools.assert_not_called()
+        assert result3.telemetry is not None
+        self.assertEqual(
+            result3.telemetry.tool_gate_event, "skip:no_signal",
+        )
+
+    def test_gate_skip_clears_continuity_flag(self) -> None:
+        runner, _, _ = _build_full_runner()
+        runner._last_turn_dispatched_tool = False
+        runner.run(session_key="default:main", user_text="hello!")
+        self.assertFalse(runner._last_turn_dispatched_tool)
+
+    def test_gate_state_snapshot_counts(self) -> None:
+        runner, _, _ = _build_full_runner()
+        runner.run(session_key="default:main", user_text="hey!")
+        runner.run(session_key="default:main", user_text="what time is it?")
+        state = runner.get_tool_gate_state()
+        self.assertTrue(state["enabled"])
+        self.assertEqual(state["turns_gated"], 2)
+        self.assertEqual(state["passes_skipped"], 1)
+        self.assertEqual(state["passes_run"], 1)
+        self.assertEqual(state["last_decision"]["reason"], "signal_time")
+        self.assertGreaterEqual(state["avg_pass_ms"], 0.0)
+
+    def test_turn_done_log_includes_gate_fields(self) -> None:
+        runner, _, _ = _build_full_runner()
+        import logging  # noqa: F401  (assertLogs needs the logger name only)
+        with self.assertLogs("app.turn_runner", level="INFO") as cm:
+            runner.run(session_key="default:main", user_text="hey!")
+        haystack = "\n".join(cm.output)
+        self.assertIn("tool_gate=skip:no_signal", haystack)
+        self.assertIn("tool_pass_ms=", haystack)
 
 
 class FinishedTaskRelaxesForcedChoiceTests(unittest.TestCase):

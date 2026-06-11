@@ -960,6 +960,105 @@ class SelfCorrectionProviderTests(unittest.TestCase):
             self.assertIn(self._CUE, messages[0]["content"])
 
 
+class PromiseFollowthroughProviderTests(unittest.TestCase):
+    """K43 promise follow-through provider lands in the system prompt
+    (right after the self-correction slot in the T6 cluster), is silent
+    when nothing is pending, and survives aggressive context-mode (the
+    provider already cleared its kv slot, so dropping the block would
+    silently lose the owed beat)."""
+
+    _CUE = "you haven't closed that loop"
+
+    def _cue_line(self) -> str:
+        return (
+            "Heads-up: yesterday you told Jacob you'd look into LanceDB "
+            "indexing — you haven't closed that loop. If it fits this "
+            "turn, mention what you found, or own that you haven't "
+            "gotten to it yet."
+        )
+
+    def test_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="pf1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                promise_followthrough=self._cue_line,
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "pf1", "x", context_window=4096, response_budget=256,
+            )
+            self.assertIn(self._CUE, messages[0]["content"])
+
+    def test_silent_when_empty(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="pf2", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                promise_followthrough=lambda: "",
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "pf2", "x", context_window=4096, response_budget=256,
+            )
+            self.assertNotIn(self._CUE, messages[0]["content"])
+
+    def test_one_shot_clear(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="pf3", role="user", content="hi", token_count=2,
+            )
+            fired = {"n": 0}
+
+            def _provider() -> str:
+                if fired["n"] == 0:
+                    fired["n"] += 1
+                    return self._cue_line()
+                return ""
+
+            assembler.set_inner_life_providers(
+                promise_followthrough=_provider,
+            )
+            messages_a, _ = assembler.assemble_with_budget(
+                "pf3", "x", context_window=4096, response_budget=256,
+            )
+            messages_b, _ = assembler.assemble_with_budget(
+                "pf3", "x", context_window=4096, response_budget=256,
+            )
+            self.assertIn(self._CUE, messages_a[0]["content"])
+            self.assertNotIn(self._CUE, messages_b[0]["content"])
+
+    def test_survives_aggressive_mode(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="pf4", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                promise_followthrough=self._cue_line,
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "pf4", "x", context_window=4096, response_budget=256,
+                aggressive=True,
+            )
+            self.assertIn(self._CUE, messages[0]["content"])
+
+    def test_registered_in_t6_tier_table(self) -> None:
+        from app.core.session.prompt_assembler import _PROMPT_BLOCK_TIERS
+
+        t6 = _PROMPT_BLOCK_TIERS["T6_detectors"]
+        self.assertIn("promise_followthrough_block", t6)
+        # Pinned ordering: right after the self-correction slot — both
+        # are "own what you owe" beats.
+        self.assertEqual(
+            t6.index("promise_followthrough_block"),
+            t6.index("self_correction_block") + 1,
+        )
+
+
 class MoodShellProviderTests(unittest.TestCase):
     """K5 mood-shell tilt: lands in the system prompt, survives
     ``aggressive=True`` (tonal cue is exactly what aggressive mode

@@ -78,8 +78,14 @@ _USER_PROMISE_PATTERNS: tuple[re.Pattern[str], ...] = (
 
 _ASSISTANT_PROMISE_PATTERNS: tuple[re.Pattern[str], ...] = (
     # Assistant: "I'll remind you" / "I'll check on..." / "I'll let you know..."
+    # K43 widened the verb set: "I'll look into that", "I'll dig into it",
+    # "I'll find out", "I'll get back to you", "I'll read up on X" are the
+    # exact phrasings that used to slip through and never close the loop.
     re.compile(
-        r"\bI(?:'ll| will)\s+(remind you|check (?:on|in)|let you know|follow up)([^.!?\n]{0,120})",
+        r"\bI(?:'ll| will)\s+(remind you|check (?:on|in)|let you know"
+        r"|follow up|look (?:into|at|up)|dig (?:into|in)|find out"
+        r"|get back to you|research|read up on|try to find)"
+        r"([^.!?\n]{0,120})",
         re.IGNORECASE,
     ),
     # "Let me know how X goes" — assistant asking the user to report back.
@@ -395,6 +401,13 @@ class PromiseExtractor:
                 salience=salience,
                 source_session=session_key,
                 source_message_id=promise.source_turn_id,
+                # K43 lifecycle: stamp sidedness + an explicit ``open``
+                # status so the follow-through worker doesn't need the
+                # brittle content-prefix fallback for new rows.
+                metadata={
+                    "promise_who": promise.who,
+                    "promise_status": "open",
+                },
                 # Schema v8: explicit promises are user-visible
                 # commitments. Anchor them in long_term immediately so
                 # the promotion worker never has a chance to drop them.

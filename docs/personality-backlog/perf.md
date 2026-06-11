@@ -14,10 +14,10 @@ unblocks the testing flow you're stuck on.
 
 (P1 per-turn embed budget + timing, P2 prompt-build phase
 telemetry, P8 idle-worker queue visibility + multi-worker drain,
-P12 bulk memory-mirror on startup, and P13 route-driven worker
+P12 bulk memory-mirror on startup, P13 route-driven worker
 model + context (with the declarative `_worker_runtime_updaters`
-cascade + worker-LLM priority gate) have shipped — see
-[`shipped.md`](shipped.md).)
+cascade + worker-LLM priority gate), and P14 heuristic
+tool-pass gate have shipped — see [`shipped.md`](shipped.md).)
 
 ---
 
@@ -255,3 +255,353 @@ in `user.json` directly.
 
 **Effort.** Small (just the prompt suffix + before/after token
 measurements). Medium if we need the dual-model split.
+
+---
+
+## P15. One user-text embed per turn, shared everywhere
+
+**Motivation.** A single turn can fire 2–4 sequential HTTP
+embedding calls on the turn thread: RAG retrieval embeds a
+*contextual* query string (`recent || user`, so the LRU can't
+collapse it with anything), K6 novelty embeds `user_text`, F2
+`pick_relevant` embeds again, K29 opinion injection embeds again.
+Post-turn adds another 2–3 (curiosity seeds, knowledge gaps,
+K22/K30 assistant-text, K20 calibration). Each call holds the
+embedder lock and competes with `MessageIndexer` for the same
+Ollama endpoint — 50–200+ ms of pure waiting per turn at local
+embed speeds, worse under contention.
+
+**Key files.**
+[`app/core/rag/rag_retriever.py`](../../app/core/rag/rag_retriever.py)
+(`retrieve` — the contextual-query embed),
+[`app/core/session/prompt_assembler.py`](../../app/core/session/prompt_assembler.py)
+(`assemble_with_budget` — natural place to compute the shared vector),
+[`app/core/conversation/novelty_detector.py`](../../app/core/conversation/novelty_detector.py),
+[`app/core/memory/knowledge_gap_extractor.py`](../../app/core/memory/knowledge_gap_extractor.py)
+(`pick_relevant`),
+[`app/core/session/inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py)
+(`_render_opinion_injection_block`),
+[`app/core/session/post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py)
+(curiosity / gaps / callback / calibration resolvers).
+
+**Sketched approach.** Compute `user_vec = embed(user_text)` once
+at the top of `assemble_with_budget` and thread it (or a tiny
+`TurnEmbeds` bundle) into every provider that only needs user
+semantics. Same pattern post-turn: one
+`embed_turn_bundle(user, assistant)` reused across all resolvers.
+RAG keeps its contextual-query embed (it's semantically
+different), so the steady state is 2 embeds on the hot path and 1
+post-turn instead of up to 7.
+
+**Effort.** Medium.
+
+---
+
+## P16. Post-turn inner-life blocks the brain loop
+
+**Motivation.** `chat_once_streaming` doesn't return until
+`_post_turn_inner_life` finishes — detector cascade, embed burst
+(see P15), K22 callback scan (see P17), SQLite writes. The brain
+loop is a single consumer, so a user who fires a quick follow-up
+message waits for all of the *previous* turn's bookkeeping before
+their message even starts assembling. Streaming + TTS may already
+be done from the user's perspective; the system is busy doing
+homework.
+
+**Key files.**
+[`app/core/session/session_controller.py`](../../app/core/session/session_controller.py)
+(`chat_once_streaming`, post-turn call ~6120),
+[`app/core/session/post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py)
+(`_post_turn_inner_life`),
+[`app/core/brain/loop.py`](../../app/core/brain/loop.py).
+
+**Sketched approach.** Split post-turn into a *fast lane*
+(anything that arms one-shot slots the NEXT prompt reads —
+clarification, rupture, self-correction, belief gaps) and a *slow
+lane* (embeds, callback scan, calibration, axes drift). Fast lane
+stays inline; slow lane moves to a background job with a
+turn-ordering guarantee (drop the job if a newer turn already
+superseded it). Alternatively run the whole post-turn as a brain
+event at lower priority than user messages.
+
+**Open questions.** Which one-shot slots are actually read by the
+next prompt vs. merely eventually-consistent? Audit before
+splitting — a wrong call here makes cues silently miss a turn.
+
+**Effort.** Large.
+
+---
+
+## P17. K22 callback detector scans the full memory mirror every turn
+
+**Motivation.** Post-turn, `callback_detector.detect` calls
+`memory_store.list_recent(limit=10_000)` — copies the entire
+in-memory mirror, sorts it twice, cosine-walks the candidates.
+O(n) with n up to the 5000-row cap, on the brain-loop thread,
+after **every** turn longer than 12 chars. Tens of ms today,
+~100 ms+ as installs age.
+
+**Key files.**
+[`app/core/conversation/callback_detector.py`](../../app/core/conversation/callback_detector.py)
+(`detect`),
+[`app/core/session/post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py)
+(call site).
+
+**Sketched approach.** Maintain a small pre-filtered candidate
+index (callback-eligible kinds, salience floor, recency cap)
+refreshed lazily on memory writes, so the per-turn walk touches
+dozens of rows instead of thousands. Pairs naturally with P4's
+`get_many` batch shape.
+
+**Effort.** Medium.
+
+---
+
+## P18. Streaming accumulator rebuilds the full reply on every delta
+
+**Motivation.** The stream loop does `accumulator.append(delta)`
+then `full = "".join(accumulator)` *per token* — O(n²) total
+work and allocation churn on long replies. The loop also re-runs
+reaction-tag parsing on the rebuilt string each delta. Pure CPU
+waste sitting between the LLM and TTS dispatch.
+
+**Key files.**
+[`app/core/session/turn_runner.py`](../../app/core/session/turn_runner.py)
+(stream loop, ~577–646).
+
+**Sketched approach.** Keep a single running `full += delta`
+string (amortised linear in CPython) or an `io.StringIO`; make
+the reaction-tag parse incremental (only re-attempt while
+`len(full) < ~64` and the tag hasn't been resolved yet, since
+`[[reaction:...]]` is contractually at the start).
+
+**Effort.** Small.
+
+---
+
+## P19. RAG: one global lock + three sequential Lance searches
+
+**Motivation.** All Lance reads and writes share one
+`threading.Lock`, and `RagRetriever.retrieve` runs
+`search_memories` → `search_messages` → `search_documents`
+sequentially under it. Latencies add instead of max-ing, and the
+turn thread serialises against `MessageIndexer` writes (a slow
+embed + write on the indexer side stalls retrieval, and vice
+versa).
+
+**Key files.**
+[`app/core/rag/rag_store.py`](../../app/core/rag/rag_store.py)
+(`_search_table`, `add_message`, `_lock`),
+[`app/core/rag/rag_retriever.py`](../../app/core/rag/rag_retriever.py)
+(`retrieve`),
+[`app/core/rag/message_indexer.py`](../../app/core/rag/message_indexer.py).
+
+**Sketched approach.** Two independent wins: (a) parallelise the
+three searches in a small shared thread pool; (b) narrow the lock
+— embed outside it, use a reader-writer pattern so concurrent
+reads don't queue behind each other (Lance datasets are safe for
+concurrent reads). Do (a) first; it's contained in `retrieve`.
+
+**Effort.** Medium.
+
+---
+
+## P20. Synchronous LLM compaction stalls the turn mid-flight
+
+**Motivation.** When the projected context overflows,
+`SummaryWorker.compact_now` runs a full summarisation LLM call
+inline on the turn thread, then re-assembles the prompt — the
+user sees a multi-second dead-air gap exactly on the turns that
+are already heaviest. Rare, but the worst-case latency spike in
+the whole system.
+
+**Key files.**
+[`app/core/session/turn_runner.py`](../../app/core/session/turn_runner.py)
+(~485–503, compaction trigger),
+[`app/core/proactive/summary_worker.py`](../../app/core/proactive/summary_worker.py)
+(`compact_now`).
+
+**Sketched approach.** On overflow, truncate history aggressively
+for *this* turn only (drop oldest non-summary rows to fit) and
+schedule the real compaction on the speaking-window scheduler so
+the next turn gets the proper summary. Never run a worker LLM
+call between user-send and first token. Watch for a *projected*
+overflow threshold (e.g. 85% of budget) that triggers the async
+compaction one turn early, making the inline fallback nearly
+unreachable.
+
+**Effort.** Medium.
+
+---
+
+## P21. K29 borderline gate runs a worker LLM call during prompt assembly
+
+**Motivation.** When the opinion-injection heuristic returns
+`borderline`, `_opinion_injection_llm_verdict` calls the worker
+model synchronously inside `assemble_with_budget` — before any
+streaming starts. When it fires, that's 0.5–8 s of added TTFT for
+a one-line prompt cue. The rate limiter bounds frequency, not
+per-fire latency.
+
+**Key files.**
+[`app/core/session/inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py)
+(`_render_opinion_injection_block`,
+`_opinion_injection_llm_verdict`).
+
+**Sketched approach.** Move the borderline check post-turn: the
+detector arms a *pending* verdict job; if the LLM confirms, the
+cue renders on the NEXT turn (the stance hasn't changed in 30
+seconds — one-turn lag is invisible). Hot path then only ever
+pays the pure-Python heuristic. `opinion_injection_require_definite=true`
+is the existing zero-code mitigation; this makes the borderline
+path safe to keep on.
+
+**Effort.** Small–medium.
+
+---
+
+## P22. Inner-life provider sweep: tiering + shared reads
+
+**Motivation.** ~35 providers run inside `assemble_with_budget`
+on every turn even on a slice-cache hit — each wrapped in a timed
+phase, many doing their own SQLite reads or mirror walks. Two
+providers (`_render_misattunement_block`,
+`_render_self_noticing_block`) issue separate overlapping
+`get_messages` queries for the same recent assistant rows within
+one assembly. Individually cheap; collectively the per-turn floor
+keeps creeping up with every new K-feature.
+
+**Key files.**
+[`app/core/session/prompt_assembler.py`](../../app/core/session/prompt_assembler.py)
+(provider loop),
+[`app/core/session/inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py).
+
+**Sketched approach.** (a) Fetch the recent-history window once
+per assembly and pass it into every provider that needs it;
+(b) short-circuit disabled features before entering their timed
+block; (c) classify providers "per-turn" vs "cacheable-for-N-
+seconds" and skip the cacheable ones inside their TTL (most
+trend/phase blocks change at minute-scale, not turn-scale). The
+existing `provider_ms` telemetry makes the win measurable
+per-provider.
+
+**Effort.** Medium–large.
+
+---
+
+## P23. K28 turning-over provider triggers the full Lance scan on the hot path
+
+**Motivation.** Sibling of P5, but worse placed: on
+return-after-gap turns, `_render_turning_over_block` reaches
+`list_recent_user_vectors`, which materialises the *entire* Lance
+`messages` table via `to_arrow()` and filters in Python — a full
+scan exactly on the "welcome back" turn, which is also the turn
+that pays cold caches everywhere else. Fixing P5 fixes this; the
+entry exists so the hot-path call site is on the map too.
+
+**Key files.**
+[`app/core/session/inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py)
+(`_render_turning_over_block`),
+[`app/core/rag/rag_store.py`](../../app/core/rag/rag_store.py)
+(`list_recent_user_vectors`).
+
+**Sketched approach.** Same as P5 (predicate push-down + row cap
++ server-side order). Additionally consider reusing the K6
+novelty ring (already warmed with recent user vectors) as the
+candidate pool for K28's topical-similarity gate, dropping the
+Lance call from this path entirely.
+
+**Effort.** Small once P5 lands.
+
+---
+
+## P24. Voice latency batch: reaction-tag TTS gate, double STT pass, first-chunk threshold
+
+**Motivation.** Three independent, individually-small voice-path
+delays that compound into "she takes a beat too long to start
+talking":
+
+1. **Reaction-tag gate** — the stream loop only dispatches TTS
+   chunks once `mood is not None`
+   ([`turn_runner.py`](../../app/core/session/turn_runner.py)
+   ~618). If the model leads with prose before
+   `[[reaction:...]]`, *all* speech waits; the fallback only
+   fires at stream end, flushing everything at once.
+2. **Double STT pass** — `process_live_capture` re-transcribes
+   the full WAV via `transcribe()` even when partial endpointing
+   already produced a stable final text during capture
+   ([`session_controller.py`](../../app/core/session/session_controller.py)
+   ~7003, [`realtime_stt_service.py`](../../app/stt/realtime_stt_service.py)
+   `transcribe`). 100–500 ms of pure re-work between "user
+   stopped talking" and LLM start.
+3. **First-chunk threshold** — `drain_tts_stream_chunks` holds
+   the first sentence until ≥24 chars / ≥4 words
+   ([`session_text_utils.py`](../../app/core/session/session_text_utils.py)
+   ~246), so short openers ("Sure.", "Okay!") wait for more
+   tokens before any audio.
+
+**Sketched approach.** (1) Start TTS with a provisional
+`neutral` mood immediately and upgrade when the tag arrives
+(reaction-to-speed already tolerates a mid-stream change, the
+expression channel just lands a few hundred ms later); (2) trust
+the partial-endpointing final when its text is stable across the
+last two partials, keep the WAV re-pass as a fallback for
+low-confidence captures; (3) voice-specific first-chunk floor
+(~8 chars or first clause boundary) — sentence two onward keeps
+the current threshold.
+
+**Effort.** Small each; ship as one voice-latency pass.
+
+---
+
+## P25. Client keeps playing scheduled audio after server-side TTS stop
+
+**Motivation.** When the server stops TTS (stop command, future
+barge-in), already-scheduled `AudioBufferSourceNode`s on the
+client keep playing to the end of their buffers —
+`AudioOutputManager.flush()` exists but is only called on
+`dispose()`. Interrupt latency is therefore "whatever is already
+scheduled", often 0.5–3 s. This also blocks the barge-in default
+flip (immersion.md minor polish) from feeling right: server-side
+barge-in without client flush still talks over the user.
+
+**Key files.**
+[`web/src/hooks/useAssistantSocket.ts`](../../web/src/hooks/useAssistantSocket.ts)
+(`tts_state` handler — no flush call),
+[`web/src/audio/AudioOutputManager.ts`](../../web/src/audio/AudioOutputManager.ts)
+(`flush`),
+[`app/core/session/session_controller.py`](../../app/core/session/session_controller.py)
+(`stop_tts`).
+
+**Sketched approach.** Emit an explicit `audio_flush` WS event
+from `stop_tts` (or piggyback on `tts_state: stopped`); the
+client handler calls `audioOutput.flush()`. Also flush on
+voice-ownership takeover. Then flip `audio.barge_in_enabled`
+default and validate the floor.
+
+**Effort.** Small.
+
+---
+
+## P26. Lip-sync rides the server clock, not the playback clock
+
+**Motivation.** Mouth animation is driven by server-paced
+amplitude JSON (30 Hz throttle) + a network hop + the client's
+first-clip idle margin + 150 ms smoothing — so the mouth runs a
+noticeable, variable beat behind the audio the user actually
+hears, and main-thread jank desyncs it further.
+
+**Key files.**
+[`app/tts/pocket_tts_service.py`](../../app/tts/pocket_tts_service.py)
+(`_amplitude_pacer`),
+[`web/src/audio/AudioOutputManager.ts`](../../web/src/audio/AudioOutputManager.ts),
+[`web/src/live2d/channels/LipsyncChannel.ts`](../../web/src/live2d/channels/LipsyncChannel.ts).
+
+**Sketched approach.** Derive amplitude client-side from an
+`AnalyserNode` hanging off the `AudioOutputManager` output —
+zero protocol change, perfectly aligned to playback by
+construction, and the server pacer becomes voice-strip-meter-only.
+Fallback option: timestamp amplitude frames server-side and have
+`LipsyncChannel` align them to scheduled `startAt`.
+
+**Effort.** Medium.

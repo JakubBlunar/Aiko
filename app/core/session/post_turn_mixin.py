@@ -172,6 +172,84 @@ class PostTurnMixin:
         if latency_f >= min_gap_s:
             self._pending_forward_curiosity_seconds = latency_f
 
+    def _maybe_resolve_promises(self, text: str, *, source: str = "reply") -> int:
+        """K43: mark assistant promises this text plausibly delivered on.
+
+        Lexical only (content-word overlap via
+        :func:`promise_lifecycle.find_fulfilled`) — when Aiko's reply
+        (or a finished background task, via the task-orchestration
+        mixin) covers the body of an ``open`` / ``surfaced``
+        assistant-side promise, the row flips to ``fulfilled`` and
+        :meth:`note_promise_kept` fires so the relationship axes /
+        moment detector see the kept-promise signal. Returns the number
+        of promises resolved. Best-effort everywhere.
+        """
+        if not bool(
+            getattr(
+                self._settings.agent, "promise_followthrough_enabled", True,
+            )
+        ):
+            return 0
+        memory_store = getattr(self, "_memory_store", None)
+        if memory_store is None:
+            return 0
+        body = (text or "").strip()
+        if not body:
+            return 0
+        try:
+            from datetime import datetime, timezone
+
+            from app.core.memory import promise_lifecycle as lifecycle
+
+            promises = memory_store.iter_by_kind("promise")
+            if not promises:
+                return 0
+            fulfilled = lifecycle.find_fulfilled(
+                promises,
+                body,
+                min_overlap=int(
+                    getattr(
+                        self._memory_settings,
+                        "promise_fulfil_min_overlap",
+                        3,
+                    )
+                ),
+            )
+            if not fulfilled:
+                return 0
+            now_iso = datetime.now(timezone.utc).isoformat()
+            resolved = 0
+            for mem in fulfilled:
+                try:
+                    memory_store.update(
+                        mem.id,
+                        metadata={
+                            "promise_status": lifecycle.STATUS_FULFILLED,
+                            "promise_resolved_at": now_iso,
+                        },
+                        metadata_merge=True,
+                    )
+                except Exception:
+                    log.debug(
+                        "promise fulfil update failed for id=%s",
+                        mem.id,
+                        exc_info=True,
+                    )
+                    continue
+                resolved += 1
+                log.info(
+                    "promise fulfilled: memory_id=%s source=%s what=%r",
+                    mem.id,
+                    source,
+                    lifecycle.promise_what(mem)[:80],
+                )
+            if resolved:
+                self.note_promise_kept()
+            return resolved
+        except Exception:
+            log.debug("promise resolution failed", exc_info=True)
+            return 0
+
     def _maybe_arm_self_correction(self, assistant_text: str) -> None:
         """K38: catch when Aiko's just-finished reply contradicts one of
         her own high-confidence ``fact`` / ``preference`` memories and arm
@@ -671,6 +749,15 @@ class PostTurnMixin:
             self._maybe_arm_self_correction(assistant_text)
         except Exception:
             log.debug("self-correction arming failed", exc_info=True)
+
+        # K43 — promise fulfilment: when this reply lexically covers the
+        # body of an open assistant-side promise, flip it to fulfilled so
+        # the follow-through worker stops owing it (and the kept-promise
+        # signal reaches the axes / moment detector above next turn).
+        try:
+            self._maybe_resolve_promises(assistant_text, source="reply")
+        except Exception:
+            log.debug("promise resolution hook failed", exc_info=True)
 
         self._notify_mood_state({
             "label": state.mood_label,
