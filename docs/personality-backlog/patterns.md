@@ -545,19 +545,8 @@ files: [`app/core/session/turn_runner.py`](../../app/core/session/turn_runner.py
 
 ## K51. Cue-register rotation — de-"Heads-up" the inner life
 
-Dozens of inner-life blocks share one meta-template — "Heads-up:
-..." — across style ruts, self-noticing, calibration,
-self-correction, novelty, misattunement. The persona keeps saying
-"never narrate the cue", but feeding the model a uniform coach
-register dozens of times per session trains exactly that voice into
-replies. Rotate cue phrasings across 3–4 shapes (imperative /
-second-person observation / bare fragment / no prefix at all) keyed
-on a per-turn hash so consecutive cues differ, and add a cheap
-assembler-time lint that logs when >2 blocks in one prompt start
-with the same prefix. Pure prompt-side change, no behaviour
-semantics. Key files:
-[`app/core/session/inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py),
-[`app/core/affect/aiko_style_tracker.py`](../../app/core/affect/aiko_style_tracker.py),
-[`app/core/conversation/calibration_detector.py`](../../app/core/conversation/calibration_detector.py),
-[`app/core/session/prompt_assembler.py`](../../app/core/session/prompt_assembler.py)
-(lint).
+**Shipped** — see [`shipped.md` → K51](shipped.md#k51-cue-register-rotation--de-heads-up-the-inner-life).
+Central prefix rotation in the prompt assembler (producers keep
+emitting the literal `Heads-up: ...`): four register shapes rotated
+on a deterministic per-turn seed, plus a shared-prefix lint and the
+`agent.cue_register_rotation_enabled` switch.

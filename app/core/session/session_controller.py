@@ -949,6 +949,9 @@ class SessionController(
             history_age_prefix_enabled=bool(
                 getattr(self._settings.agent, "history_age_prefix_enabled", True)
             ),
+            cue_register_rotation_enabled=bool(
+                getattr(self._settings.agent, "cue_register_rotation_enabled", True)
+            ),
         )
 
 
@@ -5615,6 +5618,18 @@ class SessionController(
                 registry.register(GetTimeTool())
             if getattr(tools_cfg, "recall", True) and getattr(self, "_rag_retriever", None) is not None:
                 registry.register(RecallTool(self._rag_retriever))
+            # Synchronous exact-arithmetic tool. No external deps, no
+            # store — safe to register whenever the switch is on so Aiko
+            # never has to guess a number.
+            if getattr(tools_cfg, "calculate", True):
+                try:
+                    from app.llm.tools.calc import CalculateTool
+
+                    registry.register(CalculateTool())
+                except Exception:
+                    log.warning(
+                        "calculate tool failed to register", exc_info=True
+                    )
             # web_search is intentionally NOT a brain builtin anymore.
             # A DuckDuckGo round-trip is too slow for the fast
             # conversational lane, so it now lives only as a background

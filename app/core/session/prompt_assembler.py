@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
+from app.core.conversation import cue_register
 from app.core.infra.chat_database import ChatDatabase, MessageRow, SummaryRow
 from app.llm.token_utils import estimate_messages_tokens, estimate_tokens
 
@@ -693,6 +694,7 @@ class PromptAssembler:
         rag_retriever: "RagRetriever | None" = None,
         self_image_path: Path | str | None = None,
         history_age_prefix_enabled: bool = True,
+        cue_register_rotation_enabled: bool = True,
     ) -> None:
         self._db = db
         self._persona_path = Path(persona_path)
@@ -705,6 +707,12 @@ class PromptAssembler:
         # ``[just now]``, ``[yesterday 18:45]``). Set False for a
         # byte-identical history to the pre-K-time1 behaviour.
         self._history_age_prefix_enabled = bool(history_age_prefix_enabled)
+        # K51 toggle. When True, cue blocks that open with the literal
+        # ``Heads-up:`` get their prefix rotated across a few register
+        # shapes at assembly time (deterministic per turn) so the
+        # model never reads the same coach template thrice in one
+        # prompt. False = byte-identical legacy cues.
+        self._cue_rotation_enabled = bool(cue_register_rotation_enabled)
         # Carry-over hint: the most recent assistant reaction. Lets the LLM
         # keep an emotional through-line across turns without us writing it
         # explicitly into the persona.
@@ -2198,6 +2206,82 @@ class PromptAssembler:
                 log.debug("motion names provider raised", exc_info=True)
                 motion_names = []
         motion_grammar_block = _build_motion_grammar_addendum(motion_names)
+
+        # K51 — cue-register rotation. Every producer emits the literal
+        # ``Heads-up: ...`` (single audit point); here, at the last
+        # moment before layout, the prefix is rotated across a few
+        # register shapes keyed on a per-turn seed + running ordinal so
+        # two cues in one prompt never share a shape. The seed is
+        # derived from (user_text, history length) — deterministic
+        # across the tool pass and streaming pass of the same turn, no
+        # clock, no RNG. All rotated blocks live in the uncached T5/T6
+        # tail, so this has zero prompt-cache impact. The shared-prefix
+        # lint runs regardless of the toggle to catch future template
+        # regressions.
+        cue_block_names = (
+            "mood_inertia_block",
+            "clarification_block",
+            "calibration_block",
+            "rupture_block",
+            "self_correction_block",
+            "promise_followthrough_block",
+            "misattunement_block",
+            "opinion_injection_block",
+            "novelty_block",
+            "stagnation_block",
+            "style_pattern_block",
+            "self_noticing_block",
+            "user_reactions_block",
+        )
+        cue_blocks = {
+            "mood_inertia_block": mood_inertia_block,
+            "clarification_block": clarification_block,
+            "calibration_block": calibration_block,
+            "rupture_block": rupture_block,
+            "self_correction_block": self_correction_block,
+            "promise_followthrough_block": promise_followthrough_block,
+            "misattunement_block": misattunement_block,
+            "opinion_injection_block": opinion_injection_block,
+            "novelty_block": novelty_block,
+            "stagnation_block": stagnation_block,
+            "style_pattern_block": style_pattern_block,
+            "self_noticing_block": self_noticing_block,
+            "user_reactions_block": user_reactions_block,
+        }
+        if self._cue_rotation_enabled:
+            seed = cue_register.turn_seed(user_text, len(history_msgs))
+            ordinal = 0
+            for name in cue_block_names:
+                block = cue_blocks[name]
+                if not block:
+                    continue
+                lines = cue_register.count_cue_lines(block)
+                if lines == 0:
+                    continue
+                cue_blocks[name] = cue_register.rotate_cue_prefix(
+                    block, seed=seed, ordinal=ordinal,
+                )
+                ordinal += lines
+            mood_inertia_block = cue_blocks["mood_inertia_block"]
+            clarification_block = cue_blocks["clarification_block"]
+            calibration_block = cue_blocks["calibration_block"]
+            rupture_block = cue_blocks["rupture_block"]
+            self_correction_block = cue_blocks["self_correction_block"]
+            promise_followthrough_block = cue_blocks[
+                "promise_followthrough_block"
+            ]
+            misattunement_block = cue_blocks["misattunement_block"]
+            opinion_injection_block = cue_blocks["opinion_injection_block"]
+            novelty_block = cue_blocks["novelty_block"]
+            stagnation_block = cue_blocks["stagnation_block"]
+            style_pattern_block = cue_blocks["style_pattern_block"]
+            self_noticing_block = cue_blocks["self_noticing_block"]
+            user_reactions_block = cue_blocks["user_reactions_block"]
+        offenders = cue_register.lint_shared_prefixes(
+            list(cue_blocks.values()),
+        )
+        for prefix, count in offenders:
+            log.info("cue-lint: prefix=%r count=%d", prefix, count)
 
         # Layout follows the prompt-cache prefix-stability ladder (see
         # ``_PROMPT_BLOCK_TIERS`` near the top of the file and

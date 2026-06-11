@@ -5,6 +5,7 @@ verbatim-deduplication against the rolling summary, and overflow detection.
 """
 from __future__ import annotations
 
+import logging
 import tempfile
 import unittest
 from pathlib import Path
@@ -50,17 +51,38 @@ class _TempDb:
             pass
 
 
-def _make_assembler(db: ChatDatabase, persona_text: str | None = None) -> PromptAssembler:
-    """Build an assembler with a controllable persona file (or none)."""
+def _make_assembler(
+    db: ChatDatabase,
+    persona_text: str | None = None,
+    *,
+    cue_register_rotation_enabled: bool = False,
+) -> PromptAssembler:
+    """Build an assembler with a controllable persona file (or none).
+
+    K51 cue-register rotation defaults OFF here so the dozens of
+    legacy provider-slot tests keep asserting against the literal
+    ``Heads-up:`` producers emit. ``CueRegisterRotationTests`` opts in
+    explicitly to exercise the rotation path.
+    """
     if persona_text is None:
         persona_path = Path("data/persona/aiko_companion.txt")
-        return PromptAssembler(db, persona_path=persona_path, recent_window=20)
+        return PromptAssembler(
+            db,
+            persona_path=persona_path,
+            recent_window=20,
+            cue_register_rotation_enabled=cue_register_rotation_enabled,
+        )
     tmp = tempfile.NamedTemporaryFile(
         mode="w", suffix=".txt", delete=False, encoding="utf-8",
     )
     tmp.write(persona_text)
     tmp.close()
-    return PromptAssembler(db, persona_path=Path(tmp.name), recent_window=20)
+    return PromptAssembler(
+        db,
+        persona_path=Path(tmp.name),
+        recent_window=20,
+        cue_register_rotation_enabled=cue_register_rotation_enabled,
+    )
 
 
 class PromptAssemblerBudgetTests(unittest.TestCase):
@@ -3532,6 +3554,192 @@ class PromptCachePrefixOrderingTests(unittest.TestCase):
                 f"prompt-cache ladder out of order at {s_a!r} (pos {p_a}) "
                 f"-> {s_b!r} (pos {p_b}); fix the system_parts cascade "
                 "in app/core/session/prompt_assembler.py",
+            )
+
+
+class CueRegisterRotationTests(unittest.TestCase):
+    """K51 — cue-register rotation in the assembler.
+
+    Producers keep emitting the literal ``Heads-up: ...``; with the
+    switch ON the assembler rewrites the prefix per cue block,
+    deterministic per turn, so two cues in the same prompt never share
+    a shape. OFF = byte-identical legacy cues. The shared-prefix lint
+    runs regardless of the switch.
+    """
+
+    @staticmethod
+    def _cue_line(content: str, body: str) -> str:
+        for line in content.split("\n"):
+            if body in line:
+                return line
+        raise AssertionError(f"no line containing {body!r} in prompt")
+
+    def test_two_cues_get_different_prefixes(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(
+                db, persona_text="P", cue_register_rotation_enabled=True,
+            )
+            db.add_message(
+                session_id="cr1", role="user", content="hi", token_count=2,
+            )
+            # Bodies deliberately don't start at the prefix boundary:
+            # the bare shape capitalises the first body letter, and the
+            # searched substring must survive that.
+            assembler.set_inner_life_providers(
+                style_pattern=lambda: "Heads-up: the alpha cue body.",
+                self_noticing=lambda: "Heads-up: the beta cue body.",
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "cr1",
+                "what's up?",
+                context_window=4096,
+                response_budget=256,
+            )
+            content = messages[0]["content"]
+            line_a = self._cue_line(content, "alpha cue body")
+            line_b = self._cue_line(content, "beta cue body")
+            prefix_a = line_a.split("alpha cue")[0]
+            prefix_b = line_b.split("beta cue")[0]
+            self.assertNotEqual(
+                prefix_a, prefix_b,
+                "consecutive cue blocks must land with different "
+                f"register shapes; both got {prefix_a!r}",
+            )
+
+    def test_within_turn_determinism(self) -> None:
+        # The tool pass and the streaming pass assemble the same
+        # prompt twice — rotation must not disagree between them.
+        with _TempDb() as db:
+            assembler = _make_assembler(
+                db, persona_text="P", cue_register_rotation_enabled=True,
+            )
+            db.add_message(
+                session_id="cr2", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                style_pattern=lambda: "Heads-up: opener rut.",
+                self_noticing=lambda: "Heads-up: agreeing too much.",
+            )
+            first, _ = assembler.assemble_with_budget(
+                "cr2", "same text",
+                context_window=4096, response_budget=256,
+            )
+            second, _ = assembler.assemble_with_budget(
+                "cr2", "same text",
+                context_window=4096, response_budget=256,
+            )
+            self.assertEqual(first[0]["content"], second[0]["content"])
+
+    def test_rotation_varies_across_turns(self) -> None:
+        # Different user text -> different seed -> at least one cue
+        # lands with a different shape (4 shapes, 1 cue, distinct
+        # seeds modulo 4 give distinct prefixes for most pairs; pick
+        # texts verified to differ).
+        from app.core.conversation import cue_register
+
+        text_a = "hello there"
+        text_b = "ok"
+        # Guard the fixture: the two texts must select different
+        # shapes for ordinal 0 at the same history length.
+        self.assertNotEqual(
+            cue_register.turn_seed(text_a, 1) % 4,
+            cue_register.turn_seed(text_b, 1) % 4,
+        )
+        with _TempDb() as db:
+            assembler = _make_assembler(
+                db, persona_text="P", cue_register_rotation_enabled=True,
+            )
+            db.add_message(
+                session_id="cr3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                style_pattern=lambda: "Heads-up: the gamma cue body.",
+            )
+            msgs_a, _ = assembler.assemble_with_budget(
+                "cr3", text_a, context_window=4096, response_budget=256,
+            )
+            msgs_b, _ = assembler.assemble_with_budget(
+                "cr3", text_b, context_window=4096, response_budget=256,
+            )
+            line_a = self._cue_line(msgs_a[0]["content"], "gamma cue body")
+            line_b = self._cue_line(msgs_b[0]["content"], "gamma cue body")
+            self.assertNotEqual(line_a, line_b)
+
+    def test_switch_off_preserves_literal_heads_up(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(
+                db, persona_text="P", cue_register_rotation_enabled=False,
+            )
+            db.add_message(
+                session_id="cr4", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                style_pattern=lambda: "Heads-up: cue alpha body.",
+                self_noticing=lambda: "Heads-up: cue beta body.",
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "cr4", "x", context_window=4096, response_budget=256,
+            )
+            content = messages[0]["content"]
+            self.assertIn("Heads-up: cue alpha body.", content)
+            self.assertIn("Heads-up: cue beta body.", content)
+
+    def test_lint_fires_with_rotation_off_and_three_same_prefix(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(
+                db, persona_text="P", cue_register_rotation_enabled=False,
+            )
+            db.add_message(
+                session_id="cr5", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                style_pattern=lambda: "Heads-up: cue one.",
+                self_noticing=lambda: "Heads-up: cue two.",
+                mood_inertia=lambda: "Heads-up: cue three.",
+            )
+            with self.assertLogs("app.prompt_assembler", level="INFO") as logs:
+                assembler.assemble_with_budget(
+                    "cr5", "x", context_window=4096, response_budget=256,
+                )
+            self.assertTrue(
+                any("cue-lint:" in line for line in logs.output),
+                f"expected a cue-lint INFO line, got: {logs.output}",
+            )
+
+    def test_lint_silent_with_rotation_on(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(
+                db, persona_text="P", cue_register_rotation_enabled=True,
+            )
+            db.add_message(
+                session_id="cr6", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                style_pattern=lambda: "Heads-up: cue one.",
+                self_noticing=lambda: "Heads-up: cue two.",
+                mood_inertia=lambda: "Heads-up: cue three.",
+            )
+            log_obj = logging.getLogger("app.prompt_assembler")
+            records: list[logging.LogRecord] = []
+
+            class _Capture(logging.Handler):
+                def emit(self, record: logging.LogRecord) -> None:
+                    records.append(record)
+
+            handler = _Capture(level=logging.INFO)
+            log_obj.addHandler(handler)
+            try:
+                assembler.assemble_with_budget(
+                    "cr6", "x", context_window=4096, response_budget=256,
+                )
+            finally:
+                log_obj.removeHandler(handler)
+            lint_lines = [
+                r for r in records if "cue-lint:" in r.getMessage()
+            ]
+            self.assertEqual(
+                lint_lines, [],
+                "rotation on must spread prefixes so the lint stays quiet",
             )
 
 

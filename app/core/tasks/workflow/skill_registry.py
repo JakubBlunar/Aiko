@@ -43,6 +43,7 @@ from typing import Any, Callable
 from app.core.tasks.handler_names import (
     HANDLER_FILE_READ,
     HANDLER_FILE_SEARCH,
+    HANDLER_FILE_WRITE,
     HANDLER_WEB_SEARCH,
 )
 from app.core.tasks.task_handler import INITIATED_BY_BACKGROUND
@@ -60,6 +61,7 @@ WORKFLOW_SKILL_FINISH = "finish"
 WORKFLOW_SKILL_SEARCH_FILES = "search_files"
 WORKFLOW_SKILL_READ_FILE = "read_file"
 WORKFLOW_SKILL_WEB_SEARCH = "web_search"
+WORKFLOW_SKILL_WRITE_FILE = "write_file"
 
 
 @dataclass(frozen=True, slots=True)
@@ -258,6 +260,47 @@ def _spawn_file_read(args: dict[str, Any], ctx: SpawnContext) -> "int | None":
     )
 
 
+def _spawn_write_file(args: dict[str, Any], ctx: SpawnContext) -> "int | None":
+    """Spawn a ``file_write`` child.
+
+    Args:
+
+    * ``path`` (required) — label-prefixed or bare path inside a
+      writable root.
+    * ``op`` (optional) — ``write`` (default) / ``append`` / ``replace``.
+    * ``content`` — text for ``write`` / ``append``.
+    * ``find`` / ``replace`` — for the ``replace`` op.
+
+    The destructive-write approval gate lives inside the
+    :class:`FileWriteHandler` (it emits the approval ``TaskInputNeeded``
+    and the user answers it in the TaskStrip), so the spawn itself just
+    forwards the args. The child is ``notify_aiko=False`` so Aiko
+    doesn't narrate the approval out loud — the strip is the surface.
+    """
+    path = str(args.get("path", "") or "").strip()
+    if not path:
+        log.warning("workflow write_file: empty path, skipping spawn")
+        return None
+    op = str(args.get("op", "write") or "write").strip().lower()
+    child_args: dict[str, Any] = {"path": path, "op": op}
+    if "content" in args:
+        child_args["content"] = str(args.get("content") or "")
+    if "find" in args:
+        child_args["find"] = str(args.get("find") or "")
+    if "replace" in args:
+        child_args["replace"] = str(args.get("replace") or "")
+    return ctx.orchestrator.start_task(
+        user_id=ctx.user_id,
+        handler_name=HANDLER_FILE_WRITE,
+        args=child_args,
+        title=f"workflow write: {path[:64]}",
+        initiated_by=INITIATED_BY_BACKGROUND,
+        notify_aiko=False,
+        visible_to_user=True,
+        parent_task_id=ctx.parent_task_id,
+    )
+
+
 def _spawn_web_search(args: dict[str, Any], ctx: SpawnContext) -> "int | None":
     """Spawn a ``web_search`` child.
 
@@ -375,6 +418,57 @@ def _web_search_skill() -> WorkflowSkill:
     )
 
 
+def _write_file_skill() -> WorkflowSkill:
+    return WorkflowSkill(
+        name=WORKFLOW_SKILL_WRITE_FILE,
+        description=(
+            "Create, overwrite, append to, or find/replace text in a file "
+            "inside one of the user's WRITABLE roots. Use op='write' to "
+            "create or replace a whole file, op='append' to add to the "
+            "end, op='replace' to swap one piece of text for another. "
+            "Overwriting / appending-to / editing an EXISTING file asks "
+            "the user to approve first (they confirm in the task strip); "
+            "creating a new file does not. Prefix the path with a root "
+            "label when more than one writable root exists "
+            "('Notes:todo.md')."
+        ),
+        arg_schema={
+            "path": {
+                "type": "string",
+                "description": (
+                    "Target path (label-prefixed or bare) inside a "
+                    "writable root."
+                ),
+                "required": True,
+            },
+            "op": {
+                "type": "string",
+                "description": (
+                    "One of 'write' (create/overwrite), 'append', "
+                    "'replace'. Default 'write'."
+                ),
+                "required": False,
+            },
+            "content": {
+                "type": "string",
+                "description": "Text to write or append (write/append ops).",
+                "required": False,
+            },
+            "find": {
+                "type": "string",
+                "description": "Text to search for (replace op).",
+                "required": False,
+            },
+            "replace": {
+                "type": "string",
+                "description": "Replacement text (replace op).",
+                "required": False,
+            },
+        },
+        spawn=_spawn_write_file,
+    )
+
+
 def _finish_skill() -> WorkflowSkill:
     return WorkflowSkill(
         name=WORKFLOW_SKILL_FINISH,
@@ -405,14 +499,17 @@ def _finish_skill() -> WorkflowSkill:
 
 
 def build_builtin_skill_registry(
-    *, web_search_enabled: bool = True
+    *, web_search_enabled: bool = True, file_write_enabled: bool = False
 ) -> WorkflowSkillRegistry:
     """Construct the default registry: file search/read + web + finish.
 
     ``web_search_enabled`` mirrors ``tools.web_search`` so a user who
     disabled web search doesn't get the skill offered to the planner.
-    The ``finish`` terminal skill is always present — a workflow must
-    always be able to stop.
+    ``file_write_enabled`` mirrors ``agent.file_write.enabled`` — the
+    destructive ``write_file`` skill is only offered when the master
+    switch is on (and a writable root exists, which the handler
+    enforces at run time). The ``finish`` terminal skill is always
+    present — a workflow must always be able to stop.
 
     Callers (the handler / mixin) layer MCP-provided skills on top via
     :meth:`WorkflowSkillRegistry.register` after this returns.
@@ -422,6 +519,8 @@ def build_builtin_skill_registry(
     registry.register(_file_read_skill())
     if web_search_enabled:
         registry.register(_web_search_skill())
+    if file_write_enabled:
+        registry.register(_write_file_skill())
     registry.register(_finish_skill())
     log.info(
         "workflow skill registry built: skills=%s",
@@ -435,6 +534,7 @@ __all__ = [
     "WORKFLOW_SKILL_SEARCH_FILES",
     "WORKFLOW_SKILL_READ_FILE",
     "WORKFLOW_SKILL_WEB_SEARCH",
+    "WORKFLOW_SKILL_WRITE_FILE",
     "SpawnContext",
     "SkillSpawnFn",
     "WorkflowSkill",

@@ -91,6 +91,7 @@
     "topic_graph_filter_threshold": 0.65,
     "grounding_line_mode": "off",
     "history_age_prefix_enabled": true,
+    "cue_register_rotation_enabled": true,
     "goals_enabled": true,
     "goal_worker_bootstrap_enabled": true,
     "goal_worker_per_hour_cap": 3,
@@ -321,7 +322,22 @@
     "idle_worker_wake_seconds": 30,
     "idle_worker_quiet_threshold_seconds": 20,
     "idle_worker_tick_budget_ms": 6000,
-    "idle_worker_max_per_tick": 0
+    "idle_worker_max_per_tick": 0,
+    "task_approval_mode": "ask",
+    "task_approval_overrides": {},
+    "file_write": {
+      "enabled": false,
+      "max_bytes": 262144,
+      "allowed_extensions": [
+        ".txt", ".md", ".rst", ".log",
+        ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf",
+        ".csv", ".tsv",
+        ".py", ".js", ".ts", ".tsx", ".jsx",
+        ".html", ".css", ".xml",
+        ".sh", ".bat", ".ps1",
+        ".sql"
+      ]
+    }
   },
   "tools": {
     "enabled": true,
@@ -329,7 +345,8 @@
     "recall": true,
     "web_search": true,
     "world": true,
-    "goals": true
+    "goals": true,
+    "calculate": true
   },
   "endpointing": {
     "enabled": true,

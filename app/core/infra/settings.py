@@ -420,6 +420,37 @@ class AvatarSettings:
 
 
 @dataclass(slots=True)
+class FileWriteSettings:
+    """Per-capability resource config for the ``file_write`` task.
+
+    The reusable pattern (see ``docs/task-approvals.md``): a destructive
+    capability owns a small nested settings block grouping its resource
+    knobs. The *approval* policy is generic and lives on
+    :class:`AgentSettings` (``task_approval_mode`` /
+    ``task_approval_overrides``); this block is only the file-write
+    resource limits.
+
+    ``enabled`` is the master switch — when off, the ``write_file``
+    workflow skill is never offered to the planner and the handler is
+    not registered. ``max_bytes`` caps the resulting file size.
+    ``allowed_extensions`` is the case-insensitive write allow-list
+    (empty = allow everything, same convention as the read handler).
+    """
+
+    enabled: bool = False
+    max_bytes: int = 262144
+    allowed_extensions: tuple[str, ...] = (
+        ".txt", ".md", ".rst", ".log",
+        ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf",
+        ".csv", ".tsv",
+        ".py", ".js", ".ts", ".tsx", ".jsx",
+        ".html", ".css", ".xml",
+        ".sh", ".bat", ".ps1",
+        ".sql",
+    )
+
+
+@dataclass(slots=True)
 class AgentSettings:
     """Lean v1 conversation agent knobs.
 
@@ -768,6 +799,14 @@ class AgentSettings:
     # behaviour (e.g. for A/B comparison, or if your LLM treats the
     # bracketed metadata as part of the dialogue).
     history_age_prefix_enabled: bool = True
+    # K51 -- cue-register rotation. When ON, inner-life cue blocks that
+    # open with the literal "Heads-up:" get the prefix rotated across a
+    # few register shapes ("Heads-up:" / "Quiet note:" / "Noticing:" /
+    # bare) at prompt-assembly time, deterministic per turn, so the
+    # model never reads the same coach template several times in one
+    # prompt. OFF = byte-identical legacy cues (the shared-prefix lint
+    # still runs).
+    cue_register_rotation_enabled: bool = True
     # Rolling summary background worker.
     summary_idle_seconds: float = 15.0  # quiet time before summarising
     summary_min_unsummarized_messages: int = 6  # minimum new msgs to trigger
@@ -1325,6 +1364,24 @@ class AgentSettings:
     # Cap on the per-task capability-gap log (missing_capability entries).
     # Clamped ``[1, 500]``.
     workflow_capability_gap_log_max: int = 50
+    # ── Task approvals (reusable across destructive capabilities) ───────
+    # Generic approval policy shared by every destructive task
+    # capability (today: ``file_write``; later: shell exec / http post /
+    # send email). ``task_approval_mode`` is the global default —
+    # ``"ask"`` gates every destructive action behind a TaskStrip
+    # approval prompt, ``"auto"`` performs without asking. Per-capability
+    # overrides live in ``task_approval_overrides`` (e.g.
+    # ``{"file_write": "auto"}`` to stop asking for writes only). A
+    # session "approve all" click (handled in-memory by the controller)
+    # rides on top of both — it never persists. See
+    # :mod:`app.core.tasks.approval` + ``docs/task-approvals.md``.
+    task_approval_mode: str = "ask"
+    task_approval_overrides: dict[str, str] = field(default_factory=dict)
+    # ── file_write capability resource config ───────────────────────────
+    # Nested per-capability block (master switch + byte cap + extension
+    # allow-list). The destructive-write APPROVAL is governed by the
+    # generic ``task_approval_*`` fields above, not here.
+    file_write: FileWriteSettings = field(default_factory=FileWriteSettings)
     # ── Worker-LLM priority gate ────────────────────────────────────────
     # Master switch for the priority gate in front of the shared worker
     # Ollama client. Off = pass-through proxies (zero behaviour change).
@@ -2278,6 +2335,11 @@ class ToolsSettings:
     # tools can be hidden during prompt experiments. See
     # :mod:`app.llm.tools.workflow_tools`.
     workflow: bool = True
+    # Synchronous exact-arithmetic tool (``calculate``). Evaluates an
+    # expression via an AST whitelist (no ``eval``) and returns the
+    # result in the same turn so Aiko never has to guess a number. See
+    # :mod:`app.llm.tools.calc`.
+    calculate: bool = True
 
 
 @dataclass(slots=True)
@@ -2534,6 +2596,81 @@ def _parse_extension_list(value: Any) -> tuple[str, ...]:
         seen.add(ext)
         out.append(ext)
     return tuple(out)
+
+
+_APPROVAL_MODES: frozenset[str] = frozenset({"ask", "auto"})
+
+
+def _normalize_approval_mode(value: Any, *, default: str = "ask") -> str:
+    """Clamp an approval mode to ``ask`` / ``auto`` (fallback ``ask``)."""
+    raw = str(value if value is not None else default).strip().lower()
+    if raw in _APPROVAL_MODES:
+        return raw
+    log.debug(
+        "settings: invalid approval mode=%r; falling back to %r",
+        value,
+        default,
+    )
+    return default
+
+
+def _parse_approval_overrides(value: Any) -> dict[str, str]:
+    """Normalise ``agent.task_approval_overrides`` into ``{cap: mode}``.
+
+    Keys are capability ids (free-text strings); values are clamped to
+    ``ask`` / ``auto``. Non-dict input -> empty map. A value that isn't
+    a valid mode is dropped (not coerced) so a typo doesn't silently
+    flip a capability to ``auto``.
+    """
+    if not isinstance(value, dict):
+        if value not in (None, {}):
+            log.debug(
+                "settings: agent.task_approval_overrides ignored "
+                "(not a dict): %r",
+                type(value).__name__,
+            )
+        return {}
+    out: dict[str, str] = {}
+    for key, mode in value.items():
+        cap_id = str(key).strip()
+        if not cap_id:
+            continue
+        raw = str(mode or "").strip().lower()
+        if raw not in _APPROVAL_MODES:
+            log.debug(
+                "settings: task_approval_overrides[%r] dropped "
+                "(invalid mode %r)",
+                cap_id,
+                mode,
+            )
+            continue
+        out[cap_id] = raw
+    return out
+
+
+def _parse_file_write_settings(value: Any) -> FileWriteSettings:
+    """Build a :class:`FileWriteSettings` from the raw ``file_write`` block.
+
+    Missing / non-dict input yields the defaults (disabled). ``max_bytes``
+    is clamped to ``[1 KiB, 16 MiB]``; ``allowed_extensions`` reuses
+    :func:`_parse_extension_list` (empty = allow all).
+    """
+    raw = value if isinstance(value, dict) else {}
+    defaults = FileWriteSettings()
+    if "allowed_extensions" in raw:
+        extensions = _parse_extension_list(raw.get("allowed_extensions"))
+    else:
+        extensions = defaults.allowed_extensions
+    try:
+        max_bytes = int(raw.get("max_bytes", defaults.max_bytes))
+    except (TypeError, ValueError):
+        max_bytes = defaults.max_bytes
+    max_bytes = max(1024, min(16 * 1024 * 1024, max_bytes))
+    return FileWriteSettings(
+        enabled=bool(raw.get("enabled", defaults.enabled)),
+        max_bytes=max_bytes,
+        allowed_extensions=extensions,
+    )
 
 
 def _parse_chat_llm(raw: dict[str, Any]) -> ChatLlmSettings:
@@ -3113,6 +3250,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             ),
             history_age_prefix_enabled=bool(
                 agent_raw.get("history_age_prefix_enabled", True),
+            ),
+            cue_register_rotation_enabled=bool(
+                agent_raw.get("cue_register_rotation_enabled", True),
             ),
             goals_enabled=bool(
                 agent_raw.get("goals_enabled", True),
@@ -3695,6 +3835,15 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                     500,
                     int(agent_raw.get("workflow_capability_gap_log_max", 50)),
                 ),
+            ),
+            task_approval_mode=_normalize_approval_mode(
+                agent_raw.get("task_approval_mode", "ask")
+            ),
+            task_approval_overrides=_parse_approval_overrides(
+                agent_raw.get("task_approval_overrides", {})
+            ),
+            file_write=_parse_file_write_settings(
+                agent_raw.get("file_write", {})
             ),
             worker_llm_gate_enabled=bool(
                 agent_raw.get("worker_llm_gate_enabled", True)
@@ -4559,6 +4708,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             goals=bool(tools_raw.get("goals", True)),
             file_tasks=bool(tools_raw.get("file_tasks", True)),
             workflow=bool(tools_raw.get("workflow", True)),
+            calculate=bool(tools_raw.get("calculate", True)),
         ),
         endpointing=EndpointingSettings(
             enabled=bool(endpointing_raw.get("enabled", True)),
