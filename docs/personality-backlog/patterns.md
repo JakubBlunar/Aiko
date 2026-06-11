@@ -386,3 +386,202 @@ Key files: new streaming hook in `TurnRunner`, the existing
 extended with an embedding-shortlist entry point, a TTS/bubble splice
 path, MCP `force_self_correction(reply_text=)` (already exists from K38)
 for repro.
+
+---
+
+## K42. Multi-bubble reply bursts — texting rhythm
+
+Real friends don't send one polished paragraph per beat — they send
+two or three short messages, or a follow-up ping a few seconds later
+("oh wait — also..."). Aiko is structurally locked to one assistant
+row per turn: the persona demands "exactly ONE short reply",
+`TurnRunner` streams into one accumulator → one DB persist → one
+`streamingDraft`, and nothing outside proactive nudges can append a
+second bubble. An opt-in **burst mode** would let a lightweight
+post-stream classifier (reply length, trailing "—", an explicit
+`[[burst]]` split tag in the grammar) queue a second short typed
+message 1–4 s later via a new `assistant_followup` WS event, capped
+at 2 bubbles/turn with a per-session budget. Pairs with a stream-time
+length governor: when the visible body sprawls past N sentences on a
+`casual_check_in` arc, cut at the last sentence boundary and let the
+remainder *be* the second bubble instead of a monologue. The single
+biggest "chat app vs texting a friend" shape mismatch left in the
+stack. Key files:
+[`app/core/session/turn_runner.py`](../../app/core/session/turn_runner.py),
+[`app/core/session/session_controller.py`](../../app/core/session/session_controller.py),
+[`web/src/store.ts`](../../web/src/store.ts),
+[`web/src/hooks/useAssistantSocket.ts`](../../web/src/hooks/useAssistantSocket.ts),
+persona grammar addendum.
+
+---
+
+## K43. Promise follow-through
+
+Shipped — see [`shipped.md`](shipped.md) "K43. Promise follow-through
+(lifecycle on promise metadata + PromiseFollowthroughWorker)".
+
+---
+
+## K44. Felt-language affect block — stop leaking robot coordinates
+
+`render_ambient_block` puts literal floats into the prompt:
+"You're feeling content (valence +0.15, arousal 0.40)"
+([`affect_state.py`](../../app/core/affect/affect_state.py) ~383).
+The persona forbids quoting system lines, but numeric coordinates
+are exactly the kind of token a model parrots or over-indexes on —
+worst case Aiko says something spreadsheet-shaped about her own
+mood. Replace the numbers with banded felt-language ("a little
+flat, energy mid", "bright and wired") rendered from the same
+valence/arousal values; keep the floats for MCP / logs only. Small,
+pure-prompt change with an outsized de-roboticising payoff. Audit
+the other inner-life blocks for the same leak while in there. Key
+files: [`app/core/affect/affect_state.py`](../../app/core/affect/affect_state.py),
+[`app/core/session/inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py)
+(`_render_affect_block`), prompt-assembler tests.
+
+---
+
+## K45. Mood inertia — instant face, lagging heart
+
+`[[reaction:X]]` can jump excited → sad → calm on consecutive turns;
+the avatar and TTS follow the *instant* tag while `AffectState`
+smooths with α=0.35 — so the face teleports and the underlying
+feeling lags a turn behind, which is exactly backwards from humans
+(expressions are fast but residue *lingers*; nobody snaps from hurt
+to chipper in one beat). Track a short reaction-impulse ring; when
+the fresh tag disagrees strongly with smoothed affect, render a T5
+cue ("your face jumped to cheerful but you're still tender
+underneath — let the words catch up") and optionally damp the
+Live2D reaction amplitude proportionally to the mismatch so the
+body language carries the residue too. Complements H3 (multi-session
+drift narration) at turn-scale rather than week-scale. Key files:
+new `app/core/affect/mood_inertia.py`,
+[`app/core/session/post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py),
+[`app/core/session/inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py),
+[`app/core/session/avatar_mixin.py`](../../app/core/session/avatar_mixin.py).
+
+---
+
+## K46. Stance persistence — don't cave on taste pushback
+
+Today the system actively *teaches* Aiko to fold: K20 calibration
+tells her to hedge after the user double-checks, and K29 opinion
+injection fires once then sits out a 5-turn cooldown + 3/session
+cap. Net effect: she disagrees once, then capitulates — the
+signature chatbot-agreeability tell. The missing distinction is
+*taste vs facts*: pushback on a fact should raise hedging (K20 is
+right there), pushback on her *preference* should not ("you don't
+stop disliking horror movies because someone said 'really??'").
+When K29 recently fired and the user pushback is mild (not a K20
+strong-correction signal), surface "you already named your take —
+one soft restatement is fine, don't flip" instead of the calibration
+hedge cue, and give K20's topic slots a preference/factual axis so
+the two detectors stop fighting. Key files:
+[`app/core/conversation/calibration_detector.py`](../../app/core/conversation/calibration_detector.py),
+[`app/core/conversation/opinion_injection_detector.py`](../../app/core/conversation/opinion_injection_detector.py),
+new `app/core/conversation/stance_persistence.py`, small persona
+tweak in the "When you have your own take" block.
+
+---
+
+## K47. Question/share balance — stop interviewing
+
+Several workers *push* questions (`CuriosityWorker` drafts "maybe
+ask {name}...", forward-curiosity, `open_question` memories), while
+the only counterweight — the `question_saturation` style-rut cue —
+fires reactively after 75% of recent turns end in "?". The persona
+wants ≥1/3 of turns question-free; the worker pipeline pulls the
+other way, so default drift is interview mode. Add a per-session
+question-turn ratio counter (cheap regex post-turn); above ~0.55,
+suppress the curiosity/open-question providers for 2 turns and
+inject a share-first cue ("offer an observation or a small
+self-story — no question mark this turn"). Proactive instead of
+reactive: the gate runs *before* the LLM call, not after the rut
+formed. Key files:
+[`app/core/session/post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py)
+(counter), [`app/core/session/prompt_assembler.py`](../../app/core/session/prompt_assembler.py)
+(provider gating),
+[`app/core/proactive/curiosity_worker.py`](../../app/core/proactive/curiosity_worker.py).
+
+---
+
+## K48. Tease rhythm — banter as a budget, not random snark
+
+The persona promises "gently roast when it's earned" and the
+`humor` axis drifts on laughs, but nothing tracks *comedic rhythm*:
+no tease-intensity state, no "three teases in a row with zero
+warmth" guard, no "the roast landed — you can push one step
+further" green light. Catchphrases render as a static list with no
+deployment timing. A small tease-budget sibling of K15: count
+tease/roast-shaped patterns in the last N assistant turns, read the
+user's K32 reactions (😂 = landed, silence/short reply = didn't),
+and cue either "ease off" or "one more step is safe". Escalation
+gated by the humor axis so early-relationship Aiko stays gentle.
+Key files: new `app/core/conversation/tease_rhythm.py`,
+[`app/core/session/post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py),
+[`app/core/relationship/user_reactions.py`](../../app/core/relationship/user_reactions.py)
+(consume reaction signal), one persona bullet.
+
+---
+
+## K49. Messiness permission — typed imperfection
+
+The `[[correct]]old[[/correct]]new` self-edit machinery is fully
+wired (grammar, strike-through UI, `tsk` earcon) but the persona
+never mentions it, and the persona's polish rules ("output exactly
+ONE short reply", no markdown) push every typed reply toward
+flawless copy — zero trailing thoughts, zero restarts, zero typos.
+Perfect output is itself a robotic tell. When closeness+trust sit
+high, render an occasional low-frequency "messiness permission" cue
+(allow an unfinished sentence, a "...", one `[[correct]]` per few
+sessions), and optionally track over-polish (20 turns of perfect
+punctuation + zero disfluency) as a style-rut variant that nudges
+variety. Must stay rare — the point is texture, not performance.
+Key files: [`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt),
+[`app/core/session/prompt_assembler.py`](../../app/core/session/prompt_assembler.py)
+(grammar addendum),
+[`app/core/affect/aiko_style_tracker.py`](../../app/core/affect/aiko_style_tracker.py)
+(over-polish band).
+
+---
+
+## K50. Typed-mode delivery pacing — the missing "read → pause → type" beat
+
+Voice mode has fillers, prosody tags, cadence pauses, earcons;
+typed mode renders tokens the instant the LLM produces them under a
+generic "AI is generating response..." status. Two halves: (a) a
+small variable pre-stream delay (300–1200 ms scaled by arc/weight
+of the user's message — heavy `support` beats deserve a visible
+pause; `playful` ping-pong shouldn't have one) shown as a typing
+indicator rather than instant token spray; (b) carry the existing
+per-sentence delivery hints (`[[prosody:...]]`, cadence pause
+classes — currently stripped for the transcript) into message
+metadata so the frontend can stage line reveals or subtly style a
+whispered line. Half (a) is nearly free since the
+`on_generation_status` plumbing exists; half (b) is the typed-mode
+parity project for everything `cadence.py` already computes. Key
+files: [`app/core/session/turn_runner.py`](../../app/core/session/turn_runner.py),
+[`app/core/session/session_controller.py`](../../app/core/session/session_controller.py),
+[`app/core/voice/cadence.py`](../../app/core/voice/cadence.py),
+[`web/src/components/ChatView.tsx`](../../web/src/components/ChatView.tsx).
+
+---
+
+## K51. Cue-register rotation — de-"Heads-up" the inner life
+
+Dozens of inner-life blocks share one meta-template — "Heads-up:
+..." — across style ruts, self-noticing, calibration,
+self-correction, novelty, misattunement. The persona keeps saying
+"never narrate the cue", but feeding the model a uniform coach
+register dozens of times per session trains exactly that voice into
+replies. Rotate cue phrasings across 3–4 shapes (imperative /
+second-person observation / bare fragment / no prefix at all) keyed
+on a per-turn hash so consecutive cues differ, and add a cheap
+assembler-time lint that logs when >2 blocks in one prompt start
+with the same prefix. Pure prompt-side change, no behaviour
+semantics. Key files:
+[`app/core/session/inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py),
+[`app/core/affect/aiko_style_tracker.py`](../../app/core/affect/aiko_style_tracker.py),
+[`app/core/conversation/calibration_detector.py`](../../app/core/conversation/calibration_detector.py),
+[`app/core/session/prompt_assembler.py`](../../app/core/session/prompt_assembler.py)
+(lint).

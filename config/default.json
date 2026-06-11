@@ -53,6 +53,8 @@
     "prepared_nudge_ttl_seconds": 600,
     "filler_enabled": true,
     "filler_first_token_ms": 800,
+    "tool_pass_gate_enabled": true,
+    "promise_followthrough_enabled": true,
     "consolidator_enabled": true,
     "consolidator_min_hours_between": 8,
     "consolidator_chunk_size": 40,

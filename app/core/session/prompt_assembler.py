@@ -489,6 +489,7 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "calibration_block",
         "rupture_block",
         "self_correction_block",
+        "promise_followthrough_block",
         "misattunement_block",
         "opinion_injection_block",
         "absence_curiosity_block",
@@ -589,6 +590,14 @@ class PromptTelemetry:
     # these counters.
     embed_calls: int = 0
     embed_ms: float = 0.0
+    # P14: tool-pass gate observability. Both are stamped by
+    # ``TurnRunner`` after assembly. ``tool_gate_event`` is the compact
+    # ``run:<reason>`` / ``skip:<reason>`` decision string ("-" when no
+    # tools are registered so the gate never ran); ``tool_pass_ms`` is
+    # the wall time of the forced ``chat_with_tools`` decision pass
+    # (0.0 when gated off or skipped).
+    tool_gate_event: str = "-"
+    tool_pass_ms: float = 0.0
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -630,6 +639,9 @@ class PromptTelemetry:
             # P1: per-turn embed budget.
             "embed_calls": int(self.embed_calls),
             "embed_ms": round(float(self.embed_ms), 2),
+            # P14: tool-pass gate decision + pass cost.
+            "tool_gate_event": str(self.tool_gate_event),
+            "tool_pass_ms": round(float(self.tool_pass_ms), 2),
         }
 
 
@@ -781,6 +793,11 @@ class PromptAssembler:
         # high-confidence fact/preference memories; this provider renders
         # the cue once on the next turn and clears the slot.
         self._self_correction_provider: Callable[[], str] | None = None
+        # K43 — promise follow-through one-shot. The idle worker arms a
+        # pending cue in kv_meta when an assistant-side promise has sat
+        # open past the age gate; this provider renders it once ("close
+        # the loop — or own that you haven't") and clears the slot.
+        self._promise_followthrough_provider: Callable[[], str] | None = None
         # K23 — subtle misattunement detector. Per-turn detector that
         # fires ``mild_disengagement`` when {user} goes very short or
         # pivots topics right after a substantial Aiko reply. Unlike
@@ -1091,6 +1108,7 @@ class PromptAssembler:
         sensory_anchor: Callable[[], str] | None = None,
         rupture: Callable[[], str] | None = None,
         self_correction: Callable[[], str] | None = None,
+        promise_followthrough: Callable[[], str] | None = None,
         misattunement: Callable[[str], str] | None = None,
         opinion_injection: Callable[[str], str] | None = None,
         absence_curiosity: Callable[[], str] | None = None,
@@ -1173,6 +1191,8 @@ class PromptAssembler:
             self._rupture_provider = rupture
         if self_correction is not None:
             self._self_correction_provider = self_correction
+        if promise_followthrough is not None:
+            self._promise_followthrough_provider = promise_followthrough
         if misattunement is not None:
             self._misattunement_provider = misattunement
         if opinion_injection is not None:
@@ -1745,6 +1765,24 @@ class PromptAssembler:
                 except Exception:
                     log.debug("self-correction provider raised", exc_info=True)
                     self_correction_block = ""
+
+        # K43 — promise follow-through one-shot. Same one-shot contract
+        # as rupture/self-correction (provider consumes a pending slot)
+        # and the same not-gated-on-aggressive policy: the provider
+        # clears the kv slot when it renders, so dropping the block
+        # after the read would silently lose an owed beat.
+        promise_followthrough_block = ""
+        if self._promise_followthrough_provider is not None:
+            with _timed_phase(provider_ms, "promise_followthrough"):
+                try:
+                    promise_followthrough_block = (
+                        self._promise_followthrough_provider() or ""
+                    )
+                except Exception:
+                    log.debug(
+                        "promise-followthrough provider raised", exc_info=True,
+                    )
+                    promise_followthrough_block = ""
 
         # K23 — subtle misattunement detector. Per-turn detector
         # reading the last assistant reply length, this user message
@@ -2348,6 +2386,13 @@ class PromptAssembler:
             # self-correction = "own the slip you just made". Survives
             # aggressive mode -- an owed correction must land.
             system_parts.append(self_correction_block)
+        if promise_followthrough_block:
+            # K43: promise follow-through sits right after the
+            # self-correction cue — both are "own what you owe" beats
+            # (slip you made vs loop you left open). One-shot: the
+            # provider already cleared its kv slot, so this block must
+            # land whenever it's non-empty.
+            system_parts.append(promise_followthrough_block)
         if misattunement_block:
             # K23: subtle-misattunement sits in the same noticing-Jacob
             # cluster as K17/K20/K8. K17 = "you misread him"; K20 =

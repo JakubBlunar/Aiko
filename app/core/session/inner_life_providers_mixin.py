@@ -1692,6 +1692,96 @@ class InnerLifeProvidersMixin:
             "you can ask — drop it if it doesn't fit."
         )
 
+    def _render_promise_followthrough_block(self) -> str:
+        """K43: surface one "close the loop on what you said you'd do" cue.
+
+        Consumer side of the :class:`PromiseFollowthroughWorker`
+        producer. The worker arms a one-shot pending payload in kv_meta
+        (``promise_followthrough.pending``) during a quiet window; this
+        provider renders it once and clears the slot. Persisting the
+        slot in kv (not on the controller) means an armed cue survives
+        an app restart instead of orphaning a ``surfaced`` promise row.
+
+        The cue covers both outcomes on purpose — share what you found
+        *or* own that you haven't gotten to it — because the worker
+        can't know whether Aiko actually has anything. If the promise
+        was fulfilled or deleted between arming and rendering, the cue
+        drops silently (slot still cleared).
+
+        Independent of the gap-return cue family — does NOT touch
+        ``_gap_cue_surfaced``; an owed loop-close is worth a line even
+        mid-session.
+        """
+        if not bool(
+            getattr(
+                self._settings.agent, "promise_followthrough_enabled", True,
+            )
+        ):
+            return ""
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is None or not hasattr(chat_db, "kv_get"):
+            return ""
+        try:
+            from app.core.memory import promise_lifecycle as lifecycle
+            from app.core.proactive.promise_followthrough_worker import (
+                clear_pending,
+                load_pending,
+            )
+        except Exception:
+            log.debug("promise_followthrough import failed", exc_info=True)
+            return ""
+
+        pending = load_pending(chat_db.kv_get)
+        if pending is None:
+            return ""
+        # One-shot: consume the slot whatever happens next.
+        clear_pending(chat_db.kv_set)
+
+        what = str(pending.get("what") or "").strip()
+        if not what:
+            return ""
+
+        # Re-validate against the live row: a promise fulfilled (post-turn
+        # resolution / finished task) or deleted between arming and now
+        # no longer owes anything.
+        memory_store = getattr(self, "_memory_store", None)
+        try:
+            mem = (
+                memory_store.get(int(pending.get("memory_id") or 0))
+                if memory_store is not None
+                else None
+            )
+        except Exception:
+            mem = None
+        if mem is None or lifecycle.promise_status(mem) not in (
+            lifecycle.ACTIVE_STATUSES
+        ):
+            log.debug(
+                "promise_followthrough silent: row gone or resolved (id=%s)",
+                pending.get("memory_id"),
+            )
+            return ""
+
+        try:
+            age_text = lifecycle.humanize_age(
+                float(pending.get("age_hours") or 0.0),
+            )
+        except (TypeError, ValueError):
+            age_text = "a while ago"
+        log.info(
+            "promise-followthrough fire: memory_id=%s age=%s what=%r",
+            pending.get("memory_id"),
+            age_text,
+            what[:80],
+        )
+        return (
+            f"Heads-up: {age_text} you told {self.user_display_name} you'd "
+            f"{what} — you haven't closed that loop. If it fits this turn, "
+            "mention what you found, or own that you haven't gotten to it "
+            "yet. One casual line, not a production — and don't pretend you "
+            "did it if you didn't."
+        )
+
     def _render_rupture_block(self) -> str:
         """K8: surface a one-shot affect-rupture cue.
 

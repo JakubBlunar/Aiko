@@ -626,6 +626,25 @@ class TaskOrchestrationMixin:
         """The :class:`TaskCueStore`, or ``None`` when disabled."""
         return getattr(self, "_task_cue_store", None)
 
+    def _any_tasks_active(self) -> bool:
+        """True when any task is running / awaiting_input / paused.
+
+        P14 continuity hook for the tool-pass gate: while a task is
+        live, the user's next message may be the answer a pending
+        ``answer_file_task`` is waiting for (or a cancel / status
+        request), so the forced tool-decision pass must always run.
+        Best-effort — any failure reads as "no active tasks" so the
+        gate's text heuristic still applies.
+        """
+        store = getattr(self, "_task_store", None)
+        if store is None:
+            return False
+        try:
+            return bool(store.list_running())
+        except Exception:
+            log.debug("_any_tasks_active failed", exc_info=True)
+            return False
+
     @property
     def brain_loop(self) -> BrainLoop | None:
         """The :class:`BrainLoop`, or ``None`` when disabled.
@@ -1208,6 +1227,20 @@ class TaskOrchestrationMixin:
             return
         if not bool(getattr(event, "notify_aiko", True)):
             return
+        # K43 — auto-fulfil matching promises: "I'll look into X" followed
+        # by a finished background task about X closes the loop without
+        # waiting for the next reply to mention it. Best-effort; lexical
+        # match runs in promise_lifecycle.find_fulfilled.
+        if str(getattr(event, "status", "") or "") == "done":
+            try:
+                self._maybe_resolve_promises(
+                    f"{event.title or ''} {event.result_summary or ''}",
+                    source="task",
+                )
+            except Exception:
+                log.debug(
+                    "task-completion promise resolution failed", exc_info=True,
+                )
         # Suppress the duplicate report when the spawning tool already
         # folded this task's result into the same turn (inline fast
         # path). The id was stashed by ``mark_task_inline_resolved``.

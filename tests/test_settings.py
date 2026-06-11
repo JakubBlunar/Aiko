@@ -266,6 +266,114 @@ class ForwardCuriositySettingsTests(unittest.TestCase):
         self.assertEqual(result.memory.forward_curiosity_journal_max, 1)
 
 
+class PromiseFollowthroughSettingsTests(unittest.TestCase):
+    """K43: agent master switch + memory cadence/age knobs round-trip + clamps."""
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(
+        self, agent_extra: dict | None = None, memory_extra: dict | None = None,
+    ) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(json.loads(default_path.read_text(encoding="utf-8")))
+        cfg.get("agent", {}).pop("promise_followthrough_enabled", None)
+        for k in (
+            "promise_followthrough_interval_seconds",
+            "promise_followthrough_min_age_hours",
+            "promise_followthrough_cooldown_hours",
+            "promise_followthrough_drop_after_days",
+            "promise_fulfil_min_overlap",
+        ):
+            cfg.get("memory", {}).pop(k, None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        if memory_extra is not None:
+            cfg["memory"] = {**cfg.get("memory", {}), **memory_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults_load_when_keys_missing(self) -> None:
+        path = self._write_config()
+        result = load_settings(config_path=path)
+        self.assertTrue(result.agent.promise_followthrough_enabled)
+        self.assertEqual(
+            result.memory.promise_followthrough_interval_seconds, 1800,
+        )
+        self.assertAlmostEqual(
+            result.memory.promise_followthrough_min_age_hours, 4.0,
+        )
+        self.assertAlmostEqual(
+            result.memory.promise_followthrough_cooldown_hours, 6.0,
+        )
+        self.assertAlmostEqual(
+            result.memory.promise_followthrough_drop_after_days, 14.0,
+        )
+        self.assertEqual(result.memory.promise_fulfil_min_overlap, 3)
+
+    def test_overrides_round_trip(self) -> None:
+        path = self._write_config(
+            agent_extra={"promise_followthrough_enabled": False},
+            memory_extra={
+                "promise_followthrough_interval_seconds": 600,
+                "promise_followthrough_min_age_hours": 1.0,
+                "promise_followthrough_cooldown_hours": 2.5,
+                "promise_followthrough_drop_after_days": 7.0,
+                "promise_fulfil_min_overlap": 4,
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.promise_followthrough_enabled)
+        self.assertEqual(
+            result.memory.promise_followthrough_interval_seconds, 600,
+        )
+        self.assertAlmostEqual(
+            result.memory.promise_followthrough_min_age_hours, 1.0,
+        )
+        self.assertAlmostEqual(
+            result.memory.promise_followthrough_cooldown_hours, 2.5,
+        )
+        self.assertAlmostEqual(
+            result.memory.promise_followthrough_drop_after_days, 7.0,
+        )
+        self.assertEqual(result.memory.promise_fulfil_min_overlap, 4)
+
+    def test_clamps_out_of_range_values(self) -> None:
+        path = self._write_config(
+            memory_extra={
+                "promise_followthrough_interval_seconds": 1,  # floor 30
+                "promise_followthrough_min_age_hours": -2.0,  # floor 0.0
+                "promise_followthrough_cooldown_hours": -1.0,  # floor 0.0
+                "promise_followthrough_drop_after_days": 0.1,  # floor 1.0
+                "promise_fulfil_min_overlap": 0,  # floor 1
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertEqual(
+            result.memory.promise_followthrough_interval_seconds, 30,
+        )
+        self.assertAlmostEqual(
+            result.memory.promise_followthrough_min_age_hours, 0.0,
+        )
+        self.assertAlmostEqual(
+            result.memory.promise_followthrough_cooldown_hours, 0.0,
+        )
+        self.assertAlmostEqual(
+            result.memory.promise_followthrough_drop_after_days, 1.0,
+        )
+        self.assertEqual(result.memory.promise_fulfil_min_overlap, 1)
+
+
 class SelfCorrectionSettingsTests(unittest.TestCase):
     """K38: agent master switch + memory threshold knobs round-trip + clamps."""
 

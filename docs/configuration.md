@@ -220,6 +220,23 @@ Avoids dead air on the first token by emitting a short verbal filler.
 - `agent.filler_enabled` *(bool, `true`)* — master switch.
 - `agent.filler_first_token_ms` *(int, `800`, min `150`)* — emit a filler if the LLM hasn't produced a first delta after this many ms. Lower → fires earlier (filler-heavy); higher → only fires on truly slow first tokens.
 
+### Tool-pass gate (P14)
+
+Skips the forced pre-stream tool-decision LLM pass on turns with no tool-shaped signal, cutting time-to-first-token on banter turns.
+
+- `agent.tool_pass_gate_enabled` *(bool, `true`)* — master switch / kill-switch. `true` → turns with no tool-shaped text and no continuity signal (finished-task block, active task, previous turn used a tool) skip the decision pass entirely. `false` → restore the old always-run behaviour (use this if tool recall ever regresses; see `get_tool_gate_state` over MCP for diagnostics).
+
+### Promise follow-through (K43)
+
+Closes the loop on Aiko's own "I'll look into that" commitments. Assistant-side `kind="promise"` memories carry an `open → surfaced → fulfilled | dropped` lifecycle on metadata; an idle worker arms a one-shot "mention what you found — or own that you haven't yet" cue, and replies / finished background tasks auto-fulfil matching promises.
+
+- `agent.promise_followthrough_enabled` *(bool, `true`)* — master switch for the worker, the cue, and the lifecycle writes.
+- `memory.promise_followthrough_interval_seconds` *(int, `1800`, min `30`)* — idle-worker cadence.
+- `memory.promise_followthrough_min_age_hours` *(float, `4.0`, min `0`)* — how long a promise must sit open before the cue can arm.
+- `memory.promise_followthrough_cooldown_hours` *(float, `6.0`, min `0`)* — wall-clock pacing between consecutive cues.
+- `memory.promise_followthrough_drop_after_days` *(float, `14.0`, min `1`)* — promises older than this silently flip to `dropped`.
+- `memory.promise_fulfil_min_overlap` *(int, `3`, min `1`)* — content-word overlap a reply / task result must share with the promise body to count as fulfilled.
+
 ### Memory consolidation
 
 `MemoryConsolidator` merges near-duplicate memory rows.
