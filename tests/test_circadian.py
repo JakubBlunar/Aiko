@@ -72,6 +72,26 @@ class CircadianTests(unittest.TestCase):
         state = compute(_at(3, 0))
         line = state.ambient_line()
         self.assertIn("drowsy", line)
+        self.assertIn("running low", line)
+
+    def test_ambient_line_energy_is_felt_language_not_float(self) -> None:
+        # K44: the energy scalar must render as a banded word; the only
+        # digits allowed in the line are the clock time.
+        import re
+
+        for hour in (3, 8, 11, 15, 20, 23):
+            line = compute(_at(hour)).ambient_line()
+            self.assertIsNone(
+                re.search(r"\d\.\d", line),
+                msg=f"float leaked at hour {hour}: {line!r}",
+            )
+            self.assertTrue(
+                any(
+                    word in line
+                    for word in ("running low", "dipping", "steady", "bright")
+                ),
+                msg=f"no energy word at hour {hour}: {line!r}",
+            )
 
 
 class WeekdayAwarenessTests(unittest.TestCase):

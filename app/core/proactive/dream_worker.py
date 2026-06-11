@@ -30,6 +30,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any, Callable
 
+from app.core.affect.affect_state import felt_phrase
 from app.core.session.session_text_utils import resolve_user_name
 
 if TYPE_CHECKING:
@@ -259,11 +260,13 @@ class DreamWorker:
             f"Hours since last conversation: {hours_since_last:.1f}",
         ]
         if affect is not None:
+            # K44: felt-language, not floats — the dream LLM writes
+            # Aiko-voiced prose, and numeric coordinates fed in here
+            # used to echo into dream memories that later surface.
             parts.append(
                 f"Your current mood (carried from last time): "
-                f"{getattr(affect, 'mood_label', 'content')}, "
-                f"valence={getattr(affect, 'valence', 0.0):+.2f}, "
-                f"arousal={getattr(affect, 'arousal', 0.4):.2f}"
+                f"{getattr(affect, 'mood_label', 'content')} — "
+                f"{felt_phrase(getattr(affect, 'valence', 0.0), getattr(affect, 'arousal', 0.4))}"
             )
         if rolling_summary:
             parts.append("Rolling summary of last conversation:\n" + rolling_summary[:1200])

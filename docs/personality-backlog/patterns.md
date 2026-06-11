@@ -422,22 +422,11 @@ Shipped — see [`shipped.md`](shipped.md) "K43. Promise follow-through
 
 ---
 
-## K44. Felt-language affect block — stop leaking robot coordinates
+## K44. Felt-language affect block
 
-`render_ambient_block` puts literal floats into the prompt:
-"You're feeling content (valence +0.15, arousal 0.40)"
-([`affect_state.py`](../../app/core/affect/affect_state.py) ~383).
-The persona forbids quoting system lines, but numeric coordinates
-are exactly the kind of token a model parrots or over-indexes on —
-worst case Aiko says something spreadsheet-shaped about her own
-mood. Replace the numbers with banded felt-language ("a little
-flat, energy mid", "bright and wired") rendered from the same
-valence/arousal values; keep the floats for MCP / logs only. Small,
-pure-prompt change with an outsized de-roboticising payoff. Audit
-the other inner-life blocks for the same leak while in there. Key
-files: [`app/core/affect/affect_state.py`](../../app/core/affect/affect_state.py),
-[`app/core/session/inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py)
-(`_render_affect_block`), prompt-assembler tests.
+Shipped — see [`shipped.md`](shipped.md) "K44. Felt-language affect
+block (banded felt-language replaces numeric valence/arousal/energy
+in every Aiko-facing prompt)".
 
 ---
 

@@ -32,6 +32,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
+from app.core.affect.affect_state import felt_phrase
 from app.core.session.session_text_utils import resolve_user_name
 
 if TYPE_CHECKING:
@@ -366,9 +367,12 @@ def _format_turn_block(
     """Compact turn dump for the reflection prompt."""
     lines = []
     if affect is not None:
+        # K44: felt-language, not floats — the reflection LLM writes
+        # Aiko-voiced prose, and numeric coordinates fed in here used to
+        # echo into reflection memories that later surface in chat.
         lines.append(
-            f"(your current mood: {affect.mood_label}, "
-            f"valence={affect.valence:+.2f}, arousal={affect.arousal:.2f})"
+            f"(your current mood: {affect.mood_label} — "
+            f"{felt_phrase(affect.valence, affect.arousal)})"
         )
     name = user_display_name or "the user"
     lines.append(f"{name}: {(user_text or '').strip()[:1200]}")

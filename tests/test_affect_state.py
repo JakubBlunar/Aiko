@@ -10,6 +10,7 @@ from app.core.affect.affect_state import (
     AffectState,
     AffectStore,
     AffectUpdater,
+    felt_phrase,
     render_ambient_block,
 )
 from app.core.infra.chat_database import ChatDatabase
@@ -138,7 +139,8 @@ class AffectUpdaterTests(unittest.TestCase):
 
 
 class AmbientBlockTests(unittest.TestCase):
-    def test_block_includes_label_and_numbers(self) -> None:
+    def test_block_includes_label_and_felt_phrase(self) -> None:
+        # K44: label + felt-language, never raw floats.
         state = AffectState(
             user_id="u1",
             valence=0.4,
@@ -148,8 +150,30 @@ class AmbientBlockTests(unittest.TestCase):
         )
         text = render_ambient_block(state)
         self.assertIn("tender", text)
-        self.assertIn("+0.40", text)
-        self.assertIn("0.30", text)
+        self.assertIn(felt_phrase(0.4, 0.3), text)
+
+    def test_block_contains_no_digits(self) -> None:
+        # K44 contract: no numeric coordinates land in the prompt — for
+        # any combination of scalars, including trend lines.
+        for valence, arousal, trend in (
+            (0.8, 0.9, 0.0),
+            (0.15, 0.4, 0.3),
+            (0.0, 0.5, -0.3),
+            (-0.3, 0.2, 0.0),
+            (-0.9, 0.95, 0.2),
+        ):
+            state = AffectState(
+                user_id="u1",
+                valence=valence,
+                arousal=arousal,
+                mood_label="content",
+                valence_trend_24h=trend,
+            )
+            text = render_ambient_block(state)
+            self.assertFalse(
+                any(ch.isdigit() for ch in text),
+                msg=f"digits leaked for v={valence} a={arousal}: {text!r}",
+            )
 
     def test_trend_line_omitted_below_threshold(self) -> None:
         state = AffectState(
@@ -172,6 +196,60 @@ class AmbientBlockTests(unittest.TestCase):
         )
         text = render_ambient_block(state)
         self.assertIn("Lately", text)
+
+
+class FeltPhraseTests(unittest.TestCase):
+    """K44: the (valence, arousal) -> felt-language band grid."""
+
+    def test_grid_corners(self) -> None:
+        # The four circumplex corners + dead centre map to the expected
+        # direct emotion words.
+        self.assertEqual(
+            felt_phrase(0.9, 0.9), "genuinely excited, lots of energy",
+        )
+        self.assertEqual(
+            felt_phrase(0.9, 0.1), "happy in a quiet, settled way",
+        )
+        self.assertEqual(felt_phrase(-0.9, 0.9), "upset and wound up")
+        self.assertEqual(felt_phrase(-0.9, 0.1), "down and low on energy")
+        self.assertEqual(felt_phrase(0.0, 0.5), "pretty even")
+
+    def test_valence_band_boundaries(self) -> None:
+        # Band edges (mid arousal column): <=-0.5 very_negative,
+        # <=-0.15 negative, <0.15 neutral, <0.5 positive, >=0.5
+        # very_positive.
+        self.assertEqual(felt_phrase(-0.5, 0.5), "heavy-hearted")
+        self.assertEqual(felt_phrase(-0.49, 0.5), "a little flat")
+        self.assertEqual(felt_phrase(-0.15, 0.5), "a little flat")
+        self.assertEqual(felt_phrase(-0.14, 0.5), "pretty even")
+        self.assertEqual(felt_phrase(0.14, 0.5), "pretty even")
+        self.assertEqual(felt_phrase(0.15, 0.5), "in a good mood")
+        self.assertEqual(felt_phrase(0.49, 0.5), "in a good mood")
+        self.assertEqual(felt_phrase(0.5, 0.5), "really good today")
+
+    def test_arousal_band_boundaries(self) -> None:
+        # Band edges (positive valence row): <0.35 low, <=0.65 mid,
+        # >0.65 high.
+        self.assertEqual(felt_phrase(0.3, 0.34), "mellow and content")
+        self.assertEqual(felt_phrase(0.3, 0.35), "in a good mood")
+        self.assertEqual(felt_phrase(0.3, 0.65), "in a good mood")
+        self.assertEqual(felt_phrase(0.3, 0.66), "upbeat, a little buzzed")
+
+    def test_out_of_range_clamps_to_outer_bands(self) -> None:
+        self.assertEqual(
+            felt_phrase(5.0, 5.0), "genuinely excited, lots of energy",
+        )
+        self.assertEqual(felt_phrase(-5.0, -5.0), "down and low on energy")
+
+    def test_garbage_input_falls_back_to_neutral(self) -> None:
+        self.assertEqual(felt_phrase(None, None), "pretty even")  # type: ignore[arg-type]
+
+    def test_every_cell_is_nonempty_prose_without_digits(self) -> None:
+        for valence in (-0.9, -0.3, 0.0, 0.3, 0.9):
+            for arousal in (0.1, 0.5, 0.9):
+                phrase = felt_phrase(valence, arousal)
+                self.assertTrue(phrase.strip())
+                self.assertFalse(any(ch.isdigit() for ch in phrase))
 
 
 if __name__ == "__main__":
