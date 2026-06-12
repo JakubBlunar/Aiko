@@ -2769,6 +2769,90 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"clear_emotion_episodes raised: {exc}"
 
     @mcp.tool()
+    def get_expression_mask_state() -> str:
+        """K60 — dump the tsundere-mask state.
+
+        Returns the dial mode, the live closeness/trust axes and the
+        computed erosion ``strength``, the masked-emotion set, the
+        last dere-slip stamp + cooldown, and the one-shot force-slip
+        flag. Read-only.
+        """
+        try:
+            from app.core.affect import expression_mask as _mask
+
+            chat_db = getattr(session, "_chat_db", None)
+            agent = session._settings.agent
+            mode = _mask.normalize_mode(
+                getattr(agent, "expression_mask", "off")
+            )
+            closeness = trust = None
+            axes_store = getattr(
+                session, "_relationship_axes_store", None,
+            )
+            if axes_store is not None:
+                try:
+                    axes = axes_store.get(session._user_id)
+                    closeness = float(axes.closeness)
+                    trust = float(axes.trust)
+                except Exception:
+                    pass
+            payload = {
+                "mode": mode,
+                "closeness": closeness,
+                "trust": trust,
+                "strength": _mask.mask_strength(closeness, trust),
+                "masked_emotions": sorted(
+                    e for e in ("lonely", "warm_glow")
+                    if _mask.is_masked(e, mode)
+                ),
+                "last_slip_at": (
+                    chat_db.kv_get(_mask.KV_LAST_SLIP_AT)
+                    if chat_db is not None else None
+                ),
+                "slip_cooldown_days": float(
+                    getattr(agent, "mask_slip_cooldown_days", 2.0)
+                ),
+                "force_slip_armed": bool(
+                    getattr(session, "_mask_force_slip_next", False)
+                ),
+            }
+            return json.dumps(payload)
+        except Exception as exc:
+            return f"get_expression_mask_state raised: {exc}"
+
+    @mcp.tool()
+    def set_expression_mask(mode: str) -> str:
+        """K60 — flip the mask dial live (off / tsundere_light /
+        tsundere_full). In-memory only; persist via config to keep
+        it across restarts."""
+        try:
+            from app.core.affect import expression_mask as _mask
+
+            normalized = _mask.normalize_mode(mode)
+            if normalized != str(mode).strip().lower():
+                return json.dumps({
+                    "error": "unknown mode",
+                    "modes": list(_mask.MODES),
+                })
+            session._settings.agent.expression_mask = normalized
+            return json.dumps({"mode": normalized})
+        except Exception as exc:
+            return f"set_expression_mask raised: {exc}"
+
+    @mcp.tool()
+    def force_dere_slip() -> str:
+        """K60 — arm a one-shot slip: the next masked episode render
+        bypasses the intensity + cooldown gates and appends the
+        genuine-line-then-snap-back permission. Pair with
+        ``force_emotion_episode(kind='lonely', intensity=0.8)`` and a
+        non-off mask mode."""
+        try:
+            session._mask_force_slip_next = True
+            return json.dumps({"armed": True})
+        except Exception as exc:
+            return f"force_dere_slip raised: {exc}"
+
+    @mcp.tool()
     def get_tease_ledger() -> str:
         """K59 — dump the payback ledger.
 

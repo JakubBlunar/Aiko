@@ -226,6 +226,12 @@ export interface LlmTestConnectionResult {
  * situational blocks but keeps the trend/phase ones standalone. */
 export type GroundingLineMode = "off" | "replace" | "split";
 
+/** K60 tsundere expression-mask dial. ``off`` keeps every feeling
+ * expressed plainly; ``tsundere_light`` masks lonely/warm-glow with
+ * frequent dere-slips; ``tsundere_full`` also masks the thaw beat
+ * and spaces the slips out. */
+export type ExpressionMaskMode = "off" | "tsundere_light" | "tsundere_full";
+
 export interface CompanionSettings {
   world_notice_enabled: boolean;
   world_notice_interval_seconds: number;
@@ -237,6 +243,7 @@ export interface CompanionSettings {
   user_reactions_enabled: boolean;
   persona_touch_banner_enabled: boolean;
   persona_touch_banner_duration_seconds: number;
+  expression_mask: ExpressionMaskMode;
 }
 
 export interface AssistantSettings {

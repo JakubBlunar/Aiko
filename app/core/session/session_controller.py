@@ -2886,6 +2886,10 @@ class SessionController(
         #   Consumed one-shot.
         self._day_color_force_next: str | None = None
         self._day_color_force_reroll: bool = False
+        # K60 — one-shot MCP bypass (``force_dere_slip``) of the
+        # dere-slip intensity + cooldown gates. Consumed by the next
+        # emotion-episode provider call that hits a masked episode.
+        self._mask_force_slip_next: bool = False
         # K15 -- vulnerability budget MCP debug flags. The persisted
         # bucket lives in ``kv_meta`` (``aiko.vulnerability_budget``)
         # and is read+decayed lazily on every provider call; these
@@ -3544,6 +3548,8 @@ class SessionController(
         # live episodes intentionally DO (they're kv-backed feelings
         # with wall-clock decay, not per-session state).
         self._pending_emotion_triggers = []
+        # K60 — the one-shot slip bypass doesn't cross sessions.
+        self._mask_force_slip_next = False
         # Best-effort: a write failure (read-only volume, locked file)
         # must not break the in-memory switch — the user just lands
         # back on whatever was previously persisted on next launch.
@@ -3634,6 +3640,8 @@ class SessionController(
         # K57 — staged triggers die with the history (live episodes
         # persist in kv_meta by design).
         self._pending_emotion_triggers = []
+        # K60 — the one-shot slip bypass dies with the history too.
+        self._mask_force_slip_next = False
 
     def _clear_merge_buffer(self, session_key: str | None = None) -> None:
         """Drop the voice merge buffer (one specific session, or all).
