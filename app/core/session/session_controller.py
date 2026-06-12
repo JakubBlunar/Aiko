@@ -1580,6 +1580,7 @@ class SessionController(
             style_signal=self._render_style_signal_block,
             self_noticing=self._render_self_noticing_block,
             curiosity_seeds=self._render_curiosity_seeds_block,
+            wants=self._render_wants_block,
             grounding_line=self._render_grounding_line,
             user_reactions=self._render_user_reactions_block,
             touch_state=self._render_touch_state_block,
@@ -2420,6 +2421,53 @@ class SessionController(
             except Exception:
                 log.warning(
                     "ForwardCuriosityWorker init failed", exc_info=True
+                )
+
+        # K52 WantsLedgerWorker — keeps the wants ledger stocked from
+        # curiosity seeds / forward-curiosity questions / goals during
+        # quiet windows. Pure ingestion, no LLM. Failures only drop
+        # the feeder; manual MCP adds still work.
+        self._wants_ledger_worker = None
+        if self._idle_scheduler is not None:
+            try:
+                from app.core.conversation.wants_ledger_worker import (
+                    WantsLedgerWorker,
+                )
+
+                agent = settings.agent
+                self._wants_ledger_worker = WantsLedgerWorker(
+                    kv_get=self._chat_db.kv_get,
+                    kv_set=self._chat_db.kv_set,
+                    user_display_name_provider=(
+                        lambda: self.user_display_name
+                    ),
+                    memory_store=getattr(self, "_memory_store", None),
+                    goal_store=getattr(self, "_goal_store", None),
+                    enabled_provider=lambda: bool(
+                        getattr(
+                            self._settings.agent,
+                            "wants_ledger_enabled",
+                            True,
+                        )
+                    ),
+                    interval_seconds=float(
+                        getattr(agent, "wants_worker_interval_seconds", 3600.0)
+                    ),
+                    cap=int(getattr(agent, "wants_cap", 8)),
+                    growth_per_day=float(
+                        getattr(agent, "wants_growth_per_day", 0.25)
+                    ),
+                    max_age_days=float(
+                        getattr(agent, "wants_max_age_days", 14.0)
+                    ),
+                    reentry_cooldown_days=float(
+                        getattr(agent, "wants_reentry_cooldown_days", 5.0)
+                    ),
+                )
+                self._idle_scheduler.register(self._wants_ledger_worker)
+            except Exception:
+                log.warning(
+                    "WantsLedgerWorker init failed", exc_info=True
                 )
 
         # K43 PromiseFollowthroughWorker — closes the loop on Aiko's own

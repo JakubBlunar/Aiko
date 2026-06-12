@@ -718,6 +718,35 @@ class AgentSettings:
     # alternative is a seed that hangs around forever once the
     # conversation drifts past it.
     curiosity_seed_resolve_threshold: float = 0.50
+    # ── K52 wants ledger — desire with pressure ──────────────────────
+    # Master switch for the wants ledger: the feeder worker, the
+    # prompt provider, and the post-turn acted-on detection all gate
+    # on this. Default ON — the ledger is the structural half of the
+    # "will" family.
+    wants_ledger_enabled: bool = True
+    # How fast a want's pressure grows per wall-clock day. At 0.25 a
+    # fresh want (initial 0.15) crosses the imperative threshold
+    # (0.7) in roughly 2.2 days of being ignored.
+    wants_growth_per_day: float = 0.25
+    # Pressure at which the prompt cue flips from the soft "spend one
+    # when a lull lands" list to the imperative "bring it up THIS
+    # conversation" directive.
+    wants_imperative_threshold: float = 0.7
+    # Maximum live wants. At the cap the feeder refuses new wants
+    # (expiry and acting are the only exits) so pressure ordering
+    # stays honest.
+    wants_cap: int = 8
+    # Wants never acted on expire after this many days — an itch
+    # that old has faded, and dropping it keeps the ledger from
+    # becoming a guilt list.
+    wants_max_age_days: float = 14.0
+    # After a want is acted on, its source_ref is blocked from
+    # re-entry for this many days so the feeder doesn't immediately
+    # re-add the same topic.
+    wants_reentry_cooldown_days: float = 5.0
+    # Feeder worker cadence (idle scheduler). Hourly matches the
+    # other kv-backed maintenance workers.
+    wants_worker_interval_seconds: float = 3600.0
     # Cosine threshold consumed by
     # :meth:`app.core.conversation.topic_graph.TopicGraph.is_close_to_any_cluster`
     # when the seed worker filters LLM candidates. Anything cosine-
@@ -3327,6 +3356,31 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                         "topic_graph_filter_threshold", 0.65,
                     )),
                 ),
+            ),
+            wants_ledger_enabled=bool(
+                agent_raw.get("wants_ledger_enabled", True),
+            ),
+            wants_growth_per_day=max(
+                0.0, float(agent_raw.get("wants_growth_per_day", 0.25)),
+            ),
+            wants_imperative_threshold=max(
+                0.0,
+                min(
+                    1.0,
+                    float(agent_raw.get("wants_imperative_threshold", 0.7)),
+                ),
+            ),
+            wants_cap=max(1, int(agent_raw.get("wants_cap", 8))),
+            wants_max_age_days=max(
+                1.0, float(agent_raw.get("wants_max_age_days", 14.0)),
+            ),
+            wants_reentry_cooldown_days=max(
+                0.0,
+                float(agent_raw.get("wants_reentry_cooldown_days", 5.0)),
+            ),
+            wants_worker_interval_seconds=max(
+                30.0,
+                float(agent_raw.get("wants_worker_interval_seconds", 3600.0)),
             ),
             grounding_line_mode=_parse_grounding_line_mode(
                 agent_raw.get("grounding_line_mode", "off"),

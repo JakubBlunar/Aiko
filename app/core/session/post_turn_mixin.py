@@ -1968,3 +1968,54 @@ class PostTurnMixin:
                 log.debug(
                     "vulnerability-budget spend hook raised", exc_info=True,
                 )
+
+        # K52 — wants-ledger acted-on detection. A want is satisfied
+        # when its topic surfaced this turn, whether Aiko raised it or
+        # the user happened to (once a topic has come up even briefly,
+        # it's done). Content-word overlap over user + assistant text,
+        # same shape as revival detection above. Acting on a want
+        # removes it and starts the re-entry cooldown so the feeder
+        # doesn't immediately re-add it — that visible relief is what
+        # makes the ledger read as satisfaction, not a checklist.
+        if (
+            agent_settings is not None
+            and bool(getattr(agent_settings, "wants_ledger_enabled", True))
+        ):
+            try:
+                from datetime import datetime, timezone
+
+                from app.core.conversation import wants_ledger as _wl
+
+                chat_db = getattr(self, "_chat_db", None)
+                if chat_db is not None:
+                    state = _wl.deserialize(
+                        chat_db.kv_get(_wl.KV_WANTS_LEDGER)
+                    )
+                    if state.wants:
+                        turn_text = " ".join(
+                            t for t in (user_text, assistant_text) if t
+                        )
+                        hits = _wl.detect_acted(state, turn_text)
+                        if hits:
+                            now = datetime.now(timezone.utc)
+                            for want_id in hits:
+                                want = next(
+                                    (
+                                        w for w in state.wants
+                                        if w.id == want_id
+                                    ),
+                                    None,
+                                )
+                                state = _wl.mark_acted(state, want_id, now)
+                                if want is not None:
+                                    log.info(
+                                        "wants-ledger acted: id=%s "
+                                        "source=%s pressure=%.2f text=%s",
+                                        want.id, want.source,
+                                        want.pressure, want.text[:80],
+                                    )
+                            chat_db.kv_set(
+                                _wl.KV_WANTS_LEDGER, _wl.serialize(state),
+                            )
+            except Exception:
+                log.debug("wants acted-on hook raised", exc_info=True)

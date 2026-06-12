@@ -2754,6 +2754,74 @@ class InnerLifeProvidersMixin:
         header = "Quiet curiosity (only if a soft pivot lands naturally):"
         return header + "\n" + "\n".join(rendered)
 
+    def _render_wants_block(self) -> str:
+        """K52: surface Aiko's wants ledger with pressure-driven bands.
+
+        Reads + lazily matures the ledger on every turn (growth +
+        expiry land on the same pure functions the feeder worker
+        uses, then the state is persisted back — mirrors the K15
+        read-decay-persist convention). Soft band lists up to two
+        wants; once the strongest want crosses
+        ``agent.wants_imperative_threshold`` the cue flips to the
+        one-want imperative directive. MCP ``force_want_imperative``
+        arms ``_wants_force_imperative`` to bypass the threshold once.
+        """
+        if not bool(
+            getattr(self._settings.agent, "wants_ledger_enabled", True)
+        ):
+            return ""
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is None:
+            return ""
+        try:
+            from datetime import datetime, timezone
+
+            from app.core.conversation import wants_ledger as _wl
+
+            agent = self._settings.agent
+            now = datetime.now(timezone.utc)
+            state = _wl.deserialize(chat_db.kv_get(_wl.KV_WANTS_LEDGER))
+            if not state.wants and not state.recently_acted:
+                return ""
+            matured = _wl.apply_growth(
+                state, now,
+                growth_per_day=float(
+                    getattr(agent, "wants_growth_per_day", 0.25)
+                ),
+                max_age_days=float(
+                    getattr(agent, "wants_max_age_days", 14.0)
+                ),
+                reentry_cooldown_days=float(
+                    getattr(agent, "wants_reentry_cooldown_days", 5.0)
+                ),
+            )
+            try:
+                chat_db.kv_set(_wl.KV_WANTS_LEDGER, _wl.serialize(matured))
+            except Exception:
+                log.debug("wants ledger persist failed", exc_info=True)
+            threshold = float(
+                getattr(agent, "wants_imperative_threshold", 0.7)
+            )
+            if getattr(self, "_wants_force_imperative", False):
+                self._wants_force_imperative = False
+                threshold = 0.0
+            block = _wl.render_block(
+                matured, now,
+                user_display_name=self.user_display_name,
+                imperative_threshold=threshold,
+            )
+            if block.startswith("Something you've been wanting"):
+                strongest = max(matured.wants, key=lambda w: w.pressure)
+                log.info(
+                    "wants-ledger imperative fire: id=%s pressure=%.2f "
+                    "source=%s",
+                    strongest.id, strongest.pressure, strongest.source,
+                )
+            return block
+        except Exception:
+            log.debug("wants block render failed", exc_info=True)
+            return ""
+
     def _build_grounding_context(self) -> "Any":
         """Assemble the K16 grounding-line slots from live state.
 
