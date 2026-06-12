@@ -2235,6 +2235,175 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"reroll_day_color raised: {exc}"
 
     @mcp.tool()
+    def get_wants_state() -> str:
+        """K52 — dump the wants ledger snapshot.
+
+        Returns a JSON dict with the master switch, every live want
+        (id / text / kind / source / pressure / age in days), the
+        re-entry cooldown map, the rendered cue preview for the next
+        turn, and the relevant settings knobs. Pair with
+        ``force_want`` / ``force_want_imperative`` for end-to-end
+        repro: add a want, confirm the soft band renders, force the
+        imperative, send a message, and verify the directive lands
+        in ``get_last_response_detail.system_prompt``.
+        """
+        try:
+            from datetime import datetime, timezone
+
+            from app.core.conversation import wants_ledger as _wl
+
+            agent = session._settings.agent
+            chat_db = getattr(session, "_chat_db", None)
+            stored = None
+            if chat_db is not None:
+                try:
+                    stored = chat_db.kv_get(_wl.KV_WANTS_LEDGER)
+                except Exception:
+                    stored = None
+            state = _wl.deserialize(stored)
+            now = datetime.now(timezone.utc)
+            payload = {
+                "enabled": bool(
+                    getattr(agent, "wants_ledger_enabled", True)
+                ),
+                "wants": [
+                    {
+                        "id": w.id,
+                        "text": w.text,
+                        "kind": w.kind,
+                        "source": w.source,
+                        "source_ref": w.source_ref,
+                        "pressure": round(float(w.pressure), 3),
+                        "age_days": round(_wl.age_days(w, now), 2),
+                    }
+                    for w in sorted(
+                        state.wants,
+                        key=lambda w: w.pressure,
+                        reverse=True,
+                    )
+                ],
+                "recently_acted": dict(state.recently_acted),
+                "cue_preview": _wl.render_block(
+                    state, now,
+                    user_display_name=session.user_display_name,
+                    imperative_threshold=float(
+                        getattr(agent, "wants_imperative_threshold", 0.7)
+                    ),
+                ) or None,
+                "force_imperative_armed": bool(
+                    getattr(session, "_wants_force_imperative", False)
+                ),
+                "settings": {
+                    "growth_per_day": float(
+                        getattr(agent, "wants_growth_per_day", 0.25)
+                    ),
+                    "imperative_threshold": float(
+                        getattr(agent, "wants_imperative_threshold", 0.7)
+                    ),
+                    "cap": int(getattr(agent, "wants_cap", 8)),
+                    "max_age_days": float(
+                        getattr(agent, "wants_max_age_days", 14.0)
+                    ),
+                    "reentry_cooldown_days": float(
+                        getattr(agent, "wants_reentry_cooldown_days", 5.0)
+                    ),
+                    "worker_interval_seconds": float(
+                        getattr(
+                            agent, "wants_worker_interval_seconds", 3600.0,
+                        )
+                    ),
+                },
+            }
+            return json.dumps(payload, indent=2)
+        except Exception as exc:
+            return f"get_wants_state raised: {exc}"
+
+    @mcp.tool()
+    def force_want(
+        text: str,
+        kind: str = "ask",
+        pressure: float = 0.3,
+    ) -> str:
+        """K52 — insert a manual want into the ledger.
+
+        ``kind`` is one of ``ask`` / ``share`` / ``steer``;
+        ``pressure`` in ``[0, 1]`` sets the starting intensity (use
+        >= the imperative threshold, default 0.7, to see the
+        directive band immediately). Returns the updated ledger
+        snapshot. Dedup / cap rules apply — a refusal reports why.
+        """
+        try:
+            from datetime import datetime, timezone
+
+            from app.core.conversation import wants_ledger as _wl
+
+            chat_db = getattr(session, "_chat_db", None)
+            if chat_db is None:
+                return json.dumps({"error": "no chat db"})
+            state = _wl.deserialize(chat_db.kv_get(_wl.KV_WANTS_LEDGER))
+            new_state, added = _wl.add_want(
+                state,
+                text=text,
+                kind=kind,
+                source="manual",
+                source_ref="",
+                now=datetime.now(timezone.utc),
+                cap=int(
+                    getattr(session._settings.agent, "wants_cap", 8)
+                ),
+                initial_pressure=float(pressure),
+            )
+            if not added:
+                return json.dumps({
+                    "added": False,
+                    "reason": "refused (cap reached, empty text, or "
+                              "duplicate of an existing want)",
+                    "live": len(state.wants),
+                })
+            chat_db.kv_set(_wl.KV_WANTS_LEDGER, _wl.serialize(new_state))
+            return json.dumps({
+                "added": True,
+                "live": len(new_state.wants),
+                "want": {
+                    "id": new_state.wants[-1].id,
+                    "text": new_state.wants[-1].text,
+                    "pressure": new_state.wants[-1].pressure,
+                },
+            })
+        except Exception as exc:
+            return f"force_want raised: {exc}"
+
+    @mcp.tool()
+    def force_want_imperative() -> str:
+        """K52 — arm a one-shot imperative-band bypass.
+
+        The next turn's wants provider renders the strongest live
+        want as the imperative directive regardless of its pressure.
+        No-op when the ledger is empty.
+        """
+        try:
+            session._wants_force_imperative = True
+            return json.dumps({"armed": True})
+        except Exception as exc:
+            return f"force_want_imperative raised: {exc}"
+
+    @mcp.tool()
+    def clear_wants() -> str:
+        """K52 — wipe the wants ledger (wants + re-entry cooldowns)."""
+        try:
+            from app.core.conversation import wants_ledger as _wl
+
+            chat_db = getattr(session, "_chat_db", None)
+            if chat_db is None:
+                return json.dumps({"error": "no chat db"})
+            chat_db.kv_set(
+                _wl.KV_WANTS_LEDGER, _wl.serialize(_wl.LedgerState()),
+            )
+            return json.dumps({"cleared": True})
+        except Exception as exc:
+            return f"clear_wants raised: {exc}"
+
+    @mcp.tool()
     def get_vulnerability_budget_state() -> str:
         """K15 — dump the persisted vulnerability budget snapshot.
 

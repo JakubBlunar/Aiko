@@ -524,6 +524,7 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         # ``aggressive`` — a parked task waiting for an answer is
         # exactly what tight prompts need to keep surfaced.
         "task_cues_block",
+        "wants_block",
         "curiosity_seeds_block",
         "knowledge_gaps_block",
     ),
@@ -1000,6 +1001,11 @@ class PromptAssembler:
         # stagnation so the budget stays focused on the user's
         # message. Empty when no active seeds exist.
         self._curiosity_seeds_provider: Callable[[], str] | None = None
+        # K52 wants ledger. Pressure-banded "things Aiko wants from
+        # the conversation" cue — soft list below the imperative
+        # threshold, a single directive paragraph above it. Dropped
+        # in aggressive mode alongside curiosity seeds.
+        self._wants_provider: Callable[[], str] | None = None
         # K16 unified ambient grounding line. One paragraph that fuses
         # circadian/world/activity/affect/relationship/user_state/
         # ambient_noise into a single continuous-awareness sentence at
@@ -1152,6 +1158,7 @@ class PromptAssembler:
         self_noticing: Callable[[], str] | None = None,
         vulnerability_budget: Callable[[], str] | None = None,
         curiosity_seeds: Callable[[], str] | None = None,
+        wants: Callable[[], str] | None = None,
         grounding_line: Callable[[], str] | None = None,
         user_reactions: Callable[[], str] | None = None,
         touch_state: Callable[[], str] | None = None,
@@ -1253,6 +1260,8 @@ class PromptAssembler:
             self._vulnerability_budget_provider = vulnerability_budget
         if curiosity_seeds is not None:
             self._curiosity_seeds_provider = curiosity_seeds
+        if wants is not None:
+            self._wants_provider = wants
         if grounding_line is not None:
             self._grounding_line_provider = grounding_line
         if user_reactions is not None:
@@ -2173,6 +2182,17 @@ class PromptAssembler:
                 timing_name="curiosity_seeds",
             )
 
+        # K52: wants ledger. Same aggressive-mode posture as the
+        # curiosity seeds — a tight budget should focus on the
+        # user's message, not on Aiko's agenda.
+        wants_block = ""
+        if not aggressive and self._wants_provider is not None:
+            wants_block = _safe_provider(
+                self._wants_provider,
+                timing_sink=provider_ms,
+                timing_name="wants",
+            )
+
         # K16: unified ambient grounding line. Always built (the
         # provider itself short-circuits to ``""`` when the mode is
         # ``off``); the suppression of the granular ambient blocks
@@ -2669,6 +2689,12 @@ class PromptAssembler:
             # escalation manager owns the "if she stayed silent,
             # nudge" path instead.
             system_parts.append(task_cues_block)
+        if wants_block:
+            # K52: wants ledger — leads the "things on Aiko's mind"
+            # cluster because it carries the strongest directive
+            # (the imperative band outranks the soft curiosity /
+            # knowledge-gap permission slips below it).
+            system_parts.append(wants_block)
         if curiosity_seeds_block:
             # K9: "Quiet curiosity" — at-most-two topics Aiko has
             # been wondering about that haven't come up yet. Sits
