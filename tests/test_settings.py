@@ -1530,6 +1530,102 @@ class TurningOverSettingsTests(unittest.TestCase):
         self.assertEqual(result.memory.turning_over_recent_msgs_window, 0)
 
 
+class WillFamilySettingsTests(unittest.TestCase):
+    """K52 + K53: agent knobs round-trip with clamps."""
+
+    _KEYS = (
+        "wants_ledger_enabled",
+        "wants_growth_per_day",
+        "wants_imperative_threshold",
+        "wants_cap",
+        "wants_max_age_days",
+        "wants_reentry_cooldown_days",
+        "wants_worker_interval_seconds",
+        "initiative_turns_enabled",
+        "initiative_base_period",
+        "initiative_warmup_turns",
+        "initiative_substantial_chars",
+    )
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(self, agent_extra: dict | None = None) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(
+            json.loads(default_path.read_text(encoding="utf-8"))
+        )
+        for k in self._KEYS:
+            cfg.get("agent", {}).pop(k, None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults_load_when_keys_missing(self) -> None:
+        result = load_settings(config_path=self._write_config())
+        agent = result.agent
+        self.assertTrue(agent.wants_ledger_enabled)
+        self.assertEqual(agent.wants_growth_per_day, 0.25)
+        self.assertEqual(agent.wants_imperative_threshold, 0.7)
+        self.assertEqual(agent.wants_cap, 8)
+        self.assertEqual(agent.wants_max_age_days, 14.0)
+        self.assertEqual(agent.wants_reentry_cooldown_days, 5.0)
+        self.assertEqual(agent.wants_worker_interval_seconds, 3600.0)
+        self.assertTrue(agent.initiative_turns_enabled)
+        self.assertEqual(agent.initiative_base_period, 8)
+        self.assertEqual(agent.initiative_warmup_turns, 3)
+        self.assertEqual(agent.initiative_substantial_chars, 240)
+
+    def test_overrides_round_trip(self) -> None:
+        result = load_settings(config_path=self._write_config({
+            "wants_ledger_enabled": False,
+            "wants_growth_per_day": 0.5,
+            "wants_imperative_threshold": 0.9,
+            "wants_cap": 4,
+            "initiative_turns_enabled": False,
+            "initiative_base_period": 12,
+        }))
+        agent = result.agent
+        self.assertFalse(agent.wants_ledger_enabled)
+        self.assertEqual(agent.wants_growth_per_day, 0.5)
+        self.assertEqual(agent.wants_imperative_threshold, 0.9)
+        self.assertEqual(agent.wants_cap, 4)
+        self.assertFalse(agent.initiative_turns_enabled)
+        self.assertEqual(agent.initiative_base_period, 12)
+
+    def test_clamps(self) -> None:
+        result = load_settings(config_path=self._write_config({
+            "wants_growth_per_day": -1.0,
+            "wants_imperative_threshold": 5.0,
+            "wants_cap": 0,
+            "wants_max_age_days": 0.1,
+            "wants_worker_interval_seconds": 1,
+            "initiative_base_period": 1,
+            "initiative_warmup_turns": -2,
+            "initiative_substantial_chars": 0,
+        }))
+        agent = result.agent
+        self.assertEqual(agent.wants_growth_per_day, 0.0)
+        self.assertEqual(agent.wants_imperative_threshold, 1.0)
+        self.assertEqual(agent.wants_cap, 1)
+        self.assertEqual(agent.wants_max_age_days, 1.0)
+        self.assertEqual(agent.wants_worker_interval_seconds, 30.0)
+        self.assertEqual(agent.initiative_base_period, 3)
+        self.assertEqual(agent.initiative_warmup_turns, 0)
+        self.assertEqual(agent.initiative_substantial_chars, 1)
+
+
 class DayColorSettingsTests(unittest.TestCase):
     """K27: 2 agent knobs round-trip with clamps."""
 

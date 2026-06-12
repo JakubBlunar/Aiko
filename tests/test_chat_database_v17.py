@@ -43,14 +43,17 @@ def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
 
 
 class V17ColumnTests(unittest.TestCase):
-    def test_schema_version_is_v17(self) -> None:
+    def test_schema_version_is_at_least_v17(self) -> None:
+        # v18 (message attachments) and later bumps keep the v17
+        # columns; this fixture only cares that the v17 migration
+        # landed, so pin the floor rather than the exact version.
         f = _Fixture()
         try:
-            self.assertEqual(_SCHEMA_VERSION, 17)
+            self.assertGreaterEqual(_SCHEMA_VERSION, 17)
             assert f.db is not None
             conn = f.db._get_conn()
             row = conn.execute("SELECT version FROM schema_version").fetchone()
-            self.assertEqual(int(row[0]), 17)
+            self.assertEqual(int(row[0]), _SCHEMA_VERSION)
         finally:
             f.close()
 
@@ -120,7 +123,7 @@ class V17ColumnTests(unittest.TestCase):
 class V17IdempotencyTests(unittest.TestCase):
     def test_repeat_open_is_safe(self) -> None:
         # Open + close + reopen the same db file; schema must stay
-        # at v17 without raising.
+        # at the current version without raising.
         tmp = TemporaryDirectory()
         db_path = Path(tmp.name) / "chat.db"
         try:
@@ -133,7 +136,7 @@ class V17IdempotencyTests(unittest.TestCase):
             row = db2._get_conn().execute(
                 "SELECT version FROM schema_version"
             ).fetchone()
-            self.assertEqual(int(row[0]), 17)
+            self.assertEqual(int(row[0]), _SCHEMA_VERSION)
             db2._get_conn().close()
             db2._local.conn = None
         finally:
