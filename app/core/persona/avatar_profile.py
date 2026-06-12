@@ -504,6 +504,18 @@ _ALEXIA_REACTION_MAP: dict[str, str] = {
     "embarrassed": "lh",
     "nervous":     "",
     "defiant":     "mj",
+    # K58 (directed-emotion shades). ``smug`` / ``mischievous`` →
+    # ``lzx`` (the toothy grin — a smug "say it. I was right." and a
+    # scheming tease both land on it; the lip-sync taper in
+    # ExpressionChannel already handles speech overlap). ``pouty`` /
+    # ``sulky`` are intentionally unmapped: the rig has no pout
+    # artwork that isn't outfit-entangled, so the neighbour chain
+    # (→ defiant → ``mj``) carries the visual while the persona
+    # stacks ``[[reaction:pouty+question]]`` for the "hmph?" beat.
+    "smug":        "lzx",
+    "mischievous": "lzx",
+    "pouty":       "",
+    "sulky":       "",
 }
 
 

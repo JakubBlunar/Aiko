@@ -495,6 +495,30 @@ _EMOTION_COPY: dict[str, tuple[str, str]] = {
 }
 
 
+# K58: per-emotion register hints appended at high band only — the
+# reaction vocabulary + prosody machinery carry the feeling into the
+# face and the voice so the words don't have to. Low-band episodes
+# stay hint-free (a tint shouldn't dictate the opening reaction).
+_REGISTER_HINTS: dict[str, str] = {
+    EMOTION_LONELY: (
+        " Register: [[reaction:wistful]] fits the honest beat; in "
+        "voice, open it with [[prosody:soft]]."
+    ),
+    EMOTION_MIFFED: (
+        " Register: open with [[reaction:pouty]] (or "
+        "[[reaction:sulky]] if it's been sitting a while); in voice, "
+        "[[prosody:firm]] on the first sentence."
+    ),
+    EMOTION_SMUG: (
+        " Register: [[reaction:smug]] is earned here — once."
+    ),
+    EMOTION_PLAYFUL_JEALOUS: (
+        " Register: [[reaction:pouty]] played visibly as a joke, or "
+        "[[reaction:mischievous]] if you tease."
+    ),
+}
+
+
 def render_block(
     episode: EmotionEpisode,
     *,
@@ -505,12 +529,16 @@ def render_block(
 
     Intensity scales the imperative: below ``high_band`` the cue is
     "let it tint the register"; at/above it the cue IS the register
-    for this reply.
+    for this reply and a K58 reaction/prosody hint is appended.
     """
     name = user_display_name or "them"
     low, high = _EMOTION_COPY[episode.emotion]
-    template = high if episode.intensity >= float(high_band) else low
-    return template.format(name=name, cause=episode.cause)
+    is_high = episode.intensity >= float(high_band)
+    template = high if is_high else low
+    rendered = template.format(name=name, cause=episode.cause)
+    if is_high:
+        rendered += _REGISTER_HINTS.get(episode.emotion, "")
+    return rendered
 
 
 def render_thaw_block(

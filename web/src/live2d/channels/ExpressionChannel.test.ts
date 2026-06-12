@@ -1084,6 +1084,11 @@ const PYTHON_REACTIONS = [
   "embarrassed",
   "nervous",
   "defiant",
+  // K58 directed-emotion shades.
+  "smug",
+  "pouty",
+  "sulky",
+  "mischievous",
 ] as const;
 
 describe("ExpressionChannel — _REACTION_NEIGHBOURS parity with Python", () => {

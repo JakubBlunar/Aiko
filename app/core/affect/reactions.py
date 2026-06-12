@@ -81,6 +81,33 @@ REACTIONS: tuple[str, ...] = (
     # furious". Falls back to ``frustrated`` → ``angry`` →
     # ``serious``.
     "defiant",
+    # K58 (emotion speech weighting): four shades minted so the K57
+    # directed-emotion episodes have a register to land in. The
+    # taxonomy previously had no way to *show* smugness or a sulk —
+    # a correctly-triggered "miffed at you" episode had to borrow
+    # ``frustrated`` (too hot) or ``neutral`` (invisible).
+    #
+    # ``smug`` = the earned "I was right" grin — pleased with
+    # herself, pointed at the user, clearly playful. Distinct from
+    # ``amused`` (which is about the *situation*); smug is about HER
+    # being right. Falls back to ``amused`` → ``playful``.
+    "smug",
+    # ``pouty`` = the lip-out "hmph" — lighter than ``defiant``
+    # (which refuses), warmer than ``frustrated`` (which simmers).
+    # The native face of a low-intensity miffed episode. Falls back
+    # to ``defiant`` → ``frustrated``.
+    "pouty",
+    # ``sulky`` = pouty with the energy drained out — withdrawn
+    # displeasure, shorter sentences, looking away. The K57 miffed
+    # register at higher intensity. Falls back to ``pouty`` →
+    # ``defiant``. Deliberately NOT chained into the sad family —
+    # a sulk with tear streaks reads as manipulation.
+    "sulky",
+    # ``mischievous`` = the scheming grin — about to tease, plotting
+    # a callback, the K59 ledger-collection face. Sharper than
+    # ``playful`` (which is open), more deliberate than ``amused``.
+    # Falls back to ``playful`` → ``amused``.
+    "mischievous",
 )
 
 
@@ -124,6 +151,13 @@ _REACTION_SYNONYMS: dict[str, tuple[str, ...]] = {
     ),
     "defiant": (
         "defiant", "pout", "hmph", "stubborn", "sulk", "refuse",
+    ),
+    # K58: the four directed-emotion shades.
+    "smug": ("smug", "smirk", "grin", "proud"),
+    "pouty": ("pouty", "pout", "hmph", "puff"),
+    "sulky": ("sulky", "sulk", "pout", "moody"),
+    "mischievous": (
+        "mischievous", "mischief", "smirk", "grin", "scheming", "tease",
     ),
 }
 
@@ -195,6 +229,15 @@ _REACTION_NEIGHBOURS: dict[str, tuple[str, ...]] = {
     "embarrassed": ("warm", "tender", "cheerful", "friendly", "neutral"),
     "nervous":     ("concerned", "serious", "thoughtful", "neutral"),
     "defiant":     ("frustrated", "angry", "serious", "neutral"),
+    # K58 chains. ``smug`` / ``mischievous`` stay in the playful
+    # family; ``pouty`` / ``sulky`` stay in the defiant/frustrated
+    # family and must NEVER chain through the sad family (a sulk
+    # rendering tear streaks reads as a guilt-trip — exactly the
+    # tonal failure K57's design forbids).
+    "smug":        ("amused", "playful", "cheerful", "neutral"),
+    "pouty":       ("defiant", "frustrated", "serious", "neutral"),
+    "sulky":       ("pouty", "defiant", "frustrated", "neutral"),
+    "mischievous": ("playful", "amused", "cheerful", "excited", "neutral"),
     "neutral":     ("calm", "friendly", "warm"),
 }
 

@@ -262,8 +262,16 @@ def _speed_hint(reaction: str, ctx: CadenceContext) -> float:
     base = 1.0
     if reaction in {"surprised", "amused"} and ctx.mood_arousal > 0.55:
         base *= 1.04
+    # K58: mischievous rides the same arousal-gated quickening — a
+    # scheming tease lands faster.
+    if reaction == "mischievous" and ctx.mood_arousal > 0.55:
+        base *= 1.04
     if reaction in {"thoughtful", "wistful", "concerned"} or ctx.mood_label == "tired":
         base *= 0.95
+    # K58: a sulk drags its feet a touch; smug drawls the same hair
+    # slower (the "mm. say it." delivery).
+    if reaction in {"sulky", "smug"}:
+        base *= 0.96
     if ctx.circadian_drowsy:
         base *= 0.97
     # Phase 4b: ambient-noise nudge. A noisy room slows speech a hair
