@@ -2241,6 +2241,20 @@ class InnerLifeProvidersMixin:
             self._opinion_injection_session_count,
         )
 
+        # K59: a hard pushback on her stance is prime ledger
+        # material — bank the user's claim as a future callback
+        # tease ("oh, like the time you swore...? I remember
+        # things."). Best-effort; dedupe lives in the pure module.
+        try:
+            quote = " ".join((user_text or "").split())[:120]
+            self._bank_tease_debt(
+                what="they pushed back hard on a take of yours",
+                context=f'they said "{quote}"' if quote else "",
+                source="opinion_pushback",
+            )
+        except Exception:
+            log.debug("opinion-pushback tease bank failed", exc_info=True)
+
         try:
             return opinion_injection_detector.render_inner_life_block(
                 result,
@@ -3120,6 +3134,99 @@ class InnerLifeProvidersMixin:
             )
         except Exception:
             log.debug("emotion episode block render failed", exc_info=True)
+            return ""
+
+    def _render_tease_collection_block(self) -> str:
+        """K59: rare collection-opportunity cue from the tease ledger.
+
+        Gate walk: master switch → humor-axis floor (the bit needs an
+        established teasing register) → wall-clock cooldown since the
+        last offer (``aiko.tease_last_offer_at`` kv stamp) → a debt
+        old enough to be a *callback* (``tease_min_age_hours``).
+        On fire: stamps the row ``offered_at`` (the post-turn settle
+        pass checks the reply against it), bumps the cooldown stamp,
+        and renders the permission slip. MCP ``force_tease_collection``
+        arms a one-shot bypass of the humor + cooldown gates.
+        """
+        if not bool(
+            getattr(self._settings.agent, "tease_economy_enabled", True)
+        ):
+            return ""
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is None:
+            return ""
+        try:
+            from datetime import datetime, timezone
+
+            from app.core.relationship import tease_ledger as _tl
+
+            force = bool(getattr(self, "_tease_collection_force_next", False))
+            if force:
+                self._tease_collection_force_next = False
+
+            agent = self._settings.agent
+            now = datetime.now(timezone.utc)
+
+            if not force:
+                # Humor-axis floor.
+                humor = 0.0
+                axes_store = getattr(self, "_relationship_axes_store", None)
+                if axes_store is not None:
+                    try:
+                        humor = float(axes_store.get(self._user_id).humor)
+                    except Exception:
+                        humor = 0.0
+                if humor < float(getattr(agent, "tease_min_humor", 0.2)):
+                    return ""
+                # Wall-clock cooldown between offers.
+                cooldown_h = float(
+                    getattr(agent, "tease_collect_cooldown_hours", 12.0)
+                )
+                last_raw = chat_db.kv_get("aiko.tease_last_offer_at")
+                if last_raw and cooldown_h > 0.0:
+                    last = _tl._parse_iso(str(last_raw))
+                    if last is not None:
+                        elapsed_h = (now - last).total_seconds() / 3600.0
+                        if elapsed_h < cooldown_h:
+                            return ""
+
+            state = _tl.expire(
+                _tl.deserialize(chat_db.kv_get(_tl.KV_TEASE_LEDGER)),
+                now,
+                expiry_days=float(
+                    getattr(agent, "tease_expiry_days", 14.0)
+                ),
+            )
+            debt = _tl.pick_collectable(
+                state,
+                now,
+                min_age_hours=(
+                    0.0 if force
+                    else float(getattr(agent, "tease_min_age_hours", 1.0))
+                ),
+            )
+            if debt is None:
+                chat_db.kv_set(
+                    _tl.KV_TEASE_LEDGER, _tl.serialize(state),
+                )
+                return ""
+            state = _tl.stamp_offered(state, debt.id, now)
+            chat_db.kv_set(_tl.KV_TEASE_LEDGER, _tl.serialize(state))
+            chat_db.kv_set("aiko.tease_last_offer_at", now.isoformat())
+            log.info(
+                "tease collection offered: what=%s source=%s age_h=%.1f",
+                debt.what[:80],
+                debt.source,
+                (
+                    (now - (_tl._parse_iso(debt.created_at) or now))
+                    .total_seconds() / 3600.0
+                ),
+            )
+            return _tl.render_block(
+                debt, user_display_name=self.user_display_name,
+            )
+        except Exception:
+            log.debug("tease collection render failed", exc_info=True)
             return ""
 
     def _render_topic_appetite_block(self) -> str:

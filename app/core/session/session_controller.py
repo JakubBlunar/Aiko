@@ -1585,6 +1585,7 @@ class SessionController(
             thread_ownership=self._render_thread_ownership_block,
             topic_appetite=self._render_topic_appetite_block,
             emotion_episode=self._render_emotion_episode_block,
+            tease_ledger=self._render_tease_collection_block,
             grounding_line=self._render_grounding_line,
             user_reactions=self._render_user_reactions_block,
             touch_state=self._render_touch_state_block,

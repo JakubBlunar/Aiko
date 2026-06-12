@@ -805,6 +805,24 @@ class AgentSettings:
     # Intensity at or above which the episode cue switches from
     # "let it tint the register" to "this is the register".
     emotion_high_band: float = 0.5
+    # ── K59 tease economy — "you'll pay for that one" ────────────────
+    # Master switch for the payback ledger (bank on K29 pushback /
+    # light offences, collect later as a callback tease).
+    tease_economy_enabled: bool = True
+    # Most debts kept at once; the oldest is evicted by a newcomer.
+    tease_cap: int = 5
+    # Unrepaid debts expire after this many days — an old grudge
+    # stops being funny.
+    tease_expiry_days: float = 14.0
+    # Wall-clock hours between collection offers — the running bit
+    # must never tip into needling.
+    tease_collect_cooldown_hours: float = 12.0
+    # Humor axis floor for collection (the bit needs an established
+    # teasing register to land).
+    tease_min_humor: float = 0.2
+    # A debt must age this long before it can be collected — an
+    # immediate callback isn't a callback.
+    tease_min_age_hours: float = 1.0
     # Cosine threshold consumed by
     # :meth:`app.core.conversation.topic_graph.TopicGraph.is_close_to_any_cluster`
     # when the seed worker filters LLM candidates. Anything cosine-
@@ -3515,6 +3533,28 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                     0.0,
                     float(agent_raw.get("emotion_high_band", 0.5)),
                 ),
+            ),
+            tease_economy_enabled=bool(
+                agent_raw.get("tease_economy_enabled", True),
+            ),
+            tease_cap=max(1, int(agent_raw.get("tease_cap", 5))),
+            tease_expiry_days=max(
+                0.5, float(agent_raw.get("tease_expiry_days", 14.0)),
+            ),
+            tease_collect_cooldown_hours=max(
+                0.0,
+                float(
+                    agent_raw.get("tease_collect_cooldown_hours", 12.0)
+                ),
+            ),
+            tease_min_humor=min(
+                1.0,
+                max(
+                    -1.0, float(agent_raw.get("tease_min_humor", 0.2)),
+                ),
+            ),
+            tease_min_age_hours=max(
+                0.0, float(agent_raw.get("tease_min_age_hours", 1.0)),
             ),
             grounding_line_mode=_parse_grounding_line_mode(
                 agent_raw.get("grounding_line_mode", "off"),

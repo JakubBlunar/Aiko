@@ -529,6 +529,7 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "thread_ownership_block",
         "wants_block",
         "topic_appetite_block",
+        "tease_ledger_block",
         "curiosity_seeds_block",
         "knowledge_gaps_block",
     ),
@@ -1030,6 +1031,9 @@ class PromptAssembler:
         # returns the strongest episode's register cue — or the
         # one-shot thaw cue right after a resolution.
         self._emotion_episode_provider: Callable[[str], str] | None = None
+        # K59 tease economy. Rare collection-opportunity permission
+        # slip from the payback ledger (humor-gated, cooldown-gated).
+        self._tease_ledger_provider: Callable[[], str] | None = None
         # K16 unified ambient grounding line. One paragraph that fuses
         # circadian/world/activity/affect/relationship/user_state/
         # ambient_noise into a single continuous-awareness sentence at
@@ -1187,6 +1191,7 @@ class PromptAssembler:
         thread_ownership: Callable[[str], str] | None = None,
         topic_appetite: Callable[[], str] | None = None,
         emotion_episode: Callable[[str], str] | None = None,
+        tease_ledger: Callable[[], str] | None = None,
         grounding_line: Callable[[], str] | None = None,
         user_reactions: Callable[[], str] | None = None,
         touch_state: Callable[[], str] | None = None,
@@ -1298,6 +1303,8 @@ class PromptAssembler:
             self._topic_appetite_provider = topic_appetite
         if emotion_episode is not None:
             self._emotion_episode_provider = emotion_episode
+        if tease_ledger is not None:
+            self._tease_ledger_provider = tease_ledger
         if grounding_line is not None:
             self._grounding_line_provider = grounding_line
         if user_reactions is not None:
@@ -2260,6 +2267,18 @@ class PromptAssembler:
                 timing_name="topic_appetite",
             )
 
+        # K59: tease-ledger collection opportunity. Same posture as
+        # wants / topic_appetite — a permission slip, dropped under
+        # aggressive (the provider only stamps offered/cooldown when
+        # it actually fires, so a skipped call loses nothing).
+        tease_ledger_block = ""
+        if not aggressive and self._tease_ledger_provider is not None:
+            tease_ledger_block = _safe_provider(
+                self._tease_ledger_provider,
+                timing_sink=provider_ms,
+                timing_name="tease_ledger",
+            )
+
         # K53: initiative directive. NOT gated on aggressive mode —
         # the director's counter advances on every evaluated turn, so
         # dropping the call here would silently lose a scheduled
@@ -2819,6 +2838,11 @@ class PromptAssembler:
             # slip. Lands right under the wants block — its offer IS
             # the strongest want, so the two read as one thought.
             system_parts.append(topic_appetite_block)
+        if tease_ledger_block:
+            # K59: the rare "collect on an old one" permission slip.
+            # Clusters with the wants/appetite "things on Aiko's
+            # mind" family, just before the softer curiosity cues.
+            system_parts.append(tease_ledger_block)
         if curiosity_seeds_block:
             # K9: "Quiet curiosity" — at-most-two topics Aiko has
             # been wondering about that haven't come up yet. Sits
