@@ -2871,12 +2871,87 @@ class InnerLifeProvidersMixin:
                 arc,
                 (want_text or "")[:60] or None,
             )
+            # K55: this turn opens Aiko's thread — arm the post-turn
+            # stamp so the next user reply gets evaluated for a
+            # three-words-and-pivot tell.
+            self._pending_thread_open = {
+                "source": "initiative",
+                "topic": want_text or None,
+            }
             return _idir.render_block(
                 want_text,
                 user_display_name=self.user_display_name,
             )
         except Exception:
             log.debug("initiative block render failed", exc_info=True)
+            return ""
+
+    def _render_thread_ownership_block(self, user_text: str) -> str:
+        """K55: evaluate the reply to a thread Aiko opened.
+
+        Runs only while ``_owned_thread`` is set (stamped post-turn
+        when a K53 directive / K52 imperative fired). Exactly one
+        evaluation per thread: an engaged reply clears it silently, a
+        short pivot renders the single return cue and the thread is
+        dropped forever. A blank ``user_text`` (proactive turn) skips
+        the evaluation without consuming the thread — the cue should
+        judge a real reply, not a silence.
+        """
+        if not bool(
+            getattr(self._settings.agent, "thread_ownership_enabled", True)
+        ):
+            return ""
+        thread = getattr(self, "_owned_thread", None)
+        if thread is None:
+            return ""
+        text = (user_text or "").strip()
+        if not text:
+            return ""
+        # One evaluation max — consume the slot before anything can
+        # raise so a sick embedder can't make the cue fire twice.
+        self._owned_thread = None
+        try:
+            from app.core.conversation import thread_ownership as _town
+
+            agent = self._settings.agent
+            user_vec = None
+            embedder = getattr(self, "_embedder", None)
+            if embedder is not None:
+                try:
+                    user_vec = embedder.embed(text)
+                except Exception:
+                    user_vec = None
+            verdict = _town.evaluate_reply(
+                thread,
+                text,
+                user_vec,
+                engaged_chars=int(
+                    getattr(agent, "thread_engaged_chars", 80)
+                ),
+                min_topical_similarity=float(
+                    getattr(agent, "thread_min_topical_similarity", 0.30)
+                ),
+            )
+            log.info(
+                "thread-ownership: verdict=%s cosine=%s chars=%d "
+                "source=%s topic=%s",
+                verdict.verdict,
+                f"{verdict.cosine:.3f}" if verdict.cosine is not None
+                else "n/a",
+                verdict.reply_chars,
+                thread.source,
+                thread.topic[:60],
+            )
+            if verdict.verdict != _town.VERDICT_PIVOT:
+                return ""
+            return _town.render_return_block(
+                thread.topic,
+                user_display_name=self.user_display_name,
+            )
+        except Exception:
+            log.debug(
+                "thread ownership block render failed", exc_info=True,
+            )
             return ""
 
     def _render_wants_block(self) -> str:
@@ -2942,6 +3017,12 @@ class InnerLifeProvidersMixin:
                     "source=%s",
                     strongest.id, strongest.pressure, strongest.source,
                 )
+                # K55: an imperative want directive opens Aiko's
+                # thread just like a K53 initiative turn does.
+                self._pending_thread_open = {
+                    "source": "want_imperative",
+                    "topic": strongest.text,
+                }
             return block
         except Exception:
             log.debug("wants block render failed", exc_info=True)
