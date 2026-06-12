@@ -149,6 +149,14 @@ export const _REACTION_NEIGHBOURS: Record<string, string[]> = {
   embarrassed: ["warm", "tender", "cheerful", "friendly", "neutral"],
   nervous: ["concerned", "serious", "thoughtful", "neutral"],
   defiant: ["frustrated", "angry", "serious", "neutral"],
+  // K58 directed-emotion shades. Mirrors the Python table in
+  // app/core/affect/reactions.py -- keep both in lockstep. pouty /
+  // sulky deliberately never chain into the sad family (tear-streak
+  // overlays would make a sulk read as a guilt-trip).
+  smug: ["amused", "playful", "cheerful", "neutral"],
+  pouty: ["defiant", "frustrated", "serious", "neutral"],
+  sulky: ["pouty", "defiant", "frustrated", "neutral"],
+  mischievous: ["playful", "amused", "cheerful", "excited", "neutral"],
   neutral: ["calm", "friendly", "warm"],
 };
 

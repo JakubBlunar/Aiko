@@ -43,6 +43,12 @@ const REACTION_EMOJI: Record<string, string> = {
   embarrassed: "☺️",
   nervous: "😰",
   defiant: "😤",
+  // K58 directed-emotion shades.
+  smug: "😏",
+  pouty: "🥺",
+  sulky: "😒",
+  mischievous: "😈",
+  wistful: "🌫️",
   neutral: "🌙",
 };
 

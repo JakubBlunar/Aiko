@@ -304,6 +304,25 @@ class RenderTests(unittest.TestCase):
             ep_hi = _state_with(emotion=emotion, intensity=0.9).episodes[0]
             self.assertTrue(ee.render_block(ep_hi))
 
+    def test_high_band_appends_register_hint(self) -> None:
+        # K58: the reaction/prosody recipe rides the high-band cue.
+        ep = _state_with(intensity=0.7).episodes[0]
+        block = ee.render_block(ep, user_display_name="Jacob")
+        self.assertIn("[[reaction:pouty]]", block)
+        self.assertIn("[[prosody:firm]]", block)
+
+    def test_low_band_has_no_register_hint(self) -> None:
+        ep = _state_with(intensity=0.3).episodes[0]
+        block = ee.render_block(ep, user_display_name="Jacob")
+        self.assertNotIn("[[reaction:", block)
+
+    def test_hint_free_emotions_render_clean_at_high_band(self) -> None:
+        ep = _state_with(
+            emotion=ee.EMOTION_HURT, intensity=0.9,
+        ).episodes[0]
+        block = ee.render_block(ep, user_display_name="Jacob")
+        self.assertNotIn("[[reaction:", block)
+
     def test_thaw_block(self) -> None:
         block = ee.render_thaw_block(
             (ee.EMOTION_MIFFED, "the brushed-off thread", "he apologised"),

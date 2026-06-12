@@ -64,6 +64,17 @@ _REACTION_IMPULSE: dict[str, tuple[float, float]] = {
     "angry":        (-0.10, +0.20),
     "frustrated":   (-0.08, +0.12),
     "surprised":    ( 0.00, +0.15),
+    # K58 (emotion speech weighting): impulses for the four minted
+    # directed-emotion shades plus ``wistful`` (in the canonical set
+    # but previously missing here, so it read as a zero impulse).
+    # ``smug`` / ``mischievous`` are pleased-and-energised;
+    # ``pouty`` is displeasure with a bit of spark; ``sulky`` is the
+    # same displeasure gone low-energy.
+    "smug":         (+0.08, +0.06),
+    "pouty":        (-0.06, +0.06),
+    "sulky":        (-0.08, -0.06),
+    "mischievous":  (+0.10, +0.12),
+    "wistful":      (-0.05, -0.08),
 }
 
 
