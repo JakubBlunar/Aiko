@@ -557,6 +557,32 @@ export function AvatarTab({
               className="w-16 rounded border border-white/10 bg-black/30 px-2 py-1 text-right text-ink-100/80 disabled:opacity-40"
             />
           </label>
+          {/* K60 tsundere expression-mask dial. A strong flavour
+           * choice, so it ships off by default; the mask only
+           * changes how warm feelings are *expressed* (denial with
+           * a visible tell), never what Aiko actually feels. */}
+          <label className="mt-3 flex items-center justify-between gap-2 text-xs text-ink-100/70">
+            <span>
+              Tsundere mask
+              <span className="ml-1 text-[10px] text-ink-100/40">
+                warmth expressed through denial
+              </span>
+            </span>
+            <select
+              value={companion.expression_mask ?? "off"}
+              onChange={(e) =>
+                onPatchCompanion({
+                  expression_mask: e.target
+                    .value as CompanionSettings["expression_mask"],
+                })
+              }
+              className="rounded border border-white/10 bg-black/30 px-2 py-1 text-xs text-ink-100/80"
+            >
+              <option value="off">Off</option>
+              <option value="tsundere_light">Light</option>
+              <option value="tsundere_full">Full</option>
+            </select>
+          </label>
         </Section>
       ) : null}
     </>

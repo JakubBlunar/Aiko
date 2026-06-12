@@ -1815,6 +1815,68 @@ class TeaseEconomySettingsTests(unittest.TestCase):
         self.assertEqual(agent.tease_min_age_hours, 0.0)
 
 
+class ExpressionMaskSettingsTests(unittest.TestCase):
+    """K60: mode whitelist + slip-cooldown clamp."""
+
+    _KEYS = ("expression_mask", "mask_slip_cooldown_days")
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(self, agent_extra: dict | None = None) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(
+            json.loads(default_path.read_text(encoding="utf-8"))
+        )
+        for k in self._KEYS:
+            cfg.get("agent", {}).pop(k, None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults(self) -> None:
+        agent = load_settings(config_path=self._write_config()).agent
+        self.assertEqual(agent.expression_mask, "off")
+        self.assertEqual(agent.mask_slip_cooldown_days, 2.0)
+
+    def test_modes_round_trip(self) -> None:
+        for mode in ("off", "tsundere_light", "tsundere_full"):
+            agent = load_settings(config_path=self._write_config({
+                "expression_mask": mode,
+            })).agent
+            self.assertEqual(agent.expression_mask, mode)
+
+    def test_unknown_mode_falls_back_to_off(self) -> None:
+        for bad in ("tsundere", "yes", 1, None):
+            agent = load_settings(config_path=self._write_config({
+                "expression_mask": bad,
+            })).agent
+            self.assertEqual(agent.expression_mask, "off")
+
+    def test_case_normalised(self) -> None:
+        agent = load_settings(config_path=self._write_config({
+            "expression_mask": " TSUNDERE_LIGHT ",
+        })).agent
+        self.assertEqual(agent.expression_mask, "tsundere_light")
+
+    def test_cooldown_clamped_non_negative(self) -> None:
+        agent = load_settings(config_path=self._write_config({
+            "mask_slip_cooldown_days": -3.0,
+        })).agent
+        self.assertEqual(agent.mask_slip_cooldown_days, 0.0)
+
+
 class DayColorSettingsTests(unittest.TestCase):
     """K27: 2 agent knobs round-trip with clamps."""
 

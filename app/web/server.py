@@ -983,6 +983,10 @@ def create_web_app(session: "SessionController") -> FastAPI:
                         s.agent, "persona_touch_banner_duration_seconds", 20,
                     ),
                 ),
+                # K60 tsundere expression mask dial.
+                "expression_mask": str(
+                    getattr(s.agent, "expression_mask", "off"),
+                ),
             },
             "endpointing": {
                 "enabled": bool(getattr(s.endpointing, "enabled", True)),
@@ -1344,6 +1348,12 @@ def create_web_app(session: "SessionController") -> FastAPI:
                     v = 20
                 agent.persona_touch_banner_duration_seconds = v
                 persist_patch["agent"]["persona_touch_banner_duration_seconds"] = v
+            if "expression_mask" in companion:
+                from app.core.affect.expression_mask import normalize_mode
+
+                mode = normalize_mode(companion["expression_mask"])
+                agent.expression_mask = mode
+                persist_patch["agent"]["expression_mask"] = mode
             persist_patch = {k: v for k, v in persist_patch.items() if v}
             if persist_patch:
                 try:
@@ -1388,6 +1398,9 @@ def create_web_app(session: "SessionController") -> FastAPI:
                                 "persona_touch_banner_duration_seconds",
                                 20,
                             ),
+                        ),
+                        "expression_mask": str(
+                            getattr(agent, "expression_mask", "off"),
                         ),
                     },
                 })

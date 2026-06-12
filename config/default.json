@@ -119,6 +119,8 @@
     "tease_collect_cooldown_hours": 12.0,
     "tease_min_humor": 0.2,
     "tease_min_age_hours": 1.0,
+    "expression_mask": "off",
+    "mask_slip_cooldown_days": 2.0,
     "grounding_line_mode": "off",
     "history_age_prefix_enabled": true,
     "cue_register_rotation_enabled": true,

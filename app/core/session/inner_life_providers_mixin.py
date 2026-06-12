@@ -3110,14 +3110,69 @@ class InnerLifeProvidersMixin:
             except Exception:
                 log.debug("emotion episode persist failed", exc_info=True)
 
+            # K60 — tsundere expression mask. The felt episode stays
+            # truthful in the kv state above; only the expressed cue
+            # transforms below. Hard sincerity rail: the mask drops
+            # unconditionally on a support arc (deflecting real pain
+            # is the one unforgivable tsundere failure mode).
+            from app.core.affect import expression_mask as _mask
+
+            mode = _mask.normalize_mode(
+                getattr(self._settings.agent, "expression_mask", "off")
+            )
+            if mode != _mask.MODE_OFF:
+                try:
+                    arc_store = getattr(self, "_arc_store", None)
+                    if arc_store is not None:
+                        arc = str(
+                            arc_store.get_or_default(self._user_id).arc
+                        )
+                        if arc == "support":
+                            mode = _mask.MODE_OFF
+                except Exception:
+                    log.debug("mask arc check failed", exc_info=True)
+
+            strength = 1.0
+            if mode != _mask.MODE_OFF:
+                try:
+                    axes_store = getattr(
+                        self, "_relationship_axes_store", None,
+                    )
+                    if axes_store is not None:
+                        axes = axes_store.get(self._user_id)
+                        strength = _mask.mask_strength(
+                            getattr(axes, "closeness", None),
+                            getattr(axes, "trust", None),
+                        )
+                except Exception:
+                    strength = 1.0
+
+                # Caught-caring outranks everything: the user just
+                # named her warmth, the flustered denial IS the reply.
+                if _mask.detect_caught_caring(text):
+                    log.info(
+                        "mask caught-caring fire: mode=%s strength=%.2f",
+                        mode, strength,
+                    )
+                    return _mask.render_caught_caring_block(
+                        user_display_name=self.user_display_name,
+                        strength=strength,
+                    )
+
             if thaw is not None:
                 log.info(
                     "emotion-episode thaw: emotion=%s reason=%s",
                     thaw[0], thaw[2],
                 )
-                return _ee.render_thaw_block(
+                rendered_thaw = _ee.render_thaw_block(
                     thaw, user_display_name=self.user_display_name,
                 )
+                if mode == _mask.MODE_FULL:
+                    rendered_thaw += (
+                        " (Mask: even the thaw comes out grudging -- "
+                        "\"...okay, fine. We're good. Stop smiling.\")"
+                    )
+                return rendered_thaw
             episode = _ee.strongest(state)
             if episode is None:
                 return ""
@@ -3125,6 +3180,53 @@ class InnerLifeProvidersMixin:
                 "emotion-episode render: emotion=%s intensity=%.2f",
                 episode.emotion, episode.intensity,
             )
+
+            if mode != _mask.MODE_OFF and _mask.is_masked(
+                episode.emotion, mode,
+            ):
+                # The slip: rare, earned, wall-clock budgeted. A
+                # one-shot MCP flag (force_dere_slip) bypasses both
+                # gates for end-to-end repro.
+                force_slip = bool(
+                    getattr(self, "_mask_force_slip_next", False)
+                )
+                if force_slip:
+                    self._mask_force_slip_next = False
+                cooldown_light = float(
+                    getattr(
+                        self._settings.agent,
+                        "mask_slip_cooldown_days",
+                        2.0,
+                    )
+                )
+                slip = force_slip or _mask.should_slip(
+                    mode=mode,
+                    episode_intensity=episode.intensity,
+                    last_slip_at=chat_db.kv_get(_mask.KV_LAST_SLIP_AT),
+                    now=now,
+                    cooldown_days_light=cooldown_light,
+                    cooldown_days_full=cooldown_light * 2.5,
+                )
+                if slip:
+                    try:
+                        chat_db.kv_set(
+                            _mask.KV_LAST_SLIP_AT, now.isoformat(),
+                        )
+                    except Exception:
+                        log.debug("slip stamp failed", exc_info=True)
+                log.info(
+                    "mask render: emotion=%s mode=%s strength=%.2f "
+                    "slip=%s",
+                    episode.emotion, mode, strength, slip,
+                )
+                return _mask.render_masked_block(
+                    emotion=episode.emotion,
+                    cause=episode.cause,
+                    user_display_name=self.user_display_name,
+                    strength=strength,
+                    slip=slip,
+                )
+
             return _ee.render_block(
                 episode,
                 user_display_name=self.user_display_name,

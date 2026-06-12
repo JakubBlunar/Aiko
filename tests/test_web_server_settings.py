@@ -263,6 +263,35 @@ class CompanionSettingsTests(unittest.TestCase):
             settings.agent.persona_touch_banner_duration_seconds, 120,
         )
 
+    def test_get_surfaces_expression_mask(self) -> None:
+        client, _session, _settings = _build_client()
+        comp = client.get("/api/settings").json()["companion"]
+        self.assertEqual(comp["expression_mask"], "off")
+
+    def test_patch_expression_mask_sets_and_persists(self) -> None:
+        client, _session, settings = _build_client()
+        with patch("app.web.server.persist_user_overrides") as persist:
+            response = client.patch(
+                "/api/settings",
+                json={"companion": {"expression_mask": "tsundere_light"}},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(settings.agent.expression_mask, "tsundere_light")
+        persist.assert_called_once()
+        patch_arg = persist.call_args[0][0]
+        self.assertEqual(
+            patch_arg["agent"]["expression_mask"], "tsundere_light",
+        )
+
+    def test_patch_expression_mask_invalid_falls_back(self) -> None:
+        client, _session, settings = _build_client()
+        with patch("app.web.server.persist_user_overrides"):
+            client.patch(
+                "/api/settings",
+                json={"companion": {"expression_mask": "bogus"}},
+            )
+        self.assertEqual(settings.agent.expression_mask, "off")
+
     def test_patch_earcons_runs_runtime_hook(self) -> None:
         client, session, settings = _build_client()
         with patch("app.web.server.persist_user_overrides") as persist:

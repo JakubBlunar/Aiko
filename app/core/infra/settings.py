@@ -823,6 +823,14 @@ class AgentSettings:
     # A debt must age this long before it can be collected — an
     # immediate callback isn't a callback.
     tease_min_age_hours: float = 1.0
+    # ── K60 tsundere expression mask ─────────────────────────────────
+    # User-facing flavour dial: "off" (default) / "tsundere_light"
+    # (masks lonely + warm_glow, frequent dere-slips) /
+    # "tsundere_full" (also masks the thaw beat, rarer slips).
+    expression_mask: str = "off"
+    # Wall-clock days between dere-slips in light mode (full mode
+    # uses 2.5x this value).
+    mask_slip_cooldown_days: float = 2.0
     # Cosine threshold consumed by
     # :meth:`app.core.conversation.topic_graph.TopicGraph.is_close_to_any_cluster`
     # when the seed worker filters LLM candidates. Anything cosine-
@@ -3555,6 +3563,18 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             ),
             tease_min_age_hours=max(
                 0.0, float(agent_raw.get("tease_min_age_hours", 1.0)),
+            ),
+            expression_mask=(
+                str(agent_raw.get("expression_mask", "off")).strip().lower()
+                if str(
+                    agent_raw.get("expression_mask", "off")
+                ).strip().lower()
+                in ("off", "tsundere_light", "tsundere_full")
+                else "off"
+            ),
+            mask_slip_cooldown_days=max(
+                0.0,
+                float(agent_raw.get("mask_slip_cooldown_days", 2.0)),
             ),
             grounding_line_mode=_parse_grounding_line_mode(
                 agent_raw.get("grounding_line_mode", "off"),
