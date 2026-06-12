@@ -558,65 +558,31 @@ on a deterministic per-turn seed, plus a shared-prefix lint and the
 Diagnosis from live use (Jun 2026): Aiko follows whatever topic the
 user sets, indefinitely, and never opens her own — every surfacing
 cue was hedged into silence and nothing structurally countered the
-helpful-assistant prior. **K56 (persona counterweight), K52 (wants
-ledger), and K53 (initiative turns) are SHIPPED** — see
+helpful-assistant prior. **The whole family is SHIPPED** — K56
+(persona counterweight), K52 (wants ledger), K53 (initiative
+turns), K55 (thread ownership), and K54 (topic appetite) — see
 [shipped.md](shipped.md#k56-persona-counterweight--the-leading-vs-following-rewrite)
-for the full designs. Remaining in this family: K55 (thread
-ownership) and K54 (topic appetite, riskiest tonally) below.
-Siblings already in the backlog: K46 stance persistence, K47
-question/share balance.
+for the full designs. Siblings still in the backlog: K46 stance
+persistence, K47 question/share balance.
 
 ---
 
 ## K54. Aiko-side topic appetite — she's allowed to be bored
 
-K18 detects when *the conversation* is looping; nothing models
-whether **Aiko herself** is engaged. Track a per-thread appetite
-from signals that already exist: does she have stance/`self`
-memories near the current topic centroid (K29's cosine machinery),
-has she contributed anything substantive in the last N turns or
-only acked-and-asked, how long the K18 lull has run, and does a
-high-pressure K52 want point elsewhere. Low appetite + pressured
-want = explicit permission to *negotiate the topic*: "you're
-allowed to say you're tapped out on this and offer your thing
-instead — 'okay, honestly, I've said all I have on spreadsheets.
-Can I tell you about the thing I read last night?'" That
-good-natured tug-of-war over what to talk about is exactly what
-distinguishes a person from an assistant. Highest tonal risk of
-the family: must be rare (once per conversation max), gated by
-closeness/comfort axes, and the persona copy has to land it as
-charm with an immediate offer, never as dismissal — and she yields
-gracefully if the user wants to stay. Key files: new
-`app/core/conversation/topic_appetite.py`,
-[`topic_stagnation.py`](../../app/core/conversation/topic_stagnation.py)
-(shares the K6 distance feed),
-[`opinion_injection_detector.py`](../../app/core/conversation/opinion_injection_detector.py)
-(stance-proximity reuse), persona block with bad/good pairs.
+**Shipped** — see [`shipped.md` → K54](shipped.md#k54-aiko-side-topic-appetite--shes-allowed-to-be-bored).
+Once-per-conversation negotiation slip gated on the K18 standing
+lull (`TopicStagnationDetector.last_mean`), her own short-reply
+share, a pressured K52 want as the offer, and warm axes.
 
 ---
 
 ## K55. Thread ownership — she defends what she opened
 
-When Aiko opens a topic (a K53 initiative turn, a surfaced
-curiosity seed, a proactive nudge), stamp it as *her thread* in
-per-session state. Today, if the user answers in three words and
-pivots, she follows the pivot instantly and her own thread
-evaporates — the single clearest "no stake in the conversation"
-tell. With ownership state, the next turn's cue grants **one
-return**: finish the thought or circle back — "wait, before I lose
-it — you never said what you actually thought about X". One return
-maximum, then the thread is dropped forever (persistence past one
-nudge tips into nagging); a real engaged answer marks it satisfied
-with no return needed. Detection is cheap: the user-reply
-embedding vs. the opened-topic embedding (K6 infra) plus a length
-gate, same shape as K23's shrink trigger. Pairs naturally with
-K46 stance persistence — together they cover "she holds her
-ground" (opinions) and "she holds her thread" (topics). Key
-files: new `app/core/conversation/thread_ownership.py`,
-[`inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py),
-hooks where seeds / proactive / initiative turns fire
-([`proactive_director.py`](../../app/core/proactive/proactive_director.py),
-K53's director), persona bullet.
+**Shipped** — see [`shipped.md` → K55](shipped.md#k55-thread-ownership--she-defends-what-she-opened).
+K53/K52-imperative turns stamp an owned thread (topic + embedding);
+the next real reply gets one engaged-or-pivot evaluation; a pivot
+grants exactly one "circle back" cue, then the thread is dropped
+forever.
 
 ---
 
