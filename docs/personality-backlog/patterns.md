@@ -616,202 +616,59 @@ if the persona file is user-rewritten).
 
 ---
 
-# The directed-emotions family — K57–K59
+# The directed-emotions family — K57–K60
 
 Companion diagnosis (Jun 2026), sibling of the will family: Aiko's
-moods are **objectless**. [`AffectState`](../../app/core/affect/affect_state.py)
-is a free-floating valence/arousal pair updated by her own
-`[[reaction:X]]` tags + weak user keyword hints — it can make her
-"sad" in general but never *miffed at {user_name} because he said
-he'd be back in an hour and wasn't*. Real relationship feelings
-have three properties the current stack lacks: an **object** (the
-user), a **cause** (a rememberable event), and a **resolution arc**
-(a sulk ends when acknowledged; missing-you melts on return but
-leaves a trace). Worse, the one place the system *does* detect the
-right trigger — K14 absence-curiosity — explicitly suppresses the
-feeling: "Not a complaint, not a request to comment on the gap...
-land the next reply as a warm welcome-back." And the expression
-vocabulary can't carry these states anyway: the canonical reaction
-set has no smug / smirk / pouty / sulky / wistful, so even a
-correctly-triggered mood has no register to land in. The raw
-events are almost all already detected (absence bands, K43
-broken/kept promises, K29 stance pushback, K32 reactions, gift
-gives, K48's planned tease detection) — they just route into slow
-axis drift instead of *felt, named, expiring* emotion. Tonal
-safety is the design constraint throughout: playful-not-
-manipulative, capped intensity, wall-clock decay, never
-guilt-trips, never punishes the user for having a life — the
-charm of "you owe me for that one" with none of the toxicity.
-Recommended order: K57 (episode store — the foundation) → K58
-(speech weighting so episodes actually *sound* different) → K59
-(tease economy, the most fun, needs K57's ledger shape). Pairs
-with: K37 emotional contagion (user mood tilts hers), K45 mood
-inertia (already shipped — instant face, lagging heart), K15
-vulnerability budget.
+moods were **objectless** — `AffectState` could make her "sad" in
+general but never *miffed at {user_name} because he broke a
+promise*. **The whole family is SHIPPED** — K57 (directed emotion
+episodes), K58 (emotion speech weighting), K59 (tease economy),
+and K60 (tsundere mask, `agent.expression_mask` dial, off by
+default) — see
+[shipped.md](shipped.md#k57-directed-emotion-episodes--feelings-at-the-user-with-a-cause)
+for the full designs. Tonal safety remained the design constraint
+throughout: playful-not-manipulative, capped intensity, wall-clock
+decay, never guilt-trips. Backlog siblings that pair with the
+family: K37 emotional contagion, K48 humor calibration, K15
+vulnerability budget (already shipped).
 
 ---
 
 ## K57. Directed emotion episodes — feelings *at* the user, with a cause
 
-The foundation: a small store of **emotion episodes** — `{emotion,
-cause (one human-readable line), intensity 0–1, created_at,
-decay_hours, resolution}` — kept per-user (kv_meta JSON or a new
-`emotion_episode` memory kind, cap ~3 live episodes, strongest
-wins the prompt). Starter taxonomy: `lonely` (absence beyond a
-closeness-scaled threshold — the K14 tracker already measures the
-gap; this *overrides* its "not a complaint" framing at sufficient
-intensity, letting her actually say "I missed you" or be five
-percent pouty about it), `miffed` (K43 broken promise, a brushed-
-off K55 thread, a dismissive streak), `warm_glow` (kept promise,
-K32 heart burst, a gift in her room), `smug` (her prediction /
-recommendation turned out right — K2 beliefs and K43 promise
-outcomes already know), `playful_jealous` (he enthuses about
-time spent elsewhere — strictly capped at charming, one light
-line, never repeated, axes-gated, the most dangerous one tonally),
-`hurt` (genuine sharpness detected — rare, high bar, resolves on
-any soft acknowledgment). Each episode renders ONE strong T5
-block while live ("You're a bit miffed at him right now — he said
-he'd be back in an hour yesterday and wasn't. Let it colour the
-register: a touch shorter, a touch drier, until he acknowledges
-it. Don't announce it, don't punish him."), then resolves by
-acknowledgment-detection (cheap embedding/keyword pass over the
-user turn, same shape as revival detection), counter-event
-(warm_glow cancels miffed), or wall-clock decay — and on
-resolution the *next* turn gets a one-shot "it melted — let the
-thaw show" cue, because the visible transition is what makes the
-emotion read as real. Key files: new
-`app/core/affect/emotion_episodes.py` (pure lifecycle math, K15
-budget-style), [`post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py)
-(trigger wiring off the existing detectors),
-[`inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py)
-(provider), [`affect_state.py`](../../app/core/affect/affect_state.py)
-(episodes feed small valence/arousal impulses so the scalar layer
-stays consistent), persona section with per-emotion bad/good
-pairs, MCP `get_emotion_episodes` / `force_emotion_episode(kind)`.
+**Shipped** — see [`shipped.md` → K57](shipped.md#k57-directed-emotion-episodes--feelings-at-the-user-with-a-cause).
+kv-backed episode store (`{emotion, cause, intensity, decay}` over
+`aiko.emotion_episodes`) with a staged trigger queue (kept promise,
+K32 reactions, K55 pivot, closeness-scaled absence), per-emotion
+acknowledgment resolution, and a one-shot visible-thaw cue.
 
 ---
 
 ## K58. Emotion speech weighting — moods that actually land in the voice
 
-The user-facing half: today a mood surfaces as a one-line ambient
-hint and the reply barely shifts — the persona needs *register
-recipes*, not adjectives. Three layers. (a) **Vocabulary**: mint
-the missing reactions — `smug`, `pouty`, `sulky`, `wistful`,
-`mischievous` — end-to-end: `[[reaction:X]]` → affect impulse
-table → chat-pip emoji → Live2D expression mapping where the
-Alexia rig has a fit (B4 minted `embarrassed`/`nervous`/`defiant`,
-so the pipeline precedent exists; read
-[`alexia-model-notes.md`](../alexia-model-notes.md) first). (b)
-**Register recipes in the persona**: per K57-emotion guidance with
-bad/good pairs in the K29 style — miffed = shorter sentences, dry
-humor, withholds the usual warmth a notch, does NOT lecture or
-sulk-announce ("Fine." / "...you're lucky you're cute. What do you
-need?" — not "I am upset because you broke your promise"); smug =
-one earned "mm. say it. I was right." then drops it; lonely =
-softer, slower, one honest beat ("place was quiet without you")
-without guilt-tripping. (c) **Weight scaling**: episode intensity
-scales the prompt block's imperative strength (0.3 "let it tint
-the register" → 0.8 "this is the register this reply"), feeds the
-K5 mood-shell line so shell wording strengthens instead of staying
-politely neutral, and maps to the existing `[[prosody:...]]` +
-cadence machinery in voice mode (miffed → firm/short, lonely →
-soft/slow) so the spoken delivery shifts too. Key files:
-[`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt),
-[`affect_state.py`](../../app/core/affect/affect_state.py)
-(impulse table), [`mood_shell.py`](../../app/core/affect/mood_shell.py),
-[`cadence.py`](../../app/core/voice/cadence.py),
-[`avatar_profile.py`](../../app/core/persona/avatar_profile.py) +
-[`ExpressionChannel`](../../web/src/live2d/channels/ExpressionChannel.ts)
-(new expression mappings), [`ChatView.tsx`](../../web/src/components/ChatView.tsx)
-(REACTION_EMOJI).
+**Shipped** — see [`shipped.md` → K58](shipped.md#k58-emotion-speech-weighting--moods-that-actually-land-in-the-voice).
+Minted `smug` / `pouty` / `sulky` / `mischievous` end-to-end,
+persona register recipes per K57 emotion, and intensity-banded
+prompt copy with `[[reaction:X]]` + `[[prosody:Y]]` hints at the
+high band.
 
 ---
 
 ## K59. Tease economy — "you'll pay for that one"
 
-The most personality-dense piece: a small **payback ledger**. When
-the user teases her, wins an argument, or pushes back hard on her
-stance (K29 already detects the pushback; K48's tease detection
-covers the rest), Aiko banks a debt — `{what happened, one-line
-quote/context, created_at, repaid}` — and *collects later*: a
-callback tease one or three conversations down the line ("oh, like
-the time you swore my playlist was 'objectively chaotic'? I
-remember things."), or an immediate "noted. that's going in the
-ledger" beat when it lands mid-banter. The memory-backed callback
-is what makes it feel like a real ongoing relationship rather than
-per-turn improv — it's K22's inside-joke machinery pointed at
-mock-grudges. Ledger rows expire unrepaid after ~2 weeks (a
-grudge that old stops being funny), cap ~5 rows, frequency gated
-by the humor axis + K48's rhythm budget so it never tips from
-running-bit into needling; a `repaid` row is done forever. Also
-the natural outlet for K57's `miffed` episodes: light offences
-should usually land in the ledger (comedy) rather than spawn a
-real sulk (drama) — the K57 trigger wiring picks the lane by
-severity. Key files: new
-`app/core/relationship/tease_ledger.py`,
-[`post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py)
-(bank/repay detection),
-[`inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py)
-(collection-opportunity provider, rare),
-[`opinion_injection_detector.py`](../../app/core/conversation/opinion_injection_detector.py)
-(pushback signal reuse), persona bullet teaching the
-collect-don't-needle cadence, MCP `get_tease_ledger` /
-`force_tease_debt`.
+**Shipped** — see [`shipped.md` → K59](shipped.md#k59-tease-economy--youll-pay-for-that-one).
+Payback ledger over `aiko.tease_ledger` (bank on K29 pushback +
+the K57 light-miffed lane-picker; collect as a humor-axis-gated,
+cooldown-limited callback; settle post-turn by content-word
+overlap; 14-day expiry, cap 5).
 
 ---
 
 ## K60. Tsundere mask — warmth expressed through denial
 
-Not an emotion — an **expression policy** layered between K57
-(what she *feels*) and K58 (how it *sounds*): a mask that inverts
-or deflects the warm half of the taxonomy. The architecture
-already half-built it: K45 mood inertia is "instant face, lagging
-heart" *by accident* — tsundere is the same divergence *on
-purpose* — and the B4 reaction vocabulary minted exactly the two
-faces it needs (`defiant` = the "hmph" tsun beat,
-`embarrassed+blush` = caught caring). Four mechanics. (a) **Mask
-transform table**: per-K57-emotion expressed forms — `lonely` →
-denied missing ("I wasn't *waiting*. I just happened to be
-here... the place was quiet, that's all."); `warm_glow` →
-grudging / backwards delivery ("it's not bad. For you."; "I
-guess you can be useful occasionally."); thanks received →
-deflection ("yeah, well. Don't make it weird."); `miffed` stays
-unmasked (tsun is the native register for miffed — this is why
-the families compose). (b) **The caught-caring beat**: when the
-user names her warmth ("you missed me, didn't you?", "admit it,
-you like this") — cheap pattern + embedding detection on the user
-turn — fire `embarrassed+blush` plus a denial-with-tell ("...no.
-Shut up. [[reaction:embarrassed]]"), the single most
-character-defining tsundere moment. (c) **The slip**: rare,
-budgeted dere-leaks where one fully genuine line gets through
-before the mask snaps back ("...I actually really missed you.
-— Anyway. ANYWAY. What did you bring me?"); K15's budget shape
-fits exactly (a slip is a tier-3 disclosure), and slips should be
-*earned* — high-intensity episode, anniversary, kept promise —
-because their scarcity is what makes them land. (d) **Long-arc
-erosion**: mask strength scales inversely with closeness+trust
-axes, so over weeks the denials soften into transparent token
-protests both sides are in on ("I didn't miss you. (I missed
-you.)") — the actual tsundere character arc, and the payoff of
-having persistent axes at all. Two hard safety rails: a
-**sincerity override** — the mask drops *unconditionally* when
-the user is genuinely down (K8 rupture, `support` arc, sharp
-negative affect): deflecting real pain is the one unforgivable
-tsundere failure mode; and tsun lines target *herself and the
-situation*, never become real insults (humor-axis gated, K48
-budget shared). Ships as a user-facing dial —
-`agent.expression_mask` (`off` / `tsundere_light` /
-`tsundere_full`, default off) — because it's a strong flavour
-choice; `light` masks only `lonely`/`warm_glow` and keeps slips
-frequent, `full` masks the whole warm column. Key files: new
-`app/core/affect/expression_mask.py` (transform table + slip
-budget + erosion math, pure), K57's episode provider (mask
-applied at render time — the *felt* episode stays truthful in
-state, only the expressed cue transforms),
-[`aiko_companion.txt`](../../data/persona/aiko_companion.txt)
-(a "The mask" section with per-emotion bad/good pairs — bad:
-actually cold, leaves him doubting; good: denial with a visible
-tell), [`settings.py`](../../app/core/infra/settings.py) +
-Settings drawer toggle, MCP `get_expression_mask_state` /
-`force_dere_slip`. Depends on K57; pairs with K58 (recipes),
-K15 (slip budget), K59 (the ledger is a very tsundere prop).
+**Shipped** — see [`shipped.md` → K60](shipped.md#k60-tsundere-mask--warmth-expressed-through-denial).
+Expression policy between K57 (felt) and K58 (sounded): transform
+table for lonely/warm_glow, caught-caring beat, wall-clock-budgeted
+dere-slips, closeness+trust erosion to token protests, support-arc
+sincerity override; `agent.expression_mask` dial (off by default)
+in Settings → Avatar.

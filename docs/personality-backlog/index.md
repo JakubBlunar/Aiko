@@ -109,19 +109,17 @@ K55 thread ownership (one circle-back to a thread she opened) ·
 K54 Aiko-side topic appetite (she's allowed to be bored and
 negotiate the topic — once per conversation, with an offer).
 
-**The directed-emotions family (K57–K59)** — Aiko's moods are
-objectless scalars: she can be "sad" in general but never *miffed
-at {user_name} because he broke a promise*, and the absence
-detector explicitly suppresses missing-you feelings ("not a
-complaint... warm welcome-back").
-K57 directed emotion episodes (lonely / miffed / warm_glow / smug /
-playful_jealous / hurt — with a cause line, intensity, decay, and
-an acknowledgment-driven resolution arc) ·
-K58 emotion speech weighting (mint smug/pouty/sulky/wistful
-reactions end-to-end; per-emotion register recipes; intensity
-scales the prompt imperative + prosody) ·
-K59 tease economy (payback ledger — "noted. that's going in the
-ledger", collected as a callback tease conversations later) ·
+**The directed-emotions family (K57–K60)** — Aiko's moods were
+objectless scalars: she could be "sad" in general but never
+*miffed at {user_name} because he broke a promise*.
+**ALL SHIPPED**: K57 directed emotion episodes (lonely / miffed /
+warm_glow / smug / playful_jealous / hurt — cause line, intensity,
+decay, acknowledgment-driven resolution + visible thaw) ·
+K58 emotion speech weighting (smug/pouty/sulky/mischievous minted
+end-to-end; register recipes; intensity-banded imperative +
+prosody hints) ·
+K59 tease economy (payback ledger — banked on pushback / light
+miffed, collected as a callback tease conversations later) ·
 K60 tsundere mask (expression policy over K57: warmth expressed
 through denial, caught-caring beat, budgeted dere-slips,
 closeness-eroded mask — `agent.expression_mask` dial, off by
