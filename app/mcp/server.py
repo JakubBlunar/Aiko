@@ -2541,6 +2541,69 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"force_thread_open raised: {exc}"
 
     @mcp.tool()
+    def get_topic_appetite_state() -> str:
+        """K54 — dump the topic-appetite gate inputs + settings.
+
+        ``lull_mean`` is the K18 standing rolling mean (low =
+        circling; ``null`` until the window first fills).
+        ``fired_this_session`` is the once-per-conversation latch —
+        flip sessions or use ``force_topic_appetite`` to re-arm.
+        """
+        try:
+            agent = session._settings.agent
+            detector = getattr(
+                session, "_topic_stagnation_detector", None,
+            )
+            payload = {
+                "enabled": bool(
+                    getattr(agent, "topic_appetite_enabled", True)
+                ),
+                "fired_this_session": bool(
+                    getattr(session, "_topic_appetite_fired", False)
+                ),
+                "force_armed": bool(
+                    getattr(session, "_topic_appetite_force_next", False)
+                ),
+                "lull_mean": getattr(detector, "last_mean", None),
+                "settings": {
+                    "short_reply_chars": int(
+                        getattr(agent, "appetite_short_reply_chars", 160)
+                    ),
+                    "short_share_threshold": float(
+                        getattr(
+                            agent, "appetite_short_share_threshold", 0.6,
+                        )
+                    ),
+                    "window": int(getattr(agent, "appetite_window", 6)),
+                    "min_want_pressure": float(
+                        getattr(agent, "appetite_min_want_pressure", 0.35)
+                    ),
+                    "min_axes": float(
+                        getattr(agent, "appetite_min_axes", 0.15)
+                    ),
+                },
+            }
+            return json.dumps(payload)
+        except Exception as exc:
+            return f"get_topic_appetite_state raised: {exc}"
+
+    @mcp.tool()
+    def force_topic_appetite() -> str:
+        """K54 — arm a one-shot "tapped out" negotiation slip.
+
+        The next turn's provider bypasses every gate except the
+        support / reflection arc block and the offer requirement (a
+        live K52 want must exist — add one via ``force_want`` first
+        if the ledger is empty). Verify via
+        ``get_last_response_detail.system_prompt``.
+        """
+        try:
+            session._topic_appetite_force_next = True
+            return json.dumps({"armed": True})
+        except Exception as exc:
+            return f"force_topic_appetite raised: {exc}"
+
+    @mcp.tool()
     def clear_wants() -> str:
         """K52 — wipe the wants ledger (wants + re-entry cooldowns)."""
         try:
