@@ -1583,6 +1583,7 @@ class SessionController(
             wants=self._render_wants_block,
             initiative=self._render_initiative_block,
             thread_ownership=self._render_thread_ownership_block,
+            topic_appetite=self._render_topic_appetite_block,
             grounding_line=self._render_grounding_line,
             user_reactions=self._render_user_reactions_block,
             touch_state=self._render_touch_state_block,
@@ -3535,6 +3536,8 @@ class SessionController(
         # K55 — an opened thread doesn't survive a session switch.
         self._owned_thread = None
         self._pending_thread_open = None
+        # K54 — the once-per-conversation appetite slip re-arms.
+        self._topic_appetite_fired = False
         # Best-effort: a write failure (read-only volume, locked file)
         # must not break the in-memory switch — the user just lands
         # back on whatever was previously persisted on next launch.
@@ -3620,6 +3623,8 @@ class SessionController(
         # K55 — drop any opened thread with the history it lived in.
         self._owned_thread = None
         self._pending_thread_open = None
+        # K54 — a wiped history re-arms the appetite slip.
+        self._topic_appetite_fired = False
 
     def _clear_merge_buffer(self, session_key: str | None = None) -> None:
         """Drop the voice merge buffer (one specific session, or all).

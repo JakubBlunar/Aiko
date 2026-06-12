@@ -774,6 +774,25 @@ class AgentSettings:
     # embedding at or above which the reply counts as engaged
     # regardless of length ("yeah I loved it" is an answer).
     thread_min_topical_similarity: float = 0.30
+    # ── K54 topic appetite — she's allowed to be bored ────────────────
+    # Master switch for the once-per-conversation "tapped out on this
+    # topic, here's my offer instead" permission slip.
+    topic_appetite_enabled: bool = True
+    # Assistant replies below this many characters count as
+    # ack-and-ask (not substantive) when measuring her contribution.
+    appetite_short_reply_chars: int = 160
+    # Share of recent assistant replies that must be short before
+    # she reads as disengaged (boredom needs BOTH a looped topic and
+    # her only nodding along).
+    appetite_short_share_threshold: float = 0.6
+    # Number of recent assistant replies examined for the share.
+    appetite_window: int = 6
+    # Minimum K52 want pressure required as the offer — negotiating
+    # the topic without something to offer is just rudeness.
+    appetite_min_want_pressure: float = 0.35
+    # Both relationship axes (closeness AND comfort) must be at or
+    # above this — the topic tug-of-war is an earned-intimacy move.
+    appetite_min_axes: float = 0.15
     # Cosine threshold consumed by
     # :meth:`app.core.conversation.topic_graph.TopicGraph.is_close_to_any_cluster`
     # when the seed worker filters LLM candidates. Anything cosine-
@@ -3435,6 +3454,35 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                     float(
                         agent_raw.get("thread_min_topical_similarity", 0.30)
                     ),
+                ),
+            ),
+            topic_appetite_enabled=bool(
+                agent_raw.get("topic_appetite_enabled", True),
+            ),
+            appetite_short_reply_chars=max(
+                1, int(agent_raw.get("appetite_short_reply_chars", 160)),
+            ),
+            appetite_short_share_threshold=min(
+                1.0,
+                max(
+                    0.0,
+                    float(
+                        agent_raw.get("appetite_short_share_threshold", 0.6)
+                    ),
+                ),
+            ),
+            appetite_window=max(
+                2, int(agent_raw.get("appetite_window", 6)),
+            ),
+            appetite_min_want_pressure=max(
+                0.0,
+                float(agent_raw.get("appetite_min_want_pressure", 0.35)),
+            ),
+            appetite_min_axes=min(
+                1.0,
+                max(
+                    -1.0,
+                    float(agent_raw.get("appetite_min_axes", 0.15)),
                 ),
             ),
             grounding_line_mode=_parse_grounding_line_mode(

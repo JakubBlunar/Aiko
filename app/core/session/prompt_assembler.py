@@ -527,6 +527,7 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "initiative_block",
         "thread_ownership_block",
         "wants_block",
+        "topic_appetite_block",
         "curiosity_seeds_block",
         "knowledge_gaps_block",
     ),
@@ -1017,6 +1018,12 @@ class PromptAssembler:
         # and returns the one-shot "circle back" cue on a pivot,
         # else "".
         self._thread_ownership_provider: Callable[[str], str] | None = None
+        # K54 topic appetite. Once-per-conversation "tapped out on
+        # this topic, here's my offer" permission slip. Must run
+        # after the K18 stagnation provider (reads its standing
+        # ``last_mean``) and after the K52 wants provider has matured
+        # the ledger this turn.
+        self._topic_appetite_provider: Callable[[], str] | None = None
         # K16 unified ambient grounding line. One paragraph that fuses
         # circadian/world/activity/affect/relationship/user_state/
         # ambient_noise into a single continuous-awareness sentence at
@@ -1172,6 +1179,7 @@ class PromptAssembler:
         wants: Callable[[], str] | None = None,
         initiative: Callable[[str], str] | None = None,
         thread_ownership: Callable[[str], str] | None = None,
+        topic_appetite: Callable[[], str] | None = None,
         grounding_line: Callable[[], str] | None = None,
         user_reactions: Callable[[], str] | None = None,
         touch_state: Callable[[], str] | None = None,
@@ -1279,6 +1287,8 @@ class PromptAssembler:
             self._initiative_provider = initiative
         if thread_ownership is not None:
             self._thread_ownership_provider = thread_ownership
+        if topic_appetite is not None:
+            self._topic_appetite_provider = topic_appetite
         if grounding_line is not None:
             self._grounding_line_provider = grounding_line
         if user_reactions is not None:
@@ -2210,6 +2220,19 @@ class PromptAssembler:
                 timing_name="wants",
             )
 
+        # K54: topic appetite. Same aggressive-mode posture as the
+        # wants block (it's a permission slip, not a directive), and
+        # it must run after the wants provider so the ledger is
+        # matured for this turn, and after the K18 stagnation
+        # provider so ``last_mean`` reflects the live conversation.
+        topic_appetite_block = ""
+        if not aggressive and self._topic_appetite_provider is not None:
+            topic_appetite_block = _safe_provider(
+                self._topic_appetite_provider,
+                timing_sink=provider_ms,
+                timing_name="topic_appetite",
+            )
+
         # K53: initiative directive. NOT gated on aggressive mode —
         # the director's counter advances on every evaluated turn, so
         # dropping the call here would silently lose a scheduled
@@ -2758,6 +2781,11 @@ class PromptAssembler:
             # (the imperative band outranks the soft curiosity /
             # knowledge-gap permission slips below it).
             system_parts.append(wants_block)
+        if topic_appetite_block:
+            # K54: the once-per-conversation "tapped out" negotiation
+            # slip. Lands right under the wants block — its offer IS
+            # the strongest want, so the two read as one thought.
+            system_parts.append(topic_appetite_block)
         if curiosity_seeds_block:
             # K9: "Quiet curiosity" — at-most-two topics Aiko has
             # been wondering about that haven't come up yet. Sits

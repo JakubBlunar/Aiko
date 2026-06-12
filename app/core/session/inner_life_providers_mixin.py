@@ -3028,6 +3028,157 @@ class InnerLifeProvidersMixin:
             log.debug("wants block render failed", exc_info=True)
             return ""
 
+    def _render_topic_appetite_block(self) -> str:
+        """K54: once-per-conversation "tapped out" negotiation slip.
+
+        Combines the K18 standing lull reading
+        (``TopicStagnationDetector.last_mean``), Aiko's own recent
+        contribution pattern (share of short assistant replies), the
+        strongest K52 want (the offer), and the relationship axes.
+        Every input is best-effort — a sick store reads as its
+        blocking value (no lull / no offer / cold axes) so the cue
+        stays silent rather than firing on bad data. MCP
+        ``force_topic_appetite`` arms ``_topic_appetite_force_next``
+        to bypass everything except the arc block + offer
+        requirement.
+        """
+        if not bool(
+            getattr(self._settings.agent, "topic_appetite_enabled", True)
+        ):
+            return ""
+        try:
+            from app.core.conversation import topic_appetite as _tap
+
+            agent = self._settings.agent
+
+            arc = None
+            arc_store = getattr(self, "_arc_store", None)
+            if arc_store is not None:
+                try:
+                    arc_state = arc_store.get_or_default(self._user_id)
+                    arc = getattr(arc_state, "arc", None)
+                except Exception:
+                    arc = None
+
+            closeness = comfort = None
+            axes_store = getattr(self, "_relationship_axes_store", None)
+            if axes_store is not None:
+                try:
+                    axes = axes_store.get(self._user_id)
+                    closeness = float(axes.closeness)
+                    comfort = float(axes.comfort)
+                except Exception:
+                    closeness = comfort = None
+
+            detector = getattr(self, "_topic_stagnation_detector", None)
+            lull_mean = getattr(detector, "last_mean", None)
+
+            short_share = None
+            window = max(2, int(getattr(agent, "appetite_window", 6)))
+            try:
+                rows = self._chat_db.get_messages(
+                    self.session_key, limit=max(window * 4, 20),
+                )
+                lengths: list[int] = []
+                for row in reversed(rows):
+                    if row.role != "assistant":
+                        continue
+                    content = (row.content or "").strip()
+                    if not content:
+                        continue
+                    lengths.append(len(content))
+                    if len(lengths) >= window:
+                        break
+                if len(lengths) >= window:
+                    short_share = _tap.compute_short_reply_share(
+                        lengths,
+                        short_chars=int(
+                            getattr(agent, "appetite_short_reply_chars", 160)
+                        ),
+                    )
+            except Exception:
+                short_share = None
+
+            want_text = None
+            want_pressure = 0.0
+            chat_db = getattr(self, "_chat_db", None)
+            if chat_db is not None:
+                try:
+                    from app.core.conversation import wants_ledger as _wl
+
+                    state = _wl.deserialize(
+                        chat_db.kv_get(_wl.KV_WANTS_LEDGER)
+                    )
+                    if state.wants:
+                        strongest = max(
+                            state.wants, key=lambda w: w.pressure,
+                        )
+                        want_text = strongest.text
+                        want_pressure = float(strongest.pressure)
+                except Exception:
+                    want_text = None
+                    want_pressure = 0.0
+
+            force = bool(
+                getattr(self, "_topic_appetite_force_next", False)
+            )
+            if force:
+                self._topic_appetite_force_next = False
+
+            decision = _tap.decide(
+                already_fired=bool(
+                    getattr(self, "_topic_appetite_fired", False)
+                ),
+                arc=arc,
+                closeness=closeness,
+                comfort=comfort,
+                lull_mean=lull_mean,
+                short_reply_share=short_share,
+                want_text=want_text,
+                want_pressure=want_pressure,
+                lull_threshold=float(
+                    getattr(
+                        self._memory_settings,
+                        "stagnation_mild_threshold",
+                        0.18,
+                    )
+                ),
+                short_share_threshold=float(
+                    getattr(agent, "appetite_short_share_threshold", 0.6)
+                ),
+                min_want_pressure=float(
+                    getattr(agent, "appetite_min_want_pressure", 0.35)
+                ),
+                min_axes=float(getattr(agent, "appetite_min_axes", 0.15)),
+                force=force,
+            )
+            log.debug(
+                "topic-appetite: reason=%s lull=%s short_share=%s "
+                "pressure=%.2f",
+                decision.reason,
+                f"{lull_mean:.3f}" if lull_mean is not None else "n/a",
+                f"{short_share:.2f}" if short_share is not None else "n/a",
+                want_pressure,
+            )
+            if not decision.fire:
+                return ""
+            self._topic_appetite_fired = True
+            log.info(
+                "topic-appetite fire: lull=%s short_share=%s "
+                "pressure=%.2f want=%s",
+                f"{lull_mean:.3f}" if lull_mean is not None else "n/a",
+                f"{short_share:.2f}" if short_share is not None else "n/a",
+                want_pressure,
+                (want_text or "")[:60],
+            )
+            return _tap.render_block(
+                want_text or "",
+                user_display_name=self.user_display_name,
+            )
+        except Exception:
+            log.debug("topic appetite block render failed", exc_info=True)
+            return ""
+
     def _build_grounding_context(self) -> "Any":
         """Assemble the K16 grounding-line slots from live state.
 

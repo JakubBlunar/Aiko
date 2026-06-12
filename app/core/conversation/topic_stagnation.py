@@ -107,6 +107,12 @@ class TopicStagnationDetector:
         )
         self._cooldown_remaining = 0
         self._post_novelty_suppression = 0
+        # K54 (topic appetite) consumes this: the most recent rolling
+        # mean computed over a *full* window. Deliberately NOT reset
+        # per turn — a short "ok" reply skips the K6 measurement, and
+        # that's exactly the turn K54 needs the standing lull reading
+        # for. ``None`` until the window first fills.
+        self.last_mean: float | None = None
 
     # ── public API ───────────────────────────────────────────────────
 
@@ -160,6 +166,12 @@ class TopicStagnationDetector:
         # Order matters: append first so the window evolves even when
         # we end up suppressed below.
         self._distance_history.append(float(distance))
+        if len(self._distance_history) == self._distance_history.maxlen:
+            # K54 hook: refresh the standing lull reading on every
+            # measured turn, independent of cooldown / suppression.
+            self.last_mean = float(
+                statistics.fmean(self._distance_history)
+            )
         if self._post_novelty_suppression > 0:
             self._post_novelty_suppression -= 1
             log.debug(

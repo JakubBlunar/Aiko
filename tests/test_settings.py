@@ -1548,6 +1548,12 @@ class WillFamilySettingsTests(unittest.TestCase):
         "thread_ownership_enabled",
         "thread_engaged_chars",
         "thread_min_topical_similarity",
+        "topic_appetite_enabled",
+        "appetite_short_reply_chars",
+        "appetite_short_share_threshold",
+        "appetite_window",
+        "appetite_min_want_pressure",
+        "appetite_min_axes",
     )
 
     def setUp(self) -> None:
@@ -1592,6 +1598,12 @@ class WillFamilySettingsTests(unittest.TestCase):
         self.assertTrue(agent.thread_ownership_enabled)
         self.assertEqual(agent.thread_engaged_chars, 80)
         self.assertEqual(agent.thread_min_topical_similarity, 0.30)
+        self.assertTrue(agent.topic_appetite_enabled)
+        self.assertEqual(agent.appetite_short_reply_chars, 160)
+        self.assertEqual(agent.appetite_short_share_threshold, 0.6)
+        self.assertEqual(agent.appetite_window, 6)
+        self.assertEqual(agent.appetite_min_want_pressure, 0.35)
+        self.assertEqual(agent.appetite_min_axes, 0.15)
 
     def test_overrides_round_trip(self) -> None:
         result = load_settings(config_path=self._write_config({
@@ -1604,6 +1616,9 @@ class WillFamilySettingsTests(unittest.TestCase):
             "thread_ownership_enabled": False,
             "thread_engaged_chars": 120,
             "thread_min_topical_similarity": 0.5,
+            "topic_appetite_enabled": False,
+            "appetite_window": 10,
+            "appetite_min_want_pressure": 0.5,
         }))
         agent = result.agent
         self.assertFalse(agent.wants_ledger_enabled)
@@ -1615,6 +1630,9 @@ class WillFamilySettingsTests(unittest.TestCase):
         self.assertFalse(agent.thread_ownership_enabled)
         self.assertEqual(agent.thread_engaged_chars, 120)
         self.assertEqual(agent.thread_min_topical_similarity, 0.5)
+        self.assertFalse(agent.topic_appetite_enabled)
+        self.assertEqual(agent.appetite_window, 10)
+        self.assertEqual(agent.appetite_min_want_pressure, 0.5)
 
     def test_clamps(self) -> None:
         result = load_settings(config_path=self._write_config({
@@ -1628,6 +1646,11 @@ class WillFamilySettingsTests(unittest.TestCase):
             "initiative_substantial_chars": 0,
             "thread_engaged_chars": 0,
             "thread_min_topical_similarity": 7.0,
+            "appetite_short_reply_chars": 0,
+            "appetite_short_share_threshold": 3.0,
+            "appetite_window": 1,
+            "appetite_min_want_pressure": -1.0,
+            "appetite_min_axes": -5.0,
         }))
         agent = result.agent
         self.assertEqual(agent.wants_growth_per_day, 0.0)
@@ -1640,6 +1663,11 @@ class WillFamilySettingsTests(unittest.TestCase):
         self.assertEqual(agent.initiative_substantial_chars, 1)
         self.assertEqual(agent.thread_engaged_chars, 1)
         self.assertEqual(agent.thread_min_topical_similarity, 1.0)
+        self.assertEqual(agent.appetite_short_reply_chars, 1)
+        self.assertEqual(agent.appetite_short_share_threshold, 1.0)
+        self.assertEqual(agent.appetite_window, 2)
+        self.assertEqual(agent.appetite_min_want_pressure, 0.0)
+        self.assertEqual(agent.appetite_min_axes, -1.0)
 
 
 class DayColorSettingsTests(unittest.TestCase):
