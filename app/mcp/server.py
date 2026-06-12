@@ -2458,6 +2458,89 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"force_initiative_turn raised: {exc}"
 
     @mcp.tool()
+    def get_thread_ownership_state() -> str:
+        """K55 — dump the opened-thread slot + settings.
+
+        ``owned_thread`` is the topic Aiko opened on her last
+        directive turn, awaiting exactly one reply evaluation
+        (``null`` when no thread is open — the normal state).
+        ``pending_open`` shows a stamp armed at assembly time that
+        the post-turn hook hasn't consumed yet (only ever non-null
+        mid-turn).
+        """
+        try:
+            agent = session._settings.agent
+            thread = getattr(session, "_owned_thread", None)
+            pending = getattr(session, "_pending_thread_open", None)
+            payload = {
+                "enabled": bool(
+                    getattr(agent, "thread_ownership_enabled", True)
+                ),
+                "owned_thread": (
+                    {
+                        "topic": thread.topic,
+                        "source": thread.source,
+                        "embedded": thread.embedding is not None,
+                        "opened_at": thread.opened_at.isoformat(),
+                    }
+                    if thread is not None else None
+                ),
+                "pending_open": pending,
+                "settings": {
+                    "engaged_chars": int(
+                        getattr(agent, "thread_engaged_chars", 80)
+                    ),
+                    "min_topical_similarity": float(
+                        getattr(
+                            agent, "thread_min_topical_similarity", 0.30,
+                        )
+                    ),
+                },
+            }
+            return json.dumps(payload)
+        except Exception as exc:
+            return f"get_thread_ownership_state raised: {exc}"
+
+    @mcp.tool()
+    def force_thread_open(topic: str) -> str:
+        """K55 — stamp an owned thread directly (bypasses K53/K52).
+
+        The next user message gets the one-shot engaged-or-pivot
+        evaluation against ``topic``: send a short off-topic reply
+        and the "circle back" cue should land in
+        ``get_last_response_detail.system_prompt``; send an engaged
+        reply and the thread clears silently (watch
+        ``tail_logs(module_contains="thread")`` for the verdict).
+        """
+        try:
+            from app.core.conversation import thread_ownership as _town
+
+            text = (topic or "").strip()
+            if not text:
+                return json.dumps({"error": "topic is required"})
+            embedding = None
+            embedder = getattr(session, "_embedder", None)
+            if embedder is not None:
+                try:
+                    embedding = embedder.embed(text)
+                except Exception:
+                    embedding = None
+            session._owned_thread = _town.OwnedThread(
+                topic=_town.derive_topic(text, ""),
+                source=_town.SOURCE_FORCED,
+                embedding=embedding,
+            )
+            return json.dumps(
+                {
+                    "stamped": True,
+                    "topic": session._owned_thread.topic,
+                    "embedded": embedding is not None,
+                }
+            )
+        except Exception as exc:
+            return f"force_thread_open raised: {exc}"
+
+    @mcp.tool()
     def clear_wants() -> str:
         """K52 — wipe the wants ledger (wants + re-entry cooldowns)."""
         try:

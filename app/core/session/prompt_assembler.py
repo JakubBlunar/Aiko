@@ -525,6 +525,7 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         # exactly what tight prompts need to keep surfaced.
         "task_cues_block",
         "initiative_block",
+        "thread_ownership_block",
         "wants_block",
         "curiosity_seeds_block",
         "knowledge_gaps_block",
@@ -1011,6 +1012,11 @@ class PromptAssembler:
         # substantial-message escape hatch) and returns the one-turn
         # "this turn is yours" directive on cadence, else "".
         self._initiative_provider: Callable[[str], str] | None = None
+        # K55 thread ownership. Takes the live ``user_text`` (the
+        # reply being evaluated against the opened-thread embedding)
+        # and returns the one-shot "circle back" cue on a pivot,
+        # else "".
+        self._thread_ownership_provider: Callable[[str], str] | None = None
         # K16 unified ambient grounding line. One paragraph that fuses
         # circadian/world/activity/affect/relationship/user_state/
         # ambient_noise into a single continuous-awareness sentence at
@@ -1165,6 +1171,7 @@ class PromptAssembler:
         curiosity_seeds: Callable[[], str] | None = None,
         wants: Callable[[], str] | None = None,
         initiative: Callable[[str], str] | None = None,
+        thread_ownership: Callable[[str], str] | None = None,
         grounding_line: Callable[[], str] | None = None,
         user_reactions: Callable[[], str] | None = None,
         touch_state: Callable[[], str] | None = None,
@@ -1270,6 +1277,8 @@ class PromptAssembler:
             self._wants_provider = wants
         if initiative is not None:
             self._initiative_provider = initiative
+        if thread_ownership is not None:
+            self._thread_ownership_provider = thread_ownership
         if grounding_line is not None:
             self._grounding_line_provider = grounding_line
         if user_reactions is not None:
@@ -2216,6 +2225,24 @@ class PromptAssembler:
                     log.debug("initiative provider raised", exc_info=True)
                     initiative_block = ""
 
+        # K55: thread-ownership evaluation. NOT gated on aggressive
+        # mode — the provider consumes one-shot state (the opened
+        # thread), so skipping the call would silently lose the
+        # single granted return; it renders rarely (only on a pivot
+        # away from a thread Aiko opened in the previous turn).
+        thread_ownership_block = ""
+        if self._thread_ownership_provider is not None:
+            with _timed_phase(provider_ms, "thread_ownership"):
+                try:
+                    thread_ownership_block = (
+                        self._thread_ownership_provider(user_text) or ""
+                    )
+                except Exception:
+                    log.debug(
+                        "thread ownership provider raised", exc_info=True,
+                    )
+                    thread_ownership_block = ""
+
         # K16: unified ambient grounding line. Always built (the
         # provider itself short-circuits to ``""`` when the mode is
         # ``off``); the suppression of the granular ambient blocks
@@ -2718,6 +2745,13 @@ class PromptAssembler:
             # imperative in the prompt and the blocks below it
             # (wants / curiosity / gaps) supply its material.
             system_parts.append(initiative_block)
+        if thread_ownership_block:
+            # K55: the one-shot circle-back cue. Sits directly under
+            # the initiative directive — same family (Aiko holding
+            # her own thread), and the two never fire on the same
+            # turn (the thread was opened BY the last directive, so
+            # the cadence counter just reset).
+            system_parts.append(thread_ownership_block)
         if wants_block:
             # K52: wants ledger — leads the "things on Aiko's mind"
             # cluster because it carries the strongest directive

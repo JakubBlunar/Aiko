@@ -762,6 +762,18 @@ class AgentSettings:
     # directive silently (the escape hatch); the counter does not
     # reset, so the next short turn fires instead.
     initiative_substantial_chars: int = 240
+    # ── K55 thread ownership — she defends what she opened ───────────
+    # Master switch. When a K53 directive / K52 imperative fires, the
+    # turn is stamped as Aiko's thread; a short pivot away in the
+    # next user reply grants exactly one "circle back" cue.
+    thread_ownership_enabled: bool = True
+    # Replies at or above this many characters count as engaged when
+    # no embedding comparison is available (length-only fallback).
+    thread_engaged_chars: int = 80
+    # Cosine threshold between the user reply and the opened-topic
+    # embedding at or above which the reply counts as engaged
+    # regardless of length ("yeah I loved it" is an answer).
+    thread_min_topical_similarity: float = 0.30
     # Cosine threshold consumed by
     # :meth:`app.core.conversation.topic_graph.TopicGraph.is_close_to_any_cluster`
     # when the seed worker filters LLM candidates. Anything cosine-
@@ -3409,6 +3421,21 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             initiative_substantial_chars=max(
                 1,
                 int(agent_raw.get("initiative_substantial_chars", 240)),
+            ),
+            thread_ownership_enabled=bool(
+                agent_raw.get("thread_ownership_enabled", True),
+            ),
+            thread_engaged_chars=max(
+                1, int(agent_raw.get("thread_engaged_chars", 80)),
+            ),
+            thread_min_topical_similarity=min(
+                1.0,
+                max(
+                    0.0,
+                    float(
+                        agent_raw.get("thread_min_topical_similarity", 0.30)
+                    ),
+                ),
             ),
             grounding_line_mode=_parse_grounding_line_mode(
                 agent_raw.get("grounding_line_mode", "off"),

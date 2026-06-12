@@ -2019,3 +2019,50 @@ class PostTurnMixin:
                             )
             except Exception:
                 log.debug("wants acted-on hook raised", exc_info=True)
+
+        # K55 — thread-ownership stamp. When this turn carried a K53
+        # initiative directive or a K52 imperative want (the provider
+        # armed ``_pending_thread_open`` at assembly time), record the
+        # opened topic + its embedding so the NEXT user reply gets
+        # exactly one engaged-or-pivot evaluation. The flag is
+        # consumed unconditionally so a disabled switch can't leave a
+        # stale pending stamp behind.
+        pending_open = getattr(self, "_pending_thread_open", None)
+        self._pending_thread_open = None
+        if (
+            pending_open is not None
+            and agent_settings is not None
+            and bool(
+                getattr(agent_settings, "thread_ownership_enabled", True)
+            )
+        ):
+            try:
+                from app.core.conversation import thread_ownership as _town
+
+                topic = _town.derive_topic(
+                    pending_open.get("topic"), assistant_text or "",
+                )
+                if topic:
+                    embedding = None
+                    embedder = getattr(self, "_embedder", None)
+                    if embedder is not None:
+                        try:
+                            embedding = embedder.embed(topic)
+                        except Exception:
+                            embedding = None
+                    self._owned_thread = _town.OwnedThread(
+                        topic=topic,
+                        source=str(
+                            pending_open.get("source") or "initiative"
+                        ),
+                        embedding=embedding,
+                    )
+                    log.info(
+                        "thread-ownership stamp: source=%s embedded=%s "
+                        "topic=%s",
+                        self._owned_thread.source,
+                        embedding is not None,
+                        topic[:80],
+                    )
+            except Exception:
+                log.debug("thread ownership stamp raised", exc_info=True)

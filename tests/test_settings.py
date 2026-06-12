@@ -1545,6 +1545,9 @@ class WillFamilySettingsTests(unittest.TestCase):
         "initiative_base_period",
         "initiative_warmup_turns",
         "initiative_substantial_chars",
+        "thread_ownership_enabled",
+        "thread_engaged_chars",
+        "thread_min_topical_similarity",
     )
 
     def setUp(self) -> None:
@@ -1586,6 +1589,9 @@ class WillFamilySettingsTests(unittest.TestCase):
         self.assertEqual(agent.initiative_base_period, 8)
         self.assertEqual(agent.initiative_warmup_turns, 3)
         self.assertEqual(agent.initiative_substantial_chars, 240)
+        self.assertTrue(agent.thread_ownership_enabled)
+        self.assertEqual(agent.thread_engaged_chars, 80)
+        self.assertEqual(agent.thread_min_topical_similarity, 0.30)
 
     def test_overrides_round_trip(self) -> None:
         result = load_settings(config_path=self._write_config({
@@ -1595,6 +1601,9 @@ class WillFamilySettingsTests(unittest.TestCase):
             "wants_cap": 4,
             "initiative_turns_enabled": False,
             "initiative_base_period": 12,
+            "thread_ownership_enabled": False,
+            "thread_engaged_chars": 120,
+            "thread_min_topical_similarity": 0.5,
         }))
         agent = result.agent
         self.assertFalse(agent.wants_ledger_enabled)
@@ -1603,6 +1612,9 @@ class WillFamilySettingsTests(unittest.TestCase):
         self.assertEqual(agent.wants_cap, 4)
         self.assertFalse(agent.initiative_turns_enabled)
         self.assertEqual(agent.initiative_base_period, 12)
+        self.assertFalse(agent.thread_ownership_enabled)
+        self.assertEqual(agent.thread_engaged_chars, 120)
+        self.assertEqual(agent.thread_min_topical_similarity, 0.5)
 
     def test_clamps(self) -> None:
         result = load_settings(config_path=self._write_config({
@@ -1614,6 +1626,8 @@ class WillFamilySettingsTests(unittest.TestCase):
             "initiative_base_period": 1,
             "initiative_warmup_turns": -2,
             "initiative_substantial_chars": 0,
+            "thread_engaged_chars": 0,
+            "thread_min_topical_similarity": 7.0,
         }))
         agent = result.agent
         self.assertEqual(agent.wants_growth_per_day, 0.0)
@@ -1624,6 +1638,8 @@ class WillFamilySettingsTests(unittest.TestCase):
         self.assertEqual(agent.initiative_base_period, 3)
         self.assertEqual(agent.initiative_warmup_turns, 0)
         self.assertEqual(agent.initiative_substantial_chars, 1)
+        self.assertEqual(agent.thread_engaged_chars, 1)
+        self.assertEqual(agent.thread_min_topical_similarity, 1.0)
 
 
 class DayColorSettingsTests(unittest.TestCase):
