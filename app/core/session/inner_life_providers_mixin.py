@@ -2754,6 +2754,131 @@ class InnerLifeProvidersMixin:
         header = "Quiet curiosity (only if a soft pivot lands naturally):"
         return header + "\n" + "\n".join(rendered)
 
+    def _render_initiative_block(self, user_text: str) -> str:
+        """K53: deterministic floor-taking directive.
+
+        Per-turn provider (takes the live ``user_text`` for the
+        substantial-message escape hatch). The
+        :class:`InitiativeDirector` counter lives on the controller
+        and is recreated lazily; every gate input is best-effort —
+        a sick store reads as its neutral value rather than
+        blocking the turn. MCP ``force_initiative_turn`` arms
+        ``_initiative_force_next`` to bypass everything except the
+        support/reflection arc block.
+        """
+        if not bool(
+            getattr(self._settings.agent, "initiative_turns_enabled", True)
+        ):
+            return ""
+        try:
+            from app.core.conversation import initiative_director as _idir
+
+            director = getattr(self, "_initiative_director", None)
+            if director is None:
+                director = _idir.InitiativeDirector()
+                self._initiative_director = director
+            agent = self._settings.agent
+
+            arc = None
+            arc_store = getattr(self, "_arc_store", None)
+            if arc_store is not None:
+                try:
+                    arc_state = arc_store.get_or_default(self._user_id)
+                    arc = getattr(arc_state, "arc", None)
+                except Exception:
+                    arc = None
+
+            closeness = comfort = None
+            axes_store = getattr(self, "_relationship_axes_store", None)
+            if axes_store is not None:
+                try:
+                    axes = axes_store.get(self._user_id)
+                    closeness = float(axes.closeness)
+                    comfort = float(axes.comfort)
+                except Exception:
+                    closeness = comfort = None
+
+            # K52 tie-in: read the ledger (no mutation — the wants
+            # provider owns growth) for both the imperative-active
+            # gate and the directive's content.
+            want_text = None
+            wants_imperative_active = False
+            chat_db = getattr(self, "_chat_db", None)
+            if chat_db is not None:
+                try:
+                    from datetime import datetime, timezone
+
+                    from app.core.conversation import wants_ledger as _wl
+
+                    state = _wl.deserialize(
+                        chat_db.kv_get(_wl.KV_WANTS_LEDGER)
+                    )
+                    if state.wants:
+                        strongest = max(
+                            state.wants, key=lambda w: w.pressure,
+                        )
+                        want_text = strongest.text
+                        threshold = float(
+                            getattr(
+                                agent, "wants_imperative_threshold", 0.7,
+                            )
+                        )
+                        wants_imperative_active = (
+                            strongest.pressure >= threshold
+                        )
+                except Exception:
+                    want_text = None
+                    wants_imperative_active = False
+
+            force = bool(getattr(self, "_initiative_force_next", False))
+            if force:
+                self._initiative_force_next = False
+
+            decision = director.note_turn_and_decide(
+                base_period=int(
+                    getattr(agent, "initiative_base_period", 8)
+                ),
+                arc=arc,
+                closeness=closeness,
+                comfort=comfort,
+                misattunement_active=(
+                    int(getattr(self, "_misattunement_cooldown", 0)) > 0
+                ),
+                rupture_active=(
+                    getattr(self, "_pending_rupture", None) is not None
+                ),
+                user_text=user_text or "",
+                substantial_chars=int(
+                    getattr(agent, "initiative_substantial_chars", 240)
+                ),
+                warmup_turns=int(
+                    getattr(agent, "initiative_warmup_turns", 3)
+                ),
+                wants_imperative_active=wants_imperative_active,
+                force=force,
+            )
+            log.debug(
+                "initiative-director: reason=%s turns=%d period=%d",
+                decision.reason,
+                director.turns_since_initiative,
+                decision.effective_period,
+            )
+            if not decision.fire:
+                return ""
+            log.info(
+                "initiative-turn fire: period=%d arc=%s want=%s",
+                decision.effective_period,
+                arc,
+                (want_text or "")[:60] or None,
+            )
+            return _idir.render_block(
+                want_text,
+                user_display_name=self.user_display_name,
+            )
+        except Exception:
+            log.debug("initiative block render failed", exc_info=True)
+            return ""
+
     def _render_wants_block(self) -> str:
         """K52: surface Aiko's wants ledger with pressure-driven bands.
 

@@ -747,6 +747,21 @@ class AgentSettings:
     # Feeder worker cadence (idle scheduler). Hourly matches the
     # other kv-backed maintenance workers.
     wants_worker_interval_seconds: float = 3600.0
+    # ── K53 initiative turns — deterministic floor-taking ────────────
+    # Master switch for the per-turn initiative directive ("this turn
+    # is yours"). Default ON — the scheduled directive is the
+    # highest-leverage piece of the will family.
+    initiative_turns_enabled: bool = True
+    # Base cadence in turns between directives, before arc / axes
+    # modulation (light arcs -2, cold axes +2/+4, floor 3).
+    initiative_base_period: int = 8
+    # Turns at the start of a session before the first directive can
+    # fire — turn 1 is never a floor-grab.
+    initiative_warmup_turns: int = 3
+    # User messages at or above this many characters skip the
+    # directive silently (the escape hatch); the counter does not
+    # reset, so the next short turn fires instead.
+    initiative_substantial_chars: int = 240
     # Cosine threshold consumed by
     # :meth:`app.core.conversation.topic_graph.TopicGraph.is_close_to_any_cluster`
     # when the seed worker filters LLM candidates. Anything cosine-
@@ -3381,6 +3396,19 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             wants_worker_interval_seconds=max(
                 30.0,
                 float(agent_raw.get("wants_worker_interval_seconds", 3600.0)),
+            ),
+            initiative_turns_enabled=bool(
+                agent_raw.get("initiative_turns_enabled", True),
+            ),
+            initiative_base_period=max(
+                3, int(agent_raw.get("initiative_base_period", 8)),
+            ),
+            initiative_warmup_turns=max(
+                0, int(agent_raw.get("initiative_warmup_turns", 3)),
+            ),
+            initiative_substantial_chars=max(
+                1,
+                int(agent_raw.get("initiative_substantial_chars", 240)),
             ),
             grounding_line_mode=_parse_grounding_line_mode(
                 agent_raw.get("grounding_line_mode", "off"),

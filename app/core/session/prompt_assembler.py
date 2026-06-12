@@ -524,6 +524,7 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         # ``aggressive`` — a parked task waiting for an answer is
         # exactly what tight prompts need to keep surfaced.
         "task_cues_block",
+        "initiative_block",
         "wants_block",
         "curiosity_seeds_block",
         "knowledge_gaps_block",
@@ -1006,6 +1007,10 @@ class PromptAssembler:
         # threshold, a single directive paragraph above it. Dropped
         # in aggressive mode alongside curiosity seeds.
         self._wants_provider: Callable[[], str] | None = None
+        # K53 initiative turns. Takes the live ``user_text`` (for the
+        # substantial-message escape hatch) and returns the one-turn
+        # "this turn is yours" directive on cadence, else "".
+        self._initiative_provider: Callable[[str], str] | None = None
         # K16 unified ambient grounding line. One paragraph that fuses
         # circadian/world/activity/affect/relationship/user_state/
         # ambient_noise into a single continuous-awareness sentence at
@@ -1159,6 +1164,7 @@ class PromptAssembler:
         vulnerability_budget: Callable[[], str] | None = None,
         curiosity_seeds: Callable[[], str] | None = None,
         wants: Callable[[], str] | None = None,
+        initiative: Callable[[str], str] | None = None,
         grounding_line: Callable[[], str] | None = None,
         user_reactions: Callable[[], str] | None = None,
         touch_state: Callable[[], str] | None = None,
@@ -1262,6 +1268,8 @@ class PromptAssembler:
             self._curiosity_seeds_provider = curiosity_seeds
         if wants is not None:
             self._wants_provider = wants
+        if initiative is not None:
+            self._initiative_provider = initiative
         if grounding_line is not None:
             self._grounding_line_provider = grounding_line
         if user_reactions is not None:
@@ -2193,6 +2201,21 @@ class PromptAssembler:
                 timing_name="wants",
             )
 
+        # K53: initiative directive. NOT gated on aggressive mode —
+        # the director's counter advances on every evaluated turn, so
+        # dropping the call here would silently lose a scheduled
+        # beat; the provider itself fires rarely (cadence + gates).
+        initiative_block = ""
+        if self._initiative_provider is not None:
+            with _timed_phase(provider_ms, "initiative"):
+                try:
+                    initiative_block = (
+                        self._initiative_provider(user_text) or ""
+                    )
+                except Exception:
+                    log.debug("initiative provider raised", exc_info=True)
+                    initiative_block = ""
+
         # K16: unified ambient grounding line. Always built (the
         # provider itself short-circuits to ``""`` when the mode is
         # ``off``); the suppression of the granular ambient blocks
@@ -2689,6 +2712,12 @@ class PromptAssembler:
             # escalation manager owns the "if she stayed silent,
             # nudge" path instead.
             system_parts.append(task_cues_block)
+        if initiative_block:
+            # K53: the one-turn floor-taking directive. Leads the
+            # "things on Aiko's mind" cluster — it's the strongest
+            # imperative in the prompt and the blocks below it
+            # (wants / curiosity / gaps) supply its material.
+            system_parts.append(initiative_block)
         if wants_block:
             # K52: wants ledger — leads the "things on Aiko's mind"
             # cluster because it carries the strongest directive
