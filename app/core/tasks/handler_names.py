@@ -37,6 +37,12 @@ HANDLER_FILE_READ = "file_read"
 # as a fast brain tool.
 HANDLER_FILE_WRITE = "file_write"
 
+# Vision handler — describe an image with the local worker (multimodal)
+# model. Read-only (no approval), reuses the already-loaded worker
+# Ollama client + model, reachable only as the ``describe_image``
+# ``WorkflowSkill`` child of a goal workflow.
+HANDLER_VISION_DESCRIBE = "vision_describe"
+
 # Nested-workflow handlers.
 #
 # * ``web_search`` — background DuckDuckGo lookup. Lives as a task
@@ -59,6 +65,7 @@ KNOWN_HANDLER_NAMES: tuple[str, ...] = (
     HANDLER_FILE_SEARCH,
     HANDLER_FILE_READ,
     HANDLER_FILE_WRITE,
+    HANDLER_VISION_DESCRIBE,
     HANDLER_WEB_SEARCH,
     HANDLER_GOAL_WORKFLOW,
 )
@@ -68,6 +75,7 @@ __all__ = [
     "HANDLER_FILE_SEARCH",
     "HANDLER_FILE_READ",
     "HANDLER_FILE_WRITE",
+    "HANDLER_VISION_DESCRIBE",
     "HANDLER_WEB_SEARCH",
     "HANDLER_GOAL_WORKFLOW",
     "KNOWN_HANDLER_NAMES",

@@ -199,6 +199,10 @@ export function SessionSidebar({
           ...(row.gestures && row.gestures.length > 0
             ? { gestures: row.gestures }
             : {}),
+          // D2 Part B: restore attachment chips/thumbnails on reload.
+          ...(row.attachments && row.attachments.length > 0
+            ? { attachments: row.attachments }
+            : {}),
         }));
         setMessages(mapped);
       })

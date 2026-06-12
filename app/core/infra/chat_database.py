@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_SCHEMA_VERSION = 17
+_SCHEMA_VERSION = 18
 
 _CREATE_TABLES = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -35,7 +35,14 @@ CREATE TABLE IF NOT EXISTS messages (
     -- kind -> count (e.g. ``{"heart": 1, "laugh": 1}``). NULL on
     -- messages with no reactions. The taxonomy lives in
     -- ``app/core/relationship/user_reactions.py``.
-    reactions TEXT
+    reactions TEXT,
+    -- Schema v18: D2 Part B in-chat attachments. JSON array of
+    -- ``{id, filename, kind, rel_path, bytes}`` for files the user
+    -- attached to this message (images / text). NULL on messages with
+    -- no attachment. Lets the bubble re-render chips/thumbnails on
+    -- reload. The files live under the managed ``data/attachments/``
+    -- root (label ``Attachments``).
+    attachments TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at);
 
@@ -510,6 +517,10 @@ class MessageRow:
     # for the producer paths.
     gestures: str | None = None
     reactions: str | None = None
+    # Schema v18: D2 Part B in-chat attachments. JSON array of
+    # ``{id, filename, kind, rel_path, bytes}`` for files the user
+    # attached to this message. NULL when nothing's attached.
+    attachments: str | None = None
 
 
 @dataclass(slots=True)
@@ -860,6 +871,19 @@ class ChatDatabase:
                 conn.execute(stmt)
             except sqlite3.OperationalError:
                 pass
+        # v17 -> v18: D2 Part B in-chat attachments. ``messages.attachments``
+        # stores a JSON array of ``{id, filename, kind, rel_path, bytes}``
+        # for files the user attached to a message. Defaults NULL so
+        # historical rows stay clean. Accessed by message_id PK only (no
+        # index). Wrapped in try/except so a partially-upgraded DB
+        # doesn't trip the boot path.
+        for stmt in (
+            "ALTER TABLE messages ADD COLUMN attachments TEXT",
+        ):
+            try:
+                conn.execute(stmt)
+            except sqlite3.OperationalError:
+                pass
         conn.execute("UPDATE schema_version SET version = ?", (_SCHEMA_VERSION,))
         conn.commit()
 
@@ -979,13 +1003,14 @@ class ChatDatabase:
         *,
         arc: str | None = None,
         dialogue_act: str | None = None,
+        attachments: str | None = None,
     ) -> int:
         conn = self._get_conn()
         created_at = _now_iso()
         cursor = conn.execute(
-            "INSERT INTO messages (session_id, role, content, token_count, created_at, arc, dialogue_act) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (session_id, role, content, token_count, created_at, arc, dialogue_act),
+            "INSERT INTO messages (session_id, role, content, token_count, created_at, arc, dialogue_act, attachments) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (session_id, role, content, token_count, created_at, arc, dialogue_act, attachments),
         )
         conn.commit()
         msg_id = int(cursor.lastrowid or 0)
@@ -999,6 +1024,7 @@ class ChatDatabase:
                 created_at=created_at,
                 arc=arc,
                 dialogue_act=dialogue_act,
+                attachments=attachments,
             )
             for listener in list(self._add_listeners):
                 try:
@@ -1052,7 +1078,7 @@ class ChatDatabase:
         conn = self._get_conn()
         row = conn.execute(
             "SELECT id, session_id, role, content, token_count, "
-            "       created_at, arc, dialogue_act, gestures, reactions "
+            "       created_at, arc, dialogue_act, gestures, reactions, attachments "
             "FROM messages WHERE id = ?",
             (int(message_id),),
         ).fetchone()
@@ -1176,7 +1202,7 @@ class ChatDatabase:
         conn = self._get_conn()
         select = (
             "SELECT id, session_id, role, content, token_count, created_at, "
-            "       arc, dialogue_act, gestures, reactions "
+            "       arc, dialogue_act, gestures, reactions, attachments "
             "FROM messages WHERE session_id = ?"
         )
         if offset and limit:

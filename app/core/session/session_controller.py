@@ -22,6 +22,7 @@ already use, so callers don't have to change.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -595,6 +596,11 @@ class SessionController(
         # the prompt cue to "Jacob just reacted x500 times".
         from collections import deque
         self._pending_user_reactions: deque[tuple[int, str]] = deque(maxlen=10)
+        # D2 Part B — attachments the user added to the message being
+        # processed THIS turn. Set at the top of ``chat_once_streaming``
+        # and read by the ``attachments`` inner-life provider; reset to
+        # empty on every turn so a stale value never re-surfaces.
+        self._active_turn_attachments: list[dict] = []
         # K32 broadcast listeners. ``app/web/server.py`` registers a
         # ``message_reaction_updated`` broadcaster here so both
         # webviews re-render the reaction strip.
@@ -1577,6 +1583,7 @@ class SessionController(
             grounding_line=self._render_grounding_line,
             user_reactions=self._render_user_reactions_block,
             touch_state=self._render_touch_state_block,
+            attachments=self._render_attachments_block,
         )
         self._prompt_assembler.set_pinned_self_memories_provider(
             self._top_pinned_self_memories,
@@ -6036,11 +6043,17 @@ class SessionController(
         stt_ms: float = 0.0,
         user_vocal_tone: str | None = None,
         _resume_message_id: int | None = None,
+        attachments: "list[dict] | None" = None,
     ) -> str:
         _ = user_vocal_tone  # not used in v1; reserved for prosody hints
         cleaned = sanitize_user_text(user_text or "")
         if not cleaned:
             return ""
+        # D2 Part B — normalise the turn's attachments and stash them so
+        # the ``attachments`` inner-life provider can render the turn
+        # hint during prompt assembly. Reset every turn (empty list) so
+        # a previous turn's attachments never leak forward.
+        self._active_turn_attachments = list(attachments or [])
         # K14: stash the turn's mode so ``_post_turn_inner_life`` can
         # route the engagement signal correctly (voice: latency feeds
         # closeness drift; typed: latency feeds absence-curiosity).
@@ -6085,11 +6098,18 @@ class SessionController(
                 user_message_id, len(cleaned),
             )
         else:
+            attachments_json: str | None = None
+            if self._active_turn_attachments:
+                try:
+                    attachments_json = json.dumps(self._active_turn_attachments)
+                except (TypeError, ValueError):
+                    attachments_json = None
             user_message_id = self._chat_db.add_message(
                 session_id=session_key,
                 role="user",
                 content=cleaned,
                 token_count=estimate_tokens(cleaned),
+                attachments=attachments_json,
             )
 
         if mode == "live":

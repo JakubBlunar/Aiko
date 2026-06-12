@@ -4,6 +4,7 @@ import { backendBase } from "./desktop/runtime";
 import type {
   AccessoryCatalogue,
   AssistantSettings,
+  AttachmentRef,
   AvatarProfile,
   AvatarResponse,
   AvatarSettingsKnobs,
@@ -70,6 +71,8 @@ interface RawMessage {
   reactions?: Record<string, number> | null;
   /** K31: persisted touch-gesture kinds Aiko emitted on this message. */
   gestures?: string[] | null;
+  /** D2 Part B: persisted in-chat attachments restored on reload. */
+  attachments?: AttachmentRef[] | null;
 }
 
 async function jsonFetch<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
@@ -469,6 +472,27 @@ export const api = {
       `/api/documents/${encodeURIComponent(document_id)}`,
       { method: "DELETE" },
     ),
+  // ── In-chat attachments (D2 Part B) ──────────────────────────────
+  uploadAttachment: async (file: File): Promise<AttachmentRef> => {
+    const form = new FormData();
+    form.append("file", file);
+    const res = await jsonFetch<{ attachment: AttachmentRef }>(
+      "/api/chat/attachments",
+      { method: "POST", body: form },
+    );
+    return res.attachment;
+  },
+  deleteAttachment: (rel_path: string) => {
+    // rel_path is "Attachments:<uuid><ext>"; the endpoint takes the
+    // stored name (everything after the colon).
+    const storedName = rel_path.includes(":")
+      ? rel_path.split(":").slice(1).join(":")
+      : rel_path;
+    return jsonFetch<{ deleted: boolean; stored_name: string }>(
+      `/api/chat/attachments/${encodeURIComponent(storedName)}`,
+      { method: "DELETE" },
+    );
+  },
   // ── World (Aiko's room) ──────────────────────────────────────────
   getWorld: () => jsonFetch<WorldSnapshot>("/api/world"),
   patchWorldState: (patch: WorldStatePatch) =>

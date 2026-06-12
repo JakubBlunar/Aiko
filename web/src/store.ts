@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { DEFAULT_LOGGING_SETTINGS } from "./types";
 import type {
+  AttachmentRef,
   AvatarMotionState,
   AvatarOverlayState,
   AvatarProfile,
@@ -147,6 +148,10 @@ interface AssistantState {
     backendId: number,
     reactions: Record<string, number>,
   ) => void;
+  /** D2 Part B: stamp the attachments the user sent onto the most
+   * recent user bubble. Driven by the ``user_attachments`` WS event
+   * that follows the generic ``message`` broadcast for a typed turn. */
+  attachLastUserAttachments: (attachments: AttachmentRef[]) => void;
   /** K31: stamp the kinds Aiko emitted this turn onto an assistant
    * bubble. Driven by the ``avatar_touch`` WS event so the badge
    * appears the instant the rig leans in (independent of the
@@ -863,6 +868,18 @@ export const useAssistantStore = create<AssistantState>((set) => ({
         m.backendId === backendId ? { ...m, reactions: { ...reactions } } : m,
       ),
     })),
+  attachLastUserAttachments: (attachments) =>
+    set((state) => {
+      if (!attachments || attachments.length === 0) return state;
+      for (let i = state.messages.length - 1; i >= 0; i -= 1) {
+        if (state.messages[i].role === "user") {
+          const next = [...state.messages];
+          next[i] = { ...next[i], attachments: [...attachments] };
+          return { messages: next };
+        }
+      }
+      return state;
+    }),
   appendGestureToCurrentTurn: (kind) =>
     set((state) => {
       // Prefer the streaming bubble if one is in flight (the

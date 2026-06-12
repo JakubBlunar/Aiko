@@ -181,6 +181,14 @@ export function useAssistantSocket(): {
         }
         break;
 
+      case "user_attachments":
+        // D2 Part B: stamp the just-appended user bubble with the
+        // attachments the client uploaded for this turn so the chips /
+        // thumbnails render live (history reloads pick them up from
+        // ``messages.attachments``).
+        store.attachLastUserAttachments(evt.attachments);
+        break;
+
       case "token":
         if (!store.turnInProgress) {
           store.setTurnInProgress(true);

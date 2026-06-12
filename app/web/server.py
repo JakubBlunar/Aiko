@@ -789,6 +789,7 @@ def create_web_app(session: "SessionController") -> FastAPI:
                 "created_at": r.created_at,
                 "reactions": _json_or_none(r.reactions),
                 "gestures": _json_or_none(r.gestures),
+                "attachments": _json_or_none(r.attachments),
             }
             for r in rows
         ])
@@ -3121,6 +3122,57 @@ def create_web_app(session: "SessionController") -> FastAPI:
             raise HTTPException(404, "document not found")
         return JSONResponse({"deleted": document_id, "documents": ingestor.list_documents()})
 
+    # ── REST: in-chat attachments (D2 Part B) ───────────────────────
+    #
+    # Images + text files dropped into the chat composer. They land in
+    # the managed ``data/attachments/`` root (auto-registered read-only
+    # sandbox root) so Aiko can resolve ``Attachments:<file>`` through
+    # the describe_image / read_file workflow skills. No bytes are sent
+    # to the cloud chat model — the worker (local) model reads them.
+
+    @app.post("/api/chat/attachments")
+    async def upload_attachment(file: UploadFile = File(...)) -> JSONResponse:
+        from app.core.tasks.attachments import (
+            DEFAULT_MAX_ATTACHMENT_BYTES,
+            save_attachment,
+        )
+
+        if not file.filename:
+            raise HTTPException(400, "missing filename")
+        body = await file.read()
+        if len(body) == 0:
+            raise HTTPException(400, "uploaded file is empty")
+        # Image allow-list mirrors the live vision config; text set uses
+        # the module default. Byte cap rides the vision cap when set.
+        vision_cfg = getattr(session._settings.agent, "vision", None)
+        image_exts = tuple(
+            getattr(vision_cfg, "allowed_extensions", ()) or ()
+        ) or None
+        max_bytes = int(
+            getattr(vision_cfg, "max_bytes", DEFAULT_MAX_ATTACHMENT_BYTES)
+            or DEFAULT_MAX_ATTACHMENT_BYTES
+        )
+        try:
+            saved = save_attachment(
+                data=body,
+                filename=file.filename,
+                image_extensions=image_exts,
+                max_bytes=max_bytes,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except Exception as exc:
+            log.exception("attachment save failed")
+            raise HTTPException(500, f"attachment save failed: {exc}") from exc
+        return JSONResponse({"attachment": saved.as_dict()})
+
+    @app.delete("/api/chat/attachments/{stored_name}")
+    def delete_attachment_endpoint(stored_name: str) -> JSONResponse:
+        from app.core.tasks.attachments import delete_attachment
+
+        ok = delete_attachment(stored_name)
+        return JSONResponse({"deleted": bool(ok), "stored_name": stored_name})
+
     # ── Avatar / static assets ──────────────────────────────────────
 
     # Bundled Live2D avatar (Alexia by default). The directory is
@@ -3133,6 +3185,18 @@ def create_web_app(session: "SessionController") -> FastAPI:
         "/avatar",
         StaticFiles(directory=str(avatar_root), check_dir=False),
         name="avatar",
+    )
+
+    # D2 Part B: serve uploaded in-chat attachments so the composer +
+    # chat bubbles can render image thumbnails. The dir is the managed
+    # ``Attachments`` sandbox root; gitignored + auto-created.
+    from app.core.tasks.attachments import ensure_attachments_dir
+
+    _attach_dir = ensure_attachments_dir()
+    app.mount(
+        "/attachment-files",
+        StaticFiles(directory=str(_attach_dir), check_dir=False),
+        name="attachment-files",
     )
 
     # Self-image text mount (data/persona/self_image.txt). Renamed to
@@ -3159,7 +3223,7 @@ def create_web_app(session: "SessionController") -> FastAPI:
         # SPA fallback: every non-API GET returns index.html so React Router works.
         @app.get("/{full_path:path}")
         def spa_fallback(full_path: str) -> FileResponse:
-            if full_path.startswith(("api/", "ws", "avatar/", "persona-text/", "assets/", "live2d/")):
+            if full_path.startswith(("api/", "ws", "avatar/", "attachment-files/", "persona-text/", "assets/", "live2d/")):
                 raise HTTPException(404, "not found")
             target = _DIST_DIR / full_path
             if target.is_file():
@@ -3366,8 +3430,15 @@ def create_web_app(session: "SessionController") -> FastAPI:
                             "message": "A turn is already in progress; send 'stop' first.",
                         }))
                         continue
+                    # D2 Part B — optional in-chat attachments. Each is a
+                    # ``{id, filename, kind, rel_path, bytes}`` ref the
+                    # client got back from ``POST /api/chat/attachments``.
+                    # We only forward well-formed refs that point at the
+                    # managed ``Attachments`` root (never trust a
+                    # client-supplied path into another root).
+                    attachments = _sanitize_attachment_refs(msg.get("attachments"))
                     active_turn = threading.Event()
-                    _spawn_chat_turn(session, hub, text, active_turn)
+                    _spawn_chat_turn(session, hub, text, active_turn, attachments)
 
                 elif msg_type == "stop":
                     if active_turn is not None:
@@ -3522,11 +3593,49 @@ def create_web_app(session: "SessionController") -> FastAPI:
     return app
 
 
+def _sanitize_attachment_refs(raw: Any) -> list[dict]:
+    """Validate client-supplied attachment refs from a ``chat`` command.
+
+    Each ref must be a dict carrying a ``rel_path`` that targets the
+    managed ``Attachments`` root (``Attachments:<name>``). Anything else
+    — a path into another root, a missing rel_path, a non-dict — is
+    dropped so a buggy/hostile client can't point Aiko at an arbitrary
+    file via the attachment side-channel. Only the small allow-listed
+    fields are kept.
+    """
+    from app.core.tasks.attachments import ATTACHMENTS_LABEL
+
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    prefix = ATTACHMENTS_LABEL + ":"
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        rel = str(item.get("rel_path") or "").strip()
+        if not rel.startswith(prefix) or "/" in rel or "\\" in rel:
+            continue
+        kind = str(item.get("kind") or "").strip().lower()
+        if kind not in ("image", "text"):
+            continue
+        out.append({
+            "id": str(item.get("id") or "").strip(),
+            "filename": str(item.get("filename") or "").strip(),
+            "kind": kind,
+            "rel_path": rel,
+            "bytes": int(item.get("bytes") or 0),
+        })
+        if len(out) >= 8:
+            break
+    return out
+
+
 def _spawn_chat_turn(
     session: "SessionController",
     hub: _Hub,
     text: str,
     done_event: threading.Event,
+    attachments: list[dict] | None = None,
 ) -> None:
     """Run a chat turn on a worker thread, streaming tokens via the hub.
 
@@ -3554,6 +3663,16 @@ def _spawn_chat_turn(
     def _run() -> None:
         try:
             session._notify_message("You", text)
+            # D2 Part B: the user bubble is created from the
+            # ``_notify_message`` broadcast above (which has no
+            # attachment channel); follow it with a dedicated event so
+            # the live bubble renders the chips/thumbnails. History
+            # reloads pick the same data off ``messages.attachments``.
+            if attachments:
+                hub.broadcast({
+                    "type": "user_attachments",
+                    "attachments": attachments,
+                })
 
             def on_token(chunk: str) -> None:
                 if chunk:
@@ -3576,6 +3695,7 @@ def _spawn_chat_turn(
                 on_token=on_token,
                 on_generation_status=on_status,
                 stop_requested=stop_requested,
+                attachments=attachments,
             )
             session._notify_message("Assistant", reply or "")
             _metrics = session.get_last_metrics() or {}

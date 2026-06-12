@@ -505,6 +505,9 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "vulnerability_budget_block",
         "touch_state_block",
         "user_reactions_block",
+        # D2 Part B — in-chat attachment turn hint (per-turn; what the
+        # user attached to THIS message). NOT dropped under aggressive.
+        "attachments_block",
         # Brain orchestration chunk 6 — running-tasks state block.
         # Sibling of ``task_cues_block``: this block announces what's
         # *still working*, the cue block announces *deltas*
@@ -952,6 +955,16 @@ class PromptAssembler:
         # ``""`` on the common case; not suppressed under aggressive
         # because it's a sub-line cue.
         self._touch_state_provider: Callable[[], str] | None = None
+        # D2 Part B — in-chat attachment turn hint. When the user
+        # attached image / text files to the message being processed
+        # this turn, the provider renders a one-line list of
+        # ``Attachments:<file> (image|text)`` paths + tells Aiko to act
+        # on them via ``start_workflow`` (describe_image / read_file).
+        # Reads per-turn session state set at the top of
+        # ``chat_once_streaming``; silent when nothing is attached. NOT
+        # suppressed under ``aggressive`` — a fresh attachment is
+        # exactly what the user wants acted on.
+        self._attachments_provider: Callable[[], str] | None = None
         # Brain-orchestration chunk 6 — running-tasks state block.
         # Sibling of ``_task_cues_provider`` below: this provider
         # renders what's *still working* (state), the other renders
@@ -1142,6 +1155,7 @@ class PromptAssembler:
         grounding_line: Callable[[], str] | None = None,
         user_reactions: Callable[[], str] | None = None,
         touch_state: Callable[[], str] | None = None,
+        attachments: Callable[[], str] | None = None,
         task_cues: Callable[[], str] | None = None,
         running_tasks: Callable[[], str] | None = None,
     ) -> None:
@@ -1245,6 +1259,8 @@ class PromptAssembler:
             self._user_reactions_provider = user_reactions
         if touch_state is not None:
             self._touch_state_provider = touch_state
+        if attachments is not None:
+            self._attachments_provider = attachments
         if task_cues is not None:
             self._task_cues_provider = task_cues
         if running_tasks is not None:
@@ -2109,6 +2125,21 @@ class PromptAssembler:
                     )
                     touch_state_block = ""
 
+        # D2 Part B — in-chat attachment turn hint. One line listing the
+        # files the user attached to this turn's message + a nudge to
+        # act on them via ``start_workflow``. Silent when nothing's
+        # attached.
+        attachments_block = ""
+        if self._attachments_provider is not None:
+            with _timed_phase(provider_ms, "attachments"):
+                try:
+                    attachments_block = self._attachments_provider() or ""
+                except Exception:
+                    log.debug(
+                        "attachments provider raised", exc_info=True,
+                    )
+                    attachments_block = ""
+
         # K13: stylometric mirror. One short "How Jacob writes lately"
         # line that shapes Aiko's register across days. Unlike the
         # K6/K18/anti-rut cues this block is intentionally NOT gated
@@ -2609,6 +2640,13 @@ class PromptAssembler:
             # the prompt context. Drained by the provider on
             # render so it never re-fires on the next turn.
             system_parts.append(user_reactions_block)
+        if attachments_block:
+            # D2 Part B: in-chat attachment turn hint. Lands right
+            # before the running/parked task blocks so the "the user
+            # just handed me these files -> hand them to start_workflow"
+            # beat reads adjacent to the task machinery it triggers.
+            # Per-turn (reflects only what was attached to THIS message).
+            system_parts.append(attachments_block)
         if running_tasks_block:
             # Brain-orchestration chunk 6: running-tasks state
             # block. Lands BEFORE task_cues_block so the prompt
