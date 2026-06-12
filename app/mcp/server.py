@@ -2388,6 +2388,76 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"force_want_imperative raised: {exc}"
 
     @mcp.tool()
+    def get_initiative_state() -> str:
+        """K53 — dump the initiative-turns director state.
+
+        Returns the master switch, the per-session counters
+        (``turns_since_initiative`` / ``session_turn_count``), the
+        last decision (fire / reason / effective period), the armed
+        force flag, and the settings knobs. The director is lazily
+        created on the first evaluated turn — ``null`` counters mean
+        no turn has been evaluated yet this session.
+        """
+        try:
+            agent = session._settings.agent
+            director = getattr(session, "_initiative_director", None)
+            last = getattr(director, "last_decision", None)
+            payload = {
+                "enabled": bool(
+                    getattr(agent, "initiative_turns_enabled", True)
+                ),
+                "turns_since_initiative": (
+                    director.turns_since_initiative
+                    if director is not None else None
+                ),
+                "session_turn_count": (
+                    director.session_turn_count
+                    if director is not None else None
+                ),
+                "last_decision": (
+                    {
+                        "fire": last.fire,
+                        "reason": last.reason,
+                        "effective_period": last.effective_period,
+                    }
+                    if last is not None else None
+                ),
+                "force_armed": bool(
+                    getattr(session, "_initiative_force_next", False)
+                ),
+                "settings": {
+                    "base_period": int(
+                        getattr(agent, "initiative_base_period", 8)
+                    ),
+                    "warmup_turns": int(
+                        getattr(agent, "initiative_warmup_turns", 3)
+                    ),
+                    "substantial_chars": int(
+                        getattr(agent, "initiative_substantial_chars", 240)
+                    ),
+                },
+            }
+            return json.dumps(payload, indent=2)
+        except Exception as exc:
+            return f"get_initiative_state raised: {exc}"
+
+    @mcp.tool()
+    def force_initiative_turn() -> str:
+        """K53 — arm a one-shot initiative directive.
+
+        The next turn's provider bypasses every gate except the
+        support / reflection arc block and renders the "this turn is
+        yours" directive (pointing at the strongest live K52 want
+        when one exists). Verify via
+        ``get_last_response_detail.system_prompt``.
+        """
+        try:
+            session._initiative_force_next = True
+            return json.dumps({"armed": True})
+        except Exception as exc:
+            return f"force_initiative_turn raised: {exc}"
+
+    @mcp.tool()
     def clear_wants() -> str:
         """K52 — wipe the wants ledger (wants + re-entry cooldowns)."""
         try:

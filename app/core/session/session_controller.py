@@ -1581,6 +1581,7 @@ class SessionController(
             self_noticing=self._render_self_noticing_block,
             curiosity_seeds=self._render_curiosity_seeds_block,
             wants=self._render_wants_block,
+            initiative=self._render_initiative_block,
             grounding_line=self._render_grounding_line,
             user_reactions=self._render_user_reactions_block,
             touch_state=self._render_touch_state_block,
@@ -3527,6 +3528,9 @@ class SessionController(
         # K38 — wipe the self-correction slot + cooldown on switch.
         self._pending_self_correction = None
         self._self_correction_cooldown_remaining = 0
+        # K53 — fresh initiative counter per session (warmup applies
+        # again so a new session never opens with a floor-grab).
+        self._initiative_director = None
         # Best-effort: a write failure (read-only volume, locked file)
         # must not break the in-memory switch — the user just lands
         # back on whatever was previously persisted on next launch.
@@ -3607,6 +3611,8 @@ class SessionController(
         # K38 — clear the self-correction slot + cooldown on a wipe.
         self._pending_self_correction = None
         self._self_correction_cooldown_remaining = 0
+        # K53 — a full wipe restarts the initiative cadence + warmup.
+        self._initiative_director = None
 
     def _clear_merge_buffer(self, session_key: str | None = None) -> None:
         """Drop the voice merge buffer (one specific session, or all).
