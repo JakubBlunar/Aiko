@@ -2285,5 +2285,94 @@ class TaskApprovalAndFileWriteSettingsTests(unittest.TestCase):
         self.assertEqual(a.file_write.allowed_extensions, (".txt", ".md"))
 
 
+class VisionSettingsTests(unittest.TestCase):
+    """The nested ``agent.vision`` block (describe_image capability)."""
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(
+        self,
+        agent_extra: dict | None = None,
+        strip_keys: tuple[str, ...] = (),
+    ) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(
+            json.loads(default_path.read_text(encoding="utf-8"))
+        )
+        for k in strip_keys:
+            cfg.get("agent", {}).pop(k, None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults_when_block_missing(self) -> None:
+        path = self._write_config(strip_keys=("vision",))
+        v = load_settings(config_path=path).agent.vision
+        self.assertFalse(v.enabled)
+        self.assertEqual(v.model, "")
+        self.assertEqual(v.max_bytes, 8 * 1024 * 1024)
+        self.assertEqual(v.timeout_seconds, 180)
+        self.assertIn(".png", v.allowed_extensions)
+        self.assertTrue(v.default_prompt)
+
+    def test_default_config_block_matches(self) -> None:
+        path = self._write_config()
+        v = load_settings(config_path=path).agent.vision
+        self.assertFalse(v.enabled)
+        self.assertIn(".jpg", v.allowed_extensions)
+
+    def test_enabled_override_and_model(self) -> None:
+        path = self._write_config(
+            agent_extra={
+                "vision": {"enabled": True, "model": "qwen3.5:27b"}
+            }
+        )
+        v = load_settings(config_path=path).agent.vision
+        self.assertTrue(v.enabled)
+        self.assertEqual(v.model, "qwen3.5:27b")
+
+    def test_clamps_and_extension_normalisation(self) -> None:
+        path = self._write_config(
+            agent_extra={
+                "vision": {
+                    "enabled": True,
+                    "max_bytes": 5,  # below 1 KiB floor
+                    "timeout_seconds": 1,  # below 5s floor
+                    "allowed_extensions": ["PNG", ".webp"],
+                }
+            }
+        )
+        v = load_settings(config_path=path).agent.vision
+        self.assertEqual(v.max_bytes, 1024)
+        self.assertEqual(v.timeout_seconds, 5)
+        self.assertEqual(v.allowed_extensions, (".png", ".webp"))
+
+    def test_max_bytes_upper_clamp(self) -> None:
+        path = self._write_config(
+            agent_extra={"vision": {"max_bytes": 999 * 1024 * 1024}}
+        )
+        v = load_settings(config_path=path).agent.vision
+        self.assertEqual(v.max_bytes, 64 * 1024 * 1024)
+
+    def test_blank_prompt_falls_back_to_default(self) -> None:
+        path = self._write_config(
+            agent_extra={"vision": {"default_prompt": "   "}}
+        )
+        v = load_settings(config_path=path).agent.vision
+        self.assertTrue(v.default_prompt.strip())
+
+
 if __name__ == "__main__":
     unittest.main()

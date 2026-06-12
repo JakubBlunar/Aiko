@@ -1,9 +1,15 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { api } from "../api";
+import { backendBase } from "../desktop/runtime";
 import { useMicCapture } from "../hooks/useMicCapture";
 import { useAssistantStore } from "../store";
-import type { ToolEvent, VoiceMode, WsClientCommand } from "../types";
+import type {
+  AttachmentRef,
+  ToolEvent,
+  VoiceMode,
+  WsClientCommand,
+} from "../types";
 import {
   SHARED_MOMENT_VIBES,
   TOUCH_GESTURE_LABELS,
@@ -40,6 +46,18 @@ const REACTION_EMOJI: Record<string, string> = {
   neutral: "🌙",
 };
 
+/** Build the static URL for an uploaded attachment's stored file from
+ * its ``Attachments:<uuid><ext>`` rel_path. Used for image thumbnails
+ * in the composer + on user bubbles. */
+function attachmentUrl(relPath: string): string {
+  const storedName = relPath.includes(":")
+    ? relPath.split(":").slice(1).join(":")
+    : relPath;
+  return `${backendBase().http}/attachment-files/${encodeURIComponent(storedName)}`;
+}
+
+const MAX_ATTACHMENTS = 8;
+
 function formatTime(iso: string): string {
   try {
     return new Date(iso).toLocaleTimeString([], {
@@ -74,6 +92,16 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
   useMicCapture({ sendBytes });
 
   const [draft, setDraft] = useState("");
+  // D2 Part B: attachments staged for the next message. Uploaded as
+  // soon as they're picked (so the path exists when Aiko's workflow
+  // resolves it); cleared on send / removal.
+  const [pendingAttachments, setPendingAttachments] = useState<
+    AttachmentRef[]
+  >([]);
+  const [uploadingCount, setUploadingCount] = useState(0);
+  const [attachError, setAttachError] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // Virtuoso virtualises the chat list so the DOM only ever holds the
   // bubbles currently on screen (plus a small overscan buffer). This
@@ -126,13 +154,61 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
     return REACTION_EMOJI[reaction] ?? REACTION_EMOJI.neutral;
   }, [reaction]);
 
+  const handleFiles = useCallback(
+    async (files: FileList | File[]) => {
+      const list = Array.from(files);
+      if (list.length === 0) return;
+      setAttachError(null);
+      for (const file of list) {
+        // Respect the cap using the latest known count via the
+        // functional check inside the uploader; a hard pre-check here
+        // keeps the UX snappy for the common case.
+        setPendingAttachments((prev) => {
+          if (prev.length >= MAX_ATTACHMENTS) {
+            setAttachError(`Up to ${MAX_ATTACHMENTS} attachments per message.`);
+          }
+          return prev;
+        });
+        setUploadingCount((n) => n + 1);
+        try {
+          const ref = await api.uploadAttachment(file);
+          setPendingAttachments((prev) =>
+            prev.length >= MAX_ATTACHMENTS ? prev : [...prev, ref],
+          );
+        } catch (err) {
+          setAttachError(
+            err instanceof Error ? err.message : `Couldn't attach ${file.name}`,
+          );
+        } finally {
+          setUploadingCount((n) => Math.max(0, n - 1));
+        }
+      }
+    },
+    [],
+  );
+
+  const removeAttachment = useCallback((ref: AttachmentRef) => {
+    setPendingAttachments((prev) =>
+      prev.filter((a) => a.rel_path !== ref.rel_path),
+    );
+    // Best-effort delete of the stored bytes; ignore failures (a stale
+    // file in the managed dir is harmless and gets reaped on cleanup).
+    void api.deleteAttachment(ref.rel_path).catch(() => undefined);
+  }, []);
+
   const handleSend = () => {
     const text = draft.trim();
     if (!text || turnInProgress || connection.status !== "connected") {
       return;
     }
-    send({ type: "chat", text });
+    send(
+      pendingAttachments.length > 0
+        ? { type: "chat", text, attachments: pendingAttachments }
+        : { type: "chat", text },
+    );
     setDraft("");
+    setPendingAttachments([]);
+    setAttachError(null);
     // Sending a message is an explicit "I want to engage with the
     // latest content" gesture, so force-snap to the tail. This both
     // shows the user's bubble immediately and re-arms Virtuoso's
@@ -164,6 +240,33 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
       event.preventDefault();
       handleSend();
     }
+  };
+
+  const handlePaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(event.clipboardData?.files ?? []);
+    if (files.length > 0) {
+      event.preventDefault();
+      void handleFiles(files);
+    }
+  };
+
+  const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setDragOver(false);
+    const files = event.dataTransfer?.files;
+    if (files && files.length > 0) {
+      void handleFiles(files);
+    }
+  };
+
+  const onFileInputChange = (
+    event: React.ChangeEvent<HTMLInputElement>,
+  ) => {
+    if (event.target.files) {
+      void handleFiles(event.target.files);
+    }
+    // Reset so picking the same file twice still fires onChange.
+    event.target.value = "";
   };
 
   const handleMicToggle = () => {
@@ -250,13 +353,42 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
         )}
       </div>
 
-      <div className="border-t border-white/5 bg-white/[0.02] px-6 py-4">
+      <div
+        className={`border-t border-white/5 bg-white/[0.02] px-6 py-4 ${
+          dragOver ? "ring-2 ring-inset ring-ink-400/60" : ""
+        }`}
+        onDragOver={(e) => {
+          e.preventDefault();
+          if (!dragOver) setDragOver(true);
+        }}
+        onDragLeave={(e) => {
+          // Only clear when the pointer actually left the composer, not
+          // when it crosses a child element.
+          if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+          setDragOver(false);
+        }}
+        onDrop={handleDrop}
+      >
         <div className="mx-auto max-w-3xl">
           <VoiceStrip
             voiceMode={voiceMode}
             audioLevel={audioLevel}
             lastTranscript={lastTranscript}
             currentPartial={currentPartial}
+          />
+          <AttachmentTray
+            attachments={pendingAttachments}
+            uploadingCount={uploadingCount}
+            error={attachError}
+            onRemove={removeAttachment}
+          />
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept="image/*,.txt,.md,.rst,.log,.json,.yaml,.yml,.toml,.ini,.cfg,.conf,.csv,.tsv,.py,.js,.ts,.tsx,.jsx,.html,.css,.xml,.sh,.bat,.ps1,.sql"
+            className="hidden"
+            onChange={onFileInputChange}
           />
           <div className="flex items-center gap-2">
             <MicButton
@@ -266,11 +398,37 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
               onClick={handleMicToggle}
               remotelyOwned={remotelyOwned}
             />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={
+                connection.status !== "connected" ||
+                pendingAttachments.length >= MAX_ATTACHMENTS
+              }
+              className="flex h-12 w-12 shrink-0 items-center justify-center self-center rounded-xl border border-white/10 bg-black/30 text-ink-100/70 transition hover:bg-white/10 hover:text-ink-100 disabled:cursor-not-allowed disabled:opacity-40"
+              title="Attach an image or text file"
+              aria-label="Attach a file"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="h-5 w-5"
+                aria-hidden="true"
+              >
+                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+              </svg>
+            </button>
             <textarea
               ref={textareaRef}
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
               placeholder={
                 connection.status !== "connected"
                   ? "Connecting..."
@@ -307,6 +465,71 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+interface AttachmentTrayProps {
+  attachments: AttachmentRef[];
+  uploadingCount: number;
+  error: string | null;
+  onRemove: (ref: AttachmentRef) => void;
+}
+
+/** D2 Part B: staged attachments above the composer. Images show a
+ * thumbnail; text files show a document chip. Each has a remove ✕. */
+function AttachmentTray({
+  attachments,
+  uploadingCount,
+  error,
+  onRemove,
+}: AttachmentTrayProps) {
+  if (attachments.length === 0 && uploadingCount === 0 && !error) {
+    return null;
+  }
+  return (
+    <div className="mb-2 flex flex-wrap items-center gap-2">
+      {attachments.map((att) => (
+        <div
+          key={att.rel_path}
+          className="group/att relative flex items-center gap-2 rounded-lg border border-white/10 bg-black/30 py-1 pl-1 pr-2"
+          title={att.filename}
+        >
+          {att.kind === "image" ? (
+            <img
+              src={attachmentUrl(att.rel_path)}
+              alt={att.filename}
+              className="h-9 w-9 rounded object-cover"
+            />
+          ) : (
+            <span className="flex h-9 w-9 items-center justify-center rounded bg-white/5 text-base">
+              📄
+            </span>
+          )}
+          <span className="max-w-[10rem] truncate text-xs text-ink-100/80">
+            {att.filename}
+          </span>
+          <button
+            type="button"
+            onClick={() => onRemove(att)}
+            className="ml-1 rounded px-1 text-xs text-ink-100/50 hover:bg-white/10 hover:text-ink-100"
+            title="Remove attachment"
+            aria-label={`Remove ${att.filename}`}
+          >
+            ✕
+          </button>
+        </div>
+      ))}
+      {uploadingCount > 0 ? (
+        <span className="rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-xs text-ink-100/60">
+          Uploading {uploadingCount}…
+        </span>
+      ) : null}
+      {error ? (
+        <span className="rounded-lg border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+          {error}
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -523,6 +746,8 @@ interface BubbleProps {
   /** K32: counter map of user-reaction kinds clicked on this
    * bubble. The hover tray + persistent strip both render this. */
   reactions?: Record<string, number>;
+  /** D2 Part B: files the user attached to this (user) message. */
+  attachments?: AttachmentRef[];
 }
 
 // Phase 3c: parse `[[correct]]old[[/correct]]new` into renderable
@@ -596,6 +821,7 @@ function MessageBubbleImpl({
   backendId,
   gestures,
   reactions,
+  attachments,
 }: BubbleProps) {
   // P9: when this bubble is the active streaming bubble, pull its
   // live content + reaction from the ``streamingDraft`` slice
@@ -720,6 +946,40 @@ function MessageBubbleImpl({
           : streaming
             ? ""
             : "(empty)"}
+
+        {isUser && attachments && attachments.length > 0 ? (
+          <div className="mt-2 flex flex-wrap gap-2">
+            {attachments.map((att) =>
+              att.kind === "image" ? (
+                <a
+                  key={att.rel_path}
+                  href={attachmentUrl(att.rel_path)}
+                  target="_blank"
+                  rel="noreferrer"
+                  title={att.filename}
+                >
+                  <img
+                    src={attachmentUrl(att.rel_path)}
+                    alt={att.filename}
+                    className="max-h-40 rounded-lg border border-white/10 object-cover"
+                  />
+                </a>
+              ) : (
+                <a
+                  key={att.rel_path}
+                  href={attachmentUrl(att.rel_path)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center gap-2 rounded-lg border border-white/15 bg-black/20 px-3 py-2 text-xs text-white/90 hover:bg-black/30"
+                  title={att.filename}
+                >
+                  <span className="text-base">📄</span>
+                  <span className="max-w-[12rem] truncate">{att.filename}</span>
+                </a>
+              ),
+            )}
+          </div>
+        ) : null}
 
         {canMark ? (
           <div className="absolute -top-2 right-2 opacity-0 transition-opacity group-hover:opacity-100">

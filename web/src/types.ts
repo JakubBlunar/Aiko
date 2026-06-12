@@ -25,6 +25,22 @@ export interface ChatMessage {
   /** K32 reciprocity: counter per reaction kind. Empty / undefined
    * when the user hasn't reacted yet. */
   reactions?: { [kind: string]: number };
+  /** D2 Part B: files the user attached to this message (images +
+   * text). Rendered as chips / thumbnails on the user bubble; survives
+   * a history reload via ``messages.attachments`` (schema v18). */
+  attachments?: AttachmentRef[];
+}
+
+/** D2 Part B: one in-chat attachment reference. Returned by
+ * ``POST /api/chat/attachments`` and echoed back on the ``chat`` WS
+ * command + persisted onto the user message. ``rel_path`` is the
+ * sandbox path (``Attachments:<uuid><ext>``) the workflow resolves. */
+export interface AttachmentRef {
+  id: string;
+  filename: string;
+  kind: "image" | "text";
+  rel_path: string;
+  bytes: number;
 }
 
 /** K31: shape of the ``avatar_touch`` WS payload after the ``type``
@@ -1417,6 +1433,14 @@ export type WsServerEvent =
        * work on them immediately. */
       message_id?: number;
     }
+  | {
+      /** D2 Part B: attachments for the user bubble just created by the
+       * preceding ``message`` event. Sent as a separate frame because
+       * the generic message broadcast has no attachment channel; the
+       * store patches them onto the most recent user message. */
+      type: "user_attachments";
+      attachments: AttachmentRef[];
+    }
   | { type: "session_changed"; session: string }
   | { type: "history_cleared"; session: string }
   | { type: "status"; message: string }
@@ -1553,7 +1577,7 @@ export type WsServerEvent =
   | { type: "pong" };
 
 export type WsClientCommand =
-  | { type: "chat"; text: string }
+  | { type: "chat"; text: string; attachments?: AttachmentRef[] }
   | { type: "stop" }
   | { type: "switch_session"; session_id: string }
   | { type: "new_session" }

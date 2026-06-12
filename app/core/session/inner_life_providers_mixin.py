@@ -2932,6 +2932,60 @@ class InnerLifeProvidersMixin:
             "fill silence or to prove you noticed."
         )
 
+    def _render_attachments_block(self) -> str:
+        """D2 Part B: turn hint listing files the user attached this turn.
+
+        Reads the per-turn ``_active_turn_attachments`` list (set at the
+        top of ``chat_once_streaming``). Silent when nothing's attached.
+        Lists each attachment as ``Attachments:<file> (image|text)`` and
+        tells Aiko to act on them via ``start_workflow`` — images route
+        to ``describe_image``, text to ``read_file`` — rather than
+        guessing at the contents. The files live in Aiko's read-only
+        ``Attachments`` file root so the workflow can resolve the path.
+        """
+        attachments = getattr(self, "_active_turn_attachments", None)
+        if not attachments:
+            return ""
+        lines: list[str] = []
+        has_image = False
+        has_text = False
+        for att in attachments:
+            if not isinstance(att, dict):
+                continue
+            rel = str(att.get("rel_path") or "").strip()
+            kind = str(att.get("kind") or "").strip().lower()
+            filename = str(att.get("filename") or "").strip()
+            if not rel:
+                continue
+            if kind == "image":
+                has_image = True
+            elif kind == "text":
+                has_text = True
+            label = f"{rel} ({kind or 'file'})"
+            if filename:
+                label += f" — \"{filename}\""
+            lines.append(f"  - {label}")
+        if not lines:
+            return ""
+        name = self.user_display_name
+        verb_bits: list[str] = []
+        if has_image:
+            verb_bits.append("describe_image for the picture(s)")
+        if has_text:
+            verb_bits.append("read_file for the text file(s)")
+        route = " and ".join(verb_bits) or "the right file workflow"
+        return (
+            f"{name} attached the following file(s) to this message:\n"
+            + "\n".join(lines)
+            + (
+                f"\nThey live in your read-only Attachments file root. "
+                f"When {name} asks you to look at / read / describe them, "
+                f"hand the path to start_workflow ({route}) and act on what "
+                "comes back — never guess the contents from the filename. "
+                "If you can't see images yet, say so plainly."
+            )
+        )
+
     def _render_anniversary_block(self) -> str:
         """Schema v7: surface a single 'remember when' anniversary line.
 

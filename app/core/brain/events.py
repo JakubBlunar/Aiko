@@ -172,6 +172,14 @@ class UserMessageEvent:
     resume_message_id: int | None = None
     capture_ms: float = 0.0
     stt_ms: float = 0.0
+    # D2 Part B — in-chat attachments the user added to this message.
+    # Tuple of ``{id, filename, kind, rel_path, bytes}`` dicts (empty
+    # for the common no-attachment turn). Threaded into
+    # ``chat_once_streaming`` so the row is stamped + the turn hint
+    # surfaces the paths. The queue breaks priority ties with a
+    # monotonic counter, so this non-hashable field never participates
+    # in event ordering.
+    attachments: tuple[dict, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

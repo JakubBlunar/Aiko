@@ -4211,5 +4211,124 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
         except Exception as exc:
             return json.dumps({"error": f"approvals state read failed: {exc}"})
 
+    @mcp.tool()
+    def get_vision_state() -> str:
+        """Snapshot the local-vision (describe_image) capability.
+
+        Returns ``enabled`` (``agent.vision.enabled``), the effective
+        model the vision call would use (the ``agent.vision.model``
+        override, or the worker model when empty), the runtime type of
+        the worker client (must be ``OllamaClient`` for image
+        passthrough), whether the ``describe_image`` skill is currently
+        registered, the resource caps, and the active file roots images
+        can be resolved from. First stop for "why won't Aiko look at the
+        image?" — confirm enabled + an OllamaClient worker + an active
+        root.
+        """
+        agent = getattr(session._settings, "agent", None)
+        vision_cfg = getattr(agent, "vision", None)
+        worker_client = getattr(session, "_worker_client_inner", None)
+        worker_type = type(worker_client).__name__ if worker_client else None
+        override = str(getattr(vision_cfg, "model", "") or "").strip()
+        effective_model = override or str(
+            getattr(session, "_effective_worker_model", "") or ""
+        )
+        skill_registered = False
+        try:
+            reg = getattr(session, "_workflow_skill_registry", None)
+            if reg is not None:
+                skill_registered = "describe_image" in set(reg.names())
+        except Exception:
+            skill_registered = False
+        from app.core.tasks.sandbox import FileTaskRoot, validate_roots
+
+        roots_raw = getattr(agent, "task_file_allowed_roots", ()) or ()
+        roots: list[FileTaskRoot] = []
+        for entry in roots_raw:
+            if not isinstance(entry, dict):
+                continue
+            label = str(entry.get("label", "")).strip()
+            path = str(entry.get("path", "")).strip()
+            if not label or not path:
+                continue
+            roots.append(
+                FileTaskRoot(
+                    label=label,
+                    path=path,
+                    read_only=bool(entry.get("read_only", True)),
+                )
+            )
+        active = [vr.root.label for vr in validate_roots(roots) if vr.active]
+        payload = {
+            "enabled": bool(getattr(vision_cfg, "enabled", False)),
+            "model_override": override,
+            "effective_model": effective_model,
+            "worker_client_type": worker_type,
+            "worker_is_ollama": worker_type == "OllamaClient",
+            "skill_registered": skill_registered,
+            "max_bytes": int(getattr(vision_cfg, "max_bytes", 0) or 0),
+            "timeout_seconds": int(getattr(vision_cfg, "timeout_seconds", 0) or 0),
+            "allowed_extensions": list(
+                getattr(vision_cfg, "allowed_extensions", ()) or ()
+            ),
+            "active_roots": active,
+        }
+        return json.dumps(payload, indent=2, default=str)
+
+    @mcp.tool()
+    def describe_image_now(path: str, question: str = "") -> str:
+        """Describe an image synchronously, bypassing the planner.
+
+        Runs the ``vision_describe`` handler directly (no workflow, no
+        background queue) and blocks for the result — the fastest way to
+        verify the vision path end-to-end. ``path`` is label-prefixed
+        (``"Documents:photo.png"``) or bare; ``question`` optionally
+        focuses the description. Returns the handler's result dict
+        (``description`` / ``summary`` / ``model`` / …) or an
+        ``{"error": ...}`` describing why it failed (vision disabled, no
+        active root, non-multimodal worker model, oversize, …).
+        """
+        orch = getattr(session, "_task_orchestrator", None)
+        if orch is None:
+            return json.dumps(
+                {"error": "task subsystem disabled (agent.tasks_enabled=False)"}
+            )
+        handler = None
+        try:
+            handler = orch.handler_for("vision_describe")
+        except Exception:
+            handler = None
+        if handler is None:
+            return json.dumps(
+                {
+                    "error": (
+                        "vision_describe handler not registered "
+                        "(agent.vision.enabled=False or no active root?)"
+                    )
+                }
+            )
+        captured: dict[str, Any] = {}
+
+        def _emit(event: Any) -> None:
+            name = type(event).__name__
+            if name == "TaskCompleted":
+                captured["result"] = getattr(event, "result", None)
+            elif name == "TaskFailed":
+                captured["error"] = getattr(event, "error", "failed")
+            elif name == "TaskInputNeeded":
+                captured["awaiting_input"] = getattr(event, "prompt", "")
+                captured["options"] = list(getattr(event, "options", ()) or ())
+
+        args: dict[str, Any] = {"path": path}
+        if question.strip():
+            args["question"] = question.strip()
+        try:
+            handler.start(args, _emit)
+        except Exception as exc:
+            return json.dumps({"error": f"vision call raised: {exc}"})
+        if "result" in captured:
+            return json.dumps(captured["result"], indent=2, default=str)
+        return json.dumps(captured or {"error": "no result emitted"}, indent=2, default=str)
+
     log.info("MCP server created (lean v1)")
     return mcp

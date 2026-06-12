@@ -44,6 +44,7 @@ from app.core.tasks.handler_names import (
     HANDLER_FILE_READ,
     HANDLER_FILE_SEARCH,
     HANDLER_FILE_WRITE,
+    HANDLER_VISION_DESCRIBE,
     HANDLER_WEB_SEARCH,
 )
 from app.core.tasks.task_handler import INITIATED_BY_BACKGROUND
@@ -62,6 +63,7 @@ WORKFLOW_SKILL_SEARCH_FILES = "search_files"
 WORKFLOW_SKILL_READ_FILE = "read_file"
 WORKFLOW_SKILL_WEB_SEARCH = "web_search"
 WORKFLOW_SKILL_WRITE_FILE = "write_file"
+WORKFLOW_SKILL_DESCRIBE_IMAGE = "describe_image"
 
 
 @dataclass(frozen=True, slots=True)
@@ -329,6 +331,38 @@ def _spawn_web_search(args: dict[str, Any], ctx: SpawnContext) -> "int | None":
     )
 
 
+def _spawn_describe_image(args: dict[str, Any], ctx: SpawnContext) -> "int | None":
+    """Spawn a ``vision_describe`` child.
+
+    Args:
+
+    * ``path`` (required) — label-prefixed or bare path to an image
+      inside a configured root (incl. the managed ``Attachments`` root).
+    * ``question`` (optional) — what to focus on / ask about the image.
+
+    The vision call reuses the already-loaded local worker model (no
+    second model); the handler validates the image + runs the call.
+    """
+    path = str(args.get("path", "") or "").strip()
+    if not path:
+        log.warning("workflow describe_image: empty path, skipping spawn")
+        return None
+    child_args: dict[str, Any] = {"path": path}
+    question = str(args.get("question", "") or args.get("prompt", "") or "").strip()
+    if question:
+        child_args["question"] = question
+    return ctx.orchestrator.start_task(
+        user_id=ctx.user_id,
+        handler_name=HANDLER_VISION_DESCRIBE,
+        args=child_args,
+        title=f"workflow describe image: {path[:56]}",
+        initiated_by=INITIATED_BY_BACKGROUND,
+        notify_aiko=False,
+        visible_to_user=True,
+        parent_task_id=ctx.parent_task_id,
+    )
+
+
 # ── built-in skill definitions ───────────────────────────────────────
 
 
@@ -469,6 +503,38 @@ def _write_file_skill() -> WorkflowSkill:
     )
 
 
+def _describe_image_skill() -> WorkflowSkill:
+    return WorkflowSkill(
+        name=WORKFLOW_SKILL_DESCRIBE_IMAGE,
+        description=(
+            "Look at an IMAGE file and describe what's in it, using local "
+            "vision. Pass a label-prefixed path ('Attachments:photo.png' "
+            "or 'Documents:screenshot.png') or a bare path. Use this for "
+            "any 'what's in this picture / screenshot / photo' request, "
+            "or when the user attached an image. Optionally pass a "
+            "'question' to focus on something specific. Slow (it runs a "
+            "vision model), which is why it's a background workflow skill."
+        ),
+        arg_schema={
+            "path": {
+                "type": "string",
+                "description": (
+                    "Path to the image (label-prefixed or bare)."
+                ),
+                "required": True,
+            },
+            "question": {
+                "type": "string",
+                "description": (
+                    "Optional: what to focus on or ask about the image."
+                ),
+                "required": False,
+            },
+        },
+        spawn=_spawn_describe_image,
+    )
+
+
 def _finish_skill() -> WorkflowSkill:
     return WorkflowSkill(
         name=WORKFLOW_SKILL_FINISH,
@@ -499,7 +565,10 @@ def _finish_skill() -> WorkflowSkill:
 
 
 def build_builtin_skill_registry(
-    *, web_search_enabled: bool = True, file_write_enabled: bool = False
+    *,
+    web_search_enabled: bool = True,
+    file_write_enabled: bool = False,
+    vision_enabled: bool = False,
 ) -> WorkflowSkillRegistry:
     """Construct the default registry: file search/read + web + finish.
 
@@ -508,8 +577,11 @@ def build_builtin_skill_registry(
     ``file_write_enabled`` mirrors ``agent.file_write.enabled`` — the
     destructive ``write_file`` skill is only offered when the master
     switch is on (and a writable root exists, which the handler
-    enforces at run time). The ``finish`` terminal skill is always
-    present — a workflow must always be able to stop.
+    enforces at run time). ``vision_enabled`` mirrors
+    ``agent.vision.enabled`` — the ``describe_image`` skill is only
+    offered when vision is on (and an active root exists). The
+    ``finish`` terminal skill is always present — a workflow must
+    always be able to stop.
 
     Callers (the handler / mixin) layer MCP-provided skills on top via
     :meth:`WorkflowSkillRegistry.register` after this returns.
@@ -521,6 +593,8 @@ def build_builtin_skill_registry(
         registry.register(_web_search_skill())
     if file_write_enabled:
         registry.register(_write_file_skill())
+    if vision_enabled:
+        registry.register(_describe_image_skill())
     registry.register(_finish_skill())
     log.info(
         "workflow skill registry built: skills=%s",
@@ -535,6 +609,7 @@ __all__ = [
     "WORKFLOW_SKILL_READ_FILE",
     "WORKFLOW_SKILL_WEB_SEARCH",
     "WORKFLOW_SKILL_WRITE_FILE",
+    "WORKFLOW_SKILL_DESCRIBE_IMAGE",
     "SpawnContext",
     "SkillSpawnFn",
     "WorkflowSkill",

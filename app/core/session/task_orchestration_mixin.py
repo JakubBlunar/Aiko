@@ -101,6 +101,7 @@ from app.core.tasks.handlers import (
     FileReadHandler,
     FileSearchHandler,
     FileWriteHandler,
+    VisionDescribeHandler,
 )
 from app.core.tasks.sandbox import FileTaskRoot, validate_roots
 
@@ -418,6 +419,26 @@ class TaskOrchestrationMixin:
                     read_only=bool(entry.get("read_only", True)),
                 )
             )
+        # D2 Part B — managed Attachments root. A fixed
+        # ``data/attachments/`` dir, auto-created + appended as a
+        # read-only sandbox root so in-chat attachments resolve as
+        # ``Attachments:<file>`` through the same file handlers
+        # (describe_image / read_file) with zero extra path plumbing.
+        # Never overrides a user-configured ``Attachments`` label.
+        try:
+            from app.core.tasks.attachments import (
+                ATTACHMENTS_LABEL,
+                attachments_root,
+                ensure_attachments_dir,
+            )
+
+            if not any(r.label == ATTACHMENTS_LABEL for r in roots):
+                ensure_attachments_dir()
+                roots.append(attachments_root())
+        except Exception as exc:
+            log.warning(
+                "task-handlers: failed to register Attachments root: %r", exc
+            )
         # Boot-time validation. ``validate_roots`` already emits the
         # per-root WARNING lines so the user sees what's inactive
         # without an extra log call here. We still summarise the
@@ -517,6 +538,53 @@ class TaskOrchestrationMixin:
                 "read_only) -- skill not offered"
             )
 
+        # Vision (describe_image) handler — read-only, reuses the already-
+        # loaded worker Ollama client + model (no second model in VRAM).
+        # Only registered when ``agent.vision.enabled`` is on AND at least
+        # one active root exists. The providers re-read the live worker
+        # client / model so a reconfigure that rebuilds them is picked up.
+        vision_cfg = getattr(agent, "vision", None)
+        vision_enabled = bool(getattr(vision_cfg, "enabled", False))
+        if vision_enabled and active:
+            try:
+                self._task_orchestrator.register_handler(
+                    VisionDescribeHandler(
+                        roots=roots,
+                        client_provider=lambda: getattr(
+                            self, "_worker_client_inner", None
+                        ),
+                        model_provider=lambda cfg=vision_cfg: (
+                            (str(getattr(cfg, "model", "") or "").strip())
+                            or str(getattr(self, "_effective_worker_model", "") or "")
+                        ),
+                        max_bytes=int(
+                            getattr(vision_cfg, "max_bytes", 8 * 1024 * 1024)
+                        ),
+                        allowed_extensions=tuple(
+                            getattr(vision_cfg, "allowed_extensions", ()) or ()
+                        ),
+                        default_prompt=str(
+                            getattr(vision_cfg, "default_prompt", "") or ""
+                        ),
+                    )
+                )
+                log.info(
+                    "task-handlers: vision_describe handler registered "
+                    "(active_roots=%d model=%s)",
+                    len(active),
+                    (str(getattr(vision_cfg, "model", "") or "") or "(worker default)"),
+                )
+            except Exception as exc:
+                log.warning(
+                    "task-handlers: failed to register vision_describe handler: %r",
+                    exc,
+                )
+        elif vision_enabled and not active:
+            log.info(
+                "task-handlers: vision enabled but no active file root "
+                "configured -- describe_image skill not offered"
+            )
+
         # ── nested goal workflows ────────────────────────────────────
         # web_search runs as a background task handler (it's too slow
         # for the conversational lane). Register it whenever the dep is
@@ -562,6 +630,7 @@ class TaskOrchestrationMixin:
             skill_registry = build_builtin_skill_registry(
                 web_search_enabled=web_enabled,
                 file_write_enabled=file_write_enabled and bool(writable_roots),
+                vision_enabled=vision_enabled and bool(active),
             )
             # Future MCP-provided skills register onto this same object.
             self._workflow_skill_registry = skill_registry
@@ -1118,6 +1187,7 @@ class TaskOrchestrationMixin:
         resume_message_id = getattr(event, "resume_message_id", None)
         capture_ms = float(getattr(event, "capture_ms", 0.0) or 0.0)
         stt_ms = float(getattr(event, "stt_ms", 0.0) or 0.0)
+        attachments = list(getattr(event, "attachments", ()) or ())
         try:
             reply = self.chat_once_streaming(  # type: ignore[attr-defined]
                 user_text=text,
@@ -1128,6 +1198,7 @@ class TaskOrchestrationMixin:
                 capture_ms=capture_ms,
                 stt_ms=stt_ms,
                 _resume_message_id=resume_message_id,
+                attachments=attachments,
             )
         except Exception as exc:
             log.exception(
@@ -1178,6 +1249,7 @@ class TaskOrchestrationMixin:
         resume_message_id: int | None = None,
         capture_ms: float = 0.0,
         stt_ms: float = 0.0,
+        attachments: "list[dict] | tuple[dict, ...] | None" = None,
     ) -> str | None:
         """Producer-side entry point for the brain-queue user-message path.
 
@@ -1212,6 +1284,7 @@ class TaskOrchestrationMixin:
         explicit ``callbacks`` argument wins.
         """
         cleaned = (text or "").strip()
+        attachment_tuple: tuple[dict, ...] = tuple(attachments or ())
         if not cleaned:
             # Empty / whitespace-only input never reaches the queue.
             # Voice producers that wait on the reply still need a
@@ -1285,6 +1358,8 @@ class TaskOrchestrationMixin:
                     direct_kwargs["capture_ms"] = float(capture_ms)
                 if stt_ms:
                     direct_kwargs["stt_ms"] = float(stt_ms)
+                if attachment_tuple:
+                    direct_kwargs["attachments"] = list(attachment_tuple)
                 reply = self.chat_once_streaming(**direct_kwargs)  # type: ignore[attr-defined]
             finally:
                 if previous_tts_enabled is not None and tts_settings is not None:
@@ -1313,6 +1388,7 @@ class TaskOrchestrationMixin:
             resume_message_id=int(resume_message_id) if resume_message_id is not None else None,
             capture_ms=float(capture_ms or 0.0),
             stt_ms=float(stt_ms or 0.0),
+            attachments=attachment_tuple,
         )
         loop.enqueue(event)
         log.info(

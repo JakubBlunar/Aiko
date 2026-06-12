@@ -451,6 +451,47 @@ class FileWriteSettings:
 
 
 @dataclass(slots=True)
+class VisionSettings:
+    """Resource config for the local-vision ``describe_image`` task.
+
+    The vision task does NOT introduce a second model: it reuses the
+    already-loaded worker Ollama client + worker model, so the only
+    requirement is that the worker model is multimodal (e.g.
+    ``qwen3.5:27b`` / ``qwen3.6:27b``). That's why there's no
+    ``base_url`` / ``keep_alive`` / ``num_ctx`` here — those are
+    inherited from the worker client so there is genuinely one model
+    config to reason about.
+
+    * ``enabled`` — master switch. Off = the ``describe_image`` workflow
+      skill is not offered and the handler is not registered.
+    * ``model`` — OPTIONAL override. Empty (the default + recommended)
+      reuses the effective worker model. A non-empty value points the
+      vision call at a different local model, accepting a load/reload.
+    * ``max_bytes`` — hard cap on the image file size that will be
+      base64-encoded and sent to Ollama.
+    * ``timeout_seconds`` — per-call ceiling (vision inference + a
+      possible cold model load can be slow).
+    * ``allowed_extensions`` — case-insensitive image extension
+      allow-list (empty = allow everything).
+    * ``default_prompt`` — instruction sent alongside the image when the
+      caller doesn't supply a question.
+    """
+
+    enabled: bool = False
+    model: str = ""
+    max_bytes: int = 8 * 1024 * 1024
+    timeout_seconds: int = 180
+    allowed_extensions: tuple[str, ...] = (
+        ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp",
+    )
+    default_prompt: str = (
+        "Look at this image and describe what you see in a few natural "
+        "sentences. Mention the main subject, setting, notable details, "
+        "any visible text, and the overall mood."
+    )
+
+
+@dataclass(slots=True)
 class AgentSettings:
     """Lean v1 conversation agent knobs.
 
@@ -1382,6 +1423,10 @@ class AgentSettings:
     # allow-list). The destructive-write APPROVAL is governed by the
     # generic ``task_approval_*`` fields above, not here.
     file_write: FileWriteSettings = field(default_factory=FileWriteSettings)
+    # ── vision (describe_image) capability resource config ───────────────
+    # Reuses the worker model; ``model`` empty = inherit the effective
+    # worker model. Master switch gates the describe_image workflow skill.
+    vision: VisionSettings = field(default_factory=VisionSettings)
     # ── Worker-LLM priority gate ────────────────────────────────────────
     # Master switch for the priority gate in front of the shared worker
     # Ollama client. Off = pass-through proxies (zero behaviour change).
@@ -2673,6 +2718,44 @@ def _parse_file_write_settings(value: Any) -> FileWriteSettings:
     )
 
 
+def _parse_vision_settings(value: Any) -> VisionSettings:
+    """Build a :class:`VisionSettings` from the raw ``vision`` block.
+
+    Missing / non-dict input yields the defaults (disabled). ``max_bytes``
+    is clamped to ``[1 KiB, 64 MiB]``; ``timeout_seconds`` floors at 5s;
+    ``allowed_extensions`` reuses :func:`_parse_extension_list` (empty =
+    allow all); ``model`` / ``default_prompt`` are trimmed strings.
+    """
+    raw = value if isinstance(value, dict) else {}
+    defaults = VisionSettings()
+    if "allowed_extensions" in raw:
+        extensions = _parse_extension_list(raw.get("allowed_extensions"))
+    else:
+        extensions = defaults.allowed_extensions
+    try:
+        max_bytes = int(raw.get("max_bytes", defaults.max_bytes))
+    except (TypeError, ValueError):
+        max_bytes = defaults.max_bytes
+    max_bytes = max(1024, min(64 * 1024 * 1024, max_bytes))
+    try:
+        timeout_seconds = int(raw.get("timeout_seconds", defaults.timeout_seconds))
+    except (TypeError, ValueError):
+        timeout_seconds = defaults.timeout_seconds
+    timeout_seconds = max(5, timeout_seconds)
+    model = str(raw.get("model", defaults.model) or "").strip()
+    default_prompt = str(
+        raw.get("default_prompt", defaults.default_prompt) or ""
+    ).strip() or defaults.default_prompt
+    return VisionSettings(
+        enabled=bool(raw.get("enabled", defaults.enabled)),
+        model=model,
+        max_bytes=max_bytes,
+        timeout_seconds=timeout_seconds,
+        allowed_extensions=extensions,
+        default_prompt=default_prompt,
+    )
+
+
 def _parse_chat_llm(raw: dict[str, Any]) -> ChatLlmSettings:
     """Validate the chat_llm config block, falling back to defaults on missing keys."""
 
@@ -3844,6 +3927,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             ),
             file_write=_parse_file_write_settings(
                 agent_raw.get("file_write", {})
+            ),
+            vision=_parse_vision_settings(
+                agent_raw.get("vision", {})
             ),
             worker_llm_gate_enabled=bool(
                 agent_raw.get("worker_llm_gate_enabled", True)

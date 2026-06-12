@@ -337,6 +337,16 @@
         ".sh", ".bat", ".ps1",
         ".sql"
       ]
+    },
+    "vision": {
+      "enabled": false,
+      "model": "",
+      "max_bytes": 8388608,
+      "timeout_seconds": 180,
+      "allowed_extensions": [
+        ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"
+      ],
+      "default_prompt": "Look at this image and describe what you see in a few natural sentences. Mention the main subject, setting, notable details, any visible text, and the overall mood."
     }
   },
   "tools": {

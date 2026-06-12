@@ -80,7 +80,11 @@ same plumbing.
 
 ---
 
-## D2. Image vision tool
+## D2. Image vision tool — SHIPPED (Part A: local-vision describe task; Part B: in-chat attachments)
+
+**Status.** Shipped in two parts. **Part A** — a **background workflow skill** (`describe_image`), not a fast brain tool, reusing the **single local worker model already in VRAM** (no second model, no cloud image tokens). The `VisionDescribeHandler` ([`app/core/tasks/handlers/vision_describe.py`](../../app/core/tasks/handlers/vision_describe.py)) resolves an image inside a configured file root, base64-encodes it (extension + byte-cap gated), and calls the worker `OllamaClient.chat(images=[...])`. Gated by `agent.vision.enabled`; the worker model must be multimodal (`qwen3.5:27b` / `qwen3.6:27b`). MCP debug: `get_vision_state()` / `describe_image_now(path)`. **Part B** — in-chat file attachments: the composer accepts image + text files (paperclip / drag-drop / paste), they land in a managed read-only `Attachments` sandbox root (`data/attachments/`), persist on the user message (`messages.attachments`, schema v18), and surface as a per-turn hint that routes Aiko to `start_workflow` (`describe_image` for images, `read_file` for text). See [`shipped.md`](shipped.md). The original sketch is kept below for reference.
+
+---
 
 **Motivation.** Ollama supports vision models (`llava`, `qwen2.5-vl`,
 etc.). Letting Jacob drop an image into the chat and have Aiko comment

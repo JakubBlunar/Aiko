@@ -56,6 +56,7 @@ exists to keep them in lock-step.
 | Destructive-task approval mode | `agent.task_approval_mode` | `"ask"` (`"ask"` / `"auto"`) |
 | Per-capability approval overrides | `agent.task_approval_overrides` | `{}` (e.g. `{"file_write": "auto"}`) |
 | Let Aiko write files (workflow skill) | `agent.file_write.enabled` | `false` |
+| Let Aiko see images (workflow skill) | `agent.vision.enabled` | `false` |
 | Exact-arithmetic tool | `tools.calculate` | `true` |
 | Master memory switch | `memory.enabled` | `true` |
 | RAG recall depth per turn | `memory.top_k` | `6` |
@@ -836,6 +837,28 @@ Destructive task capabilities (file writes today; shell exec / http post later) 
 - `agent.file_write.allowed_extensions` *(list, text-only default)* — case-insensitive write allow-list (empty = allow all).
 
 A session "approve all" click rides on top of both fields in-memory and is never persisted (cleared on restart). Full design + how to add a new destructive capability: [`docs/task-approvals.md`](task-approvals.md).
+
+## Local vision — `agent.vision` (`describe_image`)
+
+The `describe_image` workflow skill lets Aiko *look at* an image inside a configured file root and describe it, using the **single local worker model already loaded** — no second model, no cloud image-token cost. The only requirement is that the worker model is multimodal (e.g. `qwen3.5:27b` / `qwen3.6:27b`); switch `llm.routes.worker_default` + `llm.routes.workflow` to such a model. Read-only → it does NOT touch the approval framework.
+
+- `agent.vision.enabled` *(bool, `false`)* — master switch for the `describe_image` workflow skill + handler. Off → the skill is never offered to the planner. Requires at least one **active** root (`agent.task_file_allowed_roots`).
+- `agent.vision.model` *(str, `""`)* — optional model override. Empty (recommended) reuses the effective worker model so there is genuinely one model in VRAM; a non-empty value points the vision call at a different local Ollama model (accepting a load/reload).
+- `agent.vision.max_bytes` *(int, `8388608` = 8 MiB, clamped `[1 KiB, 64 MiB]`)* — cap on the image file size that gets base64-encoded and sent to Ollama (refused, never truncated).
+- `agent.vision.timeout_seconds` *(int, `180`, floor `5`)* — per-call ceiling hint (a cold model load + a vision pass can be slow).
+- `agent.vision.allowed_extensions` *(list, `.png .jpg .jpeg .webp .gif .bmp`)* — case-insensitive image extension allow-list (empty = allow all).
+- `agent.vision.default_prompt` *(str)* — instruction sent alongside the image when the caller doesn't supply a question.
+
+MCP debug: `get_vision_state()` (enabled / effective model / worker-client type / active roots / skill registered) and `describe_image_now(path, question="")` (one-shot, bypasses the planner).
+
+### In-chat attachments (D2 Part B)
+
+The chat composer accepts **image + text** attachments (paperclip button, drag-and-drop, or paste). Each file is uploaded to a fixed managed directory `data/attachments/` that is **auto-registered as a read-only sandbox root labelled `Attachments`** — so it resolves through the same file handlers as any other root, with zero per-attachment config.
+
+- Upload: `POST /api/chat/attachments` (multipart `file`) → `{attachment: {id, filename, kind, rel_path, bytes}}`. The image allow-list mirrors `agent.vision.allowed_extensions`; the byte cap rides `agent.vision.max_bytes` (default 8 MiB). Text extensions are a fixed set (`.txt .md .json .csv .py …`).
+- Drop an unsent attachment: `DELETE /api/chat/attachments/{stored_name}`.
+- Static serving (image thumbnails): `GET /attachment-files/<uuid><ext>`.
+- The `chat` WS command carries an optional `attachments: [{rel_path, kind, …}]` array (server-side allow-listed to the `Attachments` root only). The files are persisted onto the user message (`messages.attachments`, schema v18) and surfaced to Aiko as a **per-turn hint** that tells her to route images to `describe_image` and text to `read_file` via `start_workflow` — she acts on the workflow result, never guesses from the filename. No image bytes ever reach the cloud chat model; the **local** worker model reads them.
 
 ---
 
