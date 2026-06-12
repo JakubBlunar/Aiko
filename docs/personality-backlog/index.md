@@ -98,6 +98,36 @@ K48 tease rhythm budget ·
 K49 messiness permission (typed imperfection) ·
 K50 typed-mode delivery pacing.
 
+**The "will" family (K52–K56)** — Aiko follows every topic the user
+sets and never opens her own; every initiative cue is hedged into
+silence and nothing structurally counters the assistant prior.
+K52 wants ledger (desire with growing pressure) ·
+K53 initiative turns (deterministic floor-taking — the "may" →
+"must, occasionally" flip) ·
+K54 Aiko-side topic appetite (she's allowed to be bored and
+negotiate the topic) ·
+K55 thread ownership (one circle-back to a thread she opened) ·
+K56 persona counterweight ("leading vs following" rewrite — do
+this one first, it's persona-only).
+
+**The directed-emotions family (K57–K59)** — Aiko's moods are
+objectless scalars: she can be "sad" in general but never *miffed
+at {user_name} because he broke a promise*, and the absence
+detector explicitly suppresses missing-you feelings ("not a
+complaint... warm welcome-back").
+K57 directed emotion episodes (lonely / miffed / warm_glow / smug /
+playful_jealous / hurt — with a cause line, intensity, decay, and
+an acknowledgment-driven resolution arc) ·
+K58 emotion speech weighting (mint smug/pouty/sulky/wistful
+reactions end-to-end; per-emotion register recipes; intensity
+scales the prompt imperative + prosody) ·
+K59 tease economy (payback ledger — "noted. that's going in the
+ledger", collected as a callback tease conversations later) ·
+K60 tsundere mask (expression policy over K57: warmth expressed
+through denial, caught-caring beat, budgeted dere-slips,
+closeness-eroded mask — `agent.expression_mask` dial, off by
+default).
+
 (K1 long-term goals, K2 theory-of-mind, K3 routine awareness,
 K4 dialogue-act tagging, K5 mood-shell tilt, K6 novelty
 detector, K7 forgetting protocol, K8 affect rupture-and-repair,
