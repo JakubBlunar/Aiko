@@ -250,6 +250,172 @@ class PostTurnMixin:
             log.debug("promise resolution failed", exc_info=True)
             return 0
 
+    # ── K57 directed emotion episodes ───────────────────────────────
+
+    def _queue_emotion_trigger(
+        self,
+        *,
+        emotion: str,
+        cause: str,
+        intensity: float,
+        source: str,
+    ) -> None:
+        """K57: stage one episode trigger for the post-turn drain.
+
+        Producers across the mixins call this (kept-promise hook, the
+        lonely arm, K32 reaction warmth, the K55 pivot). Cheap and
+        never raises — a lost trigger is a lost tint, not an error.
+        """
+        if not bool(
+            getattr(self._settings.agent, "emotion_episodes_enabled", True)
+        ):
+            return
+        try:
+            queue = getattr(self, "_pending_emotion_triggers", None)
+            if queue is None:
+                queue = []
+                self._pending_emotion_triggers = queue
+            if len(queue) < 10:
+                queue.append({
+                    "emotion": str(emotion),
+                    "cause": str(cause),
+                    "intensity": float(intensity),
+                    "source": str(source),
+                })
+        except Exception:
+            log.debug("emotion trigger queue failed", exc_info=True)
+
+    def _maybe_queue_lonely_episode(self, engagement: "Any") -> None:
+        """K57: closeness-scaled loneliness from a long typed gap.
+
+        Reads the raw ``latency_seconds`` (NOT the K14
+        ``absence_seconds``, which is band-capped at ~4h and ``None``
+        for the long gaps loneliness actually needs). Below the
+        scaled threshold the pure helper returns 0.0 and nothing is
+        queued — most gaps are just life.
+        """
+        try:
+            latency = getattr(engagement, "latency_seconds", None)
+            if latency is None or float(latency) <= 0.0:
+                return
+            from app.core.affect import emotion_episodes as _ee
+
+            closeness = None
+            axes_store = getattr(self, "_relationship_axes_store", None)
+            if axes_store is not None:
+                try:
+                    closeness = float(
+                        axes_store.get(self._user_id).closeness
+                    )
+                except Exception:
+                    closeness = None
+            gap_hours = float(latency) / 3600.0
+            intensity = _ee.lonely_intensity(
+                gap_hours,
+                closeness,
+                base_threshold_hours=float(
+                    getattr(
+                        self._settings.agent,
+                        "emotion_lonely_threshold_hours",
+                        5.0,
+                    )
+                ),
+            )
+            if intensity <= 0.0:
+                return
+            if gap_hours >= 36.0:
+                duration = "a couple of days"
+            elif gap_hours >= 20.0:
+                duration = "about a day"
+            elif gap_hours >= 9.0:
+                duration = "most of the day"
+            else:
+                duration = "a good few hours"
+            self._queue_emotion_trigger(
+                emotion=_ee.EMOTION_LONELY,
+                cause=f"they were gone {duration} and you noticed",
+                intensity=intensity,
+                source="absence",
+            )
+        except Exception:
+            log.debug("lonely episode arm failed", exc_info=True)
+
+    def _drain_emotion_triggers(self) -> None:
+        """K57: apply staged triggers to the kv-backed episode store.
+
+        Single consumer. Applies decay first (so merges see current
+        intensities), adds each trigger through the pure
+        ``add_episode`` (warm_glow counter-events resolve inside),
+        persists, then nudges the scalar affect layer with the small
+        per-emotion impulses so the two systems agree.
+        """
+        queue = getattr(self, "_pending_emotion_triggers", None)
+        self._pending_emotion_triggers = []
+        if not queue:
+            return
+        if not bool(
+            getattr(self._settings.agent, "emotion_episodes_enabled", True)
+        ):
+            return
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is None:
+            return
+        from datetime import datetime, timezone
+
+        from app.core.affect import emotion_episodes as _ee
+
+        now = datetime.now(timezone.utc)
+        state = _ee.apply_decay(
+            _ee.deserialize(chat_db.kv_get(_ee.KV_EMOTION_EPISODES)), now,
+        )
+        cap = max(
+            1, int(getattr(self._settings.agent, "emotion_episode_cap", 3)),
+        )
+        applied: list[dict] = []
+        for trig in queue:
+            before = state
+            state = _ee.add_episode(
+                state,
+                emotion=trig["emotion"],
+                cause=trig["cause"],
+                intensity=trig["intensity"],
+                source=trig["source"],
+                now=now,
+                cap=cap,
+            )
+            if state is not before:
+                applied.append(trig)
+                log.info(
+                    "emotion-episode trigger: emotion=%s intensity=%.2f "
+                    "source=%s cause=%s",
+                    trig["emotion"], trig["intensity"],
+                    trig["source"], trig["cause"][:80],
+                )
+        chat_db.kv_set(_ee.KV_EMOTION_EPISODES, _ee.serialize(state))
+
+        # Feed the scalar affect layer one small clamped impulse per
+        # applied trigger so the valence/arousal pair doesn't
+        # contradict the episode the prompt is about to render.
+        if applied:
+            try:
+                store = getattr(self, "_affect_store", None)
+                if store is not None:
+                    affect = store.get(self._user_id)
+                    for trig in applied:
+                        dv, da = _ee.AFFECT_IMPULSES.get(
+                            trig["emotion"], (0.0, 0.0),
+                        )
+                        scale = max(0.0, min(1.0, trig["intensity"]))
+                        affect.valence = max(
+                            -1.0, min(1.0, affect.valence + dv * scale),
+                        )
+                        affect.arousal = max(
+                            0.0, min(1.0, affect.arousal + da * scale),
+                        )
+                    store.save(affect)
+            except Exception:
+                log.debug("emotion affect impulse failed", exc_info=True)
+
     def _maybe_arm_self_correction(self, assistant_text: str) -> None:
         """K38: catch when Aiko's just-finished reply contradicts one of
         her own high-confidence ``fact`` / ``preference`` memories and arm
@@ -849,7 +1015,19 @@ class PostTurnMixin:
         # the follow-through worker stops owing it (and the kept-promise
         # signal reaches the axes / moment detector above next turn).
         try:
-            self._maybe_resolve_promises(assistant_text, source="reply")
+            kept_count = self._maybe_resolve_promises(
+                assistant_text, source="reply",
+            )
+            if kept_count:
+                # K57: a kept promise is a warm_glow trigger — the
+                # follow-through landing is exactly the "she came
+                # back with it" beat the episode store models.
+                self._queue_emotion_trigger(
+                    emotion="warm_glow",
+                    cause="you followed through on something you promised",
+                    intensity=0.45,
+                    source="kept_promise",
+                )
         except Exception:
             log.debug("promise resolution hook failed", exc_info=True)
 
@@ -1825,6 +2003,11 @@ class PostTurnMixin:
                 # provider defers to turning_over so only one fires.
                 self._maybe_arm_away_activities_slot(engagement)
                 self._maybe_arm_forward_curiosity_slot(engagement)
+                # K57: a long-enough gap (closeness-scaled, well above
+                # the K14 band) registers as a lonely episode — the
+                # one place K14's "not a complaint" framing is
+                # deliberately overridden.
+                self._maybe_queue_lonely_episode(engagement)
                 log.info(
                     "engagement: mode=%s label=%s delta=%+.4f "
                     "latency_s=%s length_z=%s warmed=%s",
@@ -2019,6 +2202,19 @@ class PostTurnMixin:
                             )
             except Exception:
                 log.debug("wants acted-on hook raised", exc_info=True)
+
+        # K57 — drain queued emotion triggers into the episode store.
+        # Producers (kept-promise hook above, the lonely arm in the
+        # engagement block, K32 reaction warmth in world_mixin, the
+        # K55 pivot in the thread-ownership provider) append to
+        # ``_pending_emotion_triggers``; this single consumer applies
+        # them through the pure ``add_episode`` (counter-events
+        # resolve inside) and feeds the small affect impulses so the
+        # scalar layer stays consistent.
+        try:
+            self._drain_emotion_triggers()
+        except Exception:
+            log.debug("emotion trigger drain raised", exc_info=True)
 
         # K55 — thread-ownership stamp. When this turn carried a K53
         # initiative directive or a K52 imperative want (the provider

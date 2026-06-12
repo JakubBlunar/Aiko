@@ -1584,6 +1584,7 @@ class SessionController(
             initiative=self._render_initiative_block,
             thread_ownership=self._render_thread_ownership_block,
             topic_appetite=self._render_topic_appetite_block,
+            emotion_episode=self._render_emotion_episode_block,
             grounding_line=self._render_grounding_line,
             user_reactions=self._render_user_reactions_block,
             touch_state=self._render_touch_state_block,
@@ -3538,6 +3539,10 @@ class SessionController(
         self._pending_thread_open = None
         # K54 — the once-per-conversation appetite slip re-arms.
         self._topic_appetite_fired = False
+        # K57 — staged (unapplied) triggers don't cross sessions;
+        # live episodes intentionally DO (they're kv-backed feelings
+        # with wall-clock decay, not per-session state).
+        self._pending_emotion_triggers = []
         # Best-effort: a write failure (read-only volume, locked file)
         # must not break the in-memory switch — the user just lands
         # back on whatever was previously persisted on next launch.
@@ -3625,6 +3630,9 @@ class SessionController(
         self._pending_thread_open = None
         # K54 — a wiped history re-arms the appetite slip.
         self._topic_appetite_fired = False
+        # K57 — staged triggers die with the history (live episodes
+        # persist in kv_meta by design).
+        self._pending_emotion_triggers = []
 
     def _clear_merge_buffer(self, session_key: str | None = None) -> None:
         """Drop the voice merge buffer (one specific session, or all).

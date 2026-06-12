@@ -1670,6 +1670,74 @@ class WillFamilySettingsTests(unittest.TestCase):
         self.assertEqual(agent.appetite_min_axes, -1.0)
 
 
+class EmotionEpisodeSettingsTests(unittest.TestCase):
+    """K57: 4 agent knobs round-trip with clamps."""
+
+    _KEYS = (
+        "emotion_episodes_enabled",
+        "emotion_episode_cap",
+        "emotion_lonely_threshold_hours",
+        "emotion_high_band",
+    )
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(self, agent_extra: dict | None = None) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(
+            json.loads(default_path.read_text(encoding="utf-8"))
+        )
+        for k in self._KEYS:
+            cfg.get("agent", {}).pop(k, None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults(self) -> None:
+        result = load_settings(config_path=self._write_config())
+        agent = result.agent
+        self.assertTrue(agent.emotion_episodes_enabled)
+        self.assertEqual(agent.emotion_episode_cap, 3)
+        self.assertEqual(agent.emotion_lonely_threshold_hours, 5.0)
+        self.assertEqual(agent.emotion_high_band, 0.5)
+
+    def test_overrides_round_trip(self) -> None:
+        result = load_settings(config_path=self._write_config({
+            "emotion_episodes_enabled": False,
+            "emotion_episode_cap": 5,
+            "emotion_lonely_threshold_hours": 8.0,
+            "emotion_high_band": 0.7,
+        }))
+        agent = result.agent
+        self.assertFalse(agent.emotion_episodes_enabled)
+        self.assertEqual(agent.emotion_episode_cap, 5)
+        self.assertEqual(agent.emotion_lonely_threshold_hours, 8.0)
+        self.assertEqual(agent.emotion_high_band, 0.7)
+
+    def test_clamps(self) -> None:
+        result = load_settings(config_path=self._write_config({
+            "emotion_episode_cap": 0,
+            "emotion_lonely_threshold_hours": 0.0,
+            "emotion_high_band": 5.0,
+        }))
+        agent = result.agent
+        self.assertEqual(agent.emotion_episode_cap, 1)
+        self.assertEqual(agent.emotion_lonely_threshold_hours, 0.5)
+        self.assertEqual(agent.emotion_high_band, 1.0)
+
+
 class DayColorSettingsTests(unittest.TestCase):
     """K27: 2 agent knobs round-trip with clamps."""
 

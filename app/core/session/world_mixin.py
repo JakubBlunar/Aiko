@@ -372,6 +372,21 @@ class WorldMixin:
                 "K32 _pending_user_reactions append failed", exc_info=True,
             )
 
+        # K57: warm reactions feed the episode store. Small intensity
+        # per click — the merge bump in ``add_episode`` lets a burst
+        # of hearts build a real glow (and a fresh warm_glow cancels
+        # a live miffed). Applied by the post-turn drain.
+        if normalized_kind in ("heart", "hug", "rose"):
+            try:
+                self._queue_emotion_trigger(
+                    emotion="warm_glow",
+                    cause=f"they reacted to you with a {normalized_kind}",
+                    intensity=0.3,
+                    source="user_reaction",
+                )
+            except Exception:
+                log.debug("reaction warm_glow queue failed", exc_info=True)
+
         # Axes bump (optional master switch). Driven by the
         # RelationshipAxesUpdater so the per-turn clamp, broadcast
         # debounce, and persist path all behave identically to the

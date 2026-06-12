@@ -478,6 +478,7 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "mood_hint",
         "mood_inertia_block",
         "mood_shell_block",
+        "emotion_episode_block",
         "style_signal_block",
         "user_state_block",
         "vocal_tone_block",
@@ -1024,6 +1025,11 @@ class PromptAssembler:
         # ``last_mean``) and after the K52 wants provider has matured
         # the ledger this turn.
         self._topic_appetite_provider: Callable[[], str] | None = None
+        # K57 directed emotion episodes. Takes the live ``user_text``
+        # (acknowledgment detection resolves a live episode) and
+        # returns the strongest episode's register cue — or the
+        # one-shot thaw cue right after a resolution.
+        self._emotion_episode_provider: Callable[[str], str] | None = None
         # K16 unified ambient grounding line. One paragraph that fuses
         # circadian/world/activity/affect/relationship/user_state/
         # ambient_noise into a single continuous-awareness sentence at
@@ -1180,6 +1186,7 @@ class PromptAssembler:
         initiative: Callable[[str], str] | None = None,
         thread_ownership: Callable[[str], str] | None = None,
         topic_appetite: Callable[[], str] | None = None,
+        emotion_episode: Callable[[str], str] | None = None,
         grounding_line: Callable[[], str] | None = None,
         user_reactions: Callable[[], str] | None = None,
         touch_state: Callable[[], str] | None = None,
@@ -1289,6 +1296,8 @@ class PromptAssembler:
             self._thread_ownership_provider = thread_ownership
         if topic_appetite is not None:
             self._topic_appetite_provider = topic_appetite
+        if emotion_episode is not None:
+            self._emotion_episode_provider = emotion_episode
         if grounding_line is not None:
             self._grounding_line_provider = grounding_line
         if user_reactions is not None:
@@ -2006,6 +2015,24 @@ class PromptAssembler:
                     log.debug("mood shell provider raised", exc_info=True)
                     mood_shell_block = ""
 
+        # K57: directed emotion episode. Takes ``user_text`` for the
+        # acknowledgment pass; NOT gated on aggressive mode (a live
+        # episode is a register directive — exactly what a tight
+        # budget should keep — and the provider consumes one-shot
+        # thaw state, so skipping the call could lose the melt beat).
+        emotion_episode_block = ""
+        if self._emotion_episode_provider is not None:
+            with _timed_phase(provider_ms, "emotion_episode"):
+                try:
+                    emotion_episode_block = (
+                        self._emotion_episode_provider(user_text) or ""
+                    )
+                except Exception:
+                    log.debug(
+                        "emotion episode provider raised", exc_info=True,
+                    )
+                    emotion_episode_block = ""
+
         # K6: per-turn surprise/novelty signal. Same shape as the F2
         # knowledge-gap provider (takes ``user_text``), since the
         # detector scores the live utterance against a rolling
@@ -2570,6 +2597,12 @@ class PromptAssembler:
             # and dropped in K16 ``replace`` mode (the unified
             # grounding line subsumes it).
             system_parts.append(mood_shell_block)
+        if emotion_episode_block:
+            # K57: the strongest directed-emotion episode (or its
+            # one-shot thaw). Sits right after the mood-shell line —
+            # it's the *objectful* sibling of that objectless tonal
+            # tilt, and the strongest register directive in T5.
+            system_parts.append(emotion_episode_block)
         if style_signal_block:
             # K13: "How Jacob writes lately: terse, casual, asks back
             # often." NOT gated on aggressive (register shaping is a

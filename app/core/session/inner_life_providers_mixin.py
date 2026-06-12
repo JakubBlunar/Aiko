@@ -2944,6 +2944,22 @@ class InnerLifeProvidersMixin:
             )
             if verdict.verdict != _town.VERDICT_PIVOT:
                 return ""
+            # K57: a brushed-off thread is a light miffed trigger —
+            # comedy-weight, not a real sulk (the post-turn drain
+            # applies it).
+            try:
+                self._queue_emotion_trigger(
+                    emotion="miffed",
+                    cause=(
+                        "the thread you opened ("
+                        + thread.topic[:80]
+                        + ") got brushed off"
+                    ),
+                    intensity=0.25,
+                    source="thread_pivot",
+                )
+            except Exception:
+                log.debug("thread-pivot miffed queue failed", exc_info=True)
             return _town.render_return_block(
                 thread.topic,
                 user_display_name=self.user_display_name,
@@ -3026,6 +3042,84 @@ class InnerLifeProvidersMixin:
             return block
         except Exception:
             log.debug("wants block render failed", exc_info=True)
+            return ""
+
+    def _render_emotion_episode_block(self, user_text: str) -> str:
+        """K57: render the strongest live directed-emotion episode.
+
+        Per turn: read the kv store, apply wall-clock decay, run
+        acknowledgment detection against the live ``user_text``
+        (an ack resolves the episode and arms the thaw), persist,
+        then render — the one-shot thaw cue outranks a live episode
+        because the visible transition is the point. MCP
+        ``force_emotion_episode`` writes straight into the kv store,
+        so no force flag is needed here.
+        """
+        if not bool(
+            getattr(self._settings.agent, "emotion_episodes_enabled", True)
+        ):
+            return ""
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is None:
+            return ""
+        try:
+            from datetime import datetime, timezone
+
+            from app.core.affect import emotion_episodes as _ee
+
+            now = datetime.now(timezone.utc)
+            raw = chat_db.kv_get(_ee.KV_EMOTION_EPISODES)
+            state = _ee.deserialize(raw)
+            if not state.episodes and state.pending_thaw is None:
+                return ""
+            state = _ee.apply_decay(state, now)
+
+            text = (user_text or "").strip()
+            if text:
+                for ep in list(state.episodes):
+                    if _ee.detect_acknowledgment(ep, text):
+                        state = _ee.resolve(
+                            state, ep.emotion,
+                            reason="they acknowledged it",
+                        )
+                        log.info(
+                            "emotion-episode resolved: emotion=%s "
+                            "reason=acknowledged cause=%s",
+                            ep.emotion, ep.cause[:80],
+                        )
+
+            state, thaw = _ee.consume_thaw(state)
+            try:
+                chat_db.kv_set(
+                    _ee.KV_EMOTION_EPISODES, _ee.serialize(state),
+                )
+            except Exception:
+                log.debug("emotion episode persist failed", exc_info=True)
+
+            if thaw is not None:
+                log.info(
+                    "emotion-episode thaw: emotion=%s reason=%s",
+                    thaw[0], thaw[2],
+                )
+                return _ee.render_thaw_block(
+                    thaw, user_display_name=self.user_display_name,
+                )
+            episode = _ee.strongest(state)
+            if episode is None:
+                return ""
+            log.debug(
+                "emotion-episode render: emotion=%s intensity=%.2f",
+                episode.emotion, episode.intensity,
+            )
+            return _ee.render_block(
+                episode,
+                user_display_name=self.user_display_name,
+                high_band=float(
+                    getattr(self._settings.agent, "emotion_high_band", 0.5)
+                ),
+            )
+        except Exception:
+            log.debug("emotion episode block render failed", exc_info=True)
             return ""
 
     def _render_topic_appetite_block(self) -> str:
