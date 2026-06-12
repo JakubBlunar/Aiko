@@ -340,6 +340,93 @@ class PostTurnMixin:
         except Exception:
             log.debug("lonely episode arm failed", exc_info=True)
 
+    def _bank_tease_debt(
+        self,
+        *,
+        what: str,
+        context: str,
+        source: str,
+    ) -> bool:
+        """K59: bank one mock-grudge into the kv-backed tease ledger.
+
+        Called from the K29 opinion-injection fire site and the K57
+        drain's light-offence lane. Best-effort; returns whether a
+        row was actually added (dedupe / blank input refuse).
+        """
+        if not bool(
+            getattr(self._settings.agent, "tease_economy_enabled", True)
+        ):
+            return False
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is None:
+            return False
+        try:
+            from datetime import datetime, timezone
+
+            from app.core.relationship import tease_ledger as _tl
+
+            now = datetime.now(timezone.utc)
+            state = _tl.expire(
+                _tl.deserialize(chat_db.kv_get(_tl.KV_TEASE_LEDGER)),
+                now,
+                expiry_days=float(
+                    getattr(self._settings.agent, "tease_expiry_days", 14.0)
+                ),
+            )
+            state, added = _tl.bank(
+                state,
+                what=what,
+                context=context,
+                source=source,
+                now=now,
+                cap=max(
+                    1, int(getattr(self._settings.agent, "tease_cap", 5)),
+                ),
+            )
+            chat_db.kv_set(_tl.KV_TEASE_LEDGER, _tl.serialize(state))
+            if added:
+                log.info(
+                    "tease banked: source=%s what=%s",
+                    source, what[:80],
+                )
+            return added
+        except Exception:
+            log.debug("tease bank failed", exc_info=True)
+            return False
+
+    def _settle_tease_debts(self, assistant_text: str) -> None:
+        """K59: post-turn collection check on the offered ledger row.
+
+        If the reply's content words overlap the row the provider
+        offered this turn, the debt is deleted — repaid is done
+        forever. A miss just clears the offered stamp so the row can
+        come around again after the cooldown.
+        """
+        if not bool(
+            getattr(self._settings.agent, "tease_economy_enabled", True)
+        ):
+            return
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is None:
+            return
+        try:
+            from app.core.relationship import tease_ledger as _tl
+
+            state = _tl.deserialize(chat_db.kv_get(_tl.KV_TEASE_LEDGER))
+            if not any(d.offered_at for d in state.debts):
+                return
+            state, settled = _tl.settle_if_collected(
+                state, assistant_text,
+            )
+            chat_db.kv_set(_tl.KV_TEASE_LEDGER, _tl.serialize(state))
+            if settled is not None:
+                log.info(
+                    "tease collected: what=%s source=%s",
+                    settled.what[:80], settled.source,
+                )
+        except Exception:
+            log.debug("tease settle failed", exc_info=True)
+
     def _drain_emotion_triggers(self) -> None:
         """K57: apply staged triggers to the kv-backed episode store.
 
@@ -348,6 +435,11 @@ class PostTurnMixin:
         ``add_episode`` (warm_glow counter-events resolve inside),
         persists, then nudges the scalar affect layer with the small
         per-emotion impulses so the two systems agree.
+
+        K59 lane-picker: a *light* miffed trigger (intensity below
+        0.35) is comedy, not drama — it banks into the tease ledger
+        instead of spawning a real episode, so a brushed-off thread
+        becomes a callback bit rather than a sulk.
         """
         queue = getattr(self, "_pending_emotion_triggers", None)
         self._pending_emotion_triggers = []
@@ -363,6 +455,26 @@ class PostTurnMixin:
         from datetime import datetime, timezone
 
         from app.core.affect import emotion_episodes as _ee
+
+        if bool(
+            getattr(self._settings.agent, "tease_economy_enabled", True)
+        ):
+            routed: list[dict] = []
+            for trig in queue:
+                if (
+                    trig["emotion"] == _ee.EMOTION_MIFFED
+                    and float(trig["intensity"]) < 0.35
+                ):
+                    self._bank_tease_debt(
+                        what=trig["cause"],
+                        context="",
+                        source="light_offence",
+                    )
+                else:
+                    routed.append(trig)
+            queue = routed
+            if not queue:
+                return
 
         now = datetime.now(timezone.utc)
         state = _ee.apply_decay(
@@ -2215,6 +2327,15 @@ class PostTurnMixin:
             self._drain_emotion_triggers()
         except Exception:
             log.debug("emotion trigger drain raised", exc_info=True)
+
+        # K59 — tease-ledger settle. If the collection provider
+        # offered a debt this turn, check whether the reply actually
+        # collected it (content-word overlap) and delete on a hit —
+        # repaid is done forever.
+        try:
+            self._settle_tease_debts(assistant_text)
+        except Exception:
+            log.debug("tease settle hook raised", exc_info=True)
 
         # K55 — thread-ownership stamp. When this turn carried a K53
         # initiative directive or a K52 imperative want (the provider

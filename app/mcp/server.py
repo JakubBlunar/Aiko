@@ -2769,6 +2769,126 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"clear_emotion_episodes raised: {exc}"
 
     @mcp.tool()
+    def get_tease_ledger() -> str:
+        """K59 — dump the payback ledger.
+
+        Returns the master switch, the live humor axis vs the
+        collection floor, the last-offer cooldown stamp, and every
+        banked debt (what / context / source / age / offered stamp).
+        Read-only.
+        """
+        try:
+            from datetime import datetime, timezone
+
+            from app.core.relationship import tease_ledger as _tl
+
+            chat_db = getattr(session, "_chat_db", None)
+            if chat_db is None:
+                return json.dumps({"error": "no chat db"})
+            now = datetime.now(timezone.utc)
+            state = _tl.deserialize(chat_db.kv_get(_tl.KV_TEASE_LEDGER))
+            humor = None
+            axes_store = getattr(
+                session, "_relationship_axes_store", None,
+            )
+            if axes_store is not None:
+                try:
+                    humor = float(
+                        axes_store.get(session._user_id).humor
+                    )
+                except Exception:
+                    humor = None
+            agent = session._settings.agent
+            payload = {
+                "enabled": bool(
+                    getattr(agent, "tease_economy_enabled", True)
+                ),
+                "humor": humor,
+                "min_humor": float(
+                    getattr(agent, "tease_min_humor", 0.2)
+                ),
+                "last_offer_at": chat_db.kv_get(
+                    "aiko.tease_last_offer_at",
+                ),
+                "cooldown_hours": float(
+                    getattr(agent, "tease_collect_cooldown_hours", 12.0)
+                ),
+                "force_armed": bool(
+                    getattr(
+                        session, "_tease_collection_force_next", False,
+                    )
+                ),
+                "debts": [
+                    {
+                        "id": d.id,
+                        "what": d.what,
+                        "context": d.context,
+                        "source": d.source,
+                        "created_at": d.created_at,
+                        "age_hours": (
+                            round(
+                                (
+                                    now - parsed
+                                ).total_seconds() / 3600.0, 1,
+                            )
+                            if (
+                                parsed := _tl._parse_iso(d.created_at)
+                            ) is not None
+                            else None
+                        ),
+                        "offered_at": d.offered_at,
+                    }
+                    for d in state.debts
+                ],
+            }
+            return json.dumps(payload)
+        except Exception as exc:
+            return f"get_tease_ledger raised: {exc}"
+
+    @mcp.tool()
+    def force_tease_debt(what: str, context: str = "") -> str:
+        """K59 — bank a debt directly into the ledger.
+
+        Pair with ``force_tease_collection`` to verify the full
+        bank → offer → collect → settle loop without waiting for an
+        organic K29 pushback.
+        """
+        try:
+            added = session._bank_tease_debt(
+                what=what, context=context, source="forced",
+            )
+            return json.dumps({"banked": bool(added)})
+        except Exception as exc:
+            return f"force_tease_debt raised: {exc}"
+
+    @mcp.tool()
+    def force_tease_collection() -> str:
+        """K59 — arm a one-shot bypass of the humor / cooldown / age
+        gates so the next turn's provider offers the oldest debt."""
+        try:
+            session._tease_collection_force_next = True
+            return json.dumps({"armed": True})
+        except Exception as exc:
+            return f"force_tease_collection raised: {exc}"
+
+    @mcp.tool()
+    def clear_tease_ledger() -> str:
+        """K59 — wipe the ledger and the offer-cooldown stamp."""
+        try:
+            from app.core.relationship import tease_ledger as _tl
+
+            chat_db = getattr(session, "_chat_db", None)
+            if chat_db is None:
+                return json.dumps({"error": "no chat db"})
+            chat_db.kv_set(
+                _tl.KV_TEASE_LEDGER, _tl.serialize(_tl.LedgerState()),
+            )
+            chat_db.kv_set("aiko.tease_last_offer_at", "")
+            return json.dumps({"cleared": True})
+        except Exception as exc:
+            return f"clear_tease_ledger raised: {exc}"
+
+    @mcp.tool()
     def clear_wants() -> str:
         """K52 — wipe the wants ledger (wants + re-entry cooldowns)."""
         try:

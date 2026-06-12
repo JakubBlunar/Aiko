@@ -1738,6 +1738,83 @@ class EmotionEpisodeSettingsTests(unittest.TestCase):
         self.assertEqual(agent.emotion_high_band, 1.0)
 
 
+class TeaseEconomySettingsTests(unittest.TestCase):
+    """K59: 6 agent knobs round-trip with clamps."""
+
+    _KEYS = (
+        "tease_economy_enabled",
+        "tease_cap",
+        "tease_expiry_days",
+        "tease_collect_cooldown_hours",
+        "tease_min_humor",
+        "tease_min_age_hours",
+    )
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(self, agent_extra: dict | None = None) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(
+            json.loads(default_path.read_text(encoding="utf-8"))
+        )
+        for k in self._KEYS:
+            cfg.get("agent", {}).pop(k, None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults(self) -> None:
+        agent = load_settings(config_path=self._write_config()).agent
+        self.assertTrue(agent.tease_economy_enabled)
+        self.assertEqual(agent.tease_cap, 5)
+        self.assertEqual(agent.tease_expiry_days, 14.0)
+        self.assertEqual(agent.tease_collect_cooldown_hours, 12.0)
+        self.assertEqual(agent.tease_min_humor, 0.2)
+        self.assertEqual(agent.tease_min_age_hours, 1.0)
+
+    def test_overrides_round_trip(self) -> None:
+        agent = load_settings(config_path=self._write_config({
+            "tease_economy_enabled": False,
+            "tease_cap": 8,
+            "tease_expiry_days": 7.0,
+            "tease_collect_cooldown_hours": 1.0,
+            "tease_min_humor": 0.5,
+            "tease_min_age_hours": 0.0,
+        })).agent
+        self.assertFalse(agent.tease_economy_enabled)
+        self.assertEqual(agent.tease_cap, 8)
+        self.assertEqual(agent.tease_expiry_days, 7.0)
+        self.assertEqual(agent.tease_collect_cooldown_hours, 1.0)
+        self.assertEqual(agent.tease_min_humor, 0.5)
+        self.assertEqual(agent.tease_min_age_hours, 0.0)
+
+    def test_clamps(self) -> None:
+        agent = load_settings(config_path=self._write_config({
+            "tease_cap": 0,
+            "tease_expiry_days": 0.0,
+            "tease_collect_cooldown_hours": -5.0,
+            "tease_min_humor": -3.0,
+            "tease_min_age_hours": -1.0,
+        })).agent
+        self.assertEqual(agent.tease_cap, 1)
+        self.assertEqual(agent.tease_expiry_days, 0.5)
+        self.assertEqual(agent.tease_collect_cooldown_hours, 0.0)
+        self.assertEqual(agent.tease_min_humor, -1.0)
+        self.assertEqual(agent.tease_min_age_hours, 0.0)
+
+
 class DayColorSettingsTests(unittest.TestCase):
     """K27: 2 agent knobs round-trip with clamps."""
 
