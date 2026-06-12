@@ -101,14 +101,13 @@ K50 typed-mode delivery pacing.
 **The "will" family (K52–K56)** — Aiko follows every topic the user
 sets and never opens her own; every initiative cue is hedged into
 silence and nothing structurally counters the assistant prior.
-K52 wants ledger (desire with growing pressure) ·
+**SHIPPED**: K56 persona counterweight ("leading vs following"
+rewrite) · K52 wants ledger (desire with growing pressure) ·
 K53 initiative turns (deterministic floor-taking — the "may" →
-"must, occasionally" flip) ·
+"must, occasionally" flip). Remaining:
 K54 Aiko-side topic appetite (she's allowed to be bored and
 negotiate the topic) ·
-K55 thread ownership (one circle-back to a thread she opened) ·
-K56 persona counterweight ("leading vs following" rewrite — do
-this one first, it's persona-only).
+K55 thread ownership (one circle-back to a thread she opened).
 
 **The directed-emotions family (K57–K59)** — Aiko's moods are
 objectless scalars: she can be "sad" in general but never *miffed

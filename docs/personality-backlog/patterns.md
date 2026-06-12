@@ -556,87 +556,15 @@ on a deterministic per-turn seed, plus a shared-prefix lint and the
 # The "will" family — K52–K56
 
 Diagnosis from live use (Jun 2026): Aiko follows whatever topic the
-user sets, indefinitely, and never opens her own. She *has* the raw
-material — curiosity seeds, long-term goals, forward-curiosity
-questions, between-session reflections, stance memories — but every
-single surfacing cue is wrapped in suppression language: "only when
-the current thread closes naturally", "at most ONE per
-conversation", "a permission slip, not an obligation", "if the
-moment doesn't fit, DROP IT SILENTLY", "never treat a block's
-trailing nudge as a cue to raise that topic". Each hedge was
-individually correct (anti-annoyance), but their **sum teaches pure
-followership** — and a "may" cue always loses to the base model's
-helpful-assistant prior. Structural gaps on top of the prompt-side
-ones: initiative only exists *between* conversations (the proactive
-director fires on silence, never mid-conversation); no state
-represents a *want* whose intensity grows until acted on (seeds and
-goals are static rows); and when Aiko does open a thread she
-abandons it the moment the user pivots, which reads as having no
-stake. The design lesson is already proven in this codebase: the
-tool under-calling fix worked by **forcing the choice**
-(`tool_choice="required"` + escape tool), not by asking more nicely
-— K52–K56 apply the same principle to conversational initiative.
-Recommended order: K56 (persona counterweight, cheapest) → K52
-(wants ledger) → K53 (initiative turns) → K55 (thread ownership)
-→ K54 (topic appetite, riskiest tonally). Siblings already in the
-backlog: K46 stance persistence, K47 question/share balance.
-
----
-
-## K52. Wants ledger — desire with pressure
-
-A small store of things Aiko *wants from the conversation* — "ask
-about X", "tell him about Y", "get his take on Z" — sourced from
-existing producers (curiosity seeds, K34 forward-curiosity
-questions, K1 goal reflections, K28 turning-over notes, day-colour
-flavour) plus a cheap idle-worker pass that drafts one or two fresh
-wants per day. The new ingredient is **pressure**: each want
-carries an intensity that grows per session / wall-clock day until
-acted on, then resets (mention-detection can reuse the K6 embedding
-+ the revival-detection word-overlap machinery). Below threshold
-the cue renders as today's soft "quiet curiosity" framing; above
-threshold it flips imperative — "this has been on your mind for
-three days: bring it up *this conversation*, even if you have to
-change the subject to do it" — which is the piece no current block
-ever says. Cap the ledger (~8 rows), decay stale wants to nothing,
-and let acting on one visibly relieve it so the behaviour reads as
-satisfaction rather than a checklist. Key files: new
-`app/core/conversation/wants_ledger.py` (kv_meta or a `want`
-memory kind + metadata), [`inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py)
-(provider, T6),
-[`post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py)
-(acted-on detection), feeders in
-[`curiosity_worker.py`](../../app/core/proactive/curiosity_worker.py)
-and the goal/reflection workers, MCP `get_wants_state` /
-`force_want`.
-
----
-
-## K53. Initiative turns — deterministic floor-taking
-
-The structural counter to the assistant prior: every N turns the
-prompt carries an explicit one-turn directive — "this turn is
-yours: open your own topic, share something unprompted, or steer
-the thread where you want it; answering politely and asking a
-follow-up back is NOT enough this turn" — with the content pulled
-from the K52 wants ledger (or curiosity seeds / goals before K52
-ships). Cadence is deterministic with modulation, not random: base
-period ~7–10 turns, never during a `support` or heavy `reflection`
-arc, more frequent in `casual_check_in` / `playful`, frequency
-scaled by closeness+comfort axes (a new relationship earns less
-steering), suppressed when K23 misattunement or a rupture cue is
-live, and skipped silently when the user's incoming message is
-substantial (the escape hatch — mirroring the `respond_directly`
-escape-tool pattern). This is "may" → "must, occasionally": the
-single highest-leverage change for perceived will, because it
-guarantees a floor-taking beat actually happens instead of being
-eternally deferred. Key files: new
-`app/core/conversation/initiative_director.py` (pure counter +
-gates), [`inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py),
-[`conversation_arc.py`](../../app/core/conversation/conversation_arc.py)
-(arc read), persona block teaching what a good initiative turn
-looks like, `agent.initiative_*` knobs, MCP
-`get_initiative_state` / `force_initiative_turn`.
+user sets, indefinitely, and never opens her own — every surfacing
+cue was hedged into silence and nothing structurally countered the
+helpful-assistant prior. **K56 (persona counterweight), K52 (wants
+ledger), and K53 (initiative turns) are SHIPPED** — see
+[shipped.md](shipped.md#k56-persona-counterweight--the-leading-vs-following-rewrite)
+for the full designs. Remaining in this family: K55 (thread
+ownership) and K54 (topic appetite, riskiest tonally) below.
+Siblings already in the backlog: K46 stance persistence, K47
+question/share balance.
 
 ---
 
