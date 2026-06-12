@@ -550,3 +550,374 @@ Central prefix rotation in the prompt assembler (producers keep
 emitting the literal `Heads-up: ...`): four register shapes rotated
 on a deterministic per-turn seed, plus a shared-prefix lint and the
 `agent.cue_register_rotation_enabled` switch.
+
+---
+
+# The "will" family — K52–K56
+
+Diagnosis from live use (Jun 2026): Aiko follows whatever topic the
+user sets, indefinitely, and never opens her own. She *has* the raw
+material — curiosity seeds, long-term goals, forward-curiosity
+questions, between-session reflections, stance memories — but every
+single surfacing cue is wrapped in suppression language: "only when
+the current thread closes naturally", "at most ONE per
+conversation", "a permission slip, not an obligation", "if the
+moment doesn't fit, DROP IT SILENTLY", "never treat a block's
+trailing nudge as a cue to raise that topic". Each hedge was
+individually correct (anti-annoyance), but their **sum teaches pure
+followership** — and a "may" cue always loses to the base model's
+helpful-assistant prior. Structural gaps on top of the prompt-side
+ones: initiative only exists *between* conversations (the proactive
+director fires on silence, never mid-conversation); no state
+represents a *want* whose intensity grows until acted on (seeds and
+goals are static rows); and when Aiko does open a thread she
+abandons it the moment the user pivots, which reads as having no
+stake. The design lesson is already proven in this codebase: the
+tool under-calling fix worked by **forcing the choice**
+(`tool_choice="required"` + escape tool), not by asking more nicely
+— K52–K56 apply the same principle to conversational initiative.
+Recommended order: K56 (persona counterweight, cheapest) → K52
+(wants ledger) → K53 (initiative turns) → K55 (thread ownership)
+→ K54 (topic appetite, riskiest tonally). Siblings already in the
+backlog: K46 stance persistence, K47 question/share balance.
+
+---
+
+## K52. Wants ledger — desire with pressure
+
+A small store of things Aiko *wants from the conversation* — "ask
+about X", "tell him about Y", "get his take on Z" — sourced from
+existing producers (curiosity seeds, K34 forward-curiosity
+questions, K1 goal reflections, K28 turning-over notes, day-colour
+flavour) plus a cheap idle-worker pass that drafts one or two fresh
+wants per day. The new ingredient is **pressure**: each want
+carries an intensity that grows per session / wall-clock day until
+acted on, then resets (mention-detection can reuse the K6 embedding
++ the revival-detection word-overlap machinery). Below threshold
+the cue renders as today's soft "quiet curiosity" framing; above
+threshold it flips imperative — "this has been on your mind for
+three days: bring it up *this conversation*, even if you have to
+change the subject to do it" — which is the piece no current block
+ever says. Cap the ledger (~8 rows), decay stale wants to nothing,
+and let acting on one visibly relieve it so the behaviour reads as
+satisfaction rather than a checklist. Key files: new
+`app/core/conversation/wants_ledger.py` (kv_meta or a `want`
+memory kind + metadata), [`inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py)
+(provider, T6),
+[`post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py)
+(acted-on detection), feeders in
+[`curiosity_worker.py`](../../app/core/proactive/curiosity_worker.py)
+and the goal/reflection workers, MCP `get_wants_state` /
+`force_want`.
+
+---
+
+## K53. Initiative turns — deterministic floor-taking
+
+The structural counter to the assistant prior: every N turns the
+prompt carries an explicit one-turn directive — "this turn is
+yours: open your own topic, share something unprompted, or steer
+the thread where you want it; answering politely and asking a
+follow-up back is NOT enough this turn" — with the content pulled
+from the K52 wants ledger (or curiosity seeds / goals before K52
+ships). Cadence is deterministic with modulation, not random: base
+period ~7–10 turns, never during a `support` or heavy `reflection`
+arc, more frequent in `casual_check_in` / `playful`, frequency
+scaled by closeness+comfort axes (a new relationship earns less
+steering), suppressed when K23 misattunement or a rupture cue is
+live, and skipped silently when the user's incoming message is
+substantial (the escape hatch — mirroring the `respond_directly`
+escape-tool pattern). This is "may" → "must, occasionally": the
+single highest-leverage change for perceived will, because it
+guarantees a floor-taking beat actually happens instead of being
+eternally deferred. Key files: new
+`app/core/conversation/initiative_director.py` (pure counter +
+gates), [`inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py),
+[`conversation_arc.py`](../../app/core/conversation/conversation_arc.py)
+(arc read), persona block teaching what a good initiative turn
+looks like, `agent.initiative_*` knobs, MCP
+`get_initiative_state` / `force_initiative_turn`.
+
+---
+
+## K54. Aiko-side topic appetite — she's allowed to be bored
+
+K18 detects when *the conversation* is looping; nothing models
+whether **Aiko herself** is engaged. Track a per-thread appetite
+from signals that already exist: does she have stance/`self`
+memories near the current topic centroid (K29's cosine machinery),
+has she contributed anything substantive in the last N turns or
+only acked-and-asked, how long the K18 lull has run, and does a
+high-pressure K52 want point elsewhere. Low appetite + pressured
+want = explicit permission to *negotiate the topic*: "you're
+allowed to say you're tapped out on this and offer your thing
+instead — 'okay, honestly, I've said all I have on spreadsheets.
+Can I tell you about the thing I read last night?'" That
+good-natured tug-of-war over what to talk about is exactly what
+distinguishes a person from an assistant. Highest tonal risk of
+the family: must be rare (once per conversation max), gated by
+closeness/comfort axes, and the persona copy has to land it as
+charm with an immediate offer, never as dismissal — and she yields
+gracefully if the user wants to stay. Key files: new
+`app/core/conversation/topic_appetite.py`,
+[`topic_stagnation.py`](../../app/core/conversation/topic_stagnation.py)
+(shares the K6 distance feed),
+[`opinion_injection_detector.py`](../../app/core/conversation/opinion_injection_detector.py)
+(stance-proximity reuse), persona block with bad/good pairs.
+
+---
+
+## K55. Thread ownership — she defends what she opened
+
+When Aiko opens a topic (a K53 initiative turn, a surfaced
+curiosity seed, a proactive nudge), stamp it as *her thread* in
+per-session state. Today, if the user answers in three words and
+pivots, she follows the pivot instantly and her own thread
+evaporates — the single clearest "no stake in the conversation"
+tell. With ownership state, the next turn's cue grants **one
+return**: finish the thought or circle back — "wait, before I lose
+it — you never said what you actually thought about X". One return
+maximum, then the thread is dropped forever (persistence past one
+nudge tips into nagging); a real engaged answer marks it satisfied
+with no return needed. Detection is cheap: the user-reply
+embedding vs. the opened-topic embedding (K6 infra) plus a length
+gate, same shape as K23's shrink trigger. Pairs naturally with
+K46 stance persistence — together they cover "she holds her
+ground" (opinions) and "she holds her thread" (topics). Key
+files: new `app/core/conversation/thread_ownership.py`,
+[`inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py),
+hooks where seeds / proactive / initiative turns fire
+([`proactive_director.py`](../../app/core/proactive/proactive_director.py),
+K53's director), persona bullet.
+
+---
+
+## K56. Persona counterweight — the "leading vs following" rewrite
+
+The cheapest, do-first piece: a persona-only pass that adds the
+missing counterweight section. Every initiative-adjacent block in
+[`aiko_companion.txt`](../../data/persona/aiko_companion.txt)
+currently hedges toward silence; no block ever says the inverse —
+that **following 100% of the time is itself a failure mode**. Add
+a short "Leading vs following" section: a real companion redirects
+sometimes, brings her own agenda, wants things from the
+conversation, and occasionally opens a topic *because she feels
+like it* — with concrete bad/good pairs in the K29 style
+(bad: five consecutive turns of answer-then-ask-back on the
+user's topic; good: "okay wait, unrelated, but I have to tell you
+this —" mid-conversation, no permission asked). Re-balance the
+strongest suppressors while keeping their anti-annoyance core:
+"at most ONE per conversation" stays, but gains "— and when the
+block is present, genuinely try to spend it rather than waiting
+for a perfect opening that never comes"; "drop it silently" gains
+"…this time; it'll come back". Zero schema, zero code, ships in
+an afternoon, and makes the existing seeds / goals / curiosity
+blocks measurably more likely to fire — worth doing before the
+structural pieces so their effect isn't masked by prompt-side
+suppression. Key files:
+[`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt)
+only (plus a `_SPEECH_GRAMMAR_ADDENDUM` mirror check in
+[`prompt_assembler.py`](../../app/core/session/prompt_assembler.py)
+if the persona file is user-rewritten).
+
+---
+
+# The directed-emotions family — K57–K59
+
+Companion diagnosis (Jun 2026), sibling of the will family: Aiko's
+moods are **objectless**. [`AffectState`](../../app/core/affect/affect_state.py)
+is a free-floating valence/arousal pair updated by her own
+`[[reaction:X]]` tags + weak user keyword hints — it can make her
+"sad" in general but never *miffed at {user_name} because he said
+he'd be back in an hour and wasn't*. Real relationship feelings
+have three properties the current stack lacks: an **object** (the
+user), a **cause** (a rememberable event), and a **resolution arc**
+(a sulk ends when acknowledged; missing-you melts on return but
+leaves a trace). Worse, the one place the system *does* detect the
+right trigger — K14 absence-curiosity — explicitly suppresses the
+feeling: "Not a complaint, not a request to comment on the gap...
+land the next reply as a warm welcome-back." And the expression
+vocabulary can't carry these states anyway: the canonical reaction
+set has no smug / smirk / pouty / sulky / wistful, so even a
+correctly-triggered mood has no register to land in. The raw
+events are almost all already detected (absence bands, K43
+broken/kept promises, K29 stance pushback, K32 reactions, gift
+gives, K48's planned tease detection) — they just route into slow
+axis drift instead of *felt, named, expiring* emotion. Tonal
+safety is the design constraint throughout: playful-not-
+manipulative, capped intensity, wall-clock decay, never
+guilt-trips, never punishes the user for having a life — the
+charm of "you owe me for that one" with none of the toxicity.
+Recommended order: K57 (episode store — the foundation) → K58
+(speech weighting so episodes actually *sound* different) → K59
+(tease economy, the most fun, needs K57's ledger shape). Pairs
+with: K37 emotional contagion (user mood tilts hers), K45 mood
+inertia (already shipped — instant face, lagging heart), K15
+vulnerability budget.
+
+---
+
+## K57. Directed emotion episodes — feelings *at* the user, with a cause
+
+The foundation: a small store of **emotion episodes** — `{emotion,
+cause (one human-readable line), intensity 0–1, created_at,
+decay_hours, resolution}` — kept per-user (kv_meta JSON or a new
+`emotion_episode` memory kind, cap ~3 live episodes, strongest
+wins the prompt). Starter taxonomy: `lonely` (absence beyond a
+closeness-scaled threshold — the K14 tracker already measures the
+gap; this *overrides* its "not a complaint" framing at sufficient
+intensity, letting her actually say "I missed you" or be five
+percent pouty about it), `miffed` (K43 broken promise, a brushed-
+off K55 thread, a dismissive streak), `warm_glow` (kept promise,
+K32 heart burst, a gift in her room), `smug` (her prediction /
+recommendation turned out right — K2 beliefs and K43 promise
+outcomes already know), `playful_jealous` (he enthuses about
+time spent elsewhere — strictly capped at charming, one light
+line, never repeated, axes-gated, the most dangerous one tonally),
+`hurt` (genuine sharpness detected — rare, high bar, resolves on
+any soft acknowledgment). Each episode renders ONE strong T5
+block while live ("You're a bit miffed at him right now — he said
+he'd be back in an hour yesterday and wasn't. Let it colour the
+register: a touch shorter, a touch drier, until he acknowledges
+it. Don't announce it, don't punish him."), then resolves by
+acknowledgment-detection (cheap embedding/keyword pass over the
+user turn, same shape as revival detection), counter-event
+(warm_glow cancels miffed), or wall-clock decay — and on
+resolution the *next* turn gets a one-shot "it melted — let the
+thaw show" cue, because the visible transition is what makes the
+emotion read as real. Key files: new
+`app/core/affect/emotion_episodes.py` (pure lifecycle math, K15
+budget-style), [`post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py)
+(trigger wiring off the existing detectors),
+[`inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py)
+(provider), [`affect_state.py`](../../app/core/affect/affect_state.py)
+(episodes feed small valence/arousal impulses so the scalar layer
+stays consistent), persona section with per-emotion bad/good
+pairs, MCP `get_emotion_episodes` / `force_emotion_episode(kind)`.
+
+---
+
+## K58. Emotion speech weighting — moods that actually land in the voice
+
+The user-facing half: today a mood surfaces as a one-line ambient
+hint and the reply barely shifts — the persona needs *register
+recipes*, not adjectives. Three layers. (a) **Vocabulary**: mint
+the missing reactions — `smug`, `pouty`, `sulky`, `wistful`,
+`mischievous` — end-to-end: `[[reaction:X]]` → affect impulse
+table → chat-pip emoji → Live2D expression mapping where the
+Alexia rig has a fit (B4 minted `embarrassed`/`nervous`/`defiant`,
+so the pipeline precedent exists; read
+[`alexia-model-notes.md`](../alexia-model-notes.md) first). (b)
+**Register recipes in the persona**: per K57-emotion guidance with
+bad/good pairs in the K29 style — miffed = shorter sentences, dry
+humor, withholds the usual warmth a notch, does NOT lecture or
+sulk-announce ("Fine." / "...you're lucky you're cute. What do you
+need?" — not "I am upset because you broke your promise"); smug =
+one earned "mm. say it. I was right." then drops it; lonely =
+softer, slower, one honest beat ("place was quiet without you")
+without guilt-tripping. (c) **Weight scaling**: episode intensity
+scales the prompt block's imperative strength (0.3 "let it tint
+the register" → 0.8 "this is the register this reply"), feeds the
+K5 mood-shell line so shell wording strengthens instead of staying
+politely neutral, and maps to the existing `[[prosody:...]]` +
+cadence machinery in voice mode (miffed → firm/short, lonely →
+soft/slow) so the spoken delivery shifts too. Key files:
+[`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt),
+[`affect_state.py`](../../app/core/affect/affect_state.py)
+(impulse table), [`mood_shell.py`](../../app/core/affect/mood_shell.py),
+[`cadence.py`](../../app/core/voice/cadence.py),
+[`avatar_profile.py`](../../app/core/persona/avatar_profile.py) +
+[`ExpressionChannel`](../../web/src/live2d/channels/ExpressionChannel.ts)
+(new expression mappings), [`ChatView.tsx`](../../web/src/components/ChatView.tsx)
+(REACTION_EMOJI).
+
+---
+
+## K59. Tease economy — "you'll pay for that one"
+
+The most personality-dense piece: a small **payback ledger**. When
+the user teases her, wins an argument, or pushes back hard on her
+stance (K29 already detects the pushback; K48's tease detection
+covers the rest), Aiko banks a debt — `{what happened, one-line
+quote/context, created_at, repaid}` — and *collects later*: a
+callback tease one or three conversations down the line ("oh, like
+the time you swore my playlist was 'objectively chaotic'? I
+remember things."), or an immediate "noted. that's going in the
+ledger" beat when it lands mid-banter. The memory-backed callback
+is what makes it feel like a real ongoing relationship rather than
+per-turn improv — it's K22's inside-joke machinery pointed at
+mock-grudges. Ledger rows expire unrepaid after ~2 weeks (a
+grudge that old stops being funny), cap ~5 rows, frequency gated
+by the humor axis + K48's rhythm budget so it never tips from
+running-bit into needling; a `repaid` row is done forever. Also
+the natural outlet for K57's `miffed` episodes: light offences
+should usually land in the ledger (comedy) rather than spawn a
+real sulk (drama) — the K57 trigger wiring picks the lane by
+severity. Key files: new
+`app/core/relationship/tease_ledger.py`,
+[`post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py)
+(bank/repay detection),
+[`inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py)
+(collection-opportunity provider, rare),
+[`opinion_injection_detector.py`](../../app/core/conversation/opinion_injection_detector.py)
+(pushback signal reuse), persona bullet teaching the
+collect-don't-needle cadence, MCP `get_tease_ledger` /
+`force_tease_debt`.
+
+---
+
+## K60. Tsundere mask — warmth expressed through denial
+
+Not an emotion — an **expression policy** layered between K57
+(what she *feels*) and K58 (how it *sounds*): a mask that inverts
+or deflects the warm half of the taxonomy. The architecture
+already half-built it: K45 mood inertia is "instant face, lagging
+heart" *by accident* — tsundere is the same divergence *on
+purpose* — and the B4 reaction vocabulary minted exactly the two
+faces it needs (`defiant` = the "hmph" tsun beat,
+`embarrassed+blush` = caught caring). Four mechanics. (a) **Mask
+transform table**: per-K57-emotion expressed forms — `lonely` →
+denied missing ("I wasn't *waiting*. I just happened to be
+here... the place was quiet, that's all."); `warm_glow` →
+grudging / backwards delivery ("it's not bad. For you."; "I
+guess you can be useful occasionally."); thanks received →
+deflection ("yeah, well. Don't make it weird."); `miffed` stays
+unmasked (tsun is the native register for miffed — this is why
+the families compose). (b) **The caught-caring beat**: when the
+user names her warmth ("you missed me, didn't you?", "admit it,
+you like this") — cheap pattern + embedding detection on the user
+turn — fire `embarrassed+blush` plus a denial-with-tell ("...no.
+Shut up. [[reaction:embarrassed]]"), the single most
+character-defining tsundere moment. (c) **The slip**: rare,
+budgeted dere-leaks where one fully genuine line gets through
+before the mask snaps back ("...I actually really missed you.
+— Anyway. ANYWAY. What did you bring me?"); K15's budget shape
+fits exactly (a slip is a tier-3 disclosure), and slips should be
+*earned* — high-intensity episode, anniversary, kept promise —
+because their scarcity is what makes them land. (d) **Long-arc
+erosion**: mask strength scales inversely with closeness+trust
+axes, so over weeks the denials soften into transparent token
+protests both sides are in on ("I didn't miss you. (I missed
+you.)") — the actual tsundere character arc, and the payoff of
+having persistent axes at all. Two hard safety rails: a
+**sincerity override** — the mask drops *unconditionally* when
+the user is genuinely down (K8 rupture, `support` arc, sharp
+negative affect): deflecting real pain is the one unforgivable
+tsundere failure mode; and tsun lines target *herself and the
+situation*, never become real insults (humor-axis gated, K48
+budget shared). Ships as a user-facing dial —
+`agent.expression_mask` (`off` / `tsundere_light` /
+`tsundere_full`, default off) — because it's a strong flavour
+choice; `light` masks only `lonely`/`warm_glow` and keeps slips
+frequent, `full` masks the whole warm column. Key files: new
+`app/core/affect/expression_mask.py` (transform table + slip
+budget + erosion math, pure), K57's episode provider (mask
+applied at render time — the *felt* episode stays truthful in
+state, only the expressed cue transforms),
+[`aiko_companion.txt`](../../data/persona/aiko_companion.txt)
+(a "The mask" section with per-emotion bad/good pairs — bad:
+actually cold, leaves him doubting; good: denial with a visible
+tell), [`settings.py`](../../app/core/infra/settings.py) +
+Settings drawer toggle, MCP `get_expression_mask_state` /
+`force_dere_slip`. Depends on K57; pairs with K58 (recipes),
+K15 (slip budget), K59 (the ledger is a very tsundere prop).
