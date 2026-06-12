@@ -2604,6 +2604,171 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"force_topic_appetite raised: {exc}"
 
     @mcp.tool()
+    def get_emotion_episodes() -> str:
+        """K57 — dump the directed-emotion episode store.
+
+        Returns the master switch, every live episode (emotion /
+        cause / intensity *after* a dry-run decay to now / source /
+        created_at), the pending thaw slot, and any staged
+        (not-yet-drained) triggers. Read-only — does not persist the
+        decayed intensities.
+        """
+        try:
+            from datetime import datetime, timezone
+
+            from app.core.affect import emotion_episodes as _ee
+
+            chat_db = getattr(session, "_chat_db", None)
+            if chat_db is None:
+                return json.dumps({"error": "no chat db"})
+            raw = chat_db.kv_get(_ee.KV_EMOTION_EPISODES)
+            stored = _ee.deserialize(raw)
+            decayed = _ee.apply_decay(
+                stored, datetime.now(timezone.utc),
+            )
+            decayed_by_id = {e.id: e for e in decayed.episodes}
+            payload = {
+                "enabled": bool(
+                    getattr(
+                        session._settings.agent,
+                        "emotion_episodes_enabled",
+                        True,
+                    )
+                ),
+                "episodes": [
+                    {
+                        "id": e.id,
+                        "emotion": e.emotion,
+                        "cause": e.cause,
+                        "stored_intensity": round(e.intensity, 3),
+                        "current_intensity": round(
+                            decayed_by_id[e.id].intensity, 3,
+                        ) if e.id in decayed_by_id else 0.0,
+                        "expired": e.id not in decayed_by_id,
+                        "source": e.source,
+                        "created_at": e.created_at,
+                    }
+                    for e in stored.episodes
+                ],
+                "pending_thaw": (
+                    list(stored.pending_thaw)
+                    if stored.pending_thaw else None
+                ),
+                "staged_triggers": list(
+                    getattr(session, "_pending_emotion_triggers", []) or []
+                ),
+            }
+            return json.dumps(payload)
+        except Exception as exc:
+            return f"get_emotion_episodes raised: {exc}"
+
+    @mcp.tool()
+    def force_emotion_episode(
+        kind: str,
+        cause: str = "",
+        intensity: float = 0.6,
+    ) -> str:
+        """K57 — write an episode straight into the kv store.
+
+        ``kind`` is one of lonely / miffed / warm_glow / smug /
+        playful_jealous / hurt. The next turn's provider renders it
+        (verify via ``get_last_response_detail.system_prompt``).
+        Counter-events apply: forcing warm_glow cancels a live
+        miffed and arms the thaw.
+        """
+        try:
+            from datetime import datetime, timezone
+
+            from app.core.affect import emotion_episodes as _ee
+
+            if kind not in _ee.EMOTIONS:
+                return json.dumps({
+                    "error": "unknown emotion",
+                    "taxonomy": list(_ee.EMOTIONS),
+                })
+            chat_db = getattr(session, "_chat_db", None)
+            if chat_db is None:
+                return json.dumps({"error": "no chat db"})
+            now = datetime.now(timezone.utc)
+            state = _ee.apply_decay(
+                _ee.deserialize(chat_db.kv_get(_ee.KV_EMOTION_EPISODES)),
+                now,
+            )
+            state = _ee.add_episode(
+                state,
+                emotion=kind,
+                cause=cause or f"forced via MCP ({kind})",
+                intensity=intensity,
+                source="forced",
+                now=now,
+                cap=max(
+                    1,
+                    int(getattr(
+                        session._settings.agent, "emotion_episode_cap", 3,
+                    )),
+                ),
+            )
+            chat_db.kv_set(
+                _ee.KV_EMOTION_EPISODES, _ee.serialize(state),
+            )
+            return json.dumps({
+                "written": True,
+                "live": [
+                    {"emotion": e.emotion, "intensity": round(e.intensity, 3)}
+                    for e in state.episodes
+                ],
+                "pending_thaw": (
+                    list(state.pending_thaw) if state.pending_thaw else None
+                ),
+            })
+        except Exception as exc:
+            return f"force_emotion_episode raised: {exc}"
+
+    @mcp.tool()
+    def resolve_emotion_episode(kind: str) -> str:
+        """K57 — resolve a live episode by hand (arms the thaw cue)."""
+        try:
+            from app.core.affect import emotion_episodes as _ee
+
+            chat_db = getattr(session, "_chat_db", None)
+            if chat_db is None:
+                return json.dumps({"error": "no chat db"})
+            state = _ee.deserialize(
+                chat_db.kv_get(_ee.KV_EMOTION_EPISODES),
+            )
+            before = len(state.episodes)
+            state = _ee.resolve(state, kind, reason="resolved via MCP")
+            chat_db.kv_set(
+                _ee.KV_EMOTION_EPISODES, _ee.serialize(state),
+            )
+            return json.dumps({
+                "resolved": len(state.episodes) < before,
+                "pending_thaw": (
+                    list(state.pending_thaw) if state.pending_thaw else None
+                ),
+            })
+        except Exception as exc:
+            return f"resolve_emotion_episode raised: {exc}"
+
+    @mcp.tool()
+    def clear_emotion_episodes() -> str:
+        """K57 — wipe the episode store (episodes + thaw slot)."""
+        try:
+            from app.core.affect import emotion_episodes as _ee
+
+            chat_db = getattr(session, "_chat_db", None)
+            if chat_db is None:
+                return json.dumps({"error": "no chat db"})
+            chat_db.kv_set(
+                _ee.KV_EMOTION_EPISODES,
+                _ee.serialize(_ee.EpisodeState()),
+            )
+            session._pending_emotion_triggers = []
+            return json.dumps({"cleared": True})
+        except Exception as exc:
+            return f"clear_emotion_episodes raised: {exc}"
+
+    @mcp.tool()
     def clear_wants() -> str:
         """K52 — wipe the wants ledger (wants + re-entry cooldowns)."""
         try:

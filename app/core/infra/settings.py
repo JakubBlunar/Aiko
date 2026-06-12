@@ -793,6 +793,18 @@ class AgentSettings:
     # Both relationship axes (closeness AND comfort) must be at or
     # above this — the topic tug-of-war is an earned-intimacy move.
     appetite_min_axes: float = 0.15
+    # ── K57 directed emotion episodes — feelings at the user ─────────
+    # Master switch for the episode store (lonely / miffed / warm_glow
+    # / smug / playful_jealous / hurt with cause + decay + thaw).
+    emotion_episodes_enabled: bool = True
+    # Live episodes kept at once; the strongest wins the prompt.
+    emotion_episode_cap: int = 3
+    # Base absence (hours) before a gap can register as loneliness;
+    # shortened by up to 30% as closeness grows.
+    emotion_lonely_threshold_hours: float = 5.0
+    # Intensity at or above which the episode cue switches from
+    # "let it tint the register" to "this is the register".
+    emotion_high_band: float = 0.5
     # Cosine threshold consumed by
     # :meth:`app.core.conversation.topic_graph.TopicGraph.is_close_to_any_cluster`
     # when the seed worker filters LLM candidates. Anything cosine-
@@ -3483,6 +3495,25 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                 max(
                     -1.0,
                     float(agent_raw.get("appetite_min_axes", 0.15)),
+                ),
+            ),
+            emotion_episodes_enabled=bool(
+                agent_raw.get("emotion_episodes_enabled", True),
+            ),
+            emotion_episode_cap=max(
+                1, int(agent_raw.get("emotion_episode_cap", 3)),
+            ),
+            emotion_lonely_threshold_hours=max(
+                0.5,
+                float(
+                    agent_raw.get("emotion_lonely_threshold_hours", 5.0)
+                ),
+            ),
+            emotion_high_band=min(
+                1.0,
+                max(
+                    0.0,
+                    float(agent_raw.get("emotion_high_band", 0.5)),
                 ),
             ),
             grounding_line_mode=_parse_grounding_line_mode(
