@@ -25,6 +25,7 @@ realtimesst.log
 live-2d-models/
 data/lancedb/
 data/documents/
+data/attachments/
 data/personas/
 web/src-tauri/target/
 web/src-tauri/gen/

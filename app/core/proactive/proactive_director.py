@@ -339,6 +339,16 @@ class ProactiveDirector:
           escalation manager doesn't know whether the user is in
           live voice or typed mode at fire time — that ownership
           stays here.
+        * **Forced delivery (``force=True``).** The runner is invoked
+          with ``force=True``, which (a) skips the prepared-nudge
+          fast path so a boredom line never pre-empts the result, and
+          (b) bypasses the post-call eligibility / live-mode re-check
+          (presence, window-focus, typed-enabled toggle). A finished,
+          user-requested task must report regardless of whether the
+          window is focused — the silent drop on a lost-focus
+          re-check was the bug this flag fixes. The only gate the
+          forced path still honours post-call is an in-flight real
+          turn.
 
         Inflight gates from both modes are still consulted so we
         never stack a task-escalation turn on top of a regular
@@ -389,9 +399,14 @@ class ProactiveDirector:
             "voice" if live else "typed",
             session_key,
         )
+        # ``force=True``: this is a requested task result, not a boredom
+        # nudge. The runner skips the prepared-nudge fast path and
+        # bypasses the eligibility / live-mode re-check (keeping only the
+        # busy-turn defer), so a finished task always reports instead of
+        # being silently dropped when the window isn't focused.
         threading.Thread(
             target=target,
-            args=(session_key,),
+            args=(session_key, True),
             daemon=True,
             name=thread_name,
         ).start()
@@ -422,9 +437,9 @@ class ProactiveDirector:
 
     # ── internals ─────────────────────────────────────────────────────
 
-    def _run_safe(self, session_key: str) -> None:
+    def _run_safe(self, session_key: str, force: bool = False) -> None:
         try:
-            self._run(session_key)
+            self._run(session_key, force=force)
         except Exception as exc:
             log.warning("proactive run failed: %s", exc)
         finally:
@@ -432,15 +447,19 @@ class ProactiveDirector:
                 self._inflight = False
                 self._last_run_monotonic = time.monotonic()
 
-    def _run(self, session_key: str) -> None:
+    def _run(self, session_key: str, *, force: bool = False) -> None:
         if self._db.get_message_count(session_key) <= 0:
             log.debug("proactive skip: no history yet")
             return
 
-        # Phase 4c: prefer a prepared nudge if one is fresh.
-        prepared = self._consume_prepared_nudge()
-        if prepared is not None and self._speak_prepared(session_key, prepared):
-            return
+        # Phase 4c: prefer a prepared nudge if one is fresh. Skipped on
+        # the forced (task-escalation) path: a boredom-nudge line would
+        # speak instead of the requested task result AND leave the cue
+        # undrained, so we always take the cue-bearing LLM turn there.
+        if not force:
+            prepared = self._consume_prepared_nudge()
+            if prepared is not None and self._speak_prepared(session_key, prepared):
+                return
 
         messages = self._prompt.build(
             session_key,
@@ -462,11 +481,24 @@ class ProactiveDirector:
                 surface="proactive_silence",
             )
         except Exception as exc:
-            log.info("proactive call failed: %s", exc)
+            log.info(
+                "proactive%s call failed: %s",
+                " task-escalation" if force else "",
+                exc,
+            )
             return
 
-        # Re-check guards before speaking (the user may have started typing).
-        if self._is_busy() or not self._is_live():
+        # Re-check guards before speaking. On the forced (task-escalation)
+        # path we only honour the busy gate — a requested result must
+        # report regardless of live-mode flapping; only an in-flight real
+        # turn defers us (the escalation manager retries).
+        if force:
+            if self._is_busy():
+                log.info(
+                    "proactive task-escalation: deferring (turn in flight)"
+                )
+                return
+        elif self._is_busy() or not self._is_live():
             log.debug("proactive: discarding (state changed mid-call)")
             return
 
@@ -474,7 +506,10 @@ class ProactiveDirector:
         body = strip_all_meta_tags(body)
         cleaned = sanitize_assistant_text(body)
         if not cleaned:
-            log.debug("proactive: empty output")
+            if force:
+                log.info("proactive task-escalation: empty output")
+            else:
+                log.debug("proactive: empty output")
             return
 
         # Persist as an assistant turn so the model remembers what it said.
@@ -551,9 +586,9 @@ class ProactiveDirector:
 
     # ── typed-mode runners ───────────────────────────────────────────────
 
-    def _run_typed_safe(self, session_key: str) -> None:
+    def _run_typed_safe(self, session_key: str, force: bool = False) -> None:
         try:
-            self._run_typed(session_key)
+            self._run_typed(session_key, force=force)
         except Exception as exc:
             log.warning("proactive(typed) run failed: %s", exc)
         finally:
@@ -561,18 +596,23 @@ class ProactiveDirector:
                 self._typed_inflight = False
                 self._last_typed_run_monotonic = time.monotonic()
 
-    def _run_typed(self, session_key: str) -> None:
+    def _run_typed(self, session_key: str, *, force: bool = False) -> None:
         if self._db.get_message_count(session_key) <= 0:
             log.debug("proactive(typed) skip: no history yet")
             return
 
         # Same prepared-nudge fast path as voice mode: prefer a fresh
         # callback / open-question / promise / agenda woven by the
-        # NarrativeWeaver. Falls back to the LLM hint below when nothing
-        # is queued.
-        prepared = self._consume_prepared_nudge()
-        if prepared is not None and self._speak_prepared_typed(session_key, prepared):
-            return
+        # NarrativeWeaver. Skipped on the forced (task-escalation) path:
+        # a boredom-nudge line would write instead of the requested task
+        # result AND leave the cue undrained, so we always take the
+        # cue-bearing LLM turn there.
+        if not force:
+            prepared = self._consume_prepared_nudge()
+            if prepared is not None and self._speak_prepared_typed(
+                session_key, prepared
+            ):
+                return
 
         messages = self._prompt.build(
             session_key,
@@ -594,22 +634,42 @@ class ProactiveDirector:
                 surface="proactive_typed",
             )
         except Exception as exc:
-            log.info("proactive(typed) call failed: %s", exc)
+            log.info(
+                "proactive(typed)%s call failed: %s",
+                " task-escalation" if force else "",
+                exc,
+            )
             return
 
-        # Re-check eligibility before speaking — the user may have
-        # started typing, alt-tabbed away, or flipped to voice mode
-        # while the LLM call was in flight.
-        eligible = self._is_typed_eligible
-        if self._is_busy() or eligible is None or not eligible():
-            log.debug("proactive(typed): discarding (state changed mid-call)")
-            return
+        # Re-check before writing. On the forced (task-escalation) path
+        # we deliberately BYPASS the typed-proactive eligibility gate
+        # (presence / window-focus / enabled toggle) — a requested task
+        # result must report regardless of whether the window is focused.
+        # Only an in-flight real turn defers us; the escalation manager
+        # retries. The boredom-nudge path keeps the full eligibility gate.
+        if force:
+            if self._is_busy():
+                log.info(
+                    "proactive(typed) task-escalation: deferring "
+                    "(turn in flight)"
+                )
+                return
+        else:
+            eligible = self._is_typed_eligible
+            if self._is_busy() or eligible is None or not eligible():
+                log.debug(
+                    "proactive(typed): discarding (state changed mid-call)"
+                )
+                return
 
         _mood, body = parse_reaction_at_start(content or "")
         body = strip_all_meta_tags(body)
         cleaned = sanitize_assistant_text(body)
         if not cleaned:
-            log.debug("proactive(typed): empty output")
+            if force:
+                log.info("proactive(typed) task-escalation: empty output")
+            else:
+                log.debug("proactive(typed): empty output")
             return
 
         message_id = self._db.add_message(
