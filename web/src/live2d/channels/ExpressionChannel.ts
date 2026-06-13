@@ -659,12 +659,12 @@ export class ExpressionChannel implements AvatarChannel {
     }
     // No mode override — apply the persistent reaction.
     const activeOutfit = this._resolveActiveOutfitCapability();
-    const expressionName = resolveReactionExpression(
+    const resolved = resolveReactionExpression(
       deps.manifest,
       this._currentReaction,
       activeOutfit,
     );
-    if (!expressionName) {
+    if (!resolved) {
       // Empty / unmapped reaction — clear any active overlay so the
       // rig returns to its default. ``resetExpression`` runs the
       // ExpressionManager's empty default motion, releasing the slot.
@@ -676,15 +676,23 @@ export class ExpressionChannel implements AvatarChannel {
       });
       return;
     }
-    adapter.expression(expressionName);
-    this._activeExpressionName = expressionName;
+    adapter.expression(resolved.expression);
+    this._activeExpressionName = resolved.expression;
     // The cry-bug forensic trail: ``reaction`` + ``outfit`` + chosen
     // ``expression`` is the exact tuple I need to see in ``app.log``
     // when a "she cried even though I said cheerful" report comes in.
+    // ``via`` is the reaction whose mapping actually produced the
+    // expression (equal to ``reaction`` on a direct hit), and
+    // ``fallback`` flags when a neighbour-chain hop was taken — so a
+    // ``reaction=wistful expression=k via=sad fallback=true`` line
+    // tells the whole story at a glance instead of forcing a manual
+    // walk of the neighbour table.
     deps.debug?.("channel.expression", "applyReaction", {
       reaction: this._currentReaction,
       outfit: activeOutfit,
-      expression: expressionName,
+      expression: resolved.expression,
+      via: resolved.via,
+      fallback: resolved.via !== this._currentReaction,
     });
   }
 
@@ -776,11 +784,22 @@ export class ExpressionChannel implements AvatarChannel {
   }
 }
 
+/** Result of resolving a reaction to a concrete expression file.
+ * ``via`` records which reaction key's mapping produced the hit —
+ * equal to the requested reaction on a direct mapping, or the
+ * neighbour-chain entry that matched on a fallback. Surfaced so the
+ * ``applyReaction`` debug line can flag silent neighbour hops (the
+ * cry-bug forensic trail). */
+interface ResolvedReaction {
+  expression: string;
+  via: string;
+}
+
 function resolveReactionExpression(
   manifest: AvatarManifest,
   reaction: string,
   activeOutfitCap?: string,
-): string | undefined {
+): ResolvedReaction | undefined {
   if (!reaction) {
     return undefined;
   }
@@ -802,13 +821,13 @@ function resolveReactionExpression(
   };
   const direct = manifest.reaction_mapping[reaction];
   if (passesGate(direct)) {
-    return direct;
+    return { expression: direct, via: reaction };
   }
   const neighbours = _REACTION_NEIGHBOURS[reaction] || [];
   for (const fallback of neighbours) {
     const expr = manifest.reaction_mapping[fallback];
     if (passesGate(expr)) {
-      return expr;
+      return { expression: expr, via: fallback };
     }
   }
   return undefined;

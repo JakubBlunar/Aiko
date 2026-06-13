@@ -1117,6 +1117,50 @@ describe("ExpressionChannel — _REACTION_NEIGHBOURS parity with Python", () => 
   });
 });
 
+describe("ExpressionChannel — applyReaction forensic fields", () => {
+  it("reports a direct hit with fallback=false", () => {
+    const adapter = new FakeAdapter();
+    const channel = new ExpressionChannel();
+    const { deps } = makeDeps({ reaction: "cheerful" });
+    const debug = vi.fn();
+    channel.attach(adapter, { ...deps, debug });
+    const applyCalls = debug.mock.calls.filter(
+      (c) => c[0] === "channel.expression" && c[1] === "applyReaction",
+    );
+    expect(applyCalls.length).toBeGreaterThan(0);
+    const payload = applyCalls[applyCalls.length - 1][2];
+    expect(payload).toMatchObject({
+      reaction: "cheerful",
+      expression: "ExprCheerful",
+      via: "cheerful",
+      fallback: false,
+    });
+  });
+
+  it("flags a neighbour-chain hop with via + fallback=true (cry-bug trail)", () => {
+    // ``wistful`` has no direct mapping in this manifest; the
+    // neighbour chain reaches ``sad`` (-> ExprSad). The forensic
+    // line must record via=sad fallback=true so a "she cried but I
+    // never said cry" report is answerable from app.log alone.
+    const adapter = new FakeAdapter();
+    const channel = new ExpressionChannel();
+    const { deps } = makeDeps({ reaction: "wistful" });
+    const debug = vi.fn();
+    channel.attach(adapter, { ...deps, debug });
+    expect(adapter.expressionCalls).toEqual(["ExprSad"]);
+    const applyCalls = debug.mock.calls.filter(
+      (c) => c[0] === "channel.expression" && c[1] === "applyReaction",
+    );
+    const payload = applyCalls[applyCalls.length - 1][2];
+    expect(payload).toMatchObject({
+      reaction: "wistful",
+      expression: "ExprSad",
+      via: "sad",
+      fallback: true,
+    });
+  });
+});
+
 /** K45 mood-inertia harness: ``cheerful`` -> ``lzx`` carrying three
  * binding classes — a mouth-overlay grin (``Param54``), a lip-sync
  * param (``ParamMouthOpenY``, defensive case where an expression
