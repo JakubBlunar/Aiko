@@ -767,17 +767,36 @@ function makeMouthOverlayDeps(initialSnap: Partial<ChannelStoreSnapshot> = {}) {
 }
 
 describe("ExpressionChannel — mouth-overlay lip-sync suppression", () => {
-  it("silent audio writes the grin param at the full arousal-scaled value", () => {
+  it("silent audio writes the grin param at its full authored value", () => {
     const adapter = new FakeAdapter();
     const channel = new ExpressionChannel();
     const { deps, clock } = makeMouthOverlayDeps({ audioAmplitude: 0 });
     channel.attach(adapter, deps);
     runPreModel(channel, adapter, clock, 240, 1 / 60);
     const grin = adapter.params.get("Param54") ?? 0;
-    // High arousal -> ~28; we should see basically the full value
-    // because suppression is zero.
-    expect(grin).toBeGreaterThan(25);
-    expect(grin).toBeLessThanOrEqual(30);
+    // Silent -> suppression is zero -> the grin sits at its full
+    // authored on_value (30), masking the base mouth. The overlay is
+    // NOT arousal-scaled, so even a high-arousal turn lands on 30.
+    expect(grin).toBeCloseTo(30, 4);
+  });
+
+  it("keeps the grin at full when silent on a LOW-arousal turn", () => {
+    // Regression for the "two mouths while smiling but silent" bug:
+    // the grin overlay used to be arousal-scaled, so a calm turn
+    // (arousal 0.15 -> arousalScale ~0.49) rendered it at only ~15/30
+    // — strong enough to draw the toothy grin but too weak to mask
+    // the base mouth, so both showed. It must now sit at the full
+    // authored value regardless of arousal.
+    const adapter = new FakeAdapter();
+    const channel = new ExpressionChannel();
+    const { deps, clock } = makeMouthOverlayDeps({
+      audioAmplitude: 0,
+      mood: { label: "calm", intensity: 0.3, valence: 0.1, arousal: 0.15 },
+    });
+    channel.attach(adapter, deps);
+    runPreModel(channel, adapter, clock, 240, 1 / 60);
+    const grin = adapter.params.get("Param54") ?? 0;
+    expect(grin).toBeCloseTo(30, 4);
   });
 
   it("active lip-sync amplitude tapers the grin overlay toward zero", () => {

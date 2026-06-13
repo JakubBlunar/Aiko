@@ -1573,6 +1573,7 @@ class SessionController(
             turning_over=self._render_turning_over_block,
             away_activities=self._render_away_activities_block,
             forward_curiosity=self._render_forward_curiosity_block,
+            follow_up=self._render_follow_up_block,
             mood_shell=self._render_mood_shell_block,
             novelty=self._render_novelty_block,
             stagnation=self._render_stagnation_block,
@@ -2268,30 +2269,44 @@ class SessionController(
             self._prepared_nudge_store = None
             self._narrative_weaver = None
 
-        # Schema v10 — follow-up worker rides the same idle scheduler
-        # as the decay/promotion workers and uses the prepared-nudge
-        # store the NarrativeWeaver normally fills. Wired here so both
-        # dependencies are guaranteed available; failures only drop
-        # the proactive callback path (the persona rule + retrieval
-        # annotations still work).
+        # Schema v10 — follow-up worker rides the same idle scheduler as
+        # the decay/promotion workers. It is a silent *cue* producer (the
+        # K34 ForwardCuriosityWorker pattern): when a user-mentioned
+        # future_plan's event time passes it drafts a hint into the
+        # ``aiko.follow_up_cues`` kv ring, optionally phrasing a natural
+        # retrospective question on the local worker LLM. The
+        # ``_render_follow_up_block`` provider surfaces it on the next
+        # turn so Aiko asks in her own voice — it is NEVER spoken
+        # verbatim (the bug that leaked the directive into chat). Failures
+        # only drop the cue path; the retrieval annotations still work.
         if (
             self._idle_scheduler is not None
             and self._memory_store is not None
-            and self._prepared_nudge_store is not None
         ):
             try:
                 from app.core.proactive.follow_up_worker import FollowUpWorker
 
-                self._idle_scheduler.register(
-                    FollowUpWorker(
-                        memory_store=self._memory_store,
-                        prepared_nudge_store=self._prepared_nudge_store,
-                        user_id_provider=lambda: self._user_id,
-                        user_display_name_provider=(
-                            lambda: self.user_display_name
-                        ),
-                    )
+                mem = self._memory_settings
+                self._follow_up_worker = FollowUpWorker(
+                    memory_store=self._memory_store,
+                    kv_get=self._chat_db.kv_get,
+                    kv_set=self._chat_db.kv_set,
+                    user_id_provider=lambda: self._user_id,
+                    user_display_name_provider=(
+                        lambda: self.user_display_name
+                    ),
+                    enabled_provider=lambda: bool(
+                        getattr(
+                            self._settings.agent,
+                            "follow_up_enabled",
+                            True,
+                        )
+                    ),
+                    ollama=self._maintenance_client,
+                    model=self._effective_worker_model,
+                    journal_max=getattr(mem, "follow_up_journal_max", 8),
                 )
+                self._idle_scheduler.register(self._follow_up_worker)
             except Exception:
                 log.warning("FollowUpWorker init failed", exc_info=True)
 
@@ -3533,6 +3548,9 @@ class SessionController(
         # K34 — wipe the forward-curiosity slot on session switch too.
         self._pending_forward_curiosity_seconds = None
         self._forward_curiosity_force_next = False
+        # Follow-up cue: clear the MCP force-next flag on session switch
+        # (the cue ring + watermark live in kv_meta, not per-session).
+        self._follow_up_force_next = False
         # K38 — wipe the self-correction slot + cooldown on switch.
         self._pending_self_correction = None
         self._self_correction_cooldown_remaining = 0
@@ -3627,6 +3645,8 @@ class SessionController(
         # K34 — clear the forward-curiosity slot on a full history wipe.
         self._pending_forward_curiosity_seconds = None
         self._forward_curiosity_force_next = False
+        # Follow-up cue: clear the MCP force-next flag on a full wipe.
+        self._follow_up_force_next = False
         # K38 — clear the self-correction slot + cooldown on a wipe.
         self._pending_self_correction = None
         self._self_correction_cooldown_remaining = 0

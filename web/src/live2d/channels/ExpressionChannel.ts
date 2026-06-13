@@ -56,11 +56,17 @@
  *     two mouths at once.
  *   - The avatar profile exposes ``mouth_overlay_param_ids`` for
  *     these. Per frame, we drive a smoothed lip-sync suppression
- *     factor off ``audioAmplitude`` (gain × clamp01) and multiply
- *     ``(1 - factor)`` into any binding whose id is in that set.
- *     Non-mouth bindings (cheek tilts, eye squint params on the
- *     same expression) are unaffected, so the rest of the smile
- *     keeps reading while the toothy overlay tapers out.
+ *     factor off ``audioAmplitude`` (gain × clamp01) and write the
+ *     overlay param as ``on_value × (1 - factor)`` — i.e. full while
+ *     silent (the grin masks the base mouth → single mouth) and
+ *     fading to zero as she speaks (revealing the lip-synced mouth).
+ *     Crucially the overlay is driven by the taper ALONE: it is NOT
+ *     arousal-scaled or inertia-damped like the other expression
+ *     params, because a partially-applied mouth mask (≈40% on a calm
+ *     turn) draws the grin without hiding the base mouth — the
+ *     "two mouths" artefact. Non-mouth bindings (cheek tilts, eye
+ *     squint params on the same expression) keep their arousal /
+ *     inertia scaling, so the rest of the smile reads as before.
  *
  * Mood-inertia damping (K45):
  *   - The fresh reaction tag is *instant* while the backend's
@@ -558,19 +564,34 @@ export class ExpressionChannel implements AvatarChannel {
     );
 
     for (const binding of bindings) {
-      // Mouth params are NEVER inertia-damped: the grin overlay keeps
-      // only its lip-sync suppression taper, and lip-sync ids are
-      // excluded outright (LipsyncChannel owns them). Damping the
-      // mouth would freeze the expression against the talking jaw.
       const isMouthOverlay = this._mouthOverlayIds.has(binding.param_id);
       const isLipSync = this._lipSyncIds.has(binding.param_id);
-      const inertia = isMouthOverlay || isLipSync ? 1 : this._inertiaFactor;
-      const value =
-        binding.on_value *
-        this._amplitudeScale *
-        (isMouthOverlay ? mouthScale : 1) *
-        inertia;
-      adapter.setParam(binding.param_id, value);
+      if (isMouthOverlay) {
+        // The grin overlay (Alexia's Param54) is a MASK, not an
+        // expressiveness cue: the rig only fully hides the base
+        // lip-sync mouth when the param sits at (or near) its
+        // authored on_value (see docs/alexia-model-notes.md §3b).
+        // Scaling it by arousal / expressiveness / inertia like the
+        // other expression params left it at only ~40% on a calm
+        // turn — strong enough to draw the toothy grin but too weak
+        // to mask the base mouth, so BOTH rendered at once (the
+        // "two mouths" artefact reported while she was smiling but
+        // silent). Drive it purely by the lip-sync taper instead:
+        // full while she's silent (the grin masks the base mouth ->
+        // single mouth), fading to zero as she speaks (revealing the
+        // lip-synced mouth underneath). NEVER inertia-damped or
+        // arousal-scaled.
+        adapter.setParam(binding.param_id, binding.on_value * mouthScale);
+        continue;
+      }
+      // Non-mouth params: arousal-scaled and inertia-damped. Lip-sync
+      // ids are excluded from inertia (LipsyncChannel owns them and
+      // writes after us anyway); damping them would fight the jaw.
+      const inertia = isLipSync ? 1 : this._inertiaFactor;
+      adapter.setParam(
+        binding.param_id,
+        binding.on_value * this._amplitudeScale * inertia,
+      );
     }
   }
 

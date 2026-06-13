@@ -21,8 +21,8 @@ honest:
   ``relevance_until`` already passed.
 - ``MemoryDecayWorker`` reclassifies overdue future_plans and
   archives expired past_events.
-- ``FollowUpWorker`` fires exactly one nudge per future_plan around
-  ``event_time``, and is idempotent across ticks.
+- ``FollowUpWorker`` drafts exactly one cue into the kv ring per
+  future_plan around ``event_time``, and is idempotent across ticks.
 """
 from __future__ import annotations
 
@@ -48,7 +48,6 @@ from app.core.memory.memory_store import (
     MemoryStore,
     _coerce_temporal_type,
 )
-from app.core.proactive.prepared_nudge import PreparedNudgeStore
 from app.core.rag.rag_retriever import (
     RagHit,
     RagRetriever,
@@ -793,23 +792,34 @@ class TestMemoryDecayWorkerReclassify(unittest.TestCase):
 
 
 class TestFollowUpWorker(unittest.TestCase):
-    def _setup(self) -> "tuple[MemoryStore, PreparedNudgeStore, FollowUpWorker]":
+    """FollowUpWorker is a silent *cue* producer (the K34 pattern).
+
+    It no longer writes a verbatim line into the prepared-nudge slot
+    (that leaked the internal directive into chat). It drafts a hint into
+    the ``aiko.follow_up_cues`` kv ring; the ``_render_follow_up_block``
+    provider surfaces it and Aiko phrases the check-in herself.
+    """
+
+    def _setup(self) -> "tuple[MemoryStore, ChatDatabase, FollowUpWorker]":
         d = tempfile.mkdtemp()
         path = Path(d) / "fu.db"
         db = ChatDatabase(path)
         store = MemoryStore(path)
-        nudge_store = PreparedNudgeStore(db)
         worker = FollowUpWorker(
             memory_store=store,
-            prepared_nudge_store=nudge_store,
+            kv_get=db.kv_get,
+            kv_set=db.kv_set,
             user_id_provider=lambda: "user-1",
             user_display_name_provider=lambda: "Jacob",
+            ollama=None,  # deterministic: no LLM question drafting
             interval_seconds=60.0,
         )
-        return store, nudge_store, worker
+        return store, db, worker
 
-    def test_nudge_fires_within_window(self) -> None:
-        store, nudge_store, worker = self._setup()
+    def test_cue_drafted_within_window(self) -> None:
+        from app.core.proactive.follow_up_worker import load_follow_up_cues
+
+        store, db, worker = self._setup()
         ev = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
         mem = store.add(
             content="Jacob is going to the gym",
@@ -822,25 +832,52 @@ class TestFollowUpWorker(unittest.TestCase):
 
         result = worker.run()
         self.assertEqual(result["fired"], 1)
-        # Nudge persisted under the user key.
-        nudge = nudge_store.get("user-1")
-        self.assertIsNotNone(nudge)
-        assert nudge is not None
-        # Worker frames the nudge as a contingent (don't open with it)
-        # callback. The user's display name + the contingent phrasing
-        # are the two stable invariants.
-        self.assertIn("Jacob", nudge.text)
-        self.assertTrue(
-            "drift" in nudge.text.lower() or "if " in nudge.text.lower(),
-            f"expected contingent framing, got: {nudge.text}",
-        )
+        # A cue (NOT a verbatim line) lands in the kv ring.
+        ring = load_follow_up_cues(db.kv_get)
+        self.assertEqual(len(ring), 1)
+        cue = ring[0]
+        self.assertEqual(cue["source_id"], str(mem.id))
+        plan = cue["plan"].lower()
+        # Third-person memory reshaped to a second-person plan summary.
+        self.assertIn("you", plan)
+        self.assertNotIn("jacob", plan)
+        # No LLM client -> no scripted question.
+        self.assertEqual(cue.get("question", ""), "")
         # Memory marked as fired.
         updated = store.get(mem.id)
         assert updated is not None
         self.assertIn("followup_fired_at", updated.metadata)
 
-    def test_nudge_idempotent_across_ticks(self) -> None:
-        store, nudge_store, worker = self._setup()
+    def test_plan_summary_reshapes_reported_case(self) -> None:
+        # The exact memory that leaked the directive into chat.
+        from app.core.proactive.follow_up_worker import _plan_summary
+
+        plan = _plan_summary(
+            "Jacob plans to take a bath and watch anime later this evening.",
+            "Jacob",
+        )
+        self.assertEqual(
+            plan,
+            "you were planning to take a bath and watch anime later this "
+            "evening",
+        )
+        self.assertNotIn("Jacob", plan)
+
+    def test_plan_summary_handles_noun_phrase_plan(self) -> None:
+        from app.core.proactive.follow_up_worker import _plan_summary
+
+        plan = _plan_summary("Jacob has a dentist appointment", "Jacob")
+        self.assertEqual(plan, "you had a dentist appointment")
+
+    def test_plan_summary_falls_back_when_unparseable(self) -> None:
+        from app.core.proactive.follow_up_worker import _plan_summary
+
+        plan = _plan_summary("the big launch", "Jacob")
+        # Still a usable summary snippet, never empty.
+        self.assertIn("the big launch", plan)
+
+    def test_cue_idempotent_across_ticks(self) -> None:
+        store, db, worker = self._setup()
         ev = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
         mem = store.add(
             content="Jacob has a meeting",
@@ -851,14 +888,28 @@ class TestFollowUpWorker(unittest.TestCase):
         )
         assert mem is not None
         first = worker.run()
-        # Clear the prepared-nudge slot to simulate the user receiving
-        # the line; the worker should still NOT fire again because the
-        # memory is marked.
-        nudge_store.delete("user-1")
+        # The memory is marked fired, so a second tick does NOT re-draft.
         second = worker.run()
         self.assertEqual(first["fired"], 1)
         self.assertEqual(second["fired"], 0)
         self.assertGreaterEqual(second.get("skipped_already_fired", 0), 1)
+
+    def test_disabled_short_circuits(self) -> None:
+        from app.core.proactive.follow_up_worker import load_follow_up_cues
+
+        store, db, worker = self._setup()
+        worker._enabled_provider = lambda: False
+        ev = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        store.add(
+            content="Jacob is going to the gym",
+            kind="event",
+            embedding=_emb("gym"),
+            temporal_type="future_plan",
+            event_time=ev,
+        )
+        result = worker.run()
+        self.assertTrue(result.get("disabled"))
+        self.assertEqual(load_follow_up_cues(db.kv_get), [])
 
     def test_nudge_skips_too_far_future(self) -> None:
         store, _, worker = self._setup()

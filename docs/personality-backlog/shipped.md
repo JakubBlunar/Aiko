@@ -857,16 +857,53 @@ The `MemoryDecayWorker` got a reclassification pass that nudges
 `future_plan` -> `past_event` once `event_time` is in the past, and
 a new
 [`FollowUpWorker`](../../app/core/proactive/follow_up_worker.py)
-generates proactive nudges for overdue `future_plan` memories,
-queueing them in
-[`PreparedNudgeStore`](../../app/core/prepared_nudge_store.py)
-for the typed-proactive fast path. Persona rules in
+covers proactive follow-ups for overdue `future_plan` memories.
+Persona rules in
 [`aiko_companion.txt`](../../data/persona/aiko_companion.txt) teach
 Aiko to respect the temporal tags without becoming pedantic about
 them. Tests: `tests/test_memory_extractor_temporal.py`,
 `tests/test_follow_up_worker.py`,
 `tests/test_memory_decay_temporal.py`,
 `tests/test_rag_retriever_temporal.py`.
+
+**Follow-up redesign — cue producer, not verbatim speaker (the K34
+pattern).** The original `FollowUpWorker` wrote a line straight into
+[`PreparedNudgeStore`](../../app/core/proactive/prepared_nudge.py),
+which the `ProactiveDirector` speaks **verbatim**. That leaked an
+internal directive ("Jacob mentioned earlier: '...' — if the
+conversation drifts there, ask how it went. Don't open with it.") into
+the chat as if it were Aiko's reply. The worker is now a silent **cue
+producer** (mirroring K34 `ForwardCuriosityWorker`): when a
+user-mentioned `future_plan`'s `event_time` passes (lookahead 30 min /
+lookback 4 h window), it drafts `{at, plan, clock, question,
+source_id, event_time}` into the `aiko.follow_up_cues` kv ring — `plan`
+is a deterministic second-person reshaping of the memory ("you were
+planning to take a bath and watch anime …"), `question` is an optional
+natural retrospective phrasing drafted on the local worker LLM (safe
+empty fallback). The new
+[`_render_follow_up_block`](../../app/core/session/inner_life_providers_mixin.py)
+inner-life provider folds the newest unseen cue into the next turn's
+system prompt as one private "Earlier (~`clock`) `plan` — that time has
+passed; if it fits, you can gently ask how it went; no need to open
+with it" hint, watermark-gated (`follow_up.last_surfaced_at`) so it
+surfaces once. It is **time-anchored and independent of the
+`_gap_cue_surfaced` family** (does not read or set it) — a concrete
+"their plan just happened" beat is worth a line even alongside a
+generic gap cue. Aiko phrases the check-in herself; the cue is never
+spoken. Block sits in the T6 detector tier of `prompt_assembler.py`
+immediately after `forward_curiosity_block`. Settings:
+`agent.follow_up_enabled` (master, default on) +
+`memory.follow_up_journal_max` (default 8). MCP debug:
+`get_follow_up_state`, `force_follow_up_draft(source_id="")`,
+`force_follow_up_surface()` — repro is
+`force_follow_up_draft(source_id=<future_plan id>)` ->
+`force_follow_up_surface()` -> `send_message(skip_tts=true)` -> confirm
+the "Earlier ... ask how it went" line in
+`get_last_response_detail.system_prompt`. Log lines `follow_up cue
+primed` (producer) / `follow-up cue fire:` (consumer) for
+`tail_logs(module_contains="follow_up")`. Tests:
+`tests/test_memory_temporal.py::TestFollowUpWorker` (kv ring, not the
+prepared-nudge slot), `tests/test_follow_up_provider.py`.
 
 ---
 
@@ -3762,7 +3799,7 @@ Tests: [`tests/test_idle_activity_worker.py`](../../tests/test_idle_activity_wor
 
 ## K34. Forward curiosity worker — "I've been wondering"
 
-The third member of the gap-return family. K28 turning-over surfaces what Aiko has been *thinking* about between sessions; K36 away-activities surfaces what she's been *doing*; K34 surfaces what she *wants to ask the user* about their life — "did the espresso machine arrive?", "how did your sister's move go?". Distinct from the four existing curiosity systems: G3 `IdleCuriosityWorker` answers Aiko's *own* open questions via web search; K9 `CuriositySeedWorker` proposes brand-new lateral topics; the speaking-window `CuriosityWorker` drafts next-turn follow-ups; `FollowUpWorker` fires time-window proactive nudges near an event's `event_time`. K34 alone drafts forward *questions* about the user's life and surfaces one passively on gap-return.
+The third member of the gap-return family. K28 turning-over surfaces what Aiko has been *thinking* about between sessions; K36 away-activities surfaces what she's been *doing*; K34 surfaces what she *wants to ask the user* about their life — "did the espresso machine arrive?", "how did your sister's move go?". Distinct from the four existing curiosity systems: G3 `IdleCuriosityWorker` answers Aiko's *own* open questions via web search; K9 `CuriositySeedWorker` proposes brand-new lateral topics; the speaking-window `CuriosityWorker` drafts next-turn follow-ups; `FollowUpWorker` drafts a time-anchored "ask how their plan went" cue near an event's `event_time` (also a kv-ring cue, surfaced on the next turn, not a verbatim nudge). K34 alone drafts forward *questions* about the user's life and surfaces one passively on gap-return.
 
 **Producer.** During quiet windows a new [`ForwardCuriosityWorker`](../../app/core/proactive/forward_curiosity_worker.py) gathers candidate topics from the user's own `future_plan` memories (`list_by_temporal_type("future_plan")`) and recent `callback` rows (`iter_by_kind("callback")`), biased by their K3 `routines` / `usual_hours` profile fields, de-dupes against the recent ring by `source_id`, composes ONE short forward question (deterministic "how {topic} is going" fallback + optional local-LLM rephrase via `chat_json`), and appends `{at, question, source, source_id}` to a `kv_meta` journal ring (`aiko.forward_curiosity`). No world mutation, so no garden-visit guard. Paced by its own cooldown + daily cap (kv watermarks, local-midnight reset).
 

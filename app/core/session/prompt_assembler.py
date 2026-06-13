@@ -499,6 +499,7 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "turning_over_block",
         "away_activities_block",
         "forward_curiosity_block",
+        "follow_up_block",
         "novelty_block",
         "stagnation_block",
         "style_pattern_block",
@@ -867,6 +868,11 @@ class PromptAssembler:
         # gap-return cues so it defers to turning_over + away_activities
         # via the shared _gap_cue_surfaced flag.
         self._forward_curiosity_provider: Callable[[], str] | None = None
+        # Follow-up cue: surfaces one "you could ask how their plan went"
+        # hint after a user-mentioned future_plan's event time passes.
+        # Independent of the gap-return cue family (does not touch
+        # _gap_cue_surfaced).
+        self._follow_up_provider: Callable[[], str] | None = None
         # K5 mood-shell tilt. NOT one-shot -- derived fresh every turn
         # from current affect / relationship axes / pending moments,
         # so the renderer is stateless from the assembler's POV.
@@ -1178,6 +1184,7 @@ class PromptAssembler:
         turning_over: Callable[[], str] | None = None,
         away_activities: Callable[[], str] | None = None,
         forward_curiosity: Callable[[], str] | None = None,
+        follow_up: Callable[[], str] | None = None,
         mood_shell: Callable[[], str] | None = None,
         novelty: Callable[[str], str] | None = None,
         stagnation: Callable[[str], str] | None = None,
@@ -1277,6 +1284,8 @@ class PromptAssembler:
             self._away_activities_provider = away_activities
         if forward_curiosity is not None:
             self._forward_curiosity_provider = forward_curiosity
+        if follow_up is not None:
+            self._follow_up_provider = follow_up
         if mood_shell is not None:
             self._mood_shell_provider = mood_shell
         if novelty is not None:
@@ -2006,6 +2015,18 @@ class PromptAssembler:
                     )
                     forward_curiosity_block = ""
 
+        # Follow-up cue: "their plan just happened, you can ask how it
+        # went". Time-anchored (not gap-gated), independent of the
+        # _gap_cue_surfaced family.
+        follow_up_block = ""
+        if getattr(self, "_follow_up_provider", None) is not None:
+            with _timed_phase(provider_ms, "follow_up"):
+                try:
+                    follow_up_block = self._follow_up_provider() or ""
+                except Exception:
+                    log.debug("follow_up provider raised", exc_info=True)
+                    follow_up_block = ""
+
         # K5 mood-shell tilt. Stateless: derives a one-line emotional
         # directive from current affect + relationship axes + pending
         # moments every turn, returns "" when nothing is notable. NOT
@@ -2732,6 +2753,11 @@ class PromptAssembler:
             # provider's _gap_cue_surfaced guard ensures only one of the
             # three renders per return. One-shot.
             system_parts.append(forward_curiosity_block)
+        if follow_up_block:
+            # FollowUpWorker cue: "their plan just happened, you can ask
+            # how it went". Time-anchored, independent of the gap-cue
+            # family, watermark-gated one-shot.
+            system_parts.append(follow_up_block)
         if novelty_block:
             # K6: surface the "Heads-up: Jacob just brought up
             # something new" line right after belief_gaps so reaction
