@@ -460,7 +460,16 @@ _ALEXIA_REACTION_MAP: dict[str, str] = {
     "tender":       "lh",
     "gentle":       "lh",
     "thoughtful":   "",
-    "wistful":      "",
+    # ``wistful`` previously mapped to "" and fell through the
+    # neighbour chain (``wistful`` → ``sad`` → ``k`` = Param59 tear
+    # streaks), so a tender ``[[reaction:wistful]]`` ("you made my
+    # chest warm, thank you") rendered as visible crying. The LLM
+    # uses wistful for fond / bittersweet warmth, not distress — map
+    # it directly to ``lh`` (the soft inward blush) so it joins the
+    # warm / tender / embarrassed family instead of cascading into
+    # the cry overlay. ``lh`` is not a mouth-blocking expression, so
+    # this also avoids the double-mouth artefact ``lzx`` has.
+    "wistful":      "lh",
     "calm":         "",
     "serious":      "",
     "concerned":    "k",
