@@ -214,16 +214,34 @@ Detection chain:
    list against `expression_params`. Any expression whose binding
    touches a mouth-overlay param is flagged. For Alexia: `["lzx"]`.
 3. The frontend `ExpressionChannel.tickPreModel` reads
-   `mouth_overlay_param_ids` and per-frame multiplies any matching
-   binding's amplitude by `(1 - lipsyncSuppression)`. The suppression
+   `mouth_overlay_param_ids` and per-frame writes any matching
+   binding as `on_value * (1 - lipsyncSuppression)`. The suppression
    factor itself is driven by `audioAmplitude * 6` clamped to `[0,1]`
-   with a 150 ms time constant.
+   with a 150 ms time constant. Crucially the mouth overlay is driven
+   by this taper **alone** — it is NOT arousal-scaled or
+   inertia-damped like the other expression params (see the
+   "two mouths while silent" note below).
 
 Net effect: `[[reaction:cheerful]]` keeps the persistent grin
 between turns (where lip-sync is silent) but the grin tapers down to
 zero whenever TTS is actually speaking, exposing the lip-synced
 mouth underneath. As soon as audio drops back to silence the grin
 recovers smoothly.
+
+**The "two mouths while silent" regression (calm-turn arousal
+scaling).** The mouth overlay used to also be multiplied by the
+continuous-expressiveness `amplitudeScale` (`clamp(0.4 + 0.6 *
+arousal, 0.4, 1.0)`). On a low-arousal (calm) turn that left the
+grin at only ~40-50% of its authored value — enough to draw the
+toothy grin but **too weak to mask the base lip-sync mouth**, so
+both rendered at once even while she was silent. The fix drops the
+arousal / expressiveness / inertia factors from the mouth-overlay
+write specifically: a mask is binary by nature (fully on = hides the
+base mouth, fully off = reveals it), so it rides the lip-sync taper
+only. Non-mouth bindings on the same expression keep their
+arousal / inertia scaling. Locked in by the "keeps the grin at full
+when silent on a LOW-arousal turn" test in
+`ExpressionChannel.test.ts`.
 
 `mouth_blocking_expressions` is mostly informational today —
 the per-param taper does the real work — but it's exposed on the
@@ -468,10 +486,15 @@ The fix lives in `app/core/persona/avatar_profile.py` and
   `lip_sync_ids` / `eye_blink_ids`.
 - `ExpressionChannel.tickPreModel` smooths a separate
   "lip-sync suppression" factor off `audioAmplitude` (gain ≈ 6,
-  time constant ≈ 150 ms) and multiplies `(1 - factor)` into any
-  expression-param binding whose id lands in the cached overlay
-  set. Non-mouth bindings on the same expression (cheek squint,
-  eye crinkle, …) are unaffected — only the overlay mouth fades.
+  time constant ≈ 150 ms) and writes any expression-param binding
+  whose id lands in the cached overlay set as
+  `on_value * (1 - factor)` — full while silent (masks the base
+  mouth → single grin), fading to zero as she speaks. The overlay
+  is driven by the taper alone (no arousal / expressiveness /
+  inertia scaling — a partial mask is the "two mouths" bug, see
+  §3b). Non-mouth bindings on the same expression (cheek squint,
+  eye crinkle, …) keep their arousal / inertia scaling — only the
+  overlay mouth fades.
 - `_MOUTH_OVERLAY_SYNONYMS` deliberately omits the word `"smile"`.
   A soft closed-mouth smile expression doesn't paint a competing
   mouth; only overlays that visibly add a second mouth belong here.

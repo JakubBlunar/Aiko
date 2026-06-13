@@ -1692,6 +1692,85 @@ class InnerLifeProvidersMixin:
             "you can ask — drop it if it doesn't fit."
         )
 
+    def _render_follow_up_block(self) -> str:
+        """Surface one "you could ask how their plan went" cue.
+
+        Consumer side of the :class:`FollowUpWorker` producer. The worker
+        drafts a cue into the ``aiko.follow_up_cues`` kv ring when a
+        user-mentioned ``future_plan`` event time has just passed; this
+        provider folds the newest unseen cue into the prompt as one
+        optional, private hint. Aiko phrases the actual check-in herself
+        — the cue is NEVER spoken verbatim (the bug that leaked the
+        directive into chat).
+
+        Independent of the gap-return cue family — does NOT read or set
+        ``_gap_cue_surfaced``: a concrete, time-anchored "their plan just
+        happened" beat is worth a line even alongside a generic gap cue,
+        and it must surface on the very next turn after the event passed,
+        not only on a long-gap return.
+
+        One-shot via the ``follow_up.last_surfaced_at`` watermark so the
+        same cue never resurfaces. MCP debug: ``force_follow_up_surface``
+        arms ``_follow_up_force_next`` to bypass the watermark (the ring
+        still has to be non-empty).
+        """
+        if not bool(getattr(self._settings.agent, "follow_up_enabled", True)):
+            return ""
+
+        force_next = bool(getattr(self, "_follow_up_force_next", False))
+        if force_next:
+            self._follow_up_force_next = False
+
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is None or not hasattr(chat_db, "kv_get"):
+            return ""
+
+        try:
+            from app.core.proactive.follow_up_worker import load_follow_up_cues
+        except Exception:
+            log.debug("follow_up import failed", exc_info=True)
+            return ""
+
+        ring = load_follow_up_cues(chat_db.kv_get)
+        if not ring:
+            return ""
+
+        newest = ring[-1]
+        at = str(newest.get("at") or "")
+        plan = str(newest.get("plan") or "").strip()
+        if not plan:
+            return ""
+
+        watermark_key = "follow_up.last_surfaced_at"
+        if not force_next:
+            try:
+                last_surfaced = chat_db.kv_get(watermark_key)
+            except Exception:
+                last_surfaced = None
+            if last_surfaced and str(last_surfaced) == at:
+                return ""
+
+        # Advance the watermark so this cue doesn't resurface.
+        try:
+            chat_db.kv_set(watermark_key, at)
+        except Exception:
+            log.debug("follow_up watermark write failed", exc_info=True)
+
+        clock = str(newest.get("clock") or "").strip()
+        question = str(newest.get("question") or "").strip()
+        when = f" (around {clock})" if clock else ""
+        line = (
+            f"Earlier{when} {plan} — that time has passed now. If it fits "
+            "the flow, you can gently ask how it went; no need to open with "
+            "it, and let it go if the moment isn't right."
+        )
+        if question:
+            line += f' Something like: "{question}"'
+        log.info(
+            "follow-up cue fire: at=%s source=%s", at, newest.get("source_id"),
+        )
+        return line
+
     def _render_promise_followthrough_block(self) -> str:
         """K43: surface one "close the loop on what you said you'd do" cue.
 

@@ -1690,6 +1690,14 @@ class AgentSettings:
     # ``MemorySettings.forward_curiosity_*``.
     forward_curiosity_enabled: bool = True
 
+    # FollowUpWorker master switch. When a user-mentioned future_plan's
+    # event time passes, the worker drafts a private "you can ask how it
+    # went" cue into the ``aiko.follow_up_cues`` kv ring and the
+    # ``_render_follow_up_block`` provider surfaces it on the next turn.
+    # Off = no proactive follow-up cue (the retrieval-tag path still
+    # lets Aiko ask retrospectively when the memory surfaces).
+    follow_up_enabled: bool = True
+
     # ── K43: promise follow-through ───────────────────────────────────
     # Master switch for the promise lifecycle + follow-through cue. When
     # ON, assistant-side ``kind="promise"`` memories carry an
@@ -2232,6 +2240,9 @@ class MemorySettings:
     forward_curiosity_daily_cap: int = 4
     forward_curiosity_min_gap_hours: float = 4.0
     forward_curiosity_journal_max: int = 8
+    # FollowUpWorker cue ring size (``aiko.follow_up_cues``). Bounds the
+    # number of drafted "ask how their plan went" cues kept around.
+    follow_up_journal_max: int = 8
     # K43 PromiseFollowthroughWorker cadence + pacing. The worker runs
     # during quiet windows (default every 30 min). ``min_age_hours`` is
     # how long an assistant promise must sit open before the cue arms
@@ -4284,6 +4295,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             forward_curiosity_enabled=bool(
                 agent_raw.get("forward_curiosity_enabled", True),
             ),
+            follow_up_enabled=bool(
+                agent_raw.get("follow_up_enabled", True),
+            ),
             promise_followthrough_enabled=bool(
                 agent_raw.get("promise_followthrough_enabled", True),
             ),
@@ -4765,6 +4779,10 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             forward_curiosity_journal_max=max(
                 1,
                 int(memory_raw.get("forward_curiosity_journal_max", 8)),
+            ),
+            follow_up_journal_max=max(
+                1,
+                int(memory_raw.get("follow_up_journal_max", 8)),
             ),
             promise_followthrough_interval_seconds=max(
                 30,

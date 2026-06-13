@@ -3892,6 +3892,111 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"force_forward_curiosity_surface raised: {exc}"
 
     @mcp.tool()
+    def get_follow_up_state() -> str:
+        """Dump the follow-up cue worker + surfacing state.
+
+        The FollowUpWorker drafts a "you can ask how their plan went" cue
+        into the ``aiko.follow_up_cues`` kv ring when a user-mentioned
+        ``future_plan`` event time passes; ``_render_follow_up_block``
+        surfaces the newest unseen cue on the next turn (watermark-gated).
+        It is NEVER spoken verbatim — Aiko phrases the check-in herself.
+
+        Returns a JSON dict with the master switch, whether the worker
+        wired up, the MCP force-next flag, the cue ring, and the
+        last-surfaced watermark.
+        """
+        try:
+            from app.core.proactive.follow_up_worker import (
+                load_follow_up_cues,
+            )
+
+            def kv(key: str) -> str | None:
+                try:
+                    return session._chat_db.kv_get(key)
+                except Exception:
+                    return None
+
+            return json.dumps(
+                {
+                    "enabled": bool(
+                        getattr(
+                            session._settings.agent,
+                            "follow_up_enabled",
+                            True,
+                        )
+                    ),
+                    "worker_registered": getattr(
+                        session, "_follow_up_worker", None
+                    )
+                    is not None,
+                    "force_next": bool(
+                        getattr(session, "_follow_up_force_next", False)
+                    ),
+                    "cues": load_follow_up_cues(session._chat_db.kv_get),
+                    "last_surfaced_at": kv("follow_up.last_surfaced_at"),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"get_follow_up_state raised: {exc}"
+
+    @mcp.tool()
+    def force_follow_up_draft(source_id: str = "") -> str:
+        """Run the follow-up worker once, right now.
+
+        Bypasses the quiet-window gate by calling ``run()`` directly so a
+        cue is drafted into the ring immediately. Pass ``source_id`` (a
+        ``future_plan`` memory id) to force that specific plan regardless
+        of its event-time window / already-fired gate; leave blank to use
+        the normal time-window scan.
+
+        Pairs with ``force_follow_up_surface`` for the end-to-end repro:
+        draft a cue, then make the next turn fold it into the prompt.
+        """
+        try:
+            worker = getattr(session, "_follow_up_worker", None)
+            if worker is None:
+                return json.dumps(
+                    {"error": "worker not registered (no MemoryStore?)"},
+                    indent=2,
+                )
+            if source_id:
+                worker.force_source(source_id)
+            result = worker.run()
+            return json.dumps({"ran": True, "result": result}, indent=2)
+        except Exception as exc:
+            return f"force_follow_up_draft raised: {exc}"
+
+    @mcp.tool()
+    def force_follow_up_surface() -> str:
+        """Arm a one-shot bypass on the follow-up cue watermark.
+
+        Sets ``_follow_up_force_next`` so the next provider call ignores
+        the last-surfaced watermark. The ring still has to be non-empty
+        (run ``force_follow_up_draft`` first if it isn't). Bypass is
+        consumed on the next assembly.
+
+        Repro: ``force_follow_up_draft(source_id=...)`` ->
+        ``force_follow_up_surface()`` -> ``send_message(skip_tts=true)``
+        -> confirm the "Earlier ... you can gently ask how it went" line
+        in ``get_last_response_detail.system_prompt``.
+        """
+        try:
+            session._follow_up_force_next = True
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next assembly ignores the follow-up watermark; "
+                        "ring must be non-empty"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_follow_up_surface raised: {exc}"
+
+    @mcp.tool()
     def get_self_correction_state() -> str:
         """K38 — dump the self-correction cue state.
 
