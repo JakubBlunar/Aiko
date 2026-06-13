@@ -400,6 +400,66 @@ class TaskEscalationTests(unittest.TestCase):
         finally:
             f.close()
 
+    def test_typed_reports_even_when_not_eligible(self) -> None:
+        # The bug fix: a finished task result must report even when the
+        # typed-proactive eligibility gate is closed (e.g. the desktop
+        # window isn't focused). The boredom-nudge path stays gated; the
+        # forced escalation path bypasses eligibility.
+        f = _Fixture(typed_eligible=False)
+        try:
+            f.seed_history()
+            f.live = False
+            f.director.notify_task_escalation("s1")
+            self.assertTrue(self._wait_for(lambda: bool(f.notified)))
+            self.assertEqual(len(f.notified), 1)
+            self.assertEqual(f.ollama.calls, 1)
+            self.assertEqual(f.spoken, [])
+        finally:
+            f.close()
+
+    def test_voice_reports_even_when_live_flips_off(self) -> None:
+        # Voice escalation dispatched while live, then live flips off
+        # mid-run: the forced path still delivers (only the busy gate
+        # defers it), where the boredom path would discard.
+        f = _Fixture()
+        try:
+            f.seed_history()
+            f.live = True
+            f.director.notify_task_escalation("s1")
+            f.live = False
+            self.assertTrue(self._wait_for(lambda: bool(f.spoken)))
+            self.assertEqual(len(f.spoken), 1)
+        finally:
+            f.close()
+
+    def test_force_skips_prepared_nudge(self) -> None:
+        # A queued prepared (boredom) nudge must NOT pre-empt a task
+        # result: the forced path takes the cue-bearing LLM turn so the
+        # result is what surfaces, and the prepared nudge is left intact.
+        f = _Fixture()
+        try:
+            f.seed_history()
+            f.live = False
+            f.prepared.upsert(
+                "u1",
+                text="random boredom thought",
+                source_kind="agenda",
+                ttl_seconds=120.0,
+            )
+            f.director.notify_task_escalation("s1")
+            self.assertTrue(self._wait_for(lambda: bool(f.notified)))
+            self.assertEqual(f.ollama.calls, 1)
+            self.assertNotIn(
+                "random boredom thought",
+                f.notified[0][1],
+            )
+            # The prepared nudge was not consumed by the forced path.
+            self.assertIsNotNone(f.prepared.get("u1"))
+            stats = f.director.stats()
+            self.assertEqual(stats["typed_prepared_consumed"], 0)
+        finally:
+            f.close()
+
 
 if __name__ == "__main__":
     unittest.main()
