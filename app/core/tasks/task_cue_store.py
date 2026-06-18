@@ -46,7 +46,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
 
@@ -102,6 +102,13 @@ class TaskCue:
 
     ``parked_at_wall`` is the corresponding wall-clock seconds-
     since-epoch. Used for human-readable log lines ("age_s=900").
+
+    ``angle`` is an optional, short first-person framing hint drafted
+    by the C6 report-decision worker (``report_decision.decide_task_report``)
+    for how Aiko could bring the result up. It renders as a private
+    ``(angle: …)`` suffix inside the T6 cue block — never spoken
+    verbatim; the chat model composes the actual reply from it. Empty
+    string when no decision ran (the common case).
     """
 
     task_id: str
@@ -114,6 +121,7 @@ class TaskCue:
     summary: str = ""
     options: tuple[str, ...] | None = None
     error: str | None = None
+    angle: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,6 +195,7 @@ class TaskCueStore:
         summary: str = "",
         options: tuple[str, ...] | None = None,
         error: str | None = None,
+        angle: str = "",
     ) -> TaskCue:
         """Park a cue.
 
@@ -196,6 +205,11 @@ class TaskCueStore:
         Replaces any existing cue with the same ``task_id`` —
         the latest state for a task wins, since a result cue
         should clobber an earlier input-needed cue if both fire.
+
+        ``angle`` is the optional C6 report-decision framing hint;
+        re-parking the same ``task_id`` with a non-empty angle is the
+        mechanism the gate uses to enrich an already-parked floor cue
+        once the async decision finishes.
         """
         if not task_id:
             raise ValueError("task_id must be non-empty")
@@ -214,6 +228,7 @@ class TaskCueStore:
             summary=str(summary),
             options=tuple(options) if options else None,
             error=str(error) if error is not None else None,
+            angle=str(angle or ""),
         )
         with self._lock:
             # Drop any prior cue for the same task id; the latest
@@ -230,6 +245,29 @@ class TaskCueStore:
             count,
         )
         return cue
+
+    def set_angle(self, task_id: str, angle: str) -> bool:
+        """Attach/replace the C6 ``angle`` hint on an already-parked cue.
+
+        Preserves the cue's ``parked_at`` / ``parked_at_wall`` (so the
+        stale-sweep + escalation age clock is untouched) and only swaps
+        the framing hint. Used by the report-decision gate to enrich a
+        floor cue that was parked immediately, once the async worker
+        decision finishes. Returns ``True`` if a cue was updated.
+        """
+        angle = str(angle or "")
+        with self._lock:
+            updated = False
+            new_cues: list[TaskCue] = []
+            for cue in self._cues:
+                if cue.task_id == str(task_id) and cue.angle != angle:
+                    new_cues.append(replace(cue, angle=angle))
+                    updated = True
+                else:
+                    new_cues.append(cue)
+            if updated:
+                self._cues = new_cues
+        return updated
 
     # ── consumer surface ─────────────────────────────────────────────
 

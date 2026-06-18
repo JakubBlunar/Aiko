@@ -188,14 +188,26 @@ def render_reply_block(
 # ── per-cue bullet formatters ───────────────────────────────────────
 
 
+def _angle_suffix(cue: TaskCue) -> str:
+    """Private C6 framing hint rendered after the bullet body.
+
+    The report-decision worker drafts ``cue.angle`` ("mention you found
+    the 3 docs and ask if she wants the summary"); it's a hint for *how*
+    Aiko could bring the result up, never a line to read out loud. Empty
+    for the common no-decision case.
+    """
+    angle = (cue.angle or "").strip()
+    return f" (angle: {angle})" if angle else ""
+
+
 def _format_success_bullet(cue: TaskCue) -> str:
-    """``- file_search "Q4 report" — found 3 documents``"""
+    """``- file_search "Q4 report" — found 3 documents (angle: …)``"""
     title = cue.title.strip() or "the task"
     summary = cue.summary.strip()
     if not summary:
         status_word = cue.status.strip() or "done"
         summary = status_word
-    return f"- {title} — {summary}"
+    return f"- {title} — {summary}{_angle_suffix(cue)}"
 
 
 def _format_failure_bullet(cue: TaskCue) -> str:
@@ -207,7 +219,7 @@ def _format_failure_bullet(cue: TaskCue) -> str:
         # ``error`` explicitly (rare, but defensive — failure
         # cues should always carry an error string).
         err = cue.summary.strip() or "failed (no error reported)"
-    return f"- {title} — {err}"
+    return f"- {title} — {err}{_angle_suffix(cue)}"
 
 
 def _format_question_bullet(cue: TaskCue) -> str:

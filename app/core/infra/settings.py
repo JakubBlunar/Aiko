@@ -1440,6 +1440,25 @@ class AgentSettings:
     # gate clears, rather than waiting out the full completion window.
     # Clamped to ``[0, 60]``.
     task_reply_when_free_seconds: float = 1.0
+    # ── C6: worker-model task-report decision ──────────────────────────
+    # Master switch for the worker-LLM decision that runs when a
+    # reportable background task finishes. Decides surface_now / park /
+    # drop and drafts a short "angle" framing hint the chat model uses to
+    # compose the report. When False the legacy binary park+arm path runs
+    # for every ``notify_aiko=True`` task (behaviour before C6).
+    task_report_decision_enabled: bool = True
+    # How the decision treats user-requested tasks (the always-report
+    # floor). ``shadow`` keeps the hard floor (park+arm immediately) and
+    # only logs the verdict the worker WOULD have produced, plus enriches
+    # the cue with the drafted angle — use this to evaluate the worker
+    # before trusting it. ``enforce`` makes the verdict authoritative for
+    # floor tasks too. Unknown values fall back to ``shadow``.
+    task_report_decision_floor_mode: str = "shadow"
+    # Whether to enrich parked report cues with the worker-drafted angle
+    # hint (rendered as a private ``(angle: …)`` suffix in the T6 cue
+    # block; the chat model phrases the actual report). Applies to both
+    # the shadow-floor and discretionary tiers.
+    task_report_angle_enabled: bool = True
     # Configured roots for the read-only filesystem task handlers
     # (``file_search`` / ``file_read``). Each entry is a dict with
     # ``label`` (human-readable id used in path prefixes like
@@ -4089,6 +4108,22 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                     60.0,
                     float(agent_raw.get("task_reply_when_free_seconds", 1.0)),
                 ),
+            ),
+            task_report_decision_enabled=bool(
+                agent_raw.get("task_report_decision_enabled", True)
+            ),
+            task_report_decision_floor_mode=(
+                str(
+                    agent_raw.get("task_report_decision_floor_mode", "shadow")
+                ).strip().lower()
+                if str(
+                    agent_raw.get("task_report_decision_floor_mode", "shadow")
+                ).strip().lower()
+                in ("shadow", "enforce")
+                else "shadow"
+            ),
+            task_report_angle_enabled=bool(
+                agent_raw.get("task_report_angle_enabled", True)
             ),
             task_file_allowed_roots=_parse_task_file_allowed_roots(
                 agent_raw.get("task_file_allowed_roots", ())

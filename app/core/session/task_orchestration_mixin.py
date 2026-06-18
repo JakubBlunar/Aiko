@@ -103,7 +103,16 @@ from app.core.tasks.handlers import (
     FileWriteHandler,
     VisionDescribeHandler,
 )
+from app.core.tasks.report_decision import (
+    ACTION_DROP,
+    ACTION_PARK,
+    ACTION_SURFACE,
+    PROVENANCE_SELF,
+    PROVENANCE_USER,
+    decide_task_report,
+)
 from app.core.tasks.sandbox import FileTaskRoot, validate_roots
+from app.core.tasks.task_handler import INITIATED_BY_AIKO
 
 
 # Chunk 7: mapping from the event's user-facing ``mode`` to the
@@ -1464,6 +1473,216 @@ class TaskOrchestrationMixin:
         escalation = getattr(self, "_task_escalation_manager", None)
         if cue_store is None or escalation is None:
             return
+        self._dispatch_task_report(event, cue_store, escalation)
+
+    # ── C6: worker-model report decision ─────────────────────────────
+
+    def _dispatch_task_report(
+        self, event: Any, cue_store: Any, escalation: Any,
+    ) -> None:
+        """Route a finished, reportable task through the C6 decision.
+
+        Three tiers (see ``docs/personality-backlog`` C6):
+
+        * **floor** — the user explicitly asked for this
+          (``initiated_by == 'aiko'`` and not ``metadata.self_initiated``).
+          Always reports: park + arm immediately (latency unchanged).
+          When the decision is enabled, an async worker pass *also* runs
+          to (a) shadow-log the verdict it *would* have produced and
+          (b) best-effort enrich the parked cue with the drafted angle.
+          Set ``task_report_decision_floor_mode='enforce'`` to make the
+          verdict authoritative for the floor too.
+        * **discretionary** — self/background-initiated. The async
+          worker decides: ``surface_now`` -> park(angle) + arm;
+          ``park_for_natural_opening`` -> park(angle), no escalation;
+          ``drop`` -> nothing.
+        * Decision disabled -> behaves exactly as before (park + arm).
+        """
+        enabled = bool(
+            getattr(self._settings.agent, "task_report_decision_enabled", True)
+        )
+        worker_available = bool(
+            getattr(self, "_maintenance_client", None) is not None
+            and getattr(self, "_effective_worker_model", None)
+        )
+        provenance, is_floor = self._task_report_provenance(event.task_id)
+
+        # Decision off, no worker to run it, or a floor task we won't
+        # gate -> the legacy park+arm path.
+        floor_mode = str(
+            getattr(
+                self._settings.agent,
+                "task_report_decision_floor_mode",
+                "shadow",
+            )
+        ).strip().lower()
+        legacy_park = (
+            (not enabled)
+            or (not worker_available)
+            or (is_floor and floor_mode != "enforce")
+        )
+
+        if legacy_park:
+            cue = cue_store.park(
+                task_id=event.task_id,
+                session_key=event.session_key,
+                kind=CUE_KIND_RESULT,
+                title=event.title,
+                status=event.status,
+                summary=event.result_summary,
+                error=event.error,
+            )
+            # ``reply_when_done`` tasks fire as soon as Aiko is free to
+            # speak (near-zero window); everything else keeps the passive
+            # completion window (45 s) and waits for a natural turn.
+            escalation.arm(
+                cue, after_seconds=self._reply_escalation_window(event.task_id),
+            )
+            if enabled and worker_available:
+                # Floor stays forced; run the worker pass async to
+                # shadow-log + enrich the cue with the drafted angle.
+                self._spawn_task_report_decision(
+                    event, cue_store, escalation,
+                    provenance=provenance, shadow=True,
+                )
+            return
+
+        # Enforced path (discretionary tasks always, floor when
+        # floor_mode='enforce'): the worker decides whether/how to park.
+        self._spawn_task_report_decision(
+            event, cue_store, escalation,
+            provenance=provenance, shadow=False,
+        )
+
+    def _task_report_provenance(self, task_id: Any) -> tuple[str, bool]:
+        """Return ``(provenance_label, is_floor)`` for a task id.
+
+        ``is_floor`` is True for user-requested work (the hard
+        always-report tier). Today every ``initiated_by='aiko'`` spawn
+        is user-requested; a future Aiko-self-trigger path sets
+        ``metadata.self_initiated=True`` to opt into the discretionary
+        tier without touching this gate.
+        """
+        orch = getattr(self, "_task_orchestrator", None)
+        if orch is None:
+            return PROVENANCE_USER, True
+        try:
+            row = orch.get(int(str(task_id)))
+        except Exception:
+            row = None
+        if row is None:
+            return PROVENANCE_USER, True
+        initiated_by = str(getattr(row, "initiated_by", INITIATED_BY_AIKO))
+        meta = getattr(row, "metadata", None)
+        self_initiated = bool(
+            isinstance(meta, dict) and meta.get("self_initiated")
+        )
+        is_floor = initiated_by == INITIATED_BY_AIKO and not self_initiated
+        provenance = PROVENANCE_USER if is_floor else PROVENANCE_SELF
+        return provenance, is_floor
+
+    def _spawn_task_report_decision(
+        self,
+        event: Any,
+        cue_store: Any,
+        escalation: Any,
+        *,
+        provenance: str,
+        shadow: bool,
+    ) -> None:
+        """Run the worker decision off-thread, then act on the verdict.
+
+        Never blocks the brain-loop consumer (same daemon-thread pattern
+        as ``ProactiveDirector.notify_task_escalation``).
+        """
+        import threading
+
+        threading.Thread(
+            target=self._run_task_report_decision_safe,
+            args=(event, cue_store, escalation, provenance, shadow),
+            daemon=True,
+            name=f"task-report-decision-{event.task_id}",
+        ).start()
+
+    def _run_task_report_decision_safe(
+        self,
+        event: Any,
+        cue_store: Any,
+        escalation: Any,
+        provenance: str,
+        shadow: bool,
+    ) -> None:
+        try:
+            self._run_task_report_decision(
+                event, cue_store, escalation, provenance, shadow,
+            )
+        except Exception:
+            log.debug("task-report decision thread raised", exc_info=True)
+            # Conservative recovery: in the enforced path a crash must
+            # not silently swallow a result, so park (no escalation) so
+            # it can still fold into the next natural turn.
+            if not shadow:
+                try:
+                    cue_store.park(
+                        task_id=event.task_id,
+                        session_key=event.session_key,
+                        kind=CUE_KIND_RESULT,
+                        title=event.title,
+                        status=event.status,
+                        summary=event.result_summary,
+                        error=event.error,
+                    )
+                except Exception:
+                    log.debug("task-report fallback park failed", exc_info=True)
+
+    def _run_task_report_decision(
+        self,
+        event: Any,
+        cue_store: Any,
+        escalation: Any,
+        provenance: str,
+        shadow: bool,
+    ) -> None:
+        angle_enabled = bool(
+            getattr(self._settings.agent, "task_report_angle_enabled", True)
+        )
+        origin_prompt = self._task_origin_prompt(event.task_id)
+        arc, idle_seconds, gist = self._report_decision_context()
+        verdict = decide_task_report(
+            ollama=getattr(self, "_maintenance_client", None),
+            model=getattr(self, "_effective_worker_model", None),
+            title=event.title or "",
+            summary=event.result_summary or "",
+            status=event.status or "done",
+            provenance=provenance,
+            origin_prompt=origin_prompt,
+            user_display_name=getattr(self, "user_display_name", "the user"),
+            arc=arc,
+            idle_seconds=idle_seconds,
+            recent_assistant_gist=gist,
+        )
+        self._record_task_report_verdict(event, provenance, shadow, verdict)
+        log.info(
+            "task-report-decision%s: task=%s provenance=%s action=%s reason=%s",
+            " (shadow)" if shadow else "",
+            event.task_id,
+            provenance,
+            verdict.action,
+            verdict.reason,
+        )
+
+        if shadow:
+            # Floor cue is already parked + armed; just enrich the angle.
+            if angle_enabled and verdict.angle:
+                try:
+                    cue_store.set_angle(str(event.task_id), verdict.angle)
+                except Exception:
+                    log.debug("task-report angle enrich failed", exc_info=True)
+            return
+
+        # Enforced path: act on the verdict.
+        if verdict.action == ACTION_DROP:
+            return
         cue = cue_store.park(
             task_id=event.task_id,
             session_key=event.session_key,
@@ -1472,12 +1691,95 @@ class TaskOrchestrationMixin:
             status=event.status,
             summary=event.result_summary,
             error=event.error,
+            angle=verdict.angle if angle_enabled else "",
         )
-        # ``reply_when_done`` tasks fire as soon as Aiko is free to
-        # speak (near-zero window) so the result surfaces promptly as
-        # an aggregated proactive reply; everything else keeps the
-        # passive completion window (45 s) and waits for a natural turn.
-        escalation.arm(cue, after_seconds=self._reply_escalation_window(event.task_id))
+        if verdict.action == ACTION_SURFACE:
+            escalation.arm(
+                cue, after_seconds=self._reply_escalation_window(event.task_id),
+            )
+        # ACTION_PARK: parked above, no escalation -> folds into the
+        # next natural turn via drain_for_render.
+
+    def _task_origin_prompt(self, task_id: Any) -> str:
+        """Best-effort original request text from the task metadata."""
+        orch = getattr(self, "_task_orchestrator", None)
+        if orch is None:
+            return ""
+        try:
+            row = orch.get(int(str(task_id)))
+        except Exception:
+            return ""
+        meta = getattr(row, "metadata", None) if row is not None else None
+        if isinstance(meta, dict):
+            return str(meta.get("origin_prompt", "") or "")
+        return ""
+
+    def _report_decision_context(self) -> tuple[str, float | None, str]:
+        """Best-effort live signals for the report decision.
+
+        Returns ``(arc_label, idle_seconds, recent_assistant_gist)``;
+        each component degrades to a neutral default on any failure so
+        the decision never crashes on a missing dependency.
+        """
+        arc = ""
+        try:
+            store = getattr(self, "_arc_store", None)
+            if store is not None:
+                state = store.get(self._user_id)
+                arc = str(getattr(state, "arc", "") or "")
+        except Exception:
+            arc = ""
+
+        idle_seconds: float | None = None
+        gist = ""
+        try:
+            messages = self._chat_db.get_messages(self.session_key)
+        except Exception:
+            messages = []
+        try:
+            from datetime import datetime, timezone
+
+            now = datetime.now(timezone.utc)
+            for row in reversed(messages):
+                role = (getattr(row, "role", "") or "").lower()
+                if idle_seconds is None and role == "user":
+                    ts_raw = getattr(row, "created_at", None)
+                    if ts_raw:
+                        ts = datetime.fromisoformat(
+                            str(ts_raw).replace("Z", "+00:00"),
+                        )
+                        if ts.tzinfo is None:
+                            ts = ts.replace(tzinfo=timezone.utc)
+                        idle_seconds = max(0.0, (now - ts).total_seconds())
+                if not gist and role == "assistant":
+                    gist = str(getattr(row, "content", "") or "")
+                if idle_seconds is not None and gist:
+                    break
+        except Exception:
+            pass
+        return arc, idle_seconds, gist
+
+    def _record_task_report_verdict(
+        self, event: Any, provenance: str, shadow: bool, verdict: Any,
+    ) -> None:
+        """Append the verdict to a small in-memory ring for MCP debug."""
+        ring = getattr(self, "_task_report_verdicts", None)
+        if ring is None:
+            import collections
+
+            ring = collections.deque(maxlen=20)
+            self._task_report_verdicts = ring  # type: ignore[attr-defined]
+        ring.append(
+            {
+                "task_id": str(event.task_id),
+                "title": str(event.title or ""),
+                "provenance": provenance,
+                "shadow": bool(shadow),
+                "action": verdict.action,
+                "angle": verdict.angle,
+                "reason": verdict.reason,
+            }
+        )
 
     def _on_task_input_needed_event(self, event: Any) -> None:
         """Handle a ``task_input_needed`` brain event.
