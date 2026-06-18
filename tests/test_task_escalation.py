@@ -3,7 +3,8 @@
 Pins the escalation contract:
 
 * :meth:`arm` schedules a :class:`threading.Timer` keyed by
-  ``task_id``; re-arming the same id cancels the prior timer.
+  ``task_id`` that fires as soon as Aiko is free (no fixed window);
+  re-arming the same id cancels the prior timer.
 * On fire, the manager checks three preconditions in order
   (cue still parked, gate clear, no recent user message). All
   pass → enqueue a proactive event + emit one
@@ -13,16 +14,15 @@ Pins the escalation contract:
 * :meth:`cancel_for_task` removes the timer; calls return
   ``True``/``False`` accordingly.
 * :meth:`shutdown` is idempotent and silences further arms.
-* Per-kind windows: ``input_needed`` uses the shorter window;
-  ``result`` uses the longer window.
 
-Tests use tiny windows (50–100 ms) so the suite runs fast and
-deterministically. The timer thread is daemon; ``threading.Event``
-synchronises the test thread with the fire callback.
+Tests that need a timer to stay armed (to assert ``pending_count``,
+replacement, cancel) hold it open with a closed free-to-speak gate
+so the fire path re-arms instead of completing. The timer thread is
+daemon; polling via :func:`_wait_for` synchronises the test thread
+with the fire callback.
 """
 from __future__ import annotations
 
-import threading
 import time
 import unittest
 
@@ -51,8 +51,6 @@ def _wait_for(predicate, *, deadline_s: float = _DEADLINE_S) -> bool:
 
 def _make_manager(
     *,
-    completion_after_seconds: float = 0.05,
-    input_needed_after_seconds: float = 0.05,
     retry_seconds: float = 0.05,
     retry_limit: int = 10,
     free_to_speak=lambda: True,
@@ -63,7 +61,13 @@ def _make_manager(
     TaskCueStore,
     list[tuple[str, tuple[str, ...]]],
 ]:
-    """Build a manager + cue store + capture list for proactive events."""
+    """Build a manager + cue store + capture list for proactive events.
+
+    The timed-escalation windows are gone — an armed cue fires the
+    moment the gate clears — so tests that want to *hold* a timer pass
+    ``free_to_speak=lambda: False`` and the fire path re-arms on the
+    ``retry_seconds`` cadence without ever completing.
+    """
     if cue_store is None:
         cue_store = TaskCueStore(max_age_seconds=3600.0, max_aggregated=10)
     captured: list[tuple[str, tuple[str, ...]]] = []
@@ -72,8 +76,6 @@ def _make_manager(
         captured.append((session_key, parked_cue_ids))
 
     cfg = EscalationConfig(
-        completion_after_seconds=completion_after_seconds,
-        input_needed_after_seconds=input_needed_after_seconds,
         retry_seconds=retry_seconds,
         retry_limit=retry_limit,
     )
@@ -92,14 +94,11 @@ def _make_manager(
 
 class ConstructionTests(unittest.TestCase):
     def test_construct_uses_supplied_config(self) -> None:
-        mgr, _, _ = _make_manager(
-            completion_after_seconds=45,
-            input_needed_after_seconds=20,
-        )
+        mgr, _, _ = _make_manager(retry_seconds=0.25, retry_limit=7)
         self.assertEqual(mgr.pending_count(), 0)
         try:
-            self.assertEqual(mgr._config.completion_after_seconds, 45.0)
-            self.assertEqual(mgr._config.input_needed_after_seconds, 20.0)
+            self.assertEqual(mgr._config.retry_seconds, 0.25)
+            self.assertEqual(mgr._config.retry_limit, 7)
         finally:
             mgr.shutdown()
 
@@ -112,8 +111,8 @@ class ConstructionTests(unittest.TestCase):
             enqueue_proactive=lambda *a: None,
         )
         try:
-            self.assertEqual(mgr._config.completion_after_seconds, 45.0)
-            self.assertEqual(mgr._config.input_needed_after_seconds, 20.0)
+            self.assertEqual(mgr._config.retry_seconds, 1.0)
+            self.assertEqual(mgr._config.retry_limit, 60)
         finally:
             mgr.shutdown()
 
@@ -123,44 +122,55 @@ class ConstructionTests(unittest.TestCase):
 
 class ArmCancelTests(unittest.TestCase):
     def test_arm_schedules_timer(self) -> None:
-        mgr, store, _ = _make_manager()
+        # Closed gate holds the timer armed so we can inspect it.
+        mgr, store, _ = _make_manager(free_to_speak=lambda: False)
         try:
             cue = store.park(
                 task_id="t1", session_key="u",
                 kind=CUE_KIND_RESULT, summary="x",
             )
             mgr.arm(cue)
-            self.assertEqual(mgr.pending_count(), 1)
+            self.assertTrue(_wait_for(lambda: mgr.pending_count() == 1))
             snap = mgr.snapshot()
             self.assertEqual(snap[0][0], "t1")
             self.assertEqual(snap[0][1], CUE_KIND_RESULT)
         finally:
             mgr.shutdown()
 
-    def test_arm_after_seconds_override_fires_promptly(self) -> None:
-        """A ``reply_when_done`` task passes a near-zero window so the
-        proactive reply fires almost immediately (well before the
-        configured 10 s completion window)."""
-        import time as _time
+    def test_arm_fires_promptly_by_default(self) -> None:
+        """With no explicit window an armed cue fires almost
+        immediately once the free-to-speak gate is clear."""
+        mgr, store, captured = _make_manager()
+        try:
+            cue = store.park(
+                task_id="t1", session_key="u",
+                kind=CUE_KIND_RESULT, summary="x",
+            )
+            mgr.arm(cue)
+            self.assertTrue(_wait_for(lambda: len(captured) == 1))
+            self.assertEqual(captured[0][0], "u")
+            self.assertEqual(captured[0][1], ("t1",))
+        finally:
+            mgr.shutdown()
 
-        mgr, store, captured = _make_manager(completion_after_seconds=10.0)
+    def test_arm_after_seconds_override_fires_promptly(self) -> None:
+        """An explicit ``after_seconds`` override still works (tests use
+        it); the cue fires after the supplied delay."""
+        mgr, store, captured = _make_manager()
         try:
             cue = store.park(
                 task_id="t1", session_key="u",
                 kind=CUE_KIND_RESULT, summary="x",
             )
             mgr.arm(cue, after_seconds=0.02)
-            deadline = _time.monotonic() + 2.0
-            while not captured and _time.monotonic() < deadline:
-                _time.sleep(0.01)
-            self.assertEqual(len(captured), 1)
+            self.assertTrue(_wait_for(lambda: len(captured) == 1))
             self.assertEqual(captured[0][0], "u")
             self.assertEqual(captured[0][1], ("t1",))
         finally:
             mgr.shutdown()
 
     def test_arm_after_seconds_clamps_negative_to_zero(self) -> None:
-        mgr, store, _ = _make_manager(completion_after_seconds=10.0)
+        mgr, store, _ = _make_manager(free_to_speak=lambda: False)
         try:
             cue = store.park(
                 task_id="t1", session_key="u",
@@ -193,17 +203,16 @@ class ArmCancelTests(unittest.TestCase):
 
     def test_arm_replaces_existing_timer(self) -> None:
         """Arming the same task id a second time cancels the prior
-        timer; only one fire per task id."""
-        mgr, store, captured = _make_manager(
-            completion_after_seconds=10.0,  # long enough we can race
-        )
+        timer; only one fire per task id. A closed gate holds the
+        timers so we can observe the replacement."""
+        mgr, store, _ = _make_manager(free_to_speak=lambda: False)
         try:
             cue = store.park(
                 task_id="t1", session_key="u",
                 kind=CUE_KIND_RESULT, summary="x",
             )
             mgr.arm(cue)
-            self.assertEqual(mgr.pending_count(), 1)
+            self.assertTrue(_wait_for(lambda: mgr.pending_count() == 1))
             # Re-park to bump parked_at, then re-arm.
             cue2 = store.park(
                 task_id="t1", session_key="u",
@@ -216,13 +225,14 @@ class ArmCancelTests(unittest.TestCase):
             mgr.shutdown()
 
     def test_cancel_for_task_returns_true_on_hit(self) -> None:
-        mgr, store, _ = _make_manager(completion_after_seconds=5.0)
+        mgr, store, _ = _make_manager(free_to_speak=lambda: False)
         try:
             cue = store.park(
                 task_id="t1", session_key="u",
                 kind=CUE_KIND_RESULT, summary="x",
             )
             mgr.arm(cue)
+            self.assertTrue(_wait_for(lambda: mgr.pending_count() == 1))
             self.assertTrue(mgr.cancel_for_task("t1"))
             self.assertEqual(mgr.pending_count(), 0)
         finally:
@@ -236,7 +246,7 @@ class ArmCancelTests(unittest.TestCase):
             mgr.shutdown()
 
     def test_cancel_all_returns_count(self) -> None:
-        mgr, store, _ = _make_manager(completion_after_seconds=5.0)
+        mgr, store, _ = _make_manager(free_to_speak=lambda: False)
         try:
             for i in range(3):
                 cue = store.park(
@@ -244,6 +254,7 @@ class ArmCancelTests(unittest.TestCase):
                     kind=CUE_KIND_RESULT, summary="x",
                 )
                 mgr.arm(cue)
+            self.assertTrue(_wait_for(lambda: mgr.pending_count() == 3))
             self.assertEqual(mgr.cancel_all(), 3)
             self.assertEqual(mgr.pending_count(), 0)
         finally:
@@ -326,7 +337,6 @@ class RearmTests(unittest.TestCase):
     def test_gate_closed_rearms_then_fires_when_gate_opens(self) -> None:
         gate = {"open": False}
         mgr, store, captured = _make_manager(
-            completion_after_seconds=0.05,
             retry_seconds=0.05,
             free_to_speak=lambda: gate["open"],
         )
@@ -351,7 +361,6 @@ class RearmTests(unittest.TestCase):
         cue's parked_at, the manager re-arms instead of firing."""
         last_user = {"at": -float("inf")}
         mgr, store, captured = _make_manager(
-            completion_after_seconds=0.05,
             retry_seconds=0.05,
             last_user_message_at=lambda: last_user["at"],
         )
@@ -375,7 +384,6 @@ class RearmTests(unittest.TestCase):
     def test_retry_limit_gives_up_with_warning(self) -> None:
         gate = {"open": False}
         mgr, store, captured = _make_manager(
-            completion_after_seconds=0.01,
             retry_seconds=0.01,
             retry_limit=2,
             free_to_speak=lambda: gate["open"],
@@ -400,41 +408,14 @@ class RearmTests(unittest.TestCase):
             mgr.shutdown()
 
 
-# ── per-kind windows ────────────────────────────────────────────────
-
-
-class PerKindWindowTests(unittest.TestCase):
-    def test_input_needed_uses_shorter_window(self) -> None:
-        """An ``input_needed`` cue fires before a ``result`` cue with
-        the same parked_at, even when both are armed simultaneously."""
-        mgr, store, captured = _make_manager(
-            completion_after_seconds=2.0,  # long
-            input_needed_after_seconds=0.05,  # short
-        )
-        try:
-            r_cue = store.park(
-                task_id="r", session_key="u",
-                kind=CUE_KIND_RESULT, summary="x",
-            )
-            i_cue = store.park(
-                task_id="i", session_key="u",
-                kind=CUE_KIND_INPUT_NEEDED, summary="?",
-            )
-            mgr.arm(r_cue)
-            mgr.arm(i_cue)
-            self.assertTrue(_wait_for(lambda: len(captured) >= 1))
-            # The input_needed cue fires first.
-            self.assertEqual(captured[0][1], ("i",))
-        finally:
-            mgr.shutdown()
-
-
 # ── shutdown ────────────────────────────────────────────────────────
 
 
 class ShutdownTests(unittest.TestCase):
     def test_shutdown_cancels_all_timers(self) -> None:
-        mgr, store, captured = _make_manager(completion_after_seconds=5.0)
+        # Closed gate holds the timers so they don't fire before we
+        # assert + shut down.
+        mgr, store, captured = _make_manager(free_to_speak=lambda: False)
         try:
             for i in range(3):
                 cue = store.park(
@@ -442,7 +423,7 @@ class ShutdownTests(unittest.TestCase):
                     kind=CUE_KIND_RESULT, summary="x",
                 )
                 mgr.arm(cue)
-            self.assertEqual(mgr.pending_count(), 3)
+            self.assertTrue(_wait_for(lambda: mgr.pending_count() == 3))
         finally:
             mgr.shutdown()
         self.assertEqual(mgr.pending_count(), 0)
@@ -479,7 +460,6 @@ class PredicateErrorTests(unittest.TestCase):
             raise RuntimeError("boom")
 
         mgr, store, captured = _make_manager(
-            completion_after_seconds=0.02,
             retry_seconds=0.02,
             retry_limit=3,
             free_to_speak=gate,
@@ -503,7 +483,6 @@ class PredicateErrorTests(unittest.TestCase):
             raise RuntimeError("clock broken")
 
         mgr, store, captured = _make_manager(
-            completion_after_seconds=0.05,
             retry_seconds=0.05,
             last_user_message_at=last_user,
         )

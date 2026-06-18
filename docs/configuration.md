@@ -594,8 +594,7 @@ Phase 1 of the brain-orchestration refactor. Lets Aiko spawn user-initiated long
 - `agent.tasks_resume_on_boot` *(bool, `true`)* — when on, non-terminal task rows surviving a restart get demoted to `interrupted` AND a cue is parked for Aiko's next turn ("the X task stopped — want me to retry?"). Off → rows still demote on boot but Aiko stays silent; user has to ask via REST / UI.
 - `agent.tasks_running_block_enabled` *(bool, `true`)* — when on, `InnerLifeProvidersMixin._render_running_tasks_block` renders a T6 prompt block listing live tasks for the active user. Off → block is silent; Aiko has no inner-prompt awareness of her own running work (only the TaskStrip in the UI does).
 - `agent.brain_loop_deferred_grace_ms` *(int, `100`, clamped `[10, 5000]`)* — `BrainLoop` poll interval in milliseconds. Smaller → deferred items retry sooner when the free-to-speak gate clears (lower latency on the no-interrupt invariant). Larger → consumer thread wakes less often on idle, at the cost of post-TTS escalation latency. Default `100` ms.
-- `agent.task_completion_proactive_after_seconds` *(int, `45`, clamped `[5, 600]`)* — seconds of silence after a `task_result` cue parks before the escalation timer enqueues a `ProactiveEvent`. Higher → Aiko stays quieter for longer, lets the user pivot. Lower → completions surface as proactive turns more aggressively.
-- `agent.task_input_needed_proactive_after_seconds` *(int, `20`, clamped `[5, 600]`)* — shorter sibling of the above for `task_input_needed` cues. A blocked task is more pressing than a finished one, so the default is half the completion window.
+  - **Note (timed-escalation retirement):** the old `agent.task_completion_proactive_after_seconds` (45 s), `agent.task_input_needed_proactive_after_seconds` (20 s), and `agent.task_reply_when_free_seconds` (1 s) windows have been removed. Reporting is now decided by the C6 worker verdict (`surface_now` / `park_for_natural_opening` / `drop`, see below) and floor (user-requested) tasks always surface. An armed cue fires the moment Aiko is free to speak — there is no fixed silence window. `task_input_needed` is UI-only (the TaskStrip surfaces the `awaiting_input` chip; Aiko does not speak the question). The escalation manager's internal retry cadence (poll-until-free) is a constant, not a setting.
 - `agent.task_cue_max_age_seconds` *(int, `1800`, clamped `[60, 86400]`)* — wall-clock age above which a parked cue silently drops on the next dequeue / sweep. Protects against awkward stale-context messages ("the YouTube tab I opened 3 hours ago is still going") if the user vanished. Default `1800` = 30 minutes.
 - `agent.task_cue_max_aggregated` *(int, `5`, clamped `[1, 20]`)* — hard cap on cues rendered into a single turn's prompt T6 block. Excess cues stay in the DB / WS strip (so the user sees them in the UI), but get dropped from the prompt to keep T6 cheap. The most volatile tier never gets cache hits, so trimming pays off.
 
@@ -864,10 +863,34 @@ The chat composer accepts **image + text** attachments (paperclip button, drag-a
 
 ## `mcp_server` — `McpServerSettings`
 
-Embedded MCP (Model Context Protocol) server for development tooling.
+Embedded MCP (Model Context Protocol) server for development tooling. This is the server the app **exposes** (Cursor / Copilot connect to it).
 
 - `mcp_server.enabled` *(bool, `true`)* — master switch.
 - `mcp_server.port` *(int, `6274`, min `1`)* — SSE endpoint. The Cursor MCP config in `.cursor/mcp.json` points here.
+
+---
+
+## `mcp_clients` — `ExternalMcpSettings`
+
+External MCP servers the app **connects out to as a client** (the opposite direction from `mcp_server`). Their tools are discovered at boot and registered **only into the background-worker / goal-workflow lane** — never into the brain's fast tools. See [`docs/mcp-clients.md`](mcp-clients.md) for the architecture, lifecycle, and the filesystem-server proof.
+
+Master switch lives on `agent`:
+
+- `agent.mcp_clients_enabled` *(bool, `true`)* — when off (or `mcp_clients.servers` is empty), the manager never starts and no MCP tools are registered. Only meaningful when `agent.workflow_enabled` is also on (MCP tools are background-lane skills).
+
+`mcp_clients.servers` is a list of `ExternalMcpServer` rows:
+
+- `id` *(string, required)* — stable identifier; the skill names are namespaced `<id>__<tool_name>`. Duplicate ids are dropped.
+- `name` *(string)* — human label (defaults to `id`).
+- `transport` *(string, `"stdio"`)* — `"stdio"` (launch `command` + `args` as a child process) or `"sse"` (connect to a running server at `url`).
+- `command` *(string)* — executable for stdio (e.g. `"npx"`). Required for stdio rows; a stdio row without it is dropped.
+- `args` *(string[])* — command arguments (e.g. `["-y", "@modelcontextprotocol/server-filesystem", "/path"]`).
+- `env` *(object)* — extra environment for the child. Values support `${ENV:NAME}` indirection, resolved from the process environment at launch, so a token can live in an env var instead of in `config/user.json`.
+- `url` *(string)* — endpoint for `sse` rows. Required for sse; an sse row without it is dropped.
+- `enabled` *(bool, `true`)* — per-server switch.
+- `autostart` *(bool, `true`)* — connect at boot.
+- `timeout_seconds` *(float, `30.0`, min `1`)* — per-call read timeout.
+- `expose_tools` *(string[], `[]`)* — optional allow-list of tool names to register for the planner; empty exposes every tool the server advertises.
 
 ---
 

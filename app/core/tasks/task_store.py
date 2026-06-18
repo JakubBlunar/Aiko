@@ -619,6 +619,7 @@ class TaskStore:
         limit: int = 50,
         offset: int = 0,
         visible_only: bool = True,
+        roots_only: bool = False,
     ) -> list[TaskRow]:
         """Paginated history for the REST + UI surface.
 
@@ -627,7 +628,10 @@ class TaskStore:
         misbehaving client can't pull the whole table in one shot.
         ``visible_only=True`` (default, chunk 13) filters out
         ``visible_to_user=0`` rows so the REST endpoint never leaks
-        system-internal tasks to the frontend.
+        system-internal tasks to the frontend. ``roots_only=True``
+        restricts to top-level tasks (``parent_task_id IS NULL``) so
+        the Tasks tab can render parents only and fetch children
+        on-demand via :meth:`list_children`.
         """
         user_norm = str(user_id or "").strip()
         if not user_norm:
@@ -642,6 +646,8 @@ class TaskStore:
             params.append(str(status).strip())
         if visible_only:
             clauses.append("visible_to_user = 1")
+        if roots_only:
+            clauses.append("parent_task_id IS NULL")
         where = " AND ".join(clauses)
         params.extend([capped_limit, capped_offset])
         rows = conn.execute(
@@ -657,6 +663,7 @@ class TaskStore:
         *,
         status: str | None = None,
         visible_only: bool = True,
+        roots_only: bool = False,
     ) -> int:
         """Total task count for a user, mirroring :meth:`list_for_user`'s filters.
 
@@ -665,7 +672,10 @@ class TaskStore:
         accepts a single status string or ``None`` for all statuses.
         ``visible_only=True`` (default) filters out
         ``visible_to_user=0`` rows so the REST + UI never expose
-        system-internal task bookkeeping.
+        system-internal task bookkeeping. ``roots_only=True`` mirrors
+        :meth:`list_for_user` and counts only top-level tasks
+        (``parent_task_id IS NULL``) so the Tasks tab pager stays
+        consistent with a parents-only list.
         """
         user_norm = str(user_id or "").strip()
         if not user_norm:
@@ -678,6 +688,8 @@ class TaskStore:
             params.append(str(status).strip())
         if visible_only:
             clauses.append("visible_to_user = 1")
+        if roots_only:
+            clauses.append("parent_task_id IS NULL")
         where = " AND ".join(clauses)
         row = conn.execute(
             f"SELECT COUNT(*) FROM tasks WHERE {where}",

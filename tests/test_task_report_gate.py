@@ -73,15 +73,15 @@ class _Fixture:
 
     def host(self, **overrides: Any) -> _Host:
         agent = dataclasses.replace(self.settings.agent, **overrides)
-        # Dial escalation windows up so timers never fire mid-test.
-        agent = dataclasses.replace(
-            agent,
-            task_completion_proactive_after_seconds=3600,
-            task_input_needed_proactive_after_seconds=3600,
-            task_reply_when_free_seconds=3600.0,
-        )
         settings = dataclasses.replace(self.settings, agent=agent)
-        return _Host(chat_db=self.chat_db, settings=settings)
+        host = _Host(chat_db=self.chat_db, settings=settings)
+        # The timed escalation windows are gone — an armed cue fires the
+        # moment the gate clears. Hold the gate closed so an armed timer
+        # re-arms instead of firing, keeping ``pending_count == 1`` stable
+        # for the arm-side assertions. Set before init so the escalation
+        # manager captures this predicate.
+        host._brain_loop_free_to_speak = lambda: False  # type: ignore[method-assign]
+        return host
 
     def cleanup(self) -> None:
         conn = getattr(self.chat_db._local, "conn", None)

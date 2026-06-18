@@ -261,5 +261,102 @@ class PhaseFieldTests(unittest.TestCase):
             f.close()
 
 
+class ChildrenEndpointTests(unittest.TestCase):
+    def test_list_children_returns_spawn_order(self) -> None:
+        f = _Fixture()
+        try:
+            parent = f.store.create(
+                user_id=f.user_id,
+                handler_name="goal_workflow",
+                title="parent",
+                args={},
+                state={},
+            )
+            c1 = f.store.create(
+                user_id=f.user_id,
+                handler_name="file_write",
+                title="step 1",
+                args={},
+                state={},
+                parent_task_id=parent,
+            )
+            c2 = f.store.create(
+                user_id=f.user_id,
+                handler_name="file_read",
+                title="step 2",
+                args={},
+                state={},
+                parent_task_id=parent,
+            )
+            resp = f.client.get(f"/api/tasks/{parent}/children")
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+            self.assertEqual(data["task_id"], parent)
+            self.assertEqual([c["id"] for c in data["children"]], [c1, c2])
+            self.assertEqual(data["count"], 2)
+        finally:
+            f.close()
+
+    def test_list_children_empty_for_leaf_task(self) -> None:
+        f = _Fixture()
+        try:
+            tid = f.store.create(
+                user_id=f.user_id,
+                handler_name="file_search",
+                title="leaf",
+                args={},
+                state={},
+            )
+            resp = f.client.get(f"/api/tasks/{tid}/children")
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+            self.assertEqual(data["children"], [])
+            self.assertEqual(data["count"], 0)
+        finally:
+            f.close()
+
+    def test_list_children_404_for_unknown_task(self) -> None:
+        f = _Fixture()
+        try:
+            resp = f.client.get("/api/tasks/9999/children")
+            self.assertEqual(resp.status_code, 404)
+        finally:
+            f.close()
+
+
+class RootsOnlyListTests(unittest.TestCase):
+    def test_roots_only_excludes_children_and_total(self) -> None:
+        f = _Fixture()
+        try:
+            parent = f.store.create(
+                user_id=f.user_id,
+                handler_name="goal_workflow",
+                title="parent",
+                args={},
+                state={},
+            )
+            child = f.store.create(
+                user_id=f.user_id,
+                handler_name="file_write",
+                title="step",
+                args={},
+                state={},
+                parent_task_id=parent,
+            )
+            # Unfiltered list carries both rows.
+            all_data = f.client.get("/api/tasks").json()
+            all_ids = {t["id"] for t in all_data["tasks"]}
+            self.assertIn(child, all_ids)
+            self.assertEqual(all_data["total"], 2)
+            # roots_only collapses to the parent + matching total.
+            roots = f.client.get("/api/tasks?roots_only=true").json()
+            roots_ids = {t["id"] for t in roots["tasks"]}
+            self.assertIn(parent, roots_ids)
+            self.assertNotIn(child, roots_ids)
+            self.assertEqual(roots["total"], 1)
+        finally:
+            f.close()
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

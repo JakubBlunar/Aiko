@@ -13,7 +13,7 @@
  * resulting slice through. The component itself only renders + emits
  * intents.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { api } from "../../api";
 import type { TaskEvent, TaskSnapshot, TaskStatus } from "../../types";
@@ -75,14 +75,28 @@ function isTerminal(status: TaskStatus): boolean {
   return TERMINAL_TASK_STATUSES.has(status);
 }
 
-function PrimaryDetail({ task }: { task: TaskSnapshot }) {
+function PrimaryDetail({
+  task,
+  multiline = false,
+}: {
+  task: TaskSnapshot;
+  multiline?: boolean;
+}) {
   // Pick the one most informative line for the row. Priority:
   //   error (when failed) → result.summary (when done) →
   //   input_request.prompt (when awaiting input) → last_message →
   //   handler_name (always present, lowest priority)
+  //
+  // ``multiline`` toggles between the compact one-line collapsed
+  // view (``truncate``) and the fully-wrapped detail view
+  // (``whitespace-pre-wrap break-words``) so the expanded panel can
+  // show the whole summary / error / prompt for debugging.
+  const wrap = multiline
+    ? "whitespace-pre-wrap break-words"
+    : "block truncate";
   if (task.status === "failed" && task.error) {
     return (
-      <span className="truncate text-xs text-rose-200/80">{task.error}</span>
+      <span className={`${wrap} text-xs text-rose-200/80`}>{task.error}</span>
     );
   }
   if (task.status === "done" && task.result) {
@@ -90,20 +104,20 @@ function PrimaryDetail({ task }: { task: TaskSnapshot }) {
       typeof task.result.summary === "string" ? task.result.summary : "";
     if (summary) {
       return (
-        <span className="truncate text-xs text-ink-100/60">{summary}</span>
+        <span className={`${wrap} text-xs text-ink-100/60`}>{summary}</span>
       );
     }
   }
   if (task.status === "awaiting_input" && task.input_request?.prompt) {
     return (
-      <span className="truncate text-xs italic text-ink-100/70">
+      <span className={`${wrap} text-xs italic text-ink-100/70`}>
         {task.input_request.prompt}
       </span>
     );
   }
   if (task.last_message) {
     return (
-      <span className="truncate text-xs text-ink-100/60">
+      <span className={`${wrap} text-xs text-ink-100/60`}>
         {task.last_message}
       </span>
     );
@@ -113,7 +127,9 @@ function PrimaryDetail({ task }: { task: TaskSnapshot }) {
 
 /** Schema v17: lazy-loaded per-task event timeline. Click "events"
  * to fetch; render is a flat chronological list. Cheap when never
- * expanded — the API call only fires on toggle.
+ * expanded — the API call only fires on toggle. Event ``data`` JSON
+ * wraps in full (no truncation) so long paths / messages are
+ * readable for debugging.
  */
 function EventsExpander({ taskId }: { taskId: number }) {
   const [open, setOpen] = useState(false);
@@ -159,9 +175,9 @@ function EventsExpander({ taskId }: { taskId: number }) {
           ) : events === null || events.length === 0 ? (
             <div className="text-[11px] text-ink-100/45">no events</div>
           ) : (
-            <ol className="flex flex-col gap-0.5 text-[11px] text-ink-100/60">
+            <ol className="flex flex-col gap-1 text-[11px] text-ink-100/60">
               {events.map((evt) => (
-                <li key={evt.id} className="flex items-baseline gap-2">
+                <li key={evt.id} className="flex flex-wrap items-baseline gap-2">
                   <span className="shrink-0 font-mono text-ink-100/40">
                     {evt.created_at.slice(11, 19)}
                   </span>
@@ -169,7 +185,7 @@ function EventsExpander({ taskId }: { taskId: number }) {
                     {evt.type}
                   </span>
                   {evt.data ? (
-                    <span className="truncate font-mono text-ink-100/55">
+                    <span className="w-full whitespace-pre-wrap break-all font-mono text-ink-100/55">
                       {JSON.stringify(evt.data)}
                     </span>
                   ) : null}
@@ -183,6 +199,203 @@ function EventsExpander({ taskId }: { taskId: number }) {
   );
 }
 
+/** Answer controls for an ``awaiting_input`` task — option buttons
+ * when the handler supplied choices, otherwise a free-text field.
+ * Shared by parent rows and nested child rows. */
+function AwaitingInputControls({
+  task,
+  onAnswer,
+}: {
+  task: TaskSnapshot;
+  onAnswer: (taskId: number, answer: string) => void;
+}) {
+  const [freeText, setFreeText] = useState("");
+  const options = task.input_request?.options || [];
+  const hasOptions = options.length > 0;
+  return (
+    <div className="mt-2 flex flex-col gap-1.5">
+      {hasOptions ? (
+        <div className="flex flex-wrap gap-1.5">
+          {options.map((opt) => (
+            <button
+              key={opt}
+              type="button"
+              onClick={() => onAnswer(task.id, opt)}
+              className="rounded-full border border-amber-300/40 bg-amber-300/10 px-2.5 py-1 text-xs text-ink-100/85 hover:bg-amber-300/20"
+            >
+              {opt}
+            </button>
+          ))}
+        </div>
+      ) : (
+        <form
+          className="flex items-center gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const trimmed = freeText.trim();
+            if (!trimmed) return;
+            onAnswer(task.id, trimmed);
+            setFreeText("");
+          }}
+        >
+          <input
+            type="text"
+            value={freeText}
+            onChange={(e) => setFreeText(e.target.value)}
+            placeholder="answer…"
+            className="min-w-0 flex-1 rounded-md border border-white/10 bg-white/5 px-2 py-1 text-xs text-ink-100/90 placeholder:text-ink-100/30 focus:border-amber-300/40 focus:outline-none"
+          />
+          <button
+            type="submit"
+            disabled={!freeText.trim()}
+            className="rounded-md border border-amber-300/40 bg-amber-300/10 px-2.5 py-1 text-xs text-ink-100/85 hover:bg-amber-300/20 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            send
+          </button>
+        </form>
+      )}
+    </div>
+  );
+}
+
+/** A nested child task (workflow step) inside a parent's detail
+ * panel. Compact variant of the top-level row: status, title,
+ * handler, full-text detail, its own answer controls + events. */
+function ChildTaskRow({
+  child,
+  onCancel,
+  onAnswer,
+}: {
+  child: TaskSnapshot;
+  onCancel: (taskId: number) => void;
+  onAnswer: (taskId: number, answer: string) => void;
+}) {
+  const progressPct =
+    typeof child.progress === "number"
+      ? Math.round(Math.max(0, Math.min(1, child.progress)) * 100)
+      : null;
+  return (
+    <li className="rounded-md border border-white/5 bg-white/[0.02] p-2">
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex min-w-0 flex-col gap-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span
+              className={`rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide ${
+                STATUS_BADGE_CLASS[child.status] ?? "bg-white/5 text-ink-100/70"
+              }`}
+            >
+              {statusLabel(child.status)}
+            </span>
+            <span className="break-words text-xs font-medium text-ink-100/90">
+              {child.title || child.handler_name}
+            </span>
+            {child.phase && child.status === "running" ? (
+              <span className="rounded bg-violet-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-violet-200">
+                {child.phase}
+              </span>
+            ) : null}
+            {progressPct !== null && child.status === "running" ? (
+              <span className="text-[11px] text-ink-100/45">{progressPct}%</span>
+            ) : null}
+          </div>
+          <PrimaryDetail task={child} multiline />
+          <div className="flex flex-wrap items-center gap-2 text-[11px] text-ink-100/40">
+            <span>handler: {child.handler_name}</span>
+            <span>id #{child.id}</span>
+          </div>
+        </div>
+        {isActive(child.status) ? (
+          <button
+            type="button"
+            onClick={() => onCancel(child.id)}
+            className="shrink-0 rounded-md border border-white/10 bg-transparent px-2 py-1 text-xs text-ink-100/55 hover:bg-white/5 hover:text-ink-100/80"
+          >
+            cancel
+          </button>
+        ) : null}
+      </div>
+      {child.status === "awaiting_input" ? (
+        <AwaitingInputControls task={child} onAnswer={onAnswer} />
+      ) : null}
+      <EventsExpander taskId={child.id} />
+    </li>
+  );
+}
+
+/** Expandable detail panel for a parent row. Shows the full-text
+ * primary content, the lazily-fetched child tasks (workflow steps),
+ * and the parent's own event timeline. The children fetch fires
+ * once on mount — i.e. the first time the user expands the row. */
+function TaskDetailPanel({
+  task,
+  onCancel,
+  onAnswer,
+}: {
+  task: TaskSnapshot;
+  onCancel: (taskId: number) => void;
+  onAnswer: (taskId: number, answer: string) => void;
+}) {
+  const [children, setChildren] = useState<TaskSnapshot[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    api
+      .listTaskChildren(task.id)
+      .then((resp) => {
+        if (!cancelled) setChildren(resp.children ?? []);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled)
+          setError(err instanceof Error ? err.message : "failed to load steps");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [task.id]);
+
+  return (
+    <div className="mt-2 flex flex-col gap-2 border-t border-white/5 pt-2">
+      <div className="flex flex-col gap-1">
+        <div className="text-[10px] uppercase tracking-wide text-ink-100/35">
+          detail
+        </div>
+        <PrimaryDetail task={task} multiline />
+      </div>
+      <div className="flex flex-col gap-1">
+        <div className="text-[10px] uppercase tracking-wide text-ink-100/35">
+          steps{children ? ` (${children.length})` : ""}
+        </div>
+        {loading ? (
+          <div className="text-[11px] text-ink-100/45">loading steps…</div>
+        ) : error ? (
+          <div className="text-[11px] text-rose-300/80">{error}</div>
+        ) : children && children.length > 0 ? (
+          <ul className="flex flex-col gap-1.5">
+            {children.map((child) => (
+              <ChildTaskRow
+                key={child.id}
+                child={child}
+                onCancel={onCancel}
+                onAnswer={onAnswer}
+              />
+            ))}
+          </ul>
+        ) : (
+          <div className="text-[11px] text-ink-100/45">no sub-tasks</div>
+        )}
+      </div>
+      <EventsExpander taskId={task.id} />
+    </div>
+  );
+}
+
 function TaskRow({
   task,
   onCancel,
@@ -192,10 +405,7 @@ function TaskRow({
   onCancel: (taskId: number) => void;
   onAnswer: (taskId: number, answer: string) => void;
 }) {
-  const [freeText, setFreeText] = useState("");
-  const options = task.input_request?.options || [];
-  const hasOptions = task.status === "awaiting_input" && options.length > 0;
-  const acceptsFreeText = task.status === "awaiting_input" && !hasOptions;
+  const [expanded, setExpanded] = useState(false);
   const progressPct =
     typeof task.progress === "number"
       ? Math.round(Math.max(0, Math.min(1, task.progress)) * 100)
@@ -248,67 +458,34 @@ function TaskRow({
               <span>finished {formatRelative(task.completed_at)}</span>
             ) : null}
             <span>id #{task.id}</span>
-            {task.parent_task_id ? (
-              <span>parent #{task.parent_task_id}</span>
-            ) : null}
           </div>
         </div>
-        {isActive(task.status) ? (
+        <div className="flex shrink-0 items-center gap-2">
           <button
             type="button"
-            onClick={() => onCancel(task.id)}
-            className="shrink-0 rounded-md border border-white/10 bg-transparent px-2 py-1 text-xs text-ink-100/55 hover:bg-white/5 hover:text-ink-100/80"
+            onClick={() => setExpanded((v) => !v)}
+            className="rounded-md border border-white/10 bg-white/[0.02] px-2 py-1 text-xs text-ink-100/55 hover:bg-white/5 hover:text-ink-100/80"
+            aria-expanded={expanded}
           >
-            cancel
+            {expanded ? "hide" : "details"}
           </button>
-        ) : null}
-      </div>
-      {task.status === "awaiting_input" ? (
-        <div className="mt-2 flex flex-col gap-1.5">
-          {hasOptions ? (
-            <div className="flex flex-wrap gap-1.5">
-              {options.map((opt) => (
-                <button
-                  key={opt}
-                  type="button"
-                  onClick={() => onAnswer(task.id, opt)}
-                  className="rounded-full border border-amber-300/40 bg-amber-300/10 px-2.5 py-1 text-xs text-ink-100/85 hover:bg-amber-300/20"
-                >
-                  {opt}
-                </button>
-              ))}
-            </div>
-          ) : null}
-          {acceptsFreeText ? (
-            <form
-              className="flex items-center gap-2"
-              onSubmit={(e) => {
-                e.preventDefault();
-                const trimmed = freeText.trim();
-                if (!trimmed) return;
-                onAnswer(task.id, trimmed);
-                setFreeText("");
-              }}
+          {isActive(task.status) ? (
+            <button
+              type="button"
+              onClick={() => onCancel(task.id)}
+              className="rounded-md border border-white/10 bg-transparent px-2 py-1 text-xs text-ink-100/55 hover:bg-white/5 hover:text-ink-100/80"
             >
-              <input
-                type="text"
-                value={freeText}
-                onChange={(e) => setFreeText(e.target.value)}
-                placeholder="answer…"
-                className="min-w-0 flex-1 rounded-md border border-white/10 bg-white/5 px-2 py-1 text-xs text-ink-100/90 placeholder:text-ink-100/30 focus:border-amber-300/40 focus:outline-none"
-              />
-              <button
-                type="submit"
-                disabled={!freeText.trim()}
-                className="rounded-md border border-amber-300/40 bg-amber-300/10 px-2.5 py-1 text-xs text-ink-100/85 hover:bg-amber-300/20 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                send
-              </button>
-            </form>
+              cancel
+            </button>
           ) : null}
         </div>
+      </div>
+      {task.status === "awaiting_input" ? (
+        <AwaitingInputControls task={task} onAnswer={onAnswer} />
       ) : null}
-      <EventsExpander taskId={task.id} />
+      {expanded ? (
+        <TaskDetailPanel task={task} onCancel={onCancel} onAnswer={onAnswer} />
+      ) : null}
     </li>
   );
 }

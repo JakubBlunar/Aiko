@@ -416,7 +416,8 @@ class FinishedTaskRelaxesForcedChoiceTests(unittest.TestCase):
                 "role": "system",
                 "content": (
                     "You just finished what the user asked for — reply now "
-                    "using the result below.\n  file read: notes.md:\n    hi"
+                    "using the result below. Do NOT start the task again; "
+                    "the answer is right here.\n  file read: notes.md:\n    hi"
                 ),
             },
             {"role": "user", "content": "what did you find?"},
@@ -445,6 +446,30 @@ class FinishedTaskRelaxesForcedChoiceTests(unittest.TestCase):
         messages = [
             {"role": "system", "content": "You are Aiko."},
             {"role": "user", "content": "what files can you see?"},
+        ]
+        runner._maybe_run_tool_pass(messages, stop_requested=None)
+        self.assertEqual(
+            ollama.chat_with_tools.call_args.kwargs["tool_choice"], "required",
+        )
+
+    def test_persona_explanation_of_cue_does_not_relax(self) -> None:
+        """The persona TEACHES Aiko what the finished-task cue looks like,
+        quoting "...reply now using the result below". That explanation is
+        in the system prompt every turn — it must NOT trip the detector and
+        relax forced-choice (the bug that made her narrate "doing it now"
+        instead of calling start_workflow)."""
+        runner, ollama, _ = _build_runner()
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are Aiko.\n- Never start the same task twice. If a "
+                    "finished task's result is sitting in your context "
+                    '("you just finished what the user asked for -- reply '
+                    'now using the result below"), that IS the answer.'
+                ),
+            },
+            {"role": "user", "content": "create a file and write a note in it"},
         ]
         runner._maybe_run_tool_pass(messages, stop_requested=None)
         self.assertEqual(

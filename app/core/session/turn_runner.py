@@ -97,9 +97,16 @@ _RESPOND_DIRECTLY_SCHEMA: dict[str, Any] = {
 # in front of the model, so we relax ``tool_choice`` from "required" to
 # "auto" — forcing a pick there just tempts the model to re-run the task
 # it already finished (the exact bug the reply-on-complete work fixes).
+# These MUST be distinctive enough that the persona's *explanation* of the
+# finished-task cue (data/persona/aiko_companion.txt teaches Aiko what the
+# block looks like, quoting "...reply now using the result below") does NOT
+# trip the detector. The persona's paraphrase stops at "result below"; the
+# real ``cue_render`` headers continue past it, so we key off that tail and
+# the exact success-header (with its trailing colon). Keep these in lockstep
+# with ``_REPLY_HEADER`` / ``_SUCCESS_HEADER`` in app.core.tasks.cue_render.
 _FINISHED_TASK_SENTINELS = (
-    "reply now using the result below",
-    "Tasks that finished since your last message",
+    "reply now using the result below. Do NOT start the task again",
+    "Tasks that finished since your last message:",
 )
 
 

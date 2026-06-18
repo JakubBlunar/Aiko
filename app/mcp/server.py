@@ -5296,5 +5296,115 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return json.dumps(captured["result"], indent=2, default=str)
         return json.dumps(captured or {"error": "no result emitted"}, indent=2, default=str)
 
+    @mcp.tool()
+    def list_external_mcp_servers() -> str:
+        """Status of every configured EXTERNAL MCP server (client side).
+
+        These are the servers the app connects OUT to (filesystem,
+        browser, …) to consume their tools — distinct from this debug
+        server. Returns one entry per configured server:
+        ``{id, name, transport, status, error, tool_count, tools}``.
+        ``status`` is one of ``connecting`` / ``connected`` / ``failed``
+        / ``disabled`` / ``stopped``. Empty list when the manager isn't
+        running (master switch off or no servers configured).
+        """
+        manager = getattr(session, "_external_mcp_manager", None)
+        if manager is None:
+            return json.dumps(
+                {"enabled": False, "reason": "no external MCP manager running"}
+            )
+        try:
+            return json.dumps(manager.server_status(), indent=2, default=str)
+        except Exception as exc:
+            return json.dumps({"error": f"status read failed: {exc}"})
+
+    @mcp.tool()
+    def list_external_mcp_tools() -> str:
+        """Every tool discovered across connected external MCP servers.
+
+        Returns a JSON list of
+        ``{server_id, name, qualified_name, description, input_schema}``.
+        ``qualified_name`` (``<server_id>__<tool_name>``) is the skill
+        name the background-workflow planner sees. Use this to confirm a
+        server's tools auto-registered into the background lane.
+        """
+        manager = getattr(session, "_external_mcp_manager", None)
+        if manager is None:
+            return json.dumps(
+                {"enabled": False, "reason": "no external MCP manager running"}
+            )
+        try:
+            tools = [
+                {
+                    "server_id": t.server_id,
+                    "name": t.name,
+                    "qualified_name": t.qualified_name,
+                    "description": t.description,
+                    "input_schema": t.input_schema,
+                }
+                for t in manager.list_available_tools()
+            ]
+            return json.dumps(tools, indent=2, default=str)
+        except Exception as exc:
+            return json.dumps({"error": f"tool list failed: {exc}"})
+
+    @mcp.tool()
+    def call_external_mcp_tool(
+        server_id: str, tool: str, args_json: str = "{}"
+    ) -> str:
+        """Call an external MCP tool end-to-end (no task row, no Aiko).
+
+        The fastest way to verify a server is reachable and a tool
+        works: dispatches straight through the manager, bypassing the
+        task orchestrator. ``args_json`` is a JSON object of the tool's
+        arguments. Returns the flattened text content + an ``is_error``
+        flag, or an error string.
+        """
+        manager = getattr(session, "_external_mcp_manager", None)
+        if manager is None:
+            return json.dumps(
+                {"enabled": False, "reason": "no external MCP manager running"}
+            )
+        try:
+            tool_args = json.loads(args_json or "{}")
+            if not isinstance(tool_args, dict):
+                return json.dumps({"error": "args_json must be a JSON object"})
+        except Exception as exc:
+            return json.dumps({"error": f"args_json parse failed: {exc}"})
+        try:
+            from app.core.tasks.handlers.mcp_tool import _flatten_content
+
+            result = manager.call_tool(server_id, tool, tool_args)
+            text, non_text = _flatten_content(result)
+            return json.dumps(
+                {
+                    "server_id": server_id,
+                    "tool": tool,
+                    "is_error": bool(getattr(result, "isError", False)),
+                    "non_text_blocks": non_text,
+                    "content": text,
+                },
+                indent=2,
+                default=str,
+            )
+        except Exception as exc:
+            return json.dumps({"error": f"call failed: {exc}"})
+
+    @mcp.tool()
+    def restart_external_mcp_server(server_id: str) -> str:
+        """Force one external MCP server to reconnect (re-reads tools).
+
+        Use after editing a server's config or when it dropped. Returns
+        ``{restarted: bool}``; ``false`` means the id is unknown or the
+        manager isn't running.
+        """
+        manager = getattr(session, "_external_mcp_manager", None)
+        if manager is None:
+            return json.dumps({"restarted": False, "reason": "manager not running"})
+        try:
+            return json.dumps({"restarted": bool(manager.restart(server_id))})
+        except Exception as exc:
+            return json.dumps({"error": f"restart failed: {exc}"})
+
     log.info("MCP server created (lean v1)")
     return mcp

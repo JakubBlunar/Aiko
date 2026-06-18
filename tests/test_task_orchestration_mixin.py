@@ -55,7 +55,6 @@ from app.core.infra.chat_database import ChatDatabase
 from app.core.infra.settings import load_settings
 from app.core.session.task_orchestration_mixin import TaskOrchestrationMixin
 from app.core.tasks import (
-    CUE_KIND_INPUT_NEEDED,
     CUE_KIND_RESULT,
     STATUS_AWAITING_INPUT,
     STATUS_RUNNING,
@@ -414,12 +413,12 @@ class HandlerDispatchTests(unittest.TestCase):
     def setUp(self) -> None:
         self.fx = _Fixture()
         self.addCleanup(self.fx.cleanup)
-        # Dial escalation windows up to ~hours so timers don't fire
-        # during these tests; we're only testing the park side.
-        self.host = self.fx.host(
-            task_completion_proactive_after_seconds=3600,
-            task_input_needed_proactive_after_seconds=3600,
-        )
+        self.host = self.fx.host()
+        # Hold the free-to-speak gate closed so an armed escalation
+        # timer re-arms instead of firing — the cue stays parked +
+        # pending for the park-side assertions below (the timed
+        # windows are gone; an open gate would fire immediately).
+        self.host._brain_loop_free_to_speak = lambda: False  # type: ignore[method-assign]
         self.host._init_task_orchestration()
         self.addCleanup(self.host._shutdown_task_orchestration)
 
@@ -465,20 +464,27 @@ class HandlerDispatchTests(unittest.TestCase):
         self.host._on_task_result_event("not-an-event")  # type: ignore[arg-type]
         self.assertEqual(self.host._task_cue_store.pending_count(), 0)
 
-    def test_task_input_needed_parks_cue(self) -> None:
+    def test_task_input_needed_is_ui_only(self) -> None:
+        # Input-needed is UI-only: the TaskStrip surfaces the
+        # awaiting_input chip via the orchestrator's listener, so the
+        # brain-loop handler parks no chat cue and arms no escalation.
         event = TaskInputNeededEvent(
             task_id="ask1",
             session_key="test-user",
             prompt="which file?",
             options=("a.txt", "b.txt"),
         )
-        self.host._on_task_input_needed_event(event)
-
-        cues = self.host._task_cue_store.snapshot()
-        self.assertEqual(len(cues), 1)
-        self.assertEqual(cues[0].kind, CUE_KIND_INPUT_NEEDED)
-        self.assertEqual(cues[0].summary, "which file?")
-        self.assertEqual(cues[0].options, ("a.txt", "b.txt"))
+        with self.assertLogs("app.session", level="INFO") as captured:
+            self.host._on_task_input_needed_event(event)
+        messages = [rec.getMessage() for rec in captured.records]
+        self.assertTrue(
+            any("task_input_needed UI-only" in m for m in messages),
+            f"expected UI-only INFO, got {messages!r}",
+        )
+        self.assertEqual(self.host._task_cue_store.pending_count(), 0)
+        self.assertEqual(
+            self.host._task_escalation_manager.pending_count(), 0,
+        )
 
     def test_task_input_needed_wrong_type_is_noop(self) -> None:
         self.host._on_task_input_needed_event("garbage")  # type: ignore[arg-type]
@@ -556,10 +562,7 @@ class ProactiveRoutingTests(unittest.TestCase):
     def setUp(self) -> None:
         self.fx = _Fixture()
         self.addCleanup(self.fx.cleanup)
-        self.host = self.fx.host(
-            task_completion_proactive_after_seconds=3600,
-            task_input_needed_proactive_after_seconds=3600,
-        )
+        self.host = self.fx.host()
         self.director = self._StubDirector()
         # Wire the director onto the host before init so the
         # mixin's lookup at handler-call time picks it up.
@@ -630,10 +633,7 @@ class EscalationEnqueueTests(unittest.TestCase):
     def setUp(self) -> None:
         self.fx = _Fixture()
         self.addCleanup(self.fx.cleanup)
-        self.host = self.fx.host(
-            task_completion_proactive_after_seconds=3600,
-            task_input_needed_proactive_after_seconds=3600,
-        )
+        self.host = self.fx.host()
         self.host._init_task_orchestration()
         self.addCleanup(self.host._shutdown_task_orchestration)
 
@@ -665,10 +665,10 @@ class DrainForRenderTests(unittest.TestCase):
     def setUp(self) -> None:
         self.fx = _Fixture()
         self.addCleanup(self.fx.cleanup)
-        self.host = self.fx.host(
-            task_completion_proactive_after_seconds=3600,
-            task_input_needed_proactive_after_seconds=3600,
-        )
+        self.host = self.fx.host()
+        # Gate closed so an armed cue stays pending (re-arming) for the
+        # pending-count assertion in ``test_drain_cancels_escalation``.
+        self.host._brain_loop_free_to_speak = lambda: False  # type: ignore[method-assign]
         self.host._init_task_orchestration()
         self.addCleanup(self.host._shutdown_task_orchestration)
 
@@ -735,17 +735,17 @@ class InlineResolutionSuppressionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.fx = _Fixture()
         self.addCleanup(self.fx.cleanup)
-        self.host = self.fx.host(
-            task_completion_proactive_after_seconds=3600,
-            task_input_needed_proactive_after_seconds=3600,
-        )
+        self.host = self.fx.host()
         self.host._init_task_orchestration()
         self.addCleanup(self.host._shutdown_task_orchestration)
 
     def test_inline_resolved_suppresses_park_and_escalation(self) -> None:
+        # mark_task_inline_resolved takes the integer row id (42); the
+        # brain event carries the 8-char hex render (_format_task_id(42)
+        # == "0000002a"). The consume path parses base-16 to match.
         self.host.mark_task_inline_resolved(42)
         self.host._on_task_result_event(
-            TaskResultEvent(task_id="42", session_key="test-user")
+            TaskResultEvent(task_id="0000002a", session_key="test-user")
         )
         self.assertEqual(self.host._task_cue_store.pending_count(), 0)
         self.assertEqual(
@@ -755,11 +755,11 @@ class InlineResolutionSuppressionTests(unittest.TestCase):
     def test_suppression_is_one_shot(self) -> None:
         self.host.mark_task_inline_resolved(42)
         self.host._on_task_result_event(
-            TaskResultEvent(task_id="42", session_key="test-user")
+            TaskResultEvent(task_id="0000002a", session_key="test-user")
         )
         # The id was consumed; a second result for the same id parks.
         self.host._on_task_result_event(
-            TaskResultEvent(task_id="42", session_key="test-user")
+            TaskResultEvent(task_id="0000002a", session_key="test-user")
         )
         self.assertEqual(self.host._task_cue_store.pending_count(), 1)
 
@@ -770,10 +770,7 @@ class ReplyOnCompleteRenderTests(unittest.TestCase):
     def setUp(self) -> None:
         self.fx = _Fixture()
         self.addCleanup(self.fx.cleanup)
-        self.host = self.fx.host(
-            task_completion_proactive_after_seconds=3600,
-            task_input_needed_proactive_after_seconds=3600,
-        )
+        self.host = self.fx.host()
         self.host._init_task_orchestration()
         self.addCleanup(self.host._shutdown_task_orchestration)
 
@@ -822,10 +819,6 @@ class ReplyOnCompleteRenderTests(unittest.TestCase):
         self.assertIn("found 3 matches", block)
         self.assertNotIn("reply now using the result below", block)
 
-    def test_reply_escalation_window_none_for_plain_task(self) -> None:
-        # No row / no metadata -> None (use default kind-derived window).
-        self.assertIsNone(self.host._reply_escalation_window("999"))
-
 
 class BootRecoveryTests(unittest.TestCase):
     """Verify recovery surfaces stranded ``running`` rows on init."""
@@ -850,9 +843,7 @@ class BootRecoveryTests(unittest.TestCase):
             args={"path": "b.txt"},
         )
 
-        host = self.fx.host(
-            task_completion_proactive_after_seconds=3600,
-        )
+        host = self.fx.host()
         host._init_task_orchestration()
         self.addCleanup(host._shutdown_task_orchestration)
 
@@ -876,9 +867,7 @@ class BootRecoveryTests(unittest.TestCase):
             task_id, prompt="which?", options=("a", "b"),
         )
 
-        host = self.fx.host(
-            task_completion_proactive_after_seconds=3600,
-        )
+        host = self.fx.host()
         host._init_task_orchestration()
         self.addCleanup(host._shutdown_task_orchestration)
 
@@ -901,9 +890,7 @@ class DebugSurfaceTests(unittest.TestCase):
         self.assertEqual(state, {"enabled": False})
 
     def test_enabled_dict_has_expected_keys(self) -> None:
-        host = self.fx.host(
-            task_completion_proactive_after_seconds=3600,
-        )
+        host = self.fx.host()
         host._init_task_orchestration()
         self.addCleanup(host._shutdown_task_orchestration)
 
@@ -921,9 +908,10 @@ class DebugSurfaceTests(unittest.TestCase):
             self.assertIn(key, state)
 
     def test_state_reflects_parked_cue(self) -> None:
-        host = self.fx.host(
-            task_completion_proactive_after_seconds=3600,
-        )
+        host = self.fx.host()
+        # Gate closed so the armed escalation stays pending for the
+        # ``escalation_pending == 1`` assertion below.
+        host._brain_loop_free_to_speak = lambda: False  # type: ignore[method-assign]
         host._init_task_orchestration()
         self.addCleanup(host._shutdown_task_orchestration)
 
@@ -960,11 +948,7 @@ class UserMessageRoutingTests(unittest.TestCase):
     def setUp(self) -> None:
         self.fx = _Fixture()
         self.addCleanup(self.fx.cleanup)
-        self.host = self.fx.host(
-            # Dial escalation windows way up so they don't interfere.
-            task_completion_proactive_after_seconds=3600,
-            task_input_needed_proactive_after_seconds=3600,
-        )
+        self.host = self.fx.host()
         self.host._init_task_orchestration()
         self.addCleanup(self.host._shutdown_task_orchestration)
 
@@ -1103,10 +1087,7 @@ class EnqueueUserMessageTests(unittest.TestCase):
     def setUp(self) -> None:
         self.fx = _Fixture()
         self.addCleanup(self.fx.cleanup)
-        self.host = self.fx.host(
-            task_completion_proactive_after_seconds=3600,
-            task_input_needed_proactive_after_seconds=3600,
-        )
+        self.host = self.fx.host()
         self.host._init_task_orchestration()
         self.addCleanup(self.host._shutdown_task_orchestration)
 
@@ -1238,10 +1219,7 @@ class StreamingCallbacksRoutingTests(unittest.TestCase):
     def setUp(self) -> None:
         self.fx = _Fixture()
         self.addCleanup(self.fx.cleanup)
-        self.host = self.fx.host(
-            task_completion_proactive_after_seconds=3600,
-            task_input_needed_proactive_after_seconds=3600,
-        )
+        self.host = self.fx.host()
         self.host._init_task_orchestration()
         self.addCleanup(self.host._shutdown_task_orchestration)
 
@@ -1316,10 +1294,7 @@ class EnqueueWithCallbacksTests(unittest.TestCase):
     def setUp(self) -> None:
         self.fx = _Fixture()
         self.addCleanup(self.fx.cleanup)
-        self.host = self.fx.host(
-            task_completion_proactive_after_seconds=3600,
-            task_input_needed_proactive_after_seconds=3600,
-        )
+        self.host = self.fx.host()
         self.host._init_task_orchestration()
         self.addCleanup(self.host._shutdown_task_orchestration)
 

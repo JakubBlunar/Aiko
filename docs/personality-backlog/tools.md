@@ -7,19 +7,23 @@
 **Motivation.** The task-approval framework ([`docs/task-approvals.md`](../task-approvals.md))
 ships UI-only: a destructive action (file overwrite today; shell exec /
 http post later) parks an `awaiting_input` approval that shows up as a
-clickable prompt in the TaskStrip, and Aiko stays silent (background
-children are `notify_aiko=False`, so `_on_task_input_needed_event` skips
-the chat cue). That's the simple, safe v1. The natural follow-up is to
-let Aiko *ask in her own voice* — "I'd like to overwrite your todo list,
-that okay?" — so approvals feel conversational instead of a popup, while
-the TaskStrip buttons stay as the fast path.
+clickable prompt in the TaskStrip, and Aiko stays silent. As of the
+timed-escalation retirement, `_on_task_input_needed_event` is
+unconditionally UI-only — it parks no chat cue and arms no escalation
+for **any** task; the TaskStrip's `awaiting_input` chip (fed by the
+orchestrator's input-needed listener) is the whole surface. That's the
+simple, safe v1. The natural follow-up is to let Aiko *ask in her own
+voice* — "I'd like to overwrite your todo list, that okay?" — so
+approvals feel conversational instead of a popup, while the TaskStrip
+buttons stay as the fast path.
 
 **Key files (existing).**
 - [`task_orchestration_mixin.py`](../../app/core/session/task_orchestration_mixin.py)
-  `_on_task_input_needed_event` / `_input_needed_should_notify` — the
-  gate that currently suppresses the spoken cue for `notify_aiko=False`
-  children. This is the single point to flip (per-capability, or per a
-  new `agent.spoken_approvals_enabled` flag).
+  `_on_task_input_needed_event` — currently logs `task_input_needed
+  UI-only` and returns without parking a cue. This is the single point
+  to extend for a spoken path (per-capability, or per a new
+  `agent.spoken_approvals_enabled` flag): re-introduce a `notify_aiko`
+  gate + chat-cue park here.
 - [`approval.py`](../../app/core/tasks/approval.py) `build_request` — the
   prompt copy Aiko would voice.
 - [`prompt_assembler.py`](../../app/core/session/prompt_assembler.py) /

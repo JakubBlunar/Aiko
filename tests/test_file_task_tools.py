@@ -620,11 +620,9 @@ class _AgentCfgGrace:
         *,
         grace: float = 3.0,
         reply_on_complete: bool = True,
-        when_free: float = 1.0,
     ) -> None:
         self.task_inline_grace_seconds = grace
         self.task_reply_on_complete_enabled = reply_on_complete
-        self.task_reply_when_free_seconds = when_free
 
 
 class _SettingsGrace:

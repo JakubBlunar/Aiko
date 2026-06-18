@@ -62,21 +62,23 @@ class StartWorkflowTool:
         return ToolSchema(
             name="start_workflow",
             description=(
-                "Start a MULTI-STEP background task to accomplish a goal "
-                "that needs several actions chained together. Reach for "
-                "this WHENEVER fulfilling a file/research request takes "
-                "more than one step — e.g. 'find "
-                "any new files and tell me what's in them', 'look up X "
-                "online and summarise it', 'search my notes for Y then "
-                "read the best match'. I'll plan the steps, run them in "
-                "the background (file search, file read, web search, …), "
-                "and report back with an aggregated answer when done — you "
-                "don't need to do the steps yourself. Use this instead of "
-                "start_file_search / start_file_read when ONE tool call "
-                "isn't enough. For a single direct file read or one quick "
-                "search, use the fast file tools instead. Returns JSON: "
-                "{task_id, status, note}. Tell the user you're on it; the "
-                "result arrives automatically — do NOT invent it."
+                "The way you actually DO things instead of just talking "
+                "about them: hand me any goal that needs action and I "
+                "plan it, run the steps in the background, and report back "
+                "when done. Reach for this for ANYTHING beyond a single "
+                "quick read/search — any multi-step work, and ESPECIALLY "
+                "anything that creates or changes something (writing, "
+                "creating, editing, or moving a file). You do NOT need to "
+                "know which tools exist or what the steps are — just "
+                "describe the goal fully in plain language and let me work "
+                "it out. The fast tools (start_file_search / "
+                "start_file_read) are only for a single direct read or "
+                "search you want answered in this same reply. Returns "
+                "JSON: {task_id, status, note}. CRITICAL: nothing has "
+                "happened yet when you call this — never tell the user "
+                "something was done / created / written / found until the "
+                "result comes back confirming it. Say you're on it and let "
+                "it arrive; do NOT invent the result."
             ),
             parameters={
                 "type": "object",

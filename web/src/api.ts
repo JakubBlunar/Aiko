@@ -20,6 +20,7 @@ import type {
   LlmTestConnectionResult,
   Memory,
   MemoriesResponse,
+  TaskChildrenResponse,
   TaskEventsResponse,
   TaskInputsResponse,
   TasksListResponse,
@@ -666,6 +667,7 @@ export const api = {
       limit?: number;
       offset?: number;
       status?: TaskStatus | null;
+      rootsOnly?: boolean;
     } = {},
   ) => {
     const limit = options.limit ?? 50;
@@ -675,10 +677,16 @@ export const api = {
       offset: String(offset),
     });
     if (options.status) params.set("status", options.status);
+    if (options.rootsOnly) params.set("roots_only", "true");
     return jsonFetch<TasksListResponse>(`/api/tasks?${params.toString()}`);
   },
   getTask: (id: number) =>
     jsonFetch<{ task: TaskSnapshot }>(`/api/tasks/${id}`),
+  /** Schema v17 task tree: the child tasks (workflow steps) of a
+   * parent, ascending by spawn order. Fetched lazily when the user
+   * expands a parent row in the Tasks tab. */
+  listTaskChildren: (id: number) =>
+    jsonFetch<TaskChildrenResponse>(`/api/tasks/${id}/children`),
   cancelTask: (id: number) =>
     jsonFetch<{ task_id: number; cancelled: boolean }>(
       `/api/tasks/${id}/cancel`,

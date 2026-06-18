@@ -128,6 +128,46 @@ describe("tasksView — applyTaskStarted", () => {
   });
 });
 
+describe("tasksView — child tasks stay out of the parents-only history", () => {
+  it("keeps a child task off historyOrder + total but still in the strip", () => {
+    useAssistantStore
+      .getState()
+      .applyTaskStarted(makeTask({ id: 11, parent_task_id: 7 }));
+    const view = useAssistantStore.getState().tasksView;
+    // Canonical map + strip projection still carry the row...
+    expect(view.tasksById[11]).toBeDefined();
+    expect(view.activeIds).toContain(11);
+    // ...but the parents-only tab list (and its pager) ignores it.
+    expect(view.historyOrder).toEqual([]);
+    expect(view.total).toBe(0);
+  });
+
+  it("keeps roots in the history while children are skipped (mixed fire)", () => {
+    useAssistantStore.getState().applyTaskStarted(makeTask({ id: 7 }));
+    useAssistantStore
+      .getState()
+      .applyTaskStarted(makeTask({ id: 8, parent_task_id: 7 }));
+    const view = useAssistantStore.getState().tasksView;
+    expect(view.historyOrder).toEqual([7]);
+    expect(view.total).toBe(1);
+  });
+
+  it("does NOT insert a completed child into the history page", () => {
+    resetTasksView({ page: 0 });
+    useAssistantStore.getState().applyTaskCompleted(
+      makeTask({
+        id: 14,
+        parent_task_id: 7,
+        status: "done",
+        completed_at: "2026-06-07T13:00:00Z",
+      }),
+    );
+    const view = useAssistantStore.getState().tasksView;
+    expect(view.historyOrder).not.toContain(14);
+    expect(view.tasksById[14]).toBeDefined();
+  });
+});
+
 describe("tasksView — applyTaskProgress", () => {
   it("merges progress + last_message onto an existing row", () => {
     useAssistantStore

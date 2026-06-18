@@ -26,7 +26,7 @@ five attributes the mixin reads:
   ``_turn_in_progress`` it feeds the free-to-speak predicate.
 * ``_settings`` — :class:`AppSettings`. The mixin reads
   ``agent.tasks_enabled`` / ``agent.tasks_per_user_cap`` /
-  ``agent.task_completion_proactive_after_seconds`` / etc.
+  ``agent.task_cue_max_age_seconds`` / etc.
 * ``_proactive`` — :class:`ProactiveDirector` (optional). When
   wired, the ``proactive`` brain-event handler calls
   :meth:`ProactiveDirector.notify_task_escalation` to dispatch a
@@ -38,8 +38,10 @@ five attributes the mixin reads:
 What chunk 5 wires (the minimum useful integration):
 
 * The brain loop starts at init, gated on ``agent.tasks_enabled``.
-* Handlers for ``task_result`` + ``task_input_needed`` park cues on
-  :class:`TaskCueStore` and arm escalation timers.
+* The ``task_result`` handler routes through the C6 report decision,
+  parking a cue on :class:`TaskCueStore` and arming the escalation
+  timer (fires when Aiko is free) for ``surface_now`` / floor tasks.
+  ``task_input_needed`` is UI-only (the TaskStrip surfaces it).
 * Handler for ``task_progress`` is registered but a no-op — chunks
   7+ will plug in the WS broadcast.
 * Handler for ``proactive`` (with ``source=task_escalation``) is
@@ -84,7 +86,6 @@ from app.core.brain import (
     UserMessageEvent,
 )
 from app.core.tasks import (
-    CUE_KIND_INPUT_NEEDED,
     CUE_KIND_RESULT,
     EscalationConfig,
     TaskCleanupWorker,
@@ -208,6 +209,7 @@ class TaskOrchestrationMixin:
             self._task_orchestrator = None
             self._task_cue_store = None
             self._task_escalation_manager = None
+            self._external_mcp_manager = None
             log.info("task-orchestration init: disabled (agent.tasks_enabled=False)")
             return
 
@@ -289,14 +291,7 @@ class TaskOrchestrationMixin:
             free_to_speak=self._brain_loop_free_to_speak,
             last_user_message_at=self._task_last_user_message_at,
             enqueue_proactive=self._task_enqueue_escalation_proactive,
-            config=EscalationConfig(
-                completion_after_seconds=float(
-                    getattr(agent, "task_completion_proactive_after_seconds", 45)
-                ),
-                input_needed_after_seconds=float(
-                    getattr(agent, "task_input_needed_proactive_after_seconds", 20)
-                ),
-            ),
+            config=EscalationConfig(),
         )
 
         # 3b. Register built-in task handlers. Chunk 9 ships the
@@ -388,11 +383,8 @@ class TaskOrchestrationMixin:
         self._task_orchestration_inited = True
         self._task_orchestration_enabled = True
         log.info(
-            "task-orchestration ready: cap=%d completion_after_s=%.0f "
-            "input_after_s=%.0f",
+            "task-orchestration ready: cap=%d (escalation fires when free)",
             int(getattr(agent, "tasks_per_user_cap", 8)),
-            float(getattr(agent, "task_completion_proactive_after_seconds", 45)),
-            float(getattr(agent, "task_input_needed_proactive_after_seconds", 20)),
         )
 
     def _register_builtin_task_handlers(self, agent: Any) -> None:
@@ -683,6 +675,59 @@ class TaskOrchestrationMixin:
                 exc,
             )
             self._workflow_skill_registry = None
+            return
+
+        # External MCP servers → background-lane skills. Gated on the
+        # master switch + a non-empty server list; only meaningful when
+        # the workflow handler above is present (MCP tools are surfaced
+        # to the background planner only, never to the brain's fast tools).
+        self._init_external_mcp(agent, skill_registry)
+
+    def _init_external_mcp(self, agent: Any, skill_registry: Any) -> None:
+        """Build + start the external MCP manager and register its skills.
+
+        Best-effort: any failure here downgrades to "no MCP tools" and
+        leaves the built-in workflow skills fully working. The manager's
+        ``tools_changed`` callback re-runs ``register_mcp_skills`` so a
+        server that finishes connecting after boot (``npx`` cold start,
+        slow handshake) lands its tools without a restart.
+        """
+        self._external_mcp_manager = None
+        if not bool(getattr(agent, "mcp_clients_enabled", True)):
+            return
+        mcp_clients = getattr(self._settings, "mcp_clients", None)  # type: ignore[attr-defined]
+        servers = list(getattr(mcp_clients, "servers", []) or [])
+        enabled_servers = [s for s in servers if getattr(s, "enabled", True)]
+        if not enabled_servers:
+            log.debug("external-mcp: no enabled servers configured")
+            return
+        try:
+            from app.core.tasks.handlers.mcp_tool import McpToolHandler
+            from app.core.tasks.workflow.mcp_skills import register_mcp_skills
+            from app.mcp.client.manager import ExternalMcpManager
+
+            manager = ExternalMcpManager(enabled_servers)
+            # Re-register skills whenever a server's catalogue changes
+            # (initial connect or reconnect). Fired on the manager loop
+            # thread; ``register`` is dict-write cheap + GIL-atomic.
+            manager.set_tools_changed_callback(
+                lambda: register_mcp_skills(skill_registry, manager)
+            )
+            self._task_orchestrator.register_handler(
+                McpToolHandler(manager=manager)
+            )
+            manager.start()
+            # Best-effort immediate pass (usually 0 — connect is async);
+            # the callback above lands the real catalogue once connected.
+            register_mcp_skills(skill_registry, manager)
+            self._external_mcp_manager = manager
+            log.info(
+                "external-mcp: manager started servers=%d",
+                len(enabled_servers),
+            )
+        except Exception as exc:
+            log.warning("external-mcp: manager init failed: %r", exc)
+            self._external_mcp_manager = None
 
     def _record_workflow_capability_gap(self, gap: dict[str, Any]) -> None:
         """Sink for goal-workflow capability gaps (bounded ring).
@@ -818,6 +863,15 @@ class TaskOrchestrationMixin:
                 log.debug(
                     "task-orchestrator shutdown failed", exc_info=True
                 )
+        # External MCP manager last: closes sessions + terminates the
+        # child processes (stdio servers). After the orchestrator stops
+        # so no handler thread is mid-``call_tool``.
+        if getattr(self, "_external_mcp_manager", None) is not None:
+            try:
+                self._external_mcp_manager.stop()
+            except Exception:
+                log.debug("external-mcp manager stop failed", exc_info=True)
+            self._external_mcp_manager = None
         self._task_orchestration_inited = False
         log.info("task-orchestration shutdown: done")
 
@@ -943,7 +997,11 @@ class TaskOrchestrationMixin:
         if orch is None:
             return None
         try:
-            row = orch.get(int(str(cue.task_id)))
+            # Event/cue task ids are the 8-char hex render from
+            # TaskOrchestrator._format_task_id (e.g. "0000000a" for row
+            # 10) — parse base-16, NOT base-10. Base-10 silently worked
+            # for ids 1-9 and broke at 10 (first hex letter).
+            row = orch.get(int(str(cue.task_id), 16))
         except Exception:
             return None
         meta = getattr(row, "metadata", None) if row is not None else None
@@ -989,36 +1047,13 @@ class TaskOrchestrationMixin:
         if not ids:
             return False
         try:
-            tid = int(str(task_id))
+            tid = int(str(task_id), 16)  # hex event id -> row id (see _format_task_id)
         except (TypeError, ValueError):
             return False
         if tid in ids:
             ids.discard(tid)
             return True
         return False
-
-    def _reply_escalation_window(self, task_id: Any) -> float | None:
-        """Near-zero escalation window for ``reply_when_done`` tasks.
-
-        Returns ``None`` (use the default kind-derived window) for
-        ordinary tasks, or ``agent.task_reply_when_free_seconds`` for
-        tasks the spawning tool flagged ``reply_when_done`` in metadata.
-        """
-        orch = getattr(self, "_task_orchestrator", None)
-        if orch is None:
-            return None
-        try:
-            row = orch.get(int(str(task_id)))
-        except Exception:
-            return None
-        meta = getattr(row, "metadata", None) if row is not None else None
-        if not (isinstance(meta, dict) and meta.get("reply_when_done")):
-            return None
-        agent = self._settings.agent  # type: ignore[attr-defined]
-        try:
-            return max(0.0, float(getattr(agent, "task_reply_when_free_seconds", 1.0)))
-        except (TypeError, ValueError):
-            return 1.0
 
     # ── internal: brain-loop predicates + helpers ───────────────────
 
@@ -1071,12 +1106,25 @@ class TaskOrchestrationMixin:
     def _task_session_key_for_user(self, user_id: str) -> str:
         """Resolve the session key for a task's user.
 
-        The :class:`TaskOrchestrator` uses this when emitting
-        events so the brain loop's downstream consumers know which
-        session the task belongs to. In phase 1 a session is just
-        ``user_id`` — multi-user installs slot it into the
-        existing session key scheme.
+        The :class:`TaskOrchestrator` uses this when emitting events so
+        the brain loop's downstream consumers know which session the
+        task belongs to. The active chat session key is
+        ``"{user_id}:{session_id}"`` (see ``SessionController.session_key``),
+        NOT bare ``user_id`` — a finished-task proactive turn dispatched
+        against bare ``user_id`` lands on an empty history, so
+        ``ProactiveDirector._run_typed`` reads zero messages and silently
+        no-ops ("no history yet" at DEBUG). When the task's user matches
+        the controller's active user (the single-user install case) we
+        return the live session key; otherwise fall back to bare
+        ``user_id`` as a best-effort default.
         """
+        try:
+            if str(getattr(self, "_user_id", "") or "") == str(user_id):
+                key = self.session_key
+                if key:
+                    return str(key)
+        except Exception:
+            log.debug("task session-key resolve failed", exc_info=True)
         return str(user_id)
 
     def _task_enqueue_escalation_proactive(
@@ -1428,8 +1476,11 @@ class TaskOrchestrationMixin:
     def _on_task_result_event(self, event: Any) -> None:
         """Handle a ``task_result`` brain event.
 
-        Parks the result as a cue on :class:`TaskCueStore`, arms
-        the escalation timer (45 s by default), and is done.
+        Routes the finished task through the C6 report decision
+        (:meth:`_dispatch_task_report`): ``surface_now`` parks a cue +
+        arms the escalation timer so it fires the moment Aiko is free,
+        ``park`` parks silently for the next natural turn, ``drop`` does
+        nothing. Floor (user-requested) tasks always surface.
 
         Cues for ``notify_aiko=False`` tasks (internal Aiko-brain
         work) silently drop — they get persisted in the store but
@@ -1532,12 +1583,13 @@ class TaskOrchestrationMixin:
                 summary=event.result_summary,
                 error=event.error,
             )
-            # ``reply_when_done`` tasks fire as soon as Aiko is free to
-            # speak (near-zero window); everything else keeps the passive
-            # completion window (45 s) and waits for a natural turn.
-            escalation.arm(
-                cue, after_seconds=self._reply_escalation_window(event.task_id),
-            )
+            # Floor (user-requested) tasks always report: arm so the cue
+            # surfaces the moment Aiko is free. When the decision is
+            # disabled / has no worker, a non-floor (self-initiated) task
+            # parks WITHOUT arming — it folds into the next natural turn
+            # rather than interrupting off the back of a missing verdict.
+            if is_floor:
+                escalation.arm(cue)
             if enabled and worker_available:
                 # Floor stays forced; run the worker pass async to
                 # shadow-log + enrich the cue with the drafted angle.
@@ -1567,7 +1619,7 @@ class TaskOrchestrationMixin:
         if orch is None:
             return PROVENANCE_USER, True
         try:
-            row = orch.get(int(str(task_id)))
+            row = orch.get(int(str(task_id), 16))
         except Exception:
             row = None
         if row is None:
@@ -1694,9 +1746,8 @@ class TaskOrchestrationMixin:
             angle=verdict.angle if angle_enabled else "",
         )
         if verdict.action == ACTION_SURFACE:
-            escalation.arm(
-                cue, after_seconds=self._reply_escalation_window(event.task_id),
-            )
+            # surface_now: fire the moment Aiko is free (no fixed window).
+            escalation.arm(cue)
         # ACTION_PARK: parked above, no escalation -> folds into the
         # next natural turn via drain_for_render.
 
@@ -1706,7 +1757,7 @@ class TaskOrchestrationMixin:
         if orch is None:
             return ""
         try:
-            row = orch.get(int(str(task_id)))
+            row = orch.get(int(str(task_id), 16))
         except Exception:
             return ""
         meta = getattr(row, "metadata", None) if row is not None else None
@@ -1782,11 +1833,20 @@ class TaskOrchestrationMixin:
         )
 
     def _on_task_input_needed_event(self, event: Any) -> None:
-        """Handle a ``task_input_needed`` brain event.
+        """Handle a ``task_input_needed`` brain event — UI-only.
 
-        Same shape as :meth:`_on_task_result_event` but uses the
-        shorter escalation window (20 s by default) since a
-        blocked task is more pressing than a finished one.
+        A task that needs clarifying input (e.g. the file_read
+        multi-root disambiguation, or a workflow's destructive-write
+        approval) surfaces as a clickable ``awaiting_input`` chip in the
+        TaskStrip — wired by the orchestrator's input-needed listener
+        straight to the WS ``tasksView`` slice. The chip is non-terminal,
+        so it stays visible until the user answers or cancels: they can
+        resolve it whenever they like.
+
+        Aiko does NOT speak the question. Verbal in-conversation asking
+        is a deferred, opt-in addition (backlog); for now this handler
+        deliberately parks no chat cue and arms no escalation timer — the
+        strip owns the whole surface.
         """
         if not isinstance(event, TaskInputNeededEvent):
             log.debug(
@@ -1794,63 +1854,10 @@ class TaskOrchestrationMixin:
                 type(event).__name__,
             )
             return
-        # UI-only path for background children (``notify_aiko=False``):
-        # the TaskStrip already surfaces the awaiting-input row via the
-        # orchestrator's input-needed listener, so a destructive-write
-        # approval (and any other background-child question) shows up as
-        # a clickable prompt in the strip WITHOUT Aiko speaking it. We
-        # skip parking the chat cue + arming escalation for these. A
-        # spoken approval surface is a future, opt-in addition (backlog).
-        if not self._input_needed_should_notify(event.task_id):
-            log.info(
-                "task_input_needed UI-only (background task, not spoken): "
-                "task=%s",
-                event.task_id,
-            )
-            return
-        cue_store = getattr(self, "_task_cue_store", None)
-        escalation = getattr(self, "_task_escalation_manager", None)
-        if cue_store is None or escalation is None:
-            return
-        cue = cue_store.park(
-            task_id=event.task_id,
-            session_key=event.session_key,
-            kind=CUE_KIND_INPUT_NEEDED,
-            title="",  # TaskInputNeededEvent doesn't carry a title yet
-            summary=event.prompt,
-            options=event.options,
+        log.info(
+            "task_input_needed UI-only (TaskStrip surfaces it): task=%s",
+            event.task_id,
         )
-        escalation.arm(cue)
-
-    def _input_needed_should_notify(self, task_id: Any) -> bool:
-        """Whether an awaiting-input task should make Aiko speak.
-
-        ``True`` (the default) for foreground / Aiko-initiated tasks
-        whose ``notify_aiko`` flag is set — these park a chat cue so
-        Aiko surfaces the question naturally (the existing file_read
-        multi-root disambiguation). ``False`` for background children
-        (``notify_aiko=False``, e.g. a workflow's destructive-write
-        approval) — those are UI-only via the TaskStrip.
-
-        Best-effort: any lookup failure reads as ``True`` so we never
-        accidentally swallow a question Aiko ought to ask. The event's
-        ``task_id`` is the 8-char hex render (see ``_format_task_id``),
-        so we parse base-16 before the integer row lookup.
-        """
-        orch = getattr(self, "_task_orchestrator", None)
-        if orch is None:
-            return True
-        try:
-            tid = int(str(task_id), 16)
-        except (TypeError, ValueError):
-            return True
-        try:
-            row = orch.get(tid)
-        except Exception:
-            return True
-        if row is None:
-            return True
-        return bool(getattr(row, "notify_aiko", True))
 
     def _on_task_progress_event(self, event: Any) -> None:
         """Handle a ``task_progress`` brain event.

@@ -384,3 +384,46 @@ describe("TasksTab — callback invocation", () => {
     expect(spy).not.toHaveBeenCalled();
   });
 });
+
+describe("TasksTab — expandable detail + nested children", () => {
+  it("renders a 'details' toggle on every row", () => {
+    const html = renderTab({
+      tasks: [makeTask({ id: 7, status: "running" })],
+      total: 1,
+    });
+    expect(html).toContain(">details<");
+  });
+
+  it("does not render the detail panel (children/events) while collapsed", () => {
+    // SSR markup = collapsed state. The lazy children fetch + event
+    // timeline only mount once the row is expanded, so neither the
+    // "steps" header nor the parent events button is in the static
+    // markup.
+    const html = renderTab({
+      tasks: [makeTask({ id: 7, status: "running" })],
+      total: 1,
+    });
+    expect(html).not.toContain("steps");
+    expect(html).not.toContain(">events<");
+  });
+
+  it("lazily fetches a parent's children via api.listTaskChildren (source)", () => {
+    expect(tabSource).toMatch(/listTaskChildren\(task\.id\)/);
+  });
+
+  it("renders the full-text detail + event JSON with wrapping, not truncation (source)", () => {
+    // The expanded detail uses ``whitespace-pre-wrap break-words``
+    // for the primary content and ``break-all`` for event JSON so
+    // long paths / summaries are fully readable.
+    expect(tabSource).toMatch(/whitespace-pre-wrap break-words/);
+    expect(tabSource).toMatch(/break-all/);
+  });
+
+  it("routes child cancel/answer through the same props (source)", () => {
+    // ChildTaskRow + AwaitingInputControls reuse the parent's
+    // onCancel / onAnswer contract so answering a child's question
+    // works identically to a parent's.
+    expect(tabSource).toMatch(/onCancel\(child\.id\)/);
+    expect(tabSource).toMatch(/AwaitingInputControls/);
+  });
+});

@@ -1400,17 +1400,6 @@ class AgentSettings:
     # the consumer thread wakes more often on idle. Clamped to
     # ``[10, 5000]``. Default 100 = a tenth of a second.
     brain_loop_deferred_grace_ms: int = 100
-    # Seconds of silence after a ``task_result`` cue parks before the
-    # escalation timer enqueues a ``ProactiveEvent`` (Aiko speaks
-    # unprompted to surface the completion). Tuning up = Aiko stays
-    # quieter for longer, lets the user pivot. Tuning down = task
-    # completions surface as proactive turns more aggressively. Clamped
-    # to ``[5, 600]``.
-    task_completion_proactive_after_seconds: int = 45
-    # Shorter sibling of the above for ``task_input_needed`` cues — a
-    # blocked task is more pressing than a finished one. Default
-    # ``20`` seconds. Clamped to ``[5, 600]``.
-    task_input_needed_proactive_after_seconds: int = 20
     # Wall-clock age (in seconds) above which a parked cue is
     # silently dropped on the next dequeue / sweep. Protects against
     # awkward stale-context messages ("the YouTube tab I opened 3
@@ -1425,9 +1414,9 @@ class AgentSettings:
     # ── Duration-hybrid task replies (fold-fast + reply-on-complete) ──
     # Master switch for the reply-on-complete behaviour. When True the
     # ``start_file_*`` tools fold a fast result into the same turn and
-    # flag slower tasks ``reply_when_done`` so their result surfaces as
-    # a proactive reply the moment Aiko is free. Off = legacy behaviour
-    # (terse cue + 45 s completion escalation only).
+    # flag slower tasks ``reply_when_done`` so their result is rendered
+    # in full (not a terse bullet) when it surfaces. Off = legacy
+    # behaviour (terse cue only, no inline fast fold).
     task_reply_on_complete_enabled: bool = True
     # How long a ``start_file_read`` / ``start_file_search`` call blocks
     # waiting for the handler to finish so the result can be folded into
@@ -1435,11 +1424,6 @@ class AgentSettings:
     # that don't finish in this window fall back to the reply-on-complete
     # path. Clamped to ``[0, 30]``; 0 disables the inline fast path.
     task_inline_grace_seconds: float = 3.0
-    # Escalation window for ``reply_when_done`` tasks — near-zero so the
-    # result surfaces as a proactive reply as soon as the free-to-speak
-    # gate clears, rather than waiting out the full completion window.
-    # Clamped to ``[0, 60]``.
-    task_reply_when_free_seconds: float = 1.0
     # ── C6: worker-model task-report decision ──────────────────────────
     # Master switch for the worker-LLM decision that runs when a
     # reportable background task finishes. Decides surface_now / park /
@@ -1506,6 +1490,13 @@ class AgentSettings:
         ".go", ".rs", ".c", ".h", ".cpp", ".hpp", ".java", ".kt",
         ".rb", ".lua",
     )
+    # ── External MCP-server clients ────────────────────────────────────
+    # Master switch for connecting to the external MCP servers configured
+    # under ``mcp_clients.servers``. When off (or no servers configured),
+    # the manager never starts and no MCP tools are registered. MCP tools
+    # are surfaced only to the background-worker (workflow planner) lane,
+    # so this is only meaningful when ``workflow_enabled`` is also true.
+    mcp_clients_enabled: bool = True
     # ── Nested goal workflows ──────────────────────────────────────────
     # Master switch for the ``GoalWorkflowHandler`` + ``start_workflow``
     # brain tool. When off, ``start_workflow`` is not registered and the
@@ -1855,6 +1846,48 @@ class AgentSettings:
 class McpServerSettings:
     enabled: bool = True
     port: int = 6274
+
+
+@dataclass(slots=True)
+class ExternalMcpServer:
+    """One configured EXTERNAL MCP server the app connects to as a client.
+
+    Distinct from :class:`McpServerSettings` (which is the embedded MCP
+    server the app *exposes* for debugging). These rows describe servers
+    the app launches/connects to in order to *consume* their tools, which
+    are surfaced only to the background-worker (workflow planner) lane.
+
+    ``transport``:
+      * ``"stdio"`` — launch ``command`` + ``args`` as a child process and
+        speak MCP over its stdin/stdout (the common case: ``npx -y
+        @modelcontextprotocol/server-filesystem <dir>``).
+      * ``"sse"`` — connect to an already-running server at ``url``.
+
+    ``env`` values support ``${ENV:NAME}`` indirection, resolved from the
+    process environment at launch (so a token can live in an env var
+    instead of in ``config/user.json``). ``expose_tools`` is an optional
+    allow-list of tool names to register for the planner; empty exposes
+    every tool the server advertises.
+    """
+
+    id: str
+    name: str
+    transport: str = "stdio"
+    command: str = ""
+    args: tuple[str, ...] = ()
+    env: dict[str, str] = field(default_factory=dict)
+    url: str = ""
+    enabled: bool = True
+    autostart: bool = True
+    timeout_seconds: float = 30.0
+    expose_tools: tuple[str, ...] = ()
+
+
+@dataclass(slots=True)
+class ExternalMcpSettings:
+    """Catalogue of external MCP servers to connect to as a client."""
+
+    servers: list[ExternalMcpServer] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -2540,6 +2573,10 @@ class AppSettings:
     logging: LoggingSettings = field(default_factory=LoggingSettings)
     agent: AgentSettings = field(default_factory=AgentSettings)
     mcp_server: McpServerSettings = field(default_factory=McpServerSettings)
+    # External MCP servers the app connects to as a client (their tools
+    # are surfaced only to the background-worker lane). Distinct from
+    # ``mcp_server`` (the embedded debug server the app exposes).
+    mcp_clients: ExternalMcpSettings = field(default_factory=ExternalMcpSettings)
     web_server: WebServerSettings = field(default_factory=WebServerSettings)
     memory: MemorySettings = field(default_factory=MemorySettings)
     chat_llm: ChatLlmSettings = field(default_factory=ChatLlmSettings)
@@ -3054,6 +3091,88 @@ def _parse_llm_route(payload: dict[str, Any]) -> LlmRoute | None:
         max_tokens=max_tokens,
         temperature=temperature,
     )
+
+
+def _parse_external_mcp_server(payload: dict[str, Any]) -> ExternalMcpServer | None:
+    """Validate one entry from ``mcp_clients.servers``.
+
+    Returns ``None`` for malformed rows (missing id, or a stdio server
+    with no command, or an sse server with no url) so a single bad entry
+    never aborts the whole load. Mirrors :func:`_parse_llm_provider`.
+    """
+    if not isinstance(payload, dict):
+        return None
+    server_id = str(payload.get("id", "") or "").strip()
+    if not server_id:
+        return None
+    transport = str(payload.get("transport", "stdio") or "stdio").strip().lower()
+    if transport not in {"stdio", "sse"}:
+        transport = "stdio"
+    command = str(payload.get("command", "") or "").strip()
+    url = str(payload.get("url", "") or "").strip()
+    if transport == "stdio" and not command:
+        log.warning("mcp_clients: stdio server %r has no command, skipped", server_id)
+        return None
+    if transport == "sse" and not url:
+        log.warning("mcp_clients: sse server %r has no url, skipped", server_id)
+        return None
+    args_raw = payload.get("args") or []
+    args = tuple(str(a) for a in args_raw) if isinstance(args_raw, (list, tuple)) else ()
+    env_raw = payload.get("env") or {}
+    if isinstance(env_raw, dict):
+        env = {
+            str(k).strip(): str(v)
+            for k, v in env_raw.items()
+            if str(k).strip()
+        }
+    else:
+        env = {}
+    expose_raw = payload.get("expose_tools") or []
+    expose_tools = (
+        tuple(str(t).strip() for t in expose_raw if str(t).strip())
+        if isinstance(expose_raw, (list, tuple))
+        else ()
+    )
+    timeout_raw = payload.get("timeout_seconds", 30.0)
+    try:
+        timeout_seconds = max(1.0, float(timeout_raw))
+    except (TypeError, ValueError):
+        timeout_seconds = 30.0
+    return ExternalMcpServer(
+        id=server_id,
+        name=str(payload.get("name", "") or "").strip() or server_id,
+        transport=transport,
+        command=command,
+        args=args,
+        env=env,
+        url=url,
+        enabled=bool(payload.get("enabled", True)),
+        autostart=bool(payload.get("autostart", True)),
+        timeout_seconds=timeout_seconds,
+        expose_tools=expose_tools,
+    )
+
+
+def _parse_external_mcp(raw: Any) -> ExternalMcpSettings:
+    """Validate the ``mcp_clients`` config block.
+
+    Drops malformed rows and skips duplicate ids; returns an empty
+    catalogue when the block is missing/malformed.
+    """
+    if not isinstance(raw, dict):
+        return ExternalMcpSettings()
+    servers: list[ExternalMcpServer] = []
+    seen_ids: set[str] = set()
+    for entry in raw.get("servers") or []:
+        parsed = _parse_external_mcp_server(entry)
+        if parsed is None:
+            continue
+        if parsed.id in seen_ids:
+            log.warning("mcp_clients: duplicate server id %r skipped", parsed.id)
+            continue
+        seen_ids.add(parsed.id)
+        servers.append(parsed)
+    return ExternalMcpSettings(servers=servers)
 
 
 def _parse_llm(raw: Any) -> LlmSettings:
@@ -4054,28 +4173,6 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                     int(agent_raw.get("brain_loop_deferred_grace_ms", 100)),
                 ),
             ),
-            task_completion_proactive_after_seconds=max(
-                5,
-                min(
-                    600,
-                    int(
-                        agent_raw.get(
-                            "task_completion_proactive_after_seconds", 45,
-                        ),
-                    ),
-                ),
-            ),
-            task_input_needed_proactive_after_seconds=max(
-                5,
-                min(
-                    600,
-                    int(
-                        agent_raw.get(
-                            "task_input_needed_proactive_after_seconds", 20,
-                        ),
-                    ),
-                ),
-            ),
             task_cue_max_age_seconds=max(
                 60,
                 min(
@@ -4100,13 +4197,6 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                 min(
                     30.0,
                     float(agent_raw.get("task_inline_grace_seconds", 3.0)),
-                ),
-            ),
-            task_reply_when_free_seconds=max(
-                0.0,
-                min(
-                    60.0,
-                    float(agent_raw.get("task_reply_when_free_seconds", 1.0)),
                 ),
             ),
             task_report_decision_enabled=bool(
@@ -4160,6 +4250,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                     ),
                 )
             ),
+            mcp_clients_enabled=bool(agent_raw.get("mcp_clients_enabled", True)),
             workflow_enabled=bool(agent_raw.get("workflow_enabled", True)),
             workflow_max_iterations=max(
                 1, min(30, int(agent_raw.get("workflow_max_iterations", 6)))
@@ -4440,6 +4531,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             enabled=bool(mcp_server_raw.get("enabled", True)),
             port=max(1, int(mcp_server_raw.get("port", 6274))),
         ),
+        mcp_clients=_parse_external_mcp(raw.get("mcp_clients", {})),
         web_server=WebServerSettings(
             enabled=bool(web_server_raw.get("enabled", True)),
             host=str(web_server_raw.get("host", "127.0.0.1") or "127.0.0.1").strip() or "127.0.0.1",

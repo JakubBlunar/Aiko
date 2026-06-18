@@ -13,10 +13,13 @@ Event kinds and their producers (phase 1):
   wins; bypasses the free-to-speak gate (barge-in is real intent).
 * :class:`TaskInputNeededEvent` — emitted by
   :class:`TaskOrchestrator` when a handler returns
-  ``TaskInputNeeded``. Parked as a cue, escalates to proactive after
-  ``agent.task_input_needed_proactive_after_seconds``.
+  ``TaskInputNeeded``. **UI-only** — surfaces as an ``awaiting_input``
+  chip in the TaskStrip; Aiko does not speak the question (verbal
+  asking is a deferred, opt-in addition).
 * :class:`TaskResultEvent` — emitted by :class:`TaskOrchestrator` on
-  ``done`` / ``failed`` / ``cancelled``. Parked + may escalate.
+  ``done`` / ``failed`` / ``cancelled``. The C6 report decision picks
+  ``surface_now`` (fire when Aiko is free) / ``park`` (next natural
+  turn) / ``drop``; floor (user-requested) tasks always surface.
 * :class:`ProactiveEvent` — voice silence timer, typed silence timer,
   and escalated task cues all converge here.
 * :class:`SpeakingWindowJobEvent` — post-turn jobs queued via
@@ -186,11 +189,12 @@ class UserMessageEvent:
 class TaskInputNeededEvent:
     """A running task is blocked waiting for an answer.
 
-    Parked as a cue on ``SessionController._pending_task_cues``. The
-    next ``user_message`` for this user surfaces the cue in the T6
-    prompt block so Aiko can ask the question naturally. After
-    ``agent.task_input_needed_proactive_after_seconds`` of silence the
-    cue escalates to a :class:`ProactiveEvent`.
+    UI-only: the orchestrator's input-needed listener surfaces the
+    blocked task as a non-terminal ``awaiting_input`` chip in the
+    TaskStrip, which stays visible until the user answers or cancels.
+    The brain-loop handler parks no chat cue and arms no escalation —
+    Aiko does not speak the question (verbal in-conversation asking is
+    a deferred, opt-in addition).
     """
 
     kind: ClassVar[str] = KIND_TASK_INPUT_NEEDED

@@ -2214,8 +2214,6 @@ class TaskOrchestrationSettingsTests(unittest.TestCase):
         "tasks_resume_on_boot",
         "tasks_running_block_enabled",
         "brain_loop_deferred_grace_ms",
-        "task_completion_proactive_after_seconds",
-        "task_input_needed_proactive_after_seconds",
         "task_cue_max_age_seconds",
         "task_cue_max_aggregated",
     )
@@ -2258,27 +2256,22 @@ class TaskOrchestrationSettingsTests(unittest.TestCase):
         self.assertTrue(a.tasks_resume_on_boot)
         self.assertTrue(a.tasks_running_block_enabled)
         self.assertEqual(a.brain_loop_deferred_grace_ms, 100)
-        self.assertEqual(a.task_completion_proactive_after_seconds, 45)
-        self.assertEqual(a.task_input_needed_proactive_after_seconds, 20)
         self.assertEqual(a.task_cue_max_age_seconds, 1800)
         self.assertEqual(a.task_cue_max_aggregated, 5)
         # Duration-hybrid task reply defaults.
         self.assertTrue(a.task_reply_on_complete_enabled)
         self.assertEqual(a.task_inline_grace_seconds, 3.0)
-        self.assertEqual(a.task_reply_when_free_seconds, 1.0)
 
     def test_reply_on_complete_overrides_and_clamps(self) -> None:
         path = self._write_config(
             agent_extra={
                 "task_reply_on_complete_enabled": False,
                 "task_inline_grace_seconds": 999.0,  # clamp to 30
-                "task_reply_when_free_seconds": -5.0,  # clamp to 0
             },
         )
         a = load_settings(config_path=path).agent
         self.assertFalse(a.task_reply_on_complete_enabled)
         self.assertEqual(a.task_inline_grace_seconds, 30.0)
-        self.assertEqual(a.task_reply_when_free_seconds, 0.0)
 
     def test_overrides_round_trip(self) -> None:
         path = self._write_config(
@@ -2288,8 +2281,6 @@ class TaskOrchestrationSettingsTests(unittest.TestCase):
                 "tasks_resume_on_boot": False,
                 "tasks_running_block_enabled": False,
                 "brain_loop_deferred_grace_ms": 250,
-                "task_completion_proactive_after_seconds": 90,
-                "task_input_needed_proactive_after_seconds": 30,
                 "task_cue_max_age_seconds": 3600,
                 "task_cue_max_aggregated": 10,
             },
@@ -2300,8 +2291,6 @@ class TaskOrchestrationSettingsTests(unittest.TestCase):
         self.assertFalse(a.tasks_resume_on_boot)
         self.assertFalse(a.tasks_running_block_enabled)
         self.assertEqual(a.brain_loop_deferred_grace_ms, 250)
-        self.assertEqual(a.task_completion_proactive_after_seconds, 90)
-        self.assertEqual(a.task_input_needed_proactive_after_seconds, 30)
         self.assertEqual(a.task_cue_max_age_seconds, 3600)
         self.assertEqual(a.task_cue_max_aggregated, 10)
 
@@ -2326,30 +2315,6 @@ class TaskOrchestrationSettingsTests(unittest.TestCase):
         )
         a = load_settings(config_path=path).agent
         self.assertEqual(a.brain_loop_deferred_grace_ms, 5000)
-
-    def test_completion_proactive_floor_and_ceiling(self) -> None:
-        path = self._write_config(
-            agent_extra={"task_completion_proactive_after_seconds": -10}
-        )
-        a = load_settings(config_path=path).agent
-        self.assertEqual(a.task_completion_proactive_after_seconds, 5)
-        path = self._write_config(
-            agent_extra={"task_completion_proactive_after_seconds": 9999}
-        )
-        a = load_settings(config_path=path).agent
-        self.assertEqual(a.task_completion_proactive_after_seconds, 600)
-
-    def test_input_needed_proactive_floor_and_ceiling(self) -> None:
-        path = self._write_config(
-            agent_extra={"task_input_needed_proactive_after_seconds": -10}
-        )
-        a = load_settings(config_path=path).agent
-        self.assertEqual(a.task_input_needed_proactive_after_seconds, 5)
-        path = self._write_config(
-            agent_extra={"task_input_needed_proactive_after_seconds": 9999}
-        )
-        a = load_settings(config_path=path).agent
-        self.assertEqual(a.task_input_needed_proactive_after_seconds, 600)
 
     def test_cue_max_age_floor_and_ceiling(self) -> None:
         path = self._write_config(
@@ -2719,6 +2684,98 @@ class VisionSettingsTests(unittest.TestCase):
         )
         v = load_settings(config_path=path).agent.vision
         self.assertTrue(v.default_prompt.strip())
+
+
+class ExternalMcpSettingsTests(unittest.TestCase):
+    """Phase 1: ``mcp_clients.servers`` parse + ``agent.mcp_clients_enabled``."""
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(
+        self, agent_extra: dict | None = None, mcp_clients: dict | None = None
+    ) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(json.loads(default_path.read_text(encoding="utf-8")))
+        cfg.get("agent", {}).pop("mcp_clients_enabled", None)
+        cfg.pop("mcp_clients", None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        if mcp_clients is not None:
+            cfg["mcp_clients"] = mcp_clients
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults_when_missing(self) -> None:
+        result = load_settings(config_path=self._write_config())
+        self.assertTrue(result.agent.mcp_clients_enabled)
+        self.assertEqual(result.mcp_clients.servers, [])
+
+    def test_parses_stdio_server(self) -> None:
+        path = self._write_config(
+            mcp_clients={
+                "servers": [
+                    {
+                        "id": "filesystem",
+                        "name": "Files",
+                        "command": "npx",
+                        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+                        "env": {"TOKEN": "${ENV:MY_TOKEN}"},
+                        "expose_tools": ["read_text_file"],
+                    }
+                ]
+            },
+        )
+        result = load_settings(config_path=path)
+        servers = result.mcp_clients.servers
+        self.assertEqual(len(servers), 1)
+        s = servers[0]
+        self.assertEqual(s.id, "filesystem")
+        self.assertEqual(s.transport, "stdio")
+        self.assertEqual(s.command, "npx")
+        self.assertEqual(
+            s.args,
+            ("-y", "@modelcontextprotocol/server-filesystem", "/tmp"),
+        )
+        self.assertEqual(s.env, {"TOKEN": "${ENV:MY_TOKEN}"})
+        self.assertEqual(s.expose_tools, ("read_text_file",))
+
+    def test_drops_stdio_without_command(self) -> None:
+        path = self._write_config(
+            mcp_clients={"servers": [{"id": "bad", "transport": "stdio"}]},
+        )
+        result = load_settings(config_path=path)
+        self.assertEqual(result.mcp_clients.servers, [])
+
+    def test_drops_sse_without_url_and_dedupes(self) -> None:
+        path = self._write_config(
+            mcp_clients={
+                "servers": [
+                    {"id": "remote", "transport": "sse"},  # no url -> dropped
+                    {"id": "dup", "command": "a"},
+                    {"id": "dup", "command": "b"},  # duplicate id -> skipped
+                ]
+            },
+        )
+        result = load_settings(config_path=path)
+        ids = [s.id for s in result.mcp_clients.servers]
+        self.assertEqual(ids, ["dup"])
+        self.assertEqual(result.mcp_clients.servers[0].command, "a")
+
+    def test_master_switch_off(self) -> None:
+        path = self._write_config(agent_extra={"mcp_clients_enabled": False})
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.mcp_clients_enabled)
 
 
 if __name__ == "__main__":
