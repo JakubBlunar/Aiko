@@ -84,42 +84,7 @@ forever — typed-proactive is *meant* to be text-only.
 
 ---
 
-## C6. Worker-model decides task-result interrupt-worthiness
+## C6. Worker-model decides task-result interrupt-worthiness — SHIPPED
 
-**Motivation.** Today the report/stay-silent decision for a finished
-task is purely structural: user-initiated tasks (`notify_aiko=1`)
-escalate and now report deterministically via the `force=True` path
-(see [`shipped.md` — forced task-escalation delivery](shipped.md));
-everything else waits for a natural reply. That's the right floor —
-a result the user explicitly asked for must always surface — but it's
-binary. A self-initiated / background task (a curiosity dig, a
-scheduled re-check, a long datagen pipeline finishing) has no graded
-sense of "is this worth interrupting for *right now*?" It either was
-flagged `notify_aiko` at spawn (always escalates) or it wasn't (never
-proactively surfaces). There's no middle judgement.
-
-**Sketched approach.** A small worker-model pass (`worker_default`
-route) that runs when a *non-user-initiated* task completes and scores
-interrupt-worthiness against the live context: recency of the user's
-last turn, current arc (`support` should raise the bar), the result's
-own salience / novelty vs. what Aiko already said, and how long the
-user has been idle. Output is a cheap enum — `surface_now` /
-`park_for_natural_opening` / `drop` — that feeds the existing
-escalation manager instead of the current spawn-time boolean. The
-user-initiated `force=True` floor stays untouched and never routes
-through this gate; this only adds judgement to the discretionary tier.
-
-**Key files.** [`app/core/proactive/proactive_director.py`](../../app/core/proactive/proactive_director.py)
-`notify_task_escalation` (the consumer of the verdict),
-[`app/core/tasks/`](../../app/core/tasks/) task-escalation manager +
-`TaskCueStore` (where `notify_aiko` is read today), the
-`worker_default` LLM route for the scoring call.
-
-**Open questions.** Does the scoring call belong on task completion
-(one LLM hit per finished background task — bounded, but spends
-worker quota) or batched on the idle-worker tick (cheaper, but adds
-latency between "done" and "surfaced")? And what's the fallback when
-the worker model is unavailable / times out — almost certainly
-`park_for_natural_opening` (the conservative choice), never
-`surface_now`, so a flaky worker never turns into a barrage of
-interruptions.
+Shipped as the worker-model task-report decision + angle cue. See
+[`shipped.md` → Worker-model task-report decision](shipped.md#worker-model-task-report-decision--angle-cue-c6).

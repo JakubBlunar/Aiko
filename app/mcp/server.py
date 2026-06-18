@@ -3997,6 +3997,113 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"force_follow_up_surface raised: {exc}"
 
     @mcp.tool()
+    def get_task_report_decision_state() -> str:
+        """C6 — dump the worker-model task-report decision state.
+
+        When a reportable background task finishes, a worker-LLM pass
+        decides surface_now / park_for_natural_opening / drop and drafts
+        a short "angle" framing hint the chat model uses to phrase the
+        report. User-requested tasks are a hard floor (always report);
+        the decision runs in shadow (log-only) on those unless
+        ``floor_mode='enforce'``.
+
+        Returns the three settings, the worker model in use, and the
+        last ~20 verdicts (the in-memory ring), each tagged
+        ``shadow`` / enforced + provenance.
+        """
+        try:
+            agent = session._settings.agent
+            ring = getattr(session, "_task_report_verdicts", None)
+            verdicts = list(ring) if ring is not None else []
+            return json.dumps(
+                {
+                    "enabled": bool(
+                        getattr(agent, "task_report_decision_enabled", True)
+                    ),
+                    "floor_mode": str(
+                        getattr(
+                            agent,
+                            "task_report_decision_floor_mode",
+                            "shadow",
+                        )
+                    ),
+                    "angle_enabled": bool(
+                        getattr(agent, "task_report_angle_enabled", True)
+                    ),
+                    "worker_model": str(
+                        getattr(session, "_effective_worker_model", "") or ""
+                    ),
+                    "recent_verdicts": verdicts,
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"get_task_report_decision_state raised: {exc}"
+
+    @mcp.tool()
+    def force_task_report_decision(task_id: int) -> str:
+        """Run the C6 report decision for a finished task — no side effects.
+
+        Looks up the task, gathers the same stripped context the gate
+        uses (provenance, origin_prompt, arc, idle, recent gist), runs
+        the worker decision, and returns the verdict
+        (``action`` / ``angle`` / ``reason``) WITHOUT parking a cue or
+        arming escalation. Use for end-to-end repro of the worker's
+        judgement on a real result.
+        """
+        try:
+            from app.core.tasks.report_decision import decide_task_report
+
+            orch = getattr(session, "_task_orchestrator", None)
+            if orch is None:
+                return json.dumps({"error": "no task orchestrator"}, indent=2)
+            try:
+                row = orch.get(int(task_id))
+            except Exception as exc:
+                return json.dumps({"error": f"get failed: {exc}"}, indent=2)
+            if row is None:
+                return json.dumps(
+                    {"error": f"task {task_id} not found"}, indent=2
+                )
+            result = getattr(row, "result", None)
+            summary = ""
+            if isinstance(result, dict):
+                summary = str(
+                    result.get("summary") or result.get("content") or ""
+                )
+            provenance, is_floor = session._task_report_provenance(task_id)
+            origin_prompt = session._task_origin_prompt(task_id)
+            arc, idle_seconds, gist = session._report_decision_context()
+            verdict = decide_task_report(
+                ollama=getattr(session, "_maintenance_client", None),
+                model=getattr(session, "_effective_worker_model", None),
+                title=str(getattr(row, "title", "") or ""),
+                summary=summary,
+                status=str(getattr(row, "status", "done") or "done"),
+                provenance=provenance,
+                origin_prompt=origin_prompt,
+                user_display_name=getattr(
+                    session, "user_display_name", "the user"
+                ),
+                arc=arc,
+                idle_seconds=idle_seconds,
+                recent_assistant_gist=gist,
+            )
+            return json.dumps(
+                {
+                    "task_id": int(task_id),
+                    "provenance": provenance,
+                    "is_floor": bool(is_floor),
+                    "action": verdict.action,
+                    "angle": verdict.angle,
+                    "reason": verdict.reason,
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_task_report_decision raised: {exc}"
+
+    @mcp.tool()
     def get_self_correction_state() -> str:
         """K38 — dump the self-correction cue state.
 
