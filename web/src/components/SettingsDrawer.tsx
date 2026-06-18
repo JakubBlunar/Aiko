@@ -452,6 +452,7 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
           limit: tasksView.pageSize,
           offset: page * tasksView.pageSize,
           status: statusFilter,
+          rootsOnly: true,
         });
         setTasksPage({
           tasks: data.tasks,

@@ -1,25 +1,24 @@
-"""Escalation timer: turn parked cues into proactive turns when silence stretches.
+"""Escalation timer: turn parked cues into proactive turns as soon as Aiko is free.
 
 A parked :class:`TaskCue` sits silently on
 :class:`TaskCueStore`. The cue surfaces naturally on Aiko's next
-``user_message`` turn via :func:`cue_render.render_cue_block`. But
-if no ``user_message`` arrives — the user walked away, went quiet,
-got distracted — Aiko should eventually speak up unprompted ("hey,
-the search I started 45 seconds ago found nothing — want me to
-broaden it?").
+``user_message`` turn via :func:`cue_render.render_cue_block`. When a
+cue is armed for proactive delivery (the C6 ``surface_now`` verdict,
+or the floor "user asked for this" path), Aiko should speak up the
+moment she is free — no fixed silence window. The old timed-escalation
+layer (45 s completion window / 20 s input window) was a proof-of-
+concept; the C6 decision now owns the *whether* and this manager owns
+only the *when she's free* gating.
 
-This module owns that escalation logic. One
+This module owns that fire-when-free logic. One
 :class:`TaskEscalationManager` per :class:`SessionController` (chunk
 5 wiring), holding one :class:`threading.Timer` per parked
-``task_id``. When a cue parks:
+``task_id``. When a cue parks and the caller wants it surfaced:
 
-1. The wiring (chunk 5) calls :meth:`arm` with the cue + the
-   appropriate silence window — short for
-   ``task_input_needed`` cues
-   (:attr:`EscalationConfig.input_needed_after_seconds`), longer
-   for ``task_result`` cues
-   (:attr:`EscalationConfig.completion_after_seconds`).
-2. A ``threading.Timer`` ticks down. If a
+1. The wiring calls :meth:`arm` with the cue. The first fire is
+   scheduled immediately (``after_seconds`` defaults to ``0.0``);
+   the retry loop below handles waiting out a closed gate.
+2. A ``threading.Timer`` fires. If a
    ``user_message`` arrives first, the wiring calls
    :meth:`cancel_for_task` (the cue surfaced naturally — no need
    to escalate). If the cue gets superseded (replaced by a newer
@@ -71,8 +70,6 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from app.core.tasks.task_cue_store import (
-    CUE_KIND_INPUT_NEEDED,
-    CUE_KIND_RESULT,
     TaskCue,
     TaskCueStore,
 )
@@ -110,37 +107,19 @@ _DEFAULT_RETRY_LIMIT: int = 60
 class EscalationConfig:
     """Tunables for the escalation timer.
 
-    Mirrors three settings fields:
+    The timed-escalation windows are gone — an armed cue fires as
+    soon as Aiko is free to speak, so only the internal poll cadence
+    remains:
 
-    * ``completion_after_seconds`` →
-      ``agent.task_completion_proactive_after_seconds`` (default
-      45).
-    * ``input_needed_after_seconds`` →
-      ``agent.task_input_needed_proactive_after_seconds`` (default
-      20, shorter because a blocked task is more pressing).
-    * ``retry_seconds`` — internal poll cadence when a fire was
-      pre-condition-blocked. Not exposed as a setting; tests
-      override.
+    * ``retry_seconds`` — poll cadence when a fire was
+      pre-condition-blocked (gate closed / user just spoke). Not
+      exposed as a setting; tests override.
     * ``retry_limit`` — internal poll attempt cap. Not exposed as
       a setting; tests override.
     """
 
-    completion_after_seconds: float = 45.0
-    input_needed_after_seconds: float = 20.0
     retry_seconds: float = _DEFAULT_RETRY_SECONDS
     retry_limit: int = _DEFAULT_RETRY_LIMIT
-
-    def window_for_kind(self, kind: str) -> float:
-        """The first-fire delay for a given cue kind.
-
-        Unknown kinds fall back to ``completion_after_seconds`` —
-        the conservative default (longer wait).
-        """
-        if kind == CUE_KIND_INPUT_NEEDED:
-            return float(self.input_needed_after_seconds)
-        if kind == CUE_KIND_RESULT:
-            return float(self.completion_after_seconds)
-        return float(self.completion_after_seconds)
 
 
 @dataclass(slots=True)
@@ -198,10 +177,9 @@ class TaskEscalationManager:
         self._lock = threading.Lock()
         self._shutdown: bool = False
         log.info(
-            "task-escalation init: completion_after_s=%.1f "
-            "input_needed_after_s=%.1f",
-            self._config.completion_after_seconds,
-            self._config.input_needed_after_seconds,
+            "task-escalation init: fire-when-free retry_s=%.1f retry_limit=%d",
+            self._config.retry_seconds,
+            self._config.retry_limit,
         )
 
     # ── public surface ───────────────────────────────────────────────
@@ -210,24 +188,22 @@ class TaskEscalationManager:
         """Arm an escalation timer for the given parked cue.
 
         If a timer for the same ``task_id`` already exists, cancels
-        it first and installs a fresh one — the newer cue's window
-        wins. Idempotent on the timer state.
+        it first and installs a fresh one — the newer cue wins.
+        Idempotent on the timer state.
 
-        ``after_seconds`` overrides the kind-derived first-fire delay.
-        The wiring passes a near-zero value for ``reply_when_done``
-        tasks so they surface as a proactive reply the moment the
-        free-to-speak gate clears (the duration-hybrid "slow" half),
-        rather than waiting out the full completion window.
+        The first fire is scheduled immediately (``after_seconds``
+        defaults to ``0.0``): the C6 decision already chose to surface
+        this cue, so there is no fixed silence window — the cue fires
+        the moment the free-to-speak gate clears, and the retry loop
+        in :meth:`_on_fire` handles waiting out a closed gate. Callers
+        may still pass an explicit ``after_seconds`` (tests do).
 
         Silent no-op after :meth:`shutdown` so a late park doesn't
         leak a timer thread past process shutdown.
         """
         if not cue.task_id:
             raise ValueError("cue.task_id must be non-empty")
-        if after_seconds is not None:
-            after_s = max(0.0, float(after_seconds))
-        else:
-            after_s = self._config.window_for_kind(cue.kind)
+        after_s = max(0.0, float(after_seconds)) if after_seconds is not None else 0.0
         with self._lock:
             if self._shutdown:
                 log.debug(

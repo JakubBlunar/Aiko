@@ -495,6 +495,40 @@ class ListingTests(unittest.TestCase):
         finally:
             f.close()
 
+    def test_list_for_user_roots_only_excludes_children(self) -> None:
+        f = _Fixture()
+        try:
+            ids = self._seed(f.store)
+            # Spawn a child under the running parent.
+            child = f.store.create(
+                user_id="jacob",
+                handler_name="file_write",
+                title="child step",
+                args={},
+                state={},
+                parent_task_id=ids["jacob_run"],
+            )
+            all_rows = {r.id for r in f.store.list_for_user("jacob", limit=100)}
+            self.assertIn(child, all_rows)
+            roots = {
+                r.id
+                for r in f.store.list_for_user(
+                    "jacob", limit=100, roots_only=True
+                )
+            }
+            self.assertNotIn(child, roots)
+            self.assertEqual(
+                roots,
+                {ids["jacob_run"], ids["jacob_await"], ids["jacob_done"]},
+            )
+            # Count mirrors the filter so the pager stays consistent.
+            self.assertEqual(f.store.count_for_user("jacob"), 4)
+            self.assertEqual(
+                f.store.count_for_user("jacob", roots_only=True), 3
+            )
+        finally:
+            f.close()
+
     def test_list_non_terminal_returns_active(self) -> None:
         f = _Fixture()
         try:

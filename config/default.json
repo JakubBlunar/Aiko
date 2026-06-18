@@ -254,6 +254,9 @@
     "enabled": true,
     "port": 6274
   },
+  "mcp_clients": {
+    "servers": []
+  },
   "web_server": {
     "enabled": true,
     "host": "127.0.0.1",

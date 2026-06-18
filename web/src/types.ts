@@ -561,6 +561,15 @@ export interface TasksListResponse {
   enabled: boolean;
 }
 
+/** Response for ``GET /api/tasks/{id}/children`` — the child tasks
+ * (workflow steps) of a parent, ascending by spawn order. Used by
+ * the Tasks tab to lazily expand a parent row. */
+export interface TaskChildrenResponse {
+  task_id: number;
+  children: TaskSnapshot[];
+  count: number;
+}
+
 /** One row of the per-task event log (schema v17). The orchestrator
  * appends one row per emit (started / progress / phase_change /
  * input_question / input_answer / completed / failed / cancelled /

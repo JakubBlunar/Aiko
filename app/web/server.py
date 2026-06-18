@@ -2579,6 +2579,7 @@ def create_web_app(session: "SessionController") -> FastAPI:
         limit: int = 50,
         offset: int = 0,
         status: str | None = None,
+        roots_only: bool = False,
     ) -> JSONResponse:
         """Paginated task history for the current user.
 
@@ -2586,7 +2587,10 @@ def create_web_app(session: "SessionController") -> FastAPI:
         one of the canonical task statuses (``running``,
         ``awaiting_input``, ``paused``, ``done``, ``failed``,
         ``cancelled``, ``interrupted``) or omitted for all. ``limit``
-        is clamped to ``[1, 200]``.
+        is clamped to ``[1, 200]``. ``roots_only=true`` restricts the
+        page (and ``total``) to top-level tasks so the Tasks tab can
+        render parents only and fetch each parent's children on
+        demand via ``GET /api/tasks/{id}/children``.
         """
         from app.core.tasks import task_snapshot as _snapshot
         from app.core.tasks.task_handler import VALID_STATUSES
@@ -2616,9 +2620,13 @@ def create_web_app(session: "SessionController") -> FastAPI:
                 limit=clamped_limit,
                 offset=clamped_offset,
                 visible_only=True,
+                roots_only=bool(roots_only),
             )
             total = store.count_for_user(
-                user_id, status=status_norm, visible_only=True
+                user_id,
+                status=status_norm,
+                visible_only=True,
+                roots_only=bool(roots_only),
             )
         except Exception as exc:
             log.exception("list_tasks failed: status=%s", status_norm)
@@ -2763,6 +2771,41 @@ def create_web_app(session: "SessionController") -> FastAPI:
                 ],
                 "count": len(events),
                 "total": int(total),
+            }
+        )
+
+    @app.get("/api/tasks/{task_id}/children")
+    def list_task_children(task_id: int) -> JSONResponse:
+        """Child tasks of a parent (schema v17 task tree).
+
+        Used by the Tasks tab to lazily expand a parent into its
+        workflow steps. Returns visible children only, ascending by
+        id (spawn order). No pagination — the per-parent fan-out is
+        bounded. 404 mirrors ``get_task`` when the parent row is
+        missing or hidden.
+        """
+        from app.core.tasks import task_snapshot as _snapshot
+
+        store = getattr(session, "_task_store", None)
+        if store is None:
+            raise HTTPException(503, "task subsystem unavailable")
+        row = store.get(int(task_id))
+        if row is None or not bool(row.visible_to_user):
+            raise HTTPException(404, "task not found")
+        try:
+            children = [
+                c
+                for c in store.list_children(int(task_id))
+                if bool(c.visible_to_user)
+            ]
+        except Exception as exc:
+            log.exception("list_task_children failed: task=%d", task_id)
+            raise HTTPException(500, f"list failed: {exc}") from exc
+        return JSONResponse(
+            {
+                "task_id": int(task_id),
+                "children": [_snapshot(c) for c in children],
+                "count": len(children),
             }
         )
 

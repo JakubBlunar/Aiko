@@ -55,6 +55,13 @@ HANDLER_VISION_DESCRIBE = "vision_describe"
 HANDLER_WEB_SEARCH = "web_search"
 HANDLER_GOAL_WORKFLOW = "goal_workflow"
 
+# Generic external-MCP tool handler — proxies a single tool call to a
+# connected external MCP server via :class:`ExternalMcpManager`. One
+# handler serves every MCP tool; the specific ``server_id`` / ``tool_name``
+# ride in the task args. Reachable only as a ``WorkflowSkill`` child of a
+# goal workflow (MCP tools are surfaced to the background lane only).
+HANDLER_MCP_TOOL = "mcp_tool"
+
 
 # Every handler this build is aware of. Used by the MCP debug surface
 # + tests asserting "registered handlers match the canonical list".
@@ -68,6 +75,7 @@ KNOWN_HANDLER_NAMES: tuple[str, ...] = (
     HANDLER_VISION_DESCRIBE,
     HANDLER_WEB_SEARCH,
     HANDLER_GOAL_WORKFLOW,
+    HANDLER_MCP_TOOL,
 )
 
 
@@ -78,5 +86,6 @@ __all__ = [
     "HANDLER_VISION_DESCRIBE",
     "HANDLER_WEB_SEARCH",
     "HANDLER_GOAL_WORKFLOW",
+    "HANDLER_MCP_TOOL",
     "KNOWN_HANDLER_NAMES",
 ]

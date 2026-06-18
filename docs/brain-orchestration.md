@@ -45,12 +45,14 @@ phase 1 reference handler that exercises every state-machine path.
 - A new persistent **`tasks`** table (schema v16) holds long-running
   work. Each row carries a JSON state blob the handler resumes from
   on boot.
-- Task completions never interrupt. They **park as one-shot cues** on
-  `SessionController._pending_task_cues` (same shape as the K32
-  `_pending_user_reactions` list). `PromptAssembler` renders them as a
-  T6 system block on Aiko's next turn. If silence stretches past
-  `task_completion_proactive_after_seconds`, the loop escalates to a
-  `ProactiveEvent` so Aiko speaks unprompted.
+- Task completions never interrupt mid-turn. They **park as one-shot
+  cues** on `SessionController._pending_task_cues` (same shape as the
+  K32 `_pending_user_reactions` list). `PromptAssembler` renders them
+  as a T6 system block on Aiko's next turn. When the C6 report
+  decision says `surface_now` (or the task was user-requested), the
+  loop escalates to a `ProactiveEvent` the moment Aiko is free to
+  speak so she reports unprompted; `park_for_natural_opening` waits
+  for the next user turn; `drop` stays silent.
 - Phase 1 ships one real handler — **`file_search` + `file_read`** —
   sandboxed to a single configurable root. Between them they exercise
   every terminal state (`done`, `failed`, `awaiting_input → done`,
@@ -115,8 +117,8 @@ where lower wins. Tie-breaker: monotonic enqueue sequence.
 | Priority | Kind | Producer | Routes to | Bypasses free-to-speak? |
 |---|---|---|---|---|
 | P0 | `user_message` | WS typed chat, `LiveSession`, MCP `send_message` | `TurnRunner.run()` | Yes — user input is barge-in |
-| P1 | `task_input_needed` | `TaskOrchestrator` | park cue + escalate after silence | No |
-| P2 | `task_result` | `TaskOrchestrator` (done/failed/cancelled) | park cue + escalate after silence | No |
+| P1 | `task_input_needed` | `TaskOrchestrator` | UI-only — TaskStrip `awaiting_input` chip (no chat cue, no escalation) | No |
+| P2 | `task_result` | `TaskOrchestrator` (done/failed/cancelled) | C6 decision → park cue, arm fire-when-free for `surface_now`/floor | No |
 | P3 | `proactive` | Voice silence timer, typed silence timer, escalated task cue | `ProactiveDirector` | No |
 | P4 | `speaking_window_job` | Post-turn submits, TTS drain | existing job callable | No — these never speak |
 | P5 | `task_progress` | Handler emit | WS broadcast only, no LLM | No — UI-only by hard rule |
@@ -187,18 +189,32 @@ aggregate into one paragraph.
 
 ### Proactive escalation
 
-When a cue is parked, BrainLoop arms a timer for
-`agent.task_completion_proactive_after_seconds` (default `45`). If
-`_pending_task_cues` is still non-empty at fire time AND the
-free-to-speak gate is clear AND no `user_message` has arrived, the
-loop enqueues a `proactive` event carrying the parked cues. The
-existing `ProactiveDirector` path handles the actual speech (text-only
-for typed sessions, with-TTS for voice). After the proactive turn
-assembles, cues clear the same way.
+> **Timed-escalation retirement.** The old per-cue silence windows
+> (`task_completion_proactive_after_seconds` 45 s,
+> `task_input_needed_proactive_after_seconds` 20 s,
+> `task_reply_when_free_seconds` 1 s) are gone. The C6 report
+> decision (below) now owns *whether* a finished task reports;
+> `TaskEscalationManager` owns only *when she's free*.
 
-`task_input_needed` uses a shorter window
-(`agent.task_input_needed_proactive_after_seconds`, default `20`) —
-a blocked task is more pressing than a finished one.
+When the report decision arms a cue (a `surface_now` verdict, or a
+floor / user-requested task), the escalation manager schedules the
+fire **immediately**. If `_pending_task_cues` is still non-empty at
+fire time AND the free-to-speak gate is clear AND no `user_message`
+has arrived, the loop enqueues a `proactive` event carrying the
+parked cues. If the gate is closed (Aiko mid-turn or mid-TTS) the
+fire path re-arms on a short internal retry cadence and fires the
+moment the gate clears — so an armed cue surfaces as soon as Aiko is
+free, never after a fixed delay. The existing `ProactiveDirector`
+path handles the actual speech (text-only for typed sessions,
+with-TTS for voice). After the proactive turn assembles, cues clear
+the same way.
+
+`task_input_needed` is **UI-only**: the orchestrator's input-needed
+listener surfaces the blocked task as a non-terminal `awaiting_input`
+chip in the TaskStrip, which stays visible until the user answers or
+cancels. The brain-loop handler parks no chat cue and arms no
+escalation — Aiko does not speak the question (verbal in-conversation
+asking is a deferred, opt-in addition).
 
 ### Two-axis visibility
 
@@ -564,14 +580,14 @@ now"). The actual result lands as a cue on a later turn.
 | `tasks_resume_on_boot` | `true` | Whether to surface interrupted-task cues on next turn |
 | `tasks_running_block_enabled` | `true` | Whether to render the running-tasks inner-life block |
 | `brain_loop_deferred_grace_ms` | `100` | Time loop waits on turn-end before re-enqueueing a deferred event |
-| `task_completion_proactive_after_seconds` | `45` | Silence before parked `task_result` escalates to proactive |
-| `task_input_needed_proactive_after_seconds` | `20` | Shorter escalation window for blocked tasks |
 | `task_cue_max_age_seconds` | `1800` | Cues older than this drop silently on next dequeue |
 | `task_cue_max_aggregated` | `5` | Hard cap on cues rendered per turn (excess stays in DB/WS) |
 | `task_file_allowed_roots` | `[{label: "user_documents", path: "data/user_documents", read_only: true}]` | List of `FileTaskRoot` entries the file handlers may access. Bare paths resolve across all roots; multi-root matches trigger `awaiting_input`. |
 | `task_file_sandbox_root` | `null` | **Deprecated.** Legacy single-string field. If set and `task_file_allowed_roots` is empty, migrated to a single-entry list at load time. |
 | `task_file_max_read_bytes` | `262144` | 256 KB cap on `file_read` (larger → `failed`) |
 | `task_file_search_max_results` | `25` | More matches → emit `awaiting_input` |
+
+> **Removed (timed-escalation retirement):** `task_completion_proactive_after_seconds`, `task_input_needed_proactive_after_seconds`, and `task_reply_when_free_seconds`. Reporting is now driven by the C6 verdict (`surface_now` / `park_for_natural_opening` / `drop`) plus the always-surface floor; an armed cue fires the moment Aiko is free (no fixed window). `task_input_needed` is UI-only. The escalation manager's poll-until-free retry cadence is an internal constant.
 
 ## REST surface
 
@@ -651,7 +667,7 @@ Each line is one structured event, `key=value` after the message:
 | `app.brain_loop` | `brain-loop init:` | `priorities=` `consumer=brain-loop` | Boot |
 | `app.brain_loop` | `brain-loop dispatched:` | `kind=` `route=` `elapsed_ms=` `gate_waited_ms=` | After each handler returns |
 | `app.brain_loop` | `brain-loop deferred:` | `kind=` `reason=turn_in_progress\|tts_active\|both` `deferred_count=` | Event re-parked behind gate |
-| `app.brain_loop` | `brain-loop escalated:` | `task=` `silence_s=` `cue_kind=task_result\|task_input_needed` | Parked cue escalated to proactive |
+| `app.brain_loop` | `brain-loop escalated:` | `task=` `silence_s=` `cue_kind=task_result` | Parked cue fired as proactive once Aiko was free (`silence_s` = time the cue waited for the gate) |
 | `app.task_orchestrator` | `task spawned:` | `task=` `handler=` `initiated_by=` `notify_aiko=` `visible_to_user=` `running_count=` | After `start()` returns first state |
 | `app.task_orchestrator` | `task transition:` | `task=` `from=` `to=` `progress=` `elapsed_ms=` | Every state change |
 | `app.task_orchestrator` | `task completed:` | `task=` `status=done\|failed\|cancelled` `elapsed_ms=` `notify_aiko=` `result_size=` | Terminal state reached |
@@ -675,7 +691,7 @@ Each line is one structured event, `key=value` after the message:
 | `initiated_by=` | `tasks.initiated_by` | `initiated_by=aiko` |
 | `notify_aiko=` / `visible_to_user=` | row visibility flags | `notify_aiko=1 visible_to_user=1` |
 | `aggregated=` | How many cues were folded together | `aggregated=3` |
-| `silence_s=` | Time since last user input before escalation | `silence_s=46` |
+| `silence_s=` | How long the cue waited for the free-to-speak gate before firing | `silence_s=2` |
 | `running_count=` | Active tasks for this user after the transition | `running_count=2` |
 | Handler-specific | per `app.task.<name>` | `query=` `matched=` `truncated=` for `file_search`; `path=` `bytes=` for `file_read` |
 
@@ -691,7 +707,7 @@ start with `tail_logs(module_contains="…")` and widen to
 | Task never completes | `read_log_file(grep="task=<id>")` — the last `task transition:` line is the current state. Cross-reference with `list_tasks` MCP. |
 | Aiko interrupts herself mid-TTS (critical) | `tail_logs(module_contains="brain_loop")` for `brain-loop deferred: reason=tts_active` — if a `task_result` event landed mid-TTS but no `deferred:` line was emitted, the free-to-speak gate is broken. This is the no-interrupt invariant; the test `tests/test_brain_loop_no_interrupt.py` exists precisely to catch this. |
 | Cue parked but never surfaces | Grep `task=<id>` over `data/app.log`. The chain should be `task cue parked:` → eventually `task cue surfaced:`. If you see `task cue stale-dropped:` in between, the user vanished and the cue expired (`task_cue_max_age_seconds`). If you see `brain-loop escalated:` it became proactive instead. |
-| Proactive escalation never fires | `brain-loop escalated:` is the only line that proves it ran. If absent: the gate may still be held (look for `brain-loop deferred:`), or silence window hasn't elapsed, or `_pending_task_cues` is empty because the cue was already surfaced. |
+| Proactive escalation never fires | `brain-loop escalated:` is the only line that proves it ran. If absent: the gate may still be held (look for `brain-loop deferred:` / a turn or TTS in flight, so the cue is re-arming on the retry cadence), the C6 verdict was `park_for_natural_opening` / `drop` (check `task-report-decision:` for the `action=`), or `_pending_task_cues` is empty because the cue was already surfaced on a natural turn. |
 | Background work blocks an active turn | `brain-loop deferred:` should fire for every `maintenance_due` while a turn is in flight. If a maintenance line appears with high `elapsed_ms=` *during* a turn, the gate broke. |
 | Handler emits never reach orchestrator | `set_log_level("app.task.<name>", "DEBUG")` and grep `<name> emit:`. Each `emit` should produce one line; the next-up `task transition:` should fire within the same millisecond. Gap between them = orchestrator dispatch failed. |
 | Per-user cap hit silently | WARNING line `task spawn rejected: reason=per_user_cap user_id=… running_count=…` is the canary. If the LLM emitted `start_file_search` and the user got no chip in the strip, this line is the answer. |
@@ -772,11 +788,13 @@ every debuggable invariant has a force-it tool and a query-it tool.
    appears in the strip.
 4. The handler emits `TaskInputNeeded` because the match count
    exceeds the cap. `list_tasks(status="awaiting_input")` confirms.
-5. Next turn (or after the escalation window) Aiko asks "I found a
-   lot — want me to narrow it down? maybe the most recent ones?".
-6. `send_message("yeah, just recent")` — the task resumes via
-   `TaskOrchestrator.answer(task_id, "recent")`, the handler filters,
-   and the result cue surfaces on the following turn.
+5. The blocked task surfaces **UI-only** as an `awaiting_input` chip
+   in the TaskStrip (the orchestrator's input-needed listener → WS),
+   with the question + clickable options. Aiko does not speak it; the
+   chip stays visible until you answer or cancel.
+6. Answer via the chip (or `TaskOrchestrator.answer(task_id, "recent")`).
+   The task resumes, the handler filters, and the result cue is routed
+   through the C6 report decision on completion.
 
 ## Risks and the invariants the tests pin
 

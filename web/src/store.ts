@@ -1141,16 +1141,23 @@ export const useAssistantStore = create<AssistantState>((set) => ({
         : [task.id, ...view.activeIds];
       // History projection: prepend only when the user is on
       // page 0 AND the filter matches (mirror of memory_added).
+      // The tab is parents-only (server ``roots_only``), so child
+      // tasks never enter ``historyOrder`` nor bump ``total`` —
+      // they surface inside their parent's expandable detail.
+      const isRoot = task.parent_task_id == null;
       const filterMatches =
         view.statusFilter === null || view.statusFilter === task.status;
       const onFirstPage = view.page === 0;
       const nextHistory =
-        onFirstPage && filterMatches && !view.historyOrder.includes(task.id)
+        isRoot &&
+        onFirstPage &&
+        filterMatches &&
+        !view.historyOrder.includes(task.id)
           ? [task.id, ...view.historyOrder].slice(0, view.pageSize)
           : view.historyOrder;
-      // ``total`` always bumps so the pager updates even when the
-      // row didn't land on the visible page.
-      const nextTotal = filterMatches ? view.total + 1 : view.total;
+      // ``total`` bumps for root tasks so the pager updates even
+      // when the row didn't land on the visible page.
+      const nextTotal = isRoot && filterMatches ? view.total + 1 : view.total;
       return {
         tasksView: {
           ...view,
@@ -1203,13 +1210,15 @@ export const useAssistantStore = create<AssistantState>((set) => ({
         ? view.activeIds
         : [task.id, ...view.activeIds];
       // History: same prepend rule as ``applyTaskStarted`` but
-      // we don't bump ``total`` — the row already existed.
+      // we don't bump ``total`` — the row already existed. Root
+      // tasks only; children live in their parent's detail.
+      const isRoot = task.parent_task_id == null;
       const filterMatches =
         view.statusFilter === null || view.statusFilter === task.status;
       const onFirstPage = view.page === 0;
       const inHistory = view.historyOrder.includes(task.id);
       const nextHistory =
-        onFirstPage && filterMatches && !inHistory && !previouslyKnown
+        isRoot && onFirstPage && filterMatches && !inHistory && !previouslyKnown
           ? [task.id, ...view.historyOrder].slice(0, view.pageSize)
           : view.historyOrder;
       return {
@@ -1231,15 +1240,17 @@ export const useAssistantStore = create<AssistantState>((set) => ({
       const nextActive = view.activeIds.includes(task.id)
         ? view.activeIds
         : [task.id, ...view.activeIds];
-      // History: ensure terminal rows show up on a fresh load
+      // History: ensure terminal root rows show up on a fresh load
       // even when the user wasn't on page 0 when the start fired.
+      // Children stay out of the tab list (parents-only).
+      const isRoot = task.parent_task_id == null;
       const filterMatches =
         view.statusFilter === null || view.statusFilter === task.status;
       const onFirstPage = view.page === 0;
       const inHistory = view.historyOrder.includes(task.id);
       const inTasksById = task.id in view.tasksById;
       const nextHistory =
-        onFirstPage && filterMatches && !inHistory && !inTasksById
+        isRoot && onFirstPage && filterMatches && !inHistory && !inTasksById
           ? [task.id, ...view.historyOrder].slice(0, view.pageSize)
           : view.historyOrder;
       return {
