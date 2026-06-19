@@ -1610,19 +1610,10 @@ class PostTurnMixin:
                 self._record_milestone_memory(milestone)
         self._last_turn_milestone = milestone
 
-        # Phase 3c: post-turn promise regex (cheap) + maybe schedule LLM pass.
-        extractor = getattr(self, "_promise_extractor", None)
-        if extractor is not None:
-            try:
-                extractor.extract_post_turn(
-                    user_text=user_text,
-                    assistant_text=assistant_text,
-                    session_key=self.session_key,
-                )
-                extractor.notify_user_turn()
-                self._maybe_schedule_promise_llm_job()
-            except Exception:
-                log.debug("promise extraction failed", exc_info=True)
+        # Phase 3c: promise extraction now runs as the context-aware
+        # ``PromiseExtractionWorker`` idle worker (see
+        # ``app/core/memory/promise_worker.py``) rather than a post-turn
+        # regex. Nothing to do here on the hot path.
 
         # K4: per-turn dialogue-act tagger. Regex hot path is cheap
         # (microseconds) so we run it inline and write the result to

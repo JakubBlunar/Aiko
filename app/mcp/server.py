@@ -485,14 +485,19 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
 
     @mcp.tool()
     def get_promise_stats() -> str:
-        """Return PromiseExtractor counters (Phase 3c)."""
+        """Return PromiseExtractionWorker config + rate-limiter state.
+
+        The promise extractor was reworked into a context-aware idle
+        worker (``promise_worker``); this surfaces its master switch,
+        cadence, context budgets, and the current hour/day rate-limit
+        spend. Use ``force_run("promise_worker")`` to trigger a pass.
+        """
         try:
-            extractor = getattr(session, "_promise_extractor", None)
-            if extractor is None:
+            worker = getattr(session, "_promise_worker", None)
+            if worker is None:
                 return json.dumps({"enabled": False}, indent=2)
             return json.dumps(
-                {"enabled": True, **extractor.stats()},
-                indent=2, default=str,
+                worker.debug_state(), indent=2, default=str,
             )
         except Exception as exc:
             return f"get_promise_stats failed: {exc}"

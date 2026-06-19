@@ -193,56 +193,6 @@ class SpeakingWindowJobsMixin:
         except Exception:
             log.debug("dialogue_act llm submit failed", exc_info=True)
 
-    def _maybe_schedule_promise_llm_job(self) -> None:
-        """Phase 3c: enqueue the LLM promise extractor in the speaking window."""
-        extractor = getattr(self, "_promise_extractor", None)
-        if extractor is None:
-            return
-        try:
-            if not extractor.should_run_llm():
-                return
-        except Exception:
-            log.debug("promise extractor should_run failed", exc_info=True)
-            return
-
-        session_key = self.session_key
-        history_window = 12
-
-        def _history_provider() -> list[tuple[str, str]]:
-            try:
-                rows = self._chat_db.get_messages(session_key, limit=history_window)
-            except Exception:
-                return []
-            return [
-                (str(r.role or ""), str(r.content or ""))
-                for r in rows
-                if r.role in ("user", "assistant")
-            ]
-
-        def _job(_stop_flag: Any) -> None:
-            if _stop_flag is not None and _stop_flag.is_set():
-                return
-            try:
-                extractor.maybe_run_llm(
-                    session_key=session_key,
-                    history_provider=_history_provider,
-                )
-            except Exception:
-                log.debug("promise llm job raised", exc_info=True)
-
-        try:
-            from app.core.voice.speaking_window_scheduler import ScheduledJob
-
-            self._scheduler.submit(ScheduledJob(
-                name="promise_llm",
-                priority=65,
-                estimated_seconds=3.5,
-                callable=_job,
-                dedupe_key="promise_llm",
-            ))
-        except Exception:
-            log.debug("promise llm submit failed", exc_info=True)
-
     def _maybe_schedule_moment_llm_job(
         self,
         *,

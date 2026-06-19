@@ -27,7 +27,6 @@ from app.core.infra.chat_database import ChatDatabase
 from app.core.affect.circadian import compute as circadian_compute
 from app.core.conversation.conversation_arc import ArcEstimator, ArcStore
 from app.core.proactive.prepared_nudge import PreparedNudgeStore
-from app.core.memory.promise_extractor import extract_regex
 from app.core.relationship.relationship import RelationshipStore, RelationshipTracker
 from app.core.voice.speaking_window_scheduler import (
     ScheduledJob,
@@ -113,18 +112,6 @@ class HotPathLatencyTests(unittest.TestCase):
             )
         finally:
             _close(tmp, db)
-
-    def test_promise_extract_regex_under_budget(self):
-        sample_user = "I'll get back to you tomorrow about the deploy."
-        sample_assistant = "I'll send you a follow-up note tonight."
-        t0 = time.perf_counter()
-        for _ in range(200):
-            extract_regex(user_text=sample_user, assistant_text=sample_assistant)
-        elapsed_ms = (time.perf_counter() - t0) * 1000.0
-        self.assertLess(
-            elapsed_ms, 200.0,
-            f"PromiseExtractor.extract_regex burst took {elapsed_ms:.1f}ms",
-        )
 
     def test_agenda_inline_tags_under_budget(self):
         text = (

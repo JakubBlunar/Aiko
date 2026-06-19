@@ -658,8 +658,22 @@ class AgentSettings:
     # correctness gate. Dedicated
     # :class:`FactCheckRateLimiter` with
     # ``state_key='belief_worker.rate_state'``.
-    belief_worker_per_hour_cap: int = 4
-    belief_worker_per_day_cap: int = 20
+    belief_worker_per_hour_cap: int = 8
+    belief_worker_per_day_cap: int = 40
+    # ── Phase 3c (reworked): context-aware promise extraction worker ──
+    # Master switch for
+    # :class:`app.core.memory.promise_worker.PromiseExtractionWorker`,
+    # the sole writer of ``kind="promise"`` memories. When disabled the
+    # worker is never registered and no promises are auto-extracted
+    # (the ``[[remember:...]]`` self-tag path is unaffected).
+    promise_worker_enabled: bool = True
+    # Hourly + daily caps on LLM extraction calls. Generous by default
+    # because the worker runs frequently but each call is bounded by
+    # these caps -- the real spend ceiling. Dedicated
+    # :class:`FactCheckRateLimiter` with
+    # ``state_key='promise_worker.rate_state'``.
+    promise_worker_per_hour_cap: int = 10
+    promise_worker_per_day_cap: int = 60
     # ── K6 personality backlog: surprise / novelty detector ──────────
     # Master switch for :class:`app.core.conversation.novelty_detector.NoveltyDetector`.
     # When disabled the detector is never instantiated and the
@@ -2210,9 +2224,10 @@ class MemorySettings:
     # ── Background workers (schema v8) ───────────────────────────────
     # Worker intervals in seconds. Both workers are idempotent: running
     # more often is safe but wastes a little CPU. Drop to ~60 for
-    # active testing.
-    promotion_worker_interval_seconds: int = 3600
-    decay_worker_interval_seconds: int = 3600
+    # active testing. Lowered from 3600 -> 1800 since idle workers no
+    # longer block the brain and there's ample local-LLM headroom.
+    promotion_worker_interval_seconds: int = 1800
+    decay_worker_interval_seconds: int = 1800
     # F1 personality backlog: how often the IdleFactChecker drains the
     # claim queue. Defaults to 5 minutes so a steady drip of newly
     # written memories gets verified over a session. The worker still
@@ -2287,7 +2302,7 @@ class MemorySettings:
     # typed-absence threshold the surfacing provider gates on (only
     # surface "I've been wondering" after a real gap). ``journal_max``
     # bounds the kv ring of drafted questions.
-    forward_curiosity_interval_seconds: int = 1800
+    forward_curiosity_interval_seconds: int = 900
     forward_curiosity_cooldown_seconds: int = 3600
     forward_curiosity_daily_cap: int = 4
     forward_curiosity_min_gap_hours: float = 4.0
@@ -2306,7 +2321,7 @@ class MemorySettings:
     # go). ``fulfil_min_overlap`` is the content-word overlap a reply /
     # finished task must share with the promise body to count as
     # fulfilled.
-    promise_followthrough_interval_seconds: int = 1800
+    promise_followthrough_interval_seconds: int = 900
     promise_followthrough_min_age_hours: float = 4.0
     promise_followthrough_cooldown_hours: float = 6.0
     promise_followthrough_drop_after_days: float = 14.0
@@ -2364,7 +2379,7 @@ class MemorySettings:
     # F5: conflicting-memory detector cadence. The all-pairs cosine
     # scan is cheap (NumPy on the in-memory mirror) but the heuristic
     # gate + occasional LLM call adds up, so once an hour is plenty.
-    conflict_detector_interval_seconds: int = 3600
+    conflict_detector_interval_seconds: int = 1800
     # Cosine similarity band used to short-circuit the candidate
     # filter. Pairs below ``min`` are topically distant (no point
     # checking for contradiction); pairs >= ``max`` are dedupe-likely
@@ -2412,11 +2427,30 @@ class MemorySettings:
     # ``belief_worker_lookback_turns`` user turns; once an hour leaves
     # plenty of room between calls without making the model feel
     # forgetful.
-    belief_worker_interval_seconds: int = 3600
+    belief_worker_interval_seconds: int = 1200
     # How many recent **user** messages the worker passes to the LLM
     # per extraction. Larger windows give a richer signal but cost
     # more tokens; 12 is enough to span a few conversational beats.
     belief_worker_lookback_turns: int = 12
+    # ── Phase 3c (reworked): context-aware promise extraction worker ──
+    # Cadence + context budgets for
+    # :class:`app.core.memory.promise_worker.PromiseExtractionWorker`.
+    # Frequent by default (every 10 min) because real spend is bounded
+    # by the per-hour / per-day caps, not the interval.
+    promise_worker_interval_seconds: int = 600
+    # How many recent turns (both user and assistant) the worker reads.
+    # Promises come from both sides, so unlike the belief worker this
+    # keeps assistant lines too.
+    promise_worker_lookback_turns: int = 12
+    # Max promises persisted per run -- a single noisy window can't
+    # flood the store; the next tick picks up anything dropped.
+    promise_worker_max_per_run: int = 5
+    # Per-message + overall transcript char budgets for the snapshot.
+    # Generous so the LLM has enough surrounding context to resolve
+    # pronouns/objects into self-contained promises; only truncate to
+    # protect the worker-LLM token budget.
+    promise_worker_max_msg_chars: int = 2000
+    promise_worker_max_transcript_chars: int = 8000
     # Gap-detector thresholds. The mood pass surfaces a gap when
     # ``|val_pred - val_obs|`` exceeds ``belief_gap_valence_threshold``,
     # ``|aro_pred - aro_obs|`` exceeds ``belief_gap_arousal_threshold``,
@@ -3545,10 +3579,19 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                 agent_raw.get("belief_worker_enabled", True),
             ),
             belief_worker_per_hour_cap=max(
-                0, int(agent_raw.get("belief_worker_per_hour_cap", 4)),
+                0, int(agent_raw.get("belief_worker_per_hour_cap", 8)),
             ),
             belief_worker_per_day_cap=max(
-                0, int(agent_raw.get("belief_worker_per_day_cap", 20)),
+                0, int(agent_raw.get("belief_worker_per_day_cap", 40)),
+            ),
+            promise_worker_enabled=bool(
+                agent_raw.get("promise_worker_enabled", True),
+            ),
+            promise_worker_per_hour_cap=max(
+                0, int(agent_raw.get("promise_worker_per_hour_cap", 10)),
+            ),
+            promise_worker_per_day_cap=max(
+                0, int(agent_raw.get("promise_worker_per_day_cap", 60)),
             ),
             novelty_detection_enabled=bool(
                 agent_raw.get("novelty_detection_enabled", True),
@@ -4813,10 +4856,10 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             ),
             promotion_worker_interval_seconds=max(
                 10,
-                int(memory_raw.get("promotion_worker_interval_seconds", 3600)),
+                int(memory_raw.get("promotion_worker_interval_seconds", 1800)),
             ),
             decay_worker_interval_seconds=max(
-                10, int(memory_raw.get("decay_worker_interval_seconds", 3600))
+                10, int(memory_raw.get("decay_worker_interval_seconds", 1800))
             ),
             fact_checker_interval_seconds=max(
                 30,
@@ -4889,7 +4932,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             ),
             forward_curiosity_interval_seconds=max(
                 30,
-                int(memory_raw.get("forward_curiosity_interval_seconds", 1800)),
+                int(memory_raw.get("forward_curiosity_interval_seconds", 900)),
             ),
             forward_curiosity_cooldown_seconds=max(
                 0,
@@ -4915,7 +4958,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                 30,
                 int(
                     memory_raw.get(
-                        "promise_followthrough_interval_seconds", 1800,
+                        "promise_followthrough_interval_seconds", 900,
                     )
                 ),
             ),
@@ -4989,7 +5032,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             conflict_detector_interval_seconds=max(
                 60,
                 int(
-                    memory_raw.get("conflict_detector_interval_seconds", 3600),
+                    memory_raw.get("conflict_detector_interval_seconds", 1800),
                 ),
             ),
             conflict_detector_similarity_min=max(
@@ -5072,11 +5115,35 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             ),
             belief_worker_interval_seconds=max(
                 60,
-                int(memory_raw.get("belief_worker_interval_seconds", 3600)),
+                int(memory_raw.get("belief_worker_interval_seconds", 1200)),
             ),
             belief_worker_lookback_turns=max(
                 1,
                 int(memory_raw.get("belief_worker_lookback_turns", 12)),
+            ),
+            promise_worker_interval_seconds=max(
+                60,
+                int(memory_raw.get("promise_worker_interval_seconds", 600)),
+            ),
+            promise_worker_lookback_turns=max(
+                1,
+                int(memory_raw.get("promise_worker_lookback_turns", 12)),
+            ),
+            promise_worker_max_per_run=max(
+                1,
+                int(memory_raw.get("promise_worker_max_per_run", 5)),
+            ),
+            promise_worker_max_msg_chars=max(
+                200,
+                int(memory_raw.get("promise_worker_max_msg_chars", 2000)),
+            ),
+            promise_worker_max_transcript_chars=max(
+                500,
+                int(
+                    memory_raw.get(
+                        "promise_worker_max_transcript_chars", 8000
+                    )
+                ),
             ),
             belief_gap_valence_threshold=max(
                 0.0,
