@@ -199,7 +199,7 @@ export default function App() {
         collapsed={leftSidebarCollapsed}
         onToggleCollapsed={toggleLeftSidebar}
       />
-      <main className="flex h-full min-w-0 flex-1">
+      <main className="flex h-full min-h-0 min-w-0 flex-1 overflow-hidden">
         <ChatView send={send} sendBytes={sendBytes} />
       </main>
       {/* The avatar rail in the main window is redundant when the
