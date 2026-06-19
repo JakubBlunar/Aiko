@@ -3286,6 +3286,13 @@ class SessionController(
                 getattr(settings.agent, "proactive_cooldown_seconds_typed", 600.0),
             ),
             is_typed_eligible=self._is_typed_proactive_eligible,
+            typed_tts_enabled=lambda: bool(
+                getattr(
+                    getattr(self._settings, "agent", None),
+                    "proactive_typed_tts_enabled",
+                    False,
+                )
+            ),
             context_window=self._context_window,
             notify_message=self._notify_message,
             prepared_nudge_store=self._prepared_nudge_store,

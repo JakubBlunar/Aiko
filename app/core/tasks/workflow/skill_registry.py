@@ -597,6 +597,7 @@ def _finish_skill() -> WorkflowSkill:
 def build_builtin_skill_registry(
     *,
     web_search_enabled: bool = True,
+    file_skills_enabled: bool = True,
     file_write_enabled: bool = False,
     vision_enabled: bool = False,
 ) -> WorkflowSkillRegistry:
@@ -604,25 +605,31 @@ def build_builtin_skill_registry(
 
     ``web_search_enabled`` mirrors ``tools.web_search`` so a user who
     disabled web search doesn't get the skill offered to the planner.
+    ``file_skills_enabled`` mirrors ``agent.builtin_file_skills_enabled``
+    — when ``False`` the built-in ``file_search`` / ``read_file`` /
+    ``write_file`` skills are NOT registered, so a user who handles files
+    exclusively through a filesystem MCP server gets a single path
+    convention and no built-in-vs-MCP overlap for the planner to confuse.
     ``file_write_enabled`` mirrors ``agent.file_write.enabled`` — the
     destructive ``write_file`` skill is only offered when the master
     switch is on (and a writable root exists, which the handler
-    enforces at run time). ``vision_enabled`` mirrors
-    ``agent.vision.enabled`` — the ``describe_image`` skill is only
-    offered when vision is on (and an active root exists). The
-    ``finish`` terminal skill is always present — a workflow must
-    always be able to stop.
+    enforces at run time), and only when ``file_skills_enabled`` is on.
+    ``vision_enabled`` mirrors ``agent.vision.enabled`` — the
+    ``describe_image`` skill is only offered when vision is on (and an
+    active root exists). The ``finish`` terminal skill is always present
+    — a workflow must always be able to stop.
 
     Callers (the handler / mixin) layer MCP-provided skills on top via
     :meth:`WorkflowSkillRegistry.register` after this returns.
     """
     registry = WorkflowSkillRegistry()
-    registry.register(_file_search_skill())
-    registry.register(_file_read_skill())
+    if file_skills_enabled:
+        registry.register(_file_search_skill())
+        registry.register(_file_read_skill())
+        if file_write_enabled:
+            registry.register(_write_file_skill())
     if web_search_enabled:
         registry.register(_web_search_skill())
-    if file_write_enabled:
-        registry.register(_write_file_skill())
     if vision_enabled:
         registry.register(_describe_image_skill())
     registry.register(_finish_skill())

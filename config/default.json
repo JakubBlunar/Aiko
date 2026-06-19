@@ -30,6 +30,7 @@
     "proactive_silence_seconds_typed": 240,
     "proactive_cooldown_seconds_typed": 600,
     "proactive_typed_when_away": false,
+    "proactive_typed_tts_enabled": false,
     "activity_awareness_enabled": false,
     "shared_moments_enabled": true,
     "shared_moments_llm_enabled": true,
@@ -263,6 +264,19 @@
   "mcp_clients": {
     "servers": []
   },
+  "browser_perception": {
+    "enabled": false,
+    "server_id": "browser",
+    "snapshot_tools": ["browser_snapshot"],
+    "adapter": "real_browser",
+    "max_ranked_elements": 40,
+    "state_memory_pages": 8,
+    "weight_role": 1.0,
+    "weight_visibility": 1.0,
+    "weight_position": 1.0,
+    "weight_text": 1.0,
+    "weight_context": 1.0
+  },
   "web_server": {
     "enabled": true,
     "host": "127.0.0.1",
@@ -371,6 +385,7 @@
     "idle_worker_max_per_tick": 0,
     "task_approval_mode": "ask",
     "task_approval_overrides": {},
+    "builtin_file_skills_enabled": true,
     "file_write": {
       "enabled": false,
       "max_bytes": 262144,

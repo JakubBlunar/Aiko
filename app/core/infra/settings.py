@@ -524,6 +524,13 @@ class AgentSettings:
     # conversation even when away from the screen) so this flag does
     # not affect it.
     proactive_typed_when_away: bool = False
+    # When ``True`` a typed-mode proactive line is ALSO spoken via TTS
+    # (same enqueue path as voice-mode proactive). Default ``False``:
+    # typed proactive is text-only because the nudge can land minutes
+    # later when the user may be away from the speakers, and an unprompted
+    # spoken line then is more startling than helpful. Voice-mode
+    # proactive always speaks regardless of this flag.
+    proactive_typed_tts_enabled: bool = False
     # ── World-notice proactive (Aiko reaches out about her room) ──────
     # Master switch for the WorldNoticeWorker, which primes a proactive
     # nudge when the user has left something in Aiko's room or after a
@@ -1483,6 +1490,14 @@ class AgentSettings:
     # list so a temporarily-unmounted external drive doesn't auto-
     # disappear from the config. See ``docs/brain-orchestration.md``.
     task_file_allowed_roots: tuple[dict[str, Any], ...] = ()
+    # When ``False``, the built-in workflow file skills (``file_search`` /
+    # ``read_file`` / ``write_file``) are not offered to the planner.
+    # Intended for users who handle files exclusively through a filesystem
+    # MCP server: removes the built-in-vs-MCP overlap (two path
+    # conventions for the same directory) that makes the planner hand a
+    # label/relative path to an MCP file tool and get "path outside
+    # allowed directories". Default ``True`` (built-ins on).
+    builtin_file_skills_enabled: bool = True
     # ── Chunk 12: file_read handler safety caps ────────────────────────
     # ``FileReadHandler`` is the first phase-1 handler that emits a
     # ``TaskInputNeeded`` (multi-root disambiguation: a bare path that
@@ -1553,6 +1568,16 @@ class AgentSettings:
     # planner only emits a tiny ``{action, args, reason}`` object.
     # Clamped ``[64, 2048]``.
     workflow_planner_max_tokens: int = 512
+    # Circuit breaker: stop a workflow after this many child steps fail /
+    # time out *in a row* (a success resets the counter). Catches the
+    # "service unavailable" loop the exact-(skill,args) repeat guard
+    # misses — e.g. a browser workflow when Chrome / the extension isn't
+    # running, where every varied call fails. Clamped ``[1, 20]``.
+    workflow_max_consecutive_failures: int = 2
+    # Wall-clock budget for a whole workflow loop, in seconds. The loop
+    # force-finishes (partial) once exceeded so piled-up slow timeouts
+    # can't run for many minutes. ``0`` disables. Clamped ``[0, 3600]``.
+    workflow_max_wall_seconds: int = 300
     # Cap on the per-task capability-gap log (missing_capability entries).
     # Clamped ``[1, 500]``.
     workflow_capability_gap_log_max: int = 50
@@ -1893,9 +1918,18 @@ class ExternalMcpServer:
 
     ``env`` values support ``${ENV:NAME}`` indirection, resolved from the
     process environment at launch (so a token can live in an env var
-    instead of in ``config/user.json``). ``expose_tools`` is an optional
-    allow-list of tool names to register for the planner; empty exposes
-    every tool the server advertises.
+    instead of in ``config/user.json``).
+
+    Two complementary tool filters (applied in
+    :meth:`ExternalMcpManager._refresh_tools`):
+      * ``expose_tools`` — optional *allow-list*: when non-empty, ONLY
+        these tool names are registered for the planner. Empty = expose
+        every tool the server advertises.
+      * ``disabled_tools`` — optional *deny-list*: tool names to drop
+        even when they pass the allow-list. Convenient for hiding a few
+        unwanted tools (e.g. a browser server's debug group) without
+        enumerating every tool you want to keep. Applied after the
+        allow-list, so a name in both is dropped.
     """
 
     id: str
@@ -1909,6 +1943,7 @@ class ExternalMcpServer:
     autostart: bool = True
     timeout_seconds: float = 30.0
     expose_tools: tuple[str, ...] = ()
+    disabled_tools: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -1916,6 +1951,38 @@ class ExternalMcpSettings:
     """Catalogue of external MCP servers to connect to as a client."""
 
     servers: list[ExternalMcpServer] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class BrowserPerceptionSettings:
+    """Server-agnostic "browser perception layer" over an MCP browser server.
+
+    When ``enabled``, the result of a configured accessibility-snapshot
+    tool (``snapshot_tools`` on the server identified by ``server_id``) is
+    parsed by the named ``adapter`` into a normalized accessibility tree,
+    then deduped / form-grouped / heading-context-injected / heuristically
+    ranked / diffed against the previous page state, and re-rendered as a
+    compact, ranked block for the workflow planner. The MCP server stays a
+    swappable transport: switching servers means adding an
+    ``mcp_clients.servers`` entry and pointing ``server_id`` / ``adapter``
+    at it — the perception pipeline is unchanged.
+
+    Ranking is purely heuristic (no embeddings). ``weight_*`` knobs tune
+    the per-element ``interaction_likelihood`` score. ``state_memory_pages``
+    bounds the in-process (ephemeral) previous-page-state LRU.
+    """
+
+    enabled: bool = False
+    server_id: str = "browser"
+    snapshot_tools: tuple[str, ...] = ("browser_snapshot",)
+    adapter: str = "real_browser"
+    max_ranked_elements: int = 40
+    state_memory_pages: int = 8
+    weight_role: float = 1.0
+    weight_visibility: float = 1.0
+    weight_position: float = 1.0
+    weight_text: float = 1.0
+    weight_context: float = 1.0
 
 
 @dataclass(slots=True)
@@ -2625,6 +2692,13 @@ class AppSettings:
     # are surfaced only to the background-worker lane). Distinct from
     # ``mcp_server`` (the embedded debug server the app exposes).
     mcp_clients: ExternalMcpSettings = field(default_factory=ExternalMcpSettings)
+    # Optional middleware over an MCP browser server's accessibility
+    # snapshot (parse -> dedup -> group -> rank -> diff). Disabled by
+    # default; the underlying browser server is configured under
+    # ``mcp_clients.servers``.
+    browser_perception: BrowserPerceptionSettings = field(
+        default_factory=BrowserPerceptionSettings
+    )
     web_server: WebServerSettings = field(default_factory=WebServerSettings)
     memory: MemorySettings = field(default_factory=MemorySettings)
     chat_llm: ChatLlmSettings = field(default_factory=ChatLlmSettings)
@@ -3181,6 +3255,12 @@ def _parse_external_mcp_server(payload: dict[str, Any]) -> ExternalMcpServer | N
         if isinstance(expose_raw, (list, tuple))
         else ()
     )
+    disabled_raw = payload.get("disabled_tools") or []
+    disabled_tools = (
+        tuple(str(t).strip() for t in disabled_raw if str(t).strip())
+        if isinstance(disabled_raw, (list, tuple))
+        else ()
+    )
     timeout_raw = payload.get("timeout_seconds", 30.0)
     try:
         timeout_seconds = max(1.0, float(timeout_raw))
@@ -3198,6 +3278,7 @@ def _parse_external_mcp_server(payload: dict[str, Any]) -> ExternalMcpServer | N
         autostart=bool(payload.get("autostart", True)),
         timeout_seconds=timeout_seconds,
         expose_tools=expose_tools,
+        disabled_tools=disabled_tools,
     )
 
 
@@ -3221,6 +3302,59 @@ def _parse_external_mcp(raw: Any) -> ExternalMcpSettings:
         seen_ids.add(parsed.id)
         servers.append(parsed)
     return ExternalMcpSettings(servers=servers)
+
+
+def _parse_browser_perception(raw: Any) -> BrowserPerceptionSettings:
+    """Validate the ``browser_perception`` config block.
+
+    Returns defaults (disabled) when the block is missing/malformed so a
+    bad entry never aborts the load. Weights and caps are clamped to sane
+    floors; ``snapshot_tools`` falls back to the default when empty.
+    """
+    defaults = BrowserPerceptionSettings()
+    if not isinstance(raw, dict):
+        return defaults
+
+    def _weight(key: str, fallback: float) -> float:
+        try:
+            return max(0.0, float(raw.get(key, fallback)))
+        except (TypeError, ValueError):
+            return fallback
+
+    tools_raw = raw.get("snapshot_tools")
+    if isinstance(tools_raw, (list, tuple)):
+        snapshot_tools = tuple(
+            str(t).strip() for t in tools_raw if str(t).strip()
+        )
+    else:
+        snapshot_tools = ()
+    if not snapshot_tools:
+        snapshot_tools = defaults.snapshot_tools
+
+    try:
+        max_ranked = max(1, int(raw.get("max_ranked_elements", defaults.max_ranked_elements)))
+    except (TypeError, ValueError):
+        max_ranked = defaults.max_ranked_elements
+    try:
+        state_pages = max(1, int(raw.get("state_memory_pages", defaults.state_memory_pages)))
+    except (TypeError, ValueError):
+        state_pages = defaults.state_memory_pages
+
+    return BrowserPerceptionSettings(
+        enabled=bool(raw.get("enabled", defaults.enabled)),
+        server_id=str(raw.get("server_id", defaults.server_id) or defaults.server_id).strip()
+        or defaults.server_id,
+        snapshot_tools=snapshot_tools,
+        adapter=str(raw.get("adapter", defaults.adapter) or defaults.adapter).strip()
+        or defaults.adapter,
+        max_ranked_elements=max_ranked,
+        state_memory_pages=state_pages,
+        weight_role=_weight("weight_role", defaults.weight_role),
+        weight_visibility=_weight("weight_visibility", defaults.weight_visibility),
+        weight_position=_weight("weight_position", defaults.weight_position),
+        weight_text=_weight("weight_text", defaults.weight_text),
+        weight_context=_weight("weight_context", defaults.weight_context),
+    )
 
 
 def _parse_llm(raw: Any) -> LlmSettings:
@@ -3528,6 +3662,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             ),
             proactive_cooldown_seconds_typed=max(
                 120.0, float(agent_raw.get("proactive_cooldown_seconds_typed", 600.0)),
+            ),
+            proactive_typed_tts_enabled=bool(
+                agent_raw.get("proactive_typed_tts_enabled", False)
             ),
             proactive_typed_when_away=bool(
                 agent_raw.get("proactive_typed_when_away", False),
@@ -4289,6 +4426,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             task_file_allowed_roots=_parse_task_file_allowed_roots(
                 agent_raw.get("task_file_allowed_roots", ())
             ),
+            builtin_file_skills_enabled=bool(
+                agent_raw.get("builtin_file_skills_enabled", True)
+            ),
             task_file_read_max_bytes=max(
                 1024,
                 min(
@@ -4366,6 +4506,20 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                 min(
                     2048,
                     int(agent_raw.get("workflow_planner_max_tokens", 512)),
+                ),
+            ),
+            workflow_max_consecutive_failures=max(
+                1,
+                min(
+                    20,
+                    int(agent_raw.get("workflow_max_consecutive_failures", 2)),
+                ),
+            ),
+            workflow_max_wall_seconds=max(
+                0,
+                min(
+                    3600,
+                    int(agent_raw.get("workflow_max_wall_seconds", 300)),
                 ),
             ),
             workflow_capability_gap_log_max=max(
@@ -4603,6 +4757,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             port=max(1, int(mcp_server_raw.get("port", 6274))),
         ),
         mcp_clients=_parse_external_mcp(raw.get("mcp_clients", {})),
+        browser_perception=_parse_browser_perception(
+            raw.get("browser_perception", {})
+        ),
         web_server=WebServerSettings(
             enabled=bool(web_server_raw.get("enabled", True)),
             host=str(web_server_raw.get("host", "127.0.0.1") or "127.0.0.1").strip() or "127.0.0.1",

@@ -37,6 +37,7 @@ exists to keep them in lock-step.
 | Aiko proactively speaks in **voice** chat after N s silence | `agent.proactive_silence_seconds` | `45` |
 | Aiko proactively speaks in **typed** chat after N s silence | `agent.proactive_silence_seconds_typed` | `240` (4 min) |
 | Enable typed-mode proactive at all | `agent.proactive_typed_enabled` | `true` |
+| Speak typed-mode proactive lines (TTS) | `agent.proactive_typed_tts_enabled` | `false` |
 | Forward foreground app name (desktop) | `agent.activity_awareness_enabled` | `false` |
 | Live2D body-language intensity | `avatar.expressiveness` | `1.0` (0.0–1.5) |
 | Live2D outfit override | `avatar.auto_outfit` | `"auto"` |
@@ -179,6 +180,7 @@ Typed-mode runs an independent timer so the cadence can differ (typing sessions 
 - `agent.proactive_silence_seconds_typed` *(float, `240.0`, min `60`)* — silence threshold for typed-mode nudges (default 4 min). Higher → less likely to interrupt a heads-down session.
 - `agent.proactive_cooldown_seconds_typed` *(float, `600.0`, min `120`)* — minimum gap between two typed proactive nudges (default 10 min). Higher → quieter.
 - `agent.proactive_typed_when_away` *(bool, `false`)* — when `false`, typed proactive respects `_user_present` (browser visibility + Tauri focus); when `true`, Aiko can typed-chime in even when no client window is visible. Voice mode ignores this on purpose.
+- `agent.proactive_typed_tts_enabled` *(bool, `false`)* — when `false`, a typed-mode proactive line is **text-only** (bubble, no speech); when `true`, it's also spoken via TTS through the same enqueue the voice path uses. Default off because a typed-silence nudge can land minutes later when you may be away from the speakers. Voice-mode proactive always speaks regardless of this flag.
 
 ### Activity awareness (desktop opt-in)
 
@@ -855,6 +857,7 @@ Agent tool registry switches. Each toggles a single tool; `tools.enabled = false
 
 Destructive task capabilities (file writes today; shell exec / http post later) are gated by a **reusable** approval layer. The policy is generic; each capability owns a small resource block.
 
+- `agent.builtin_file_skills_enabled` *(bool, `true`)* — when `false`, the built-in workflow file skills (`file_search` / `read_file` / `write_file`) are **not** offered to the planner. Set this off when you handle files exclusively through a filesystem MCP server (e.g. `@modelcontextprotocol/server-filesystem`): it removes the built-in-vs-MCP overlap (two path conventions — the built-in `Documents:` label vs the MCP's absolute-under-sandbox-root) that otherwise makes the planner hand a label/relative path to an MCP file tool and get *"path outside allowed directories"*. With it off, all file work uses one convention; note file ops then depend on the MCP server being up.
 - `agent.task_approval_mode` *(str, `"ask"`)* — global default. `"ask"` gates every destructive action behind a TaskStrip approval prompt; `"auto"` performs without asking.
 - `agent.task_approval_overrides` *(dict, `{}`)* — per-capability override map, e.g. `{"file_write": "auto"}` to stop asking for writes only. Invalid modes are dropped (never coerced).
 - `agent.file_write.enabled` *(bool, `false`)* — master switch for the `write_file` workflow skill + handler. Off → the skill is never offered to the planner. Requires at least one **writable** root (a `agent.task_file_allowed_roots` entry with `read_only: false`).
@@ -916,7 +919,22 @@ Master switch lives on `agent`:
 - `enabled` *(bool, `true`)* — per-server switch.
 - `autostart` *(bool, `true`)* — connect at boot.
 - `timeout_seconds` *(float, `30.0`, min `1`)* — per-call read timeout.
-- `expose_tools` *(string[], `[]`)* — optional allow-list of tool names to register for the planner; empty exposes every tool the server advertises.
+- `expose_tools` *(string[], `[]`)* — optional **allow-list** of tool names to register for the planner; empty exposes every tool the server advertises.
+- `disabled_tools` *(string[], `[]`)* — optional **deny-list** of tool names to drop even when they pass the allow-list. Applied after `expose_tools`. Convenient for hiding a few unwanted tools (e.g. a browser server's debug group) without enumerating everything you keep.
+
+---
+
+## `browser_perception` — `BrowserPerceptionSettings`
+
+Optional server-agnostic middleware over an MCP browser server's accessibility-snapshot tool: parse → dedup → form-group → heading-context → heuristic rank → diff-vs-previous → compact render for the workflow planner. Off by default. See [`docs/browser-perception.md`](browser-perception.md) for the full design and the "swap the MCP server" runbook.
+
+- `browser_perception.enabled` *(bool, `false`)* — master switch.
+- `browser_perception.server_id` *(string, `"browser"`)* — which `mcp_clients.servers` row is the browser server.
+- `browser_perception.snapshot_tools` *(string[], `["browser_snapshot"]`)* — tool names whose results get reshaped; every other tool passes through untouched.
+- `browser_perception.adapter` *(string, `"real_browser"`)* — snapshot parser: `"real_browser"` (JSON or indented tree) or `"generic"` (indented tree only). Unknown names fall back to `generic`.
+- `browser_perception.max_ranked_elements` *(int, `40`, min `1`)* — cap on ranked interactive elements rendered.
+- `browser_perception.state_memory_pages` *(int, `8`, min `1`)* — size of the in-process (ephemeral) previous-page-state LRU used for change diffs.
+- `browser_perception.weight_role` / `weight_visibility` / `weight_position` / `weight_text` / `weight_context` *(float, `1.0`, min `0`)* — per-signal weights for the heuristic `interaction_likelihood` score.
 
 ---
 

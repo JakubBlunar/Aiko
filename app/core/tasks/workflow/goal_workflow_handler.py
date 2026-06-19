@@ -62,6 +62,7 @@ from app.core.tasks.workflow.skill_registry import (
     SpawnContext,
     WorkflowSkillRegistry,
 )
+from app.core.tasks.workflow.skill_guidance import guidance_for_skills
 from app.core.tasks.workflow.workflow_skill_router import select_skill_groups
 from app.core.tasks.workflow.workflow_planner import (
     OUTCOME_PARTIAL,
@@ -155,6 +156,11 @@ class GoalWorkflowHandler:
         planner_history_budget_chars: int = 4000,
         planner_max_tokens: int = 512,
         skill_router_enabled_provider: Callable[[], bool] | None = None,
+        max_consecutive_failures: int = 2,
+        max_wall_seconds: float = 300.0,
+        browser_skill_prefix: str = "",
+        browser_skill_group: str = "",
+        mcp_root_provider: "Callable[[str], list[str]] | None" = None,
     ) -> None:
         self._orchestrator = orchestrator
         self._skills = skill_registry
@@ -171,6 +177,21 @@ class GoalWorkflowHandler:
         self._child_wait_timeout = max(1.0, float(child_wait_timeout_seconds))
         self._history_budget = max(500, int(planner_history_budget_chars))
         self._planner_max_tokens = max(64, int(planner_max_tokens))
+        # Robustness limits: stop a workflow that keeps failing (e.g. a
+        # browser goal when Chrome isn't running) instead of grinding
+        # through every iteration on slow timeouts.
+        self._max_consecutive_failures = max(1, int(max_consecutive_failures))
+        self._max_wall_seconds = max(0.0, float(max_wall_seconds))
+        # Skill-name prefix that marks browser skills (``<server_id>__``),
+        # used only to tailor the give-up message.
+        self._browser_skill_prefix = str(browser_skill_prefix or "")
+        # Skill group (``mcp:<server_id>``) whose operational playbook is
+        # injected into the planner prompt when its skills are in the menu.
+        self._browser_skill_group = str(browser_skill_group or "")
+        # Maps an MCP server_id to its configured sandbox root path(s), so
+        # the filesystem playbook can inline the exact allowed root and the
+        # planner never has to guess it. ``None`` -> discover-via-tool copy.
+        self._mcp_root_provider = mcp_root_provider
         # Per-task daemon threads, keyed by task id, for shutdown joins.
         self._threads: dict[int, threading.Thread] = {}
         self._lock = threading.Lock()
@@ -260,10 +281,30 @@ class GoalWorkflowHandler:
         steps: list[PlannerStep] = []
         seen: set[str] = set()
         children_spawned = 0
+        consecutive_failures = 0
+        last_failed_skill = ""
+        started_monotonic = time.monotonic()
         try:
             for iteration in range(max_iter):
                 if self._is_cancelled(task_id):
                     log.info("workflow cancelled: task=%d (pre-plan)", task_id)
+                    return
+                # Wall-clock budget: a pile-up of slow timeouts (e.g. an
+                # offline service) shouldn't run for many minutes.
+                if (
+                    self._max_wall_seconds > 0
+                    and (time.monotonic() - started_monotonic)
+                    >= self._max_wall_seconds
+                ):
+                    log.info(
+                        "workflow wall-clock budget hit: task=%d budget=%.0fs",
+                        task_id,
+                        self._max_wall_seconds,
+                    )
+                    self._emit_finish(
+                        emit, steps, OUTCOME_PARTIAL,
+                        "Stopped after running longer than the time budget.",
+                    )
                     return
                 # If we've hit the child cap, force a finish on the next
                 # plan by telling the planner there's no budget left.
@@ -285,16 +326,18 @@ class GoalWorkflowHandler:
                         phase="planning",
                     )
                 )
+                planner_skills = self._planner_skills(goal)
                 decision = decide_next_action(
                     self._worker_client_provider(),
                     PlannerInput(
                         goal=goal,
-                        skills=self._planner_skills(goal),
+                        skills=planner_skills,
                         steps=steps,
                         iteration=iteration,
                         max_iterations=max_iter,
                         history_budget_chars=self._history_budget,
                         user_name=self._user_name(),
+                        guidance=self._planner_guidance(planner_skills),
                     ),
                     valid_skill_names=set(self._skills.names()),
                     model=self._model(),
@@ -370,6 +413,14 @@ class GoalWorkflowHandler:
                             ),
                         )
                     )
+                    consecutive_failures += 1
+                    last_failed_skill = decision.skill
+                    if self._should_break(consecutive_failures):
+                        self._emit_failure_break(
+                            emit, steps, last_failed_skill, task_id,
+                            consecutive_failures,
+                        )
+                        return
                     continue
                 children_spawned += 1
                 status, row = self._wait_child(task_id, child_id)
@@ -385,6 +436,20 @@ class GoalWorkflowHandler:
                 if self._is_cancelled(task_id):
                     log.info("workflow cancelled: task=%d (post-act)", task_id)
                     return
+                # Consecutive-failure circuit breaker. A clean ``done``
+                # resets the streak; anything else (failed / timeout /
+                # cancelled-child / interrupted) advances it.
+                if status == "done":
+                    consecutive_failures = 0
+                else:
+                    consecutive_failures += 1
+                    last_failed_skill = decision.skill
+                    if self._should_break(consecutive_failures):
+                        self._emit_failure_break(
+                            emit, steps, last_failed_skill, task_id,
+                            consecutive_failures,
+                        )
+                        return
 
             # Fell out of the loop without an explicit finish — cap hit.
             log.info(
@@ -491,6 +556,45 @@ class GoalWorkflowHandler:
         except Exception:
             return False
         return row is not None and row.status in TERMINAL_STATUSES
+
+    def _should_break(self, consecutive_failures: int) -> bool:
+        return consecutive_failures >= self._max_consecutive_failures
+
+    def _is_browser_skill(self, skill: str) -> bool:
+        name = (skill or "").lower()
+        if self._browser_skill_prefix and name.startswith(
+            self._browser_skill_prefix.lower()
+        ):
+            return True
+        return "browser" in name
+
+    def _emit_failure_break(
+        self,
+        emit: TaskEmitFn,
+        steps: list[PlannerStep],
+        last_failed_skill: str,
+        task_id: int,
+        consecutive_failures: int,
+    ) -> None:
+        """Finish (partial) after the consecutive-failure breaker tripped."""
+        if self._is_browser_skill(last_failed_skill):
+            findings = (
+                "I couldn't reach your browser — make sure Chrome is open "
+                "and the Real Browser extension shows a green dot, then ask "
+                "me again."
+            )
+        else:
+            findings = (
+                "I stopped because a tool kept failing — the service it "
+                "needs may be unavailable right now."
+            )
+        log.info(
+            "workflow failure breaker: task=%d failures=%d last_skill=%s",
+            task_id,
+            consecutive_failures,
+            last_failed_skill,
+        )
+        self._emit_finish(emit, steps, OUTCOME_PARTIAL, findings)
 
     def _emit_finish(
         self,
@@ -603,6 +707,25 @@ class GoalWorkflowHandler:
                 [s.get("name") for s in skills],
             )
         return skills
+
+    def _planner_guidance(self, skills: list[dict[str, Any]]) -> str:
+        """Operational playbook(s) for the skills actually in the menu.
+
+        Reads the skills the planner will see this turn (so router
+        narrowing is respected) and returns the matching playbooks: the
+        browser snapshot-first workflow when a browser skill is present,
+        and the filesystem absolute-path discipline when a filesystem MCP
+        server's tools are present (auto-detected by capability). Empty
+        string when none apply."""
+        try:
+            return guidance_for_skills(
+                skills,
+                browser_group=self._browser_skill_group,
+                root_lookup=self._mcp_root_provider,
+            )
+        except Exception:
+            log.debug("planner guidance render failed", exc_info=True)
+            return ""
 
 
 __all__ = ["GoalWorkflowHandler", "OUTCOME_MISSING_CAPABILITY"]
