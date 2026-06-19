@@ -54,6 +54,24 @@ class RenderTests(unittest.TestCase):
         user = render_planner_messages(ctx)[1]["content"]
         self.assertIn("no steps yet", user)
 
+    def test_guidance_block_rendered_when_present(self) -> None:
+        ctx = PlannerInput(
+            goal="g",
+            skills=_SKILLS,
+            guidance="Snapshot FIRST. Refs go stale after navigation.",
+        )
+        user = render_planner_messages(ctx)[1]["content"]
+        self.assertIn("GUIDANCE:", user)
+        self.assertIn("Snapshot FIRST", user)
+        # GUIDANCE sits between SKILLS and STEPS SO FAR.
+        self.assertLess(user.index("SKILLS:"), user.index("GUIDANCE:"))
+        self.assertLess(user.index("GUIDANCE:"), user.index("STEPS SO FAR"))
+
+    def test_no_guidance_block_when_empty(self) -> None:
+        ctx = PlannerInput(goal="g", skills=_SKILLS, guidance="   ")
+        user = render_planner_messages(ctx)[1]["content"]
+        self.assertNotIn("GUIDANCE:", user)
+
     def test_history_budget_truncates_oldest(self) -> None:
         steps = [
             PlannerStep(

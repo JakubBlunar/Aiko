@@ -67,6 +67,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
+import os
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -625,11 +626,19 @@ class TaskOrchestrationMixin:
 
             tools_cfg = getattr(self._settings, "tools", None)  # type: ignore[attr-defined]
             web_enabled = bool(getattr(tools_cfg, "web_search", True))
+            # Built-in file skills can be disabled when files are handled
+            # exclusively through a filesystem MCP server — removes the
+            # built-in-vs-MCP path-convention overlap that confuses the
+            # planner (label path vs absolute-under-sandbox-root).
+            file_skills_enabled = bool(
+                getattr(agent, "builtin_file_skills_enabled", True)
+            )
             # The destructive write skill is offered to the planner only
             # when the master switch is on AND a writable root exists —
             # otherwise the planner would pick a skill that always fails.
             skill_registry = build_builtin_skill_registry(
                 web_search_enabled=web_enabled,
+                file_skills_enabled=file_skills_enabled,
                 file_write_enabled=file_write_enabled and bool(writable_roots),
                 vision_enabled=vision_enabled and bool(active),
             )
@@ -672,6 +681,22 @@ class TaskOrchestrationMixin:
                         False,
                     )
                 ),
+                # Robustness limits so an offline service (e.g. browser
+                # with Chrome closed) fails fast with a clear message
+                # instead of grinding through every iteration.
+                max_consecutive_failures=int(
+                    getattr(agent, "workflow_max_consecutive_failures", 2)
+                ),
+                max_wall_seconds=float(
+                    getattr(agent, "workflow_max_wall_seconds", 300)
+                ),
+                browser_skill_prefix=(
+                    f"{getattr(getattr(self._settings, 'browser_perception', None), 'server_id', 'browser')}__"
+                ),
+                browser_skill_group=(
+                    f"mcp:{getattr(getattr(self._settings, 'browser_perception', None), 'server_id', 'browser')}"
+                ),
+                mcp_root_provider=self._mcp_server_roots,
             )
             self._task_orchestrator.register_handler(handler)
             log.info(
@@ -692,6 +717,33 @@ class TaskOrchestrationMixin:
         # to the background planner only, never to the brain's fast tools).
         self._init_external_mcp(agent, skill_registry)
 
+    def _mcp_server_roots(self, server_id: str) -> list[str]:
+        """Configured sandbox root dir(s) for an MCP server, by id.
+
+        Used to inline the exact allowed root into the filesystem playbook
+        so the planner never guesses it. We pick the launch args that are
+        real directories on disk (``os.path.isdir``) — deterministic and
+        server-agnostic (a filesystem MCP must be given an existing root).
+        Returns ``[]`` for unknown ids / arg-less (e.g. SSE) servers."""
+        try:
+            mcp_clients = getattr(self._settings, "mcp_clients", None)  # type: ignore[attr-defined]
+            servers = list(getattr(mcp_clients, "servers", []) or [])
+            for srv in servers:
+                if str(getattr(srv, "id", "")) != str(server_id):
+                    continue
+                roots: list[str] = []
+                for arg in getattr(srv, "args", ()) or ():
+                    candidate = str(arg)
+                    try:
+                        if os.path.isdir(candidate):
+                            roots.append(os.path.normpath(candidate))
+                    except Exception:
+                        continue
+                return roots
+        except Exception:
+            log.debug("mcp server roots lookup failed", exc_info=True)
+        return []
+
     def _init_external_mcp(self, agent: Any, skill_registry: Any) -> None:
         """Build + start the external MCP manager and register its skills.
 
@@ -702,6 +754,7 @@ class TaskOrchestrationMixin:
         slow handshake) lands its tools without a restart.
         """
         self._external_mcp_manager = None
+        self._browser_perception = None
         if not bool(getattr(agent, "mcp_clients_enabled", True)):
             return
         mcp_clients = getattr(self._settings, "mcp_clients", None)  # type: ignore[attr-defined]
@@ -715,6 +768,29 @@ class TaskOrchestrationMixin:
             from app.core.tasks.workflow.mcp_skills import register_mcp_skills
             from app.mcp.client.manager import ExternalMcpManager
 
+            # Optional browser perception middleware (parse -> dedup ->
+            # group -> rank -> diff over an accessibility snapshot). Built
+            # only when enabled; passed to the handler so the matching
+            # snapshot tool's result is reshaped, every other tool is
+            # untouched.
+            perception = None
+            bp = getattr(self._settings, "browser_perception", None)  # type: ignore[attr-defined]
+            if bp is not None and getattr(bp, "enabled", False):
+                try:
+                    from app.core.browser.perception import BrowserPerception
+
+                    perception = BrowserPerception.from_settings(bp)
+                    log.info(
+                        "browser-perception: enabled server=%s tools=%s adapter=%s",
+                        bp.server_id,
+                        list(bp.snapshot_tools),
+                        bp.adapter,
+                    )
+                except Exception as exc:
+                    log.warning("browser-perception: init failed: %r", exc)
+                    perception = None
+            self._browser_perception = perception
+
             manager = ExternalMcpManager(enabled_servers)
             # Re-register skills whenever a server's catalogue changes
             # (initial connect or reconnect). Fired on the manager loop
@@ -723,7 +799,7 @@ class TaskOrchestrationMixin:
                 lambda: register_mcp_skills(skill_registry, manager)
             )
             self._task_orchestrator.register_handler(
-                McpToolHandler(manager=manager)
+                McpToolHandler(manager=manager, perception=perception)
             )
             manager.start()
             # Best-effort immediate pass (usually 0 — connect is async);

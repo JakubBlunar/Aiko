@@ -85,6 +85,21 @@ On the embedded debug server (`app/mcp/server.py`):
 - `list_external_mcp_tools()` — every discovered tool (`server_id`, `name`, `qualified_name`, `description`, `input_schema`).
 - `call_external_mcp_tool(server_id, tool, args_json)` — call a tool end-to-end, no task row, no Aiko. Fastest reachability check.
 - `restart_external_mcp_server(server_id)` — force one server to reconnect (re-reads tools).
+- `get_browser_perception_state()` — perception layer status (enabled / server_id / adapter / memory pages / last summary). See [browser-perception.md](browser-perception.md).
+- `preview_browser_perception(raw_text, args_json)` — run the perception pipeline on a pasted snapshot, no live browser.
+
+## Tool filtering: allow-list vs deny-list
+
+Each server row supports two complementary filters (applied in
+`ExternalMcpManager._refresh_tools`, before tools become skills):
+
+- `expose_tools` — *allow-list*. When non-empty, ONLY these tool names register.
+- `disabled_tools` — *deny-list*. Tool names to drop even if they pass the allow-list. Convenient for hiding a few unwanted tools without enumerating everything you keep.
+
+```json
+{ "id": "browser", "command": "npx", "args": ["-y", "real-browser-mcp"],
+  "disabled_tools": ["browser_console", "browser_network", "browser_evaluate", "browser_handle_dialog"] }
+```
 
 ## Filesystem MCP proof
 
@@ -117,8 +132,17 @@ Restart the app, then verify over the debug MCP:
 The custom file tools (`FileRead/Search/Write`) keep working alongside the
 filesystem MCP server; retiring them is Phase 4.
 
+## Browser MCP + perception layer
+
+`real-browser-mcp` (`npx -y real-browser-mcp` + a Chrome extension) is just
+another stdio server row. On top of it, the optional **browser perception
+layer** reshapes the raw accessibility snapshot into a compact, ranked,
+deduped, form-grouped, change-diffed page model before it reaches the
+planner — and it's **server-agnostic** (swap the MCP server, keep the
+optimizations). See [browser-perception.md](browser-perception.md) for the
+full design, the adapter contract, and the swap runbook.
+
 ## Later phases (not built)
 
-- **Phase 2 — Browser MCP.** `npx @browsermcp/mcp` is just another stdio row + the user installs the Chrome extension; no new framework code.
-- **Phase 3 — Settings UI + keychain.** A drawer panel + `/api/mcp/servers` CRUD + `mcp_servers_changed` WS, cloning the `llm.providers` pattern, plus keychain-backed secret env vars.
-- **Phase 4 — Retire the custom file tools** once the filesystem MCP server is validated.
+- **Settings UI + keychain.** A drawer panel + `/api/mcp/servers` CRUD + `mcp_servers_changed` WS, cloning the `llm.providers` pattern, plus keychain-backed secret env vars.
+- **Retire the custom file tools** once the filesystem MCP server is validated.

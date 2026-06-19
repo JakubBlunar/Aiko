@@ -30,6 +30,7 @@ from app.core.tasks.task_handler import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover - import-only
+    from app.core.browser.perception import BrowserPerception
     from app.mcp.client.manager import ExternalMcpManager
 
 
@@ -64,8 +65,17 @@ class McpToolHandler:
 
     name: str = HANDLER_MCP_TOOL
 
-    def __init__(self, *, manager: "ExternalMcpManager") -> None:
+    def __init__(
+        self,
+        *,
+        manager: "ExternalMcpManager",
+        perception: "BrowserPerception | None" = None,
+    ) -> None:
         self._manager = manager
+        # Optional server-agnostic middleware that reshapes accessibility
+        # snapshots (parse -> dedup -> group -> rank -> diff) before they
+        # reach the planner. None = every tool result flattened as-is.
+        self._perception = perception
 
     # ── lifecycle ────────────────────────────────────────────────────
 
@@ -98,6 +108,36 @@ class McpToolHandler:
                 "mcp_tool tool-error: server=%s tool=%s", server_id, tool_name,
             )
             return {"args": args, "phase": "failed"}
+
+        # Browser perception hook: when a perception layer claims this
+        # (server_id, tool_name) and successfully parses the snapshot, use
+        # its compact ranked render; otherwise fall through to the raw
+        # flatten so every other tool (and an unparseable snapshot) is
+        # byte-identical to the no-perception path.
+        perceived = None
+        if self._perception is not None and self._perception.claims(
+            server_id, tool_name
+        ):
+            perceived = self._perception.transform(
+                server_id, tool_name, text, tool_args
+            )
+        if perceived is not None:
+            content = perceived.content[:_CONTENT_CAP]
+            if len(perceived.content) > _CONTENT_CAP:
+                content = content.rstrip() + "\n…(truncated)"
+            summary = perceived.summary[:_SUMMARY_CAP]
+            log.info(
+                "mcp_tool perceived: server=%s tool=%s elements=%d",
+                server_id, tool_name, perceived.element_count,
+            )
+            payload = {
+                "server_id": server_id,
+                "tool_name": tool_name,
+                "content": content,
+                "summary": summary,
+            }
+            emit(TaskCompleted(result=payload))
+            return {"args": args, "phase": "done"}
 
         content = text[:_CONTENT_CAP]
         if text and len(text) > _CONTENT_CAP:

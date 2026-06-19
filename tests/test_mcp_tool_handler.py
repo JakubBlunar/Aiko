@@ -133,5 +133,80 @@ class McpToolHandlerTests(unittest.TestCase):
         self.assertIsInstance(out2[0], TaskFailed)
 
 
+class _PerceptionResult:
+    def __init__(self, content: str, summary: str, element_count: int) -> None:
+        self.content = content
+        self.summary = summary
+        self.element_count = element_count
+
+
+class _StubPerception:
+    """Claims one (server, tool) and optionally returns a result/None."""
+
+    def __init__(self, *, result, server="browser", tool="browser_snapshot") -> None:
+        self._result = result
+        self._server = server
+        self._tool = tool
+        self.transform_calls: list[tuple] = []
+
+    def claims(self, server_id: str, tool_name: str) -> bool:
+        return server_id == self._server and tool_name == self._tool
+
+    def transform(self, server_id, tool_name, text, tool_args):
+        self.transform_calls.append((server_id, tool_name, text, tool_args))
+        return self._result
+
+
+class PerceptionHookTests(unittest.TestCase):
+    def test_claimed_snapshot_uses_perceived_render(self) -> None:
+        mgr = _FakeManager(result=_FakeResult([_TextBlock("- button \"X\" [ref=e1]")]))
+        perception = _StubPerception(
+            result=_PerceptionResult("RANKED RENDER", "page: 1 interactive", 1)
+        )
+        handler = McpToolHandler(manager=mgr, perception=perception)
+        outcomes, state = _run(
+            handler,
+            {"server_id": "browser", "tool_name": "browser_snapshot", "tool_args": {}},
+        )
+        self.assertIsInstance(outcomes[0], TaskCompleted)
+        self.assertEqual(outcomes[0].result["content"], "RANKED RENDER")
+        self.assertEqual(outcomes[0].result["summary"], "page: 1 interactive")
+        self.assertEqual(state["phase"], "done")
+        self.assertEqual(len(perception.transform_calls), 1)
+
+    def test_perception_none_falls_back_to_raw(self) -> None:
+        mgr = _FakeManager(result=_FakeResult([_TextBlock("raw tree text")]))
+        perception = _StubPerception(result=None)
+        handler = McpToolHandler(manager=mgr, perception=perception)
+        outcomes, _ = _run(
+            handler,
+            {"server_id": "browser", "tool_name": "browser_snapshot", "tool_args": {}},
+        )
+        self.assertIsInstance(outcomes[0], TaskCompleted)
+        self.assertEqual(outcomes[0].result["content"], "raw tree text")
+
+    def test_non_claimed_tool_passes_through(self) -> None:
+        mgr = _FakeManager(result=_FakeResult([_TextBlock("click ok")]))
+        perception = _StubPerception(
+            result=_PerceptionResult("SHOULD NOT BE USED", "x", 9)
+        )
+        handler = McpToolHandler(manager=mgr, perception=perception)
+        outcomes, _ = _run(
+            handler,
+            {"server_id": "browser", "tool_name": "browser_click", "tool_args": {}},
+        )
+        self.assertEqual(outcomes[0].result["content"], "click ok")
+        self.assertEqual(perception.transform_calls, [])
+
+    def test_no_perception_is_unchanged(self) -> None:
+        mgr = _FakeManager(result=_FakeResult([_TextBlock("plain")]))
+        handler = McpToolHandler(manager=mgr, perception=None)
+        outcomes, _ = _run(
+            handler,
+            {"server_id": "browser", "tool_name": "browser_snapshot"},
+        )
+        self.assertEqual(outcomes[0].result["content"], "plain")
+
+
 if __name__ == "__main__":
     unittest.main()

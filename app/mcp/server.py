@@ -5454,5 +5454,69 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
         except Exception as exc:
             return json.dumps({"error": f"restart failed: {exc}"})
 
+    @mcp.tool()
+    def get_browser_perception_state() -> str:
+        """Snapshot of the browser perception layer (the snapshot middleware).
+
+        Returns ``{enabled, server_id, snapshot_tools, adapter,
+        max_ranked_elements, memory_pages, transform_count, last_summary}``
+        when the layer is configured, else ``{enabled: false}``. Use this
+        to confirm the perception layer is active and which MCP server /
+        adapter it's wrapping before debugging a browse workflow.
+        """
+        perception = getattr(session, "_browser_perception", None)
+        if perception is None:
+            return json.dumps(
+                {"enabled": False, "reason": "browser perception not configured"}
+            )
+        try:
+            return json.dumps(perception.debug_state(), indent=2, default=str)
+        except Exception as exc:
+            return json.dumps({"error": f"state read failed: {exc}"})
+
+    @mcp.tool()
+    def preview_browser_perception(raw_text: str, args_json: str = "{}") -> str:
+        """Run the perception pipeline on a pasted snapshot (no live browser).
+
+        Feeds ``raw_text`` (a raw accessibility-tree dump) through the
+        configured adapter + dedup/group/rank/diff pipeline and returns
+        the reshaped ``{content, summary, element_count}`` — or
+        ``{parsed: false}`` when the adapter can't parse it (the raw text
+        would pass through unchanged in production). ``args_json`` is the
+        optional tool-args object (e.g. ``{"url": "..."}``) used for the
+        page key/title. The fastest way to validate the adapter against a
+        real snapshot format without driving Chrome.
+        """
+        perception = getattr(session, "_browser_perception", None)
+        if perception is None:
+            return json.dumps(
+                {"enabled": False, "reason": "browser perception not configured"}
+            )
+        try:
+            tool_args = json.loads(args_json or "{}")
+            if not isinstance(tool_args, dict):
+                return json.dumps({"error": "args_json must be a JSON object"})
+        except Exception as exc:
+            return json.dumps({"error": f"args_json parse failed: {exc}"})
+        try:
+            tool = next(iter(perception.snapshot_tools), "")
+            result = perception.transform(
+                perception.server_id, tool, raw_text, tool_args
+            )
+            if result is None:
+                return json.dumps({"parsed": False, "reason": "adapter passthrough"})
+            return json.dumps(
+                {
+                    "parsed": True,
+                    "element_count": result.element_count,
+                    "summary": result.summary,
+                    "content": result.content,
+                },
+                indent=2,
+                default=str,
+            )
+        except Exception as exc:
+            return json.dumps({"error": f"preview failed: {exc}"})
+
     log.info("MCP server created (lean v1)")
     return mcp

@@ -91,6 +91,10 @@ class PlannerInput:
     max_iterations: int = 6
     history_budget_chars: int = 4000
     user_name: str = "the user"
+    # Optional per-skill-group operational playbook (e.g. the browser
+    # snapshot-first workflow), injected only when the relevant group's
+    # skills are in the menu. Empty = no GUIDANCE block.
+    guidance: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,7 +202,11 @@ _SYSTEM_PROMPT = (
     "plainly (e.g. \"open and interact with a web page\"). Do NOT use it "
     "just because a step failed.\n"
     "- Do NOT repeat an action that already ran with the same args.\n"
-    "- Do NOT invent skills or args that aren't in the catalogue."
+    "- Do NOT invent skills or args that aren't in the catalogue.\n"
+    "- Be HONEST about failure. If steps failed and you could not actually "
+    "complete the goal, finish with outcome \"partial\" or \"nothing_found\" "
+    "and say plainly what went wrong in \"findings\". NEVER claim an action "
+    "succeeded (e.g. \"copied the file\") when its step status was failed."
 )
 
 
@@ -206,9 +214,13 @@ def render_planner_messages(ctx: PlannerInput) -> list[dict[str, str]]:
     """Build the ``messages`` list for the planner's ``chat_json`` call."""
     catalogue = _render_skill_catalogue(ctx.skills)
     history = _render_history(ctx.steps, ctx.history_budget_chars)
+    guidance_block = (
+        f"GUIDANCE:\n{ctx.guidance.strip()}\n\n" if ctx.guidance.strip() else ""
+    )
     user_block = (
         f"GOAL (for {ctx.user_name}): {ctx.goal.strip()}\n\n"
         f"SKILLS:\n{catalogue}\n\n"
+        f"{guidance_block}"
         f"STEPS SO FAR (iteration {ctx.iteration + 1} of "
         f"{ctx.max_iterations}):\n{history}\n\n"
         "Decide the next action. Respond with one JSON object."

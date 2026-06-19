@@ -323,9 +323,12 @@ class ExternalMcpManager:
     async def _refresh_tools(self, state: _ServerState, session: Any) -> None:
         result = await session.list_tools()
         allow = set(state.server.expose_tools or ())
+        deny = set(state.server.disabled_tools or ())
         descriptors: list[McpToolDescriptor] = []
         for tool in result.tools:
             if allow and tool.name not in allow:
+                continue
+            if tool.name in deny:
                 continue
             schema = tool.inputSchema if isinstance(tool.inputSchema, dict) else {}
             descriptors.append(

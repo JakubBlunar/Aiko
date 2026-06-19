@@ -136,6 +136,7 @@ class ProactiveDirector:
         # very different cadences (10 min typed vs 2 min voice default).
         cooldown_seconds_typed: float = 600.0,
         is_typed_eligible: BoolPredicate | None = None,
+        typed_tts_enabled: BoolPredicate | None = None,
         user_display_name_provider: Callable[[], str] | None = None,
         arc_store: "ArcStore | None" = None,
     ) -> None:
@@ -170,6 +171,10 @@ class ProactiveDirector:
         # parallel against the same DB row.
         self._cooldown_typed = float(cooldown_seconds_typed)
         self._is_typed_eligible = is_typed_eligible
+        # Opt-in: speak typed-mode proactive lines too. Read live (a
+        # callable) so a settings toggle takes effect without rebuilding
+        # the director. ``None`` / returns False -> typed stays text-only.
+        self._typed_tts_enabled = typed_tts_enabled
         self._last_typed_run_monotonic = 0.0
         self._typed_inflight = False
         self._typed_prepared_consumed = 0
@@ -679,11 +684,11 @@ class ProactiveDirector:
             token_count=usage.completion_tokens,
         )
         self._emit_notify("Assistant (proactive)", cleaned, message_id)
-        # Typed mode is text-only by design: the assumption is the
+        # Typed mode is text-only by default: the assumption is the
         # user is reading, not listening, so auto-speaking a 4-min-
         # later "pick up the thread" line just to fill the room would
-        # surprise them. TTS toggle for typed proactive is on the
-        # backlog as a follow-up.
+        # surprise them. Opt in via ``proactive_typed_tts_enabled``.
+        self._maybe_speak_typed(cleaned, _mood)
         self._typed_llm_path_used += 1
         log.info(
             "proactive(typed) wrote %d chars (%d/%d tokens, %.0f ms)",
@@ -693,11 +698,29 @@ class ProactiveDirector:
             (time.monotonic() - t0) * 1000.0,
         )
 
+    def _maybe_speak_typed(self, cleaned: str, mood: str | None) -> None:
+        """Speak a typed-mode proactive line only when opted in.
+
+        Default typed proactive is text-only; ``proactive_typed_tts_enabled``
+        (read live via the injected predicate) routes it through the same
+        ``prepare_tts_text`` + ``speak`` enqueue the voice path uses."""
+        enabled = self._typed_tts_enabled
+        if enabled is None or not enabled():
+            return
+        spoken = prepare_tts_text(cleaned)
+        if not spoken:
+            return
+        try:
+            self._speak(spoken, mood or "calm")
+        except Exception:
+            log.debug("proactive(typed) speak callback raised", exc_info=True)
+
     def _speak_prepared_typed(self, session_key: str, nudge: object) -> bool:
         """Persist a prepared nudge as a typed-mode proactive turn.
 
-        Mirrors :meth:`_speak_prepared` but skips the TTS enqueue —
-        typed proactive is text-only by design.
+        Mirrors :meth:`_speak_prepared`; the TTS enqueue only fires when
+        ``proactive_typed_tts_enabled`` is set (typed proactive is
+        text-only by default).
         """
         text = getattr(nudge, "text", "")
         if not text:
@@ -720,6 +743,7 @@ class ProactiveDirector:
         except Exception:
             log.debug("prepared nudge persist failed", exc_info=True)
         self._emit_notify("Assistant (proactive)", cleaned, message_id)
+        self._maybe_speak_typed(cleaned, "calm")
         self._typed_prepared_consumed += 1
         log.info(
             "proactive(typed) wrote prepared nudge (kind=%s, %d chars)",

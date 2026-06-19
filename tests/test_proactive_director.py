@@ -35,7 +35,7 @@ class _FakeOllama:
 
 
 class _Fixture:
-    def __init__(self, *, typed_eligible: bool = True):
+    def __init__(self, *, typed_eligible: bool = True, typed_tts: bool = False):
         self.tmp = TemporaryDirectory()
         self.db = ChatDatabase(Path(self.tmp.name) / "chat.db")
         self.prepared = PreparedNudgeStore(self.db)
@@ -44,6 +44,7 @@ class _Fixture:
         self.live = True
         self.busy = False
         self.typed_eligible = typed_eligible
+        self.typed_tts = typed_tts
         self.ollama = _FakeOllama()
         self.director = ProactiveDirector(
             ollama=self.ollama,
@@ -62,6 +63,7 @@ class _Fixture:
             user_id="u1",
             cooldown_seconds_typed=0.01,
             is_typed_eligible=lambda: self.typed_eligible,
+            typed_tts_enabled=lambda: self.typed_tts,
         )
 
     def close(self):
@@ -213,6 +215,49 @@ class TypedProactivePathTests(unittest.TestCase):
             )
             # Typed mode never speaks aloud.
             self.assertEqual(f.spoken, [])
+            stats = f.director.stats()
+            self.assertEqual(stats["typed_llm_path_used"], 1)
+        finally:
+            f.close()
+
+    def _wait_for_speak(self, fixture: _Fixture, timeout: float = 2.0):
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            if fixture.spoken:
+                return
+            time.sleep(0.02)
+        raise AssertionError("director never spoke")
+
+    def test_typed_prepared_speaks_when_tts_enabled(self):
+        f = _Fixture(typed_tts=True)
+        try:
+            f.seed_history()
+            f.prepared.upsert(
+                "u1",
+                text="Hey, picked up the migration thread?",
+                source_kind="agenda",
+                ttl_seconds=120.0,
+            )
+            f.director.notify_typed_silence("s1")
+            self._wait_for_speak(f)
+            # Opt-in: the prepared typed nudge is both shown AND spoken.
+            self.assertEqual(len(f.notified), 1)
+            self.assertEqual(len(f.spoken), 1)
+            self.assertIn("migration", f.spoken[0][0])
+            stats = f.director.stats()
+            self.assertEqual(stats["typed_prepared_consumed"], 1)
+            self.assertEqual(stats["typed_llm_path_used"], 0)
+        finally:
+            f.close()
+
+    def test_typed_llm_speaks_when_tts_enabled(self):
+        f = _Fixture(typed_tts=True)
+        try:
+            f.seed_history()
+            f.director.notify_typed_silence("s1")
+            self._wait_for_speak(f)
+            self.assertEqual(f.ollama.calls, 1)
+            self.assertEqual(len(f.spoken), 1)
             stats = f.director.stats()
             self.assertEqual(stats["typed_llm_path_used"], 1)
         finally:

@@ -87,6 +87,19 @@ class BuiltinRegistryTests(unittest.TestCase):
         # finish is always present.
         self.assertIn(WORKFLOW_SKILL_FINISH, reg.names())
 
+    def test_file_skills_can_be_disabled(self) -> None:
+        # When files are handled solely via a filesystem MCP server, the
+        # built-in file skills are dropped (no built-in-vs-MCP overlap).
+        reg = build_builtin_skill_registry(
+            file_skills_enabled=False, file_write_enabled=True
+        )
+        self.assertNotIn("search_files", reg.names())
+        self.assertNotIn("read_file", reg.names())
+        self.assertNotIn("write_file", reg.names())
+        # Web + finish remain.
+        self.assertIn("web_search", reg.names())
+        self.assertIn(WORKFLOW_SKILL_FINISH, reg.names())
+
     def test_describe_for_planner_shape(self) -> None:
         reg = build_builtin_skill_registry()
         desc = reg.describe_for_planner()
