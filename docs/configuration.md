@@ -415,8 +415,21 @@ Web-searches `open_question` memories during idle windows.
 
 - `agent.belief_tracking_enabled` *(bool, `true`)* — master switch for the whole K2 surface (worker + gap detector + tag parser + REST + UI). Off → `[[predict:...]]` self-tags still strip from chat but their payload is dropped.
 - `agent.belief_worker_enabled` *(bool, `true`)* — toggle only the background inference worker. With tracking on and worker off, the self-tag fast path still writes beliefs and gaps still surface.
-- `agent.belief_worker_per_hour_cap` *(int, `4`, min `0`)* — hourly cap on LLM extraction calls.
-- `agent.belief_worker_per_day_cap` *(int, `20`, min `0`)* — daily cap.
+- `agent.belief_worker_per_hour_cap` *(int, `8`, min `0`)* — hourly cap on LLM extraction calls.
+- `agent.belief_worker_per_day_cap` *(int, `40`, min `0`)* — daily cap.
+
+### Promise extraction worker (Phase 3c, reworked)
+
+The sole writer of `kind="promise"` memories. Replaces the retired post-turn regex + speaking-window LLM tracks (which wrote context-free fragments like "Jacob promised: never know"). Runs on the `IdleWorkerScheduler` during quiet windows, reads the last few turns for *context* (both user and assistant lines), and asks the worker LLM for self-contained promises (pronouns/objects resolved). Output is quality-gated (idiom stop-list + pronoun-only rejection) and deduped against existing open promises. The transcript is privacy-gated (a URL/email/address-bearing window is skipped) but otherwise sent to the **local** worker LLM with names intact so pronoun resolution works.
+
+- `agent.promise_worker_enabled` *(bool, `true`)* — master switch. Off → no promises are auto-extracted (the `[[remember:...]]` self-tag path is unaffected).
+- `agent.promise_worker_per_hour_cap` *(int, `10`, min `0`)* — hourly cap on LLM extraction calls (the real spend ceiling).
+- `agent.promise_worker_per_day_cap` *(int, `60`, min `0`)* — daily cap.
+- `memory.promise_worker_interval_seconds` *(int, `600`, min `60`)* — idle-worker cadence; frequent because spend is bounded by the caps, not the interval.
+- `memory.promise_worker_lookback_turns` *(int, `12`, min `1`)* — recent turns (both sides) read per run.
+- `memory.promise_worker_max_per_run` *(int, `5`, min `1`)* — max promises persisted per run.
+- `memory.promise_worker_max_msg_chars` *(int, `2000`, min `200`)* — per-message char cap in the snapshot.
+- `memory.promise_worker_max_transcript_chars` *(int, `8000`, min `500`)* — overall transcript char budget.
 
 ### K6 — surprise / novelty detector
 
@@ -684,14 +697,19 @@ The cue is **not** added to the K16 grounding-line suppression matrix: the fused
 
 ### Memory background workers
 
-- `memory.promotion_worker_interval_seconds` *(int, `3600`, min `10`)* — `MemoryPromotionWorker` cadence. Drop to ~60 for active testing.
-- `memory.decay_worker_interval_seconds` *(int, `3600`, min `10`)* — `MemoryDecayWorker` cadence. Workers are idempotent; running more often is safe but wastes a little CPU.
+Idle LLM workers were retuned to run more often (they no longer block the brain and local-LLM headroom is ample); real spend stays bounded by each worker's `per_hour_cap` / `per_day_cap`.
+
+- `memory.promotion_worker_interval_seconds` *(int, `1800`, min `10`)* — `MemoryPromotionWorker` cadence. Drop to ~60 for active testing.
+- `memory.decay_worker_interval_seconds` *(int, `1800`, min `10`)* — `MemoryDecayWorker` cadence. Workers are idempotent; running more often is safe but wastes a little CPU.
 - `memory.fact_checker_interval_seconds` *(int, `300`, min `30`)* — F1 `IdleFactChecker` cadence. Defaults to 5 min so newly written memories get verified mid-session.
 - `memory.schedule_learner_interval_seconds` *(int, `86400`, min `60`)* — G2 schedule-learner cadence. Once a day is plenty.
 - `memory.idle_curiosity_interval_seconds` *(int, `1800`, min `60`)* — G3 idle-curiosity-worker cadence.
 - `memory.curiosity_seed_interval_seconds` *(int, `3600`, min `60`)* — K9 curiosity-seed-worker cadence (a ceiling, not a floor — it short-circuits at `curiosity_seed_max_active`).
-- `memory.conflict_detector_interval_seconds` *(int, `3600`, min `60`)* — F5 conflict-detector cadence.
-- `memory.belief_worker_interval_seconds` *(int, `3600`, min `60`)* — K2 belief-inference-worker cadence.
+- `memory.conflict_detector_interval_seconds` *(int, `1800`, min `60`)* — F5 conflict-detector cadence.
+- `memory.belief_worker_interval_seconds` *(int, `1200`, min `60`)* — K2 belief-inference-worker cadence.
+- `memory.promise_worker_interval_seconds` *(int, `600`, min `60`)* — Phase 3c promise-extraction-worker cadence.
+- `memory.forward_curiosity_interval_seconds` *(int, `900`, min `30`)* — forward-curiosity-worker cadence.
+- `memory.promise_followthrough_interval_seconds` *(int, `900`, min `30`)* — K43 promise-follow-through-worker cadence.
 - `memory.goal_reflection_interval_seconds` *(int, `3600`, min `60`)* — K1 `GoalWorker` cadence. Once an hour gives every goal a daily-ish reflection at the default `goal_max_active=5`. Drop to ~60 for an active testing loop; raise for a calmer cadence.
 
 ### F5 — conflict detector thresholds

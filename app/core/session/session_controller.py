@@ -1183,23 +1183,12 @@ class SessionController(
             self._agenda_store = None
             self._agenda_worker = None
 
-        # Phase 3c: promise extractor (regex post-turn + LLM speaking-window).
-        # Both tracks persist promises as ``kind="promise"`` memories so RAG
-        # surfaces them naturally; ProactiveDirector benefits implicitly.
-        self._promise_extractor = None
-        try:
-            from app.core.memory.promise_extractor import PromiseExtractor
-
-            self._promise_extractor = PromiseExtractor(
-                ollama=self._ollama,
-                memory_store=self._memory_store,
-                embedder=self._embedder,
-                model=self._effective_worker_model,
-                user_display_name_provider=lambda: self.user_display_name,
-            )
-        except Exception:
-            log.warning("PromiseExtractor init failed", exc_info=True)
-            self._promise_extractor = None
+        # Phase 3c (reworked): promise extraction now runs as the
+        # context-aware ``PromiseExtractionWorker`` idle worker, registered
+        # alongside the other LLM idle workers below. The old regex
+        # post-turn + speaking-window tracks were retired because they
+        # wrote context-free fragments ("Jacob promised: never know").
+        self._promise_worker = None
 
         # K4: per-turn dialogue-act tagger. Regex hot path runs inline
         # in ``_post_turn_inner_life``; the LLM cold path (~3 user-turn
@@ -3002,6 +2991,70 @@ class SessionController(
                 self._belief_worker = None
                 self._belief_rate_limiter = None
 
+        # Phase 3c (reworked): context-aware promise extraction worker.
+        # Sole writer of ``kind="promise"`` memories now -- reads the last
+        # few turns for context, extracts self-contained promises via the
+        # worker LLM, quality-gates + dedupes, and writes long_term rows.
+        self._promise_rate_limiter = None
+        if (
+            self._idle_scheduler is not None
+            and self._memory_store is not None
+            and self._fact_check_cancel is not None
+            and self._embedder is not None
+            and bool(getattr(settings.agent, "promise_worker_enabled", True))
+        ):
+            try:
+                from app.core.memory.promise_worker import (
+                    PromiseExtractionWorker,
+                )
+                from app.core.memory.fact_check_rate_limiter import (
+                    FactCheckRateLimiter,
+                )
+
+                self._promise_rate_limiter = FactCheckRateLimiter(
+                    self._chat_db,
+                    per_hour_cap=int(
+                        getattr(
+                            settings.agent,
+                            "promise_worker_per_hour_cap",
+                            10,
+                        )
+                    ),
+                    per_day_cap=int(
+                        getattr(
+                            settings.agent,
+                            "promise_worker_per_day_cap",
+                            60,
+                        )
+                    ),
+                    state_key="promise_worker.rate_state",
+                )
+                self._promise_worker = PromiseExtractionWorker(
+                    memory_store=self._memory_store,
+                    chat_db=self._chat_db,
+                    embedder=self._embedder,
+                    # Idle-scheduler worker → maintenance tier.
+                    ollama=self._maintenance_client,
+                    chat_model=self._effective_worker_model,
+                    rate_limiter=self._promise_rate_limiter,
+                    cancel_event=self._fact_check_cancel,
+                    agent_settings=settings.agent,
+                    memory_settings=self._memory_settings,
+                    session_id_provider=lambda: self._session_id,
+                    user_display_name_provider=lambda: self.user_display_name,
+                    user_names_provider=lambda: [self.user_display_name]
+                    if self.user_display_name
+                    else [],
+                    assistant_name_provider=lambda: "Aiko",
+                )
+                self._idle_scheduler.register(self._promise_worker)
+            except Exception:
+                log.warning(
+                    "PromiseExtractionWorker init failed", exc_info=True
+                )
+                self._promise_worker = None
+                self._promise_rate_limiter = None
+
         # K6 — surprise / novelty detector. Pure in-process helper:
         # one embed + a tiny in-memory ring per turn, no DB writes,
         # no background worker. Registered as a per-turn inner-life
@@ -3758,7 +3811,7 @@ class SessionController(
         "_reflection_worker",
         "_dream_worker",
         "_curiosity_worker",
-        "_promise_extractor",
+        "_promise_worker",
         "_self_image_worker",
         "_relationship_pulse",
         "_idle_fact_checker",

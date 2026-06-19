@@ -218,7 +218,7 @@ class ForwardCuriositySettingsTests(unittest.TestCase):
         result = load_settings(config_path=path)
         self.assertTrue(result.agent.forward_curiosity_enabled)
         self.assertEqual(
-            result.memory.forward_curiosity_interval_seconds, 1800,
+            result.memory.forward_curiosity_interval_seconds, 900,
         )
         self.assertEqual(
             result.memory.forward_curiosity_cooldown_seconds, 3600,
@@ -308,7 +308,7 @@ class PromiseFollowthroughSettingsTests(unittest.TestCase):
         result = load_settings(config_path=path)
         self.assertTrue(result.agent.promise_followthrough_enabled)
         self.assertEqual(
-            result.memory.promise_followthrough_interval_seconds, 1800,
+            result.memory.promise_followthrough_interval_seconds, 900,
         )
         self.assertAlmostEqual(
             result.memory.promise_followthrough_min_age_hours, 4.0,
@@ -372,6 +372,115 @@ class PromiseFollowthroughSettingsTests(unittest.TestCase):
             result.memory.promise_followthrough_drop_after_days, 1.0,
         )
         self.assertEqual(result.memory.promise_fulfil_min_overlap, 1)
+
+
+class PromiseWorkerSettingsTests(unittest.TestCase):
+    """Phase 3c (reworked): promise-extraction-worker knobs round-trip + clamps."""
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(
+        self, agent_extra: dict | None = None, memory_extra: dict | None = None,
+    ) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(json.loads(default_path.read_text(encoding="utf-8")))
+        for k in (
+            "promise_worker_enabled",
+            "promise_worker_per_hour_cap",
+            "promise_worker_per_day_cap",
+        ):
+            cfg.get("agent", {}).pop(k, None)
+        for k in (
+            "promise_worker_interval_seconds",
+            "promise_worker_lookback_turns",
+            "promise_worker_max_per_run",
+            "promise_worker_max_msg_chars",
+            "promise_worker_max_transcript_chars",
+        ):
+            cfg.get("memory", {}).pop(k, None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        if memory_extra is not None:
+            cfg["memory"] = {**cfg.get("memory", {}), **memory_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults_load_when_keys_missing(self) -> None:
+        path = self._write_config()
+        result = load_settings(config_path=path)
+        self.assertTrue(result.agent.promise_worker_enabled)
+        self.assertEqual(result.agent.promise_worker_per_hour_cap, 10)
+        self.assertEqual(result.agent.promise_worker_per_day_cap, 60)
+        self.assertEqual(
+            result.memory.promise_worker_interval_seconds, 600,
+        )
+        self.assertEqual(result.memory.promise_worker_lookback_turns, 12)
+        self.assertEqual(result.memory.promise_worker_max_per_run, 5)
+        self.assertEqual(result.memory.promise_worker_max_msg_chars, 2000)
+        self.assertEqual(
+            result.memory.promise_worker_max_transcript_chars, 8000,
+        )
+
+    def test_overrides_round_trip(self) -> None:
+        path = self._write_config(
+            agent_extra={
+                "promise_worker_enabled": False,
+                "promise_worker_per_hour_cap": 3,
+                "promise_worker_per_day_cap": 9,
+            },
+            memory_extra={
+                "promise_worker_interval_seconds": 1200,
+                "promise_worker_lookback_turns": 20,
+                "promise_worker_max_per_run": 8,
+                "promise_worker_max_msg_chars": 4000,
+                "promise_worker_max_transcript_chars": 12000,
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.promise_worker_enabled)
+        self.assertEqual(result.agent.promise_worker_per_hour_cap, 3)
+        self.assertEqual(result.agent.promise_worker_per_day_cap, 9)
+        self.assertEqual(
+            result.memory.promise_worker_interval_seconds, 1200,
+        )
+        self.assertEqual(result.memory.promise_worker_lookback_turns, 20)
+        self.assertEqual(result.memory.promise_worker_max_per_run, 8)
+        self.assertEqual(result.memory.promise_worker_max_msg_chars, 4000)
+        self.assertEqual(
+            result.memory.promise_worker_max_transcript_chars, 12000,
+        )
+
+    def test_clamps_out_of_range_values(self) -> None:
+        path = self._write_config(
+            memory_extra={
+                "promise_worker_interval_seconds": 1,  # floor 60
+                "promise_worker_lookback_turns": 0,  # floor 1
+                "promise_worker_max_per_run": 0,  # floor 1
+                "promise_worker_max_msg_chars": 10,  # floor 200
+                "promise_worker_max_transcript_chars": 10,  # floor 500
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertEqual(
+            result.memory.promise_worker_interval_seconds, 60,
+        )
+        self.assertEqual(result.memory.promise_worker_lookback_turns, 1)
+        self.assertEqual(result.memory.promise_worker_max_per_run, 1)
+        self.assertEqual(result.memory.promise_worker_max_msg_chars, 200)
+        self.assertEqual(
+            result.memory.promise_worker_max_transcript_chars, 500,
+        )
 
 
 class SelfCorrectionSettingsTests(unittest.TestCase):
