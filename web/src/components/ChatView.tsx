@@ -119,6 +119,31 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
   // implemented; ``initialTopMostItemIndex`` lands on the latest
   // message on first paint, including after a session switch.
   const virtuosoRef = useRef<VirtuosoHandle | null>(null);
+  // Re-pin support: Virtuoso's ``followOutput`` only fires on
+  // ``messages`` count changes, so streaming tokens (stable
+  // ``messages`` ref by P9), tool events (Footer), and task-strip
+  // growth never re-trigger it. We track whether the user is parked
+  // at the tail and grab the real scroller element so an effect can
+  // nudge ``scrollTop = scrollHeight`` on those silent updates.
+  const atBottomRef = useRef(true);
+  const scrollerElRef = useRef<HTMLElement | null>(null);
+  // Lightweight signatures: re-render ChatView (not the memoized
+  // bubbles) when the streaming draft grows, or an active task's
+  // status/progress/phase changes, so the re-pin effect below runs.
+  const streamingSignature = useAssistantStore((s) =>
+    s.streamingDraft
+      ? `${s.streamingDraft.id}:${s.streamingDraft.content.length}`
+      : "",
+  );
+  const activeTaskSignature = useAssistantStore((s) => {
+    const view = s.tasksView;
+    return view.activeIds
+      .map((id) => {
+        const t = view.tasksById[id];
+        return t ? `${id}:${t.status}:${t.progress ?? ""}:${t.phase ?? ""}` : `${id}`;
+      })
+      .join("|");
+  });
   // Snap the chat to the bottom on session change. The session-id
   // dependency triggers re-mount of the same Virtuoso instance with
   // the new ``messages`` array; we still want to land at the tail on
@@ -137,6 +162,22 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
     // by the conversation, not by every token append.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionKey]);
+
+  // Keep the latest line in view during the "silent" updates Virtuoso
+  // doesn't observe — streaming tokens, tool-activity Footer growth,
+  // and task-strip / phase changes. Only re-pin when the user is
+  // already at the tail so scrolling up to read history still freezes
+  // the view. Drive the actual scroller (not ``scrollToIndex('LAST')``)
+  // because the streaming bubble and the Footer live below the last
+  // virtualised item.
+  useEffect(() => {
+    if (!atBottomRef.current) return;
+    const id = requestAnimationFrame(() => {
+      const el = scrollerElRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+    });
+    return () => cancelAnimationFrame(id);
+  }, [streamingSignature, toolActivity.length, activeTaskSignature]);
 
   // Hide the transcript pill ~3s after we receive a final transcript.
   useEffect(() => {
@@ -292,9 +333,9 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
         : "Idle";
 
   return (
-    <div className="flex h-full min-h-0 flex-1 flex-col">
+    <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       {/* Header strip showing TTS state + reaction */}
-      <div className="flex items-center justify-between border-b border-white/5 bg-white/[0.02] px-6 py-3">
+      <div className="flex shrink-0 items-center justify-between border-b border-white/5 bg-white/[0.02] px-6 py-3">
         <div className="flex items-center gap-3 text-sm text-ink-100/80">
           <span className="text-2xl leading-none">{headerReaction}</span>
           <div>
@@ -335,6 +376,12 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
             // ``scrollTop = scrollHeight`` did — switch to ``"smooth"``
             // here only if we ever want to animate it.
             followOutput={(isAtBottom) => (isAtBottom ? "auto" : false)}
+            atBottomStateChange={(bottom) => {
+              atBottomRef.current = bottom;
+            }}
+            scrollerRef={(el) => {
+              scrollerElRef.current = (el as HTMLElement) ?? null;
+            }}
             initialTopMostItemIndex={Math.max(0, messages.length - 1)}
             computeItemKey={(_index, msg) => msg.id}
             increaseViewportBy={{ top: 400, bottom: 600 }}
@@ -360,7 +407,7 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
       </div>
 
       <div
-        className={`border-t border-white/5 bg-white/[0.02] px-6 py-4 ${
+        className={`shrink-0 border-t border-white/5 bg-white/[0.02] px-6 py-4 ${
           dragOver ? "ring-2 ring-inset ring-ink-400/60" : ""
         }`}
         onDragOver={(e) => {
@@ -937,7 +984,7 @@ function MessageBubbleImpl({
       }`}
     >
       <div
-        className={`relative whitespace-pre-wrap rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-md ${
+        className={`relative whitespace-pre-wrap break-words rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-md ${
           isUser
             ? "max-w-xl bg-ink-600/80 text-white"
             : isProactive

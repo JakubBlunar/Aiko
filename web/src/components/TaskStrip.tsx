@@ -318,10 +318,10 @@ export function TaskStrip() {
 
   return (
     <div
-      className="border-b border-white/5 bg-white/[0.015] px-6 py-2"
+      className="max-h-[40vh] shrink-0 overflow-y-auto border-b border-white/5 bg-white/[0.015] px-6 py-2"
       data-testid="task-strip"
     >
-      <ul className="mx-auto flex max-w-3xl flex-col gap-1.5">
+      <ul className="mx-auto flex min-w-0 max-w-3xl flex-col gap-1.5">
         {tasks.map((task) => (
           <TaskChip
             key={task.id}
