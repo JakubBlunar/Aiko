@@ -232,6 +232,14 @@ Skips the forced pre-stream tool-decision LLM pass on turns with no tool-shaped 
 
 - `agent.tool_pass_gate_enabled` *(bool, `true`)* — master switch / kill-switch. `true` → turns with no tool-shaped text and no continuity signal (finished-task block, active task, previous turn used a tool) skip the decision pass entirely. `false` → restore the old always-run behaviour (use this if tool recall ever regresses; see `get_tool_gate_state` over MCP for diagnostics).
 
+### Skills framework — progressive tool disclosure
+
+Narrows which tools the model sees per turn instead of always shipping the whole catalogue. Both routers default off (= today's behaviour). See [skills-framework.md](skills-framework.md).
+
+- `agent.skill_router_enabled` *(bool, `false`)* — brain-lane router. When `true`, a tool-shaped turn exposes only the matched tool families plus the always-on core, instead of every registered tool. The P14 tool families act as the brain skill-groups. Inspect the per-turn active set via `get_tool_gate_state` (`router_enabled` / `core_skills` / `last_active_tools`) over MCP.
+- `agent.brain_core_skills` *(list of str, `["time", "recall", "world"]`)* — families always exposed when the brain router narrows. `world` is included so Aiko keeps taking spontaneous room actions (sip tea, shift posture) on turns whose text named no item. An empty/invalid value falls back to the default triple.
+- `agent.workflow_skill_router_enabled` *(bool, `false`)* — worker-lane router. When `true`, the goal-workflow planner's skill menu is narrowed to the goal's capability group(s) (`files` / `web` / `vision` / `mcp:<server>`) before each plan, with a full-menu fallback on ambiguity or multi-group goals. Watch the planner `missing_capability` rate as the over-narrowing canary.
+
 ### Promise follow-through (K43)
 
 Closes the loop on Aiko's own "I'll look into that" commitments. Assistant-side `kind="promise"` memories carry an `open → surfaced → fulfilled | dropped` lifecycle on metadata; an idle worker arms a one-shot "mention what you found — or own that you haven't yet" cue, and replies / finished background tasks auto-fulfil matching promises.

@@ -194,6 +194,55 @@ def families_for_tools(tool_names: Iterable[str]) -> tuple[set[str], set[str]]:
     return families, unknown
 
 
+# ── brain-lane progressive disclosure (the "SkillRouter") ─────────────
+# The P14 gate already classifies the user's text into tool families.
+# When the skill router is enabled we reuse that classification to pick
+# the *subset* of tools to expose this turn, instead of always shipping
+# the whole registry. The brain families ARE the brain skill-groups.
+
+# Families always exposed when the router narrows, so trivial asks and
+# Aiko's spontaneous room actions (sip tea, shift posture on a turn whose
+# text named no item) never miss a tool. ``world`` is deliberately in the
+# core: it is cheap and the most immersion-relevant lane.
+BRAIN_CORE_FAMILIES: frozenset[str] = frozenset({"time", "recall", "world"})
+
+
+def select_active_tool_names(
+    decision: GateDecision,
+    registered_tool_names: Iterable[str],
+    *,
+    core_families: Iterable[str] = BRAIN_CORE_FAMILIES,
+    router_enabled: bool = False,
+) -> set[str] | None:
+    """Pick the brain tool subset to expose this turn, or ``None`` to send
+    every registered tool (no narrowing).
+
+    ``None`` is returned whenever the router is disabled, the pass isn't
+    running, or the gate fired for any reason other than a specific
+    ``signal_<family>`` text match. Every continuity / fallback case
+    (``force`` / ``finished_task`` / ``tasks_active`` / ``last_turn_tool``
+    / ``unknown_tool`` / ``gate_error`` / ``disabled`` / ``generic_request``)
+    therefore widens to the full toolset — preserving the gate's
+    conservative contract that a false negative is the only real
+    regression.
+
+    When the gate matched specific families, the returned set is every
+    registered tool whose family is in ``decision.matched ∪ core_families``
+    (core always included).
+    """
+    if not router_enabled or not decision.run:
+        return None
+    if not decision.reason.startswith("signal_"):
+        return None
+    active_families = set(decision.matched) | set(core_families)
+    allow: set[str] = set()
+    for name in registered_tool_names:
+        family = _TOOL_FAMILY.get(name)
+        if family is not None and family in active_families:
+            allow.add(name)
+    return allow
+
+
 def should_run_tool_pass(
     user_text: str,
     registered_tool_names: Iterable[str],

@@ -117,6 +117,45 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             )
 
     @mcp.tool()
+    def list_skills() -> str:
+        """Return JSON of every skill across both lanes (skills framework).
+
+        Unifies the two catalogues into one ``{name, lane, group}`` view:
+        the fast **brain** tools (with their P14 family as ``group`` — the
+        unit the brain skill router narrows to) and the heavy **worker**
+        skills (with their per-capability / per-MCP-server ``group``). Use
+        this to see, in one place, which lane and group a capability lives
+        in when debugging the skill router. See docs/skills-framework.md.
+        """
+        from app.core.session.tool_pass_gate import _TOOL_FAMILY
+
+        out: list[dict[str, str]] = []
+        brain = getattr(session, "_tool_registry", None)
+        if brain is not None:
+            try:
+                for entry in brain.describe():
+                    name = entry.get("name", "")
+                    out.append({
+                        "name": name,
+                        "lane": "brain",
+                        "group": _TOOL_FAMILY.get(name, ""),
+                    })
+            except Exception:
+                pass
+        worker = getattr(session, "_workflow_skill_registry", None)
+        if worker is not None:
+            try:
+                for entry in worker.describe_for_planner():
+                    out.append({
+                        "name": entry.get("name", ""),
+                        "lane": "worker",
+                        "group": entry.get("group", ""),
+                    })
+            except Exception:
+                pass
+        return json.dumps(out, indent=2)
+
+    @mcp.tool()
     def get_tool_gate_state() -> str:
         """P14 — dump the heuristic tool-pass gate state.
 
@@ -127,7 +166,11 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
         counters (``turns_gated`` / ``passes_skipped`` /
         ``passes_run``), the rolling average cost of a real pass
         (``avg_pass_ms``), the estimated total ms saved by skips,
-        and the ``last_turn_dispatched_tool`` continuity flag.
+        and the ``last_turn_dispatched_tool`` continuity flag. Also
+        carries the skills-framework fields: ``router_enabled``
+        (``agent.skill_router_enabled``), ``core_skills`` (the always-on
+        families, default time/recall/world), and ``last_active_tools``
+        (the narrowed tool set sent on the last run pass, or null).
 
         First stop when "Aiko stopped using tools" comes up: a
         ``last_decision.reason`` of ``no_signal`` on a turn that

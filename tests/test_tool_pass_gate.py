@@ -19,9 +19,11 @@ from __future__ import annotations
 import unittest
 
 from app.core.session.tool_pass_gate import (
+    BRAIN_CORE_FAMILIES,
     GateContext,
     GateDecision,
     families_for_tools,
+    select_active_tool_names,
     should_run_tool_pass,
 )
 
@@ -211,6 +213,111 @@ class SkipPathTests(unittest.TestCase):
         skip = _decide("hey!")
         self.assertEqual(run.as_event(), "run:signal_time")
         self.assertEqual(skip.as_event(), "skip:no_signal")
+
+
+class SelectActiveToolNamesTests(unittest.TestCase):
+    """Brain-lane progressive disclosure (the SkillRouter)."""
+
+    def _decide(self, text: str, tools: list[str] | None = None) -> GateDecision:
+        return should_run_tool_pass(
+            text, tools if tools is not None else _ALL_TOOLS, context=_NO_CONTEXT,
+        )
+
+    def test_router_disabled_returns_none(self) -> None:
+        decision = self._decide("what time is it?")
+        self.assertIsNone(
+            select_active_tool_names(
+                decision, _ALL_TOOLS, router_enabled=False,
+            )
+        )
+
+    def test_widen_reasons_return_none(self) -> None:
+        # Every continuity / fallback reason widens to the full toolset.
+        for ctx, _reason in (
+            (GateContext(force=True), "force"),
+            (GateContext(finished_task_block=True), "finished_task"),
+            (GateContext(tasks_active=True), "tasks_active"),
+            (GateContext(last_turn_dispatched_tool=True), "last_turn_tool"),
+        ):
+            decision = should_run_tool_pass("hi", _ALL_TOOLS, context=ctx)
+            self.assertIsNone(
+                select_active_tool_names(
+                    decision, _ALL_TOOLS, router_enabled=True,
+                ),
+                f"reason={decision.reason} should widen",
+            )
+
+    def test_unknown_tool_widens(self) -> None:
+        decision = should_run_tool_pass(
+            "hey", ["get_time", "brand_new_tool"], context=_NO_CONTEXT,
+        )
+        self.assertEqual(decision.reason, "unknown_tool")
+        self.assertIsNone(
+            select_active_tool_names(
+                decision, ["get_time", "brand_new_tool"], router_enabled=True,
+            )
+        )
+
+    def test_generic_request_widens(self) -> None:
+        decision = should_run_tool_pass(
+            "show me what you've got", ["get_time"], context=_NO_CONTEXT,
+        )
+        self.assertEqual(decision.reason, "generic_request")
+        self.assertIsNone(
+            select_active_tool_names(
+                decision, ["get_time"], router_enabled=True,
+            )
+        )
+
+    def test_time_signal_narrows_to_core_only(self) -> None:
+        decision = self._decide("what time is it?")
+        allow = select_active_tool_names(
+            decision, _ALL_TOOLS, router_enabled=True,
+        )
+        assert allow is not None
+        # Core = time/recall/world. No files/goals/tasks/web tools.
+        self.assertIn("get_time", allow)
+        self.assertIn("recall", allow)
+        self.assertIn("consume_item", allow)  # world is core
+        self.assertNotIn("list_file_roots", allow)
+        self.assertNotIn("add_goal", allow)
+        self.assertNotIn("start_workflow", allow)
+
+    def test_files_signal_includes_files_plus_core(self) -> None:
+        decision = self._decide("read the notes from yesterday please")
+        allow = select_active_tool_names(
+            decision, _ALL_TOOLS, router_enabled=True,
+        )
+        assert allow is not None
+        self.assertIn("start_file_read", allow)  # files family matched
+        # World is always-on core even though this is a files turn.
+        self.assertIn("consume_item", allow)
+        self.assertIn("recall", allow)
+        # Goals are not relevant -> excluded.
+        self.assertNotIn("add_goal", allow)
+
+    def test_world_always_present_via_core(self) -> None:
+        # A goals-only turn still exposes world so Aiko can act in her room.
+        decision = self._decide("how's the progress on your goals?")
+        allow = select_active_tool_names(
+            decision, _ALL_TOOLS, router_enabled=True,
+        )
+        assert allow is not None
+        self.assertIn("look_around", allow)
+        self.assertIn("add_goal", allow)  # matched family
+
+    def test_custom_core_families_respected(self) -> None:
+        decision = self._decide("what time is it?")
+        allow = select_active_tool_names(
+            decision, _ALL_TOOLS, core_families={"time"}, router_enabled=True,
+        )
+        assert allow is not None
+        self.assertIn("get_time", allow)
+        # world dropped from core -> not present on a time-only turn.
+        self.assertNotIn("consume_item", allow)
+
+    def test_default_core_is_time_recall_world(self) -> None:
+        self.assertEqual(BRAIN_CORE_FAMILIES, frozenset({"time", "recall", "world"}))
 
 
 if __name__ == "__main__":

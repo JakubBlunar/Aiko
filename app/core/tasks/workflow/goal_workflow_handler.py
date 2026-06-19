@@ -62,6 +62,7 @@ from app.core.tasks.workflow.skill_registry import (
     SpawnContext,
     WorkflowSkillRegistry,
 )
+from app.core.tasks.workflow.workflow_skill_router import select_skill_groups
 from app.core.tasks.workflow.workflow_planner import (
     OUTCOME_PARTIAL,
     OUTCOME_SUCCESS,
@@ -153,6 +154,7 @@ class GoalWorkflowHandler:
         child_wait_timeout_seconds: float = 120.0,
         planner_history_budget_chars: int = 4000,
         planner_max_tokens: int = 512,
+        skill_router_enabled_provider: Callable[[], bool] | None = None,
     ) -> None:
         self._orchestrator = orchestrator
         self._skills = skill_registry
@@ -160,6 +162,10 @@ class GoalWorkflowHandler:
         self._model_provider = model_provider
         self._user_name_provider = user_name_provider
         self._on_capability_gap = on_capability_gap
+        # Worker-lane skill router: when the provider returns True, the
+        # planner menu is narrowed to the goal's group(s) (full-menu
+        # fallback on ambiguity). None / False = today's full menu.
+        self._skill_router_enabled_provider = skill_router_enabled_provider
         self._max_iterations = max(1, int(max_iterations))
         self._max_children = max(1, int(max_children))
         self._child_wait_timeout = max(1.0, float(child_wait_timeout_seconds))
@@ -283,7 +289,7 @@ class GoalWorkflowHandler:
                     self._worker_client_provider(),
                     PlannerInput(
                         goal=goal,
-                        skills=self._skills.describe_for_planner(),
+                        skills=self._planner_skills(goal),
                         steps=steps,
                         iteration=iteration,
                         max_iterations=max_iter,
@@ -573,6 +579,30 @@ class GoalWorkflowHandler:
             return self._model_provider()
         except Exception:
             return None
+
+    def _planner_skills(self, goal: str) -> list[dict[str, Any]]:
+        """The skill catalogue for the planner, narrowed by the worker-lane
+        router when enabled (full menu otherwise, or on ambiguity)."""
+        if self._skill_router_enabled_provider is None:
+            return self._skills.describe_for_planner()
+        try:
+            enabled = bool(self._skill_router_enabled_provider())
+        except Exception:
+            enabled = False
+        if not enabled:
+            return self._skills.describe_for_planner()
+        try:
+            groups = select_skill_groups(goal, self._skills.groups())
+        except Exception:
+            groups = None
+        skills = self._skills.describe_for_planner(groups=groups)
+        if groups is not None:
+            log.info(
+                "planner: narrowed groups=%s skills=%s",
+                sorted(groups),
+                [s.get("name") for s in skills],
+            )
+        return skills
 
 
 __all__ = ["GoalWorkflowHandler", "OUTCOME_MISSING_CAPABILITY"]

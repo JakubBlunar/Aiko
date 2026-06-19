@@ -91,6 +91,9 @@ def _skill_from_descriptor(desc: "McpToolDescriptor") -> WorkflowSkill:
         description=description,
         arg_schema=_arg_schema_from_input(desc.input_schema),
         spawn=_make_spawn(desc.server_id, desc.name),
+        # Per-server router group so a server's tools are narrowed in/out
+        # together (and the catalogue can grow without bloating each plan).
+        group=f"mcp:{desc.server_id}",
     )
 
 
