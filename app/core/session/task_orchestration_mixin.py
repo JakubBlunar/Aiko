@@ -663,6 +663,15 @@ class TaskOrchestrationMixin:
                 planner_max_tokens=int(
                     getattr(agent, "workflow_planner_max_tokens", 512)
                 ),
+                # Worker-lane skill router: read live so a settings change
+                # is picked up on the next workflow without a rebuild.
+                skill_router_enabled_provider=lambda: bool(
+                    getattr(
+                        getattr(self._settings, "agent", None),
+                        "workflow_skill_router_enabled",
+                        False,
+                    )
+                ),
             )
             self._task_orchestrator.register_handler(handler)
             log.info(

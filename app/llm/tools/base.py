@@ -103,8 +103,20 @@ class ToolRegistry:
             })
         return out
 
-    def to_ollama_tools(self) -> list[dict[str, Any]]:
-        return [self._tools[n].schema().to_ollama() for n in sorted(self._tools.keys())]
+    def to_ollama_tools(
+        self, allow: "set[str] | None" = None
+    ) -> list[dict[str, Any]]:
+        """Ollama-shaped schemas for the registered tools.
+
+        When ``allow`` is given, only tools whose name is in the set are
+        emitted (brain-lane progressive disclosure — see
+        :func:`app.core.session.tool_pass_gate.select_active_tool_names`).
+        ``allow=None`` (the default) emits every tool, unchanged.
+        """
+        names = sorted(self._tools.keys())
+        if allow is not None:
+            names = [n for n in names if n in allow]
+        return [self._tools[n].schema().to_ollama() for n in names]
 
     def dispatch(self, name: str, arguments: dict[str, Any], *, call_id: str = "") -> ToolResult:
         tool = self._tools.get(name)

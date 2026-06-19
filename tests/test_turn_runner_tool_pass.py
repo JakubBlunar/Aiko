@@ -404,6 +404,158 @@ class ToolPassGateTests(unittest.TestCase):
         self.assertIn("tool_pass_ms=", haystack)
 
 
+class SkillRouterPassTests(unittest.TestCase):
+    """Brain-lane progressive disclosure threads an allow-set into the
+    tool pass and never strips every tool."""
+
+    def test_allow_forwarded_to_registry(self) -> None:
+        runner, _ollama, registry = _build_runner()
+        runner._maybe_run_tool_pass(
+            [{"role": "user", "content": "what files can you see?"}],
+            stop_requested=None,
+            allow={"list_file_roots"},
+        )
+        # The registry is asked for the narrowed subset.
+        self.assertEqual(
+            registry.to_ollama_tools.call_args.kwargs.get("allow"),
+            {"list_file_roots"},
+        )
+
+    def test_empty_filter_falls_back_to_full_set(self) -> None:
+        runner, ollama, registry = _build_runner()
+        real_tool = {
+            "type": "function",
+            "function": {
+                "name": "list_file_roots",
+                "description": "List configured file roots.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+
+        def _to(allow=None):
+            # Narrowed subset is empty; full set has the real tool.
+            return [] if allow is not None else [real_tool]
+
+        registry.to_ollama_tools = MagicMock(side_effect=_to)
+        runner._maybe_run_tool_pass(
+            [{"role": "user", "content": "hi"}],
+            stop_requested=None,
+            allow={"nonexistent"},
+            max_rounds=1,
+        )
+        # Safety fallback: the pass still ran with the full toolset.
+        ollama.chat_with_tools.assert_called_once()
+        names = [
+            t["function"]["name"]
+            for t in ollama.chat_with_tools.call_args.kwargs["tools"]
+        ]
+        self.assertIn("list_file_roots", names)
+
+    def test_router_off_sends_allow_none(self) -> None:
+        # Default runner has the router disabled -> run() passes allow=None.
+        runner, _ollama, registry = _build_full_runner()
+        runner.run(session_key="default:main", user_text="what time is it?")
+        self.assertIsNone(
+            registry.to_ollama_tools.call_args.kwargs.get("allow"),
+        )
+
+
+class SkillRouterNarrowingTests(unittest.TestCase):
+    """End-to-end: with the router on, a tool-shaped turn exposes only the
+    matched family + always-on core (time/recall/world)."""
+
+    def _build(self) -> tuple[TurnRunner, MagicMock, MagicMock]:
+        from app.core.session.prompt_assembler import PromptTelemetry
+
+        ollama = MagicMock()
+        response = MagicMock()
+        response.content = ""
+        response.tool_calls = []
+        ollama.chat_with_tools = MagicMock(return_value=response)
+        ollama.chat_stream = MagicMock(
+            side_effect=lambda *a, **k: iter(["[[reaction:neutral]] hi."]),
+        )
+        ollama.last_usage = OllamaUsage()
+
+        db = MagicMock()
+        db.add_message = MagicMock(return_value=1)
+        prompt = MagicMock()
+        prompt.assemble_with_budget = MagicMock(
+            side_effect=lambda *a, **k: ([], PromptTelemetry()),
+        )
+
+        schemas = {
+            name: {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": name,
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+            for name in (
+                "get_time", "recall", "list_file_roots",
+                "add_goal", "consume_item",
+            )
+        }
+        registry = MagicMock()
+        registry.__len__ = MagicMock(return_value=len(schemas))
+        registry.names = MagicMock(return_value=sorted(schemas))
+
+        def _to(allow=None):
+            names = sorted(schemas)
+            if allow is not None:
+                names = [n for n in names if n in allow]
+            return [schemas[n] for n in names]
+
+        registry.to_ollama_tools = MagicMock(side_effect=_to)
+        registry.dispatch = MagicMock(
+            return_value=types.SimpleNamespace(
+                name="get_time", content="12:00", ok=True,
+            ),
+        )
+
+        runner = TurnRunner(
+            ollama=ollama,
+            db=db,
+            prompt_assembler=prompt,
+            model="test-model",
+            context_window=8192,
+            max_tokens=512,
+            temperature=0.7,
+            filler_enabled=False,
+            tool_registry=registry,
+            skill_router_enabled=True,
+        )
+        return runner, ollama, registry
+
+    def test_time_turn_exposes_core_only(self) -> None:
+        runner, ollama, _ = self._build()
+        runner.run(session_key="default:main", user_text="what time is it?")
+        names = [
+            t["function"]["name"]
+            for t in ollama.chat_with_tools.call_args.kwargs["tools"]
+        ]
+        # Matched family (time) + core (recall, world=consume_item).
+        self.assertIn("get_time", names)
+        self.assertIn("recall", names)
+        self.assertIn("consume_item", names)  # world is always-on core
+        # Irrelevant families dropped.
+        self.assertNotIn("list_file_roots", names)
+        self.assertNotIn("add_goal", names)
+        # Escape tool always appended.
+        self.assertIn(_RESPOND_DIRECTLY_TOOL, names)
+
+    def test_gate_state_reports_router(self) -> None:
+        runner, _ollama, _ = self._build()
+        runner.run(session_key="default:main", user_text="what time is it?")
+        state = runner.get_tool_gate_state()
+        self.assertTrue(state["router_enabled"])
+        self.assertEqual(state["core_skills"], ["recall", "time", "world"])
+        self.assertIsNotNone(state["last_active_tools"])
+        self.assertIn("consume_item", state["last_active_tools"])
+
+
 class FinishedTaskRelaxesForcedChoiceTests(unittest.TestCase):
     """When a finished-task result is already in the system prompt the
     pass relaxes ``tool_choice`` to "auto" so the model narrates the

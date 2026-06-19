@@ -23,7 +23,7 @@ import secrets
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, TYPE_CHECKING
+from typing import Any, Callable, Iterable, TYPE_CHECKING
 
 from app.core.infra.chat_database import ChatDatabase
 from app.core.voice.filler_injector import FillerInjector
@@ -44,8 +44,10 @@ from app.core.session.session_text_utils import (
 )
 from app.core.proactive.summary_worker import SummaryWorker
 from app.core.session.tool_pass_gate import (
+    BRAIN_CORE_FAMILIES,
     GateContext,
     GateDecision,
+    select_active_tool_names,
     should_run_tool_pass,
 )
 from app.llm.ollama_client import OllamaClient, OllamaUsage
@@ -213,6 +215,8 @@ class TurnRunner:
         listen_extensions_provider: Callable[[], int] | None = None,
         tool_pass_gate_enabled: bool = True,
         tasks_active_provider: Callable[[], bool] | None = None,
+        skill_router_enabled: bool = False,
+        brain_core_families: "Iterable[str] | None" = None,
     ) -> None:
         self._ollama = ollama
         self._db = db
@@ -269,6 +273,20 @@ class TurnRunner:
         self._tool_gate_skips = 0
         self._tool_pass_ms_total = 0.0
         self._tool_pass_count = 0
+        # ── brain-lane skill router (progressive tool disclosure) ──────
+        # When enabled, a tool-shaped turn exposes only the matched
+        # families' tools plus the always-on core (time / recall / world),
+        # instead of the whole registry. Off = today's behaviour (all
+        # tools every gated turn). World is in the core so Aiko's
+        # spontaneous room actions survive on any turn.
+        self._skill_router_enabled = bool(skill_router_enabled)
+        self._brain_core_families: frozenset[str] = (
+            frozenset(brain_core_families)
+            if brain_core_families is not None
+            else BRAIN_CORE_FAMILIES
+        )
+        # Names sent on the last run pass (for MCP get_tool_gate_state).
+        self._last_active_tools: list[str] | None = None
 
     def set_tool_registry(self, registry: "Any | None") -> None:
         self._tool_registry = registry
@@ -299,6 +317,8 @@ class TurnRunner:
         filler_threshold_ms: int | None = None,
         filler_enabled: bool | None = None,
         tool_pass_gate_enabled: bool | None = None,
+        skill_router_enabled: bool | None = None,
+        brain_core_families: "Iterable[str] | None" = None,
     ) -> None:
         # ``client`` lets ``SessionController.reconfigure_chat_llm`` swap
         # the chat-LLM backend (e.g. Ollama -> Gemini) without recreating
@@ -324,6 +344,10 @@ class TurnRunner:
             )
         if tool_pass_gate_enabled is not None:
             self._tool_pass_gate_enabled = bool(tool_pass_gate_enabled)
+        if skill_router_enabled is not None:
+            self._skill_router_enabled = bool(skill_router_enabled)
+        if brain_core_families is not None:
+            self._brain_core_families = frozenset(brain_core_families)
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -573,9 +597,18 @@ class TurnRunner:
             telemetry.tool_gate_event = gate_decision.as_event()
             if gate_decision.run:
                 tool_pass_t0 = time.monotonic()
+                # Brain-lane skill router: narrow the tool schema list to
+                # the matched families + always-on core when enabled.
+                # ``None`` (router off / widen-case) sends the full set.
+                allow = select_active_tool_names(
+                    gate_decision,
+                    self._tool_registry.names(),
+                    core_families=self._brain_core_families,
+                    router_enabled=self._skill_router_enabled,
+                )
                 try:
                     tool_usage = self._maybe_run_tool_pass(
-                        messages, stop_requested=stop_requested,
+                        messages, stop_requested=stop_requested, allow=allow,
                     )
                 except Exception:
                     log.exception("tool pre-pass failed; falling back to plain stream")
@@ -1035,6 +1068,13 @@ class TurnRunner:
             "last_turn_dispatched_tool": bool(
                 self._last_turn_dispatched_tool,
             ),
+            "router_enabled": bool(self._skill_router_enabled),
+            "core_skills": sorted(self._brain_core_families),
+            "last_active_tools": (
+                list(self._last_active_tools)
+                if self._last_active_tools is not None
+                else None
+            ),
         }
 
     def _maybe_run_tool_pass(
@@ -1043,6 +1083,7 @@ class TurnRunner:
         *,
         stop_requested: StopPredicate | None,
         max_rounds: int = 2,
+        allow: "set[str] | None" = None,
     ) -> OllamaUsage:
         """Run up to ``max_rounds`` ``chat_with_tools`` passes and mutate
         ``messages`` in place by appending the assistant's tool_calls and
@@ -1065,9 +1106,24 @@ class TurnRunner:
         registry = self._tool_registry
         if registry is None:
             return total_usage
-        tool_schemas = registry.to_ollama_tools()
+        tool_schemas = registry.to_ollama_tools(allow=allow)
+        # Safety fallback: narrowing must never strip every tool. If the
+        # filtered subset is empty but the registry has tools, send all.
+        if not tool_schemas and allow is not None:
+            tool_schemas = registry.to_ollama_tools()
         if not tool_schemas:
+            self._last_active_tools = []
             return total_usage
+        self._last_active_tools = [
+            s.get("function", {}).get("name", "") for s in tool_schemas
+        ]
+        if allow is not None:
+            log.debug(
+                "skill-router: active=%d/%d names=%s",
+                len(tool_schemas),
+                len(registry),
+                ",".join(self._last_active_tools),
+            )
         # Force-pick a tool every round, with the synthetic
         # ``respond_directly`` escape hatch as the "no tool needed"
         # option (see ``_RESPOND_DIRECTLY_SCHEMA``). This is the lever

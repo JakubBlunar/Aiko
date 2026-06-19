@@ -98,6 +98,10 @@ class WorkflowSkill:
     arg_schema: dict[str, Any] = field(default_factory=dict)
     spawn: SkillSpawnFn | None = None
     terminal: bool = False
+    # Router group: the unit the worker-lane skill router narrows to
+    # (``files`` / ``web`` / ``vision`` / a per-MCP-server label). Empty
+    # means "uncategorised" — such skills are never hidden by the router.
+    group: str = ""
 
     @property
     def spawnable(self) -> bool:
@@ -139,26 +143,47 @@ class WorkflowSkillRegistry:
         """Names of skills that spawn a child (excludes ``finish``)."""
         return sorted(n for n, s in self._skills.items() if s.spawnable)
 
-    def describe_for_planner(self) -> list[dict[str, Any]]:
+    def describe_for_planner(
+        self, groups: "set[str] | None" = None
+    ) -> list[dict[str, Any]]:
         """Structured catalogue the planner renders into its prompt.
 
-        One entry per skill: ``{name, description, args, terminal}``
+        One entry per skill: ``{name, description, args, terminal, group}``
         where ``args`` is the skill's arg-schema. Pure data — the
         planner module decides how to format it (JSON block, bullet
         list, …).
+
+        When ``groups`` is given (worker-lane skill router narrowing),
+        only skills whose ``group`` is in the set are included — except
+        terminal skills (``finish``) and uncategorised skills (empty
+        ``group``), which are ALWAYS included so the planner can always
+        stop and a future untagged skill is never silently hidden.
+        ``groups=None`` (the default) returns the full catalogue.
         """
         out: list[dict[str, Any]] = []
         for name in self.names():
             skill = self._skills[name]
+            if (
+                groups is not None
+                and not skill.terminal
+                and skill.group
+                and skill.group not in groups
+            ):
+                continue
             out.append(
                 {
                     "name": skill.name,
                     "description": skill.description,
                     "args": dict(skill.arg_schema or {}),
                     "terminal": bool(skill.terminal),
+                    "group": skill.group,
                 }
             )
         return out
+
+    def groups(self) -> set[str]:
+        """Non-empty router groups present in the registry."""
+        return {s.group for s in self._skills.values() if s.group}
 
     def spawn_child(
         self, name: str, args: dict[str, Any], ctx: SpawnContext
@@ -400,6 +425,7 @@ def _file_search_skill() -> WorkflowSkill:
             },
         },
         spawn=_spawn_file_search,
+        group="files",
     )
 
 
@@ -424,6 +450,7 @@ def _file_read_skill() -> WorkflowSkill:
             },
         },
         spawn=_spawn_file_read,
+        group="files",
     )
 
 
@@ -449,6 +476,7 @@ def _web_search_skill() -> WorkflowSkill:
             },
         },
         spawn=_spawn_web_search,
+        group="web",
     )
 
 
@@ -500,6 +528,7 @@ def _write_file_skill() -> WorkflowSkill:
             },
         },
         spawn=_spawn_write_file,
+        group="files",
     )
 
 
@@ -532,6 +561,7 @@ def _describe_image_skill() -> WorkflowSkill:
             },
         },
         spawn=_spawn_describe_image,
+        group="vision",
     )
 
 

@@ -2194,6 +2194,11 @@ class SessionController(
                 getattr(self, "_last_listen_extensions", 0) or 0
             ),
             tool_pass_gate_enabled=settings.agent.tool_pass_gate_enabled,
+            # Brain-lane skill router: progressive tool disclosure with an
+            # always-on core (time/recall/world) so spontaneous room
+            # actions survive. Off by default = full toolset every turn.
+            skill_router_enabled=settings.agent.skill_router_enabled,
+            brain_core_families=settings.agent.brain_core_skills,
             # P14 continuity hook: the gate always runs the tool pass
             # while any task is running / awaiting_input / paused (the
             # user's message may be the answer a pending task needs).

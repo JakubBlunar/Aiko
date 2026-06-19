@@ -1038,6 +1038,20 @@ class AgentSettings:
     # [`app/core/session/tool_pass_gate.py`](../session/tool_pass_gate.py).
     tool_pass_gate_enabled: bool = True
 
+    # ── Skills framework: progressive tool disclosure ─────────────────
+    # When true, the brain exposes only the matched tool families plus the
+    # always-on core (``brain_core_skills``) on a tool-shaped turn, instead
+    # of the whole registry. Off (default) = today's behaviour: every
+    # registered tool every gated turn. ``world`` is in the core so Aiko's
+    # spontaneous room actions (sip tea, shift posture) survive on turns
+    # whose text named no item. See docs/skills-framework.md.
+    skill_router_enabled: bool = False
+    brain_core_skills: tuple[str, ...] = ("time", "recall", "world")
+    # Worker-lane router: narrows the workflow planner's skill menu to the
+    # group(s) relevant to the goal before each plan. Off (default) = full
+    # menu, today's behaviour.
+    workflow_skill_router_enabled: bool = False
+
     # ── Memory consolidation (Phase 4b) ───────────────────────────────
     # MemoryConsolidator merges near-cosine clusters in the SQLite store
     # so we don't drown in tiny redundant fact-rows. Runs in chunks during
@@ -3826,6 +3840,20 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             filler_enabled=bool(agent_raw.get("filler_enabled", True)),
             filler_first_token_ms=max(150, int(agent_raw.get("filler_first_token_ms", 800))),
             tool_pass_gate_enabled=bool(agent_raw.get("tool_pass_gate_enabled", True)),
+            skill_router_enabled=bool(agent_raw.get("skill_router_enabled", False)),
+            brain_core_skills=tuple(
+                str(s).strip()
+                for s in (
+                    agent_raw.get("brain_core_skills")
+                    if isinstance(agent_raw.get("brain_core_skills"), list)
+                    else ["time", "recall", "world"]
+                )
+                if str(s).strip()
+            )
+            or ("time", "recall", "world"),
+            workflow_skill_router_enabled=bool(
+                agent_raw.get("workflow_skill_router_enabled", False)
+            ),
             consolidator_enabled=bool(agent_raw.get("consolidator_enabled", True)),
             consolidator_min_hours_between=max(0.5, float(agent_raw.get("consolidator_min_hours_between", 18.0))),
             consolidator_chunk_size=max(8, int(agent_raw.get("consolidator_chunk_size", 40))),
