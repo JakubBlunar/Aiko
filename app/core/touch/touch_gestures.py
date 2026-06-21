@@ -268,6 +268,57 @@ def all_gestures() -> tuple[TouchGesture, ...]:
     return tuple(_TOUCH_GESTURES[k] for k in TOUCH_KINDS)
 
 
+# ── Open-vocabulary custom gestures (B7) ────────────────────────────
+
+
+# Visual defaults for a gesture Aiko coins on the fly. The Alexia rig
+# has no arbitrary-motion param, so every custom gesture animates as the
+# same gentle lean-in; the novelty lives in the badge label + emoji.
+DEFAULT_CUSTOM_LEAN = 0.3
+DEFAULT_CUSTOM_DURATION_MS = 1500
+_MAX_CUSTOM_KIND_LEN = 40
+_MAX_CUSTOM_LABEL_LEN = 60
+_MAX_CUSTOM_EMOJI_LEN = 8
+
+
+def _humanize_kind(kind: str) -> str:
+    """``fist_bump`` -> ``fist bump`` for a default badge label."""
+    return kind.replace("_", " ").strip()
+
+
+def synthesize_custom_gesture(
+    kind: str, *, emoji: str = "", label: str = "",
+) -> TouchGesture:
+    """Build a :class:`TouchGesture` for an off-taxonomy kind (B7).
+
+    Used when Aiko coins a gesture that isn't one of the curated
+    built-ins. Visuals are generic (a gentle lean, no overlays); the
+    model-supplied ``label`` / ``emoji`` carry the meaning. Both are
+    optional -- a missing label falls back to the humanized slug, a
+    missing emoji renders glyph-free. Inputs are sanitised (whitespace
+    collapsed, length-clamped) so an invented "gesture" can't smuggle a
+    wall of text into the transcript.
+    """
+    safe_kind = (kind or "").strip().lower()[:_MAX_CUSTOM_KIND_LEN]
+    safe_label = " ".join((label or "").split())[:_MAX_CUSTOM_LABEL_LEN]
+    if not safe_label:
+        safe_label = _humanize_kind(safe_kind) or "reached out"
+    safe_emoji = " ".join((emoji or "").split())[:_MAX_CUSTOM_EMOJI_LEN]
+    return TouchGesture(
+        kind=safe_kind,
+        label=safe_label,
+        emoji=safe_emoji,
+        min_closeness=-1.0,
+        min_trust=-1.0,
+        min_humor=-1.0,
+        cooldown_seconds=0,
+        daily_cap=0,
+        duration_ms=DEFAULT_CUSTOM_DURATION_MS,
+        lean_amount=DEFAULT_CUSTOM_LEAN,
+        overlays=(),
+    )
+
+
 # ── State ───────────────────────────────────────────────────────────
 
 
@@ -528,35 +579,42 @@ class TouchService:
         self,
         kind: str,
         *,
-        axes: Any | None,
-        now: datetime,
+        axes: Any | None = None,
+        now: datetime | None = None,
         bypass_gates: bool = False,
+        emoji: str = "",
+        label: str = "",
     ) -> DispatchReport:
-        """Decide whether to fire ``kind``; persist the new state on yes.
+        """Resolve ``kind`` to a gesture and dispatch it.
 
-        ``axes`` is the current :class:`RelationshipAxesState` snapshot
-        (or ``None`` if the relationship-axes subsystem isn't wired,
-        e.g. in unit tests). When ``None``, all gates are treated as
-        passing -- callers that wire the service through the controller
-        always have an axes snapshot, so ``None`` is a test convenience.
+        B7 removed all gating (relationship-axes floors, per-kind
+        cooldowns, daily caps) and the ``kv_meta`` state machine. Every
+        emitted ``[[touch:...]]`` dispatches; Aiko self-paces through the
+        persona guidance ("at most once a turn, only when it's earned").
+        The ``axes`` / ``now`` / ``bypass_gates`` parameters are retained
+        for call-site compatibility but no longer affect the verdict.
 
-        ``bypass_gates=True`` skips ALL gates (axes + cooldown + daily
-        cap) and force-fires the gesture. Used by the MCP debug tool
-        ``send_touch(kind)`` so a developer can exercise the avatar
-        path without first nudging axes / waiting cooldown.
-
-        On success: returns ``DispatchReport(dispatched=True, ...)``
-        AND writes the updated :class:`TouchServiceState` back to
-        ``kv_meta``. On rejection: returns the verdict WITHOUT
-        touching ``kv_meta``.
+        Built-in kinds resolve to their curated taxonomy entry. An
+        off-taxonomy ``kind`` is synthesized via
+        :func:`synthesize_custom_gesture` using the model-supplied
+        ``emoji`` / ``label`` (B7 open vocabulary). The only thing that
+        can still reject a dispatch is the ``touch_enabled`` master flag.
         """
-        gesture = get_gesture(kind)
-        if gesture is None:
+        normalized = (kind or "").strip().lower()
+        if not normalized:
             return DispatchReport(
                 dispatched=False,
                 reason=REASON_UNKNOWN_KIND,
                 gesture=None,
                 new_state=None,
+            )
+
+        gesture = get_gesture(normalized)
+        if gesture is None:
+            # B7: off-taxonomy kind -> generic custom gesture carrying
+            # the model-supplied label / emoji.
+            gesture = synthesize_custom_gesture(
+                normalized, emoji=emoji, label=label,
             )
 
         if self._settings is not None and not bool(
@@ -569,155 +627,17 @@ class TouchService:
                 new_state=None,
             )
 
-        state = self._load_state()
-        today = _today_utc(now)
-
-        if not bypass_gates:
-            verdict = self._check_gates(gesture, axes, state, now, today)
-            if verdict is not None:
-                return DispatchReport(
-                    dispatched=False,
-                    reason=verdict,
-                    gesture=gesture,
-                    new_state=None,
-                )
-
-        # Roll daily counts forward if the date moved on.
-        new_counts = (
-            dict(state.daily_counts)
-            if state.daily_date == today
-            else {}
-        )
-        new_counts[gesture.kind] = new_counts.get(gesture.kind, 0) + 1
-
-        new_last = dict(state.last_fired)
-        new_last[gesture.kind] = now.astimezone(timezone.utc).isoformat()
-
-        new_state = TouchServiceState(
-            last_fired=new_last,
-            daily_counts=new_counts,
-            daily_date=today,
-        )
-        self._save_state(new_state)
         return DispatchReport(
             dispatched=True,
             reason=REASON_OK,
             gesture=gesture,
-            new_state=new_state,
+            new_state=None,
         )
 
-    # -- gate evaluation -------------------------------------------------
-
-    def _check_gates(
-        self,
-        gesture: TouchGesture,
-        axes: Any | None,
-        state: TouchServiceState,
-        now: datetime,
-        today: str,
-    ) -> str | None:
-        """Return rejection reason or ``None`` if all gates pass."""
-        # Axes gates -- only check when axes are wired AND the kind
-        # carries a non-trivial floor. ``-1.0`` is the sentinel for
-        # "no gate" so the comparison is uniformly written.
-        if axes is not None:
-            closeness = float(getattr(axes, "closeness", 0.0))
-            trust = float(getattr(axes, "trust", 0.0))
-            humor = float(getattr(axes, "humor", 0.0))
-            if gesture.min_closeness > -1.0 and closeness < gesture.min_closeness:
-                return REASON_GATE_CLOSENESS
-            if gesture.min_trust > -1.0 and trust < gesture.min_trust:
-                return REASON_GATE_TRUST
-            if gesture.min_humor > -1.0 and humor < gesture.min_humor:
-                return REASON_GATE_HUMOR
-
-        overrides = (
-            getattr(self._settings, "touch_per_kind_overrides", None)
-            if self._settings is not None
-            else None
-        )
-
-        # Cooldown gate.
-        cooldown = _resolved_cooldown_seconds(gesture, overrides)
-        if cooldown > 0:
-            last_fired_iso = state.last_fired.get(gesture.kind)
-            last_fired = _parse_iso(last_fired_iso)
-            if last_fired is not None:
-                now_utc = now.astimezone(timezone.utc) if now.tzinfo else now.replace(tzinfo=timezone.utc)
-                elapsed = (now_utc - last_fired).total_seconds()
-                if elapsed < cooldown:
-                    return REASON_COOLDOWN
-
-        # Daily-cap gate. A daily_cap of 0 means "uncapped".
-        daily_cap = _resolved_daily_cap(gesture, overrides)
-        if daily_cap > 0:
-            current = (
-                state.daily_counts.get(gesture.kind, 0)
-                if state.daily_date == today
-                else 0
-            )
-            if current >= daily_cap:
-                return REASON_DAILY_CAP
-
-        return None
-
-
-# ── Inner-life cue (low physical budget) ────────────────────────────
-
-
-def render_touch_state_block(
-    state: TouchServiceState,
-    *,
-    now: datetime,
-    user_display_name: str = "them",
-) -> str:
-    """Render a short prompt cue when the *physical* budget is low.
-
-    Mirrors :func:`vulnerability_budget.render_inner_life_block` but
-    looks at touch usage rather than disclosure depth. The cue stays
-    silent unless Aiko has actually been touchy today -- the feature
-    is "stop her from spamming hugs", not "advertise the budget".
-
-    Heuristic:
-
-    - Today's combined intimate-gesture count (hug + head_pat +
-      cuddle) >= 3 -> "you've been pretty physical with X today,
-      let some space land".
-    - Today's combined cap-hit count (any kind that already maxed
-      its daily cap) >= 1 -> "you've maxed out something today,
-      hold off on that beat for now".
-
-    Returns ``""`` when none of the above; the feature is silent on
-    the common case so the prompt cue budget isn't wasted.
-    """
-    today = _today_utc(now)
-    name = user_display_name or "them"
-    if state.daily_date != today:
-        return ""
-
-    intimate_kinds = ("hug", "head_pat", "cuddle")
-    intimate_total = sum(
-        int(state.daily_counts.get(k, 0)) for k in intimate_kinds
-    )
-    if intimate_total >= 3:
-        return (
-            f"You've been pretty physical with {name} today -- let some "
-            f"space land before the next hug or cuddle."
-        )
-
-    capped: list[str] = []
-    for kind, count in state.daily_counts.items():
-        gesture = get_gesture(kind)
-        if gesture is None or gesture.daily_cap <= 0:
-            continue
-        if count >= gesture.daily_cap:
-            capped.append(kind)
-    if capped:
-        return (
-            f"You've maxed out {'/'.join(sorted(capped))} with {name} "
-            f"today -- pick a lighter beat for now."
-        )
-    return ""
+    # B7: axes / cooldown / daily-cap gating and the low-budget inner-life
+    # cue (``render_touch_state_block``) were retired -- Aiko self-paces
+    # via the persona guidance, so the prompt carries no budget block and
+    # the dispatch path never rejects on pacing.
 
 
 __all__ = [
@@ -738,6 +658,6 @@ __all__ = [
     "all_gestures",
     "deserialize_state",
     "get_gesture",
-    "render_touch_state_block",
     "serialize_state",
+    "synthesize_custom_gesture",
 ]

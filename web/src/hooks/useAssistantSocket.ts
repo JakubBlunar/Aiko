@@ -457,7 +457,13 @@ export function useAssistantSocket(): {
             : [],
         });
         if (evt.kind) {
-          store.appendGestureToCurrentTurn(String(evt.kind));
+          // B7: pass the full descriptor so invented custom gestures
+          // keep their model-supplied label / emoji on the bubble badge.
+          store.appendGestureToCurrentTurn({
+            kind: String(evt.kind),
+            label: evt.label != null ? String(evt.label) : undefined,
+            emoji: evt.emoji != null ? String(evt.emoji) : undefined,
+          });
         }
         break;
 

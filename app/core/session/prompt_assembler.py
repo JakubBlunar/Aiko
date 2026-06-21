@@ -88,15 +88,15 @@ def build_speech_grammar_addendum(user_display_name: str = "the user") -> str:
 _SPEECH_GRAMMAR_ADDENDUM = build_speech_grammar_addendum()
 
 
-# K31 soft physicality: ``[[touch:KIND]]`` tag family. Folded into
-# the system prompt unconditionally (the persona block teaches the
-# "use sparingly + reaches earned" posture). Eight kinds, ordered
-# from casual to intimate so the LLM reads them as a ladder. The
-# axes-gate, cadence, and daily cap are enforced backend-side by
-# :class:`TouchService.try_dispatch`; if Aiko asks for a gesture
-# that doesn't pass the gate we silently drop it. The full list
-# kept short and grammar-shaped (one line per kind, no narrative
-# prose) so the budget cost is ~80 tokens.
+# K31 / B7 soft physicality: ``[[touch:KIND]]`` tag family. Folded
+# into the system prompt unconditionally (the persona block teaches the
+# "use sparingly + reaches earned" posture). Eight curated kinds,
+# ordered from casual to intimate so the LLM reads them as a ladder.
+# B7 opened the vocabulary: Aiko may coin a fresh kind for a beat the
+# built-ins don't cover, optionally supplying an emoji + a short badge
+# phrase. There is no backend gate any more — every emitted tag fires,
+# so the only pacing is the "at most once a turn" discipline below.
+# Kept short and grammar-shaped so the budget cost is ~90 tokens.
 _TOUCH_GRAMMAR_ADDENDUM = (
     "Soft-physicality grammar (reach toward the user with a small "
     "real gesture, ONLY when the moment earns it):\n"
@@ -108,6 +108,11 @@ _TOUCH_GRAMMAR_ADDENDUM = (
     "- [[touch:hug]] — give them a hug (warmth, comfort, real hello/bye)\n"
     "- [[touch:head_pat]] — pat their head (reassurance, tender care)\n"
     "- [[touch:cuddle]] — snuggle up (deepest comfort; rare, earned)\n"
+    "If none of these fits, invent your own kind with an optional emoji "
+    "and a short phrase: [[touch:fist_bump:🤜:bumped your fist]] (emoji "
+    "and phrase are both optional — [[touch:fist_bump]] also works). "
+    "Keep the kind a single lowercase word_with_underscores and the "
+    "phrase a few words.\n"
     "Drop the tag at a clause boundary; the badge appears on your "
     "bubble and the avatar leans in. Never speak the word "
     "\"[[touch:...]]\" aloud. Touches land best at most once a "

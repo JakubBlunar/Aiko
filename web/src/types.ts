@@ -17,11 +17,14 @@ export interface ChatMessage {
   reaction?: string;
   /** Subtype hint -- e.g. "proactive" for unsolicited Aiko nudges. */
   kind?: "proactive";
-  /** K31 soft physicality: kinds Aiko emitted via ``[[touch:KIND]]``
-   * during this turn. Painted as small badges on the chat bubble
-   * footer (e.g. "🫂 Aiko gave you a hug"). Empty / undefined when
-   * the turn fired no touches. */
-  gestures?: string[];
+  /** K31 / B7 soft physicality: gestures Aiko emitted via
+   * ``[[touch:KIND]]`` during this turn. Painted as small badges on the
+   * chat bubble footer (e.g. "🫂 Aiko gave you a hug"). Each entry is
+   * either a legacy bare-``kind`` string (older DB rows) or a full
+   * ``{kind,label,emoji}`` descriptor (B7) so invented custom gestures
+   * render their model-supplied badge text on reload. Empty / undefined
+   * when the turn fired no touches. */
+  gestures?: (string | TouchGestureBadge)[];
   /** K32 reciprocity: counter per reaction kind. Empty / undefined
    * when the user hasn't reacted yet. */
   reactions?: { [kind: string]: number };
@@ -90,6 +93,41 @@ export const TOUCH_GESTURE_LABELS: Record<string, { label: string; emoji: string
   head_pat: { label: "patted your head", emoji: "🫳" },
   cuddle: { label: "cuddled up", emoji: "🤗" },
 };
+
+/** B7: a persisted touch-gesture badge. ``label`` / ``emoji`` are the
+ * model-supplied (custom) or curated (built-in) badge fields; both are
+ * optional so the renderer can fall back to {@link TOUCH_GESTURE_LABELS}
+ * or a synthesized phrase. */
+export interface TouchGestureBadge {
+  kind: string;
+  label?: string;
+  emoji?: string;
+}
+
+/** B7: normalize a stored gesture (legacy bare-``kind`` string OR a
+ * ``{kind,label,emoji}`` descriptor) into a renderable badge.
+ *
+ * Resolution order for label / emoji:
+ *   1. the descriptor's own ``label`` / ``emoji`` (custom gestures),
+ *   2. the curated {@link TOUCH_GESTURE_LABELS} entry (built-ins / legacy
+ *      string rows),
+ *   3. a synthesized fallback (humanized slug + ``✨``) so an unknown
+ *      kind still renders something sensible.
+ */
+export function normalizeGesture(
+  entry: string | TouchGestureBadge,
+): { kind: string; label: string; emoji: string } {
+  const raw = typeof entry === "string" ? { kind: entry } : entry;
+  const kind = (raw.kind || "").trim();
+  const curated = TOUCH_GESTURE_LABELS[kind];
+  const label =
+    (raw.label && raw.label.trim()) ||
+    curated?.label ||
+    (kind ? kind.replace(/_/g, " ") : "reached out");
+  const emoji =
+    (raw.emoji && raw.emoji.trim()) || curated?.emoji || "✨";
+  return { kind, label, emoji };
+}
 
 export interface SessionRow {
   session_id: string;

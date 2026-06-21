@@ -26,30 +26,64 @@ from app.core.services.response_text_service import (
 class ExtractTouchCommandsTests(unittest.TestCase):
     def test_extracts_single_tag_with_offset(self) -> None:
         out = extract_touch_commands("come here [[touch:hug]] you")
-        self.assertEqual(out, [("hug", 10)])
+        self.assertEqual(len(out), 1)
+        cmd = out[0]
+        self.assertEqual(cmd.kind, "hug")
+        self.assertEqual(cmd.emoji, "")
+        self.assertEqual(cmd.label, "")
+        self.assertEqual(cmd.offset, 10)
 
     def test_extracts_multiple_tags_in_order(self) -> None:
         out = extract_touch_commands(
             "hey [[touch:wave]] and also [[touch:head_pat]]"
         )
-        self.assertEqual([k for k, _ in out], ["wave", "head_pat"])
+        self.assertEqual([c.kind for c in out], ["wave", "head_pat"])
 
     def test_repeated_kind_preserved_as_two_entries(self) -> None:
         # Two hugs in a row is unusual but should not be coalesced
-        # at the parser level. The dispatcher's TouchService is the
-        # surface that rate-limits.
+        # at the parser level. Aiko self-paces via the persona.
         out = extract_touch_commands("[[touch:hug]] [[touch:hug]]")
         self.assertEqual(len(out), 2)
-        self.assertEqual(out[0][0], "hug")
-        self.assertEqual(out[1][0], "hug")
+        self.assertEqual(out[0].kind, "hug")
+        self.assertEqual(out[1].kind, "hug")
 
     def test_case_insensitive_normalised_to_lower(self) -> None:
         out = extract_touch_commands("[[touch:HUG]]")
-        self.assertEqual(out, [("hug", 0)])
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0].kind, "hug")
+        self.assertEqual(out[0].offset, 0)
 
     def test_empty_input_returns_empty_list(self) -> None:
         self.assertEqual(extract_touch_commands(""), [])
         self.assertEqual(extract_touch_commands(None), [])  # type: ignore[arg-type]
+
+    # ── B7: open-vocabulary custom fields ────────────────────────────
+
+    def test_custom_kind_with_emoji_and_label(self) -> None:
+        out = extract_touch_commands(
+            "there [[touch:fist_bump:🤜:bumped your fist]] friend"
+        )
+        self.assertEqual(len(out), 1)
+        cmd = out[0]
+        self.assertEqual(cmd.kind, "fist_bump")
+        self.assertEqual(cmd.emoji, "🤜")
+        self.assertEqual(cmd.label, "bumped your fist")
+
+    def test_custom_kind_with_emoji_only(self) -> None:
+        out = extract_touch_commands("[[touch:fist_bump:🤜]]")
+        self.assertEqual(out[0].kind, "fist_bump")
+        self.assertEqual(out[0].emoji, "🤜")
+        self.assertEqual(out[0].label, "")
+
+    def test_custom_kind_with_empty_emoji_slot_and_label(self) -> None:
+        out = extract_touch_commands("[[touch:tug_sleeve::tugged your sleeve]]")
+        self.assertEqual(out[0].kind, "tug_sleeve")
+        self.assertEqual(out[0].emoji, "")
+        self.assertEqual(out[0].label, "tugged your sleeve")
+
+    def test_label_field_may_contain_spaces(self) -> None:
+        out = extract_touch_commands("[[touch:wave::a big slow wave goodbye]]")
+        self.assertEqual(out[0].label, "a big slow wave goodbye")
 
 
 class StripTouchTagsTests(unittest.TestCase):
@@ -80,6 +114,18 @@ class StripTouchTagsTests(unittest.TestCase):
         self.assertNotIn("[[touch", out)
         self.assertIn("hi", out)
         self.assertIn("you doing okay", out)
+
+    def test_strips_custom_tag_with_emoji_and_label(self) -> None:
+        # B7: the whole tag (kind + emoji + label) is stripped from the
+        # visible / TTS stream, including the label phrase.
+        out = strip_all_meta_tags(
+            "nice one [[touch:fist_bump:🤜:bumped your fist]] dude"
+        )
+        self.assertNotIn("[[touch", out)
+        self.assertNotIn("bumped your fist", out)
+        self.assertNotIn("🤜", out)
+        self.assertIn("nice one", out)
+        self.assertIn("dude", out)
 
 
 class SafeVisiblePrefixTests(unittest.TestCase):

@@ -7,12 +7,13 @@ import { useAssistantStore } from "../store";
 import type {
   AttachmentRef,
   ToolEvent,
+  TouchGestureBadge,
   VoiceMode,
   WsClientCommand,
 } from "../types";
 import {
+  normalizeGesture,
   SHARED_MOMENT_VIBES,
-  TOUCH_GESTURE_LABELS,
   USER_REACTION_KINDS,
 } from "../types";
 import { ContextBadge } from "./ContextBadge";
@@ -793,9 +794,11 @@ interface BubbleProps {
   kind?: "proactive";
   /** Backend message id (when known) — gates the "Mark as moment" action. */
   backendId?: number;
-  /** K31: touch kinds Aiko emitted on this turn (one badge per
-   * entry, in order). Empty / undefined for plain bubbles. */
-  gestures?: string[];
+  /** K31 / B7: touch gestures Aiko emitted on this turn (one badge per
+   * entry, in order). Each entry is a legacy bare-``kind`` string or a
+   * ``{kind,label,emoji}`` descriptor. Empty / undefined for plain
+   * bubbles. */
+  gestures?: (string | TouchGestureBadge)[];
   /** K32: counter map of user-reaction kinds clicked on this
    * bubble. The hover tray + persistent strip both render this. */
   reactions?: Record<string, number>;
@@ -1084,13 +1087,10 @@ function MessageBubbleImpl({
       {gestureKinds.length > 0 ? (
         <div className="flex flex-wrap items-center gap-1 self-start">
           {gestureKinds.map((g, idx) => {
-            const meta = TOUCH_GESTURE_LABELS[g] ?? {
-              label: g,
-              emoji: "✨",
-            };
+            const meta = normalizeGesture(g);
             return (
               <span
-                key={`${g}-${idx}`}
+                key={`${meta.kind}-${idx}`}
                 className="rounded-full border border-pink-400/30 bg-pink-500/[0.12] px-2 py-0.5 text-[10px] text-pink-50"
                 title={`Aiko ${meta.label}`}
               >

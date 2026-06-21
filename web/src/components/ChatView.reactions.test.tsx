@@ -6,7 +6,7 @@
  * lock in the contract by inspecting the source verbatim: that the
  * bubble renderer
  *
- *   1. pulls in the K31 + K32 taxonomies (``TOUCH_GESTURE_LABELS`` +
+ *   1. pulls in the K31 + K32 helpers (``normalizeGesture`` +
  *      ``USER_REACTION_KINDS``) — a stale import would make every
  *      gesture badge fall back to the generic ``✨`` placeholder and
  *      every reaction tray button disappear,
@@ -34,15 +34,18 @@ import { describe, expect, it } from "vitest";
 const here = dirname(fileURLToPath(import.meta.url));
 const chatViewSource = readFileSync(resolve(here, "ChatView.tsx"), "utf-8");
 
-describe("ChatView — K31 gesture badge wiring", () => {
-  it("imports TOUCH_GESTURE_LABELS from the shared types module", () => {
+describe("ChatView — K31 / B7 gesture badge wiring", () => {
+  it("imports normalizeGesture from the shared types module", () => {
     expect(chatViewSource).toMatch(
-      /import\s*\{[^}]*\bTOUCH_GESTURE_LABELS\b[^}]*\}\s*from\s*"\.\.\/types"/s,
+      /import\s*\{[^}]*\bnormalizeGesture\b[^}]*\}\s*from\s*"\.\.\/types"/s,
     );
   });
 
-  it("threads the gestures prop on BubbleProps", () => {
-    expect(chatViewSource).toMatch(/gestures\?:\s*string\[\]/);
+  it("threads the open-vocabulary gestures prop on BubbleProps", () => {
+    // B7: each entry is a legacy string OR a {kind,label,emoji} descriptor.
+    expect(chatViewSource).toMatch(
+      /gestures\?:\s*\(string\s*\|\s*TouchGestureBadge\)\[\]/,
+    );
   });
 
   it("branches the gesture badge strip on gestureKinds.length", () => {
@@ -50,11 +53,43 @@ describe("ChatView — K31 gesture badge wiring", () => {
     expect(chatViewSource).toMatch(/gestureKinds\.length\s*>\s*0/);
   });
 
-  it("reads gesture metadata through TOUCH_GESTURE_LABELS with a fallback", () => {
-    // The bubble must accept an unknown kind and still render *something*.
-    expect(chatViewSource).toMatch(/TOUCH_GESTURE_LABELS\[g\]/);
-    expect(chatViewSource).toMatch(/label:\s*g,/);
-    expect(chatViewSource).toMatch(/emoji:\s*"✨"/);
+  it("normalizes each gesture descriptor before rendering the badge", () => {
+    // The bubble must accept a custom descriptor or a legacy string and
+    // still render *something* (normalizeGesture owns the fallback chain).
+    expect(chatViewSource).toMatch(/normalizeGesture\(g\)/);
+    expect(chatViewSource).toMatch(/\{meta\.emoji\}/);
+    expect(chatViewSource).toMatch(/Aiko \{meta\.label\}/);
+  });
+});
+
+describe("normalizeGesture — B7 descriptor fallback chain", () => {
+  it("resolves a built-in kind to its curated label + emoji", async () => {
+    const { normalizeGesture } = await import("../types");
+    expect(normalizeGesture("hug")).toEqual({
+      kind: "hug",
+      label: "gave you a hug",
+      emoji: "🫂",
+    });
+  });
+
+  it("keeps a custom descriptor's own label + emoji", async () => {
+    const { normalizeGesture } = await import("../types");
+    expect(
+      normalizeGesture({
+        kind: "fist_bump",
+        label: "bumped your fist",
+        emoji: "🤜",
+      }),
+    ).toEqual({ kind: "fist_bump", label: "bumped your fist", emoji: "🤜" });
+  });
+
+  it("humanizes the slug + uses ✨ for an unknown bare-string kind", async () => {
+    const { normalizeGesture } = await import("../types");
+    expect(normalizeGesture("tug_sleeve")).toEqual({
+      kind: "tug_sleeve",
+      label: "tug sleeve",
+      emoji: "✨",
+    });
   });
 });
 

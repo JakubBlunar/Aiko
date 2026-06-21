@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import re
+from typing import NamedTuple
 
 
 # Reaction grammar: ``[[reaction:NAME]]`` for a single reaction, or
@@ -502,22 +503,41 @@ _MOTION_OPEN_TAIL_PATTERN = re.compile(
     r"\[\[motion:[^\]]*\Z",
     flags=re.IGNORECASE,
 )
-# K31 soft physicality: [[touch:KIND]] reaches toward the user with a
-# small physical gesture (hug, head_pat, poke, wave, ...). The
-# taxonomy + axes gate + cadence live in
-# ``app/core/touch/touch_gestures.py``; the dispatch path threads
-# through ``TurnRunner.on_touch`` -> ``avatar_mixin._emit_avatar_touch``
-# -> WS ``avatar_touch`` event. The literal touch is sold by the
-# bubble footer badge + persona action banner; the avatar lean-in is
-# an approximation because the Alexia rig has no real reach params.
+# K31 soft physicality: ``[[touch:KIND]]`` reaches toward the user with
+# a small physical gesture (hug, head_pat, poke, wave, ...). B7 opened
+# the vocabulary: the KIND can be one of the curated built-ins OR a
+# fresh kind Aiko coins in the moment, with two optional trailing
+# fields -- ``[[touch:KIND]]``, ``[[touch:KIND:emoji]]``, or
+# ``[[touch:KIND:emoji:label phrase]]`` (empty emoji slot is allowed:
+# ``[[touch:KIND::label phrase]]``). The label may contain spaces and
+# colons (it's the last field). The dispatch path threads through
+# ``TurnRunner.on_touch`` -> ``avatar_mixin._emit_avatar_touch`` -> WS
+# ``avatar_touch`` event. The literal touch is sold by the bubble footer
+# badge + persona action banner; the avatar lean-in is an approximation
+# because the Alexia rig has no real reach params.
 _TOUCH_TAG_PATTERN = re.compile(
-    r"\[\[touch:([A-Za-z_][A-Za-z0-9_]*)\]\]",
+    r"\[\[touch:([A-Za-z_][A-Za-z0-9_]*)(?::([^:\]\[]*))?(?::([^\]\[]*))?\]\]",
     flags=re.IGNORECASE,
 )
 _TOUCH_OPEN_TAIL_PATTERN = re.compile(
     r"\[\[touch:[^\]]*\Z",
     flags=re.IGNORECASE,
 )
+
+
+class TouchCommand(NamedTuple):
+    """One parsed ``[[touch:...]]`` marker.
+
+    ``kind`` is lowercased; ``emoji`` / ``label`` are the optional
+    trailing fields (empty string when the tag omitted them). ``offset``
+    is the char position of the tag in the source string (list order is
+    preserved so consecutive tags read as separate entries).
+    """
+
+    kind: str
+    emoji: str
+    label: str
+    offset: int
 
 
 def extract_overlays(text: str) -> list[tuple[str, int]]:
@@ -557,20 +577,24 @@ def extract_motion_commands(text: str) -> list[tuple[str, int]]:
     ]
 
 
-def extract_touch_commands(text: str) -> list[tuple[str, int]]:
-    """Return ``(kind, char_offset)`` ``[[touch:KIND]]`` markers.
+def extract_touch_commands(text: str) -> list[TouchCommand]:
+    """Return :class:`TouchCommand` markers for every ``[[touch:...]]``.
 
-    Used by the post-turn pass in ``avatar_mixin._persist_turn_gestures``
-    to gather every touch kind Aiko emitted in this turn even if some
-    landed in chunks the streaming path didn't see (e.g. when a tool
-    pass merged into the final text). Stays as the canonical list-order
-    so consecutive ``[[touch:hug]] [[touch:hug]]`` reads as two entries.
+    Captures the open-vocabulary fields (B7): ``kind`` (lowercased) plus
+    the optional ``emoji`` / ``label`` trailing fields. Stays in
+    canonical list-order so consecutive ``[[touch:hug]] [[touch:hug]]``
+    reads as two entries.
     """
     source = str(text or "")
     if not source:
         return []
     return [
-        (m.group(1).strip().lower(), m.start())
+        TouchCommand(
+            kind=m.group(1).strip().lower(),
+            emoji=(m.group(2) or "").strip(),
+            label=(m.group(3) or "").strip(),
+            offset=m.start(),
+        )
         for m in _TOUCH_TAG_PATTERN.finditer(source)
     ]
 

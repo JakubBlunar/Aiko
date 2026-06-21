@@ -1,38 +1,33 @@
-"""Tests for the K31 touch-gesture service (taxonomy + dispatch).
+"""Tests for the K31 / B7 touch-gesture service (taxonomy + dispatch).
 
-Exercises :mod:`app.core.touch.touch_gestures` end-to-end:
+Exercises :mod:`app.core.touch.touch_gestures`:
 
-  - Taxonomy invariants (eight kinds, ordered light -> intimate,
-    every entry has the required fields wired).
-  - Cooldown gating across consecutive ``try_dispatch`` calls.
-  - Daily-cap gating + roll-over at UTC midnight.
-  - Per-kind override resolution (``touch_per_kind_overrides``).
-  - Relationship-axes gates per kind.
-  - ``bypass_gates`` shortcut for the MCP debug tool.
-  - kv_meta round-trip via the in-process ``ChatDatabase``.
-  - ``render_touch_state_block`` inner-life cue heuristics.
+  - Taxonomy invariants (eight built-in kinds, ordered light ->
+    intimate, every entry has the required fields wired).
+  - B7 open-vocabulary dispatch: every emitted gesture lands (no
+    relationship-axes / cooldown / daily-cap gating any more), unknown
+    kinds are synthesized into generic custom gestures, and the only
+    rejection left is the ``touch_enabled`` master flag.
+  - ``synthesize_custom_gesture`` sanitisation (label fallback, emoji
+    default, length clamps).
+  - The dormant ``TouchServiceState`` codec still round-trips (kept for
+    the MCP state snapshot), though ``try_dispatch`` no longer writes it.
 
-The tests use a real :class:`ChatDatabase` against ``:memory:`` so
-the ``kv_get`` / ``kv_set`` plumbing is exercised exactly as in
-production -- the K31 service writes through one kv key, the rest
-of the schema is irrelevant. Runs in single-digit milliseconds.
+Runs in single-digit milliseconds; no real I/O beyond an in-memory
+kv stand-in.
 """
 from __future__ import annotations
 
 import unittest
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 
-from app.core.touch import touch_gestures as tg
 from app.core.touch.touch_gestures import (
+    DEFAULT_CUSTOM_DURATION_MS,
+    DEFAULT_CUSTOM_LEAN,
     KV_TOUCH_STATE,
-    REASON_COOLDOWN,
-    REASON_DAILY_CAP,
     REASON_DISABLED,
-    REASON_GATE_CLOSENESS,
-    REASON_GATE_HUMOR,
-    REASON_GATE_TRUST,
     REASON_OK,
     REASON_UNKNOWN_KIND,
     TOUCH_KINDS,
@@ -41,17 +36,13 @@ from app.core.touch.touch_gestures import (
     all_gestures,
     deserialize_state,
     get_gesture,
-    render_touch_state_block,
     serialize_state,
+    synthesize_custom_gesture,
 )
 
 
 class _MemoryChatDb:
-    """Minimal kv_meta-only stand-in for :class:`ChatDatabase`.
-
-    Just enough to make :class:`TouchService` round-trip its state
-    blob; nothing else of the chat_database API is exercised here.
-    """
+    """Minimal kv_meta-only stand-in for :class:`ChatDatabase`."""
 
     def __init__(self) -> None:
         self.store: dict[str, str] = {}
@@ -67,22 +58,8 @@ class _MemoryChatDb:
 
 
 @dataclass(slots=True)
-class _Axes:
-    """Minimal :class:`RelationshipAxesState` stand-in.
-
-    Only the fields the gate checks read are needed; defaults are
-    ``0.0`` so the lightest gestures pass without any setup.
-    """
-
-    closeness: float = 0.0
-    trust: float = 0.0
-    humor: float = 0.0
-    comfort: float = 0.0
-
-
-@dataclass(slots=True)
 class _Settings:
-    """Minimal :class:`AgentSettings` stand-in used by gating logic."""
+    """Minimal :class:`AgentSettings` stand-in (master enable flag)."""
 
     touch_enabled: bool = True
     touch_per_kind_overrides: dict[str, Any] | None = None
@@ -101,8 +78,6 @@ def _make_service(
 
 class TouchTaxonomyTests(unittest.TestCase):
     def test_eight_kinds_ordered_light_to_intimate(self) -> None:
-        # The order is canonical -- log lines + MCP diagnostics
-        # depend on it. Pin the exact sequence.
         self.assertEqual(
             TOUCH_KINDS,
             (
@@ -122,28 +97,6 @@ class TouchTaxonomyTests(unittest.TestCase):
             self.assertGreaterEqual(gesture.lean_amount, 0.0, kind)
             self.assertLessEqual(gesture.lean_amount, 1.0, kind)
 
-    def test_intimate_kinds_have_axes_floors(self) -> None:
-        # hug / head_pat / cuddle MUST gate on closeness so the
-        # cuddly tail never lands on a brand-new install.
-        for kind in ("hug", "head_pat", "cuddle"):
-            gesture = get_gesture(kind)
-            assert gesture is not None
-            self.assertGreater(
-                gesture.min_closeness,
-                0.0,
-                f"{kind} should require positive closeness",
-            )
-
-    def test_light_kinds_have_no_axes_floor(self) -> None:
-        # wave/poke/boop/nudge are always allowed; gating them
-        # would make the LLM hesitate on basic greetings.
-        for kind in ("wave", "poke", "boop", "nudge"):
-            gesture = get_gesture(kind)
-            assert gesture is not None
-            self.assertEqual(gesture.min_closeness, -1.0, kind)
-            self.assertEqual(gesture.min_trust, -1.0, kind)
-            self.assertEqual(gesture.min_humor, -1.0, kind)
-
     def test_get_gesture_handles_garbage(self) -> None:
         self.assertIsNone(get_gesture(""))
         self.assertIsNone(get_gesture("not_a_kind"))
@@ -151,7 +104,7 @@ class TouchTaxonomyTests(unittest.TestCase):
         self.assertEqual(get_gesture(" HUG ").kind, "hug")  # type: ignore[union-attr]
 
 
-# ── Serde round-trip ────────────────────────────────────────────────
+# ── Serde round-trip (dormant codec, kept for MCP snapshot) ─────────
 
 
 class SerdeTests(unittest.TestCase):
@@ -177,275 +130,124 @@ class SerdeTests(unittest.TestCase):
         self.assertEqual(deserialize_state("").daily_date, "")
 
 
-# ── Dispatch verdict + kv_meta round-trip ───────────────────────────
+# ── B7 dispatch (no gating, no state writes) ────────────────────────
 
 
 class TryDispatchTests(unittest.TestCase):
     def setUp(self) -> None:
         self.now = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
 
-    def test_unknown_kind_rejected(self) -> None:
+    def test_empty_kind_rejected(self) -> None:
         service, db = _make_service()
-        report = service.try_dispatch("teleport", axes=None, now=self.now)
+        report = service.try_dispatch("")
         self.assertFalse(report.dispatched)
         self.assertEqual(report.reason, REASON_UNKNOWN_KIND)
         self.assertIsNone(report.gesture)
         self.assertNotIn(KV_TOUCH_STATE, db.store)
 
-    def test_first_dispatch_succeeds_and_persists(self) -> None:
+    def test_builtin_dispatch_succeeds_without_persisting(self) -> None:
         service, db = _make_service()
-        report = service.try_dispatch("wave", axes=_Axes(), now=self.now)
+        report = service.try_dispatch("wave")
         self.assertTrue(report.dispatched)
         self.assertEqual(report.reason, REASON_OK)
-        assert report.new_state is not None
-        self.assertEqual(report.new_state.daily_counts["wave"], 1)
-        self.assertEqual(report.new_state.daily_date, "2026-06-01")
-        # kv_meta persisted.
-        raw = db.store.get(KV_TOUCH_STATE)
-        self.assertIsNotNone(raw)
-        revived = deserialize_state(raw)
-        self.assertEqual(revived.daily_counts["wave"], 1)
+        assert report.gesture is not None
+        self.assertEqual(report.gesture.kind, "wave")
+        # B7: no state machine -- nothing is written to kv_meta.
+        self.assertIsNone(report.new_state)
+        self.assertNotIn(KV_TOUCH_STATE, db.store)
 
-    def test_cooldown_rejects_back_to_back(self) -> None:
+    def test_back_to_back_always_lands_no_cooldown(self) -> None:
+        # B7 removed cooldown gating: firing the same kind twice in a
+        # row both dispatch.
         service, _ = _make_service()
-        first = service.try_dispatch("wave", axes=_Axes(), now=self.now)
+        first = service.try_dispatch("wave")
+        second = service.try_dispatch("wave")
         self.assertTrue(first.dispatched)
-        second = service.try_dispatch(
-            "wave",
-            axes=_Axes(),
-            now=self.now + timedelta(seconds=10),
-        )
-        self.assertFalse(second.dispatched)
-        self.assertEqual(second.reason, REASON_COOLDOWN)
+        self.assertTrue(second.dispatched)
 
-    def test_cooldown_clears_after_full_window(self) -> None:
+    def test_intimate_kind_lands_without_axes(self) -> None:
+        # B7 removed axes floors: a cuddle on a brand-new install (no
+        # axes wired) still dispatches.
         service, _ = _make_service()
-        first = service.try_dispatch("wave", axes=_Axes(), now=self.now)
-        self.assertTrue(first.dispatched)
-        gesture = get_gesture("wave")
-        assert gesture is not None
-        later = self.now + timedelta(seconds=gesture.cooldown_seconds + 1)
-        second = service.try_dispatch("wave", axes=_Axes(), now=later)
-        self.assertTrue(second.dispatched, second.reason)
-
-    def test_independent_cooldowns_per_kind(self) -> None:
-        # A wave cooldown should not block a poke dispatch.
-        service, _ = _make_service()
-        first = service.try_dispatch("wave", axes=_Axes(), now=self.now)
-        self.assertTrue(first.dispatched)
-        second = service.try_dispatch(
-            "poke",
-            axes=_Axes(),
-            now=self.now + timedelta(seconds=1),
-        )
-        self.assertTrue(second.dispatched, second.reason)
-
-    def test_daily_cap_blocks_after_threshold(self) -> None:
-        service, _ = _make_service()
-        gesture = get_gesture("poke")
-        assert gesture is not None and gesture.daily_cap > 0
-        now = self.now
-        for n in range(gesture.daily_cap):
-            now = self.now + timedelta(seconds=(gesture.cooldown_seconds + 1) * n)
-            report = service.try_dispatch("poke", axes=_Axes(), now=now)
-            self.assertTrue(report.dispatched, f"call {n}: {report.reason}")
-        # One more past the cap on the same UTC day -> rejected.
-        rejected = service.try_dispatch(
-            "poke",
-            axes=_Axes(),
-            now=now + timedelta(seconds=gesture.cooldown_seconds + 1),
-        )
-        self.assertFalse(rejected.dispatched)
-        self.assertEqual(rejected.reason, REASON_DAILY_CAP)
-
-    def test_daily_cap_rolls_at_utc_midnight(self) -> None:
-        service, _ = _make_service()
-        gesture = get_gesture("cuddle")
-        assert gesture is not None
-        # Saturate the cap on day 1.
-        now = self.now
-        for n in range(gesture.daily_cap):
-            now = self.now + timedelta(seconds=(gesture.cooldown_seconds + 1) * n)
-            report = service.try_dispatch(
-                "cuddle",
-                axes=_Axes(closeness=1.0, trust=1.0),
-                now=now,
-            )
-            self.assertTrue(report.dispatched, f"call {n}: {report.reason}")
-        next_day = (self.now + timedelta(days=1)).replace(hour=0, minute=5)
-        rolled = service.try_dispatch(
-            "cuddle",
-            axes=_Axes(closeness=1.0, trust=1.0),
-            now=next_day,
-        )
-        self.assertTrue(rolled.dispatched, rolled.reason)
-        assert rolled.new_state is not None
-        self.assertEqual(rolled.new_state.daily_counts["cuddle"], 1)
-        self.assertEqual(rolled.new_state.daily_date, "2026-06-02")
-
-
-# ── Gate evaluation ────────────────────────────────────────────────
-
-
-class GateTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.now = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
-
-    def test_hug_blocked_below_closeness_floor(self) -> None:
-        service, _ = _make_service()
-        report = service.try_dispatch(
-            "hug",
-            axes=_Axes(closeness=0.0, trust=1.0),
-            now=self.now,
-        )
-        self.assertFalse(report.dispatched)
-        self.assertEqual(report.reason, REASON_GATE_CLOSENESS)
-
-    def test_hug_blocked_below_trust_floor(self) -> None:
-        service, _ = _make_service()
-        report = service.try_dispatch(
-            "hug",
-            axes=_Axes(closeness=1.0, trust=0.0),
-            now=self.now,
-        )
-        self.assertFalse(report.dispatched)
-        self.assertEqual(report.reason, REASON_GATE_TRUST)
-
-    def test_high_five_blocked_below_humor_floor(self) -> None:
-        service, _ = _make_service()
-        report = service.try_dispatch(
-            "high_five",
-            axes=_Axes(closeness=1.0, trust=1.0, humor=0.0),
-            now=self.now,
-        )
-        self.assertFalse(report.dispatched)
-        self.assertEqual(report.reason, REASON_GATE_HUMOR)
-
-    def test_no_axes_means_gates_skipped(self) -> None:
-        service, _ = _make_service()
-        report = service.try_dispatch("cuddle", axes=None, now=self.now)
-        # No axes -> tests skip gates, dispatch lands.
+        report = service.try_dispatch("cuddle")
         self.assertTrue(report.dispatched, report.reason)
+        assert report.gesture is not None
+        self.assertEqual(report.gesture.kind, "cuddle")
 
     def test_disabled_setting_rejects(self) -> None:
         service, _ = _make_service(settings=_Settings(touch_enabled=False))
-        report = service.try_dispatch("wave", axes=_Axes(), now=self.now)
+        report = service.try_dispatch("wave")
         self.assertFalse(report.dispatched)
         self.assertEqual(report.reason, REASON_DISABLED)
 
-    def test_bypass_gates_overrides_everything(self) -> None:
+    def test_unknown_kind_synthesized_as_custom(self) -> None:
         service, _ = _make_service()
-        # Fire once to establish a cooldown.
-        first = service.try_dispatch("hug", axes=_Axes(closeness=1.0, trust=1.0), now=self.now)
-        self.assertTrue(first.dispatched, first.reason)
-        # Now bypass + insufficient axes + still in cooldown.
-        bypass = service.try_dispatch(
-            "hug",
-            axes=_Axes(closeness=0.0, trust=0.0),
-            now=self.now + timedelta(seconds=1),
-            bypass_gates=True,
+        report = service.try_dispatch(
+            "fist_bump", emoji="🤜", label="bumped your fist",
         )
-        self.assertTrue(bypass.dispatched, bypass.reason)
+        self.assertTrue(report.dispatched, report.reason)
+        assert report.gesture is not None
+        self.assertEqual(report.gesture.kind, "fist_bump")
+        self.assertEqual(report.gesture.label, "bumped your fist")
+        self.assertEqual(report.gesture.emoji, "🤜")
+        self.assertEqual(report.gesture.lean_amount, DEFAULT_CUSTOM_LEAN)
+        self.assertEqual(report.gesture.overlays, ())
 
+    def test_custom_kind_without_label_humanizes_slug(self) -> None:
+        service, _ = _make_service()
+        report = service.try_dispatch("tug_sleeve")
+        self.assertTrue(report.dispatched, report.reason)
+        assert report.gesture is not None
+        self.assertEqual(report.gesture.label, "tug sleeve")
+        self.assertEqual(report.gesture.emoji, "")
 
-# ── Per-kind overrides ─────────────────────────────────────────────
-
-
-class OverrideTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.now = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
-
-    def test_override_lowers_cooldown(self) -> None:
-        # Drop wave cooldown to 1s.
-        settings = _Settings(
-            touch_per_kind_overrides={"wave": {"cooldown_seconds": 1}},
+    def test_axes_and_now_kwargs_are_ignored(self) -> None:
+        # Retained for call-site compatibility; passing them changes
+        # nothing about the verdict.
+        service, _ = _make_service()
+        report = service.try_dispatch(
+            "hug", axes=None, now=self.now, bypass_gates=False,
         )
-        service, _ = _make_service(settings=settings)
-        first = service.try_dispatch("wave", axes=_Axes(), now=self.now)
-        self.assertTrue(first.dispatched, first.reason)
-        second = service.try_dispatch(
-            "wave",
-            axes=_Axes(),
-            now=self.now + timedelta(seconds=2),
-        )
-        self.assertTrue(second.dispatched, second.reason)
-
-    def test_override_lowers_daily_cap(self) -> None:
-        settings = _Settings(
-            touch_per_kind_overrides={"poke": {"daily_cap": 1}},
-        )
-        service, _ = _make_service(settings=settings)
-        gesture = get_gesture("poke")
-        assert gesture is not None
-        first = service.try_dispatch("poke", axes=_Axes(), now=self.now)
-        self.assertTrue(first.dispatched)
-        second = service.try_dispatch(
-            "poke",
-            axes=_Axes(),
-            now=self.now + timedelta(seconds=gesture.cooldown_seconds + 1),
-        )
-        self.assertFalse(second.dispatched)
-        self.assertEqual(second.reason, REASON_DAILY_CAP)
-
-    def test_invalid_override_value_ignored(self) -> None:
-        settings = _Settings(
-            touch_per_kind_overrides={
-                "wave": {"cooldown_seconds": "huh", "daily_cap": "x"},
-            },
-        )
-        service, _ = _make_service(settings=settings)
-        # Garbage falls back to the default values.
-        report = service.try_dispatch("wave", axes=_Axes(), now=self.now)
         self.assertTrue(report.dispatched, report.reason)
 
 
-# ── Inner-life cue (low physical budget) ───────────────────────────
+# ── synthesize_custom_gesture sanitisation ──────────────────────────
 
 
-class InnerLifeBlockTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.now = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+class SynthesizeCustomGestureTests(unittest.TestCase):
+    def test_defaults_when_label_and_emoji_missing(self) -> None:
+        g = synthesize_custom_gesture("fist_bump")
+        self.assertEqual(g.kind, "fist_bump")
+        self.assertEqual(g.label, "fist bump")
+        self.assertEqual(g.emoji, "")
+        self.assertEqual(g.duration_ms, DEFAULT_CUSTOM_DURATION_MS)
+        self.assertEqual(g.lean_amount, DEFAULT_CUSTOM_LEAN)
+        # No relationship gating residue -- floors are wide open.
+        self.assertEqual(g.min_closeness, -1.0)
+        self.assertEqual(g.cooldown_seconds, 0)
+        self.assertEqual(g.daily_cap, 0)
 
-    def test_silent_on_empty_state(self) -> None:
-        state = TouchServiceState(last_fired={}, daily_counts={}, daily_date="2026-06-01")
-        self.assertEqual(
-            render_touch_state_block(state, now=self.now, user_display_name="Jacob"),
-            "",
+    def test_uses_supplied_label_and_emoji(self) -> None:
+        g = synthesize_custom_gesture(
+            "salute", emoji="🫡", label="snapped you a salute",
         )
+        self.assertEqual(g.label, "snapped you a salute")
+        self.assertEqual(g.emoji, "🫡")
 
-    def test_silent_on_stale_date(self) -> None:
-        state = TouchServiceState(
-            last_fired={},
-            daily_counts={"hug": 5},
-            daily_date="2026-05-01",
-        )
-        self.assertEqual(
-            render_touch_state_block(state, now=self.now, user_display_name="Jacob"),
-            "",
-        )
+    def test_label_whitespace_collapsed_and_clamped(self) -> None:
+        g = synthesize_custom_gesture("x", label="a" * 200)
+        self.assertLessEqual(len(g.label), 60)
 
-    def test_warns_on_high_intimate_count(self) -> None:
-        state = TouchServiceState(
-            last_fired={},
-            daily_counts={"hug": 2, "cuddle": 1},
-            daily_date="2026-06-01",
-        )
-        block = render_touch_state_block(state, now=self.now, user_display_name="Jacob")
-        self.assertIn("Jacob", block)
-        self.assertIn("physical", block)
+    def test_kind_lowercased_and_clamped(self) -> None:
+        g = synthesize_custom_gesture("FIST_BUMP")
+        self.assertEqual(g.kind, "fist_bump")
+        long_kind = "k" * 100
+        g2 = synthesize_custom_gesture(long_kind)
+        self.assertLessEqual(len(g2.kind), 40)
 
-    def test_warns_on_capped_kind(self) -> None:
-        # Saturate the poke cap (10) for the day.
-        gesture = get_gesture("poke")
-        assert gesture is not None
-        state = TouchServiceState(
-            last_fired={},
-            daily_counts={"poke": gesture.daily_cap},
-            daily_date="2026-06-01",
-        )
-        block = render_touch_state_block(state, now=self.now, user_display_name="Jacob")
-        self.assertIn("poke", block)
-        self.assertIn("Jacob", block)
+    def test_emoji_clamped(self) -> None:
+        g = synthesize_custom_gesture("x", emoji="🤜" * 20)
+        self.assertLessEqual(len(g.emoji), 8)
 
 
 # ── all_gestures ordering ──────────────────────────────────────────

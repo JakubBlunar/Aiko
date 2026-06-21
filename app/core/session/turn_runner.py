@@ -156,12 +156,13 @@ OutfitCallback = Callable[[str], None]
 MotionCallback = Callable[[str], None]
 
 # K31 soft physicality: ``[[touch:KIND]]`` callback — fires for
-# every recognised touch kind in stream order. The SessionController
-# threads this to ``avatar_mixin._emit_avatar_touch`` which runs the
-# TouchService cooldown + axes gate, then (on dispatch) broadcasts
-# an ``avatar_touch`` WS event AND records the kind on the assistant
-# message row's ``gestures`` column.
-TouchCallback = Callable[[str], None]
+# every touch tag in stream order. B7 widened it to carry the two
+# optional fields ``(kind, emoji, label)``: built-ins ignore the extra
+# fields, invented kinds use them for the badge. The SessionController
+# threads this to ``avatar_mixin._emit_avatar_touch`` which (on
+# dispatch) broadcasts an ``avatar_touch`` WS event AND records the
+# gesture descriptor on the assistant message row's ``gestures`` column.
+TouchCallback = Callable[[str, str, str], None]
 
 StopPredicate = Callable[[], bool]
 
@@ -428,7 +429,11 @@ class TurnRunner:
         if on_touch is not None:
             for match in _TOUCH_TAG_PATTERN.finditer(chunk):
                 try:
-                    on_touch(match.group(1).strip().lower())
+                    on_touch(
+                        match.group(1).strip().lower(),
+                        (match.group(2) or "").strip(),
+                        (match.group(3) or "").strip(),
+                    )
                 except Exception:
                     log.debug("on_touch raised", exc_info=True)
         chunk = _TOUCH_TAG_PATTERN.sub("", chunk)
@@ -829,7 +834,11 @@ class TurnRunner:
             if on_touch is not None:
                 for match in _TOUCH_TAG_PATTERN.finditer(full_raw):
                     try:
-                        on_touch(match.group(1).strip().lower())
+                        on_touch(
+                            match.group(1).strip().lower(),
+                            (match.group(2) or "").strip(),
+                            (match.group(3) or "").strip(),
+                        )
                     except Exception:
                         log.debug("on_touch raised", exc_info=True)
         body_text = strip_all_meta_tags(full_raw)

@@ -1578,7 +1578,8 @@ class SessionController(
             tease_ledger=self._render_tease_collection_block,
             grounding_line=self._render_grounding_line,
             user_reactions=self._render_user_reactions_block,
-            touch_state=self._render_touch_state_block,
+            # B7: the touch budget cue (``touch_state``) was retired —
+            # gating is gone, so there's no physical budget to surface.
             attachments=self._render_attachments_block,
         )
         self._prompt_assembler.set_pinned_self_memories_provider(
