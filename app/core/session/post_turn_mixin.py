@@ -1000,6 +1000,52 @@ class PostTurnMixin:
             except Exception:
                 log.debug("mark_revived failed", exc_info=True)
 
+    def _estimate_user_affect_for_contagion(
+        self, user_text: str | None, tone: Any,
+    ) -> tuple[float, float] | None:
+        """K37: build the user's estimated ``(valence, arousal)`` for the
+        contagion pass from cheap per-turn signals.
+
+        Reuses the perceived mood / energy from the
+        :class:`UserStateEstimator` (pure, no DB write needed here),
+        regex dialogue-act sentiment, and the confident vocal tone.
+        Returns ``None`` when nothing is readable so the contagion pass
+        stays silent.
+        """
+        from app.core.affect.affect_state import estimate_user_affect
+
+        mood: str | None = None
+        energy: str | None = None
+        estimator = getattr(self, "_user_state_estimator", None)
+        if estimator is not None and user_text:
+            try:
+                now = estimator.estimate(self._user_id, user_text=user_text)
+                mood = now.perceived_mood
+                energy = now.perceived_energy
+            except Exception:
+                log.debug("contagion user-state estimate failed", exc_info=True)
+
+        dialogue_act: str | None = None
+        if user_text:
+            try:
+                from app.core.conversation.dialogue_act_tagger import tag_regex
+
+                res = tag_regex(user_text)
+                dialogue_act = res.act if res is not None else None
+            except Exception:
+                log.debug("contagion dialogue-act tag failed", exc_info=True)
+
+        try:
+            return estimate_user_affect(
+                mood=mood,
+                energy=energy,
+                dialogue_act=dialogue_act,
+                tone=tone,
+            )
+        except Exception:
+            log.debug("contagion estimate_user_affect failed", exc_info=True)
+            return None
+
     def _post_turn_inner_life(
         self,
         *,
@@ -1029,11 +1075,30 @@ class PostTurnMixin:
         try:
             with self._vocal_tone_lock:
                 tone = self._last_vocal_tone
+            # K37 emotional contagion: estimate the user's affect from
+            # cheap per-turn signals and let apply_turn tilt Aiko toward
+            # it (gated + capped by the contagion knobs).
+            agent = self._settings.agent
+            contagion_enabled = bool(
+                getattr(agent, "contagion_enabled", True)
+            )
+            user_affect = (
+                self._estimate_user_affect_for_contagion(user_text, tone)
+                if contagion_enabled else None
+            )
             state = self._affect_updater.apply_turn(
                 self._user_id,
                 reaction=reaction,
                 user_text=user_text,
                 user_tone=tone,
+                user_affect=user_affect,
+                contagion_strength=(
+                    float(getattr(agent, "contagion_strength", 0.15))
+                    if user_affect is not None else 0.0
+                ),
+                contagion_max_per_turn=float(
+                    getattr(agent, "contagion_max_per_turn", 0.05)
+                ),
             )
         except Exception:
             log.debug("affect updater failed", exc_info=True)

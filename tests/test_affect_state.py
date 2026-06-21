@@ -138,6 +138,126 @@ class AffectUpdaterTests(unittest.TestCase):
             self.assertLess(new_state.arousal, 0.7)
 
 
+class EstimateUserAffectTests(unittest.TestCase):
+    """K37: cheap (valence, arousal) estimate from per-turn signals."""
+
+    def test_no_signal_returns_none(self) -> None:
+        from app.core.affect.affect_state import estimate_user_affect
+        self.assertIsNone(
+            estimate_user_affect(mood="unknown", energy="unknown"),
+        )
+
+    def test_low_mood_is_negative_valence(self) -> None:
+        from app.core.affect.affect_state import estimate_user_affect
+        est = estimate_user_affect(mood="low", energy="unknown")
+        self.assertIsNotNone(est)
+        self.assertLess(est[0], 0.0)
+
+    def test_high_mood_is_positive_valence_and_higher_arousal(self) -> None:
+        from app.core.affect.affect_state import estimate_user_affect
+        est = estimate_user_affect(mood="high", energy="high")
+        self.assertGreater(est[0], 0.0)
+        self.assertGreater(est[1], 0.4)
+
+    def test_vent_dialogue_act_pulls_negative(self) -> None:
+        from app.core.affect.affect_state import estimate_user_affect
+        est = estimate_user_affect(dialogue_act="vent")
+        self.assertIsNotNone(est)
+        self.assertLess(est[0], 0.0)
+
+    def test_banter_dialogue_act_pulls_positive(self) -> None:
+        from app.core.affect.affect_state import estimate_user_affect
+        est = estimate_user_affect(dialogue_act="banter")
+        self.assertGreater(est[0], 0.0)
+
+    def test_confident_tone_arousal_only(self) -> None:
+        from app.core.affect.affect_state import estimate_user_affect
+        from types import SimpleNamespace
+        tone = SimpleNamespace(confident=True, arousal_hint=0.10)
+        est = estimate_user_affect(tone=tone)
+        self.assertIsNotNone(est)
+        self.assertGreater(est[1], 0.4)
+
+    def test_unconfident_tone_ignored(self) -> None:
+        from app.core.affect.affect_state import estimate_user_affect
+        from types import SimpleNamespace
+        tone = SimpleNamespace(confident=False, arousal_hint=0.10)
+        self.assertIsNone(estimate_user_affect(tone=tone))
+
+    def test_ranges_clamped(self) -> None:
+        from app.core.affect.affect_state import estimate_user_affect
+        est = estimate_user_affect(mood="high", energy="high", dialogue_act="banter")
+        self.assertGreaterEqual(est[0], -1.0)
+        self.assertLessEqual(est[0], 1.0)
+        self.assertGreaterEqual(est[1], 0.0)
+        self.assertLessEqual(est[1], 1.0)
+
+
+class ContagionTests(unittest.TestCase):
+    """K37: apply_turn tilts toward user affect, capped + gated."""
+
+    def test_disabled_by_default_when_strength_zero(self) -> None:
+        with _TempDb() as db:
+            updater = AffectUpdater(AffectStore(db))
+            baseline = updater.apply_turn(
+                "u1", reaction="neutral", user_text="hi",
+            )
+            with_user = updater.apply_turn(
+                "u2", reaction="neutral", user_text="hi",
+                user_affect=(-0.8, 0.4),  # strength defaults to 0.0
+            )
+            self.assertAlmostEqual(baseline.valence, with_user.valence, places=4)
+
+    def test_negative_user_pulls_valence_down(self) -> None:
+        with _TempDb() as db:
+            updater = AffectUpdater(AffectStore(db))
+            no_cont = updater.apply_turn(
+                "u1", reaction="neutral", user_text="ok",
+            )
+            with_cont = updater.apply_turn(
+                "u2", reaction="neutral", user_text="ok",
+                user_affect=(-0.8, 0.3),
+                contagion_strength=0.15,
+                contagion_max_per_turn=0.05,
+            )
+            self.assertLess(with_cont.valence, no_cont.valence)
+
+    def test_positive_user_pulls_valence_up(self) -> None:
+        with _TempDb() as db:
+            updater = AffectUpdater(AffectStore(db))
+            no_cont = updater.apply_turn(
+                "u1", reaction="neutral", user_text="ok",
+            )
+            with_cont = updater.apply_turn(
+                "u2", reaction="neutral", user_text="ok",
+                user_affect=(0.9, 0.7),
+                contagion_strength=0.15,
+                contagion_max_per_turn=0.05,
+            )
+            self.assertGreater(with_cont.valence, no_cont.valence)
+
+    def test_move_is_capped(self) -> None:
+        from app.core.affect.affect_state import _apply_user_contagion
+        # Huge gap, but cap=0.05 limits the per-axis move.
+        v, a = _apply_user_contagion(
+            0.0, 0.4, (-1.0, 1.0), strength=0.9, cap=0.05,
+        )
+        self.assertAlmostEqual(v, -0.05, places=4)
+        self.assertAlmostEqual(a, 0.45, places=4)
+
+    def test_none_user_affect_is_noop(self) -> None:
+        with _TempDb() as db:
+            updater = AffectUpdater(AffectStore(db))
+            a = updater.apply_turn(
+                "u1", reaction="neutral", user_text="ok",
+            )
+            b = updater.apply_turn(
+                "u2", reaction="neutral", user_text="ok",
+                user_affect=None, contagion_strength=0.15,
+            )
+            self.assertAlmostEqual(a.valence, b.valence, places=4)
+
+
 class AmbientBlockTests(unittest.TestCase):
     def test_block_includes_label_and_felt_phrase(self) -> None:
         # K44: label + felt-language, never raw floats.

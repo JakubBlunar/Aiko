@@ -251,6 +251,64 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"get_mood_state failed: {exc}"
 
     @mcp.tool()
+    def get_contagion_state(user_text: str = "") -> str:
+        """K37 — inspect emotional-contagion config + a dry-run estimate.
+
+        Returns the master switch + strength/cap knobs, Aiko's current
+        (valence, arousal), and — when ``user_text`` is supplied — the
+        ``estimate_user_affect`` result for that text (mood/energy +
+        dialogue-act, no vocal tone) plus the capped (dv, da) Aiko would
+        move this turn. ``user_affect=null`` means no readable signal, so
+        contagion would stay silent.
+        """
+        try:
+            from app.core.affect.affect_state import (
+                _apply_user_contagion,
+                estimate_user_affect,
+            )
+
+            agent = session._settings.agent
+            out: dict[str, Any] = {
+                "enabled": bool(getattr(agent, "contagion_enabled", True)),
+                "strength": float(getattr(agent, "contagion_strength", 0.15)),
+                "max_per_turn": float(
+                    getattr(agent, "contagion_max_per_turn", 0.05)
+                ),
+            }
+            state = session._affect_store.get(session._user_id)
+            out["aiko"] = {"valence": state.valence, "arousal": state.arousal}
+            if user_text.strip():
+                mood = energy = None
+                est = getattr(session, "_user_state_estimator", None)
+                if est is not None:
+                    now = est.estimate(session._user_id, user_text=user_text)
+                    mood, energy = now.perceived_mood, now.perceived_energy
+                try:
+                    from app.core.conversation.dialogue_act_tagger import tag_regex
+                    dact = tag_regex(user_text).act
+                except Exception:
+                    dact = None
+                user_affect = estimate_user_affect(
+                    mood=mood, energy=energy, dialogue_act=dact,
+                )
+                out["detected"] = {
+                    "mood": mood, "energy": energy, "dialogue_act": dact,
+                }
+                out["user_affect"] = user_affect
+                if user_affect is not None:
+                    nv, na = _apply_user_contagion(
+                        state.valence, state.arousal, user_affect,
+                        strength=out["strength"], cap=out["max_per_turn"],
+                    )
+                    out["would_move"] = {
+                        "dv": round(nv - state.valence, 4),
+                        "da": round(na - state.arousal, 4),
+                    }
+            return json.dumps(out, indent=2, default=str)
+        except Exception as exc:
+            return f"get_contagion_state failed: {exc}"
+
+    @mcp.tool()
     def get_circadian_state() -> str:
         """Return the current circadian state (Phase 2e)."""
         try:

@@ -92,7 +92,7 @@ K11 counterfactual cache (SHIPPED) · K12 calendar-linked anticipation ·
 K19 cold-start companion onboarding ·
 K21 fresh-eyes thread re-summary (SHIPPED) ·
 K26 Aiko-side voice evolution ·
-K33 cozy mode · K37 emotional contagion ·
+K33 cozy mode · K37 emotional contagion (SHIPPED) ·
 K39 energy / spoons model · K40 comfortable silence ·
 K41 mid-stream self-correction ·
 K42 multi-bubble reply bursts (texting rhythm) ·
