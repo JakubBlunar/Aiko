@@ -455,6 +455,7 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "goals_block",
         "day_color_block",
         "anniversary_block",
+        "milestone_block",
     ),
     # T2 — compaction only. Only mutates when a SummaryWorker run
     # collapses old history into a new summary row.
@@ -779,6 +780,12 @@ class PromptAssembler:
         # rate-limited per moment by the provider itself. Dropped in
         # aggressive mode.
         self._anniversary_provider: Callable[[], str] | None = None
+        # J8: one-shot milestone-celebration cue. Armed post-turn when a
+        # relationship milestone (100 turns / 1 week / 1 month / …) crosses,
+        # consumed by the provider on the next turn. Empty almost always;
+        # deferred (not consumed) in aggressive mode so a milestone never
+        # gets silently swallowed under context pressure.
+        self._milestone_provider: Callable[[], str] | None = None
         # Schema v7: terse relationship-axes line. Only renders when an
         # axis exceeds the notability threshold (default 0.5). Dropped
         # in aggressive mode.
@@ -1190,6 +1197,7 @@ class PromptAssembler:
         world: Callable[[], str] | None = None,
         activity: Callable[[], str] | None = None,
         anniversary: Callable[[], str] | None = None,
+        milestone: Callable[[], str] | None = None,
         axes: Callable[[], str] | None = None,
         knowledge_gaps: Callable[[str], str] | None = None,
         belief_gaps: Callable[[], str] | None = None,
@@ -1276,6 +1284,8 @@ class PromptAssembler:
             self._activity_provider = activity
         if anniversary is not None:
             self._anniversary_provider = anniversary
+        if milestone is not None:
+            self._milestone_provider = milestone
         if axes is not None:
             self._axes_provider = axes
         if knowledge_gaps is not None:
@@ -1788,6 +1798,14 @@ class PromptAssembler:
         anniversary_block = "" if aggressive else _safe_provider(
             self._anniversary_provider,
             timing_sink=provider_ms, timing_name="anniversary",
+        )
+        # J8: milestone-celebration one-shot. Not called in aggressive mode
+        # so the slot is deferred rather than consumed under context
+        # pressure (a milestone is a once-per-threshold beat we don't want
+        # to lose).
+        milestone_block = "" if aggressive else _safe_provider(
+            self._milestone_provider,
+            timing_sink=provider_ms, timing_name="milestone",
         )
         axes_block = "" if aggressive else _safe_provider(
             self._axes_provider,
@@ -2604,6 +2622,8 @@ class PromptAssembler:
         # in the system prompt.
         if anniversary_block:
             system_parts.append(anniversary_block)
+        if milestone_block:
+            system_parts.append(milestone_block)
         if axes_block:
             system_parts.append(axes_block)
         if arc_block:

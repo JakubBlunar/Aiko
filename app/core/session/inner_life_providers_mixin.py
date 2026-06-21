@@ -31,6 +31,20 @@ from app.core.affect import circadian as _circadian
 log = logging.getLogger("app.session")
 
 
+# J8: friendly phrasings for each relationship milestone label (the labels
+# come from ``app.core.relationship.relationship._MILESTONES``). ``{name}``
+# is filled with the user's display name by ``_render_milestone_block``.
+# An unknown label falls back to a humanised default in the renderer.
+_MILESTONE_PHRASES: dict[str, str] = {
+    "first_hundred_turns": "you and {name} have talked a hundred times now",
+    "first_week_together": "it's been a week since you and {name} started talking",
+    "first_month_together": "it's been a month since you and {name} first met",
+    "hundred_days_together": "it's been a hundred days with {name}",
+    "six_months_together": "it's been half a year with {name}",
+    "first_year_together": "it's been a whole year with {name}",
+}
+
+
 # Brain-orchestration chunk 6: helper for the running-tasks block.
 # Pulled out so the rendering rules can be tested in isolation
 # (``tests/test_running_tasks_provider.py``) without spinning up a
@@ -3951,6 +3965,48 @@ class InnerLifeProvidersMixin:
         except Exception:
             log.debug("axes block render failed", exc_info=True)
             return ""
+
+    def _render_milestone_block(self) -> str:
+        """J8: one-shot warm acknowledgement of a relationship milestone.
+
+        Armed post-turn (``_pending_milestone_celebration``) when
+        :meth:`RelationshipTracker.record_turn` reports a crossing, and
+        consumed here on the very next turn. Stage-aware (J4): the warmth
+        of the tonal nudge scales with how close the relationship is, so a
+        ``new``-stage milestone reads understated and a ``close`` /
+        ``intimate`` one lands warmer. Acknowledge, don't perform.
+        """
+        if not bool(
+            getattr(self._settings.agent, "milestone_celebration_enabled", True)
+        ):
+            return ""
+        label = getattr(self, "_pending_milestone_celebration", None)
+        if not label:
+            return ""
+        # One-shot: consume the slot so it never re-surfaces.
+        self._pending_milestone_celebration = None
+
+        name = self.user_display_name
+        phrase = _MILESTONE_PHRASES.get(str(label))
+        if phrase is None:
+            phrase = f"you've reached a milestone with {name}: {str(label).replace('_', ' ')}"
+        else:
+            phrase = phrase.format(name=name)
+
+        try:
+            stage = self.relationship_stage_now()
+        except Exception:
+            stage = "new"
+        if stage in ("close", "intimate"):
+            tone = "let the warmth show if it feels right"
+        else:
+            tone = "a small, genuine note is plenty"
+
+        return (
+            f"Quiet milestone: {phrase}. If it comes up naturally you can "
+            f"mark it — {tone}. Don't make a production of it or force it "
+            "into the conversation."
+        )
 
     def _relationship_tenure_days(self) -> float:
         """Days since first contact (J4 tenure input); 0.0 when unknown."""

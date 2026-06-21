@@ -39,6 +39,7 @@
     "shared_moments_cooldown_seconds": 300,
     "anniversary_surfacing_enabled": true,
     "relationship_axes_enabled": true,
+    "milestone_celebration_enabled": true,
     "summary_idle_seconds": 15,
     "summary_min_unsummarized_messages": 6,
     "summary_target_tokens": 600,
