@@ -24,6 +24,8 @@ prompt for the next brainstorm, not a queue.
 - **B3.** Blink-rate modulation by arousal (deferred follow-up to B1).
 - **B4.** Phase 5 reaction polish — mint `embarrassed` / `nervous` /
   `defiant`; teach the persona the stacked-overlay idiom.
+- **B7.** Open-vocabulary touch gestures — let Aiko invent new
+  `[[touch:...]]` kinds (model-supplied, no config, emoji optional).
 
 ### C. Proactive + presence — [`proactive.md`](proactive.md)
 
@@ -62,6 +64,8 @@ silent failure path). Cheap individually, compounding in aggregate.
 - **I6.** Chat history hard-capped at 200 with no "load older".
 - **I7.** Embedding-model swap wipes LanceDB with only a log line.
 - **I8.** No React error boundary.
+- **I9.** Mobile responsiveness + PWA installability (LAN-responsive
+  is cheap; full installable auto-updating PWA needs an HTTPS origin).
 
 ### H. Immersion polish — [`immersion.md`](immersion.md)
 
@@ -175,6 +179,12 @@ compound across every K-series entry:
   pass, first-chunk threshold.
 - **P25.** Client audio flush on TTS stop (barge-in prerequisite).
 - **P26.** Lip-sync rides the server clock, not the playback clock.
+- **P27.** STT Whisper model loaded eagerly + unconditionally
+  (biggest resident-RAM lever).
+- **P28.** TTS engine + PyTorch load even when `tts.enabled=false`;
+  never released.
+- **P29.** No process-memory observability (RSS breakdown + the
+  unidentified second python process).
 
 (P1 per-turn embed budget + timing, P2 prompt-build phase
 telemetry, P8 idle-worker queue visibility + multi-worker drain,

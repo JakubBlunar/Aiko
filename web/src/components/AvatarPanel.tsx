@@ -1,5 +1,34 @@
 import { Live2DAvatar } from "./Live2DAvatar";
 import { useAssistantStore } from "../store";
+import type { WorldSnapshot } from "../types";
+
+/** Turn slugs like ``window_seat`` / ``curled_up`` / ``watching_screens``
+ * into a readable caption fragment ("window seat", "curled up",
+ * "watching screens"). */
+function humanize(token: string | null | undefined): string {
+  return (token ?? "").trim().replace(/_/g, " ");
+}
+
+/** Build the short "what Aiko is doing" caption from the world snapshot:
+ * ``{location} · {posture} · {activity}`` (e.g. "garden · standing ·
+ * stretching"). Pieces that are missing or trivial (``idle`` activity)
+ * are dropped. Returns ``""`` when the world is disabled / unknown so
+ * the caller can fall back to the plain status line. */
+function worldCaption(world: WorldSnapshot | null): string {
+  if (!world || world.enabled === false || !world.state) return "";
+  const { state, locations } = world;
+  const loc =
+    state.location_id != null
+      ? locations.find((l) => l.id === state.location_id)?.name
+      : undefined;
+  const activity = humanize(state.activity);
+  const parts = [
+    humanize(loc),
+    humanize(state.posture),
+    activity && activity !== "idle" ? activity : "",
+  ].filter(Boolean);
+  return parts.join(" · ");
+}
 
 /**
  * Avatar panel — wraps the Live2D renderer with the side-rail layout
@@ -16,6 +45,7 @@ export function AvatarPanel() {
   const reaction = useAssistantStore((s) => s.reaction);
   const voiceMode = useAssistantStore((s) => s.voiceMode);
   const avatar = useAssistantStore((s) => s.avatar);
+  const world = useAssistantStore((s) => s.world);
   const connectionStatus = useAssistantStore((s) => s.connection.status);
   const panelWidth = useAssistantStore((s) => s.personaPanelWidth);
 
@@ -27,8 +57,7 @@ export function AvatarPanel() {
   // message is reserved for the truly bad case: WS is up but the
   // backend reports ``loaded === false``.
   const showAvatar = Boolean(avatar && avatar.loaded);
-  const stillBooting =
-    !avatar && connectionStatus !== "connected";
+  const stillBooting = !avatar && connectionStatus !== "connected";
 
   return (
     <aside
@@ -61,8 +90,7 @@ export function AvatarPanel() {
             ? "speaking"
             : voiceMode !== "off"
               ? voiceMode
-              : "idle"}
-          {avatar?.loaded ? ` · cubism v${avatar.cubism_version}` : ""}
+              : worldCaption(world) || "idle"}
         </div>
       </div>
     </aside>

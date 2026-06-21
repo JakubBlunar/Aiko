@@ -605,3 +605,133 @@ Fallback option: timestamp amplitude frames server-side and have
 `LipsyncChannel` align them to scheduled `startAt`.
 
 **Effort.** Medium.
+
+---
+
+## P27. STT Whisper model loaded eagerly + unconditionally (biggest resident-RAM lever)
+
+**Motivation.** The single largest in-process ML weight is the
+STT model, and it is loaded for **every** install regardless of
+whether voice is ever used. `SessionController.__init__`
+constructs `RealtimeSttService(settings.stt, settings.audio)`
+unconditionally (no `stt.enabled` gate exists — `SttSettings`
+only has `model` + `language`), and the service's constructor
+**synchronously and eagerly** builds the `AudioToTextRecorder`,
+which loads the faster-whisper weights into the Python process
+and holds them for the whole process lifetime — there is no
+unload/release path (shutdown only calls `stop_context()`). The
+shipped default is **`large-v1`** (~1.5B params), which measures
+on the order of **~1.5–3 GB resident** depending on precision —
+the dominant chunk of the observed ~6 GB `python.exe`. A
+typed-only user (e.g. chat on a remote `gpt-5-mini` route, no
+mic) pays this in full for nothing. NOTE: this is the #1 fix for
+the RAM report — the embedder is HTTP→Ollama (negligible Python),
+the in-memory memory mirror is ~20 MB at the 5000-row cap, and
+the LLM context window lives in Ollama/OpenAI, not Python, so
+none of those are the cause.
+
+**Key files.**
+[`app/core/session/session_controller.py`](../../app/core/session/session_controller.py)
+(~L944, unconditional `RealtimeSttService` construct),
+[`app/stt/realtime_stt_service.py`](../../app/stt/realtime_stt_service.py)
+(~L56–74 eager load in `__init__`, `_create_recorder` ~L81–94),
+[`app/core/infra/settings.py`](../../app/core/infra/settings.py)
+(`SttSettings` ~L206–208 — add `enabled` + optional `device` /
+`compute_type`),
+[`config/default.json`](../../config/default.json) (`stt.model`
+L233).
+
+**Sketched approach.** Three independent wins, cheapest first:
+(a) **zero-code lever today** — document `stt.model: "small"` /
+`"base"` in `user.json` (drops ~1.5–2 GB immediately; quality is
+fine for short companion utterances); (b) **lazy load** — defer
+`AudioToTextRecorder` construction until the first voice
+activation (first mic frame / Live-mode enable) instead of in
+`__init__`, so typed-only sessions never pay it; (c) **idle
+release** — add an `stt.enabled` flag and an unload path
+(drop `self._recorder`, force GC) after N minutes with no voice
+use, rebuilding on demand. (b) gives most of the benefit for the
+common typed-first user. Also expose `compute_type` (faster-
+whisper `int8` on CPU roughly halves the footprint vs fp16/fp32)
+since Aiko currently passes neither `device` nor `compute_type`
+and inherits library defaults.
+
+**Open questions.** Does lazy-load add an unacceptable cold-start
+delay on the first voice turn (large-v1 load is multi-second)? If
+so, pair (b) with a background warm-load triggered when the
+client reports mic permission / Live toggle, not at first frame.
+
+**Effort.** Small (a/config), Small–medium (b/lazy), Medium
+(c/idle-release + flag).
+
+---
+
+## P28. TTS engine + PyTorch load even when `tts.enabled=false`; never released
+
+**Motivation.** `_build_tts_service` constructs
+`PocketTtsService(settings.tts)` unconditionally — it does not
+consult `settings.tts.enabled` — and the service's constructor
+spawns a daemon load thread that pulls Pocket-TTS (~100M params)
+plus the PyTorch CPU runtime into memory (~0.6–1 GB combined),
+held for the process lifetime (`stop()` clears only the 8-entry
+audio cache, not `self._model`). For a user who has disabled TTS
+this is pure waste; even for a TTS user it's the second-largest
+resident block and the place the shared PyTorch runtime first
+gets paged in. Lower urgency than P27 (the model is genuinely
+needed when TTS is on, which is the common case), but the
+"loads even when disabled" path is a clear bug.
+
+**Key files.**
+[`app/core/session/session_controller.py`](../../app/core/session/session_controller.py)
+(`_build_tts_service` ~L7472–7478 — gate on `settings.tts.enabled`),
+[`app/tts/pocket_tts_service.py`](../../app/tts/pocket_tts_service.py)
+(`__init__` load thread ~L236–237, `_load_model` ~L265–286,
+`stop` ~L367–370 — add a model-release path).
+
+**Sketched approach.** (a) Skip the load entirely when
+`tts.enabled` is false (return a no-op engine, or defer the load
+thread until the first enable); (b) add an explicit
+`release_model()` so toggling TTS off at runtime frees the
+weights; (c) investigate Pocket-TTS int8 quantization (~230 MB
+vs ~450 MB baseline per upstream) as a config knob. (a) is the
+quick correctness fix.
+
+**Effort.** Small (a), Small (b), Medium (c — depends on upstream
+quantization support).
+
+---
+
+## P29. No process-memory observability (RSS breakdown + the second python process)
+
+**Motivation.** The RAM investigation that produced P27/P28 was
+pure static code reading — there is no runtime surface that says
+"STT is holding X, TTS Y, the mirror Z". `get_status` reports
+model names and metrics but not resident memory. Diagnosing
+"why is the server 6 GB?" should be one MCP call, not an
+archaeology session. Separately, the reporter's Task-Manager
+screenshot showed **three** `python.exe` under one tree
+(~6.2 GB, ~946 MB, ~0.6 MB); the main process is understood
+(STT+TTS+runtime) but the **~946 MB second process is
+unidentified** — it could be a multiprocessing child, a
+faster-whisper/CTranslate2 worker, or a stray spawn, and it's
+~1 GB we can't currently account for.
+
+**Key files.**
+[`app/mcp/server.py`](../../app/mcp/server.py) (new
+`get_memory_breakdown` debug tool),
+[`app/web/__main__.py`](../../app/web/__main__.py) (process
+spawn audit — identify what the second interpreter is),
+AGENTS.md MCP tool table.
+
+**Sketched approach.** Add an MCP `get_memory_breakdown` tool:
+total RSS via `psutil.Process().memory_info().rss`, plus
+best-effort per-subsystem attribution (STT loaded/unloaded +
+model name, TTS loaded + model, memory-mirror row count ×
+vector bytes, LanceDB on-disk size, embedder LRU size). For the
+second process: enumerate `psutil.Process().children(recursive=
+True)` with `cmdline()` so we can see whether it's ours and
+what launched it (the MCP servers are `cmd /c npx` → node, not
+python, so a python child is something else). Pairs with P6 /
+P8 which already added per-subsystem stat tools.
+
+**Effort.** Small (breakdown tool), Small (children enumeration).
