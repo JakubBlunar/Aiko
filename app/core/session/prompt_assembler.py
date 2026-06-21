@@ -509,6 +509,8 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "novelty_block",
         "stagnation_block",
         "style_pattern_block",
+        "question_balance_block",
+        "tease_rhythm_block",
         "self_noticing_block",
         "vulnerability_budget_block",
         "touch_state_block",
@@ -922,6 +924,19 @@ class PromptAssembler:
         # in the system prompt. Dropped in aggressive mode like the
         # other style cues.
         self._style_pattern_provider: Callable[[], str] | None = None
+        # K47 question/share balance: proactive share-first cue surfaced
+        # while the question/share gate is armed (Aiko's recent replies
+        # have leaned too hard on questions). Pairs with the suppression
+        # of the question-pushing providers (curiosity_seeds /
+        # forward_curiosity / follow_up / knowledge_gaps + narrative
+        # open_question). No args; the post-turn pipeline owns the
+        # counter. Dropped in aggressive mode like the other cues.
+        self._question_balance_provider: Callable[[], str] | None = None
+        # K48 tease rhythm: one-shot banter-budget cue (ease off / one
+        # more step is safe), armed post-turn from the tease classifier +
+        # K32 landing signal + humor axis. Clusters with the other
+        # Aiko-side noticing cues; dropped in aggressive mode.
+        self._tease_rhythm_provider: Callable[[], str] | None = None
         # K13 stylometric mirror: tracks Jacob's *own* writing style
         # (terseness / formality / emoji / slang / question rate)
         # across recent user turns and surfaces a one-line "How
@@ -1196,6 +1211,8 @@ class PromptAssembler:
         novelty: Callable[[str], str] | None = None,
         stagnation: Callable[[str], str] | None = None,
         style_pattern: Callable[[], str] | None = None,
+        question_balance: Callable[[], str] | None = None,
+        tease_rhythm: Callable[[], str] | None = None,
         style_signal: Callable[[], str] | None = None,
         self_noticing: Callable[[], str] | None = None,
         vulnerability_budget: Callable[[], str] | None = None,
@@ -1301,6 +1318,10 @@ class PromptAssembler:
             self._stagnation_provider = stagnation
         if style_pattern is not None:
             self._style_pattern_provider = style_pattern
+        if question_balance is not None:
+            self._question_balance_provider = question_balance
+        if tease_rhythm is not None:
+            self._tease_rhythm_provider = tease_rhythm
         if style_signal is not None:
             self._style_signal_provider = style_signal
         if self_noticing is not None:
@@ -2120,6 +2141,35 @@ class PromptAssembler:
                     log.debug("style_pattern provider raised", exc_info=True)
                     style_pattern_block = ""
 
+        # K47: question/share balance share-first cue. Sibling of the
+        # anti-rut style_pattern cue; surfaces while the proactive
+        # question/share gate is armed (paired with suppression of the
+        # question-pushing providers). Dropped in aggressive mode.
+        question_balance_block = ""
+        if not aggressive and self._question_balance_provider is not None:
+            with _timed_phase(provider_ms, "question_balance"):
+                try:
+                    question_balance_block = (
+                        self._question_balance_provider() or ""
+                    )
+                except Exception:
+                    log.debug(
+                        "question_balance provider raised", exc_info=True
+                    )
+                    question_balance_block = ""
+
+        # K48: tease-rhythm banter-budget cue. Sibling of the anti-rut /
+        # share-first cues; one-shot, armed post-turn. Dropped in
+        # aggressive mode.
+        tease_rhythm_block = ""
+        if not aggressive and self._tease_rhythm_provider is not None:
+            with _timed_phase(provider_ms, "tease_rhythm"):
+                try:
+                    tease_rhythm_block = self._tease_rhythm_provider() or ""
+                except Exception:
+                    log.debug("tease_rhythm provider raised", exc_info=True)
+                    tease_rhythm_block = ""
+
         # K30: self-noticing cues. Sibling of ``style_pattern`` (same
         # persona block, same anti-narration rules) -- fans three
         # sub-detectors (agreement streak / flat affect / repeated
@@ -2434,6 +2484,8 @@ class PromptAssembler:
             "novelty_block",
             "stagnation_block",
             "style_pattern_block",
+            "question_balance_block",
+            "tease_rhythm_block",
             "self_noticing_block",
             "user_reactions_block",
         )
@@ -2449,6 +2501,8 @@ class PromptAssembler:
             "novelty_block": novelty_block,
             "stagnation_block": stagnation_block,
             "style_pattern_block": style_pattern_block,
+            "question_balance_block": question_balance_block,
+            "tease_rhythm_block": tease_rhythm_block,
             "self_noticing_block": self_noticing_block,
             "user_reactions_block": user_reactions_block,
         }
@@ -2479,6 +2533,8 @@ class PromptAssembler:
             novelty_block = cue_blocks["novelty_block"]
             stagnation_block = cue_blocks["stagnation_block"]
             style_pattern_block = cue_blocks["style_pattern_block"]
+            question_balance_block = cue_blocks["question_balance_block"]
+            tease_rhythm_block = cue_blocks["tease_rhythm_block"]
             self_noticing_block = cue_blocks["self_noticing_block"]
             user_reactions_block = cue_blocks["user_reactions_block"]
         offenders = cue_register.lint_shared_prefixes(
@@ -2795,6 +2851,20 @@ class PromptAssembler:
             # Aiko reads and silently corrects on this turn). Empty
             # on the common no-rut turn.
             system_parts.append(style_pattern_block)
+        if question_balance_block:
+            # K47: share-first cue. Sits right after the anti-rut
+            # style_pattern cue (same "notice and self-correct" shape)
+            # and is paired with the suppression of the question-pushing
+            # providers, so the turn reads as "offer something of yours"
+            # instead of another interview question. Empty on the common
+            # turn (gate not armed).
+            system_parts.append(question_balance_block)
+        if tease_rhythm_block:
+            # K48: banter-budget cue — "ease off" or "the roast landed,
+            # one gentle step further is safe". Same noticing-cue family
+            # as style_pattern / question_balance; one-shot, empty on the
+            # common no-tease turn.
+            system_parts.append(tease_rhythm_block)
         if self_noticing_block:
             # K30: self-noticing cluster — agreement-streak,
             # flat-affect, and/or repeated-thought Heads-ups (1-3

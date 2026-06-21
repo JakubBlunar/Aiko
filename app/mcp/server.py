@@ -309,6 +309,164 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"get_contagion_state failed: {exc}"
 
     @mcp.tool()
+    def get_question_balance_state() -> str:
+        """K47 — inspect the question/share balance gate.
+
+        Returns the master switch + ratio/window/suppress knobs, the
+        current rolling question-turn flags ring (newest last), the live
+        ratio, whether suppression is currently armed (and how many turns
+        remain), and the share-first cue that would render right now.
+        While ``suppress_remaining > 0`` the question-pushing inner-life
+        providers (curiosity_seeds / forward_curiosity / follow_up /
+        knowledge_gaps + the narrative open_question nudge) are muted.
+        """
+        try:
+            from app.core.conversation.question_balance import (
+                compute_ratio,
+                render_share_first_cue,
+            )
+
+            agent = session._settings.agent
+            flags = list(getattr(session, "_question_turn_flags", []) or [])
+            remaining = int(
+                getattr(session, "_question_balance_suppress_remaining", 0)
+            )
+            out = {
+                "enabled": bool(
+                    getattr(agent, "question_balance_enabled", True)
+                ),
+                "ratio_threshold": float(
+                    getattr(agent, "question_balance_ratio_threshold", 0.55)
+                ),
+                "window": int(
+                    getattr(agent, "question_balance_window", 10)
+                ),
+                "suppress_turns": int(
+                    getattr(agent, "question_balance_suppress_turns", 2)
+                ),
+                "flags": [bool(f) for f in flags],
+                "samples": len(flags),
+                "ratio": round(compute_ratio(flags), 4),
+                "suppress_remaining": remaining,
+                "suppressed_now": remaining > 0,
+                "cue_preview": (
+                    render_share_first_cue(session.user_display_name)
+                    if remaining > 0 else None
+                ),
+            }
+            return json.dumps(out, indent=2, default=str)
+        except Exception as exc:
+            return f"get_question_balance_state failed: {exc}"
+
+    @mcp.tool()
+    def force_question_balance() -> str:
+        """K47 — arm the question/share gate so the next turn suppresses
+        the question-pushing cues and surfaces the share-first cue.
+
+        Sets ``_question_balance_suppress_remaining`` to the configured
+        ``suppress_turns`` without needing a real high-ratio streak. The
+        post-turn hook will decay it normally afterward.
+        """
+        try:
+            agent = session._settings.agent
+            turns = max(
+                1, int(getattr(agent, "question_balance_suppress_turns", 2))
+            )
+            session._question_balance_suppress_remaining = turns
+            return json.dumps(
+                {"ok": True, "suppress_remaining": turns},
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_question_balance failed: {exc}"
+
+    @mcp.tool()
+    def get_tease_rhythm_state() -> str:
+        """K48 — inspect the tease-rhythm banter budget.
+
+        Returns the master switch + knobs, the rolling tease-flag ring
+        (newest last), the trailing tease streak, the id of the most
+        recent tease being watched for a landing verdict, the live humor
+        axis, the pending cue (if armed) + its rendered text, and the
+        cooldown remainder.
+        """
+        try:
+            from app.core.conversation.tease_rhythm import (
+                render_cue,
+                trailing_tease_streak,
+            )
+
+            agent = session._settings.agent
+            flags = list(getattr(session, "_tease_flags", []) or [])
+            pending = getattr(session, "_pending_tease_cue", None)
+            humor = 0.0
+            try:
+                store = getattr(session, "_relationship_axes_store", None)
+                if store is not None:
+                    humor = float(store.get(session._user_id).humor)
+            except Exception:
+                pass
+            out = {
+                "enabled": bool(
+                    getattr(agent, "tease_rhythm_enabled", True)
+                ),
+                "window": int(getattr(agent, "tease_rhythm_window", 6)),
+                "consecutive_cap": int(
+                    getattr(agent, "tease_rhythm_consecutive_cap", 3)
+                ),
+                "green_light_humor": float(
+                    getattr(agent, "tease_rhythm_green_light_humor", 0.2)
+                ),
+                "cooldown_turns": int(
+                    getattr(agent, "tease_rhythm_cooldown_turns", 3)
+                ),
+                "flags": [bool(f) for f in flags],
+                "tease_streak": trailing_tease_streak(flags),
+                "last_tease_message_id": getattr(
+                    session, "_last_tease_message_id", None
+                ),
+                "humor": round(humor, 4),
+                "cooldown_remaining": int(
+                    getattr(session, "_tease_cue_cooldown", 0)
+                ),
+                "pending_cue": pending,
+                "pending_cue_text": (
+                    render_cue(pending, user_name=session.user_display_name)
+                    if pending else None
+                ),
+            }
+            return json.dumps(out, indent=2, default=str)
+        except Exception as exc:
+            return f"get_tease_rhythm_state failed: {exc}"
+
+    @mcp.tool()
+    def force_tease_rhythm(cue: str = "green_light") -> str:
+        """K48 — arm a tease-rhythm cue for the next turn.
+
+        ``cue`` is ``ease_off`` or ``green_light``. The provider renders
+        it on the next assembly (bypassing the cooldown + landing logic).
+        """
+        try:
+            from app.core.conversation.tease_rhythm import (
+                CUE_EASE_OFF,
+                CUE_GREEN_LIGHT,
+            )
+
+            norm = (cue or "").strip().lower()
+            if norm not in (CUE_EASE_OFF, CUE_GREEN_LIGHT):
+                return json.dumps(
+                    {
+                        "error": "unknown cue",
+                        "valid": [CUE_EASE_OFF, CUE_GREEN_LIGHT],
+                    },
+                    indent=2,
+                )
+            session._tease_rhythm_force = norm
+            return json.dumps({"ok": True, "cue": norm}, indent=2)
+        except Exception as exc:
+            return f"force_tease_rhythm failed: {exc}"
+
+    @mcp.tool()
     def get_circadian_state() -> str:
         """Return the current circadian state (Phase 2e)."""
         try:

@@ -582,41 +582,114 @@ tweak in the "When you have your own take" block.
 
 ## K47. Question/share balance — stop interviewing
 
-Several workers *push* questions (`CuriosityWorker` drafts "maybe
-ask {name}...", forward-curiosity, `open_question` memories), while
-the only counterweight — the `question_saturation` style-rut cue —
-fires reactively after 75% of recent turns end in "?". The persona
-wants ≥1/3 of turns question-free; the worker pipeline pulls the
-other way, so default drift is interview mode. Add a per-session
-question-turn ratio counter (cheap regex post-turn); above ~0.55,
-suppress the curiosity/open-question providers for 2 turns and
-inject a share-first cue ("offer an observation or a small
-self-story — no question mark this turn"). Proactive instead of
-reactive: the gate runs *before* the LLM call, not after the rut
-formed. Key files:
+**SHIPPED.** Several workers *push* questions (`CuriosityWorker` drafts
+"maybe ask {name}...", forward-curiosity, `open_question` memories),
+while the only counterweight — the `question_saturation` style-rut cue
+— fires reactively after 75% of recent turns end in "?". The persona
+wants ≥1/3 of turns question-free; the worker pipeline pulls the other
+way, so default drift is interview mode.
+
+K47 adds a **proactive** per-session gate. A pure, dependency-free
+module [`app/core/conversation/question_balance.py`](../../app/core/conversation/question_balance.py)
+owns the math: `is_question_turn(text)` (any `?` → a "question turn",
+the complement of "question-free"), `compute_ratio`, `should_suppress`,
+and `render_share_first_cue`. The per-session state lives on
+`SessionController`: a `deque[bool]` ring (`_question_turn_flags`,
+maxlen=`question_balance_window`, default 10) and an int countdown
+`_question_balance_suppress_remaining`.
+
+`PostTurnMixin._update_question_balance(assistant_text)` runs once per
+committed turn (right before the reflection schedule): append the new
+question flag, consume one suppressed turn for the turn that just
+completed, then re-arm the countdown to `question_balance_suppress_turns`
+(default 2) when the rolling ratio is strictly above
+`question_balance_ratio_threshold` (default 0.55) over at least
+`max(4, window//2)` samples. Re-arming while the ratio stays high keeps
+the gate up until the question/share mix rebalances; a gentle tail lets
+it release. The countdown is **only** mutated post-turn, so a same-turn
+re-render of the prompt is consistent (no double-decrement worry, and
+T6 detectors aren't built during the listening-window prebuild anyway).
+
+Provider time (`InnerLifeProvidersMixin`): `_question_balance_suppressed()`
+is the shared guard (master switch + `remaining > 0`).
+`_render_question_balance_block()` surfaces the share-first cue while
+armed (a new T6 detector cue, clustered right after `style_pattern`,
+dropped under `aggressive=True`). The four question-pushing providers —
+`_render_curiosity_seeds_block`, `_render_forward_curiosity_block`,
+`_render_follow_up_block`, `_render_knowledge_gaps_block` — early-return
+`""` while suppressed, and `_render_narrative_block` drops *only* the
+`open_question` nudge. (RAG-surfaced `open_question` memories are left
+as-is this pass — provider suppression + the cue + persona dominate;
+RAG filtering is a noted follow-up.)
+
+Settings (`AgentSettings`): `question_balance_enabled` /
+`_ratio_threshold` / `_window` / `_suppress_turns`. Persona reinforcement
+in the "Style patterns I'm in" block of
+[`aiko_companion.txt`](../../data/persona/aiko_companion.txt). MCP debug:
+`get_question_balance_state()` (ring, ratio, remaining, cue preview) and
+`force_question_balance()` (arm without a real streak). Key files:
+[`app/core/conversation/question_balance.py`](../../app/core/conversation/question_balance.py),
 [`app/core/session/post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py)
 (counter), [`app/core/session/prompt_assembler.py`](../../app/core/session/prompt_assembler.py)
-(provider gating),
-[`app/core/proactive/curiosity_worker.py`](../../app/core/proactive/curiosity_worker.py).
++ [`inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py)
+(provider gating). Tests: `tests/test_question_balance.py`,
+`QuestionBalanceSettingsTests` in `tests/test_settings.py`,
+`QuestionBalanceProviderSlotTests` in `tests/test_prompt_assembler.py`.
 
 ---
 
 ## K48. Tease rhythm — banter as a budget, not random snark
 
-The persona promises "gently roast when it's earned" and the
-`humor` axis drifts on laughs, but nothing tracks *comedic rhythm*:
-no tease-intensity state, no "three teases in a row with zero
-warmth" guard, no "the roast landed — you can push one step
-further" green light. Catchphrases render as a static list with no
-deployment timing. A small tease-budget sibling of K15: count
-tease/roast-shaped patterns in the last N assistant turns, read the
-user's K32 reactions (😂 = landed, silence/short reply = didn't),
-and cue either "ease off" or "one more step is safe". Escalation
-gated by the humor axis so early-relationship Aiko stays gentle.
-Key files: new `app/core/conversation/tease_rhythm.py`,
+**SHIPPED.** The persona promises "gently roast when it's earned" and
+the `humor` axis drifts on laughs, but nothing tracked *comedic rhythm*:
+no "three teases in a row with zero warmth" guard, no "the roast landed
+— you can push one step further" green light.
+
+K48 adds a small tease-budget sibling of K47/K15. A pure,
+dependency-free module
+[`app/core/conversation/tease_rhythm.py`](../../app/core/conversation/tease_rhythm.py)
+owns the logic: `classify_tease(text, reaction)` (primary signal = a
+tease-shaped `[[reaction:X]]` — `smug` / `mischievous` / `defiant` /
+`pouty`; secondary = a small playful-jab text-marker net),
+`landed_verdict(laughed, user_reply)` (laugh 😂 → landed; no laugh +
+short/curt reply → missed; substantive reply → ambiguous/None),
+`trailing_tease_streak`, `decide_cue`, and `render_cue`. Per-session
+state on `SessionController`: a `deque[bool]` tease-flag ring
+(`_tease_flags`, maxlen=`tease_rhythm_window`, default 6),
+`_last_tease_message_id` (so the next turn can read that message's K32
+reactions), a one-shot `_pending_tease_cue`, and a `_tease_cue_cooldown`.
+
+`PostTurnMixin._update_tease_rhythm` runs once per committed turn:
+(1) read the verdict on the most recent tease using this turn's
+`user_text` + the prior tease message's persisted K32 reactions (via
+`WorldMixin._load_message_reactions`); (2) classify the current reply,
+roll the ring, and remember its id if it was a tease; (3) `decide_cue`
++ arm a one-shot cue (cooldown-gated). `decide_cue` priority: a tease
+that just missed → `ease_off`; `consecutive_cap` (default 3) teases in
+a row → `ease_off` (the "zero-warmth" guard); the last tease landed AND
+`humor >= tease_rhythm_green_light_humor` (default 0.2) → `green_light`.
+The humor floor is what keeps early-relationship Aiko gentle (a new user
+sits near humor 0, so escalation never greenlights). The cue surfaces on
+the *next* turn via `InnerLifeProvidersMixin._render_tease_rhythm_block`
+(a new T6 detector cue, clustered right after `question_balance`,
+dropped under `aggressive=True`, one-shot consume).
+
+Settings (`AgentSettings`): `tease_rhythm_enabled` / `_window` /
+`_consecutive_cap` / `_green_light_humor` / `_cooldown_turns`. Persona
+reinforcement in the "Style patterns I'm in" block of
+[`aiko_companion.txt`](../../data/persona/aiko_companion.txt). MCP debug:
+`get_tease_rhythm_state()` (ring, streak, watched message id, humor,
+pending cue + text, cooldown) and `force_tease_rhythm(cue)`
+(`ease_off` / `green_light`). Key files:
+[`app/core/conversation/tease_rhythm.py`](../../app/core/conversation/tease_rhythm.py),
 [`app/core/session/post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py),
 [`app/core/relationship/user_reactions.py`](../../app/core/relationship/user_reactions.py)
-(consume reaction signal), one persona bullet.
+(`laugh` reaction signal),
+[`app/core/session/prompt_assembler.py`](../../app/core/session/prompt_assembler.py)
++ [`inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py).
+Tests: `tests/test_tease_rhythm.py`, `TeaseRhythmSettingsTests` in
+`tests/test_settings.py`, `TeaseRhythmProviderSlotTests` in
+`tests/test_prompt_assembler.py`.
 
 ---
 

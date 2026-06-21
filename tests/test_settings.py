@@ -313,6 +313,138 @@ class ContagionSettingsTests(unittest.TestCase):
         self.assertAlmostEqual(a.contagion_max_per_turn, 0.5)
 
 
+class QuestionBalanceSettingsTests(unittest.TestCase):
+    """K47: question/share balance agent knobs default / round-trip / clamp."""
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(self, agent_extra: dict | None = None) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(json.loads(default_path.read_text(encoding="utf-8")))
+        for k in (
+            "question_balance_enabled",
+            "question_balance_ratio_threshold",
+            "question_balance_window",
+            "question_balance_suppress_turns",
+        ):
+            cfg.get("agent", {}).pop(k, None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults(self) -> None:
+        a = load_settings(config_path=self._write_config()).agent
+        self.assertTrue(a.question_balance_enabled)
+        self.assertAlmostEqual(a.question_balance_ratio_threshold, 0.55)
+        self.assertEqual(a.question_balance_window, 10)
+        self.assertEqual(a.question_balance_suppress_turns, 2)
+
+    def test_overrides_round_trip(self) -> None:
+        path = self._write_config(agent_extra={
+            "question_balance_enabled": False,
+            "question_balance_ratio_threshold": 0.7,
+            "question_balance_window": 6,
+            "question_balance_suppress_turns": 3,
+        })
+        a = load_settings(config_path=path).agent
+        self.assertFalse(a.question_balance_enabled)
+        self.assertAlmostEqual(a.question_balance_ratio_threshold, 0.7)
+        self.assertEqual(a.question_balance_window, 6)
+        self.assertEqual(a.question_balance_suppress_turns, 3)
+
+    def test_clamps(self) -> None:
+        path = self._write_config(agent_extra={
+            "question_balance_ratio_threshold": 99.0,
+            "question_balance_window": 1,
+            "question_balance_suppress_turns": -5,
+        })
+        a = load_settings(config_path=path).agent
+        self.assertAlmostEqual(a.question_balance_ratio_threshold, 1.0)
+        self.assertEqual(a.question_balance_window, 2)
+        self.assertEqual(a.question_balance_suppress_turns, 0)
+
+
+class TeaseRhythmSettingsTests(unittest.TestCase):
+    """K48: tease-rhythm agent knobs default / round-trip / clamp."""
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(self, agent_extra: dict | None = None) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(json.loads(default_path.read_text(encoding="utf-8")))
+        for k in (
+            "tease_rhythm_enabled",
+            "tease_rhythm_window",
+            "tease_rhythm_consecutive_cap",
+            "tease_rhythm_green_light_humor",
+            "tease_rhythm_cooldown_turns",
+        ):
+            cfg.get("agent", {}).pop(k, None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults(self) -> None:
+        a = load_settings(config_path=self._write_config()).agent
+        self.assertTrue(a.tease_rhythm_enabled)
+        self.assertEqual(a.tease_rhythm_window, 6)
+        self.assertEqual(a.tease_rhythm_consecutive_cap, 3)
+        self.assertAlmostEqual(a.tease_rhythm_green_light_humor, 0.2)
+        self.assertEqual(a.tease_rhythm_cooldown_turns, 3)
+
+    def test_overrides_round_trip(self) -> None:
+        path = self._write_config(agent_extra={
+            "tease_rhythm_enabled": False,
+            "tease_rhythm_window": 8,
+            "tease_rhythm_consecutive_cap": 2,
+            "tease_rhythm_green_light_humor": 0.4,
+            "tease_rhythm_cooldown_turns": 5,
+        })
+        a = load_settings(config_path=path).agent
+        self.assertFalse(a.tease_rhythm_enabled)
+        self.assertEqual(a.tease_rhythm_window, 8)
+        self.assertEqual(a.tease_rhythm_consecutive_cap, 2)
+        self.assertAlmostEqual(a.tease_rhythm_green_light_humor, 0.4)
+        self.assertEqual(a.tease_rhythm_cooldown_turns, 5)
+
+    def test_clamps(self) -> None:
+        path = self._write_config(agent_extra={
+            "tease_rhythm_window": 1,
+            "tease_rhythm_consecutive_cap": 0,
+            "tease_rhythm_green_light_humor": 99.0,
+            "tease_rhythm_cooldown_turns": -3,
+        })
+        a = load_settings(config_path=path).agent
+        self.assertEqual(a.tease_rhythm_window, 2)
+        self.assertEqual(a.tease_rhythm_consecutive_cap, 1)
+        self.assertAlmostEqual(a.tease_rhythm_green_light_humor, 1.0)
+        self.assertEqual(a.tease_rhythm_cooldown_turns, 0)
+
+
 class ThreadResummarySettingsTests(unittest.TestCase):
     """K21: thread re-summary agent + memory knobs default / round-trip / clamp."""
 

@@ -164,8 +164,14 @@ class InnerLifeProvidersMixin:
         text = (nudge.text or "").strip()
         if not text:
             return ""
+        source_kind = (nudge.source_kind or "").strip().lower()
+        # K47: while the question/share gate is armed, drop the
+        # open_question nudge specifically — it's the one narrative source
+        # that hands the LLM a ready-made question to ask.
+        if source_kind == "open_question" and self._question_balance_suppressed():
+            return ""
         label = self._NARRATIVE_LABELS.get(
-            (nudge.source_kind or "").strip().lower(),
+            source_kind,
             "On your mind",
         )
         if "{name}" in label:
@@ -905,6 +911,54 @@ class InnerLifeProvidersMixin:
             return ""
         return "\n".join(lines)
 
+    def _question_balance_suppressed(self) -> bool:
+        """K47: True when the question/share gate is currently muting the
+        question-pushing cues. Read by the question-pushing providers as
+        an early-return guard; never mutates state (the countdown is
+        decremented post-turn, so a same-turn re-render is consistent)."""
+        if not bool(
+            getattr(self._settings.agent, "question_balance_enabled", True)
+        ):
+            return False
+        return int(
+            getattr(self, "_question_balance_suppress_remaining", 0)
+        ) > 0
+
+    def _render_question_balance_block(self) -> str:
+        """K47: share-first cue, surfaced while the question/share gate is
+        armed. Pairs with the suppression of the question-pushing
+        providers so the turn reads as "offer something of yours" rather
+        than another interview question."""
+        if not self._question_balance_suppressed():
+            return ""
+        from app.core.conversation.question_balance import (
+            render_share_first_cue,
+        )
+
+        return render_share_first_cue(self.user_display_name)
+
+    def _render_tease_rhythm_block(self) -> str:
+        """K48: surface the pending banter-rhythm cue (ease off / one
+        more step is safe). One-shot — consumes the slot armed by the
+        post-turn hook so a re-render in the same assembly is
+        consistent. An MCP force flag bypasses the slot for testing."""
+        if not bool(
+            getattr(self._settings.agent, "tease_rhythm_enabled", True)
+        ):
+            return ""
+        from app.core.conversation.tease_rhythm import render_cue
+
+        forced = getattr(self, "_tease_rhythm_force", None)
+        if forced:
+            self._tease_rhythm_force = None
+            return render_cue(forced, user_name=self.user_display_name)
+
+        cue = getattr(self, "_pending_tease_cue", None)
+        self._pending_tease_cue = None
+        if not cue:
+            return ""
+        return render_cue(cue, user_name=self.user_display_name)
+
     def _render_knowledge_gaps_block(self, user_text: str) -> str:
         """F2: surface the open knowledge gap most relevant to ``user_text``.
 
@@ -914,6 +968,8 @@ class InnerLifeProvidersMixin:
         block ends without a trailing newline so the assembler can stitch
         it next to its siblings.
         """
+        if self._question_balance_suppressed():
+            return ""
         store = getattr(self, "_knowledge_gap_store", None)
         if store is None:
             return ""
@@ -1572,6 +1628,8 @@ class InnerLifeProvidersMixin:
             getattr(self._settings.agent, "forward_curiosity_enabled", True)
         ):
             return ""
+        if self._question_balance_suppressed():
+            return ""
 
         force_next = bool(
             getattr(self, "_forward_curiosity_force_next", False)
@@ -1680,6 +1738,8 @@ class InnerLifeProvidersMixin:
         still has to be non-empty).
         """
         if not bool(getattr(self._settings.agent, "follow_up_enabled", True)):
+            return ""
+        if self._question_balance_suppressed():
             return ""
 
         force_next = bool(getattr(self, "_follow_up_force_next", False))
@@ -2776,6 +2836,8 @@ class InnerLifeProvidersMixin:
         if not bool(
             getattr(self._settings.agent, "curiosity_seed_enabled", True)
         ):
+            return ""
+        if self._question_balance_suppressed():
             return ""
         memory = getattr(self, "_memory_store", None)
         if memory is None:
