@@ -498,3 +498,152 @@ def render_axes_block(
         return ""
     joined = parts[0] if len(parts) == 1 else f"{parts[0]} — {parts[1]}"
     return f"How the relationship feels: {joined}."
+
+
+# ── relationship stage (J4) ──────────────────────────────────────────────
+#
+# A coarse, legible *bond stage* derived from a blend of the depth axes
+# (closeness / trust / comfort — humor is flavour, not depth) gated by
+# tenure (days known). This is distinct from
+# :func:`app.core.relationship.relationship.phase_for`, which is purely
+# tenure + turn-count: the phase answers "how long have we known each
+# other?", the stage answers "how close are we, *given* how long it's
+# been?". The stage is meant to *colour behaviour* (gesture / tease /
+# self-disclosure gates in J8-J10) and to subtly tune register — it is
+# never named at the user ("we've reached level 3").
+
+STAGE_NEW = "new"
+STAGE_FAMILIAR = "familiar"
+STAGE_CLOSE = "close"
+STAGE_INTIMATE = "intimate"
+
+# Ordered shallow -> deep. Index is the stage rank.
+STAGE_ORDER: tuple[str, ...] = (
+    STAGE_NEW,
+    STAGE_FAMILIAR,
+    STAGE_CLOSE,
+    STAGE_INTIMATE,
+)
+
+# Bond = weighted blend of the three depth axes. Humor is deliberately
+# excluded — two people can banter without being close.
+_BOND_WEIGHTS: dict[str, float] = {
+    "closeness": 0.40,
+    "trust": 0.35,
+    "comfort": 0.25,
+}
+
+# Base bond thresholds (bond in [-1, 1]) to *reach* familiar / close /
+# intimate. Tuned against the slow axis accumulation: the axes are hard
+# to push past ~0.6, so 0.60 is a meaningful "intimate" bar.
+_BOND_THRESHOLDS: tuple[float, float, float] = (0.12, 0.35, 0.60)
+
+# Hysteresis margin: promote only when bond clears threshold + margin,
+# demote only when it drops below threshold - margin. Stops the stage
+# flapping turn-to-turn around a boundary.
+_STAGE_HYSTERESIS = 0.05
+
+
+def relationship_bond(state: RelationshipAxesState) -> float:
+    """Weighted blend of the depth axes, clamped to [-1, 1]."""
+    bond = (
+        state.closeness * _BOND_WEIGHTS["closeness"]
+        + state.trust * _BOND_WEIGHTS["trust"]
+        + state.comfort * _BOND_WEIGHTS["comfort"]
+    )
+    return max(-1.0, min(1.0, bond))
+
+
+def stage_rank(stage: str | None) -> int:
+    """Rank (0..3) for a stage label; unknown / None -> 0 (new)."""
+    if not stage:
+        return 0
+    try:
+        return STAGE_ORDER.index(str(stage))
+    except ValueError:
+        return 0
+
+
+def _tenure_ceiling_rank(tenure_days: float) -> int:
+    """Max stage reachable at a given tenure — you can't be intimate on day 1."""
+    if tenure_days < 3.0:
+        return 1  # familiar
+    if tenure_days < 21.0:
+        return 2  # close
+    return 3  # intimate
+
+
+def _tenure_floor_rank(tenure_days: float) -> int:
+    """Min stage once a relationship has simply *lasted* (cold or not)."""
+    if tenure_days >= 14.0:
+        return 1  # familiar
+    return 0  # new
+
+
+def relationship_stage(
+    state: RelationshipAxesState,
+    *,
+    tenure_days: float,
+    current_stage: str | None = None,
+) -> str:
+    """Resolve the bond stage from axes + tenure, with hysteresis.
+
+    ``current_stage`` (the previously-resolved stage) feeds the
+    hysteresis band so the stage only promotes when bond clears
+    ``threshold + margin`` and only demotes below ``threshold - margin``.
+    Pass ``None`` for a cold resolve (conservative — every boundary uses
+    the promote threshold).
+
+    Tenure gates the result: a ceiling (can't skip ahead before enough
+    time has passed) and a floor (a long-lasting relationship reads as at
+    least ``familiar`` even at neutral axes).
+    """
+    bond = relationship_bond(state)
+    cur_rank = stage_rank(current_stage)
+
+    rank = 0
+    for boundary, base in enumerate(_BOND_THRESHOLDS):
+        # ``boundary`` is the divider between rank ``boundary`` and
+        # ``boundary + 1``. If we're already on the upper side, the
+        # threshold is sticky (base - margin); otherwise we must climb
+        # past (base + margin).
+        if cur_rank >= boundary + 1:
+            thr = base - _STAGE_HYSTERESIS
+        else:
+            thr = base + _STAGE_HYSTERESIS
+        if bond >= thr:
+            rank = boundary + 1
+
+    days = max(0.0, float(tenure_days))
+    ceiling = _tenure_ceiling_rank(days)
+    floor = min(_tenure_floor_rank(days), ceiling)
+    rank = max(floor, min(rank, ceiling))
+    return STAGE_ORDER[rank]
+
+
+# Per-stage register nudge for the prompt. Only the deeper stages get a
+# line — ``new`` / ``familiar`` are the default warmth the persona
+# already carries, so surfacing a cue there is noise. ``{name}`` is
+# filled by :func:`stage_register_hint`.
+_STAGE_REGISTER_HINTS: dict[str, str] = {
+    STAGE_CLOSE: (
+        "You and {name} are close now — easy warmth, inside references, "
+        "and light teasing land well; you don't have to keep your guard up."
+    ),
+    STAGE_INTIMATE: (
+        "You and {name} are very close — deep familiarity, comfortable "
+        "silences, candor and softness are all welcome; speak like someone "
+        "who knows them well."
+    ),
+}
+
+
+def stage_register_hint(stage: str, *, user_display_name: str = "the user") -> str:
+    """Return a subtle register nudge for the stage, or '' for shallow stages.
+
+    Never names the stage at the user — it only colours how Aiko speaks.
+    """
+    template = _STAGE_REGISTER_HINTS.get(str(stage), "")
+    if not template:
+        return ""
+    return template.format(name=user_display_name or "the user")

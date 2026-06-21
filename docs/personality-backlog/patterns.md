@@ -865,3 +865,66 @@ table for lonely/warm_glow, caught-caring beat, wall-clock-budgeted
 dere-slips, closeness+trust erosion to token protests, support-arc
 sincerity override; `agent.expression_mask` dial (off by default)
 in Settings → Avatar.
+
+---
+
+## K61. Specifics over generalities — knowledge-grounded answers
+
+**Motivation.** When asked something informational ("what are some good
+shoegaze bands?") Aiko gives a survey-shaped, hedge-y answer and never
+names the *actual thing* — because she's reaching for the model's
+generic parametric knowledge, not grounded specifics. The
+read-side companion to the F8/F9 knowledge work: when matching
+`knowledge` memories exist, inject them and tell her to commit to
+specifics instead of generalising. Pairs with K4 (dialogue-act) to know
+when a turn is informational and with F8's retrieval boost. Key files:
+[`app/core/session/prompt_assembler.py`](../../app/core/session/prompt_assembler.py)
+(a T6 detector-tier provider gated on dialogue-act = info-seeking +
+non-empty `knowledge` retrieval), a new "Naming things" persona block in
+[`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt)
+that forbids survey-hedging ("there are many..." / "it depends") when she
+actually has grounded facts, and
+[`app/core/rag/rag_retriever.py`](../../app/core/rag/rag_retriever.py)
+for the `knowledge`-kind surfacing. Tonal guard: never turn into a
+know-it-all — specificity is "oh, try Slowdive," not a lecture.
+
+---
+
+## K62. Co-experience companion — follow a show/album/book with the user
+
+**Motivation.** A huge relationship multiplier that the world/room work
+hints at but never delivers: Aiko *follows along* with media the user is
+consuming. "I started Frieren ep 4 tonight" → she tracks progress,
+reacts to where they are (spoiler-aware, never ahead), and brings it up
+naturally later ("did you get to the part where..."). Builds directly on
+F7 (MyAnimeList/source routing for canonical episode/track data), F8
+(`knowledge` memories for the work), and the shared-moments plumbing. Key
+files: a new `app/core/relationship/co_experience.py` (a lightweight
+`media_thread` store: title, kind, current progress, last_touched,
+spoiler_ceiling), F7 source handlers for metadata, a `[[media:...]]`
+self-tag parsed in
+[`app/core/services/response_text_service.py`](../../app/core/services/response_text_service.py),
+an inner-life provider in
+[`prompt_assembler.py`](../../app/core/session/prompt_assembler.py)
+surfacing the active thread, and a small surface in the Together tab.
+The hard part is the **spoiler ceiling** — never reference anything past
+the user's stated progress; default to cautious when unsure.
+
+---
+
+## K63. Long-arc callbacks — "weeks ago you said..."
+
+**Motivation.** K22 catches inside-jokes and short-horizon callbacks, but
+Aiko rarely reaches *weeks* back to connect a current moment to something
+the user said long ago ("this reminds me of that thing you mentioned about
+your dad back in May"). That long reach is one of the strongest "she
+actually knows me" signals a companion can produce. Key files:
+[`app/core/rag/rag_retriever.py`](../../app/core/rag/rag_retriever.py)
+(an *aged* retrieval lane that deliberately surfaces an older, topically
+linked memory alongside the recent ones — inverse of the recency boost),
+a callback-candidate picker that gates on age (> N weeks) + topical link
++ a cooldown so it stays rare and special, and a persona cue teaching her
+to offer it tentatively ("didn't you once say...?") rather than asserting
+a possibly-faded detail as fact. Leans on K25 (confidence time-decay) so
+an old callback is hedged appropriately. Rarity is the whole point —
+over-firing turns "she remembers" into "she's combing a database."
