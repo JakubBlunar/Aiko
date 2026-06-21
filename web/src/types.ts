@@ -883,6 +883,27 @@ export interface TopicGraphSnapshot {
   clusters: TopicGraphCluster[];
 }
 
+// ── K10 persona regression (golden-turn drift eval) ─────────────────
+
+export interface PersonaRegressionResult {
+  id: string;
+  scope: string;
+  passed: boolean;
+  failures: string[];
+  reply_preview: string;
+}
+
+export interface PersonaRegressionSnapshot {
+  ran_at?: string;
+  model?: string;
+  ran_ms?: number;
+  total?: number;
+  passed?: number;
+  failed?: number;
+  results?: PersonaRegressionResult[];
+  error?: string;
+}
+
 // ── K2 theory-of-mind beliefs ───────────────────────────────────────
 
 export type BeliefKind = "mood" | "opinion";

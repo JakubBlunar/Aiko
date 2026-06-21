@@ -28,6 +28,7 @@ from __future__ import annotations
 from app.core.session.avatar_mixin import AvatarMixin
 from app.core.session.inner_life_providers_mixin import InnerLifeProvidersMixin
 from app.core.session.memory_facade_mixin import MemoryFacadeMixin
+from app.core.session.persona_regression_mixin import PersonaRegressionMixin
 from app.core.session.post_turn_mixin import PostTurnMixin
 from app.core.session.speaking_window_jobs_mixin import SpeakingWindowJobsMixin
 from app.core.session.task_orchestration_mixin import TaskOrchestrationMixin
@@ -37,6 +38,7 @@ __all__ = [
     "AvatarMixin",
     "InnerLifeProvidersMixin",
     "MemoryFacadeMixin",
+    "PersonaRegressionMixin",
     "PostTurnMixin",
     "SpeakingWindowJobsMixin",
     "TaskOrchestrationMixin",

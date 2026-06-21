@@ -54,17 +54,51 @@ Shipped — see [`shipped.md`](shipped.md) "K8. Affect rupture-and-repair
 
 ---
 
-## K10. Persona regression tests
+## K10. Persona regression tests — SHIPPED (on-demand)
 
-Periodic golden-prompt evals: a small fixture file
-(`data/persona/golden_turns.jsonl`) with a handful of canonical
-prompts + expected style markers (tone words, presence of specific
-self-tags, no forbidden phrases). A worker compares replies to the
-markers and flags drift. Catches the persona quietly drifting from
-the sheet via prompt rot or memory contamination. Key files: new
-`app/core/persona_regression_worker.py`, fixture file under
-`data/persona/`, alert path that surfaces drift in the diagnostics
-tab.
+Golden-prompt evals: a small fixture file
+(`data/persona/golden_turns.jsonl`) with canonical prompts + expected
+style markers (advisory `require_any` tone words, `require_all`,
+`require_tags` literal self-tag substrings like `[[reaction:`, and
+`forbid` corporate-tell phrases). Each reply is scored against the
+markers and drift is surfaced in the Diagnostics tab. Catches the
+persona quietly drifting from the sheet via prompt rot or memory
+contamination.
+
+**Shipped on-demand only** (no background token spend): trigger via the
+MCP `run_persona_regression()` tool, the "Run check" button in
+Settings → Diagnostics → Persona regression, or
+`POST /api/persona-drift/run`. Each golden turn declares
+`"scope": "minimal"` (persona sheet + grammar addenda, isolates
+persona-sheet drift) or `"scope": "full"` (the live assembled system
+prompt + RAG, catches memory contamination). Scoring is pure
+case-insensitive substring matching in
+[`app/core/persona/persona_regression.py`](../../app/core/persona/persona_regression.py).
+
+Key files: pure scorer `app/core/persona/persona_regression.py`,
+fixture `data/persona/golden_turns.jsonl`,
+`PromptAssembler.build_eval_messages`, orchestration
+`app/core/session/persona_regression_mixin.py`, REST
+`GET/POST /api/persona-drift[/run]`, MCP
+`get_persona_regression_state()` / `run_persona_regression()`, panel
+`web/src/components/settings/PersonaRegressionPanel.tsx`. Settings:
+`agent.persona_regression_enabled`,
+`agent.persona_regression_fixture_path`. Tests:
+`tests/test_persona_regression.py`,
+`tests/test_web_server_persona_drift.py`.
+
+### K10-followup — background auto-eval worker (deferred)
+
+The on-demand path is the whole eval engine; the only missing piece is
+a scheduler. Register a thin `IdleWorker` that calls the same
+`SessionController.run_persona_regression()` core on a slow cadence
+(e.g. daily) during quiet windows, gated by the existing
+`IdleWorkerScheduler` quiet predicate so it never competes with a live
+turn and never spends tokens while the user is active. The snapshot
+already persists to `kv_meta` and renders in the panel, so the worker
+needs no new surface — just a cadence + `is_ready` clock and a
+`last_run_at` kv key. Deferred to avoid continuous background token
+spend until there's demand for unattended drift alerts.
 
 ---
 

@@ -2107,6 +2107,45 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"force_repeated_thought raised: {exc}"
 
     @mcp.tool()
+    def get_persona_regression_state() -> str:
+        """K10 — read the last persona-regression snapshot.
+
+        Returns the JSON snapshot persisted under
+        ``aiko.persona_regression.last_run`` (``{}`` until the first
+        run). Pairs with ``run_persona_regression`` for end-to-end
+        repro: run the eval, then read this to inspect per-turn
+        pass/fail + the failure reasons.
+        """
+        try:
+            snapshot_fn = getattr(
+                session, "persona_regression_snapshot", None,
+            )
+            if snapshot_fn is None:
+                return json.dumps({"error": "unavailable"})
+            return json.dumps(snapshot_fn(), indent=2)
+        except Exception as exc:
+            return f"get_persona_regression_state raised: {exc}"
+
+    @mcp.tool()
+    def run_persona_regression() -> str:
+        """K10 — replay the golden-turn fixture and return the snapshot.
+
+        Builds each canonical turn's prompt (minimal persona-only or
+        full live scope per fixture), runs it through the background
+        worker LLM, scores the reply against the style markers, and
+        persists + returns the aggregated snapshot
+        (``passed/total`` + per-turn failures). On-demand; no
+        background spend.
+        """
+        try:
+            run_fn = getattr(session, "run_persona_regression", None)
+            if run_fn is None:
+                return json.dumps({"error": "unavailable"})
+            return json.dumps(run_fn(), indent=2)
+        except Exception as exc:
+            return f"run_persona_regression raised: {exc}"
+
+    @mcp.tool()
     def get_day_color_state() -> str:
         """K27 — dump the live daily personality colour state.
 

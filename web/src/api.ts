@@ -33,6 +33,7 @@ import type {
   MemoryOrder,
   MemoryUpdatePatch,
   MetricsResponse,
+  PersonaRegressionSnapshot,
   RagDocument,
   SessionRow,
   SharedMoment,
@@ -372,6 +373,13 @@ export const api = {
     ),
   // ── Topic-graph browser (K9) ─────────────────────────────────────
   getTopicGraph: () => jsonFetch<TopicGraphSnapshot>("/api/topic-graph"),
+  // ── Persona regression (K10) ─────────────────────────────────────
+  getPersonaDrift: () =>
+    jsonFetch<PersonaRegressionSnapshot>("/api/persona-drift"),
+  runPersonaDrift: () =>
+    jsonFetch<PersonaRegressionSnapshot>("/api/persona-drift/run", {
+      method: "POST",
+    }),
   // ── Theory-of-mind beliefs (K2) ──────────────────────────────────
   listBeliefs: (
     options: {
