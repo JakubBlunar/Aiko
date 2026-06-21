@@ -388,6 +388,11 @@ interface AssistantState {
    * patch (state / location / item / deleted_*_id / snapshot). */
   applyWorldPatch: (patch: WorldPatch) => void;
 
+  /** K21: monotonically bumped on each ``thread_note_updated`` WS event
+   * so the session sidebar can refetch its list (titles changed). */
+  sessionListSignal: number;
+  bumpSessionListSignal: () => void;
+
   // ── PR 2: LLM provider catalogue + role assignments ─────────────
   //
   // Loaded once when the Settings drawer opens (or on a WS
@@ -1377,6 +1382,10 @@ export const useAssistantStore = create<AssistantState>((set) => ({
     set((state) => ({
       llmRoutes: { ...(state.llmRoutes ?? {}), [role]: route },
     })),
+
+  sessionListSignal: 0,
+  bumpSessionListSignal: () =>
+    set((state) => ({ sessionListSignal: state.sessionListSignal + 1 })),
 
   world: null,
   setWorld: (snapshot) => set({ world: snapshot }),

@@ -133,6 +133,8 @@ export interface SessionRow {
   session_id: string;
   message_count: number;
   last_activity: string | null;
+  /** K21 fresh-eyes thread title (or first-message fallback); "" when neither. */
+  title?: string | null;
 }
 
 /** One option in the curated provider preset catalogue.
@@ -1527,6 +1529,17 @@ export type WsServerEvent =
   | { type: "belief_updated"; belief: Belief }
   | { type: "belief_deleted"; id: number }
   | { type: "world_updated"; patch: WorldPatch }
+  | {
+      /** K21. Fresh-eyes thread note upserted; sidebar refetches its
+       * session list to pick up the new title. */
+      type: "thread_note_updated";
+      payload: {
+        session_id: string;
+        title: string;
+        note: string;
+        messages_at: number;
+      };
+    }
   | {
       /** Schema v7. ``patch.moment`` is the typed row dict for a create
        * or update; ``patch.deleted_moment_id`` is the numeric id on

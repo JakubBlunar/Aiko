@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_SCHEMA_VERSION = 18
+_SCHEMA_VERSION = 19
 
 _CREATE_TABLES = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -55,6 +55,18 @@ CREATE TABLE IF NOT EXISTS session_summaries (
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_summaries_session ON session_summaries(session_id, updated_at);
+
+-- K21 fresh-eyes thread re-summary. One latest row per session (upsert
+-- on session_id). ``title`` is a short <=6-word label for the sidebar;
+-- ``note`` is a 3-sentence "where this thread is now" read for Aiko's
+-- prompt; ``messages_at`` is the message-count watermark when generated.
+CREATE TABLE IF NOT EXISTS thread_notes (
+    session_id TEXT PRIMARY KEY,
+    title TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    messages_at INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS memories (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -532,8 +544,29 @@ class SummaryRow:
     updated_at: str
 
 
+@dataclass(slots=True)
+class ThreadNoteRow:
+    """K21 fresh-eyes thread note (one latest row per session)."""
+
+    session_id: str
+    title: str
+    note: str
+    messages_at: int
+    updated_at: str
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _snippet(text: str | None, *, max_chars: int = 80) -> str:
+    """Collapse whitespace and truncate to a single-line label."""
+    if not text:
+        return ""
+    flat = " ".join(str(text).split())
+    if len(flat) <= max_chars:
+        return flat
+    return flat[: max_chars - 1].rstrip() + "\u2026"
 
 
 class ChatDatabase:
@@ -879,6 +912,22 @@ class ChatDatabase:
         # doesn't trip the boot path.
         for stmt in (
             "ALTER TABLE messages ADD COLUMN attachments TEXT",
+        ):
+            try:
+                conn.execute(stmt)
+            except sqlite3.OperationalError:
+                pass
+        # v18 -> v19: K21 fresh-eyes thread re-summary. ``thread_notes``
+        # holds one latest "where this thread is now" note + short title
+        # per session (upsert on session_id). Idempotent CREATE so a
+        # partially-upgraded DB just no-ops.
+        for stmt in (
+            "CREATE TABLE IF NOT EXISTS thread_notes ("
+            "session_id TEXT PRIMARY KEY, "
+            "title TEXT NOT NULL DEFAULT '', "
+            "note TEXT NOT NULL DEFAULT '', "
+            "messages_at INTEGER NOT NULL DEFAULT 0, "
+            "updated_at TEXT NOT NULL)",
         ):
             try:
                 conn.execute(stmt)
@@ -1249,6 +1298,9 @@ class ChatDatabase:
         conn.execute(
             "DELETE FROM session_summaries WHERE session_id = ?", (session_id,)
         )
+        conn.execute(
+            "DELETE FROM thread_notes WHERE session_id = ?", (session_id,)
+        )
         conn.commit()
         return cursor.rowcount
 
@@ -1286,19 +1338,68 @@ class ChatDatabase:
             )
         conn.commit()
 
+    # ── K21 fresh-eyes thread notes ──
+
+    def get_thread_note(self, session_id: str) -> ThreadNoteRow | None:
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT session_id, title, note, messages_at, updated_at "
+            "FROM thread_notes WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        return ThreadNoteRow(*row) if row else None
+
+    def save_thread_note(
+        self,
+        session_id: str,
+        title: str,
+        note: str,
+        messages_at: int,
+    ) -> None:
+        """Upsert the latest fresh-eyes note for a session."""
+        conn = self._get_conn()
+        conn.execute(
+            "INSERT INTO thread_notes (session_id, title, note, messages_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(session_id) DO UPDATE SET "
+            "title = excluded.title, note = excluded.note, "
+            "messages_at = excluded.messages_at, updated_at = excluded.updated_at",
+            (session_id, title, note, int(messages_at), _now_iso()),
+        )
+        conn.commit()
+
     # ── Session management ──
 
     def list_sessions(self) -> list[dict[str, Any]]:
-        """Return all distinct sessions with message count and last activity."""
+        """Return all distinct sessions with message count, last activity,
+        and a human-readable ``title``.
+
+        ``title`` (K21) prefers the fresh-eyes thread-note title; when no
+        note exists yet (new / short threads) it falls back to a snippet
+        of the first user message. Empty string when neither is
+        available so the frontend can fall back to the short id.
+        """
         conn = self._get_conn()
         rows = conn.execute(
-            "SELECT session_id, COUNT(*) AS msg_count, MAX(created_at) AS last_at "
-            "FROM messages GROUP BY session_id ORDER BY last_at DESC"
+            "SELECT m.session_id, COUNT(*) AS msg_count, MAX(m.created_at) AS last_at, "
+            "tn.title AS thread_title, "
+            "(SELECT content FROM messages WHERE session_id = m.session_id "
+            "AND role = 'user' ORDER BY id LIMIT 1) AS first_user "
+            "FROM messages m "
+            "LEFT JOIN thread_notes tn ON tn.session_id = m.session_id "
+            "GROUP BY m.session_id ORDER BY last_at DESC"
         ).fetchall()
-        return [
-            {"session_id": r[0], "message_count": r[1], "last_activity": r[2]}
-            for r in rows
-        ]
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            thread_title = (r[3] or "").strip()
+            title = thread_title or _snippet(r[4], max_chars=80)
+            out.append({
+                "session_id": r[0],
+                "message_count": r[1],
+                "last_activity": r[2],
+                "title": title,
+            })
+        return out
 
     def delete_session(self, session_id: str) -> None:
         """Remove all messages and summaries for a session."""

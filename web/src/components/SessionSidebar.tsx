@@ -153,6 +153,7 @@ export function SessionSidebar({
   onToggleCollapsed,
 }: SessionSidebarProps) {
   const sessionKey = useAssistantStore((s) => s.sessionKey);
+  const sessionListSignal = useAssistantStore((s) => s.sessionListSignal);
   const setMessages = useAssistantStore((s) => s.setMessages);
   const clearMessages = useAssistantStore((s) => s.clearMessages);
   const pushSystemMessage = useAssistantStore((s) => s.pushSystemMessage);
@@ -174,10 +175,11 @@ export function SessionSidebar({
     }
   }, []);
 
-  // Initial fetch + refresh on every session change broadcast.
+  // Initial fetch + refresh on every session change broadcast, and
+  // whenever K21 upserts a fresh-eyes note (sessionListSignal bump).
   useEffect(() => {
     void refresh();
-  }, [refresh, sessionKey]);
+  }, [refresh, sessionKey, sessionListSignal]);
 
   // Whenever the active session key changes, hydrate the message list.
   useEffect(() => {
@@ -404,7 +406,7 @@ export function SessionSidebar({
                   >
                     <div className="min-w-0">
                       <div className="truncate font-medium">
-                        {shortId(row.session_id)}
+                        {row.title?.trim() || shortId(row.session_id)}
                       </div>
                       <div className="text-[10px] text-ink-100/40">
                         {row.message_count} msgs ·{" "}

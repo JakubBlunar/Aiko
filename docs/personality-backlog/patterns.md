@@ -102,16 +102,50 @@ spend until there's demand for unattended drift alerts.
 
 ---
 
-## K11. Counterfactual / pre-thought cache
+## K11. Counterfactual / pre-thought cache — SHIPPED
 
 G3 covers factual `open_question`s. A natural cousin is "what would I
-say if Jacob asked me X" — Aiko occasionally drafts a reply to a
-hypothetical and caches it in scratchpad memory, smoothing future
-first responses without needing web access. Bounded queue, cheap LLM
-call, scratchpad-tier so it ages out naturally if unused. Key files:
-new `app/core/counterfactual_worker.py`,
-[`app/core/memory/memory_store.py`](../../app/core/memory/memory_store.py) (new
-`pre_thought` kind, scratchpad tier).
+say if Jacob asked me X" — Aiko drafts replies to plausible upcoming
+questions during idle windows and caches them in scratchpad memory,
+smoothing future first responses without needing web access.
+
+**Shipped** as a two-stage idle worker
+([`app/core/proactive/pre_thought_worker.py`](../../app/core/proactive/pre_thought_worker.py),
+`PreThoughtWorker`), modeled on the K9 `CuriositySeedWorker`. Each
+quiet-window tick (rate-limited via a dedicated `FactCheckRateLimiter`,
+`state_key="pre_thought.rate_state"`): (1) **generate** — one local-LLM
+JSON call proposes `pre_thought_candidates` (default 4) likely
+near-future user questions, grounded in the rolling summary + persona;
+(2) **draft** — for up to `pre_thought_max_per_run` (default 2) of the
+survivors (deduped vs existing pre-thoughts by question embedding at
+`pre_thought_min_novelty`), it builds the **K10
+`PromptAssembler.build_eval_messages(full_context=False)`** minimal
+persona prompt and drafts Aiko's in-persona reply, then strips meta
+tags. Each draft is written via `MemoryStore.add` with the new
+`pre_thought` kind on the **scratchpad** tier, **embedded on the
+question** so it surfaces through ordinary cosine RAG when the user
+later asks something similar. The store prunes oldest beyond
+`pre_thought_max_active` (default 12) and ages out naturally via decay.
+
+Surfacing is RAG-only: `RagRetriever.format_block` tags the bullet
+`(pre-thought)` and the persona ("Memories tagged `(pre-thought)`")
+teaches Aiko to lean on the thinking, not recite the draft, and to
+trust the live moment if the real question differs.
+
+Key files: `app/core/proactive/pre_thought_worker.py`,
+[`app/core/memory/memory_store.py`](../../app/core/memory/memory_store.py)
+(`pre_thought` in `VALID_KINDS`),
+[`app/core/rag/rag_retriever.py`](../../app/core/rag/rag_retriever.py)
+(`(pre-thought)` suffix),
+[`app/core/session/prompt_assembler.py`](../../app/core/session/prompt_assembler.py)
+(`build_eval_messages` reuse), registration in
+`SessionController.__init__`. Settings: `agent.pre_thought_enabled`,
+`pre_thought_max_active`, `pre_thought_candidates`,
+`pre_thought_max_per_run`, `pre_thought_min_novelty`,
+`pre_thought_per_hour_cap`, `pre_thought_per_day_cap`,
+`memory.pre_thought_interval_seconds`. MCP: `get_pre_thought_state()`,
+`force_pre_thought()`. Tests: `tests/test_pre_thought_worker.py`,
+`PreThoughtSettingsTests` in `tests/test_settings.py`.
 
 ---
 
@@ -192,19 +226,43 @@ calibration — per-user trust scalar + topic slots".
 
 ## K21. Fresh-eyes thread re-summarisation
 
-Compaction compresses history when context overflows; it doesn't
-periodically re-synthesise "what this ongoing thread is *about*
-now" for Aiko's inner voice. After ~50 turns or daily (whichever
-comes first), an idle worker would draft a 3-sentence "current
-state of this thread" note pinned to the session, separate from
-the rolling summary. Improves long-thread coherence without
-paying a per-turn token cost, and gives Aiko a clean place to
-reset her read of where the conversation has actually gone. Key
-files: new `app/core/thread_resummary_worker.py` adjacent to the
-shipped `SummaryService` / `NarrativeWeaver`, inner-life provider
-that prefers the fresh-eyes note over the rolling summary when
-present, schema addition (a `thread_resummary` row per session or
-a metadata field on the latest summary).
+**SHIPPED.** Compaction (the `SummaryWorker`) compresses old history
+when context overflows; it doesn't periodically re-synthesise "what
+this ongoing thread is *about* now". K21 adds a separate
+[`ThreadResummaryWorker`](../../app/core/proactive/thread_resummary_worker.py)
+(`IdleWorker` on the maintenance client) that, once the active session
+has `thread_resummary_min_messages` (12) messages AND either has no
+note yet / has gained `thread_resummary_message_interval` (50) new
+messages since the note's watermark / the note is older than
+`thread_resummary_max_age_hours` (24h), makes ONE LLM call producing a
+JSON `{title, note}`: a short ≤6-word title and a 3-sentence
+present-tense "where this conversation stands now" read in Aiko's
+voice.
+
+Storage is a new `thread_notes` table (schema v19, one upserted row per
+session: `session_id` PK, `title`, `note`, `messages_at`, `updated_at`)
+with `ChatDatabase.get_thread_note` / `save_thread_note`. Two consumers:
+(1) **prompt** — the note renders as its own small T2 block ("Where
+this conversation stands now: …") immediately after the rolling summary
+(complement, not replace — the rolling summary keeps its factual
+coverage and its history watermark), cached in `_StaticSlices` so the
+cache prefix stays stable; (2) **sidebar** — `list_sessions` returns a
+`title` per session, preferring the note title and falling back to a
+truncated first-user-message snippet for new/short threads, so the
+left sidebar shows readable labels instead of raw ids. A
+`thread_note_updated` WS event nudges the sidebar to refetch live.
+
+LLM spend bounded by a dedicated `FactCheckRateLimiter`
+(`state_key="thread_resummary.rate_state"`, 6/hr · 24/day). Opt-out via
+`agent.thread_resummary_enabled`. MCP-debuggable:
+`get_thread_note_state()` (switch + knobs + rate snapshot + current
+note) and `force_thread_resummary()` (run once, bypassing the interval
+gate; min-message + trigger gates still apply). Logs:
+`tail_logs(module_contains="thread_resummary")` shows
+`thread_resummary wrote: session=… title=…`. Tests:
+`tests/test_thread_resummary_worker.py`, `TestThreadNotes` in
+`tests/test_chat_database.py`, `ThreadResummarySettingsTests` in
+`tests/test_settings.py`.
 
 ---
 

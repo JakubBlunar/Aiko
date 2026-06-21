@@ -174,6 +174,23 @@ VALID_KINDS = {
     # ``metadata.last_progress_note`` so prompt assembly can render
     # one line without scanning the progress tail.
     "goal_progress",
+    # K11 personality backlog — a "pre-thought": Aiko's drafted reply to
+    # a plausible near-future user question, written ahead of time by
+    # :class:`app.core.proactive.pre_thought_worker.PreThoughtWorker`
+    # during idle windows. The two-stage worker first asks the local LLM
+    # for likely upcoming questions (grounded in the rolling summary +
+    # persona), then drafts Aiko's in-persona reply to each via the K10
+    # minimal-persona eval prompt. The row's ``content`` carries the
+    # combined "If asked X, I'd say Y" text but the EMBEDDING is computed
+    # on the hypothetical question alone, so the pre-thought surfaces
+    # through normal cosine RAG when the user later asks something
+    # similar -- smoothing the first response without any web access.
+    # Carries ``{question, thought, generated_at, source}`` in the
+    # ``metadata`` JSON column; lands on the ``scratchpad`` tier so it
+    # ages out naturally if it never gets used. Rendered with a
+    # ``(pre-thought)`` suffix in the RAG block so Aiko reads it as a
+    # draft she already mulled, not a fact.
+    "pre_thought",
 }
 
 

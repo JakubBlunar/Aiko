@@ -88,9 +88,9 @@ silent failure path). Cheap individually, compounding in aggregate.
 ### K. Patterns to explore — [`patterns.md`](patterns.md)
 
 K10 persona regression tests (SHIPPED, on-demand; background worker deferred) ·
-K11 counterfactual cache · K12 calendar-linked anticipation ·
+K11 counterfactual cache (SHIPPED) · K12 calendar-linked anticipation ·
 K19 cold-start companion onboarding ·
-K21 fresh-eyes thread re-summary ·
+K21 fresh-eyes thread re-summary (SHIPPED) ·
 K26 Aiko-side voice evolution ·
 K33 cozy mode · K37 emotional contagion ·
 K39 energy / spoons model · K40 comfortable silence ·

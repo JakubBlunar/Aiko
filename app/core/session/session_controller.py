@@ -858,6 +858,7 @@ class SessionController(
         # turn one.
         self._world_store: WorldStore | None = None
         self._world_listeners: list[Callable[[dict[str, Any]], None]] = []
+        self._thread_note_listeners: list[Callable[[dict[str, Any]], None]] = []
         try:
             self._world_store = WorldStore(storage_path)
             try:
@@ -2042,6 +2043,156 @@ class SessionController(
                             exc_info=True,
                         )
                         self._curiosity_seed_worker = None
+
+                # K11: PreThoughtWorker. Drafts + caches Aiko's reply to
+                # likely upcoming questions during idle windows so the
+                # first real response lands smoother. Independent of the
+                # topic graph (it grounds on the rolling summary +
+                # persona, not clusters). LLM spend is bounded by its
+                # own FactCheckRateLimiter; failures here only drop the
+                # speculative cache — the live turn path is unaffected.
+                self._pre_thought_worker = None
+                self._pre_thought_rate_limiter = None
+                if (
+                    self._memory_store is not None
+                    and self._embedder is not None
+                    and self._fact_check_cancel is not None
+                    and getattr(self, "_prompt_assembler", None) is not None
+                    and bool(getattr(settings.agent, "pre_thought_enabled", True))
+                ):
+                    try:
+                        from app.core.memory.fact_check_rate_limiter import (
+                            FactCheckRateLimiter,
+                        )
+                        from app.core.proactive.pre_thought_worker import (
+                            PreThoughtWorker,
+                        )
+
+                        persona_path_pt = (
+                            Path(__file__).resolve().parents[3]
+                            / "data" / "persona" / "aiko_companion.txt"
+                        )
+
+                        def _pt_persona_provider() -> str:
+                            try:
+                                return persona_path_pt.read_text(encoding="utf-8")
+                            except OSError:
+                                return ""
+
+                        def _pt_summary_provider() -> str:
+                            try:
+                                row = self._chat_db.get_latest_summary(
+                                    self.session_key,
+                                )
+                                return (row.summary if row is not None else "") or ""
+                            except Exception:
+                                return ""
+
+                        def _pt_assistant_name_provider() -> str:
+                            return self._fact_check_assistant_name() or "Aiko"
+
+                        def _pt_messages_builder(
+                            question: str,
+                        ) -> list[dict[str, Any]]:
+                            return self._prompt_assembler.build_eval_messages(
+                                question, full_context=False,
+                            )
+
+                        self._pre_thought_rate_limiter = FactCheckRateLimiter(
+                            self._chat_db,
+                            per_hour_cap=int(getattr(
+                                settings.agent, "pre_thought_per_hour_cap", 6,
+                            )),
+                            per_day_cap=int(getattr(
+                                settings.agent, "pre_thought_per_day_cap", 40,
+                            )),
+                            state_key="pre_thought.rate_state",
+                        )
+                        self._pre_thought_worker = PreThoughtWorker(
+                            memory_store=self._memory_store,
+                            embedder=self._embedder,
+                            # Idle-scheduler worker → maintenance tier.
+                            ollama=self._maintenance_client,
+                            chat_model=self._effective_worker_model,
+                            cancel_event=self._fact_check_cancel,
+                            agent_settings=settings.agent,
+                            memory_settings=self._memory_settings,
+                            rate_limiter=self._pre_thought_rate_limiter,
+                            persona_messages_builder=_pt_messages_builder,
+                            persona_provider=_pt_persona_provider,
+                            rolling_summary_provider=_pt_summary_provider,
+                            user_display_name_provider=(
+                                lambda: self.user_display_name
+                            ),
+                            assistant_display_name_provider=(
+                                _pt_assistant_name_provider
+                            ),
+                            notify_memory_added=self._notify_memory_added,
+                        )
+                        self._idle_scheduler.register(
+                            self._pre_thought_worker,
+                        )
+                    except Exception:
+                        log.warning(
+                            "PreThoughtWorker boot failed", exc_info=True,
+                        )
+                        self._pre_thought_worker = None
+
+                # K21: ThreadResummaryWorker. Periodically re-synthesises
+                # a short "where this thread stands now" note (+ a short
+                # title for the sidebar) for the active session. One LLM
+                # call per due tick on the maintenance client.
+                self._thread_resummary_worker = None
+                if (
+                    self._fact_check_cancel is not None
+                    and bool(getattr(settings.agent, "thread_resummary_enabled", True))
+                ):
+                    try:
+                        from app.core.memory.fact_check_rate_limiter import (
+                            FactCheckRateLimiter,
+                        )
+                        from app.core.proactive.thread_resummary_worker import (
+                            ThreadResummaryWorker,
+                        )
+
+                        def _tr_assistant_name_provider() -> str:
+                            return self._fact_check_assistant_name() or "Aiko"
+
+                        self._thread_resummary_rate_limiter = FactCheckRateLimiter(
+                            self._chat_db,
+                            per_hour_cap=int(getattr(
+                                settings.agent, "thread_resummary_per_hour_cap", 6,
+                            )),
+                            per_day_cap=int(getattr(
+                                settings.agent, "thread_resummary_per_day_cap", 24,
+                            )),
+                            state_key="thread_resummary.rate_state",
+                        )
+                        self._thread_resummary_worker = ThreadResummaryWorker(
+                            chat_db=self._chat_db,
+                            ollama=self._maintenance_client,
+                            chat_model=self._effective_worker_model,
+                            cancel_event=self._fact_check_cancel,
+                            agent_settings=settings.agent,
+                            memory_settings=self._memory_settings,
+                            rate_limiter=self._thread_resummary_rate_limiter,
+                            session_key_provider=lambda: self.session_key,
+                            user_display_name_provider=(
+                                lambda: self.user_display_name
+                            ),
+                            assistant_display_name_provider=(
+                                _tr_assistant_name_provider
+                            ),
+                            notify_thread_note=self._notify_thread_note,
+                        )
+                        self._idle_scheduler.register(
+                            self._thread_resummary_worker,
+                        )
+                    except Exception:
+                        log.warning(
+                            "ThreadResummaryWorker boot failed", exc_info=True,
+                        )
+                        self._thread_resummary_worker = None
 
                 # K1: GoalWorker. Cold-start bootstrap when the ring
                 # is empty, reflection ticks otherwise. Each LLM call

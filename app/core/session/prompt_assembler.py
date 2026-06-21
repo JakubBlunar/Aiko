@@ -460,6 +460,7 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
     # collapses old history into a new summary row.
     "T2_summary": (
         "summary_text",
+        "thread_note_text",
     ),
     # T3 — per-turn but topic-stable. Same memories often surface on
     # consecutive turns on the same thread.
@@ -684,6 +685,7 @@ class _StaticSlices:
     self_image_block: str
     summary_row: SummaryRow | None
     already_summarized: int
+    thread_note: str
     history_msgs: list[MessageRow]
     ambient: str
     mood_hint: str
@@ -1455,6 +1457,7 @@ class PromptAssembler:
                     row for row in history_msgs
                     if getattr(row, "id", 0) and int(row.id) > already_summarized
                 ]
+        thread_note = self._thread_note_block(session_key)
         ambient = self._ambient_block()
         mood_hint = self._mood_carryover_hint()
         circadian_block = _safe_provider(self._circadian_provider)
@@ -1474,6 +1477,7 @@ class PromptAssembler:
             self_image_block=self_image_block,
             summary_row=summary,
             already_summarized=already_summarized,
+            thread_note=thread_note,
             history_msgs=history_msgs,
             ambient=ambient,
             mood_hint=mood_hint,
@@ -1705,6 +1709,10 @@ class PromptAssembler:
         summary_text = ""
         if summary and summary.summary.strip():
             summary_text = "Earlier conversation (summary):\n" + summary.summary.strip()
+        # K21: fresh-eyes thread note (cached in static slices, session-stable
+        # until the ThreadResummaryWorker re-drafts). Sits in T2 right after
+        # the rolling summary so the cache prefix stays intact.
+        thread_note_text = slices.thread_note
 
         # Per-turn dynamic blocks read fresh on every assemble (NOT cached
         # in static slices). Vocal-tone is captured by the live-capture
@@ -2569,6 +2577,8 @@ class PromptAssembler:
         # next compaction event, so it caches for the whole arc.
         if summary_text:
             system_parts.append(summary_text)
+        if thread_note_text:
+            system_parts.append(thread_note_text)
 
         # ── T3: RAG MEMORY ────────────────────────────────────────────
         # Per-turn retrieval but topic-stable: the same surfaced
@@ -3061,6 +3071,24 @@ class PromptAssembler:
             f"into this turn unless the new context obviously calls for a "
             f"different one."
         )
+
+    def _thread_note_block(self, session_key: str) -> str:
+        """K21 fresh-eyes note: Aiko's recently-refreshed read of where
+        this thread stands now. Complements (does not replace) the
+        rolling summary; rendered as its own small T2 block. Empty until
+        the :class:`ThreadResummaryWorker` has drafted one for the
+        session.
+        """
+        try:
+            row = self._db.get_thread_note(session_key)
+        except Exception:
+            return ""
+        if row is None:
+            return ""
+        note = (row.note or "").strip()
+        if not note:
+            return ""
+        return "Where this conversation stands now:\n" + note
 
     @staticmethod
     def _ambient_block() -> str:

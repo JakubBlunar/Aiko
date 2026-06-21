@@ -176,6 +176,166 @@ class CuriositySeedSettingsTests(unittest.TestCase):
         )
 
 
+class PreThoughtSettingsTests(unittest.TestCase):
+    """K11: pre-thought agent + memory knobs default / round-trip / clamp."""
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(
+        self, agent_extra: dict | None = None, memory_extra: dict | None = None,
+    ) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(json.loads(default_path.read_text(encoding="utf-8")))
+        for k in (
+            "pre_thought_enabled",
+            "pre_thought_max_active",
+            "pre_thought_candidates",
+            "pre_thought_max_per_run",
+            "pre_thought_min_novelty",
+            "pre_thought_per_hour_cap",
+            "pre_thought_per_day_cap",
+        ):
+            cfg.get("agent", {}).pop(k, None)
+        cfg.get("memory", {}).pop("pre_thought_interval_seconds", None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        if memory_extra is not None:
+            cfg["memory"] = {**cfg.get("memory", {}), **memory_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults(self) -> None:
+        result = load_settings(config_path=self._write_config())
+        a, m = result.agent, result.memory
+        self.assertTrue(a.pre_thought_enabled)
+        self.assertEqual(a.pre_thought_max_active, 12)
+        self.assertEqual(a.pre_thought_candidates, 4)
+        self.assertEqual(a.pre_thought_max_per_run, 2)
+        self.assertAlmostEqual(a.pre_thought_min_novelty, 0.85)
+        self.assertEqual(a.pre_thought_per_hour_cap, 6)
+        self.assertEqual(a.pre_thought_per_day_cap, 40)
+        self.assertEqual(m.pre_thought_interval_seconds, 3600)
+
+    def test_overrides_round_trip(self) -> None:
+        path = self._write_config(
+            agent_extra={
+                "pre_thought_enabled": False,
+                "pre_thought_max_active": 20,
+                "pre_thought_max_per_run": 3,
+            },
+            memory_extra={"pre_thought_interval_seconds": 900},
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.pre_thought_enabled)
+        self.assertEqual(result.agent.pre_thought_max_active, 20)
+        self.assertEqual(result.agent.pre_thought_max_per_run, 3)
+        self.assertEqual(result.memory.pre_thought_interval_seconds, 900)
+
+    def test_clamps(self) -> None:
+        path = self._write_config(
+            agent_extra={
+                "pre_thought_min_novelty": 99.0,
+                "pre_thought_max_active": 0,
+            },
+            memory_extra={"pre_thought_interval_seconds": 1},
+        )
+        result = load_settings(config_path=path)
+        self.assertAlmostEqual(result.agent.pre_thought_min_novelty, 1.0)
+        self.assertEqual(result.agent.pre_thought_max_active, 1)
+        self.assertEqual(result.memory.pre_thought_interval_seconds, 60)
+
+
+class ThreadResummarySettingsTests(unittest.TestCase):
+    """K21: thread re-summary agent + memory knobs default / round-trip / clamp."""
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(
+        self, agent_extra: dict | None = None, memory_extra: dict | None = None,
+    ) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(json.loads(default_path.read_text(encoding="utf-8")))
+        for k in (
+            "thread_resummary_enabled",
+            "thread_resummary_min_messages",
+            "thread_resummary_message_interval",
+            "thread_resummary_max_age_hours",
+            "thread_resummary_per_hour_cap",
+            "thread_resummary_per_day_cap",
+        ):
+            cfg.get("agent", {}).pop(k, None)
+        cfg.get("memory", {}).pop("thread_resummary_interval_seconds", None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        if memory_extra is not None:
+            cfg["memory"] = {**cfg.get("memory", {}), **memory_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults(self) -> None:
+        result = load_settings(config_path=self._write_config())
+        a, m = result.agent, result.memory
+        self.assertTrue(a.thread_resummary_enabled)
+        self.assertEqual(a.thread_resummary_min_messages, 12)
+        self.assertEqual(a.thread_resummary_message_interval, 50)
+        self.assertAlmostEqual(a.thread_resummary_max_age_hours, 24.0)
+        self.assertEqual(a.thread_resummary_per_hour_cap, 6)
+        self.assertEqual(a.thread_resummary_per_day_cap, 24)
+        self.assertEqual(m.thread_resummary_interval_seconds, 3600)
+
+    def test_overrides_round_trip(self) -> None:
+        path = self._write_config(
+            agent_extra={
+                "thread_resummary_enabled": False,
+                "thread_resummary_message_interval": 30,
+                "thread_resummary_max_age_hours": 12.0,
+            },
+            memory_extra={"thread_resummary_interval_seconds": 900},
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.thread_resummary_enabled)
+        self.assertEqual(result.agent.thread_resummary_message_interval, 30)
+        self.assertAlmostEqual(result.agent.thread_resummary_max_age_hours, 12.0)
+        self.assertEqual(result.memory.thread_resummary_interval_seconds, 900)
+
+    def test_clamps(self) -> None:
+        path = self._write_config(
+            agent_extra={
+                "thread_resummary_min_messages": 0,
+                "thread_resummary_message_interval": 0,
+                "thread_resummary_max_age_hours": -5.0,
+            },
+            memory_extra={"thread_resummary_interval_seconds": 1},
+        )
+        result = load_settings(config_path=path)
+        self.assertEqual(result.agent.thread_resummary_min_messages, 1)
+        self.assertEqual(result.agent.thread_resummary_message_interval, 1)
+        self.assertAlmostEqual(result.agent.thread_resummary_max_age_hours, 0.0)
+        self.assertEqual(result.memory.thread_resummary_interval_seconds, 60)
+
+
 class ForwardCuriositySettingsTests(unittest.TestCase):
     """K34: agent master switch + memory cadence/cap knobs round-trip + clamps."""
 

@@ -2309,6 +2309,19 @@ def create_web_app(session: "SessionController") -> FastAPI:
     except Exception:
         log.debug("world listener subscription failed", exc_info=True)
 
+    def _on_thread_note(payload: dict[str, Any]) -> None:
+        # K21: fresh-eyes note upserted. The sidebar refetches its
+        # session list on this event to pick up the new title.
+        try:
+            hub.broadcast({"type": "thread_note_updated", "payload": dict(payload)})
+        except Exception:
+            log.debug("thread note broadcast failed", exc_info=True)
+
+    try:
+        session.add_thread_note_listener(_on_thread_note)
+    except Exception:
+        log.debug("thread note listener subscription failed", exc_info=True)
+
     @app.get("/api/world")
     def get_world() -> JSONResponse:
         return JSONResponse(session.world_snapshot())

@@ -174,6 +174,62 @@ class TestSummaries(unittest.TestCase):
             self.assertEqual(row.summary, "new")
 
 
+class TestThreadNotes(unittest.TestCase):
+    """K21 fresh-eyes thread notes + sidebar title resolution."""
+
+    def test_save_and_get_thread_note(self):
+        with _TempDB() as db:
+            self.assertIsNone(db.get_thread_note("s1"))
+            db.save_thread_note("s1", "Parser bug", "Deep in a bug, close.", 42)
+            row = db.get_thread_note("s1")
+            self.assertIsNotNone(row)
+            self.assertEqual(row.title, "Parser bug")
+            self.assertEqual(row.note, "Deep in a bug, close.")
+            self.assertEqual(row.messages_at, 42)
+
+    def test_save_thread_note_upserts(self):
+        with _TempDB() as db:
+            db.save_thread_note("s1", "old title", "old note", 10)
+            db.save_thread_note("s1", "new title", "new note", 30)
+            row = db.get_thread_note("s1")
+            self.assertEqual(row.title, "new title")
+            self.assertEqual(row.note, "new note")
+            self.assertEqual(row.messages_at, 30)
+
+    def test_list_sessions_prefers_thread_title(self):
+        with _TempDB() as db:
+            db.add_message("s1", "user", "how do I center a div")
+            db.add_message("s1", "assistant", "flexbox")
+            db.save_thread_note("s1", "CSS layout help", "Working on layout.", 2)
+            rows = {r["session_id"]: r for r in db.list_sessions()}
+            self.assertEqual(rows["s1"]["title"], "CSS layout help")
+
+    def test_list_sessions_falls_back_to_first_user_message(self):
+        with _TempDB() as db:
+            db.add_message("s2", "assistant", "hi")  # not a user message
+            db.add_message("s2", "user", "tell me about black holes please")
+            rows = {r["session_id"]: r for r in db.list_sessions()}
+            self.assertEqual(
+                rows["s2"]["title"], "tell me about black holes please",
+            )
+
+    def test_list_sessions_truncates_long_first_message(self):
+        with _TempDB() as db:
+            long_msg = "word " * 60
+            db.add_message("s3", "user", long_msg)
+            rows = {r["session_id"]: r for r in db.list_sessions()}
+            title = rows["s3"]["title"]
+            self.assertLessEqual(len(title), 80)
+            self.assertTrue(title.endswith("\u2026"))
+
+    def test_clear_messages_drops_thread_note(self):
+        with _TempDB() as db:
+            db.add_message("s1", "user", "hello")
+            db.save_thread_note("s1", "t", "n", 1)
+            db.clear_messages("s1", full_reset=True)
+            self.assertIsNone(db.get_thread_note("s1"))
+
+
 class TestSchemaV7Migration(unittest.TestCase):
     """Schema v6 → v7 upgrade adds the ``memories.metadata`` column and
     the ``relationship_axes`` table without losing existing rows."""
