@@ -192,6 +192,7 @@ class ClientCache:
                 model=model.strip(),
                 extra_headers=extra_headers or None,
                 keep_alive=provider.keep_alive,
+                reasoning_effort=getattr(provider, "reasoning_effort", "") or "",
             )
         return OllamaClient(
             self._ollama_settings,
@@ -280,7 +281,23 @@ def build_client_for_route(
     hand-edited ``user.json`` could trip this).
     """
     provider = _find_provider(settings, route.provider_id)
-    return cache.get(provider, model=route.model)
+    client = cache.get(provider, model=route.model)
+    # A route's own reasoning-effort overrides the provider-level default.
+    # The cached client is shared across routes on the same provider, so
+    # this applies the effective (route-else-provider) value each time a
+    # route resolves — last writer wins, which is fine because workers on
+    # a shared remote provider want the same effort the chat route set.
+    effective_effort = (
+        (getattr(route, "reasoning_effort", "") or "").strip()
+        or (getattr(provider, "reasoning_effort", "") or "").strip()
+    )
+    setter = getattr(client, "set_reasoning_effort", None)
+    if callable(setter):
+        try:
+            setter(effective_effort)
+        except Exception:  # pragma: no cover - best-effort
+            pass
+    return client
 
 
 def _find_provider(settings: LlmSettings, provider_id: str) -> LlmProvider:

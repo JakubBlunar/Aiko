@@ -1541,6 +1541,9 @@ def create_web_app(session: "SessionController") -> FastAPI:
                 for k, v in raw_headers.items()
                 if str(k).strip() and v is not None
             },
+            reasoning_effort=str(
+                payload.get("reasoning_effort", "") or ""
+            ).strip().lower(),
         )
         try:
             probe = _build_chat_client(

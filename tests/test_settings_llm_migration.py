@@ -107,6 +107,31 @@ class FirstRunSynthesisTests(unittest.TestCase):
             settings.routes[LLM_ROLE_WORKER_DEFAULT].model, "llama3.1:8b",
         )
 
+    def test_reasoning_effort_carried_to_remote_provider_and_route(
+        self,
+    ) -> None:
+        """A configured ``chat_llm.reasoning_effort`` lands on both the
+        synthesised remote provider and the ``main_chat`` route so the
+        chat client is built with it (gpt-5.4-mini fix)."""
+        chat_llm = ChatLlmSettings(
+            provider="openai_compatible",
+            provider_preset="openai",
+            model="gpt-5.4-mini",
+            base_url="https://api.openai.com/v1",
+            api_key="sk-real",
+            reasoning_effort="low",
+        )
+        settings = _migrate_legacy_llm(
+            chat_llm=chat_llm,
+            ollama=_ollama(),
+            timeout=300,
+        )
+        openai = next(p for p in settings.providers if p.id == "openai")
+        self.assertEqual(openai.reasoning_effort, "low")
+        self.assertEqual(
+            settings.routes[LLM_ROLE_MAIN_CHAT].reasoning_effort, "low",
+        )
+
     def test_ollama_cloud_synthesises_separate_provider(self) -> None:
         """When chat_llm.provider == "ollama" but base_url is the cloud
         host, the migration still creates a separate provider entry

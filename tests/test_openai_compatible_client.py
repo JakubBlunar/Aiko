@@ -21,7 +21,13 @@ from app.llm.openai_compatible_client import (
     _is_gemini_model,
     _iter_sse_data_lines,
     _map_finish_reason,
+    _messages_to_responses_input,
     _normalize_tool_messages_for_openai,
+    _parse_responses_output,
+    _responses_usage,
+    _tool_choice_to_responses,
+    _tools_to_responses,
+    _use_responses_api,
 )
 
 
@@ -42,6 +48,36 @@ def _fake_chat_response(
     body: dict = {
         "choices": [{"message": message, "finish_reason": finish_reason}],
     }
+    if usage is not None:
+        body["usage"] = usage
+    response.json.return_value = body
+    return response
+
+
+def _fake_responses_response(
+    *,
+    text: str = "hello",
+    function_calls: list[dict] | None = None,
+    status: str = "completed",
+    usage: dict | None = None,
+    incomplete_reason: str | None = None,
+) -> Mock:
+    """Build a ``requests.post`` mock shaped like a ``/v1/responses`` body."""
+    response = Mock()
+    response.ok = True
+    response.raise_for_status.return_value = None
+    output: list[dict] = []
+    if text:
+        output.append({
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": text}],
+        })
+    for call in function_calls or []:
+        output.append({"type": "function_call", **call})
+    body: dict = {"output": output, "status": status}
+    if incomplete_reason is not None:
+        body["incomplete_details"] = {"reason": incomplete_reason}
     if usage is not None:
         body["usage"] = usage
     response.json.return_value = body
@@ -854,6 +890,205 @@ class ChatWithToolsTests(unittest.TestCase):
                 "even with tools present",
             )
 
+    def test_configurable_reasoning_effort_overrides_minimal_default(
+        self,
+    ) -> None:
+        """gpt-5.4-mini rejects ``minimal`` -> a configured effort wins.
+
+        Regression: the hardcoded ``reasoning_effort="minimal"`` 400'd on
+        gpt-5.4-mini ("Supported values are: none, low, medium, high,
+        xhigh"). The dotted GPT-5.x line now routes through
+        ``/v1/responses`` where the effort lands in ``reasoning.effort``.
+        """
+        settings = load_settings().ollama
+        fake = _fake_responses_response(text="ok")
+        client = OpenAICompatibleClient(
+            settings,
+            base_url="https://api.openai.com/v1",
+            model="gpt-5.4-mini",
+            api_key="sk-test",
+            reasoning_effort="low",
+        )
+        with patch(
+            "app.llm.openai_compatible_client.requests.post",
+            return_value=fake,
+        ) as posted:
+            client.chat_with_tools(
+                [{"role": "user", "content": "x"}],
+                options={"num_predict": 512},
+            )
+        self.assertTrue(
+            posted.call_args.args[0].endswith("/responses"),
+            "dotted GPT-5.x must POST to /responses",
+        )
+        payload = posted.call_args.kwargs["json"]
+        self.assertEqual(payload.get("reasoning"), {"effort": "low"})
+        self.assertNotIn("reasoning_effort", payload)
+
+        # ``set_reasoning_effort`` updates it at runtime.
+        client.set_reasoning_effort("xhigh")
+        with patch(
+            "app.llm.openai_compatible_client.requests.post",
+            return_value=fake,
+        ) as posted:
+            client.chat_with_tools(
+                [{"role": "user", "content": "x"}],
+                options={"num_predict": 512},
+            )
+        payload = posted.call_args.kwargs["json"]
+        self.assertEqual(payload.get("reasoning"), {"effort": "xhigh"})
+
+    def test_dotted_gpt5_with_tools_routes_to_responses(self) -> None:
+        """gpt-5.4-mini 400s on tools + reasoning_effort in
+        /v1/chat/completions -> the whole model now routes to
+        /v1/responses, where tools (flattened) AND reasoning coexist."""
+        settings = load_settings().ollama
+        fake = _fake_responses_response(text="ok")
+        tool_schema = [{
+            "type": "function",
+            "function": {
+                "name": "list_file_roots",
+                "description": "List configured file roots.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }]
+        client = OpenAICompatibleClient(
+            settings,
+            base_url="https://api.openai.com/v1",
+            model="gpt-5.4-mini",
+            api_key="sk-test",
+            reasoning_effort="low",
+        )
+        with patch(
+            "app.llm.openai_compatible_client.requests.post",
+            return_value=fake,
+        ) as posted:
+            client.chat_with_tools(
+                [{"role": "user", "content": "what can you see?"}],
+                tools=tool_schema,
+                tool_choice="required",
+                options={"num_predict": 512},
+            )
+        self.assertTrue(posted.call_args.args[0].endswith("/responses"))
+        payload = posted.call_args.kwargs["json"]
+        # Tools AND reasoning are both present (the whole point of /responses).
+        self.assertEqual(payload.get("reasoning"), {"effort": "low"})
+        self.assertEqual(payload["tools"], [{
+            "type": "function",
+            "name": "list_file_roots",
+            "description": "List configured file roots.",
+            "parameters": {"type": "object", "properties": {}},
+        }])
+        self.assertEqual(payload.get("tool_choice"), "required")
+        # 512 visible budget + the low-effort reasoning reserve (1024).
+        self.assertEqual(payload.get("max_output_tokens"), 512 + 1024)
+        # Responses shape: ``input`` not ``messages``, no flat token key.
+        self.assertIn("input", payload)
+        self.assertNotIn("messages", payload)
+        self.assertNotIn("max_completion_tokens", payload)
+
+    def test_original_gpt5_keeps_reasoning_effort_with_tools(self) -> None:
+        """The original (undotted) GPT-5 models accept tools +
+        reasoning_effort, so the tool pass must keep ``minimal`` (avoids
+        their slow ``medium`` default)."""
+        settings = load_settings().ollama
+        fake = _fake_chat_response(content="ok")
+        tool_schema = [{
+            "type": "function",
+            "function": {
+                "name": "list_file_roots",
+                "description": "List configured file roots.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }]
+        for model in ("gpt-5", "gpt-5-mini", "gpt-5-nano"):
+            client = OpenAICompatibleClient(
+                settings,
+                base_url="https://api.openai.com/v1",
+                model=model,
+                api_key="sk-test",
+            )
+            with patch(
+                "app.llm.openai_compatible_client.requests.post",
+                return_value=fake,
+            ) as posted:
+                client.chat_with_tools(
+                    [{"role": "user", "content": "what can you see?"}],
+                    tools=tool_schema,
+                    options={"num_predict": 512},
+                )
+            payload = posted.call_args.kwargs["json"]
+            self.assertEqual(
+                payload.get("reasoning_effort"), "minimal",
+                f"{model} should keep reasoning_effort=minimal with tools",
+            )
+
+    def test_reasoning_effort_omit_skips_param(self) -> None:
+        """``omit`` sends no reasoning param so the provider's own
+        default applies (escape hatch for models that reject every
+        explicit value)."""
+        settings = load_settings().ollama
+        fake = _fake_chat_response(content="ok")
+        client = OpenAICompatibleClient(
+            settings,
+            base_url="https://api.openai.com/v1",
+            model="gpt-5-mini",
+            api_key="sk-test",
+            reasoning_effort="omit",
+        )
+        with patch(
+            "app.llm.openai_compatible_client.requests.post",
+            return_value=fake,
+        ) as posted:
+            client.chat_with_tools(
+                [{"role": "user", "content": "x"}],
+                options={"num_predict": 512},
+            )
+        payload = posted.call_args.kwargs["json"]
+        self.assertNotIn("reasoning_effort", payload)
+
+    def test_reasoning_effort_per_call_option_overrides_instance(self) -> None:
+        """A per-call ``options['reasoning_effort']`` beats the instance
+        default and never leaks onto a non-Responses payload."""
+        settings = load_settings().ollama
+        fake = _fake_chat_response(content="ok")
+        client = OpenAICompatibleClient(
+            settings,
+            base_url="https://api.openai.com/v1",
+            model="gpt-5-mini",
+            api_key="sk-test",
+            reasoning_effort="minimal",
+        )
+        with patch(
+            "app.llm.openai_compatible_client.requests.post",
+            return_value=fake,
+        ) as posted:
+            client.chat_with_tools(
+                [{"role": "user", "content": "x"}],
+                options={"num_predict": 512, "reasoning_effort": "high"},
+            )
+        payload = posted.call_args.kwargs["json"]
+        self.assertEqual(payload.get("reasoning_effort"), "high")
+
+        # Non-Responses model: the option must be dropped, not leaked.
+        other = OpenAICompatibleClient(
+            settings,
+            base_url="https://api.openai.com/v1",
+            model="gpt-4o-mini",
+            api_key="sk-test",
+            reasoning_effort="low",
+        )
+        with patch(
+            "app.llm.openai_compatible_client.requests.post",
+            return_value=fake,
+        ) as posted:
+            other.chat_with_tools(
+                [{"role": "user", "content": "x"}],
+                options={"num_predict": 512, "reasoning_effort": "high"},
+            )
+        payload = posted.call_args.kwargs["json"]
+        self.assertNotIn("reasoning_effort", payload)
+
     def test_responses_api_family_no_default_temperature_without_options(
         self,
     ) -> None:
@@ -1300,6 +1535,297 @@ class ListModelsTests(unittest.TestCase):
         ]:
             with self.subTest(model=model):
                 self.assertIsNone(client.get_context_length(model))
+
+
+class ResponsesApiRoutingTests(unittest.TestCase):
+    """Routing predicate: which models use ``/v1/responses``."""
+
+    def test_dotted_gpt5_family_routes_to_responses(self) -> None:
+        for model in (
+            "gpt-5.1", "gpt-5.4-mini", "gpt-5.5-pro",
+            "GPT-5.4-MINI", "openai/gpt-5.4-mini",
+        ):
+            with self.subTest(model=model):
+                self.assertTrue(_use_responses_api(model))
+
+    def test_undotted_and_other_models_stay_on_chat_completions(self) -> None:
+        for model in (
+            "gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5-pro",
+            "gpt-4o", "gpt-4o-mini", "o3", "o4-mini",
+            "gemini-2.5-flash", "llama-3.3-70b", "", "   ",
+        ):
+            with self.subTest(model=model):
+                self.assertFalse(_use_responses_api(model))
+
+
+class ResponsesApiConverterTests(unittest.TestCase):
+    """Pure message/tool/usage converters for the Responses shape."""
+
+    def test_messages_to_input_plain_roles(self) -> None:
+        messages = [
+            {"role": "system", "content": "Be kind."},
+            {"role": "user", "content": "Hi."},
+            {"role": "assistant", "content": "Hello!"},
+        ]
+        out = _messages_to_responses_input(messages)
+        self.assertEqual(out, [
+            {"role": "system", "content": "Be kind."},
+            {"role": "user", "content": "Hi."},
+            {"role": "assistant", "content": "Hello!"},
+        ])
+
+    def test_messages_to_input_tool_call_roundtrip(self) -> None:
+        messages = [
+            {
+                "role": "assistant",
+                "content": "let me check",
+                "tool_calls": [{
+                    "id": "call_abc",
+                    "type": "function",
+                    "function": {
+                        "name": "get_time",
+                        "arguments": {"tz": "UTC"},
+                    },
+                }],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_abc",
+                "name": "get_time",
+                "content": "12:00",
+            },
+        ]
+        out = _messages_to_responses_input(messages)
+        self.assertEqual(out[0], {"role": "assistant", "content": "let me check"})
+        self.assertEqual(out[1], {
+            "type": "function_call",
+            "call_id": "call_abc",
+            "name": "get_time",
+            "arguments": json.dumps({"tz": "UTC"}, ensure_ascii=False),
+        })
+        self.assertEqual(out[2], {
+            "type": "function_call_output",
+            "call_id": "call_abc",
+            "output": "12:00",
+        })
+
+    def test_tools_to_responses_flattens_function(self) -> None:
+        chat_tools = [{
+            "type": "function",
+            "function": {
+                "name": "recall",
+                "description": "Recall a memory.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }]
+        self.assertEqual(_tools_to_responses(chat_tools), [{
+            "type": "function",
+            "name": "recall",
+            "description": "Recall a memory.",
+            "parameters": {"type": "object", "properties": {}},
+        }])
+
+    def test_tool_choice_to_responses(self) -> None:
+        self.assertEqual(_tool_choice_to_responses("required"), "required")
+        self.assertEqual(_tool_choice_to_responses("auto"), "auto")
+        self.assertEqual(
+            _tool_choice_to_responses(
+                {"type": "function", "function": {"name": "recall"}},
+            ),
+            {"type": "function", "name": "recall"},
+        )
+
+    def test_parse_output_text_and_calls(self) -> None:
+        body = {
+            "status": "completed",
+            "output": [
+                {"type": "reasoning", "summary": []},
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "Hello "},
+                        {"type": "output_text", "text": "there"},
+                    ],
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "get_time",
+                    "arguments": "{\"tz\": \"UTC\"}",
+                },
+            ],
+        }
+        content, calls, done = _parse_responses_output(body)
+        self.assertEqual(content, "Hello there")
+        self.assertEqual(done, "stop")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0].name, "get_time")
+        self.assertEqual(calls[0].arguments, {"tz": "UTC"})
+        self.assertEqual(calls[0].call_id, "call_1")
+
+    def test_parse_output_incomplete_max_tokens_maps_to_length(self) -> None:
+        body = {
+            "status": "incomplete",
+            "incomplete_details": {"reason": "max_output_tokens"},
+            "output": [{
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "partial"}],
+            }],
+        }
+        content, _calls, done = _parse_responses_output(body)
+        self.assertEqual(content, "partial")
+        self.assertEqual(done, "length")
+
+    def test_responses_usage_maps_token_fields(self) -> None:
+        usage = _responses_usage(
+            {
+                "input_tokens": 100,
+                "output_tokens": 42,
+                "input_tokens_details": {"cached_tokens": 80},
+            },
+            total_ms=123.0,
+            done_reason="stop",
+        )
+        self.assertEqual(usage.prompt_tokens, 100)
+        self.assertEqual(usage.completion_tokens, 42)
+        self.assertEqual(usage.cached_tokens, 80)
+        self.assertEqual(usage.done_reason, "stop")
+        self.assertEqual(usage.total_duration_ms, 123.0)
+
+
+class ResponsesApiClientTests(unittest.TestCase):
+    """End-to-end client behaviour through the Responses path."""
+
+    def _client(self, model: str = "gpt-5.4-mini") -> OpenAICompatibleClient:
+        return OpenAICompatibleClient(
+            load_settings().ollama,
+            base_url="https://api.openai.com/v1",
+            model=model,
+            api_key="sk-test",
+            reasoning_effort="low",
+        )
+
+    def test_chat_with_tools_parses_responses_body(self) -> None:
+        fake = _fake_responses_response(
+            text="all done",
+            function_calls=[{
+                "call_id": "c1",
+                "name": "recall",
+                "arguments": "{\"query\": \"x\"}",
+            }],
+            usage={
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "input_tokens_details": {"cached_tokens": 4},
+            },
+        )
+        client = self._client()
+        with patch(
+            "app.llm.openai_compatible_client.requests.post",
+            return_value=fake,
+        ):
+            result = client.chat_with_tools(
+                [{"role": "user", "content": "hi"}],
+                options={"num_predict": 256},
+            )
+        self.assertEqual(result.content, "all done")
+        self.assertEqual(len(result.tool_calls), 1)
+        self.assertEqual(result.tool_calls[0].name, "recall")
+        self.assertEqual(client.last_usage.prompt_tokens, 10)
+        self.assertEqual(client.last_usage.cached_tokens, 4)
+
+    def test_chat_json_uses_responses_text_format(self) -> None:
+        fake = _fake_responses_response(text="{\"ok\": true}")
+        client = self._client()
+        with patch(
+            "app.llm.openai_compatible_client.requests.post",
+            return_value=fake,
+        ) as posted:
+            content, _usage = client.chat_json(
+                [{"role": "user", "content": "give me json"}],
+                options={"num_predict": 128},
+            )
+        self.assertEqual(content, "{\"ok\": true}")
+        self.assertTrue(posted.call_args.args[0].endswith("/responses"))
+        payload = posted.call_args.kwargs["json"]
+        self.assertEqual(payload.get("text"), {"format": {"type": "json_object"}})
+        # Temperature is never sent for the dotted GPT-5.x family.
+        self.assertNotIn("temperature", payload)
+
+    def test_max_output_tokens_adds_reasoning_reserve(self) -> None:
+        """``max_output_tokens`` = visible budget + per-effort reserve so
+        the reasoning trace can't starve the answer."""
+        fake = _fake_responses_response(text="ok")
+        cases = {"low": 256 + 1024, "high": 256 + 8192, "none": 256 + 0}
+        for effort, expected in cases.items():
+            with self.subTest(effort=effort):
+                client = OpenAICompatibleClient(
+                    load_settings().ollama,
+                    base_url="https://api.openai.com/v1",
+                    model="gpt-5.4-mini",
+                    api_key="sk-test",
+                    reasoning_effort=effort,
+                )
+                with patch(
+                    "app.llm.openai_compatible_client.requests.post",
+                    return_value=fake,
+                ) as posted:
+                    client.chat_with_tools(
+                        [{"role": "user", "content": "hi"}],
+                        options={"num_predict": 256},
+                    )
+                payload = posted.call_args.kwargs["json"]
+                self.assertEqual(payload.get("max_output_tokens"), expected)
+
+    def test_chat_stream_yields_output_text_deltas(self) -> None:
+        lines = [
+            'data: {"type": "response.created"}',
+            'data: {"type": "response.output_text.delta", "delta": "Hel"}',
+            'data: {"type": "response.output_text.delta", "delta": "lo"}',
+            (
+                'data: {"type": "response.completed", "response": '
+                '{"status": "completed", "usage": {"input_tokens": 7, '
+                '"output_tokens": 2}}}'
+            ),
+            "data: [DONE]",
+        ]
+        fake = _sse_response(lines)
+        client = self._client()
+        with patch(
+            "app.llm.openai_compatible_client.requests.post",
+            return_value=fake,
+        ) as posted:
+            tokens = list(client.chat_stream(
+                [{"role": "user", "content": "hi"}],
+                options={"num_predict": 64},
+            ))
+        self.assertEqual("".join(tokens), "Hello")
+        self.assertTrue(posted.call_args.args[0].endswith("/responses"))
+        payload = posted.call_args.kwargs["json"]
+        self.assertTrue(payload.get("stream"))
+        self.assertEqual(client.last_usage.prompt_tokens, 7)
+        self.assertEqual(client.last_usage.completion_tokens, 2)
+
+    def test_chat_stream_raises_on_failed_event(self) -> None:
+        lines = [
+            (
+                'data: {"type": "response.failed", "response": '
+                '{"error": {"message": "boom"}}}'
+            ),
+        ]
+        fake = _sse_response(lines)
+        client = self._client()
+        with patch(
+            "app.llm.openai_compatible_client.requests.post",
+            return_value=fake,
+        ):
+            with self.assertRaises(RuntimeError):
+                list(client.chat_stream(
+                    [{"role": "user", "content": "hi"}],
+                    options={"num_predict": 64},
+                ))
 
 
 if __name__ == "__main__":

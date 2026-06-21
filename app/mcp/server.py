@@ -5215,6 +5215,7 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
         model: str,
         context_window: int = 0,
         max_tokens: int = 0,
+        reasoning_effort: str = "",
     ) -> str:
         """Retarget a role to a different provider / model.
 
@@ -5223,6 +5224,12 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
         up). ``context_window`` and ``max_tokens`` of ``0`` mean
         "leave unchanged on the route" — the resolved budget then
         falls back to the client's lookup or the existing value.
+
+        ``reasoning_effort`` (OpenAI GPT-5 / o-series only) is sent
+        verbatim when non-empty — e.g. ``low`` / ``none`` / ``xhigh``
+        for gpt-5.4-mini which rejects the default ``minimal``. Use
+        ``omit`` to send no reasoning param at all; leave empty to keep
+        the route's current value.
 
         Useful for quickly flipping the chat path to a different
         cloud provider during testing without going through the
@@ -5236,6 +5243,8 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             draft["context_window"] = int(context_window)
         if max_tokens > 0:
             draft["max_tokens"] = int(max_tokens)
+        if (reasoning_effort or "").strip():
+            draft["reasoning_effort"] = reasoning_effort.strip().lower()
         try:
             updated = session.update_route(role, draft)
         except KeyError as exc:

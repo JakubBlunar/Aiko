@@ -194,6 +194,9 @@ export interface LlmProvider {
   extra_headers: Record<string, string>;
   timeout_seconds: number;
   keep_alive: string;
+  /** Reasoning-effort hint for OpenAI Responses-API models (GPT-5 /
+   * o-series). Empty = "auto" (client default). A route can override. */
+  reasoning_effort: string;
 }
 
 /** One row in the role-assignment table. */
@@ -203,6 +206,9 @@ export interface LlmRoute {
   context_window: number | null;
   max_tokens: number;
   temperature: number | null;
+  /** Per-route override of the provider's reasoning-effort hint.
+   * Empty = inherit the provider value, then the client default. */
+  reasoning_effort: string;
 }
 
 /** Server response shape for the test-provider endpoint. */
@@ -233,6 +239,7 @@ export interface ChatLlmSnapshot {
   context_window: number | null;
   keep_alive: string;
   workers_use_local: boolean;
+  reasoning_effort: string;
   extra_headers: Record<string, string>;
 }
 

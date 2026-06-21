@@ -362,6 +362,7 @@ def _build_chat_client(
             model=model,
             extra_headers=extra_headers or None,
             keep_alive=chat_llm.keep_alive,
+            reasoning_effort=getattr(chat_llm, "reasoning_effort", "") or "",
         )
     # Default path: Ollama (local or cloud, distinguished only by base_url).
     return OllamaClient(
@@ -4409,6 +4410,11 @@ class SessionController(
             _set("keep_alive", str(payload["keep_alive"] or "").strip() or "30m")
         if "workers_use_local" in payload:
             _set("workers_use_local", bool(payload["workers_use_local"]))
+        if "reasoning_effort" in payload:
+            _set(
+                "reasoning_effort",
+                str(payload["reasoning_effort"] or "").strip().lower(),
+            )
         if "extra_headers" in payload:
             raw_headers = payload.get("extra_headers") or {}
             if isinstance(raw_headers, dict):
@@ -4436,6 +4442,7 @@ class SessionController(
                 "context_window": chat_llm.context_window,
                 "keep_alive": chat_llm.keep_alive,
                 "workers_use_local": chat_llm.workers_use_local,
+                "reasoning_effort": getattr(chat_llm, "reasoning_effort", ""),
                 "extra_headers": dict(chat_llm.extra_headers or {}),
             }})
         except Exception:
@@ -4541,6 +4548,7 @@ class SessionController(
             "context_window": cfg.context_window,
             "keep_alive": cfg.keep_alive,
             "workers_use_local": bool(cfg.workers_use_local),
+            "reasoning_effort": getattr(cfg, "reasoning_effort", "") or "",
             "extra_headers": dict(cfg.extra_headers or {}),
         }
 
@@ -4567,6 +4575,7 @@ class SessionController(
             "extra_headers": dict(provider.extra_headers or {}),
             "timeout_seconds": int(provider.timeout_seconds or 300),
             "keep_alive": provider.keep_alive,
+            "reasoning_effort": getattr(provider, "reasoning_effort", "") or "",
         }
 
     def list_providers(self) -> list[dict[str, Any]]:
@@ -4583,6 +4592,7 @@ class SessionController(
                 "context_window": route.context_window,
                 "max_tokens": int(route.max_tokens or 512),
                 "temperature": route.temperature,
+                "reasoning_effort": getattr(route, "reasoning_effort", "") or "",
             }
         return out
 
@@ -4665,6 +4675,9 @@ class SessionController(
         except (TypeError, ValueError):
             timeout = 300
         keep_alive = str(payload.get("keep_alive", "30m") or "30m").strip() or "30m"
+        reasoning_effort = str(
+            payload.get("reasoning_effort", "") or ""
+        ).strip().lower()
         new_provider = LlmProvider(
             id=provider_id,
             name=name,
@@ -4675,6 +4688,7 @@ class SessionController(
             extra_headers=extra_headers,
             timeout_seconds=timeout,
             keep_alive=keep_alive,
+            reasoning_effort=reasoning_effort,
         )
         if self._find_llm_provider(provider_id) is not None:
             raise ValueError(
@@ -4729,6 +4743,10 @@ class SessionController(
             provider.keep_alive = (
                 str(draft["keep_alive"] or "").strip() or "30m"
             )
+        if "reasoning_effort" in draft:
+            provider.reasoning_effort = str(
+                draft["reasoning_effort"] or ""
+            ).strip().lower()
         # Anything changed -> drop the cached client so future
         # ``cache.get`` rebuilds with the new fields.
         self._client_cache.invalidate(provider_id)
@@ -4867,6 +4885,10 @@ class SessionController(
                 )
             except (TypeError, ValueError):
                 current.temperature = None
+        if "reasoning_effort" in draft:
+            current.reasoning_effort = str(
+                draft["reasoning_effort"] or ""
+            ).strip().lower()
         provider = self._find_llm_provider(current.provider_id)
         if provider is None:
             raise KeyError(
@@ -4897,6 +4919,7 @@ class SessionController(
             "context_window": current.context_window,
             "max_tokens": int(current.max_tokens or 512),
             "temperature": current.temperature,
+            "reasoning_effort": getattr(current, "reasoning_effort", "") or "",
         }
 
     def test_provider(
@@ -4939,6 +4962,7 @@ class SessionController(
             extra_headers=dict(provider.extra_headers or {}),
             max_tokens=8,  # enough for a one-token probe
             keep_alive=provider.keep_alive,
+            reasoning_effort=getattr(provider, "reasoning_effort", "") or "",
         )
         start = time.time()
         try:
@@ -5005,6 +5029,10 @@ class SessionController(
         cfg.context_window = route.context_window
         cfg.max_tokens = int(route.max_tokens or 512)
         cfg.temperature = route.temperature
+        cfg.reasoning_effort = (
+            (getattr(route, "reasoning_effort", "") or "").strip()
+            or (getattr(provider, "reasoning_effort", "") or "").strip()
+        )
         # Set the UI hint to the provider id when it matches a known
         # preset (purely cosmetic — used to highlight the card).
         cfg.provider_preset = (
@@ -5029,6 +5057,10 @@ class SessionController(
             "temperature": route.temperature,
             "context_window": route.context_window,
             "keep_alive": provider.keep_alive,
+            "reasoning_effort": (
+                (getattr(route, "reasoning_effort", "") or "").strip()
+                or (getattr(provider, "reasoning_effort", "") or "").strip()
+            ),
             "extra_headers": dict(provider.extra_headers or {}),
             # ``workers_use_local`` lives outside the catalogue for
             # now (a per-role concern that the new ``routes`` table
@@ -5114,6 +5146,9 @@ class SessionController(
             context_window=chat_llm.context_window,
             max_tokens=int(chat_llm.max_tokens or 512),
             temperature=chat_llm.temperature,
+            reasoning_effort=(
+                getattr(chat_llm, "reasoning_effort", "") or ""
+            ).strip(),
         )
         # P13: the worker route is the source of truth for the worker
         # model + context. A chat-provider reconfigure must NOT clobber a

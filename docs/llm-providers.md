@@ -405,6 +405,58 @@ You can bump the override up from 131 072 if you genuinely need
 more (very long-form chat, in-app document Q&A, etc.) — but the
 default makes the typical case both fast and cheap.
 
+## Responses API (`/v1/responses`) for the dotted GPT-5.x line
+
+The original GPT-5 models (`gpt-5`, `gpt-5-mini`, `gpt-5-nano`,
+`gpt-5-pro`) and the o-series work fine on `/v1/chat/completions`.
+The **decimal-versioned** siblings (`gpt-5.1`, `gpt-5.4-mini`,
+`gpt-5.5-*`, …) moved reasoning behind the **Responses API**: on
+`/v1/chat/completions` they return
+
+```
+400 — Function tools with reasoning_effort are not supported for
+gpt-5.4-mini in /v1/chat/completions. Please use /v1/responses instead.
+```
+
+So `OpenAICompatibleClient` auto-routes any model matching the dotted
+pattern (`_use_responses_api` →
+[`app/llm/openai_compatible_client.py`](../app/llm/openai_compatible_client.py))
+through `POST /v1/responses` for **every** call — the tool-decision
+pass, the streaming reply, JSON workers, and the test-connection probe.
+No config flag is needed; pick the model and it just works.
+
+What the client translates between the two shapes:
+
+| Concept | `/v1/chat/completions` | `/v1/responses` |
+|---|---|---|
+| Messages | `messages: [...]` | `input: [...]` (tool calls become `function_call` / `function_call_output` items) |
+| Reasoning | `reasoning_effort: "low"` (flat) | `reasoning: {effort: "low"}` |
+| Function tools | `{type:"function", function:{name,...}}` | `{type:"function", name, ...}` (flattened) |
+| Forced tool | `tool_choice:{type:"function",function:{name}}` | `{type:"function",name}` |
+| Output budget | `max_completion_tokens` | `max_output_tokens` |
+| JSON mode | `response_format:{type:"json_object"}` | `text:{format:{type:"json_object"}}` |
+| Visible text | `choices[0].message.content` | `output[]` → `message` → `output_text` parts |
+| Tool calls | `choices[0].message.tool_calls` | `output[]` → `function_call` items |
+| Usage | `prompt_tokens` / `completion_tokens` | `input_tokens` / `output_tokens` |
+| Truncation | `finish_reason="length"` | `status="incomplete"` + `incomplete_details.reason="max_output_tokens"` |
+
+**Reasoning-token reserve.** On the Responses API `max_output_tokens`
+caps reasoning **and** visible tokens *combined* — a tight budget lets
+the reasoning trace eat the whole allowance and return an empty
+`incomplete` response. To preserve the caller's intended *visible*
+budget (`chat_llm.max_tokens` → `num_predict`), the client adds a
+per-effort reserve on top of it (`_RESPONSES_REASONING_RESERVE`:
+`minimal=256`, `low=1024`, `medium=4096`, `high=8192`, `xhigh=16384`,
+`none=0`). It's a ceiling, not a floor — the model only spends what it
+needs, so the reserve costs nothing on easy turns and prevents silent
+truncation on hard ones.
+
+Temperature is never sent for these models (the reasoning family locks
+it to the default and 400s on any other value). The legacy
+chat-completions omit-hack (`_tools_with_reasoning_unsupported`) is kept
+as a fallback for the rare case a dotted model is forced onto
+chat-completions, but the normal path never reaches it.
+
 ## OpenAI prompt caching
 
 OpenAI's API automatically applies a ~90 % discount on cached

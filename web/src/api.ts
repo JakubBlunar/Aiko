@@ -161,6 +161,7 @@ export const api = {
     base_url: string;
     api_key: string;
     model: string;
+    reasoning_effort?: string;
     extra_headers?: Record<string, string>;
   }) =>
     jsonFetch<LlmTestConnectionResult>("/api/llm/test-connection", {

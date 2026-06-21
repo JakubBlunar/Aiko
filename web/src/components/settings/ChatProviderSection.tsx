@@ -46,6 +46,11 @@ interface DraftState {
   model: string;
   workers_use_local: boolean;
   max_tokens: number;
+  /** Reasoning-effort hint for OpenAI Responses-API models (GPT-5 /
+   *  o-series). Empty = "auto" (the client's safe ``minimal`` default).
+   *  Free-text because providers disagree on the vocabulary — gpt-5-mini
+   *  accepts ``minimal`` but gpt-5.4-mini wants ``none`` / ``low`` / … */
+  reasoning_effort: string;
   extra_headers_json: string;
   /** Explicit context-window override. ``null`` means "auto" — let
    *  the controller resolve via the active client's
@@ -78,6 +83,7 @@ function snapshotToDraft(
     model: snap.model,
     workers_use_local: snap.workers_use_local,
     max_tokens: snap.max_tokens,
+    reasoning_effort: snap.reasoning_effort || "",
     extra_headers_json:
       Object.keys(snap.extra_headers || {}).length > 0
         ? JSON.stringify(snap.extra_headers, null, 2)
@@ -238,6 +244,7 @@ export function ChatProviderSection({
         base_url: draft.base_url,
         api_key: draft.api_key_touched ? draft.api_key : "",
         model: draft.model,
+        reasoning_effort: draft.reasoning_effort,
         extra_headers: parseHeaders(draft.extra_headers_json),
       };
       const result = await api.testLlmConnection(payload);
@@ -289,6 +296,7 @@ export function ChatProviderSection({
           model: draft.model,
           workers_use_local: draft.workers_use_local,
           max_tokens: draft.max_tokens,
+          reasoning_effort: draft.reasoning_effort,
           // ``0`` / empty / null -> server treats as "no explicit
           //  override" and falls back to ``client.get_context_length``
           //  per the precedence in ``_resolve_context_window``.
@@ -578,6 +586,44 @@ export function ChatProviderSection({
               }
               className="mt-1 w-32 rounded-md border border-white/10 bg-black/40 px-2 py-1 text-sm text-ink-100"
             />
+          </label>
+          <label className="block">
+            <span className="block text-[11px] text-ink-100/60">
+              Reasoning effort
+              <span className="block text-[10px] text-ink-100/40">
+                OpenAI GPT-5 / o-series only. Leave blank for "auto"
+                (sends <span className="font-medium">minimal</span>). Set
+                this when a model rejects it — e.g. gpt-5.4-mini wants{" "}
+                <span className="font-medium">none</span> /{" "}
+                <span className="font-medium">low</span> /{" "}
+                <span className="font-medium">medium</span> /{" "}
+                <span className="font-medium">high</span> /{" "}
+                <span className="font-medium">xhigh</span>. Use{" "}
+                <span className="font-medium">omit</span> to send nothing.
+                Ignored by Ollama and non-OpenAI providers.
+              </span>
+            </span>
+            <input
+              type="text"
+              list="chat-provider-effort-options"
+              value={draft.reasoning_effort}
+              onChange={(e) =>
+                editDraft({
+                  reasoning_effort: e.target.value.trim().toLowerCase(),
+                })
+              }
+              placeholder="auto"
+              autoComplete="off"
+              spellCheck={false}
+              className="mt-1 w-40 rounded-md border border-white/10 bg-black/40 px-2 py-1 text-sm text-ink-100"
+            />
+            <datalist id="chat-provider-effort-options">
+              {["minimal", "none", "low", "medium", "high", "xhigh", "omit"].map(
+                (v) => (
+                  <option key={v} value={v} />
+                ),
+              )}
+            </datalist>
           </label>
           <label className="block">
             <span className="block text-[11px] text-ink-100/60">

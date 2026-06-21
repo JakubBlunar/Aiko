@@ -32,6 +32,9 @@ interface ProviderDraft {
   api_key_env: string;
   keep_alive: string;
   timeout_seconds: number;
+  /** Reasoning-effort hint for OpenAI Responses-API models. Empty =
+   *  "auto" (client default). A route can override per-role. */
+  reasoning_effort: string;
   extra_headers_json: string;
   // Credential draft fields. ``api_key`` is empty when the user hasn't
   // touched the password field; on save we only send it when touched.
@@ -46,6 +49,7 @@ function providerToDraft(provider: LlmProvider): ProviderDraft {
     api_key_env: provider.api_key_env,
     keep_alive: provider.keep_alive,
     timeout_seconds: provider.timeout_seconds,
+    reasoning_effort: provider.reasoning_effort || "",
     extra_headers_json:
       Object.keys(provider.extra_headers || {}).length > 0
         ? JSON.stringify(provider.extra_headers, null, 2)
@@ -157,6 +161,7 @@ export function LlmProvidersListSection() {
           extra_headers: headers,
           keep_alive: draft.keep_alive,
           timeout_seconds: draft.timeout_seconds,
+          reasoning_effort: draft.reasoning_effort,
         });
         upsertProvider(updated);
         // Reset the touched flag so the masked placeholder reappears.
@@ -397,6 +402,40 @@ export function LlmProvidersListSection() {
                       placeholder="e.g. OPENAI_API_KEY"
                       className="mt-1 w-full rounded-md border border-white/10 bg-black/40 px-2 py-1 text-sm text-ink-100"
                     />
+                  </label>
+                  <label className="block">
+                    <span className="block text-[11px] text-ink-100/60">
+                      Reasoning effort (OpenAI GPT-5 / o-series)
+                    </span>
+                    <input
+                      type="text"
+                      list="llm-provider-effort-options"
+                      value={draft.reasoning_effort}
+                      onChange={(e) =>
+                        editDraft(p.id, {
+                          reasoning_effort: e.target.value
+                            .trim()
+                            .toLowerCase(),
+                        })
+                      }
+                      placeholder="auto (blank) · minimal / none / low / medium / high / xhigh / omit"
+                      autoComplete="off"
+                      spellCheck={false}
+                      className="mt-1 w-full rounded-md border border-white/10 bg-black/40 px-2 py-1 text-sm text-ink-100"
+                    />
+                    <datalist id="llm-provider-effort-options">
+                      {[
+                        "minimal",
+                        "none",
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh",
+                        "omit",
+                      ].map((v) => (
+                        <option key={v} value={v} />
+                      ))}
+                    </datalist>
                   </label>
                   <label className="block">
                     <span className="block text-[11px] text-ink-100/60">
