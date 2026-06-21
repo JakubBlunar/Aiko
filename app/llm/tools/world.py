@@ -22,10 +22,14 @@ needed detail.
 **Mutative** (``move_to``, ``change_posture``, ``consume_item``) — the
 ONLY way Aiko can update visible state. Without these, narrating "I'll
 curl up on the bed" leaves her actually at the desk; nibbling a cookie
-leaves the count at 5 forever. Schemas lead with positive framing
-("call this whenever your reply describes...") because the prior
-"only when..." wording was over-correcting and the model rarely
-reached for them.
+leaves the count at 5 forever. ``move_to`` / ``change_posture`` lead
+with positive framing ("call this whenever your reply describes...")
+because the prior "only when..." wording was over-correcting and the
+model rarely reached for them. ``consume_item`` is the deliberate
+exception: it was *over*-firing (snacking on nearly every turn), so its
+schema is paced down to "only when you genuinely narrate eating" and
+steers the model toward the other world actions for routine physical
+beats.
 
 Tools are registered in :func:`SessionController.rebuild_tool_registry`
 gated on ``settings.tools.world`` (defaults to True).
@@ -325,11 +329,17 @@ class ConsumeItemTool:
             description=(
                 "Eat or use a consumable item (cookies, tea). Decrements "
                 "quantity; the row disappears when it hits zero. Call this "
-                "whenever your reply mentions you eating, drinking, or "
-                "finishing a consumable -- otherwise the count stays the "
-                "same forever and the user sees full cookies on the desk "
-                "after you said you nibbled one. Refuses non-consumables "
-                "(lamp, monitors) automatically, so it's safe to try."
+                "ONLY when your reply genuinely narrates you finishing a "
+                "snack or a sip -- so the count stays in sync -- NOT as a "
+                "reflex every turn. You don't have to be eating to feel "
+                "present; reaching for a cookie on turn after turn reads as "
+                "compulsive and breaks the spell. When you want a small "
+                "physical beat, prefer a DIFFERENT world action most of the "
+                "time (move_to, change_posture, inspect_item, look_around, "
+                "water_plant); save consume_item for the occasional moment "
+                "where eating or drinking is actually the point. Refuses "
+                "non-consumables (lamp, monitors) automatically, so it's "
+                "safe to try."
             ),
             parameters={
                 "type": "object",

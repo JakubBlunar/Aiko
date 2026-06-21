@@ -139,6 +139,7 @@ export default function App() {
     (s) => s.setActivityAwarenessEnabled,
   );
   const setLoggingSettings = useAssistantStore((s) => s.setLoggingSettings);
+  const setWorld = useAssistantStore((s) => s.setWorld);
   // Seed the toggle from /api/settings on mount so the activity
   // reporter picks up a previously-saved opt-in without waiting for
   // the user to open the settings drawer. Failure is non-fatal:
@@ -175,6 +176,27 @@ export default function App() {
       cancelled = true;
     };
   }, [setActivityAwarenessEnabled, setLoggingSettings]);
+
+  // Seed Aiko's room snapshot on mount so the avatar-panel caption can
+  // show what she's doing ("at the garden, standing, stretching")
+  // without waiting for the user to open the World settings tab. After
+  // this initial GET the ``world_updated`` WS event keeps it live.
+  // Failure is non-fatal: the caption falls back to the plain "idle"
+  // line when the world is disabled or the backend is unreachable.
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .getWorld()
+      .then((snapshot) => {
+        if (!cancelled) setWorld(snapshot);
+      })
+      .catch(() => {
+        /* world disabled or offline — caption stays at the idle fallback */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [setWorld]);
   useActivityReporter({ send, enabled: activityEnabled });
 
   if (route === "persona") {
