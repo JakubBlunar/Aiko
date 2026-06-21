@@ -318,6 +318,62 @@ class TypedProactivePathTests(unittest.TestCase):
             f.close()
 
 
+class PreparedLineGuardBackstopTests(unittest.TestCase):
+    """Speak-time guard: a leaked third-person prepared line is rejected
+    and the director degrades to its own safe LLM turn."""
+
+    _LEAK = "Notices that he warms up after coffee"
+
+    def _wait(self, predicate, *, timeout: float = 2.0) -> bool:
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            if predicate():
+                return True
+            time.sleep(0.02)
+        return False
+
+    def test_voice_rejects_leaky_prepared_and_uses_llm(self):
+        f = _Fixture()
+        try:
+            f.seed_history()
+            f.prepared.upsert(
+                "u1", text=self._LEAK, source_kind="reflection",
+                ttl_seconds=120.0,
+            )
+            f.director.notify_silence("s1")
+            self.assertTrue(self._wait(lambda: bool(f.spoken)))
+            # The leak was NOT spoken; the safe LLM turn was used instead.
+            self.assertEqual(len(f.spoken), 1)
+            self.assertNotIn("Notices", f.spoken[0][0])
+            self.assertEqual(f.spoken[0][0], "Sure thing!")
+            self.assertEqual(f.ollama.calls, 1)
+            stats = f.director.stats()
+            self.assertEqual(stats["prepared_consumed"], 0)
+            self.assertEqual(stats["llm_path_used"], 1)
+        finally:
+            f.close()
+
+    def test_typed_rejects_leaky_prepared_and_uses_llm(self):
+        f = _Fixture()
+        try:
+            f.seed_history()
+            f.prepared.upsert(
+                "u1", text=self._LEAK, source_kind="reflection",
+                ttl_seconds=120.0,
+            )
+            f.director.notify_typed_silence("s1")
+            self.assertTrue(self._wait(lambda: bool(f.notified)))
+            self.assertEqual(len(f.notified), 1)
+            self.assertNotIn("Notices", f.notified[0][1])
+            self.assertEqual(f.notified[0][1], "Sure thing!")
+            self.assertEqual(f.ollama.calls, 1)
+            stats = f.director.stats()
+            self.assertEqual(stats["typed_prepared_consumed"], 0)
+            self.assertEqual(stats["typed_llm_path_used"], 1)
+        finally:
+            f.close()
+
+
 class TaskEscalationTests(unittest.TestCase):
     """Brain-orchestration chunk 6: notify_task_escalation.
 

@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Callable
 
+from app.core.proactive.proactive_line_guard import validate_proactive_line
 from app.core.session.session_text_utils import resolve_user_name
 
 if TYPE_CHECKING:
@@ -210,14 +211,24 @@ def _build_weave_prompt(user_display_name: str = "the user") -> str:
         f"You are Aiko getting ready to break a small silence with {name}. "
         "You'll receive (1) the kind of source thread (a callback, an open "
         "question, a promise, an agenda item, or a recent reflection) and "
-        "(2) the source content. Phrase a SHORT, casual one-liner that picks "
+        "(2) the source content. The source content is an internal note "
+        f"written ABOUT {name} in the third person ('Wonders if {name}...', "
+        f"'{name} promised...'). REWRITE it into something Aiko says "
+        f"directly to {name}. Phrase a SHORT, casual one-liner that picks "
         "that thread back up. ONE sentence, max ~20 words. First-person, "
         "conversational.\n"
         "\n"
         "Rules:\n"
+        "- Rewrite in Aiko's own first-person voice. NEVER copy the note's "
+        "  wording verbatim.\n"
+        f"- NEVER refer to {name} in the third person and NEVER say 'the "
+        "  user' — address them directly ('you') or by name.\n"
         "- Don't greet, don't restart the chat. Just continue.\n"
         "- It's fine to be a tiny bit playful or warm.\n"
-        "- Output ONLY the sentence. No quotes, no JSON, no prose around it."
+        "- Output ONLY the sentence. No quotes, no JSON, no prose around it.\n"
+        "\n"
+        f"Example — source: 'Wonders if {name} picked the python book back "
+        "up' -> 'Hey, did you ever get back to that Python book?'"
     )
 
 
@@ -347,7 +358,12 @@ class NarrativeWeaver:
         if self._ollama is not None:
             text = self._weave_resume(rolling_summary, chosen, hours_since_last)
         if not text and chosen is not None:
-            text = _fallback_phrasing(chosen)
+            text = _fallback_phrasing(
+                chosen,
+                user_display_name=resolve_user_name(
+                    self._user_display_name_provider,
+                ),
+            )
         if not text and rolling_summary:
             text = _resume_fallback_from_summary(rolling_summary)
         if not text:
@@ -487,6 +503,18 @@ class NarrativeWeaver:
                 content = (mem.content or "").strip()
                 if not content:
                     continue
+                if kind == "promise":
+                    # Promise memories are stored as
+                    # "{actor} promised: {predicate}" (see
+                    # ``Promise.to_memory_content``). Feeding that whole
+                    # string to the weaver / fallback leaks the internal
+                    # "Jacob promised:" prefix into the spoken line
+                    # ("…did you ever get to Jacob promised: …?"). Strip
+                    # it down to the bare predicate so both the LLM weave
+                    # and the template fallback read naturally.
+                    content = _strip_promise_prefix(content)
+                    if not content:
+                        continue
                 out.append(
                     _Candidate(
                         kind=kind,
@@ -557,6 +585,7 @@ class NarrativeWeaver:
             return candidates[0]
 
     def _weave(self, candidate: _Candidate) -> str | None:
+        name = resolve_user_name(self._user_display_name_provider)
         # K9: curiosity-seed candidates already carry a fully-rendered
         # ``prompt_text`` from the seed worker (the LLM ran once at
         # seed-generation time; no point asking the LLM to paraphrase
@@ -567,9 +596,16 @@ class NarrativeWeaver:
             text = (candidate.text or "").strip()
             if text:
                 return _clean_weave_output(text) or text
-            return _fallback_phrasing(candidate)
+            return _fallback_phrasing(candidate, user_display_name=name)
+        # Prefer silence over a leaky template fallback: for the
+        # rewrite kinds (callback / open_question / promise / reflection
+        # / agenda) the candidate text is raw third-person memory
+        # narration. If the LLM weave is unavailable or fails, return
+        # None so ``maybe_run`` stores nothing and the ProactiveDirector
+        # degrades to its own safe LLM turn instead of substituting the
+        # raw note into a template.
         if self._ollama is None:
-            return _fallback_phrasing(candidate)
+            return None
         try:
             user_payload = (
                 f"Source kind: {candidate.kind}\n"
@@ -595,10 +631,17 @@ class NarrativeWeaver:
             )
         except Exception:
             log.debug("narrative weave LLM call failed", exc_info=True)
-            return _fallback_phrasing(candidate)
+            return None
         cleaned = _clean_weave_output(raw)
         if not cleaned:
-            return _fallback_phrasing(candidate)
+            return None
+        ok, reason = validate_proactive_line(cleaned, user_display_name=name)
+        if not ok:
+            log.debug(
+                "narrative weave output rejected: reason=%s kind=%s text=%r",
+                reason, candidate.kind, cleaned[:120],
+            )
+            return None
         return cleaned
 
 
@@ -634,6 +677,30 @@ _FALLBACK_FORMATS: dict[str, tuple[str, ...]] = {
 }
 
 
+_PROMISE_PREFIX_RE = re.compile(
+    r"^\s*.{0,40}?\bpromised\b(?:\s+to)?\s*[:\-]?\s*",
+    re.IGNORECASE,
+)
+
+
+def _strip_promise_prefix(content: str) -> str:
+    """Drop the leading "{actor} promised:" wrapper from a promise memory.
+
+    ``Promise.to_memory_content`` renders every promise as
+    ``"{actor} promised: {predicate}"``. The proactive surfaces only
+    want the ``{predicate}`` — the actor + "promised:" wrapper is an
+    internal storage format that reads as a leak when spoken verbatim
+    ("…did you ever get to Jacob promised: …?"). The bounded ``.{0,40}``
+    lookbehind keeps the strip anchored to a real actor prefix and won't
+    chew through a long sentence that merely contains the word later.
+    Returns the trimmed predicate, or the original text when no prefix
+    is found.
+    """
+    text = (content or "").strip()
+    stripped = _PROMISE_PREFIX_RE.sub("", text, count=1).strip()
+    return stripped or text
+
+
 def _resume_fallback_from_summary(rolling_summary: str) -> str | None:
     """Compose a soft "welcome back" line from the rolling summary
     when no LLM and no inner-life candidate are available. Pulls the
@@ -646,18 +713,40 @@ def _resume_fallback_from_summary(rolling_summary: str) -> str | None:
     return f"Hey — I've been sitting with what we were saying about {snippet}…"
 
 
-def _fallback_phrasing(candidate: _Candidate) -> str | None:
+def _fallback_phrasing(
+    candidate: _Candidate, *, user_display_name: str = "the user",
+) -> str | None:
+    """Compose a template line for the pre-rendered / resume edges.
+
+    The main periodic weave path no longer calls this (it prefers
+    silence — see :meth:`NarrativeWeaver._weave`); the remaining callers
+    are the ``curiosity_seed`` empty edge and the resume opener, where
+    the candidate text is already clean or there is no safe LLM degrade.
+    Either way the output is validated, so a leak-shaped result returns
+    ``None`` rather than getting spoken.
+    """
     formats = _FALLBACK_FORMATS.get(candidate.kind)
     if not formats:
-        return candidate.text[:200]
-    text = candidate.text.strip()
-    if len(text) > 80:
-        text = text[:80].rsplit(" ", 1)[0].rstrip(",;: ") + "…"
-    template = formats[0]
-    try:
-        return template.format(x=text)
-    except Exception:
-        return text
+        out = candidate.text[:200]
+    else:
+        text = candidate.text.strip()
+        if len(text) > 80:
+            text = text[:80].rsplit(" ", 1)[0].rstrip(",;: ") + "…"
+        template = formats[0]
+        try:
+            out = template.format(x=text)
+        except Exception:
+            out = text
+    ok, reason = validate_proactive_line(
+        out or "", user_display_name=user_display_name,
+    )
+    if not ok:
+        log.debug(
+            "fallback phrasing rejected: reason=%s kind=%s text=%r",
+            reason, candidate.kind, (out or "")[:120],
+        )
+        return None
+    return out
 
 
 _QUOTE_RE = re.compile(r"^[\"'`\s]+|[\"'`\s]+$")

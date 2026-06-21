@@ -15,6 +15,7 @@ from app.core.proactive.prepared_nudge import (
     PreparedNudgeStore,
     _clean_weave_output,
     _fallback_phrasing,
+    _strip_promise_prefix,
 )
 
 
@@ -184,6 +185,66 @@ class FallbackPhrasingTests(unittest.TestCase):
         self.assertEqual(_fallback_phrasing(c), "some thread")
 
 
+class PromisePrefixStripTests(unittest.TestCase):
+    """Regression: the "{actor} promised:" storage wrapper must never
+    leak into a spoken proactive line."""
+
+    def test_strips_user_promised_prefix(self):
+        self.assertEqual(
+            _strip_promise_prefix("Jacob promised: watch the new anime episode"),
+            "watch the new anime episode",
+        )
+
+    def test_strips_assistant_promised_to_prefix(self):
+        self.assertEqual(
+            _strip_promise_prefix("Aiko promised to send the recipe"),
+            "send the recipe",
+        )
+
+    def test_no_prefix_returns_original(self):
+        self.assertEqual(
+            _strip_promise_prefix("water the plants this weekend"),
+            "water the plants this weekend",
+        )
+
+    def test_promise_candidate_has_no_prefix_in_fallback(self):
+        from app.core.proactive.prepared_nudge import _Candidate
+
+        stripped = _strip_promise_prefix(
+            "Jacob promised: fit my waiting with some another airing anime",
+        )
+        c = _Candidate(kind="promise", source_id="1", text=stripped, salience=0.6)
+        out = _fallback_phrasing(c)
+        self.assertIsNotNone(out)
+        assert out is not None
+        self.assertNotIn("promised:", out.lower())
+        self.assertNotIn("Jacob", out)
+
+    def test_collect_candidates_strips_promise_prefix(self):
+        f = _Fixture()
+        try:
+            f.memory.add(
+                "Jacob promised: finish the side project this week",
+                "promise",
+                _emb(7),
+                salience=0.9,
+            )
+            weaver = NarrativeWeaver(
+                ollama=_FakeOllama(),
+                store=f.store,
+                memory_store=f.memory,
+                agenda_store=f.agenda,
+                model="m",
+            )
+            candidates = weaver._collect_candidates("local")
+            promise = next(c for c in candidates if c.kind == "promise")
+            self.assertEqual(
+                promise.text, "finish the side project this week",
+            )
+        finally:
+            f.close()
+
+
 class NarrativeWeaverTests(unittest.TestCase):
     def _seed_memories(self, memory: MemoryStore):
         memory.add("Wonders if Jacob picked the python book back up", "callback", _emb(1), salience=0.8)
@@ -245,28 +306,60 @@ class NarrativeWeaverTests(unittest.TestCase):
         finally:
             f.close()
 
-    def test_falls_back_when_no_llm(self):
+    def test_no_llm_prefers_silence(self):
+        # Prefer silence: with no LLM to rewrite the third-person memory
+        # note, the weaver stores nothing (instead of leaking the raw
+        # note through the old template fallback). The ProactiveDirector
+        # then degrades to its own safe LLM turn.
         f, _ollama, weaver = self._make()
         try:
             weaver._ollama = None  # type: ignore[attr-defined]
             for _ in range(2):
                 weaver.notify_user_turn()
             result = weaver.maybe_run("u1")
-            self.assertIsNotNone(result)
-            assert result is not None
-            self.assertGreater(len(result.text), 0)
+            self.assertIsNone(result)
+            self.assertIsNone(f.store.get_fresh("u1"))
         finally:
             f.close()
 
-    def test_llm_failure_falls_back(self):
+    def test_llm_failure_prefers_silence(self):
+        # An LLM exception during the weave must not fall back to a
+        # leaky template — it stores nothing.
         f, ollama, weaver = self._make()
         try:
             ollama.fail = True
             for _ in range(2):
                 weaver.notify_user_turn()
             result = weaver.maybe_run("u1")
-            # Should still produce a fallback nudge without crashing.
-            self.assertIsNotNone(result)
+            self.assertIsNone(result)
+            self.assertIsNone(f.store.get_fresh("u1"))
+        finally:
+            f.close()
+
+    def test_empty_weave_prefers_silence(self):
+        # A weave that cleans down to empty stores nothing.
+        f, _ollama, weaver = self._make(response="")
+        try:
+            for _ in range(2):
+                weaver.notify_user_turn()
+            result = weaver.maybe_run("u1")
+            self.assertIsNone(result)
+            self.assertIsNone(f.store.get_fresh("u1"))
+        finally:
+            f.close()
+
+    def test_leaky_weave_output_suppressed(self):
+        # A weave that echoes raw third-person narration is rejected by
+        # the guard -> nothing stored (no leak).
+        f, _ollama, weaver = self._make(
+            response="Notices that he warms up after coffee",
+        )
+        try:
+            for _ in range(2):
+                weaver.notify_user_turn()
+            result = weaver.maybe_run("u1")
+            self.assertIsNone(result)
+            self.assertIsNone(f.store.get_fresh("u1"))
         finally:
             f.close()
 

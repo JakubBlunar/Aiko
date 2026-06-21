@@ -33,6 +33,7 @@ from app.core.session.session_text_utils import (
     resolve_user_name,
     sanitize_assistant_text,
 )
+from app.core.proactive.proactive_line_guard import validate_proactive_line
 from app.core.services.response_text_service import (
     parse_reaction_at_start,
     strip_all_meta_tags,
@@ -552,6 +553,35 @@ class ProactiveDirector:
             log.debug("prepared nudge consume raised", exc_info=True)
             return None
 
+    def _prepared_line_ok(self, cleaned: str, nudge: object) -> bool:
+        """Speak-time backstop: reject a prepared line that still reads
+        like raw memory narration / carries an internal marker.
+
+        On a reject we log a WARNING (greppable via
+        ``tail_logs(module_contains="proactive")``) and return ``False``.
+        The caller (``_speak_prepared`` / ``_speak_prepared_typed``)
+        then returns ``False`` too, so ``_run`` / ``_run_typed`` fall
+        through to the safe LLM turn (full prompt + meta-tag strip)
+        instead of speaking the leak. Protects every source kind that
+        flows through the prepared path (callback / promise / reflection
+        / world / curiosity_seed / resume / ...).
+        """
+        ok, reason = validate_proactive_line(
+            cleaned,
+            user_display_name=resolve_user_name(
+                self._user_display_name_provider,
+            ),
+        )
+        if not ok:
+            log.warning(
+                "proactive line rejected: reason=%s kind=%s text=%r",
+                reason,
+                getattr(nudge, "source_kind", "?"),
+                cleaned[:120],
+            )
+            return False
+        return True
+
     def _speak_prepared(self, session_key: str, nudge: object) -> bool:
         text = getattr(nudge, "text", "")
         if not text:
@@ -562,6 +592,8 @@ class ProactiveDirector:
             return False
         cleaned = sanitize_assistant_text(text)
         if not cleaned:
+            return False
+        if not self._prepared_line_ok(cleaned, nudge):
             return False
         message_id: int | None = None
         try:
@@ -731,6 +763,8 @@ class ProactiveDirector:
             return False
         cleaned = sanitize_assistant_text(text)
         if not cleaned:
+            return False
+        if not self._prepared_line_ok(cleaned, nudge):
             return False
         message_id: int | None = None
         try:
