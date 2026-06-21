@@ -93,6 +93,14 @@ class ChatLlmSettings:
     # into the same provider — burns quota; useful when running
     # without a local Ollama at all.
     workers_use_local: bool = True
+    # Reasoning-effort hint for OpenAI Responses-API-family models
+    # (GPT-5 / o-series). Empty string = "auto": the client keeps its
+    # built-in default (``minimal``). Providers disagree on the allowed
+    # vocabulary — OpenAI gpt-5-mini takes ``minimal``; gpt-5.4-mini
+    # rejects ``minimal`` and wants one of ``none`` / ``low`` / ``medium``
+    # / ``high`` / ``xhigh`` — so this is free-text, sent verbatim only
+    # for Responses-API models and ignored everywhere else.
+    reasoning_effort: str = ""
 
 
 @dataclass(slots=True)
@@ -119,6 +127,9 @@ class LlmProvider:
     extra_headers: dict[str, str] = field(default_factory=dict)
     timeout_seconds: int = 300
     keep_alive: str = "30m"  # Ollama-only; ignored by openai_compatible
+    # Provider-level reasoning-effort default (see ChatLlmSettings).
+    # A route's own ``reasoning_effort`` overrides this when set.
+    reasoning_effort: str = ""
 
 
 @dataclass(slots=True)
@@ -138,6 +149,9 @@ class LlmRoute:
     context_window: int | None = None
     max_tokens: int = 512
     temperature: float | None = None
+    # Per-route reasoning-effort override (see ChatLlmSettings). Empty =
+    # inherit the provider-level value, then the client default.
+    reasoning_effort: str = ""
 
 
 @dataclass(slots=True)
@@ -3246,10 +3260,25 @@ def _parse_chat_llm(raw: dict[str, Any]) -> ChatLlmSettings:
         keep_alive=keep_alive,
         provider_preset=preset_raw,
         workers_use_local=workers_use_local,
+        reasoning_effort=_norm_reasoning_effort(
+            payload.get("reasoning_effort")
+        ),
     )
 
 
 # PR 2: provider catalogue + role-assignment parsers + legacy migration.
+
+
+def _norm_reasoning_effort(raw: Any) -> str:
+    """Normalise a reasoning-effort hint to a trimmed lowercase string.
+
+    Free-text on purpose: providers disagree on the allowed vocabulary
+    (``minimal`` / ``none`` / ``low`` / ``medium`` / ``high`` / ``xhigh``
+    and counting), so we don't restrict it — empty means "auto" (let the
+    client keep its built-in default)."""
+    if raw is None:
+        return ""
+    return str(raw).strip().lower()
 
 
 def _parse_llm_provider(payload: dict[str, Any]) -> LlmProvider | None:
@@ -3294,6 +3323,9 @@ def _parse_llm_provider(payload: dict[str, Any]) -> LlmProvider | None:
         extra_headers=extra_headers,
         timeout_seconds=timeout_seconds,
         keep_alive=str(payload.get("keep_alive", "30m") or "30m").strip() or "30m",
+        reasoning_effort=_norm_reasoning_effort(
+            payload.get("reasoning_effort")
+        ),
     )
 
 
@@ -3327,6 +3359,9 @@ def _parse_llm_route(payload: dict[str, Any]) -> LlmRoute | None:
         context_window=context_window,
         max_tokens=max_tokens,
         temperature=temperature,
+        reasoning_effort=_norm_reasoning_effort(
+            payload.get("reasoning_effort")
+        ),
     )
 
 
@@ -3595,6 +3630,9 @@ def _migrate_legacy_llm(
             extra_headers=dict(chat_llm.extra_headers or {}),
             timeout_seconds=int(timeout) if timeout else 300,
             keep_alive=chat_llm.keep_alive or "30m",
+            reasoning_effort=(
+                getattr(chat_llm, "reasoning_effort", "") or ""
+            ).strip().lower(),
         )
         providers.append(remote_provider)
         chat_provider_id = remote_provider.id
@@ -3607,6 +3645,9 @@ def _migrate_legacy_llm(
             context_window=chat_context_window,
             max_tokens=int(chat_llm.max_tokens or 512),
             temperature=chat_llm.temperature,
+            reasoning_effort=(
+                getattr(chat_llm, "reasoning_effort", "") or ""
+            ).strip().lower(),
         ),
         LLM_ROLE_WORKER_DEFAULT: LlmRoute(
             provider_id=_LEGACY_LOCAL_OLLAMA_ID,

@@ -21,6 +21,7 @@
     "max_tokens": 512,
     "keep_alive": "30m",
     "workers_use_local": true,
+    "reasoning_effort": "",
     "extra_headers": {}
   },
   "agent": {

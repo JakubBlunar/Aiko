@@ -35,6 +35,9 @@ interface RouteDraft {
   context_window: number | null;
   max_tokens: number;
   temperature: number | null;
+  /** Per-route reasoning-effort override (OpenAI GPT-5 / o-series).
+   *  Empty = inherit the provider's value, then the client default. */
+  reasoning_effort: string;
 }
 
 function routeToDraft(route: LlmRoute): RouteDraft {
@@ -44,6 +47,7 @@ function routeToDraft(route: LlmRoute): RouteDraft {
     context_window: route.context_window,
     max_tokens: route.max_tokens,
     temperature: route.temperature,
+    reasoning_effort: route.reasoning_effort || "",
   };
 }
 
@@ -53,7 +57,8 @@ function draftsEqual(a: RouteDraft, b: LlmRoute): boolean {
     a.model === b.model &&
     (a.context_window ?? null) === (b.context_window ?? null) &&
     a.max_tokens === b.max_tokens &&
-    (a.temperature ?? null) === (b.temperature ?? null)
+    (a.temperature ?? null) === (b.temperature ?? null) &&
+    (a.reasoning_effort || "") === (b.reasoning_effort || "")
   );
 }
 
@@ -181,6 +186,7 @@ export function LlmRoutesSection() {
           context_window: draft.context_window,
           max_tokens: draft.max_tokens,
           temperature: draft.temperature,
+          reasoning_effort: draft.reasoning_effort,
         });
         setRoute(role, updated);
         pushToast("info", `Route '${formatRoleLabel(role)}' saved.`);
@@ -424,6 +430,38 @@ export function LlmRoutesSection() {
                     placeholder="auto"
                     className="mt-1 w-20 rounded-md border border-white/10 bg-black/40 px-2 py-1 text-sm text-ink-100"
                   />
+                </label>
+                <label className="block">
+                  <span className="block text-[11px] text-ink-100/60">
+                    Reasoning effort
+                  </span>
+                  <input
+                    type="text"
+                    list={`llm-route-effort-options-${role}`}
+                    value={draft.reasoning_effort}
+                    onChange={(e) =>
+                      editRoute(role, {
+                        reasoning_effort: e.target.value.trim().toLowerCase(),
+                      })
+                    }
+                    placeholder="auto"
+                    autoComplete="off"
+                    spellCheck={false}
+                    className="mt-1 w-28 rounded-md border border-white/10 bg-black/40 px-2 py-1 text-sm text-ink-100"
+                  />
+                  <datalist id={`llm-route-effort-options-${role}`}>
+                    {[
+                      "minimal",
+                      "none",
+                      "low",
+                      "medium",
+                      "high",
+                      "xhigh",
+                      "omit",
+                    ].map((v) => (
+                      <option key={v} value={v} />
+                    ))}
+                  </datalist>
                 </label>
               </div>
 

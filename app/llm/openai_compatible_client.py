@@ -366,6 +366,70 @@ def _is_responses_api_family(model: str) -> bool:
     return False
 
 
+# Versioned GPT-5.x line (gpt-5.1, gpt-5.4-mini, …) that 400s on
+# ``Function tools with reasoning_effort are not supported … in
+# /v1/chat/completions. Please use /v1/responses instead.`` The
+# *original* GPT-5 models (gpt-5, gpt-5-mini, gpt-5-nano, gpt-5-pro)
+# have NO dotted minor version and DO accept tools + reasoning_effort
+# together, so we only match the decimal-versioned siblings. ``openai/``
+# (OpenRouter) prefixes are tolerated.
+_GPT5_DOTTED_VERSION_RE = re.compile(r"(?:^|/)gpt-5\.\d", re.IGNORECASE)
+
+
+def _tools_with_reasoning_unsupported(model: str) -> bool:
+    """True when sending ``tools`` + ``reasoning_effort`` together on
+    ``/v1/chat/completions`` is rejected for ``model``.
+
+    Only the dotted GPT-5.x line (gpt-5.1+, e.g. gpt-5.4-mini) moved
+    reasoning behind the Responses API; the tool-decision pass for
+    these models must therefore omit ``reasoning_effort`` (it provides
+    no behavioural benefit on that pass anyway — see
+    ``turn_runner._maybe_run_tool_pass``). This is the fallback guard
+    for when such a model is *forced* onto chat-completions; the normal
+    path routes it to ``/v1/responses`` (see :func:`_use_responses_api`)."""
+    if not isinstance(model, str):
+        return False
+    return bool(_GPT5_DOTTED_VERSION_RE.search(model.strip()))
+
+
+# On the Responses API, ``max_output_tokens`` caps reasoning tokens
+# AND visible output tokens *combined*. If the budget is too small the
+# reasoning trace can consume all of it, leaving status=incomplete with
+# no message / no tool call. To preserve the caller's intended *visible*
+# budget (``num_predict``) we add a per-effort reasoning reserve on top
+# of it. Values are conservative ceilings — the model only spends what
+# it actually needs, so a generous reserve costs nothing on easy turns
+# but prevents silent truncation on hard ones.
+_RESPONSES_REASONING_RESERVE: dict[str, int] = {
+    "none": 0,
+    "minimal": 256,
+    "low": 1024,
+    "medium": 4096,
+    "high": 8192,
+    "xhigh": 16384,
+}
+_RESPONSES_DEFAULT_RESERVE = 1024
+
+
+def _use_responses_api(model: str) -> bool:
+    """True when ``model`` should be driven via ``POST /v1/responses``.
+
+    The dotted GPT-5.x line (gpt-5.1, gpt-5.4-mini, …) moved reasoning
+    behind the Responses API: on ``/v1/chat/completions`` it 400s when
+    ``tools`` and ``reasoning_effort`` are sent together. Routing the
+    whole model through ``/v1/responses`` lets the tool-decision pass
+    AND the reply pass both honour the configured reasoning effort.
+
+    The *original* GPT-5 models (gpt-5, gpt-5-mini, gpt-5-nano,
+    gpt-5-pro) and the o-series keep using ``/v1/chat/completions``
+    where their tool path is already tuned — only the decimal-versioned
+    siblings qualify. ``openai/`` (OpenRouter) prefixes are tolerated by
+    the shared :data:`_GPT5_DOTTED_VERSION_RE`."""
+    if not isinstance(model, str):
+        return False
+    return bool(_GPT5_DOTTED_VERSION_RE.search(model.strip()))
+
+
 # Sampling knobs the Responses-API family (GPT-5 + o-series) does
 # NOT support. Dropping them entirely is preferred over forcing them
 # to "default" — omission lets the server pick its actual default
@@ -493,6 +557,7 @@ class OpenAICompatibleClient:
         model: str,
         extra_headers: dict[str, str] | None = None,
         keep_alive: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> None:
         if not (base_url or "").strip():
             raise ValueError("OpenAICompatibleClient requires a base_url")
@@ -523,10 +588,22 @@ class OpenAICompatibleClient:
         # controller can pass the same value to either client without
         # branching, but it never makes it onto the wire here.
         self._keep_alive_unused = keep_alive
+        # Reasoning-effort hint for Responses-API-family models. Empty /
+        # None = "auto" -> the built-in ``minimal`` default. A non-empty
+        # value is sent verbatim (providers disagree on the vocabulary).
+        self._reasoning_effort = (reasoning_effort or "").strip().lower()
 
     @property
     def base_url(self) -> str:
         return self._base_url
+
+    def set_reasoning_effort(self, value: str | None) -> None:
+        """Update the Responses-API reasoning-effort hint at runtime.
+
+        Called when a provider / route edit changes the effort without
+        rebuilding the client. Empty / None resets to "auto" (``minimal``
+        default)."""
+        self._reasoning_effort = (value or "").strip().lower()
 
     def _request_headers(self) -> dict[str, str]:
         return dict(self._headers)
@@ -607,20 +684,37 @@ class OpenAICompatibleClient:
             # tokens before any visible output. With the default
             # ``reasoning_effort="medium"`` and a tight budget (e.g.
             # ``chat_llm.max_tokens=512``) every token can go to
-            # reasoning, leaving Aiko's visible reply empty.
+            # reasoning, leaving Aiko's visible reply empty — so we
+            # default to ``minimal``.
             #
-            # We keep ``minimal`` on *every* surface, including the
-            # tool-decision pass. Empirically, raising the tool-pass
-            # effort did NOT change gpt-5-mini's tool-vs-text
-            # decision: at minimal / low / medium it equally chose to
-            # narrate its intent ("I'll list the folders") instead of
-            # emitting the tool call. The decision is driven by
-            # ``tool_choice`` + the conversational prior in the
-            # system prompt, not by reasoning budget — so medium only
-            # bought ~8s of extra latency for no behavioural gain.
-            # The reliable lever for under-calling is ``tool_choice``
-            # (see ``turn_runner._maybe_run_tool_pass``), not this.
-            payload["reasoning_effort"] = "minimal"
+            # The value is configurable per provider / route because
+            # the vocabulary is NOT universal: gpt-5-mini accepts
+            # ``minimal`` but gpt-5.4-mini rejects it (HTTP 400) and
+            # wants one of ``none`` / ``low`` / ``medium`` / ``high`` /
+            # ``xhigh``. A per-call override (``options["reasoning_effort"]``)
+            # wins over the client default; an explicit ``"omit"`` /
+            # ``"default"`` skips the param entirely so the provider
+            # applies its own default.
+            effort = self._reasoning_effort
+            if options and isinstance(options, dict):
+                override = options.get("reasoning_effort")
+                if override is not None:
+                    effort = str(override).strip().lower()
+            if not effort:
+                # "" / unset = auto -> the safe ``minimal`` default that
+                # keeps the visible-token budget from being eaten.
+                effort = "minimal"
+            # The dotted GPT-5.x line (gpt-5.4-mini, …) 400s when tools
+            # AND reasoning_effort are sent together on
+            # /v1/chat/completions ("use /v1/responses instead"). The
+            # tool-decision pass doesn't benefit from reasoning anyway,
+            # so drop the param when tools are present for those models.
+            # Older GPT-5 / o-series keep it (avoids the ~8s latency of
+            # their default ``medium`` effort on the tool pass).
+            if tools and _tools_with_reasoning_unsupported(model):
+                effort = "omit"
+            if effort != "omit":
+                payload["reasoning_effort"] = effort
         if options:
             # Pull out the keys we know how to translate, pass the rest
             # through. The Ollama vocabulary leaks here on purpose — the
@@ -635,6 +729,10 @@ class OpenAICompatibleClient:
             # sampling knobs are locked to defaults so we drop them
             # entirely — see ``_is_responses_api_family``.
             opts = dict(options)
+            # Handled explicitly above for the Responses-API family; drop
+            # it here so it never leaks onto a non-Responses payload (or
+            # double-writes) via the generic pass-through below.
+            opts.pop("reasoning_effort", None)
             temp = opts.pop("temperature", None)
             if temp is not None and not responses_api:
                 try:
@@ -682,6 +780,289 @@ class OpenAICompatibleClient:
             payload["response_format"] = {"type": "json_object"}
         return payload
 
+    # ── /v1/responses request builder + transport ───────────────────
+
+    def _resolve_reasoning_effort(
+        self, options: dict[str, object] | None,
+    ) -> str:
+        """Resolve the effective reasoning effort for a Responses call.
+
+        Precedence: per-call ``options["reasoning_effort"]`` overrides
+        the instance default (``self._reasoning_effort``, itself fed
+        from the route-else-provider setting). Empty resolves to
+        ``"minimal"``. ``"omit"`` is a sentinel that suppresses the
+        ``reasoning`` block entirely.
+        """
+        effort = self._reasoning_effort
+        if options and isinstance(options, dict):
+            override = options.get("reasoning_effort")
+            if override is not None:
+                effort = str(override).strip().lower()
+        return effort or "minimal"
+
+    def _build_responses_payload(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        model: str,
+        options: dict[str, object] | None,
+        tools: list[dict[str, Any]] | None,
+        stream: bool,
+        format_json: bool,
+        tool_choice: "str | dict[str, Any] | None",
+    ) -> dict[str, Any]:
+        """Assemble a ``POST /v1/responses`` body.
+
+        Mirrors :meth:`_build_payload` but speaks the Responses shape:
+        ``input`` (not ``messages``), ``reasoning.effort`` (not a flat
+        ``reasoning_effort``), ``max_output_tokens`` (not
+        ``max_completion_tokens``), flat function tools, and
+        ``text.format`` for JSON mode. Temperature is intentionally
+        omitted — the dotted GPT-5.x reasoning family locks it to the
+        default and 400s on any other value.
+        """
+        payload: dict[str, Any] = {
+            "model": model,
+            "input": _messages_to_responses_input(messages),
+            "stream": stream,
+        }
+        effort = self._resolve_reasoning_effort(options)
+        if effort != "omit":
+            payload["reasoning"] = {"effort": effort}
+        if options and isinstance(options, dict):
+            num_predict = options.get("num_predict")
+            if num_predict is not None:
+                try:
+                    visible = int(num_predict)
+                except (TypeError, ValueError):
+                    visible = None
+                if visible is not None:
+                    # Reserve headroom for the reasoning trace so it
+                    # can't starve the visible answer / tool call.
+                    reserve = (
+                        0
+                        if effort == "omit"
+                        else _RESPONSES_REASONING_RESERVE.get(
+                            effort, _RESPONSES_DEFAULT_RESERVE,
+                        )
+                    )
+                    payload["max_output_tokens"] = visible + reserve
+        if tools:
+            payload["tools"] = _tools_to_responses(tools)
+            if tool_choice is not None:
+                payload["tool_choice"] = _tool_choice_to_responses(tool_choice)
+        if format_json:
+            payload["text"] = {"format": {"type": "json_object"}}
+        return payload
+
+    def _responses_complete(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        model: str,
+        options: dict[str, object] | None,
+        tools: list[dict[str, Any]] | None,
+        tool_choice: "str | dict[str, Any] | None",
+        format_json: bool,
+        timeout: float,
+        surface: str,
+        think: bool,
+    ) -> tuple[str, list[ChatToolCall], ChatUsage]:
+        """Non-streaming ``POST /v1/responses`` -> (content, calls, usage)."""
+        payload = self._build_responses_payload(
+            messages=messages,
+            model=model,
+            options=options,
+            tools=tools,
+            stream=False,
+            format_json=format_json,
+            tool_choice=tool_choice,
+        )
+        t0 = time.monotonic()
+        try:
+            response = requests.post(
+                f"{self._base_url}/responses",
+                json=payload,
+                timeout=timeout,
+                headers=self._request_headers(),
+            )
+        except requests.RequestException as exc:
+            elapsed_ms = (time.monotonic() - t0) * 1000.0
+            log.error(
+                "openai-compat responses transport error: model=%s "
+                "surface=%s msgs=%d tools=%d elapsed_ms=%.0f exc=%r",
+                model, surface, len(messages), len(tools or []),
+                elapsed_ms, exc,
+            )
+            raise
+        elapsed_ms = (time.monotonic() - t0) * 1000.0
+        if not response.ok:
+            self._log_http_error(
+                "responses", response, elapsed_ms=elapsed_ms,
+            )
+            try:
+                err_body = response.text
+                if err_body and len(err_body) > 500:
+                    err_body = err_body[:500] + "..."
+            except Exception:
+                err_body = ""
+            msg = f"{response.status_code} {response.reason}"
+            if err_body:
+                msg += f" — {err_body}"
+            raise requests.HTTPError(msg, response=response)
+        body = response.json()
+        content, tool_calls, done_reason = _parse_responses_output(body)
+        had_thinking = False
+        if not think:
+            content, had_thinking = _strip_thinking_blocks_with_signal(content)
+        usage = _responses_usage(
+            body.get("usage") if isinstance(body, dict) else None,
+            total_ms=elapsed_ms,
+            done_reason=done_reason,
+        )
+        _warn_if_truncated(
+            usage,
+            model=model,
+            surface=surface,
+            benign=had_thinking and _content_looks_complete(content),
+        )
+        self._announce_connection(model)
+        log.debug(
+            "openai-compat responses: model=%s surface=%s msgs=%d tools=%d "
+            "elapsed_ms=%.0f prompt_tokens=%d completion_tokens=%d "
+            "tool_calls=%d",
+            model, surface, len(messages), len(tools or []), elapsed_ms,
+            usage.prompt_tokens, usage.completion_tokens, len(tool_calls),
+        )
+        return content, tool_calls, usage
+
+    def _responses_stream(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        model: str,
+        options: dict[str, object] | None,
+        format_json: bool,
+        stop_event: threading.Event | None,
+        surface: str,
+    ) -> Generator[str, None, None]:
+        """Streaming ``POST /v1/responses`` -> visible text token deltas.
+
+        Responses SSE carries the event type inside each ``data`` JSON
+        object (``chunk["type"]``), so the shared
+        :func:`_iter_sse_data_lines` reader is reused unchanged and we
+        switch on the type: ``response.output_text.delta`` yields a
+        token; ``response.completed`` / ``response.incomplete`` carry
+        the final ``usage`` + status; ``response.failed`` / ``error``
+        raise.
+        """
+        payload = self._build_responses_payload(
+            messages=messages,
+            model=model,
+            options=options,
+            tools=None,
+            stream=True,
+            format_json=format_json,
+            tool_choice=None,
+        )
+        usage = ChatUsage()
+        t0 = time.monotonic()
+        first_token_ms: float | None = None
+        try:
+            with requests.post(
+                f"{self._base_url}/responses",
+                json=payload,
+                stream=True,
+                timeout=self._timeout_seconds,
+                headers=self._request_headers(),
+            ) as response:
+                if not response.ok:
+                    elapsed_ms = (time.monotonic() - t0) * 1000.0
+                    self._log_http_error(
+                        "responses_stream", response, elapsed_ms=elapsed_ms,
+                    )
+                response.raise_for_status()
+                done_reason: str | None = None
+                for data in _iter_sse_data_lines(
+                    response, stop_event=stop_event,
+                ):
+                    try:
+                        chunk = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(chunk, dict):
+                        continue
+                    ctype = chunk.get("type")
+                    if ctype == "response.output_text.delta":
+                        token = chunk.get("delta")
+                        if isinstance(token, str) and token:
+                            if first_token_ms is None:
+                                first_token_ms = (
+                                    time.monotonic() - t0
+                                ) * 1000.0
+                            yield token
+                    elif ctype in (
+                        "response.completed", "response.incomplete",
+                    ):
+                        resp_obj = chunk.get("response")
+                        if isinstance(resp_obj, dict):
+                            u = resp_obj.get("usage")
+                            if isinstance(u, dict):
+                                usage.prompt_tokens = int(
+                                    u.get("input_tokens", 0) or 0,
+                                )
+                                usage.completion_tokens = int(
+                                    u.get("output_tokens", 0) or 0,
+                                )
+                                details = u.get("input_tokens_details")
+                                if isinstance(details, dict):
+                                    usage.cached_tokens = int(
+                                        details.get("cached_tokens", 0) or 0,
+                                    )
+                            status = resp_obj.get("status")
+                            if status == "incomplete":
+                                inc = resp_obj.get("incomplete_details") or {}
+                                if (
+                                    isinstance(inc, dict)
+                                    and inc.get("reason") == "max_output_tokens"
+                                ):
+                                    done_reason = "length"
+                            elif status == "completed":
+                                done_reason = "stop"
+                    elif ctype in ("response.failed", "error"):
+                        err_msg = _extract_responses_stream_error(chunk)
+                        log.error(
+                            "openai-compat responses_stream error: model=%s "
+                            "surface=%s msg=%s",
+                            model, surface, err_msg,
+                        )
+                        raise RuntimeError(
+                            f"responses stream error: {err_msg}",
+                        )
+                usage.done_reason = done_reason
+        except requests.RequestException as exc:
+            elapsed_ms = (time.monotonic() - t0) * 1000.0
+            log.error(
+                "openai-compat responses_stream transport error: model=%s "
+                "elapsed_ms=%.0f exc=%r",
+                model, elapsed_ms, exc,
+            )
+            raise
+        elapsed_ms = (time.monotonic() - t0) * 1000.0
+        usage.total_duration_ms = elapsed_ms
+        self.last_usage = usage
+        _warn_if_truncated(usage, model=model, surface=surface)
+        self._announce_connection(model)
+        log.debug(
+            "openai-compat responses_stream done: model=%s msgs=%d "
+            "elapsed_ms=%.0f first_token_ms=%s prompt_tokens=%d "
+            "completion_tokens=%d stopped=%s",
+            model, len(messages), elapsed_ms,
+            f"{first_token_ms:.0f}" if first_token_ms is not None else "-",
+            usage.prompt_tokens, usage.completion_tokens,
+            "1" if (stop_event is not None and stop_event.is_set()) else "0",
+        )
+
     # ── Public API ──────────────────────────────────────────────────
 
     def chat(
@@ -712,6 +1093,20 @@ class OpenAICompatibleClient:
     ) -> ChatResponse:
         del keep_alive  # Ollama-only knob; see __init__ docstring
         use_model = (model or "").strip() or self._default_model
+        if _use_responses_api(use_model):
+            content, tool_calls, usage = self._responses_complete(
+                messages=messages,
+                model=use_model,
+                options=options,
+                tools=tools,
+                tool_choice=tool_choice,
+                format_json=False,
+                timeout=self._timeout_seconds,
+                surface=surface,
+                think=think,
+            )
+            self.last_usage = usage
+            return ChatResponse(content=content, tool_calls=tool_calls)
         payload = self._build_payload(
             messages=messages,
             model=use_model,
@@ -803,6 +1198,16 @@ class OpenAICompatibleClient:
         del keep_alive
         del think  # OpenAI-compat doesn't expose a thinking-trace toggle
         use_model = (model or "").strip() or self._default_model
+        if _use_responses_api(use_model):
+            yield from self._responses_stream(
+                messages=messages,
+                model=use_model,
+                options=options,
+                format_json=format_json,
+                stop_event=stop_event,
+                surface=surface,
+            )
+            return
         payload = self._build_payload(
             messages=messages,
             model=use_model,
@@ -920,6 +1325,24 @@ class OpenAICompatibleClient:
         if options:
             merged_options.update(options)
         use_model = (model or "").strip() or self._default_model
+        effective_timeout = (
+            timeout_seconds
+            if timeout_seconds is not None
+            else self._timeout_seconds
+        )
+        if _use_responses_api(use_model):
+            content, _tool_calls, usage = self._responses_complete(
+                messages=messages,
+                model=use_model,
+                options=merged_options,
+                tools=None,
+                tool_choice=None,
+                format_json=format_json,
+                timeout=effective_timeout,
+                surface=surface,
+                think=think,
+            )
+            return content, usage
         payload = self._build_payload(
             messages=messages,
             model=use_model,
@@ -927,11 +1350,6 @@ class OpenAICompatibleClient:
             tools=None,
             stream=False,
             format_json=format_json,
-        )
-        effective_timeout = (
-            timeout_seconds
-            if timeout_seconds is not None
-            else self._timeout_seconds
         )
         t0 = time.monotonic()
         try:
@@ -1139,6 +1557,259 @@ def _parse_openai_tool_calls(raw: object) -> list[ChatToolCall]:
             args = {}
         parsed.append(ChatToolCall(name=name, arguments=args, call_id=call_id))
     return parsed
+
+
+# ── /v1/responses (Responses API) converters + parsers ───────────────
+#
+# The Responses API speaks a different request/response shape than
+# /v1/chat/completions. These pure helpers translate between the
+# codebase's neutral chat-message vocabulary and the Responses shape so
+# the public client methods can branch on one routing predicate
+# (:func:`_use_responses_api`) and reuse the same ChatResponse /
+# ChatToolCall / ChatUsage dataclasses downstream.
+
+
+def _messages_to_responses_input(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Translate neutral chat messages into a Responses ``input`` array.
+
+    Plain text turns become ``{"role": ..., "content": <text>}`` items.
+    Assistant tool calls become ``{"type": "function_call", "call_id",
+    "name", "arguments"(json-string)}`` items (one per call, preceded by
+    the assistant's text when present). Tool results become
+    ``{"type": "function_call_output", "call_id", "output"}`` items —
+    the Responses analogue of a ``role=tool`` message.
+
+    The caller's list is never mutated; a fresh list is returned.
+    """
+    out: list[dict[str, Any]] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role == "assistant" and isinstance(msg.get("tool_calls"), list):
+            content = msg.get("content")
+            if isinstance(content, str) and content.strip():
+                out.append({"role": "assistant", "content": content})
+            for idx, call in enumerate(msg["tool_calls"]):
+                if not isinstance(call, dict):
+                    continue
+                fn = call.get("function") or {}
+                if not isinstance(fn, dict):
+                    fn = {}
+                args = fn.get("arguments")
+                if isinstance(args, str):
+                    args_str = args
+                elif args is None:
+                    args_str = "{}"
+                else:
+                    try:
+                        args_str = json.dumps(
+                            args, ensure_ascii=False, default=str,
+                        )
+                    except (TypeError, ValueError):
+                        args_str = "{}"
+                call_id = str(call.get("id", "") or "").strip() or f"call_{idx}"
+                out.append({
+                    "type": "function_call",
+                    "call_id": call_id,
+                    "name": str(fn.get("name", "") or ""),
+                    "arguments": args_str,
+                })
+        elif role == "tool":
+            call_id = str(
+                msg.get("tool_call_id", "") or msg.get("id", "") or "",
+            ).strip()
+            content = msg.get("content", "")
+            if not isinstance(content, str):
+                content = "" if content is None else str(content)
+            out.append({
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": content,
+            })
+        else:
+            content = msg.get("content", "")
+            if not isinstance(content, str):
+                content = "" if content is None else str(content)
+            resolved_role = (
+                role
+                if role in ("system", "developer", "user", "assistant")
+                else "user"
+            )
+            out.append({"role": resolved_role, "content": content})
+    return out
+
+
+def _tools_to_responses(
+    tools: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Flatten chat-completions function tools to the Responses shape.
+
+    chat-completions: ``{"type":"function","function":{name,description,
+    parameters}}``. Responses: ``{"type":"function",name,description,
+    parameters}`` (the nested ``function`` object is hoisted). Tools
+    already in the flat shape pass through unchanged.
+    """
+    out: list[dict[str, Any]] = []
+    for tool in tools or []:
+        if not isinstance(tool, dict):
+            continue
+        fn = tool.get("function")
+        if tool.get("type") == "function" and isinstance(fn, dict):
+            out.append({
+                "type": "function",
+                "name": str(fn.get("name", "") or ""),
+                "description": fn.get("description") or "",
+                "parameters": fn.get("parameters")
+                or {"type": "object", "properties": {}},
+            })
+        else:
+            # Already flat (or a non-function tool, e.g. web_search) —
+            # pass through so future Responses-native tool types work.
+            out.append(dict(tool))
+    return out
+
+
+def _tool_choice_to_responses(
+    tool_choice: "str | dict[str, Any]",
+) -> "str | dict[str, Any]":
+    """Translate a chat-completions ``tool_choice`` to the Responses form.
+
+    Strings (``"auto"`` / ``"required"`` / ``"none"``) are identical on
+    both APIs. The forced-function dict differs: chat-completions nests
+    the name under ``function`` (``{"type":"function","function":
+    {"name":...}}``) while Responses puts it at the top level
+    (``{"type":"function","name":...}``).
+    """
+    if isinstance(tool_choice, str):
+        return tool_choice
+    if isinstance(tool_choice, dict):
+        fn = tool_choice.get("function")
+        if isinstance(fn, dict) and fn.get("name"):
+            return {"type": "function", "name": str(fn["name"])}
+        if tool_choice.get("type") == "function" and tool_choice.get("name"):
+            return {"type": "function", "name": str(tool_choice["name"])}
+    return tool_choice
+
+
+def _parse_responses_output(
+    body: object,
+) -> tuple[str, list[ChatToolCall], str | None]:
+    """Pull visible text, tool calls, and a done_reason from a Responses body.
+
+    Walks ``body.output[]`` collecting ``message`` items' ``output_text``
+    parts and ``function_call`` items. ``done_reason`` mirrors the
+    chat-completions vocabulary: ``"length"`` when the run stopped on
+    ``max_output_tokens``, ``"stop"`` on a clean completion, else the
+    raw status string.
+    """
+    if not isinstance(body, dict):
+        return "", [], None
+    text_parts: list[str] = []
+    tool_calls: list[ChatToolCall] = []
+    output = body.get("output")
+    if isinstance(output, list):
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+            itype = item.get("type")
+            if itype == "message":
+                content = item.get("content")
+                if isinstance(content, list):
+                    for part in content:
+                        if (
+                            isinstance(part, dict)
+                            and part.get("type") == "output_text"
+                        ):
+                            text = part.get("text")
+                            if isinstance(text, str):
+                                text_parts.append(text)
+                elif isinstance(content, str):
+                    text_parts.append(content)
+            elif itype == "function_call":
+                name = str(item.get("name", "") or "").strip()
+                if not name:
+                    continue
+                call_id = str(
+                    item.get("call_id", "") or item.get("id", "") or "",
+                ).strip()
+                raw_args = item.get("arguments", {})
+                if isinstance(raw_args, str):
+                    try:
+                        loaded = json.loads(raw_args)
+                    except Exception:
+                        loaded = {}
+                    args = dict(loaded) if isinstance(loaded, dict) else {}
+                elif isinstance(raw_args, dict):
+                    args = dict(raw_args)
+                else:
+                    args = {}
+                tool_calls.append(
+                    ChatToolCall(name=name, arguments=args, call_id=call_id),
+                )
+    status = body.get("status")
+    done_reason: str | None = None
+    if status == "incomplete":
+        inc = body.get("incomplete_details") or {}
+        if isinstance(inc, dict) and inc.get("reason") == "max_output_tokens":
+            done_reason = "length"
+        else:
+            done_reason = "incomplete"
+    elif status == "completed":
+        done_reason = "stop"
+    elif isinstance(status, str) and status:
+        done_reason = status
+    return "".join(text_parts), tool_calls, done_reason
+
+
+def _extract_responses_stream_error(chunk: dict[str, Any]) -> str:
+    """Best-effort human message from a Responses ``error`` / ``failed`` SSE.
+
+    ``error`` events carry ``{"message": ...}`` directly;
+    ``response.failed`` nests it under ``response.error.message``.
+    Falls back to a compact repr so the raise always carries *some*
+    context.
+    """
+    message = chunk.get("message")
+    if isinstance(message, str) and message.strip():
+        return message.strip()
+    resp_obj = chunk.get("response")
+    if isinstance(resp_obj, dict):
+        err = resp_obj.get("error")
+        if isinstance(err, dict):
+            msg = err.get("message")
+            if isinstance(msg, str) and msg.strip():
+                return msg.strip()
+    err = chunk.get("error")
+    if isinstance(err, dict):
+        msg = err.get("message")
+        if isinstance(msg, str) and msg.strip():
+            return msg.strip()
+    return str(chunk)[:300]
+
+
+def _responses_usage(
+    usage_dict: object, *, total_ms: float, done_reason: str | None,
+) -> ChatUsage:
+    """Build a ChatUsage from a Responses ``usage`` block.
+
+    Responses names the token fields ``input_tokens`` /
+    ``output_tokens`` (vs chat-completions' ``prompt_tokens`` /
+    ``completion_tokens``) and reports cache hits under
+    ``input_tokens_details.cached_tokens``. ``done_reason`` is already
+    mapped by :func:`_parse_responses_output`, so it's stored as-is.
+    """
+    usage = ChatUsage(total_duration_ms=float(total_ms))
+    if isinstance(usage_dict, dict):
+        usage.prompt_tokens = int(usage_dict.get("input_tokens", 0) or 0)
+        usage.completion_tokens = int(usage_dict.get("output_tokens", 0) or 0)
+        details = usage_dict.get("input_tokens_details")
+        if isinstance(details, dict):
+            usage.cached_tokens = int(details.get("cached_tokens", 0) or 0)
+    usage.done_reason = done_reason
+    return usage
 
 
 __all__ = ["OpenAICompatibleClient"]
