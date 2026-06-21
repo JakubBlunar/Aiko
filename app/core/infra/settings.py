@@ -587,6 +587,12 @@ class AgentSettings:
     # (one SQL upsert). The prompt block is terse and only renders
     # when an axis exceeds the notable threshold (default 0.5).
     relationship_axes_enabled: bool = True
+    # J8: milestone-celebration cue. When a relationship milestone crosses
+    # (100 turns / 1 week / 1 month / 100 days / 6 months / 1 year), a
+    # one-shot warm acknowledgement is surfaced into the next turn's
+    # prompt (stage-aware register via J4). Off = the milestone is still
+    # recorded as a memory but never actively acknowledged.
+    milestone_celebration_enabled: bool = True
     # ── F1 personality backlog: background fact-checker ───────────────
     # Master switch. When off, the queue still persists but the
     # IdleFactChecker worker never runs (so any pending claims simply
@@ -4154,6 +4160,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             ),
             relationship_axes_enabled=bool(
                 agent_raw.get("relationship_axes_enabled", True),
+            ),
+            milestone_celebration_enabled=bool(
+                agent_raw.get("milestone_celebration_enabled", True),
             ),
             summary_idle_seconds=max(2.0, float(agent_raw.get("summary_idle_seconds", 15.0))),
             summary_min_unsummarized_messages=max(2, int(agent_raw.get("summary_min_unsummarized_messages", 6))),

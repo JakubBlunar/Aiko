@@ -1524,6 +1524,11 @@ class SessionController(
         # now isn't an anniversary today).
         self._last_turn_moment_vibes: list[str] = []
         self._last_turn_milestone: str | None = None
+        # J8: one-shot milestone-celebration slot; armed post-turn when a
+        # milestone crosses, consumed by _render_milestone_block next turn.
+        self._pending_milestone_celebration: str | None = None
+        # J4: cached bond stage for the hysteresis band (axes + tenure).
+        self._last_relationship_stage: str | None = None
         self._last_turn_promise_kept: bool = False
         self._last_turn_gift_received: bool = False
         # Wire all hot-path providers (each cheap: SQL/mirror reads or
@@ -1550,6 +1555,7 @@ class SessionController(
             world=self._render_world_block,
             activity=self._render_activity_block,
             anniversary=self._render_anniversary_block,
+            milestone=self._render_milestone_block,
             axes=self._render_axes_block,
             knowledge_gaps=self._render_knowledge_gaps_block,
             belief_gaps=self._render_belief_gaps_block,

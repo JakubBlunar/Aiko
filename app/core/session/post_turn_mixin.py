@@ -1826,6 +1826,9 @@ class PostTurnMixin:
                 milestone = None
             if milestone:
                 self._record_milestone_memory(milestone)
+                # J8: arm the one-shot milestone-celebration cue for the
+                # next turn's prompt (consumed by _render_milestone_block).
+                self._pending_milestone_celebration = milestone
         self._last_turn_milestone = milestone
 
         # Phase 3c: promise extraction now runs as the context-aware
