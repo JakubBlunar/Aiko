@@ -1178,6 +1178,13 @@ class RagRetriever:
                 # sees it.
                 if kind == "curiosity_finding":
                     suffix_tags.append("(curiosity)")
+                # K11 — pre-thought / counterfactual cache. Tag drafts
+                # so the persona rule lets Aiko lean on a reply she
+                # already mulled ("I actually thought about this…")
+                # rather than treat it as a recalled fact. Invisible to
+                # the user; only the LLM sees it.
+                if kind == "pre_thought":
+                    suffix_tags.append("(pre-thought)")
                 # K7 — Forgetting protocol. Graded fade predicate
                 # covers both archive-tier rows (cold history) AND
                 # long_term rows that have decayed in place

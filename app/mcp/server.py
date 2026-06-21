@@ -2107,6 +2107,184 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"force_repeated_thought raised: {exc}"
 
     @mcp.tool()
+    def get_pre_thought_state() -> str:
+        """K11 — inspect the pre-thought / counterfactual cache.
+
+        Returns the master switch + caps, the LLM rate-limiter
+        snapshot (``hour_used``/``day_used`` vs caps), and the current
+        active ``pre_thought`` memories (id, question, a short slice of
+        the drafted thought, tier, salience, created_at). Use alongside
+        ``force_pre_thought()`` to verify the worker end-to-end without
+        waiting for the idle cadence.
+        """
+        try:
+            agent = session._settings.agent
+            memory = session._settings.memory
+            out: dict[str, Any] = {
+                "enabled": bool(
+                    getattr(agent, "pre_thought_enabled", True)
+                ),
+                "interval_seconds": int(
+                    getattr(memory, "pre_thought_interval_seconds", 3600)
+                ),
+                "max_active": int(
+                    getattr(agent, "pre_thought_max_active", 12)
+                ),
+                "candidates": int(
+                    getattr(agent, "pre_thought_candidates", 4)
+                ),
+                "max_per_run": int(
+                    getattr(agent, "pre_thought_max_per_run", 2)
+                ),
+                "min_novelty": float(
+                    getattr(agent, "pre_thought_min_novelty", 0.85)
+                ),
+            }
+            limiter = getattr(session, "_pre_thought_rate_limiter", None)
+            if limiter is not None:
+                from datetime import datetime, timezone
+
+                try:
+                    out["rate"] = limiter.snapshot(
+                        datetime.now(timezone.utc)
+                    )
+                except Exception:
+                    out["rate"] = None
+            store = getattr(session, "_memory_store", None)
+            rows: list[dict[str, Any]] = []
+            if store is not None:
+                try:
+                    for mem in store.iter_by_kind("pre_thought"):
+                        if mem.tier == "archive":
+                            continue
+                        meta = mem.metadata or {}
+                        rows.append(
+                            {
+                                "id": mem.id,
+                                "question": meta.get("question"),
+                                "thought": (
+                                    str(meta.get("thought") or "")[:160]
+                                ),
+                                "tier": mem.tier,
+                                "salience": round(
+                                    float(mem.salience), 3
+                                ),
+                                "created_at": mem.created_at,
+                            }
+                        )
+                except Exception:
+                    pass
+            out["active_count"] = len(rows)
+            out["active"] = rows
+            return json.dumps(out, indent=2, default=str)
+        except Exception as exc:
+            return f"get_pre_thought_state raised: {exc}"
+
+    @mcp.tool()
+    def force_pre_thought() -> str:
+        """K11 — run the PreThoughtWorker once, ignoring its interval gate.
+
+        Returns the worker's result dict (``wrote``, ``checked``,
+        ``memory_ids``, rejection counts, ``pruned``, ``llm_ms``). The
+        rate-limiter and ``max_active`` gates still apply, so a result
+        of ``{"skipped": "rate_limited"}`` / ``{"skipped":
+        "max_active"}`` is expected when those are exhausted.
+        """
+        sched = getattr(session, "_idle_scheduler", None)
+        if sched is None:
+            return "scheduler not running (memory.tiers_enabled may be off)"
+        try:
+            result = sched.force_run("pre_thought")
+        except KeyError:
+            return "pre_thought worker not registered"
+        except Exception as exc:
+            return f"force_pre_thought raised: {exc}"
+        return json.dumps(result or {}, indent=2, default=str)
+
+    @mcp.tool()
+    def get_thread_note_state() -> str:
+        """K21 — inspect the fresh-eyes thread note for the active session.
+
+        Returns the master switch + trigger knobs, the LLM rate-limiter
+        snapshot, the active session's message count, and the current
+        stored note (title, note, messages_at watermark, updated_at).
+        Pairs with ``force_thread_resummary()`` to verify the worker
+        end-to-end without waiting for the idle cadence.
+        """
+        try:
+            agent = session._settings.agent
+            memory = session._settings.memory
+            out: dict[str, Any] = {
+                "enabled": bool(
+                    getattr(agent, "thread_resummary_enabled", True)
+                ),
+                "interval_seconds": int(
+                    getattr(memory, "thread_resummary_interval_seconds", 3600)
+                ),
+                "min_messages": int(
+                    getattr(agent, "thread_resummary_min_messages", 12)
+                ),
+                "message_interval": int(
+                    getattr(agent, "thread_resummary_message_interval", 50)
+                ),
+                "max_age_hours": float(
+                    getattr(agent, "thread_resummary_max_age_hours", 24.0)
+                ),
+            }
+            session_key = session.session_key
+            out["session_id"] = session_key
+            try:
+                out["message_count"] = session._chat_db.get_message_count(
+                    session_key
+                )
+            except Exception:
+                out["message_count"] = None
+            limiter = getattr(session, "_thread_resummary_rate_limiter", None)
+            if limiter is not None:
+                from datetime import datetime, timezone
+
+                try:
+                    out["rate"] = limiter.snapshot(datetime.now(timezone.utc))
+                except Exception:
+                    out["rate"] = None
+            try:
+                row = session._chat_db.get_thread_note(session_key)
+            except Exception:
+                row = None
+            if row is None:
+                out["note"] = None
+            else:
+                out["note"] = {
+                    "title": row.title,
+                    "note": row.note,
+                    "messages_at": row.messages_at,
+                    "updated_at": row.updated_at,
+                }
+            return json.dumps(out, indent=2, default=str)
+        except Exception as exc:
+            return f"get_thread_note_state raised: {exc}"
+
+    @mcp.tool()
+    def force_thread_resummary() -> str:
+        """K21 — run the ThreadResummaryWorker once, ignoring its interval gate.
+
+        Returns the worker's result dict (``wrote``, ``title``,
+        ``messages_at``, ``llm_ms`` on success; or a ``skipped`` reason
+        like ``too_short`` / ``not_due`` / ``rate_limited``). The
+        min-message and trigger gates still apply.
+        """
+        sched = getattr(session, "_idle_scheduler", None)
+        if sched is None:
+            return "scheduler not running (memory.tiers_enabled may be off)"
+        try:
+            result = sched.force_run("thread_resummary")
+        except KeyError:
+            return "thread_resummary worker not registered"
+        except Exception as exc:
+            return f"force_thread_resummary raised: {exc}"
+        return json.dumps(result or {}, indent=2, default=str)
+
+    @mcp.tool()
     def get_persona_regression_state() -> str:
         """K10 — read the last persona-regression snapshot.
 

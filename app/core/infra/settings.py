@@ -739,6 +739,58 @@ class AgentSettings:
     # alternative is a seed that hangs around forever once the
     # conversation drifts past it.
     curiosity_seed_resolve_threshold: float = 0.50
+    # ── K11 pre-thought / counterfactual cache ───────────────────────
+    # Master switch for
+    # :class:`app.core.proactive.pre_thought_worker.PreThoughtWorker`.
+    # When ``False`` the worker never registers its idle tick. The
+    # cached ``pre_thought`` memories already written stay in the store
+    # and keep surfacing through RAG until they decay out.
+    pre_thought_enabled: bool = True
+    # Cap on how many active pre-thoughts the worker keeps alive at
+    # once. ``is_ready`` short-circuits when the count is at the cap so
+    # a long idle stretch can't pile up dozens of speculative drafts;
+    # ``run`` also prunes the oldest beyond this cap after writing.
+    pre_thought_max_active: int = 12
+    # How many candidate questions the first-stage LLM call proposes
+    # per tick (the worker drafts replies for up to ``max_per_run`` of
+    # the survivors).
+    pre_thought_candidates: int = 4
+    # Cap on how many drafted pre-thoughts the worker writes per
+    # successful tick (one second-stage draft LLM call each).
+    pre_thought_max_per_run: int = 2
+    # Novelty floor against existing pre-thoughts: a candidate question
+    # whose cosine to ANY active pre-thought question >= this is
+    # rejected as a near-duplicate. Mirrors ``curiosity_seed_min_novelty``.
+    pre_thought_min_novelty: float = 0.85
+    # Per-hour / per-day budget on the worker's LLM calls (a tick can
+    # spend 1 question call + up to ``max_per_run`` draft calls). The
+    # worker runs on the local worker model, so the caps are generous —
+    # they only exist to stop a misconfigured fast cadence from running
+    # the local box hot.
+    pre_thought_per_hour_cap: int = 6
+    pre_thought_per_day_cap: int = 40
+    # ── K21 fresh-eyes thread re-summary ─────────────────────────────
+    # Master switch for
+    # :class:`app.core.proactive.thread_resummary_worker.ThreadResummaryWorker`.
+    # When ``False`` the worker never registers its idle tick and the
+    # prompt never carries a "where this thread is now" block.
+    thread_resummary_enabled: bool = True
+    # Floor on conversation length before a fresh-eyes note is worth
+    # drafting at all (a 3-message thread doesn't need re-synthesis).
+    thread_resummary_min_messages: int = 12
+    # Re-draft once this many new messages have landed since the note's
+    # ``messages_at`` watermark (the "~50 turns" trigger from the
+    # backlog).
+    thread_resummary_message_interval: int = 50
+    # Re-draft when the existing note is older than this many hours even
+    # if the message-interval trigger hasn't fired (the "daily,
+    # whichever comes first" trigger).
+    thread_resummary_max_age_hours: float = 24.0
+    # Per-hour / per-day budget on the worker's LLM calls (one call per
+    # successful tick). Runs on the local worker model; the caps only
+    # stop a misconfigured fast cadence from running the box hot.
+    thread_resummary_per_hour_cap: int = 6
+    thread_resummary_per_day_cap: int = 24
     # ── K52 wants ledger — desire with pressure ──────────────────────
     # Master switch for the wants ledger: the feeder worker, the
     # prompt provider, and the post-turn acted-on detection all gate
@@ -2362,6 +2414,18 @@ class MemorySettings:
     # store is at ``curiosity_seed_max_active`` so the cadence is a
     # ceiling, not a floor.
     curiosity_seed_interval_seconds: int = 3600
+    # K11: pre-thought / counterfactual worker cadence. A tick is one
+    # question-generation LLM call plus up to ``pre_thought_max_per_run``
+    # in-persona draft calls, so an hour between successful runs is
+    # plenty; the worker also ``is_ready=False``s when the pre-thought
+    # store is at ``pre_thought_max_active``, making the cadence a
+    # ceiling not a floor.
+    pre_thought_interval_seconds: int = 3600
+    # K21: fresh-eyes thread re-summary worker cadence. The is_ready
+    # gate already enforces the real triggers (message-interval / age),
+    # so this is just how often the idle scheduler bothers to check —
+    # hourly is plenty.
+    thread_resummary_interval_seconds: int = 3600
     # WorldNoticeWorker cadence + pacing. The worker checks for a freshly
     # user-given item (kv watermark) or a long-enough quiet stretch and
     # primes a single proactive "I noticed my room" nudge. Runs often
@@ -3785,6 +3849,46 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                     )),
                 ),
             ),
+            pre_thought_enabled=bool(
+                agent_raw.get("pre_thought_enabled", True),
+            ),
+            pre_thought_max_active=max(
+                1, int(agent_raw.get("pre_thought_max_active", 12)),
+            ),
+            pre_thought_candidates=max(
+                1, int(agent_raw.get("pre_thought_candidates", 4)),
+            ),
+            pre_thought_max_per_run=max(
+                1, int(agent_raw.get("pre_thought_max_per_run", 2)),
+            ),
+            pre_thought_min_novelty=max(
+                0.0,
+                min(1.0, float(agent_raw.get("pre_thought_min_novelty", 0.85))),
+            ),
+            pre_thought_per_hour_cap=max(
+                0, int(agent_raw.get("pre_thought_per_hour_cap", 6)),
+            ),
+            pre_thought_per_day_cap=max(
+                0, int(agent_raw.get("pre_thought_per_day_cap", 40)),
+            ),
+            thread_resummary_enabled=bool(
+                agent_raw.get("thread_resummary_enabled", True),
+            ),
+            thread_resummary_min_messages=max(
+                1, int(agent_raw.get("thread_resummary_min_messages", 12)),
+            ),
+            thread_resummary_message_interval=max(
+                1, int(agent_raw.get("thread_resummary_message_interval", 50)),
+            ),
+            thread_resummary_max_age_hours=max(
+                0.0, float(agent_raw.get("thread_resummary_max_age_hours", 24.0)),
+            ),
+            thread_resummary_per_hour_cap=max(
+                0, int(agent_raw.get("thread_resummary_per_hour_cap", 6)),
+            ),
+            thread_resummary_per_day_cap=max(
+                0, int(agent_raw.get("thread_resummary_per_day_cap", 24)),
+            ),
             topic_graph_filter_threshold=max(
                 0.0,
                 min(
@@ -5097,6 +5201,14 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             curiosity_seed_interval_seconds=max(
                 60,
                 int(memory_raw.get("curiosity_seed_interval_seconds", 3600)),
+            ),
+            pre_thought_interval_seconds=max(
+                60,
+                int(memory_raw.get("pre_thought_interval_seconds", 3600)),
+            ),
+            thread_resummary_interval_seconds=max(
+                60,
+                int(memory_raw.get("thread_resummary_interval_seconds", 3600)),
             ),
             world_notice_interval_seconds=max(
                 30,

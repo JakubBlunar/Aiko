@@ -74,6 +74,32 @@ class WorldMixin:
             except Exception:
                 log.debug("world listener raised", exc_info=True)
 
+    # ── K21 fresh-eyes thread-note listeners ─────────────────────────
+
+    def add_thread_note_listener(
+        self, callback: Callable[[dict[str, Any]], None],
+    ) -> None:
+        """Register a ``callback(payload)`` invoked when the
+        ThreadResummaryWorker upserts a fresh-eyes note.
+
+        Payload carries ``{session_id, title, note, messages_at}``. The
+        WS hub translates it into a ``thread_note_updated`` event so the
+        sidebar can refetch its session list and pick up the new title.
+        """
+        bucket = getattr(self, "_thread_note_listeners", None)
+        if bucket is None:
+            self._thread_note_listeners = []
+            bucket = self._thread_note_listeners
+        if callback and callback not in bucket:
+            bucket.append(callback)
+
+    def _notify_thread_note(self, payload: dict[str, Any]) -> None:
+        for listener in list(getattr(self, "_thread_note_listeners", []) or []):
+            try:
+                listener(payload)
+            except Exception:
+                log.debug("thread-note listener raised", exc_info=True)
+
     # ── Shared moments + axes listeners (schema v7) ──────────────────
 
     def add_shared_moment_listener(

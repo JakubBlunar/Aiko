@@ -385,6 +385,12 @@ export function useAssistantSocket(): {
         store.applyWorldPatch(evt.patch);
         break;
 
+      case "thread_note_updated":
+        // K21: a fresh-eyes note was upserted; nudge the sidebar to
+        // refetch its session list so the new title shows up.
+        store.bumpSessionListSignal();
+        break;
+
       case "shared_moment_updated": {
         // Patch is exactly one of {moment} (create/update) or
         // {deleted_moment_id} (delete). Both keep the Together tab
