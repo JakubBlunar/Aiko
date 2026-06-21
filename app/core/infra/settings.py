@@ -1191,6 +1191,34 @@ class AgentSettings:
     style_tracker_length_avg_threshold: float = 50.0
     style_tracker_cue_cooldown_turns: int = 5
 
+    # ── K47: question/share balance (stop interviewing) ───────────────
+    # Proactive complement to the reactive style-tracker question
+    # saturation cue. A rolling per-session ratio of Aiko's replies that
+    # contain a question; once it exceeds ``ratio_threshold`` over a full
+    # ``window``, the question-pushing inner-life providers
+    # (curiosity_seeds / forward_curiosity / follow_up / knowledge_gaps +
+    # the narrative open_question nudge) are suppressed for the next
+    # ``suppress_turns`` turns and a share-first cue is injected BEFORE
+    # the LLM call. See
+    # [`app/core/conversation/question_balance.py`](../conversation/question_balance.py).
+    question_balance_enabled: bool = True
+    question_balance_ratio_threshold: float = 0.55
+    question_balance_window: int = 10
+    question_balance_suppress_turns: int = 2
+
+    # ── K48: tease rhythm (banter as a budget) ────────────────────────
+    # Classify tease-shaped assistant turns over a rolling window, read
+    # whether the previous tease landed (K32 laugh reaction vs. a
+    # short/curt reply), and surface an "ease off" or "one more step is
+    # safe" cue. Escalation is gated by the ``humor`` relationship axis
+    # so early-relationship Aiko stays gentle. See
+    # [`app/core/conversation/tease_rhythm.py`](../conversation/tease_rhythm.py).
+    tease_rhythm_enabled: bool = True
+    tease_rhythm_window: int = 6
+    tease_rhythm_consecutive_cap: int = 3
+    tease_rhythm_green_light_humor: float = 0.2
+    tease_rhythm_cooldown_turns: int = 3
+
     # ── K13: stylometric mirror (Jacob-side stylometry) ───────────────
     # Tracks Jacob's writing style across recent user turns and emits
     # a one-line "How Jacob writes lately: terse, casual, asks back
@@ -4198,6 +4226,45 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                 int(
                     agent_raw.get("style_tracker_cue_cooldown_turns", 5)
                 ),
+            ),
+            question_balance_enabled=bool(
+                agent_raw.get("question_balance_enabled", True),
+            ),
+            question_balance_ratio_threshold=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        agent_raw.get("question_balance_ratio_threshold", 0.55)
+                    ),
+                ),
+            ),
+            question_balance_window=max(
+                2, int(agent_raw.get("question_balance_window", 10)),
+            ),
+            question_balance_suppress_turns=max(
+                0, int(agent_raw.get("question_balance_suppress_turns", 2)),
+            ),
+            tease_rhythm_enabled=bool(
+                agent_raw.get("tease_rhythm_enabled", True),
+            ),
+            tease_rhythm_window=max(
+                2, int(agent_raw.get("tease_rhythm_window", 6)),
+            ),
+            tease_rhythm_consecutive_cap=max(
+                1, int(agent_raw.get("tease_rhythm_consecutive_cap", 3)),
+            ),
+            tease_rhythm_green_light_humor=max(
+                -1.0,
+                min(
+                    1.0,
+                    float(
+                        agent_raw.get("tease_rhythm_green_light_humor", 0.2)
+                    ),
+                ),
+            ),
+            tease_rhythm_cooldown_turns=max(
+                0, int(agent_raw.get("tease_rhythm_cooldown_turns", 3)),
             ),
             style_signal_enabled=bool(
                 agent_raw.get("style_signal_enabled", True),

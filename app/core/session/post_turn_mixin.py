@@ -1046,6 +1046,131 @@ class PostTurnMixin:
             log.debug("contagion estimate_user_affect failed", exc_info=True)
             return None
 
+    def _update_question_balance(self, assistant_text: str) -> None:
+        """K47: roll the question-turn ring and arm/decay the suppress gate.
+
+        Order matters: append the new flag, consume one suppressed turn
+        for the turn that just completed, THEN re-arm from the fresh
+        ratio. Re-arming while the ratio stays high keeps the gate up
+        until Aiko's mix of questions vs. shares actually rebalances; a
+        gentle tail of up-to ``suppress_turns`` lets it release.
+        """
+        from app.core.conversation.question_balance import (
+            is_question_turn,
+            should_suppress,
+        )
+
+        agent = self._settings.agent
+        ring = getattr(self, "_question_turn_flags", None)
+        if ring is None:
+            return
+        ring.append(is_question_turn(assistant_text))
+
+        remaining = int(getattr(self, "_question_balance_suppress_remaining", 0))
+        if remaining > 0:
+            remaining -= 1
+
+        threshold = float(
+            getattr(agent, "question_balance_ratio_threshold", 0.55)
+        )
+        window = max(2, int(getattr(agent, "question_balance_window", 10)))
+        min_samples = max(4, window // 2)
+        suppress_turns = max(
+            0, int(getattr(agent, "question_balance_suppress_turns", 2))
+        )
+        if suppress_turns > 0 and should_suppress(
+            ring, threshold=threshold, min_samples=min_samples,
+        ):
+            remaining = suppress_turns
+
+        self._question_balance_suppress_remaining = remaining
+
+    def _update_tease_rhythm(
+        self,
+        *,
+        user_text: str | None,
+        assistant_text: str,
+        reaction: str | None,
+        assistant_message_id: int | None,
+    ) -> None:
+        """K48: evaluate the prior tease's landing, classify the current
+        reply, and arm an ease-off / green-light cue.
+
+        Order: (1) read the verdict on the most recent tease using this
+        turn's ``user_text`` + that message's persisted K32 reactions;
+        (2) classify the current reply and roll the ring + remember its
+        id if it was a tease; (3) decide + arm a one-shot cue (cooldown-
+        gated). The cue surfaces on the *next* turn's prompt.
+        """
+        from app.core.conversation.tease_rhythm import (
+            classify_tease,
+            decide_cue,
+            landed_verdict,
+            trailing_tease_streak,
+        )
+
+        agent = self._settings.agent
+        ring = getattr(self, "_tease_flags", None)
+        if ring is None:
+            return
+
+        # (1) Verdict on the previous tease.
+        prev_id = getattr(self, "_last_tease_message_id", None)
+        verdict: bool | None = None
+        if prev_id is not None:
+            laughed = False
+            try:
+                reactions = self._load_message_reactions(int(prev_id))
+                laughed = int((reactions or {}).get("laugh", 0)) > 0
+            except Exception:
+                log.debug("tease-rhythm reaction read failed", exc_info=True)
+            verdict = landed_verdict(laughed=laughed, user_reply=user_text)
+
+        # (2) Classify the current reply; roll the ring; track its id.
+        is_tease = classify_tease(assistant_text, reaction)
+        ring.append(is_tease)
+        self._last_tease_message_id = (
+            int(assistant_message_id)
+            if (is_tease and assistant_message_id is not None)
+            else None
+        )
+
+        # (3) Decide + arm (cooldown-gated).
+        cooldown = int(getattr(self, "_tease_cue_cooldown", 0))
+        if cooldown > 0:
+            cooldown -= 1
+
+        humor = 0.0
+        try:
+            store = getattr(self, "_relationship_axes_store", None)
+            if store is not None:
+                humor = float(store.get(self._user_id).humor)
+        except Exception:
+            log.debug("tease-rhythm humor read failed", exc_info=True)
+
+        cue = decide_cue(
+            last_landed=verdict,
+            tease_streak=trailing_tease_streak(ring),
+            humor=humor,
+            consecutive_cap=max(
+                1, int(getattr(agent, "tease_rhythm_consecutive_cap", 3))
+            ),
+            green_light_humor=float(
+                getattr(agent, "tease_rhythm_green_light_humor", 0.2)
+            ),
+        )
+        if cue is not None and cooldown == 0:
+            self._pending_tease_cue = cue
+            cooldown = max(
+                0, int(getattr(agent, "tease_rhythm_cooldown_turns", 3))
+            )
+            log.info(
+                "tease-rhythm cue armed: cue=%s last_landed=%s streak=%d "
+                "humor=%.3f",
+                cue, verdict, trailing_tease_streak(ring), humor,
+            )
+        self._tease_cue_cooldown = cooldown
+
     def _post_turn_inner_life(
         self,
         *,
@@ -1601,6 +1726,34 @@ class PostTurnMixin:
                     "style signal record_user_turn failed",
                     exc_info=True,
                 )
+
+        # K47 — question/share balance. Append a "did this reply contain
+        # a question" flag, consume one suppressed turn for the turn that
+        # just completed, then re-arm the suppress countdown when the
+        # rolling ratio is over threshold. Provider-time guards read the
+        # countdown to mute the question-pushing cues + surface the
+        # share-first cue.
+        if bool(getattr(self._settings.agent, "question_balance_enabled", True)) \
+                and assistant_text:
+            try:
+                self._update_question_balance(assistant_text)
+            except Exception:
+                log.debug("question-balance update failed", exc_info=True)
+
+        # K48 — tease rhythm. Evaluate whether the previous tease landed
+        # (using this turn's user_text + the prior tease's K32
+        # reactions), classify whether THIS reply was a tease, and arm
+        # an ease-off / green-light cue for the next turn.
+        if bool(getattr(self._settings.agent, "tease_rhythm_enabled", True)):
+            try:
+                self._update_tease_rhythm(
+                    user_text=user_text,
+                    assistant_text=assistant_text,
+                    reaction=reaction,
+                    assistant_message_id=assistant_message_id,
+                )
+            except Exception:
+                log.debug("tease-rhythm update failed", exc_info=True)
 
         # Phase 2c: schedule a reflection during TTS playback.
         worker = getattr(self, "_reflection_worker", None)

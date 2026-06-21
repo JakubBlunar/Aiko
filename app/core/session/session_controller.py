@@ -1570,6 +1570,8 @@ class SessionController(
             novelty=self._render_novelty_block,
             stagnation=self._render_stagnation_block,
             style_pattern=self._render_style_pattern_block,
+            question_balance=self._render_question_balance_block,
+            tease_rhythm=self._render_tease_rhythm_block,
             style_signal=self._render_style_signal_block,
             self_noticing=self._render_self_noticing_block,
             curiosity_seeds=self._render_curiosity_seeds_block,
@@ -3021,6 +3023,33 @@ class SessionController(
         self._self_noticing_force_agreement: bool = False
         self._self_noticing_force_flat_affect: bool = False
         self._self_noticing_force_repeated_thought: bool = False
+
+        # K47 — question/share balance. Rolling ring of "did this reply
+        # contain a question" flags + a suppress countdown. The post-turn
+        # hook appends + arms; the provider-time guards read
+        # ``_question_balance_suppress_remaining`` to mute the
+        # question-pushing cues and surface a share-first cue instead.
+        question_balance_window = max(
+            2, int(getattr(settings.agent, "question_balance_window", 10))
+        )
+        self._question_turn_flags: deque[bool] = deque(
+            maxlen=question_balance_window
+        )
+        self._question_balance_suppress_remaining: int = 0
+
+        # K48 — tease rhythm (banter budget). Rolling ring of "was this
+        # reply a tease" flags + the id of the most recent tease so the
+        # post-turn hook can read its K32 reactions next turn. The
+        # verdict lands in ``_pending_tease_cue`` (one-shot, consumed by
+        # the provider); ``_tease_cue_cooldown`` rate-limits firing.
+        tease_rhythm_window = max(
+            2, int(getattr(settings.agent, "tease_rhythm_window", 6))
+        )
+        self._tease_flags: deque[bool] = deque(maxlen=tease_rhythm_window)
+        self._last_tease_message_id: int | None = None
+        self._pending_tease_cue: str | None = None
+        self._tease_cue_cooldown: int = 0
+        self._tease_rhythm_force: str | None = None
         self._self_noticing_agreement_cooldown: int = 0
         self._self_noticing_flat_affect_cooldown: int = 0
         self._repeated_thought_fired_last_turn: bool = False

@@ -1578,6 +1578,146 @@ class SelfNoticingProviderSlotTests(unittest.TestCase):
             self.assertNotIn("Heads-up", messages[0]["content"])
 
 
+class QuestionBalanceProviderSlotTests(unittest.TestCase):
+    """K47 question/share share-first cue lands right after the
+    style_pattern block (same anti-rut family), is dropped under
+    ``aggressive=True``, and swallows provider exceptions."""
+
+    def test_question_balance_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="qb1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                question_balance=lambda: "Heads-up: share first this turn.",
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "qb1", "x", context_window=4096, response_budget=256,
+            )
+            self.assertIn("share first this turn", messages[0]["content"])
+
+    def test_question_balance_lands_after_style_pattern(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="qb2", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                style_pattern=lambda: "Heads-up: opener rut",
+                question_balance=lambda: "Heads-up: share first",
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "qb2", "x", context_window=4096, response_budget=256,
+            )
+            content = messages[0]["content"]
+            self.assertLess(
+                content.index("opener rut"),
+                content.index("share first"),
+            )
+
+    def test_question_balance_dropped_under_aggressive(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="qb3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                question_balance=lambda: "Heads-up: share first.",
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "qb3", "x", context_window=4096, response_budget=256,
+                aggressive=True,
+            )
+            self.assertNotIn("Heads-up", messages[0]["content"])
+
+    def test_question_balance_provider_exception_swallowed(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="qb4", role="user", content="hi", token_count=2,
+            )
+
+            def _boom() -> str:
+                raise RuntimeError("question-balance exploded")
+
+            assembler.set_inner_life_providers(question_balance=_boom)
+            messages, _ = assembler.assemble_with_budget(
+                "qb4", "x", context_window=4096, response_budget=256,
+            )
+            self.assertNotIn("Heads-up", messages[0]["content"])
+
+
+class TeaseRhythmProviderSlotTests(unittest.TestCase):
+    """K48 tease-rhythm cue lands right after the question_balance block
+    (same noticing-cue family), is dropped under ``aggressive=True``, and
+    swallows provider exceptions."""
+
+    def test_tease_rhythm_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="tr1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                tease_rhythm=lambda: "Heads-up: that last tease landed.",
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "tr1", "x", context_window=4096, response_budget=256,
+            )
+            self.assertIn("last tease landed", messages[0]["content"])
+
+    def test_tease_rhythm_lands_after_question_balance(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="tr2", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                question_balance=lambda: "Heads-up: share first",
+                tease_rhythm=lambda: "Heads-up: ease off the banter",
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "tr2", "x", context_window=4096, response_budget=256,
+            )
+            content = messages[0]["content"]
+            self.assertLess(
+                content.index("share first"),
+                content.index("ease off the banter"),
+            )
+
+    def test_tease_rhythm_dropped_under_aggressive(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="tr3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                tease_rhythm=lambda: "Heads-up: ease off.",
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "tr3", "x", context_window=4096, response_budget=256,
+                aggressive=True,
+            )
+            self.assertNotIn("Heads-up", messages[0]["content"])
+
+    def test_tease_rhythm_provider_exception_swallowed(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="tr4", role="user", content="hi", token_count=2,
+            )
+
+            def _boom() -> str:
+                raise RuntimeError("tease-rhythm exploded")
+
+            assembler.set_inner_life_providers(tease_rhythm=_boom)
+            messages, _ = assembler.assemble_with_budget(
+                "tr4", "x", context_window=4096, response_budget=256,
+            )
+            self.assertNotIn("Heads-up", messages[0]["content"])
+
+
 class MoodInertiaProviderSlotTests(unittest.TestCase):
     """K45 mood-inertia provider lands in the T5 cluster directly
     after the mood carryover hint (both are reaction-shaping beats),

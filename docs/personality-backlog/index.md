@@ -97,8 +97,8 @@ K39 energy / spoons model · K40 comfortable silence ·
 K41 mid-stream self-correction ·
 K42 multi-bubble reply bursts (texting rhythm) ·
 K46 stance persistence (don't cave on taste pushback) ·
-K47 question/share balance (stop interviewing) ·
-K48 tease rhythm budget ·
+K47 question/share balance (stop interviewing) (SHIPPED) ·
+K48 tease rhythm budget (SHIPPED) ·
 K49 messiness permission (typed imperfection) ·
 K50 typed-mode delivery pacing.
 
