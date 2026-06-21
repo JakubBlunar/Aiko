@@ -176,6 +176,109 @@ def _user_hint_delta(user_text: str) -> tuple[float, float]:
     return (val, aro)
 
 
+# ── K37: emotional contagion ─────────────────────────────────────────────
+
+# Absolute (valence_contribution, arousal_contribution) that each readable
+# user-mood band implies, layered on top of the neutral baseline
+# (val 0.0, aro 0.4). Only "low" / "high" count as a real read — "neutral"
+# / "unknown" leave no pull (so contagion stays silent when we can't tell).
+_USER_MOOD_AFFECT: dict[str, tuple[float, float]] = {
+    "low": (-0.40, -0.05),
+    "high": (0.40, 0.20),
+}
+# Perceived-energy band -> arousal contribution.
+_USER_ENERGY_AROUSAL: dict[str, float] = {
+    "low": -0.15,
+    "high": 0.15,
+}
+# Dialogue-act sentiment -> valence contribution. ``vent`` is the strongest
+# negative-emotion signal; ``banter`` reads as mildly upbeat.
+_USER_DACT_VALENCE: dict[str, float] = {
+    "vent": -0.30,
+    "banter": 0.20,
+}
+# How much of a confident vocal-tone arousal_hint (already ±0.10) folds into
+# the user-affect arousal estimate.
+_CONTAGION_TONE_WEIGHT = 1.0
+
+
+def estimate_user_affect(
+    *,
+    mood: str | None = None,
+    energy: str | None = None,
+    dialogue_act: str | None = None,
+    tone: "VocalTone | None" = None,
+) -> tuple[float, float] | None:
+    """Estimate the user's current ``(valence, arousal)`` from cheap signals.
+
+    Combines the perceived-mood / perceived-energy bands (from
+    :class:`app.core.affect.user_state.UserStateEstimator`), dialogue-act
+    sentiment (``vent`` / ``banter``), and a confident vocal-tone
+    arousal hint into an absolute affect point on the same scale Aiko
+    uses (valence ``[-1, 1]``, arousal ``[0, 1]``).
+
+    Returns ``None`` when no signal is readable (mood/energy unknown, no
+    sentiment-bearing dialogue act, no confident tone) so the K37
+    contagion pass can stay silent rather than pulling toward neutral.
+    """
+    val_contrib = 0.0
+    aro_contrib = 0.0
+    seen = False
+
+    mood_key = (mood or "").strip().lower()
+    if mood_key in _USER_MOOD_AFFECT:
+        mv, ma = _USER_MOOD_AFFECT[mood_key]
+        val_contrib += mv
+        aro_contrib += ma
+        seen = True
+
+    energy_key = (energy or "").strip().lower()
+    if energy_key in _USER_ENERGY_AROUSAL:
+        aro_contrib += _USER_ENERGY_AROUSAL[energy_key]
+        seen = True
+
+    dact_key = (dialogue_act or "").strip().lower()
+    if dact_key in _USER_DACT_VALENCE:
+        val_contrib += _USER_DACT_VALENCE[dact_key]
+        seen = True
+
+    if tone is not None and getattr(tone, "confident", False):
+        hint = float(getattr(tone, "arousal_hint", 0.0))
+        if hint:
+            aro_contrib += hint * _CONTAGION_TONE_WEIGHT
+            seen = True
+
+    if not seen:
+        return None
+
+    user_val = max(-1.0, min(1.0, 0.0 + val_contrib))
+    user_aro = max(0.0, min(1.0, 0.4 + aro_contrib))
+    return (user_val, user_aro)
+
+
+def _apply_user_contagion(
+    valence: float,
+    arousal: float,
+    user_affect: tuple[float, float],
+    *,
+    strength: float,
+    cap: float,
+) -> tuple[float, float]:
+    """Tilt ``(valence, arousal)`` a small, capped amount toward the user.
+
+    Moves a ``strength`` fraction of the gap to ``user_affect`` each
+    call, with the per-axis step clamped to ``±cap`` so a big mismatch
+    can only ever pull Aiko ``cap`` per turn. Result is re-clamped to the
+    valid affect ranges.
+    """
+    uv, ua = user_affect
+    dv = max(-cap, min(cap, strength * (uv - valence)))
+    da = max(-cap, min(cap, strength * (ua - arousal)))
+    new_val = max(-1.0, min(1.0, valence + dv))
+    new_aro = max(0.0, min(1.0, arousal + da))
+    return (new_val, new_aro)
+
+
 # ── store ───────────────────────────────────────────────────────────────
 
 
@@ -281,6 +384,9 @@ class AffectUpdater:
         reaction: str | None,
         user_text: str | None,
         user_tone: "VocalTone | None" = None,
+        user_affect: tuple[float, float] | None = None,
+        contagion_strength: float = 0.0,
+        contagion_max_per_turn: float = 0.05,
     ) -> AffectState:
         """Apply one turn's worth of evidence and persist the result.
 
@@ -289,6 +395,13 @@ class AffectUpdater:
         ``arousal_hint`` (already capped at ±0.10) nudges Aiko's arousal
         target on top of the reaction-based impulse — the "she catches
         on when you sound tired or excited" signal.
+
+        K37 emotional contagion: when ``user_affect`` (an estimated
+        ``(valence, arousal)`` for the user, e.g. from
+        :func:`estimate_user_affect`) is supplied and
+        ``contagion_strength > 0``, Aiko's post-blend affect is tilted a
+        small, capped amount toward it — the residual "I'm picking up on
+        him" pull, separate from her own ``[[reaction:...]]`` math.
         """
         state = self._store.get(user_id)
         # 1) decay toward baseline based on elapsed time.
@@ -330,6 +443,24 @@ class AffectUpdater:
         new_valence = max(-1.0, min(1.0, new_valence))
         new_arousal = max(0.0, min(1.0, new_arousal))
 
+        # 3b) K37 emotional contagion: tilt toward the user's estimated
+        # affect by a small, capped amount. Distinct from the reaction
+        # impulse so the strength/cap knobs don't entangle with the
+        # ``[[reaction:...]]`` math above.
+        contagion_dv = 0.0
+        contagion_da = 0.0
+        if user_affect is not None and contagion_strength > 0.0:
+            before_val, before_aro = new_valence, new_arousal
+            new_valence, new_arousal = _apply_user_contagion(
+                new_valence,
+                new_arousal,
+                user_affect,
+                strength=contagion_strength,
+                cap=contagion_max_per_turn,
+            )
+            contagion_dv = new_valence - before_val
+            contagion_da = new_arousal - before_aro
+
         # 4) trend EWMAs (compare against baseline, not previous value).
         val_delta = new_valence - state.baseline_valence
         aro_delta = new_arousal - state.baseline_arousal
@@ -355,11 +486,14 @@ class AffectUpdater:
 
         self._store.save(state)
         log.debug(
-            "affect: rxn=%s val=%.2f aro=%.2f mood=%s int=%.2f tv=%.2f ta=%.2f",
+            "affect: rxn=%s val=%.2f aro=%.2f mood=%s int=%.2f tv=%.2f ta=%.2f "
+            "contagion_dv=%.3f contagion_da=%.3f user_affect=%s",
             rxn,
             state.valence, state.arousal,
             state.mood_label, state.mood_intensity,
             state.valence_trend_24h, state.arousal_trend_24h,
+            contagion_dv, contagion_da,
+            user_affect,
         )
         return state
 

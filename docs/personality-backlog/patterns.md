@@ -392,16 +392,44 @@ the voice toggle in `ChatView.tsx`.
 
 ## K37. Emotional contagion — Jacob's affect tilts Aiko's affect
 
-Today `AffectUpdater` only reacts to Aiko's own emitted
-`[[reaction:...]]`. When Jacob's affect swings strongly (from K14
-implicit-engagement signals, the vocal-tone block, or dialogue-act
-sentiment), Aiko's affect should tilt a small amount toward his
-(~0.05/turn, capped). The residual reads as "I'm picking up on him"
-without explicit narration. Persona block teaches her to register
-without performing it. Key files:
-[`app/core/affect/affect_updater.py`](../../app/core/affect/affect_updater.py)
-(new `_apply_user_contagion` pass), settings knob
-(`agent.contagion_strength`, `_max_per_turn`), persona addendum.
+**SHIPPED.** Previously `AffectUpdater.apply_turn` only moved Aiko's
+affect toward a target built from her own `[[reaction:...]]` (plus a
+tiny user-keyword hint and a confident vocal-tone arousal nudge). K37
+adds a distinct contagion pass: each turn, the post-turn hook estimates
+Jacob's current `(valence, arousal)` and Aiko's affect is tilted a
+small, capped amount toward it — the residual "I'm picking up on him"
+pull.
+
+The estimate is a pure function
+[`estimate_user_affect`](../../app/core/affect/affect_state.py) fed by
+cheap per-turn signals: perceived **mood** + **energy** bands (from
+`UserStateEstimator`, low → negative/lower-arousal, high →
+positive/higher-arousal), **dialogue-act** sentiment (`vent` → negative
+pull, `banter` → mild positive pull), and a confident **vocal-tone**
+`arousal_hint`. It returns `None` when nothing is readable
+(mood/energy unknown, no sentiment-bearing act, no confident tone), so
+contagion stays silent rather than dragging toward neutral.
+
+[`_apply_user_contagion`](../../app/core/affect/affect_state.py) runs
+*after* the reaction blend+clamp inside `apply_turn`: it closes a
+`contagion_strength` (0.15) fraction of the per-axis gap, clamped to
+`±contagion_max_per_turn` (0.05) so a big mismatch can only ever pull
+her 0.05/turn, then re-clamps to the valid ranges. The reaction math is
+untouched (the strength/cap knobs don't entangle with it). Wired in
+[`PostTurnMixin._post_turn_inner_life`](../../app/core/session/post_turn_mixin.py)
+via `_estimate_user_affect_for_contagion`, which only fires the next
+turn's felt-affect read — no per-turn LLM cost.
+
+Settings: `agent.contagion_enabled` / `contagion_strength` /
+`contagion_max_per_turn`. Persona: a new bullet under "Reading
+{user_name}:" in [`aiko_companion.txt`](../../data/persona/aiko_companion.txt)
+("you catch their mood a little … never announce it"). MCP:
+`get_contagion_state(user_text)` previews the detected bands + the
+capped `(dv, da)` Aiko would move. Logs: the per-turn
+`affect:` DEBUG line now carries `contagion_dv` / `contagion_da` /
+`user_affect`. Tests: `EstimateUserAffectTests` + `ContagionTests` in
+`tests/test_affect_state.py`, `ContagionSettingsTests` in
+`tests/test_settings.py`.
 
 ---
 

@@ -1287,6 +1287,19 @@ class AgentSettings:
     rupture_repair_enabled: bool = True
     rupture_valence_drop_threshold: float = 0.12
 
+    # ── K37: emotional contagion ──────────────────────────────────────
+    # Aiko's affect tilts a small, capped amount toward the user's
+    # estimated affect each turn (separate from how it reacts to her own
+    # ``[[reaction:...]]``). ``contagion_strength`` is the fraction of
+    # the valence/arousal gap closed per turn; ``contagion_max_per_turn``
+    # is the hard per-axis ceiling on that move, so a big mismatch can
+    # only ever pull her this far in one turn. See
+    # [`app/core/affect/affect_state.py`](affect_state.py)
+    # (``estimate_user_affect`` + ``_apply_user_contagion``).
+    contagion_enabled: bool = True
+    contagion_strength: float = 0.15
+    contagion_max_per_turn: float = 0.05
+
     # ── K45: mood inertia (instant face, lagging heart) ───────────────
     # Master switch for the one-shot "your face jumped to X but
     # underneath you're still Y — let the words catch up" cue armed
@@ -4327,6 +4340,17 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                         )
                     ),
                 ),
+            ),
+            contagion_enabled=bool(
+                agent_raw.get("contagion_enabled", True),
+            ),
+            contagion_strength=max(
+                0.0,
+                min(1.0, float(agent_raw.get("contagion_strength", 0.15))),
+            ),
+            contagion_max_per_turn=max(
+                0.0,
+                min(0.5, float(agent_raw.get("contagion_max_per_turn", 0.05))),
             ),
             misattunement_detection_enabled=bool(
                 agent_raw.get("misattunement_detection_enabled", True),

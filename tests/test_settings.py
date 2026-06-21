@@ -256,6 +256,63 @@ class PreThoughtSettingsTests(unittest.TestCase):
         self.assertEqual(result.memory.pre_thought_interval_seconds, 60)
 
 
+class ContagionSettingsTests(unittest.TestCase):
+    """K37: emotional contagion agent knobs default / round-trip / clamp."""
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(self, agent_extra: dict | None = None) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(json.loads(default_path.read_text(encoding="utf-8")))
+        for k in (
+            "contagion_enabled",
+            "contagion_strength",
+            "contagion_max_per_turn",
+        ):
+            cfg.get("agent", {}).pop(k, None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults(self) -> None:
+        a = load_settings(config_path=self._write_config()).agent
+        self.assertTrue(a.contagion_enabled)
+        self.assertAlmostEqual(a.contagion_strength, 0.15)
+        self.assertAlmostEqual(a.contagion_max_per_turn, 0.05)
+
+    def test_overrides_round_trip(self) -> None:
+        path = self._write_config(agent_extra={
+            "contagion_enabled": False,
+            "contagion_strength": 0.3,
+            "contagion_max_per_turn": 0.1,
+        })
+        a = load_settings(config_path=path).agent
+        self.assertFalse(a.contagion_enabled)
+        self.assertAlmostEqual(a.contagion_strength, 0.3)
+        self.assertAlmostEqual(a.contagion_max_per_turn, 0.1)
+
+    def test_clamps(self) -> None:
+        path = self._write_config(agent_extra={
+            "contagion_strength": 99.0,
+            "contagion_max_per_turn": 99.0,
+        })
+        a = load_settings(config_path=path).agent
+        self.assertAlmostEqual(a.contagion_strength, 1.0)
+        self.assertAlmostEqual(a.contagion_max_per_turn, 0.5)
+
+
 class ThreadResummarySettingsTests(unittest.TestCase):
     """K21: thread re-summary agent + memory knobs default / round-trip / clamp."""
 
