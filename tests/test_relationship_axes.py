@@ -8,11 +8,19 @@ from pathlib import Path
 
 from app.core.infra.chat_database import ChatDatabase
 from app.core.relationship.relationship_axes import (
+    STAGE_CLOSE,
+    STAGE_FAMILIAR,
+    STAGE_INTIMATE,
+    STAGE_NEW,
     RelationshipAxesState,
     RelationshipAxesStore,
     RelationshipAxesUpdater,
     apply_decay,
+    relationship_bond,
+    relationship_stage,
     render_axes_block,
+    stage_rank,
+    stage_register_hint,
 )
 
 
@@ -231,6 +239,97 @@ class TestRendering(unittest.TestCase):
         self.assertTrue(block)
         # comfort/trust shouldn't both appear when closeness+humor dominate.
         self.assertEqual(block.count("—"), 1)
+
+
+class TestRelationshipStage(unittest.TestCase):
+    """J4 — bond stage derived from axes + tenure with hysteresis."""
+
+    def _state(self, **axes) -> RelationshipAxesState:
+        return RelationshipAxesState(user_id="jacob", **axes)
+
+    def test_bond_excludes_humor(self) -> None:
+        # Humor maxed but depth axes zero -> bond stays ~0.
+        bond = relationship_bond(self._state(humor=1.0))
+        self.assertAlmostEqual(bond, 0.0, places=6)
+
+    def test_bond_is_weighted_blend(self) -> None:
+        bond = relationship_bond(
+            self._state(closeness=1.0, trust=1.0, comfort=1.0)
+        )
+        self.assertAlmostEqual(bond, 1.0, places=6)
+
+    def test_stage_rank_known_and_unknown(self) -> None:
+        self.assertEqual(stage_rank(STAGE_NEW), 0)
+        self.assertEqual(stage_rank(STAGE_INTIMATE), 3)
+        self.assertEqual(stage_rank(None), 0)
+        self.assertEqual(stage_rank("nonsense"), 0)
+
+    def test_new_user_neutral_axes_is_new(self) -> None:
+        stage = relationship_stage(self._state(), tenure_days=0.0)
+        self.assertEqual(stage, STAGE_NEW)
+
+    def test_cannot_be_intimate_on_day_one(self) -> None:
+        # Max axes but zero tenure -> ceiling pins to familiar.
+        stage = relationship_stage(
+            self._state(closeness=1.0, trust=1.0, comfort=1.0),
+            tenure_days=0.0,
+        )
+        self.assertEqual(stage, STAGE_FAMILIAR)
+
+    def test_high_bond_long_tenure_is_intimate(self) -> None:
+        stage = relationship_stage(
+            self._state(closeness=0.8, trust=0.8, comfort=0.7),
+            tenure_days=60.0,
+        )
+        self.assertEqual(stage, STAGE_INTIMATE)
+
+    def test_mid_bond_resolves_close(self) -> None:
+        stage = relationship_stage(
+            self._state(closeness=0.45, trust=0.45, comfort=0.4),
+            tenure_days=30.0,
+        )
+        self.assertEqual(stage, STAGE_CLOSE)
+
+    def test_tenure_floor_lifts_cold_long_relationship(self) -> None:
+        # Neutral axes but 20 days known -> at least familiar.
+        stage = relationship_stage(self._state(), tenure_days=20.0)
+        self.assertEqual(stage, STAGE_FAMILIAR)
+
+    def test_ceiling_caps_below_one_week(self) -> None:
+        # Strong bond but only 5 days -> capped at close (not intimate).
+        stage = relationship_stage(
+            self._state(closeness=0.9, trust=0.9, comfort=0.9),
+            tenure_days=5.0,
+        )
+        self.assertEqual(stage, STAGE_CLOSE)
+
+    def test_hysteresis_prevents_flap_at_boundary(self) -> None:
+        # Bond sits just below the close threshold (0.35). With current
+        # stage already CLOSE it stays close (sticky); with current NEW it
+        # does not promote to close.
+        state = self._state(closeness=0.34, trust=0.34, comfort=0.34)
+        sticky = relationship_stage(
+            state, tenure_days=30.0, current_stage=STAGE_CLOSE
+        )
+        cold = relationship_stage(
+            state, tenure_days=30.0, current_stage=STAGE_NEW
+        )
+        self.assertEqual(sticky, STAGE_CLOSE)
+        self.assertEqual(cold, STAGE_FAMILIAR)
+
+    def test_register_hint_silent_for_shallow_stages(self) -> None:
+        self.assertEqual(stage_register_hint(STAGE_NEW), "")
+        self.assertEqual(stage_register_hint(STAGE_FAMILIAR), "")
+
+    def test_register_hint_present_for_deep_stages(self) -> None:
+        close = stage_register_hint(STAGE_CLOSE, user_display_name="Jacob")
+        intimate = stage_register_hint(STAGE_INTIMATE, user_display_name="Jacob")
+        self.assertIn("Jacob", close)
+        self.assertIn("close", close.lower())
+        self.assertIn("Jacob", intimate)
+        # The hint never names the stage mechanically at the user.
+        self.assertNotIn("level", close.lower())
+        self.assertNotIn("stage", intimate.lower())
 
 
 if __name__ == "__main__":

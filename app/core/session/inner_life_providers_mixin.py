@@ -3905,23 +3905,97 @@ class InnerLifeProvidersMixin:
             return ""
 
     def _render_axes_block(self) -> str:
-        """Schema v7: terse relationship-axes line (only when notable)."""
+        """Schema v7: terse relationship-axes line (only when notable).
+
+        J4: also resolves the coarse *bond stage* (axes + tenure) and
+        appends a subtle register nudge for the deeper stages. The stage
+        is cached on ``self._last_relationship_stage`` so the hysteresis
+        band has a previous value to compare against, and is exposed for
+        the J8-J10 behaviour gates to read.
+        """
         if not bool(getattr(self._settings.agent, "relationship_axes_enabled", True)):
             return ""
         store = getattr(self, "_relationship_axes_store", None)
         if store is None:
             return ""
         try:
-            from app.core.relationship.relationship_axes import render_axes_block
+            from app.core.relationship.relationship_axes import (
+                relationship_stage,
+                render_axes_block,
+                stage_register_hint,
+            )
 
             state = store.get(self._user_id)
-            return render_axes_block(
+            line = render_axes_block(
                 state,
                 user_display_name=self.user_display_name,
             )
+
+            stage_hint = ""
+            try:
+                tenure_days = self._relationship_tenure_days()
+                stage = relationship_stage(
+                    state,
+                    tenure_days=tenure_days,
+                    current_stage=getattr(self, "_last_relationship_stage", None),
+                )
+                self._last_relationship_stage = stage
+                stage_hint = stage_register_hint(
+                    stage, user_display_name=self.user_display_name,
+                )
+            except Exception:
+                log.debug("relationship stage resolve failed", exc_info=True)
+
+            parts = [p for p in (line, stage_hint) if p]
+            return "\n".join(parts)
         except Exception:
             log.debug("axes block render failed", exc_info=True)
             return ""
+
+    def _relationship_tenure_days(self) -> float:
+        """Days since first contact (J4 tenure input); 0.0 when unknown."""
+        tracker = getattr(self, "_relationship_tracker", None)
+        if tracker is None:
+            return 0.0
+        try:
+            from datetime import datetime, timezone
+
+            from app.core.relationship.relationship import _days_since
+
+            rstate = tracker.get(self._user_id)
+            return float(_days_since(rstate, now=datetime.now(timezone.utc)))
+        except Exception:
+            log.debug("relationship tenure lookup failed", exc_info=True)
+            return 0.0
+
+    def relationship_stage_now(self) -> str:
+        """Public read of the current bond stage (J4) for behaviour gates.
+
+        Resolves fresh from the live axes + tenure, updating the cached
+        ``_last_relationship_stage`` so the hysteresis stays consistent
+        with whatever the prompt block last rendered. Returns ``"new"``
+        when axes are unavailable so callers always get a valid stage.
+        """
+        from app.core.relationship.relationship_axes import (
+            STAGE_NEW,
+            relationship_stage,
+        )
+
+        store = getattr(self, "_relationship_axes_store", None)
+        if store is None:
+            return STAGE_NEW
+        try:
+            state = store.get(self._user_id)
+            stage = relationship_stage(
+                state,
+                tenure_days=self._relationship_tenure_days(),
+                current_stage=getattr(self, "_last_relationship_stage", None),
+            )
+            self._last_relationship_stage = stage
+            return stage
+        except Exception:
+            log.debug("relationship_stage_now failed", exc_info=True)
+            return STAGE_NEW
 
     def _render_arc_block(self) -> str:
         """Phase 4c: ambient line about the current conversation arc."""

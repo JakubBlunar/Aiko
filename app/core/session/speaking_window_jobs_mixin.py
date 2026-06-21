@@ -28,6 +28,7 @@ The patch must target the module where the symbol is *looked up*.
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING, Any
 
 
@@ -200,6 +201,8 @@ class SpeakingWindowJobsMixin:
         assistant_text: str,
         raw_assistant_text: str,
         milestone: str | None,
+        gift_signal: bool = False,
+        promise_kept_signal: bool = False,
     ) -> None:
         """Schema v7: enqueue the LLM moment detector when signals warrant.
 
@@ -207,6 +210,11 @@ class SpeakingWindowJobsMixin:
         only spend cycles on candidate turns), and a cadence/cooldown
         check inside :class:`MomentDetector.should_run_llm`. Skipping
         either short-circuits the job.
+
+        ``gift_signal`` / ``promise_kept_signal`` are passed in by the
+        caller (snapshotted before the axes updater clears the per-turn
+        flags) rather than read off ``self`` here — the J7 fix, since the
+        instance flags are already cleared by the time this runs.
         """
         detector = getattr(self, "_moment_detector", None)
         if detector is None:
@@ -221,8 +229,8 @@ class SpeakingWindowJobsMixin:
         except Exception:
             reaction_signal = False
 
-        gift_signal = bool(self._last_turn_gift_received)
-        promise_kept_signal = bool(self._last_turn_promise_kept)
+        gift_signal = bool(gift_signal)
+        promise_kept_signal = bool(promise_kept_signal)
         milestone_signal = bool(milestone)
         now_monotonic = time.monotonic()
         try:

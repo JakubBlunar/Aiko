@@ -2348,6 +2348,16 @@ class PostTurnMixin:
             except Exception:
                 log.debug("engagement tracker raised", exc_info=True)
 
+        # Snapshot the per-turn gift / promise-kept flags ONCE, before any
+        # consumer clears them. Both the relationship-axes updater and the
+        # moment-detector scheduler read these signals; previously the axes
+        # block cleared them (relationship_axes_enabled defaults true) before
+        # the moment scheduler ran, so gift / promise-kept could never seed a
+        # shared moment (J7). Snapshot here, feed both consumers the locals,
+        # and reset the instance flags once after both have run.
+        gift_received_this_turn = bool(self._last_turn_gift_received)
+        promise_kept_this_turn = bool(self._last_turn_promise_kept)
+
         # Apply per-turn drift to the relationship axes. Cheap (no LLM).
         axes_updater = getattr(self, "_relationship_axes_updater", None)
         if (
@@ -2367,20 +2377,19 @@ class PostTurnMixin:
                     reaction_tags=reaction_tag_set,
                     moment_vibes=moment_vibes_this_turn,
                     milestone=milestone,
-                    gift_received=bool(self._last_turn_gift_received),
-                    promise_kept=bool(self._last_turn_promise_kept),
+                    gift_received=gift_received_this_turn,
+                    promise_kept=promise_kept_this_turn,
                     user_text=user_text,
                     engagement_delta=engagement_delta,
                 )
-                # Reset per-turn flags now that they've been consumed.
-                self._last_turn_gift_received = False
-                self._last_turn_promise_kept = False
                 self._maybe_notify_axes(axes_state)
             except Exception:
                 log.debug("relationship axes update failed", exc_info=True)
 
         # Schedule the LLM moment detector when a moment-worthy signal
         # fired AND cadence allows. Detector internally throttles further.
+        # Pass the gift / promise-kept snapshot explicitly so the scheduler
+        # never depends on the instance-flag clearing order (J7 fix).
         detector = getattr(self, "_moment_detector", None)
         if (
             detector is not None
@@ -2395,9 +2404,18 @@ class PostTurnMixin:
                     assistant_text=assistant_text,
                     raw_assistant_text=raw_assistant_text,
                     milestone=milestone,
+                    gift_signal=gift_received_this_turn,
+                    promise_kept_signal=promise_kept_this_turn,
                 )
             except Exception:
                 log.debug("moment detector schedule failed", exc_info=True)
+
+        # Per-turn gift / promise-kept flags have now been consumed by both
+        # the axes updater and the moment scheduler — reset unconditionally
+        # (even when relationship_axes_enabled is off) so they don't leak
+        # into the next turn.
+        self._last_turn_gift_received = False
+        self._last_turn_promise_kept = False
 
         # K15 — self-disclosure / vulnerability budget spend hook.
         # Delegates to :func:`vulnerability_budget.compute_spend_for_self_tags`
