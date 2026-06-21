@@ -3314,85 +3314,53 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
             return f"get_touch_state raised: {exc}"
 
     @mcp.tool()
-    def send_touch(kind: str) -> str:
-        """K31 — force-fire one ``[[touch:KIND]]`` (bypass gates).
+    def send_touch(kind: str, emoji: str = "", label: str = "") -> str:
+        """K31 / B7 — force-fire one ``[[touch:KIND]]`` gesture.
 
-        Skips the axes-floor + cooldown + daily-cap gates so the
-        gesture lands regardless of relationship state. Useful for
+        B7 removed all touch gating (axes / cooldown / daily-cap), so
+        every gesture lands regardless of relationship state. ``kind``
+        may be a curated built-in (``hug``, ``poke``, ...) OR an
+        invented open-vocabulary kind; for customs pass the optional
+        ``emoji`` / ``label`` to exercise the badge text. Useful for
         end-to-end debugging:
 
         1. ``send_touch("hug")`` → verify the chat bubble grows a
            "Aiko gave you a hug 🫂" badge AND the persona action
            banner appears in any open ``#/persona`` window AND the
            Live2D rig leans in.
-        2. ``add_user_reaction(message_id, "heart")`` → verify the
+        2. ``send_touch("fist_bump", "🤜", "bumped your fist")`` →
+           verify an invented gesture renders its custom badge.
+        3. ``add_user_reaction(message_id, "heart")`` → verify the
            reciprocity loop closes.
 
-        Returns the dispatch verdict as JSON so you can confirm
-        the side-effects landed.
+        Routes through ``_emit_avatar_touch`` so the accumulator + WS
+        broadcast + persona banner fire exactly as on the real LLM
+        path. Returns the dispatch verdict as JSON.
         """
         try:
-            service = getattr(session, "_touch_service", None)
-            if service is None:
+            emit = getattr(session, "_emit_avatar_touch", None)
+            if emit is None:
                 return json.dumps(
                     {"dispatched": False, "reason": "service_unavailable"},
                     indent=2,
                 )
-            from datetime import datetime, timezone
-
-            from app.core.touch.touch_gestures import get_gesture
-
-            # Route through the controller's emit method so the
-            # listeners (WS broadcast + gesture accumulator) fire
-            # exactly as they do on the real LLM path. We override
-            # ``_touch_service.try_dispatch`` for this one call by
-            # adding to the gesture accumulator directly if the
-            # service rejected -- the bypass is meaningless if
-            # ``_emit_avatar_touch`` re-applies the gate.
-            gesture = get_gesture(kind)
-            if gesture is None:
+            report = emit(kind, emoji, label)
+            if report is None:
                 return json.dumps(
-                    {"dispatched": False, "reason": "unknown_kind"},
+                    {"dispatched": True, "kind": kind, "note": "emitted"},
                     indent=2,
                 )
-            report = service.try_dispatch(
-                kind,
-                axes=None,
-                now=datetime.now(timezone.utc),
-                bypass_gates=True,
-            )
-            if report.dispatched:
-                # Fan out the same side-channels the streaming path
-                # uses -- accumulator, paired overlays, listeners.
-                bucket = getattr(session, "_current_turn_gestures", None)
-                if isinstance(bucket, list):
-                    bucket.append(gesture.kind)
-                for overlay in gesture.overlays:
-                    try:
-                        session._emit_avatar_overlay(overlay)
-                    except Exception:
-                        pass
-                payload = {
-                    "kind": gesture.kind,
-                    "label": gesture.label,
-                    "emoji": gesture.emoji,
-                    "duration_ms": int(gesture.duration_ms),
-                    "lean_amount": float(gesture.lean_amount),
-                    "overlays": list(gesture.overlays),
-                }
-                for cb in list(session._avatar_touch_listeners):
-                    try:
-                        cb(dict(payload))
-                    except Exception:
-                        pass
+            gesture = report.gesture
             return json.dumps(
                 {
                     "dispatched": bool(report.dispatched),
                     "reason": report.reason,
-                    "kind": gesture.kind,
-                    "duration_ms": gesture.duration_ms,
-                    "lean_amount": gesture.lean_amount,
-                    "overlays": list(gesture.overlays),
+                    "kind": gesture.kind if gesture else kind,
+                    "label": gesture.label if gesture else label,
+                    "emoji": gesture.emoji if gesture else emoji,
+                    "duration_ms": gesture.duration_ms if gesture else None,
+                    "lean_amount": gesture.lean_amount if gesture else None,
+                    "overlays": list(gesture.overlays) if gesture else [],
                 },
                 indent=2,
             )

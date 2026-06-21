@@ -40,6 +40,7 @@ from typing import TYPE_CHECKING, Any
 from app.core.affect import circadian as _circadian
 from app.core.conversation.backchannel_classifier import BackchannelHint
 from app.core.infra.settings import OUTFIT_MODES, persist_user_overrides
+from app.core.touch.touch_gestures import get_gesture
 
 if TYPE_CHECKING:  # pragma: no cover - import-cycle guard
     from app.core.persona.avatar_profile import AvatarProfile
@@ -652,63 +653,43 @@ class AvatarMixin:
         if cb in self._avatar_touch_listeners:
             self._avatar_touch_listeners.remove(cb)
 
-    def _emit_avatar_touch(self, kind: str) -> None:
+    def _emit_avatar_touch(
+        self, kind: str, emoji: str = "", label: str = "",
+    ) -> Any:
         """Forward an LLM-driven ``[[touch:KIND]]`` to the renderer.
 
-        Routes through :class:`TouchService.try_dispatch` first:
+        Routes through :meth:`TouchService.try_dispatch`. B7 removed all
+        gating (relationship-axes floors, cooldown, daily caps), so the
+        only rejections left are an empty kind, a missing service, or
+        the ``touch_enabled`` master flag. ``kind`` may be a curated
+        built-in OR an invented open-vocabulary kind; for customs the
+        model-supplied ``emoji`` / ``label`` carry the badge meaning and
+        a generic lean-in is synthesized.
 
-        - **Unknown kind**: silently dropped (LLM hallucinated).
-        - **Disabled** (settings flag): silently dropped.
-        - **Axes gate fails**: dropped with an INFO log so the
-          MCP debug pass can see "Aiko asked for a hug but
-          closeness was too low".
-        - **Cooldown / daily cap hit**: dropped with an INFO log
-          (intentional pacing, not a bug -- the persona block
-          teaches her to feel the budget).
-        - **OK**: accumulates the kind on
-          ``self._current_turn_gestures`` so the post-turn pass
-          can persist it on the assistant message row; fires
-          companion overlays via the existing ``_emit_avatar_overlay``
-          path; broadcasts an ``avatar_touch`` event to the
-          registered listeners (the WS hub).
+        On dispatch this accumulates a ``{kind, label, emoji}``
+        descriptor on ``self._current_turn_gestures`` so the post-turn
+        pass can persist the badge on the assistant message row; fires
+        companion overlays via ``_emit_avatar_overlay``; and broadcasts
+        an ``avatar_touch`` event to the registered listeners (WS hub).
 
-        The post-turn pass calls :meth:`_persist_turn_gestures`
-        with the final assistant ``message_id`` to seal the
-        accumulated list onto SQLite, so the bubble badge
-        survives a reload.
+        Returns the :class:`DispatchReport` (or ``None`` when the
+        feature isn't wired) so callers like the MCP ``send_touch``
+        debug tool can inspect the verdict.
         """
         if not kind:
-            return
+            return None
         normalized = str(kind).strip().lower()
         if not normalized:
-            return
+            return None
 
         touch_service = getattr(self, "_touch_service", None)
         if touch_service is None:
             # Soft-disabled: feature wasn't wired in this controller
             # build (e.g. unit-test scaffolding). Silently drop.
-            return
-
-        # Resolve the live relationship-axes snapshot for the gate
-        # check. ``None`` here is OK: the service treats it as
-        # "no axes data, gates pass" so test scaffolding can
-        # still exercise the dispatch path.
-        axes_state = None
-        axes_store = getattr(self, "_relationship_axes_store", None)
-        user_id = str(getattr(self, "_user_id", "") or "")
-        if axes_store is not None and user_id:
-            try:
-                axes_state = axes_store.get(user_id)
-            except Exception:
-                log.debug("touch: axes_store.get failed", exc_info=True)
-                axes_state = None
-
-        from datetime import datetime, timezone
+            return None
 
         report = touch_service.try_dispatch(
-            normalized,
-            axes=axes_state,
-            now=datetime.now(timezone.utc),
+            normalized, emoji=emoji, label=label,
         )
         if not report.dispatched:
             log.info(
@@ -716,29 +697,37 @@ class AvatarMixin:
                 normalized,
                 report.reason,
             )
-            return
+            return report
         gesture = report.gesture
         if gesture is None:
             # Defensive: dispatched=True always carries a gesture,
             # but guard the typed contract.
-            return
+            return report
 
         log.info(
             "touch dispatched: kind=%s rejected=false reason=%s "
-            "duration_ms=%d lean_amount=%.2f overlays=%s",
+            "duration_ms=%d lean_amount=%.2f overlays=%s custom=%s",
             gesture.kind,
             report.reason,
             gesture.duration_ms,
             gesture.lean_amount,
             ",".join(gesture.overlays) if gesture.overlays else "-",
+            "true" if get_gesture(gesture.kind) is None else "false",
         )
 
-        # Accumulate for post-turn persistence -- the controller wires
-        # ``_current_turn_gestures`` in ``__init__`` and clears it on
-        # the next turn.
+        # Accumulate a full descriptor for post-turn persistence so a
+        # custom badge's label / emoji survive a reload. The controller
+        # wires ``_current_turn_gestures`` in ``__init__`` and clears it
+        # on the next turn.
         bucket = getattr(self, "_current_turn_gestures", None)
         if isinstance(bucket, list):
-            bucket.append(gesture.kind)
+            bucket.append(
+                {
+                    "kind": gesture.kind,
+                    "label": gesture.label,
+                    "emoji": gesture.emoji,
+                },
+            )
 
         # Fire paired overlays through the existing channel so the
         # renderer paints them with no special-case routing. Errors
@@ -765,15 +754,18 @@ class AvatarMixin:
                 cb(dict(payload))
             except Exception:
                 log.debug("avatar touch listener failed", exc_info=True)
+        return report
 
     def _persist_turn_gestures(self, message_id: int) -> None:
         """Seal the per-turn gesture accumulator onto a message row.
 
         Called from :meth:`PostTurnMixin._post_turn_inner_life` after
         the assistant message has been persisted. If no gestures
-        landed this turn, this is a no-op. The kinds are stored as
-        a JSON array on ``messages.gestures`` so the chat bubble
-        footer badge survives a reload / new tab.
+        landed this turn, this is a no-op. The accumulator holds
+        ``{kind, label, emoji}`` descriptor dicts (B7) which are stored
+        as a JSON array on ``messages.gestures`` so the chat bubble
+        footer badge -- including invented custom gestures -- survives a
+        reload / new tab.
         """
         bucket = getattr(self, "_current_turn_gestures", None)
         if not isinstance(bucket, list) or not bucket:

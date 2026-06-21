@@ -31,6 +31,7 @@ import type {
   TaskStatus,
   TogetherSummary,
   ToolEvent,
+  TouchGestureBadge,
   VoiceMode,
   WorldItem,
   WorldLocation,
@@ -159,7 +160,7 @@ interface AssistantState {
    * the latest assistant message that's still streaming OR the
    * most recent assistant message overall when no streaming
    * draft is active. */
-  appendGestureToCurrentTurn: (kind: string) => void;
+  appendGestureToCurrentTurn: (badge: string | TouchGestureBadge) => void;
 
   // Status / metrics
   status: string;
@@ -880,8 +881,17 @@ export const useAssistantStore = create<AssistantState>((set) => ({
       }
       return state;
     }),
-  appendGestureToCurrentTurn: (kind) =>
+  appendGestureToCurrentTurn: (badge) =>
     set((state) => {
+      // B7: accept either a bare kind string (legacy / convenience) or
+      // a full ``{kind,label,emoji}`` descriptor so invented custom
+      // gestures keep their model-supplied badge text.
+      const descriptor: TouchGestureBadge =
+        typeof badge === "string" ? { kind: badge } : badge;
+      const kind = (descriptor.kind || "").trim();
+      if (!kind) {
+        return state;
+      }
       // Prefer the streaming bubble if one is in flight (the
       // common case for an LLM-emitted touch). Otherwise stamp
       // the most recent assistant bubble (e.g. proactive or
@@ -904,11 +914,15 @@ export const useAssistantStore = create<AssistantState>((set) => ({
       }
       const target = state.messages[targetIndex];
       const existing = target.gestures ?? [];
-      if (existing.includes(kind)) {
+      // Dedup by kind regardless of stored shape (string or descriptor).
+      const alreadyHasKind = existing.some(
+        (g) => (typeof g === "string" ? g : g.kind) === kind,
+      );
+      if (alreadyHasKind) {
         return state;
       }
       const next = [...state.messages];
-      next[targetIndex] = { ...target, gestures: [...existing, kind] };
+      next[targetIndex] = { ...target, gestures: [...existing, descriptor] };
       return { messages: next };
     }),
 

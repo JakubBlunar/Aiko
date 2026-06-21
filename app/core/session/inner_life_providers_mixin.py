@@ -609,44 +609,9 @@ class InnerLifeProvidersMixin:
             )
             return ""
 
-    def _render_touch_state_block(self) -> str:
-        """K31: render a low-budget cue when Aiko's been physical a lot.
-
-        Reads the persisted :class:`TouchServiceState` from ``kv_meta``
-        and runs it through :func:`touch_gestures.render_touch_state_block`
-        which stays silent on the common case. Off-switch is the
-        master ``agent.touch_enabled`` flag -- when off, the
-        physical-budget cue is irrelevant because Aiko can't touch
-        at all.
-
-        Best-effort: any failure path returns ``""`` (matches the
-        K15 / K27 swallow-and-log convention).
-        """
-        agent_settings = getattr(self._settings, "agent", None)
-        if agent_settings is not None and not bool(
-            getattr(agent_settings, "touch_enabled", True),
-        ):
-            return ""
-        try:
-            from datetime import datetime, timezone
-
-            from app.core.touch import touch_gestures as _touch
-
-            chat_db = getattr(self, "_chat_db", None)
-            if chat_db is None:
-                return ""
-            raw = chat_db.kv_get(_touch.KV_TOUCH_STATE)
-            state = _touch.deserialize_state(raw)
-            return _touch.render_touch_state_block(
-                state,
-                now=datetime.now(timezone.utc),
-                user_display_name=self.user_display_name,
-            )
-        except Exception:
-            log.debug(
-                "K31 touch_state block render failed", exc_info=True,
-            )
-            return ""
+    # B7: ``_render_touch_state_block`` (the K31 low-physical-budget cue)
+    # was removed — touch gating is gone, so there is no budget to
+    # surface and the provider is no longer wired in the controller.
 
     def _render_running_tasks_block(self) -> str:
         """Brain-orchestration chunk 6: list tasks currently in flight.
