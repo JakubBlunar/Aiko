@@ -2125,6 +2125,24 @@ def create_web_app(session: "SessionController") -> FastAPI:
         """
         return JSONResponse(session.topic_graph_snapshot())
 
+    @app.get("/api/persona-drift")
+    def get_persona_drift() -> JSONResponse:
+        """K10: last persona-regression snapshot (``{}`` until first run).
+
+        Pull-only — the Diagnostics panel fetches on open and after a
+        manual "Run check", so there's no WS event.
+        """
+        return JSONResponse(session.persona_regression_snapshot())
+
+    @app.post("/api/persona-drift/run")
+    def run_persona_drift() -> JSONResponse:
+        """K10: replay the golden-turn fixture and return a fresh snapshot.
+
+        Synchronous handler — FastAPI runs it in the threadpool, so the
+        blocking worker-LLM calls stay off the event loop.
+        """
+        return JSONResponse(session.run_persona_regression())
+
     @app.post("/api/memory-conflicts/{pair_id}/resolve")
     async def resolve_memory_conflict(
         pair_id: int, payload: dict[str, Any] | None = None,

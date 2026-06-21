@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { debugLog } from "../../log";
 import { useAssistantStore } from "../../store";
 import type { MetricsResponse, MetricsSnapshot } from "../../types";
+import { PersonaRegressionPanel } from "./PersonaRegressionPanel";
 import { Section } from "./SettingsSection";
 
 interface DiagnosticsProps {
@@ -189,6 +190,8 @@ export function DiagnosticsSection({
           ) : null}
         </div>
       </div>
+
+      <PersonaRegressionPanel />
 
       <DebugLoggingBlock onApplyPatch={onApplyPatch} busy={busy} />
     </Section>

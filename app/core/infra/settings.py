@@ -1405,6 +1405,16 @@ class AgentSettings:
     # taxonomy defaults in :data:`app.core.touch.touch_gestures`.
     touch_per_kind_overrides: dict[str, Any] = field(default_factory=dict)
 
+    # ── K10 persona regression (on-demand golden-turn eval) ───────────
+    # Master switch for the persona-drift harness. When off,
+    # ``run_persona_regression()`` is a no-op returning an empty snapshot
+    # and the Diagnostics panel shows a disabled state. Purely on-demand
+    # (MCP tool / "Run check" button / pytest); no background spend.
+    persona_regression_enabled: bool = True
+    # JSONL fixture of canonical "golden turns" to replay. Relative to
+    # the working directory; ships beside the persona sheet.
+    persona_regression_fixture_path: str = "data/persona/golden_turns.jsonl"
+
     # ── Brain orchestration: long-running tasks (schema v16) ──────────
     # Master switch for the whole task subsystem. Off disables the
     # ``start_*`` tools, the ``TaskOrchestrator`` rejects spawns, and
@@ -4363,6 +4373,15 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                     agent_raw.get("touch_per_kind_overrides"), dict,
                 )
                 else {}
+            ),
+            persona_regression_enabled=bool(
+                agent_raw.get("persona_regression_enabled", True),
+            ),
+            persona_regression_fixture_path=str(
+                agent_raw.get(
+                    "persona_regression_fixture_path",
+                    "data/persona/golden_turns.jsonl",
+                ),
             ),
             tasks_enabled=bool(agent_raw.get("tasks_enabled", True)),
             tasks_per_user_cap=max(

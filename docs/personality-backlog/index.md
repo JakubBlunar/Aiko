@@ -87,7 +87,7 @@ silent failure path). Cheap individually, compounding in aggregate.
 
 ### K. Patterns to explore — [`patterns.md`](patterns.md)
 
-K10 persona regression tests ·
+K10 persona regression tests (SHIPPED, on-demand; background worker deferred) ·
 K11 counterfactual cache · K12 calendar-linked anticipation ·
 K19 cold-start companion onboarding ·
 K21 fresh-eyes thread re-summary ·

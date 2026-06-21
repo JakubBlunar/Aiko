@@ -51,6 +51,7 @@ from app.core.session import (
     AvatarMixin,
     InnerLifeProvidersMixin,
     MemoryFacadeMixin,
+    PersonaRegressionMixin,
     PostTurnMixin,
     SpeakingWindowJobsMixin,
     TaskOrchestrationMixin,
@@ -426,6 +427,7 @@ class SessionController(
     SpeakingWindowJobsMixin,
     PostTurnMixin,
     TaskOrchestrationMixin,
+    PersonaRegressionMixin,
 ):
     def __init__(self, settings: AppSettings) -> None:
         self._settings = settings

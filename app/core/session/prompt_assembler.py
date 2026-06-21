@@ -3096,6 +3096,54 @@ class PromptAssembler:
             f"unprompted."
         )
 
+    def build_eval_messages(
+        self,
+        user_text: str,
+        *,
+        full_context: bool,
+        session_key: str = "persona_regression",
+        context_window: int = 8192,
+        response_budget: int = 512,
+    ) -> list[dict[str, Any]]:
+        """K10: build the message list for one persona-regression golden turn.
+
+        ``full_context=False`` (minimal scope): persona sheet + the
+        always-on speech + touch grammar addenda + the golden user line.
+        Deterministic-ish; isolates persona-sheet drift from the rest of
+        the prompt.
+
+        ``full_context=True`` (full scope): the live assembled system
+        prompt (persona + inner-life blocks + RAG retrieved for the
+        golden line), with history discarded and the golden line appended
+        as the user turn. Catches memory contamination + prompt rot.
+        Note: this drives the real RAG path and perturbs ``_slice_cache``
+        / ``RagRetriever.last_surfaced_memory_ids``, so callers must run
+        it only while the session is idle.
+        """
+        if full_context:
+            messages, _telemetry = self.assemble_with_budget(
+                session_key,
+                user_text,
+                context_window=context_window,
+                response_budget=response_budget,
+            )
+            system_parts = [
+                m
+                for m in messages
+                if isinstance(m, dict) and m.get("role") == "system"
+            ]
+            return [*system_parts, {"role": "user", "content": user_text}]
+
+        persona = self._load_persona()
+        grammar = build_speech_grammar_addendum(self._resolve_user_display_name())
+        system_text = "\n\n".join(
+            part for part in (persona, grammar, _TOUCH_GRAMMAR_ADDENDUM) if part
+        )
+        return [
+            {"role": "system", "content": system_text},
+            {"role": "user", "content": user_text},
+        ]
+
     def _load_persona(self) -> str:
         path = self._persona_path
         try:
