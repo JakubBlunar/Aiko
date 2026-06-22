@@ -69,6 +69,12 @@ never be named at the user ("we've reached level 3").
 
 ## J5. Reconnection ritual after a long absence
 
+> **STATUS: SHIPPED.** Assembly-time gap detector (`_render_reconnection_block`,
+> closeness-scaled threshold via `app/core/relationship/reconnection.py`,
+> default base 24 h), one-shot per return via an in-memory anchor, stage-aware
+> warmth (J4), leads the T6 gap cluster. Settings `agent.reconnection_enabled`
+> / `reconnection_base_gap_hours`. Tests: `tests/test_reconnection.py`.
+
 **Motivation.** K28 ("what I've been turning over") gives a between-session
 thought thread, but there's no distinct *warm reconnection beat* when the
 user returns after a genuinely long gap (days/weeks). Right now a return
@@ -157,6 +163,13 @@ mirror. Tone guard: acknowledge, don't perform — no confetti.
 
 ---
 
+> **STATUS: SHIPPED.** `_render_reciprocal_vulnerability_block` (T6 user_text
+> provider). Gates: master switch, stage >= familiar (J4), trust floor, K15
+> budget not exhausted (read-only check), user's live message not low-mood
+> (estimator + `vent` dialogue act), long cooldown. MCP force-next bypass.
+> Settings `agent.reciprocal_vulnerability_{enabled,min_trust,cooldown_hours}`.
+> Tests: `tests/test_reciprocal_vulnerability_provider.py`.
+
 ## J9. Reciprocal vulnerability — Aiko leans on the user (rarely)
 
 **Motivation.** Support today is one-directional: the user offloads, Aiko
@@ -178,6 +191,13 @@ this must never read as manipulation or guilt — it's an offer of
 closeness, withdrawn instantly if the user doesn't pick it up.
 
 ---
+
+> **STATUS: SHIPPED.** `_render_appreciation_block` (T6). Anchored to the most
+> recent positive shared moment (`_APPRECIATION_VIBES`, within
+> `appreciation_max_anchor_age_days`), closeness-gated, long cooldown +
+> anti-repeat via kv watermarks. Stage-aware tone (J4). MCP force-next bypass.
+> Settings `agent.appreciation_{beats_enabled,min_closeness,cooldown_hours,max_anchor_age_days}`.
+> Tests: `tests/test_appreciation_provider.py`.
 
 ## J10. Appreciation beats — unprompted, specific gratitude
 

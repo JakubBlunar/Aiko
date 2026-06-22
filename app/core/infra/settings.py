@@ -593,6 +593,27 @@ class AgentSettings:
     # prompt (stage-aware register via J4). Off = the milestone is still
     # recorded as a memory but never actively acknowledged.
     milestone_celebration_enabled: bool = True
+    # J5: reconnection ritual. On the first reply after a long absence
+    # (>= reconnection_base_gap_hours, closeness-scaled so a closer
+    # relationship notices a gap sooner), surface a one-shot warm
+    # re-anchoring cue that colours the opener. Distinct from the K57
+    # lonely episode (felt) and K28/K36 (next-turn "what I was up to").
+    reconnection_enabled: bool = True
+    reconnection_base_gap_hours: float = 24.0
+    # J10: appreciation beats. Rare, specific unprompted gratitude anchored
+    # to a recent positive shared moment. Gated by closeness + a long
+    # wall-clock cooldown so it stays a treat, never a tic.
+    appreciation_beats_enabled: bool = True
+    appreciation_min_closeness: float = 0.25
+    appreciation_cooldown_hours: float = 72.0
+    appreciation_max_anchor_age_days: float = 21.0
+    # J9: reciprocal vulnerability. Rare cue authorising Aiko to open up
+    # about something she's sitting with, so the user gets to be the
+    # supportive one. Stage (familiar+) + trust gated, paced by the K15
+    # budget, and hard-suppressed when the user is in a low-mood window.
+    reciprocal_vulnerability_enabled: bool = True
+    reciprocal_vulnerability_cooldown_hours: float = 96.0
+    reciprocal_vulnerability_min_trust: float = 0.2
     # ── F1 personality backlog: background fact-checker ───────────────
     # Master switch. When off, the queue still persists but the
     # IdleFactChecker worker never runs (so any pending claims simply
@@ -4163,6 +4184,43 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             ),
             milestone_celebration_enabled=bool(
                 agent_raw.get("milestone_celebration_enabled", True),
+            ),
+            reconnection_enabled=bool(
+                agent_raw.get("reconnection_enabled", True),
+            ),
+            reconnection_base_gap_hours=max(
+                1.0, float(agent_raw.get("reconnection_base_gap_hours", 24.0)),
+            ),
+            appreciation_beats_enabled=bool(
+                agent_raw.get("appreciation_beats_enabled", True),
+            ),
+            appreciation_min_closeness=max(
+                -1.0, min(1.0, float(
+                    agent_raw.get("appreciation_min_closeness", 0.25),
+                )),
+            ),
+            appreciation_cooldown_hours=max(
+                1.0, float(agent_raw.get("appreciation_cooldown_hours", 72.0)),
+            ),
+            appreciation_max_anchor_age_days=max(
+                1.0,
+                float(agent_raw.get("appreciation_max_anchor_age_days", 21.0)),
+            ),
+            reciprocal_vulnerability_enabled=bool(
+                agent_raw.get("reciprocal_vulnerability_enabled", True),
+            ),
+            reciprocal_vulnerability_cooldown_hours=max(
+                1.0,
+                float(
+                    agent_raw.get(
+                        "reciprocal_vulnerability_cooldown_hours", 96.0,
+                    )
+                ),
+            ),
+            reciprocal_vulnerability_min_trust=max(
+                -1.0, min(1.0, float(
+                    agent_raw.get("reciprocal_vulnerability_min_trust", 0.2),
+                )),
             ),
             summary_idle_seconds=max(2.0, float(agent_raw.get("summary_idle_seconds", 15.0))),
             summary_min_unsummarized_messages=max(2, int(agent_raw.get("summary_min_unsummarized_messages", 6))),
