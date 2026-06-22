@@ -415,6 +415,20 @@ Web-searches `open_question` memories during idle windows.
 - `agent.idle_curiosity_per_hour_cap` *(int, `2`, min `0`)* — hourly cap on web searches. Strictly tighter than the fact-checker so a multi-week absence + a backlog of open questions can't dump a wall of "I was reading about" beats on return.
 - `agent.idle_curiosity_per_day_cap` *(int, `6`, min `0`)* — daily cap.
 
+### F8 / F9 / K61 — interest-driven knowledge enrichment
+
+F9 is the `idle_knowledge` worker: on an idle tick it reads the K9 topic graph, picks the densest under-researched interest cluster, web-searches it, distils one or two impersonal, evergreen facts (F8 `knowledge` memory kind), and writes them silently. F8 boosts those `knowledge` rows in retrieval on informational turns and tags them `(learned)`. K61 is the per-turn inner-life steer that, on question turns, nudges Aiko to commit to the learned specifics instead of survey-hedging. None of this adds an LLM turn to the chat path — F9 runs on the worker model in idle windows, and K61 costs only a local regex + embed + cosine scan.
+
+- `agent.knowledge_enrichment_enabled` *(bool, `true`)* — master switch for the F9 worker. Off → the worker never registers, no web searches, no `knowledge` rows written.
+- `agent.knowledge_enrichment_per_hour_cap` *(int, `1`, min `0`)* — hourly cap on F9 web searches (its own `FactCheckRateLimiter` budget keyed `idle_knowledge.rate_state`, separate from F1/G3). Deliberately tight — this is slow, ambient learning, not a research sprint.
+- `agent.knowledge_enrichment_per_day_cap` *(int, `4`, min `0`)* — daily cap.
+- `agent.knowledge_grounding_enabled` *(bool, `true`)* — master switch for the K61 inner-life block. Off → learned facts still surface through F8 retrieval, but the "commit to specifics, don't hedge" steer is silent.
+- `memory.knowledge_enrichment_interval_seconds` *(int, `3600`, min `60`)* — F9 worker cadence.
+- `memory.knowledge_cluster_cooldown_hours` *(int, `72`, min `0`)* — per-cluster wall-clock cooldown so the worker rotates across interests instead of grinding one. Stamped on every run (even a no-result / privacy-gated one).
+- `memory.knowledge_enrichment_max_per_cluster` *(int, `3`, min `0`)* — a cluster already holding this many `knowledge` rows is skipped (it's researched enough).
+- `memory.knowledge_grounding_min_similarity` *(float, `0.45`, clamped `[0, 1]`)* — K61 cosine threshold; a learned fact must be at least this close to the question to surface.
+- `memory.knowledge_grounding_max_items` *(int, `2`, min `1`)* — K61 max bullets surfaced per turn.
+
 ### F5 — conflicting-memory detector
 
 - `agent.conflict_detector_enabled` *(bool, `true`)* — master switch.
@@ -846,10 +860,28 @@ Agent tool registry switches. Each toggles a single tool; `tools.enabled = false
 - `tools.enabled` *(bool, `true`)* — master switch for **all** agent tools. Off → Aiko has no tool-calling capability at all (no time lookups, no recall, no web search, no world manipulation).
 - `tools.get_time` *(bool, `true`)* — time/date lookup tool.
 - `tools.recall` *(bool, `true`)* — explicit memory-recall tool (in addition to automatic RAG).
-- `tools.web_search` *(bool, `true`)* — DuckDuckGo-backed web search tool.
+- `tools.web_search` *(bool, `true`)* — gates whether the background `web_search` workflow skill is offered. The actual search backend (DuckDuckGo vs LangSearch) is configured separately under the `search` block below.
 - `tools.world` *(bool, `true`)* — Aiko's room tools (`look_around`, `move_to`, `change_posture`, `inspect_item`, `consume_item`). Off → her room is still alive in the world store but she can't act on it.
 - `tools.goals` *(bool, `true`)* — K1 goal tools (`list_goals`, `add_goal`, `update_goal_progress`, `archive_goal`). Off → Aiko's prompt block + worker still surface goals but she can't *act* on them mid-turn. Independent from `agent.goals_enabled`: if the master switch is off the tools are wired but no-op because the store is unset.
 - `tools.calculate` *(bool, `true`)* — synchronous exact-arithmetic tool. Evaluates an expression through an AST whitelist (no `eval`) and returns the result in the same turn so Aiko never guesses a number. See [`docs/task-approvals.md`](task-approvals.md) for the broader task/skill picture.
+
+---
+
+## `search` — `SearchSettings`
+
+Web-search backend shared by every search path — the background workers (F1 fact-checker, G3 curiosity, F9 knowledge enrichment) and the goal-workflow `web_search` lane. One pluggable provider is built from this block in `SessionController` and injected into all of them; see [`app/llm/search/providers.py`](../app/llm/search/providers.py).
+
+- `search.provider` *(str, `"duckduckgo"`)* — `"duckduckgo"` (keyless default) or `"langsearch"`. When `"langsearch"` but no API key resolves, it silently falls back to DuckDuckGo.
+- `search.api_key` *(str, `""`)* — LangSearch API key. **Write-only via REST**: `GET /api/settings` returns only `has_api_key`, and the value is routed into the OS keychain (blank on disk) when a backend exists. Set it through `PUT /api/settings/search-credentials` or the `LANGSEARCH_API_KEY` env var rather than committing it to `config/user.json`.
+- `search.api_key_env` *(str, `"LANGSEARCH_API_KEY"`)* — env var consulted when `api_key` is blank.
+- `search.langsearch_summary` *(bool, `true`)* — request LangSearch's long-text summaries (richer context for distillation). Ignored by the DuckDuckGo path.
+- `search.langsearch_freshness` *(str, `"noLimit"`)* — time window: `oneDay` / `oneWeek` / `oneMonth` / `oneYear` / `noLimit`.
+- `search.langsearch_count` *(int, `10`, clamped `[1, 10]`)* — max results requested per call.
+- `search.fallback_to_duckduckgo` *(bool, `true`)* — when LangSearch errors out or its daily quota (free tier = 1000/day) is exhausted, fall back to DuckDuckGo so search still works.
+- `search.timeout_seconds` *(float, `12.0`, floor `1.0`)* — LangSearch request timeout.
+- `search.query_reformulation_enabled` *(bool, `true`)* — **F6**: before searching, rewrite a personal claim into a neutral, name-free topic query with the local worker model, post-filtered by the deterministic privacy scrubber (a hallucinated name can never reach the search engine). When off, the workers use the deterministic scrub directly. See [`app/core/memory/query_reformulation.py`](../app/core/memory/query_reformulation.py).
+
+LangSearch's Semantic Rerank API is intentionally not wired (Aiko's RAG is already local cosine and results come back ranked + summarized). LangSearch docs: <https://docs.langsearch.com/>.
 
 ---
 

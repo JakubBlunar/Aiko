@@ -123,6 +123,21 @@ _RAG_ARC_BOOST = 0.03
 _RAG_DIALOGUE_ACT_BOOST = 0.03
 _RAG_ALIGNMENT_BOOST_CAP = 0.05
 
+# F8 — small additive bonus for ``knowledge``-kind hits (distilled,
+# impersonal learned facts) when the live turn is *informational*
+# (the K4 dialogue-act tag is ``question``). The point is to let an
+# accumulated, queryable knowledge pool win over the model's generic
+# parametric knowledge on "what are some good X?" turns, without
+# boosting learned facts during emotional / support / banter turns
+# where they'd just read as a non-sequitur lecture. Same magnitude as
+# the pinned / anniversary nudges so it nudges ordering near-ties
+# rather than overpowering raw cosine relevance.
+_RAG_KNOWLEDGE_BONUS = 0.05
+# Dialogue acts that count as "informational" for the knowledge boost.
+# ``question`` is the K4 label for "asking for information / a soft
+# request" (there is no separate ``info_seeking`` act).
+_INFORMATIONAL_ACTS = frozenset({"question"})
+
 # K7 — Forgetting protocol defaults. The original implementation only
 # fired ``(faded)`` for ``tier=="archive"`` rows; this completion adds a
 # graded predicate so long_term rows that have decayed in place
@@ -739,6 +754,18 @@ class RagRetriever:
                 )
                 goal_vectors = []
 
+        # F8 — decide once whether this turn is informational so the
+        # per-hit ``knowledge`` bonus below stays a cheap branch. Reuses
+        # the same regex dialogue-act provider the alignment boost uses;
+        # missing provider / raise → not informational (no boost).
+        informational_turn = False
+        if self._dialogue_act_provider is not None and query_text:
+            try:
+                act = self._dialogue_act_provider(query_text)
+            except Exception:
+                act = None
+            informational_turn = bool(act) and act in _INFORMATIONAL_ACTS
+
         merged: list[RagHit] = []
         try:
             mem_hits = self._store.search_memories(
@@ -872,6 +899,19 @@ class RagRetriever:
                                         cb_count = 0
                                     if cb_count >= 1:
                                         h.score += _RAG_CALLBACK_BONUS
+                                # F8 — knowledge boost on informational
+                                # turns only. A distilled ``knowledge``
+                                # fact should win over an equally-similar
+                                # personal memory when the user is
+                                # asking "what are some good X?", but
+                                # stay neutral on emotional / banter
+                                # turns where reciting a fact reads as a
+                                # lecture.
+                                if (
+                                    informational_turn
+                                    and mem.kind == "knowledge"
+                                ):
+                                    h.score += _RAG_KNOWLEDGE_BONUS
                                 # Schema v10: stamp the temporal
                                 # fields onto the hit so format_block
                                 # can render the time-tag suffix
@@ -1178,6 +1218,13 @@ class RagRetriever:
                 # sees it.
                 if kind == "curiosity_finding":
                     suffix_tags.append("(curiosity)")
+                # F8 — append "(learned)" so the persona rule lets Aiko
+                # surface a distilled fact she picked up between sessions
+                # naturally ("oh — try Slowdive") rather than reciting it
+                # like a textbook. Invisible to the user; only the LLM
+                # sees it. Sibling of the G3 "(curiosity)" tag.
+                if kind == "knowledge":
+                    suffix_tags.append("(learned)")
                 # K11 — pre-thought / counterfactual cache. Tag drafts
                 # so the persona rule lets Aiko lean on a reply she
                 # already mulled ("I actually thought about this…")

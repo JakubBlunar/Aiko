@@ -545,6 +545,12 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "tease_ledger_block",
         "curiosity_seeds_block",
         "knowledge_gaps_block",
+        # K61 (F8/F9): informational-turn steer toward learned
+        # specifics. Query-aware (consumes ``user_text``), so it lands
+        # in T6 with the other detectors. Clusters right after the
+        # knowledge-gap line — both are "what Aiko knows / wonders
+        # about" surfaces.
+        "knowledge_grounding_block",
     ),
 }
 
@@ -800,6 +806,10 @@ class PromptAssembler:
         # empty when no gap is sufficiently relevant. Dropped in
         # aggressive mode.
         self._knowledge_gaps_provider: Callable[[str], str] | None = None
+        # K61: informational-turn knowledge-grounding steer.
+        self._knowledge_grounding_provider: Callable[[str], str] | None = (
+            None
+        )
         # K2 personality backlog: belief-gap "you had Jacob pegged as X
         # but it actually reads Y" lines. Source rows come from the
         # post-turn :class:`BeliefGapDetector`; the provider only
@@ -1215,6 +1225,7 @@ class PromptAssembler:
         milestone: Callable[[], str] | None = None,
         axes: Callable[[], str] | None = None,
         knowledge_gaps: Callable[[str], str] | None = None,
+        knowledge_grounding: Callable[[str], str] | None = None,
         belief_gaps: Callable[[], str] | None = None,
         clarification: Callable[[], str] | None = None,
         calibration: Callable[[], str] | None = None,
@@ -1308,6 +1319,8 @@ class PromptAssembler:
             self._axes_provider = axes
         if knowledge_gaps is not None:
             self._knowledge_gaps_provider = knowledge_gaps
+        if knowledge_grounding is not None:
+            self._knowledge_grounding_provider = knowledge_grounding
         if belief_gaps is not None:
             self._belief_gaps_provider = belief_gaps
         if clarification is not None:
@@ -1846,6 +1859,27 @@ class PromptAssembler:
                 except Exception:
                     log.debug("knowledge gaps provider raised", exc_info=True)
                     knowledge_gaps_block = ""
+
+        # K61: on informational turns, steer Aiko toward learned
+        # specifics (F9 ``knowledge`` / G3 ``curiosity_finding`` rows)
+        # instead of survey-hedging. Query-aware, local-only (one
+        # regex + one embed + a cosine scan), dropped under aggressive.
+        knowledge_grounding_block = ""
+        if (
+            not aggressive
+            and self._knowledge_grounding_provider is not None
+        ):
+            with _timed_phase(provider_ms, "knowledge_grounding"):
+                try:
+                    knowledge_grounding_block = (
+                        self._knowledge_grounding_provider(user_text) or ""
+                    )
+                except Exception:
+                    log.debug(
+                        "knowledge grounding provider raised",
+                        exc_info=True,
+                    )
+                    knowledge_grounding_block = ""
 
         belief_gaps_block = ""
         if not aggressive and self._belief_gaps_provider is not None:
@@ -3071,6 +3105,11 @@ class PromptAssembler:
             # agenda. Keeps the "things on Aiko's mind" cluster
             # together in the system prompt.
             system_parts.append(knowledge_gaps_block)
+        if knowledge_grounding_block:
+            # K61: informational-turn steer toward learned specifics.
+            # Sits right after the knowledge-gap line so the "what Aiko
+            # knows / wonders about" surfaces cluster together.
+            system_parts.append(knowledge_grounding_block)
 
         system_prompt = "\n\n---\n\n".join(p for p in system_parts if p)
 

@@ -92,6 +92,48 @@ def _trim(text: str, limit: int) -> str:
     return text[: limit - 1] + "…"
 
 
+def _search_public_snapshot(search: Any) -> dict[str, Any]:
+    """Masked snapshot of the ``search`` block — never echoes the raw key.
+
+    Defensive: returns safe DuckDuckGo defaults when ``search`` is
+    ``None`` / a stub without the fields, so a test session whose
+    ``_settings`` lacks a real ``SearchSettings`` still serialises.
+    """
+    if search is None:
+        return {
+            "provider": "duckduckgo",
+            "has_api_key": False,
+            "api_key_env": "LANGSEARCH_API_KEY",
+            "langsearch_summary": True,
+            "langsearch_freshness": "noLimit",
+            "langsearch_count": 10,
+            "fallback_to_duckduckgo": True,
+            "timeout_seconds": 12.0,
+            "query_reformulation_enabled": True,
+        }
+    from app.llm.search.providers import resolve_api_key
+
+    resolved = resolve_api_key(
+        getattr(search, "api_key", "") or "",
+        getattr(search, "api_key_env", "") or "",
+    )
+    return {
+        "provider": getattr(search, "provider", "duckduckgo"),
+        "has_api_key": bool(resolved),
+        "api_key_env": getattr(search, "api_key_env", ""),
+        "langsearch_summary": bool(getattr(search, "langsearch_summary", True)),
+        "langsearch_freshness": getattr(search, "langsearch_freshness", "noLimit"),
+        "langsearch_count": int(getattr(search, "langsearch_count", 10)),
+        "fallback_to_duckduckgo": bool(
+            getattr(search, "fallback_to_duckduckgo", True)
+        ),
+        "timeout_seconds": float(getattr(search, "timeout_seconds", 12.0)),
+        "query_reformulation_enabled": bool(
+            getattr(search, "query_reformulation_enabled", True)
+        ),
+    }
+
+
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _DIST_DIR = _PROJECT_ROOT / "web" / "dist"
 # ``data/persona`` is unrelated to the Live2D pipeline — it stores the
@@ -1017,6 +1059,11 @@ def create_web_app(session: "SessionController") -> FastAPI:
                 "world": bool(getattr(s.tools, "world", True)),
                 "available": list(session.available_tool_names()),
             },
+            # Web-search backend. The raw ``api_key`` is never echoed —
+            # only ``has_api_key`` so the drawer can show a •••• filled
+            # state. Writes to the key go through PUT
+            # ``/api/settings/search-credentials``.
+            "search": _search_public_snapshot(getattr(s, "search", None)),
             "logging": {
                 # Mirror of LoggingSettings.ui_log_enabled and friends so
                 # the Settings drawer's Debug-logging toggle has a single
@@ -1064,6 +1111,23 @@ def create_web_app(session: "SessionController") -> FastAPI:
                 log.warning("reconfigure_chat_llm failed: %s", exc, exc_info=True)
                 raise HTTPException(
                     400, f"chat_llm reconfigure failed: {exc}",
+                )
+        search_patch = payload.get("search") or {}
+        if search_patch:
+            # Safety net: never accept the search API key through the
+            # generic PATCH. ``PUT /api/settings/search-credentials`` is
+            # the dedicated write-only path.
+            search_patch.pop("api_key", None)
+            try:
+                snapshot = session.reconfigure_search(search_patch)
+                hub.broadcast({
+                    "type": "search_settings_changed",
+                    "search": snapshot,
+                })
+            except Exception as exc:
+                log.warning("reconfigure_search failed: %s", exc, exc_info=True)
+                raise HTTPException(
+                    400, f"search reconfigure failed: {exc}",
                 )
         tts = payload.get("tts") or {}
         if "voice" in tts:
@@ -1484,6 +1548,43 @@ def create_web_app(session: "SessionController") -> FastAPI:
         hub.broadcast({
             "type": "llm_settings_changed",
             "chat_llm": snapshot,
+        })
+        return JSONResponse(snapshot)
+
+    @app.put("/api/settings/search-credentials")
+    async def put_search_credentials(payload: dict[str, Any]) -> JSONResponse:
+        """Persist the web-search (LangSearch) API key, write-only.
+
+        Body accepts ``{api_key, api_key_env}``. The raw key is routed
+        into the OS keychain by ``reconfigure_search``; only the masked
+        snapshot (``has_api_key``) comes back.
+        """
+        patch: dict[str, Any] = {}
+        if "api_key" in payload:
+            raw_key = str(payload.get("api_key", "") or "")
+            if raw_key and any(c.isspace() for c in raw_key):
+                raise HTTPException(
+                    400, "api_key must not contain whitespace",
+                )
+            patch["api_key"] = raw_key.strip()
+        if "api_key_env" in payload:
+            patch["api_key_env"] = str(
+                payload.get("api_key_env", "") or "",
+            ).strip()
+        if not patch:
+            return JSONResponse(
+                _search_public_snapshot(getattr(session._settings, "search", None))
+            )
+        try:
+            snapshot = session.reconfigure_search(patch)
+        except Exception as exc:
+            log.warning(
+                "search-credentials write failed: %s", exc, exc_info=True,
+            )
+            raise HTTPException(400, f"credentials write failed: {exc}")
+        hub.broadcast({
+            "type": "search_settings_changed",
+            "search": snapshot,
         })
         return JSONResponse(snapshot)
 

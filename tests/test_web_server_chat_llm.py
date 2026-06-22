@@ -183,6 +183,51 @@ class GetSettingsChatLlmTests(unittest.TestCase):
         self.assertNotIn("api_key", body["chat_llm"])
         self.assertEqual(body["chat_llm"]["provider"], "ollama")
 
+    def test_get_includes_masked_search_block(self) -> None:
+        client, _session, _settings = _build_client()
+        body = client.get("/api/settings").json()
+        self.assertIn("search", body)
+        self.assertIn("has_api_key", body["search"])
+        self.assertNotIn("api_key", body["search"])
+        self.assertEqual(body["search"]["provider"], "duckduckgo")
+
+
+class SearchCredentialsTests(unittest.TestCase):
+    def test_put_search_credentials_reconfigures_and_broadcasts(self) -> None:
+        client, session, _settings = _build_client()
+        masked = {"provider": "langsearch", "has_api_key": True}
+        session.reconfigure_search.return_value = masked
+        response = client.put(
+            "/api/settings/search-credentials",
+            json={"api_key": "ls-secret-key"},
+        )
+        self.assertEqual(response.status_code, 200)
+        session.reconfigure_search.assert_called_once()
+        called = session.reconfigure_search.call_args[0][0]
+        self.assertEqual(called["api_key"], "ls-secret-key")
+        self.assertTrue(response.json()["has_api_key"])
+
+    def test_put_search_credentials_rejects_whitespace_key(self) -> None:
+        client, session, _settings = _build_client()
+        response = client.put(
+            "/api/settings/search-credentials",
+            json={"api_key": "has space"},
+        )
+        self.assertEqual(response.status_code, 400)
+        session.reconfigure_search.assert_not_called()
+
+    def test_patch_search_strips_api_key(self) -> None:
+        client, session, _settings = _build_client()
+        session.reconfigure_search.return_value = {"provider": "langsearch"}
+        client.patch(
+            "/api/settings",
+            json={"search": {"provider": "langsearch", "api_key": "leak"}},
+        )
+        session.reconfigure_search.assert_called_once()
+        called = session.reconfigure_search.call_args[0][0]
+        self.assertNotIn("api_key", called)
+        self.assertEqual(called["provider"], "langsearch")
+
 
 class PatchChatLlmTests(unittest.TestCase):
     def test_patch_chat_llm_triggers_reconfigure_and_broadcast(

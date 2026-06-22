@@ -597,13 +597,14 @@ class TaskOrchestrationMixin:
                 WebSearchHandler,
             )
 
-            self._task_orchestrator.register_handler(
-                WebSearchHandler(
-                    max_results=int(
-                        getattr(agent, "workflow_web_search_max_results", DEFAULT_MAX_RESULTS)
-                    )
-                )
+            self._web_search_handler = WebSearchHandler(
+                max_results=int(
+                    getattr(agent, "workflow_web_search_max_results", DEFAULT_MAX_RESULTS)
+                ),
+                provider=self._get_search_provider(),
             )
+            self._register_search_consumer(self._web_search_handler)
+            self._task_orchestrator.register_handler(self._web_search_handler)
         except Exception as exc:
             log.warning(
                 "task-handlers: failed to register web_search handler: %r",

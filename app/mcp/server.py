@@ -1418,6 +1418,86 @@ def create_mcp_server(session: "SessionController", port: int = 6274) -> FastMCP
         return json.dumps(result or {}, indent=2, default=str)
 
     @mcp.tool()
+    def force_knowledge_enrichment() -> str:
+        """F9 — run the IdleKnowledgeWorker once, ignoring its gates.
+
+        Picks the densest under-researched topic-graph cluster,
+        web-searches it, and distils ``knowledge`` facts. Returns the
+        run result (``cluster``, ``topic``, ``wrote``, ``deduped``,
+        ``outcome``) or a skip reason (``no_cluster``, ``rate_limited``,
+        ``privacy_gate``, …). Bypasses the interval gate but still
+        honours the rate limiter inside ``run()``.
+        """
+        sched = getattr(session, "_idle_scheduler", None)
+        if sched is None:
+            return "scheduler not running (memory.tiers_enabled may be off)"
+        try:
+            result = sched.force_run("idle_knowledge")
+        except KeyError:
+            return (
+                "idle_knowledge worker not registered "
+                "(agent.knowledge_enrichment_enabled may be off, or no "
+                "embedder / web-search tool)"
+            )
+        except Exception as exc:
+            return f"force_knowledge_enrichment raised: {exc}"
+        return json.dumps(result or {}, indent=2, default=str)
+
+    @mcp.tool()
+    def get_knowledge_worker_state() -> str:
+        """F9 — dump the IdleKnowledgeWorker state as JSON.
+
+        Shows the master switch, cadence, the live rate-limiter
+        snapshot (hour/day used vs cap), the per-cluster cooldown map
+        from ``kv_meta``, and a dry-run of the cluster picker (which
+        interest cluster would be researched on the next tick, or
+        ``None`` if everything is on cooldown / already researched).
+        First stop for "why isn't Aiko learning anything new?".
+        """
+        from datetime import datetime, timezone
+
+        worker = getattr(session, "_idle_knowledge", None)
+        out: dict = {
+            "registered": worker is not None,
+            "enabled": bool(
+                getattr(
+                    session._settings.agent,
+                    "knowledge_enrichment_enabled",
+                    True,
+                )
+            ),
+        }
+        if worker is None:
+            return json.dumps(out, indent=2, default=str)
+        now = datetime.now(timezone.utc)
+        try:
+            out["interval_seconds"] = worker.interval_seconds
+        except Exception as exc:  # pragma: no cover -- diag tool
+            out["interval_error"] = str(exc)
+        try:
+            out["rate_limit"] = worker._rate_limiter.snapshot(now)
+        except Exception as exc:  # pragma: no cover -- diag tool
+            out["rate_limit_error"] = str(exc)
+        try:
+            out["cluster_cooldowns"] = worker._load_cooldowns()
+        except Exception as exc:  # pragma: no cover -- diag tool
+            out["cooldowns_error"] = str(exc)
+        try:
+            pick = worker._pick_cluster(now=now)
+            out["next_pick"] = (
+                None
+                if pick is None
+                else {
+                    "cluster_key": pick.cluster_key,
+                    "topic": pick.topic[:160],
+                    "size": pick.size,
+                }
+            )
+        except Exception as exc:  # pragma: no cover -- diag tool
+            out["next_pick_error"] = str(exc)
+        return json.dumps(out, indent=2, default=str)
+
+    @mcp.tool()
     def get_calibration_state() -> str:
         """K20 — dump the per-user CalibrationState as JSON.
 

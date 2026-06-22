@@ -53,6 +53,7 @@ from app.core.session import (
     MemoryFacadeMixin,
     PersonaRegressionMixin,
     PostTurnMixin,
+    SearchProviderMixin,
     SpeakingWindowJobsMixin,
     TaskOrchestrationMixin,
     WorldMixin,
@@ -428,6 +429,7 @@ class SessionController(
     SpeakingWindowJobsMixin,
     PostTurnMixin,
     TaskOrchestrationMixin,
+    SearchProviderMixin,
     PersonaRegressionMixin,
 ):
     def __init__(self, settings: AppSettings) -> None:
@@ -1568,6 +1570,7 @@ class SessionController(
             milestone=self._render_milestone_block,
             axes=self._render_axes_block,
             knowledge_gaps=self._render_knowledge_gaps_block,
+            knowledge_grounding=self._render_knowledge_grounding_block,
             belief_gaps=self._render_belief_gaps_block,
             clarification=self._render_clarification_block,
             calibration=self._render_calibration_block,
@@ -1755,7 +1758,10 @@ class SessionController(
                         from app.llm.tools.builtins import WebSearchTool
 
                         try:
-                            web_search_tool = WebSearchTool()
+                            web_search_tool = WebSearchTool(
+                                provider=self._get_search_provider()
+                            )
+                            self._register_search_consumer(web_search_tool)
                         except Exception:
                             log.info(
                                 "fact-checker disabled: web_search tool "
@@ -1804,6 +1810,7 @@ class SessionController(
                                 # next tick.
                                 user_names_provider=self._fact_check_user_names,
                                 assistant_name_provider=self._fact_check_assistant_name,
+                                query_reformulator=self._build_query_reformulator(),
                             )
                             self._idle_scheduler.register(self._idle_fact_checker)
                     except Exception:
@@ -1847,7 +1854,10 @@ class SessionController(
                         # curiosity worker survives the F1 path being
                         # disabled / failing.
                         try:
-                            curiosity_search_tool = WebSearchTool()
+                            curiosity_search_tool = WebSearchTool(
+                                provider=self._get_search_provider()
+                            )
+                            self._register_search_consumer(curiosity_search_tool)
                         except Exception:
                             log.info(
                                 "idle_curiosity disabled: web_search "
@@ -1900,6 +1910,9 @@ class SessionController(
                                 notify_memory_updated=(
                                     self._notify_memory_updated
                                 ),
+                                query_reformulator=(
+                                    self._build_query_reformulator()
+                                ),
                             )
                             self._idle_scheduler.register(
                                 self._idle_curiosity,
@@ -1910,6 +1923,112 @@ class SessionController(
                             exc_info=True,
                         )
                         self._idle_curiosity = None
+
+                # F9: IdleKnowledgeWorker. Reads the K9 topic graph,
+                # picks the densest under-researched interest cluster,
+                # web-searches it, and distils impersonal ``knowledge``
+                # facts into the memory pool. Strictly silent (no
+                # proactive message) and off the brain path. Its own
+                # ``FactCheckRateLimiter`` budget keyed on
+                # ``"idle_knowledge.rate_state"`` so it never shares
+                # counters with F1 / G3. The topic graph is read lazily
+                # via a provider so registration order vs. the K9 graph
+                # boot below doesn't matter.
+                self._idle_knowledge = None
+                self._idle_knowledge_rate_limiter = None
+                if (
+                    self._fact_check_cancel is not None
+                    and self._embedder is not None
+                    and bool(
+                        getattr(
+                            settings.agent,
+                            "knowledge_enrichment_enabled",
+                            True,
+                        )
+                    )
+                ):
+                    try:
+                        from app.core.memory.fact_check_rate_limiter import (
+                            FactCheckRateLimiter,
+                        )
+                        from app.core.proactive.idle_knowledge_worker import (
+                            IdleKnowledgeWorker,
+                        )
+                        from app.llm.tools.builtins import WebSearchTool
+
+                        try:
+                            knowledge_search_tool = WebSearchTool(
+                                provider=self._get_search_provider()
+                            )
+                            self._register_search_consumer(knowledge_search_tool)
+                        except Exception:
+                            log.info(
+                                "idle_knowledge disabled: web_search "
+                                "tool unavailable",
+                            )
+                            knowledge_search_tool = None
+                        if knowledge_search_tool is not None:
+                            self._idle_knowledge_rate_limiter = (
+                                FactCheckRateLimiter(
+                                    self._chat_db,
+                                    per_hour_cap=int(
+                                        getattr(
+                                            settings.agent,
+                                            "knowledge_enrichment_per_hour_cap",
+                                            1,
+                                        )
+                                    ),
+                                    per_day_cap=int(
+                                        getattr(
+                                            settings.agent,
+                                            "knowledge_enrichment_per_day_cap",
+                                            4,
+                                        )
+                                    ),
+                                    state_key="idle_knowledge.rate_state",
+                                )
+                            )
+                            self._idle_knowledge = IdleKnowledgeWorker(
+                                memory_store=self._memory_store,
+                                embedder=self._embedder,
+                                ollama=self._maintenance_client,
+                                chat_model=self._effective_worker_model,
+                                web_search_tool=knowledge_search_tool,
+                                rate_limiter=(
+                                    self._idle_knowledge_rate_limiter
+                                ),
+                                cancel_event=self._fact_check_cancel,
+                                agent_settings=settings.agent,
+                                memory_settings=self._memory_settings,
+                                topic_graph_provider=(
+                                    lambda: getattr(
+                                        self, "_topic_graph", None,
+                                    )
+                                ),
+                                kv_get=self._chat_db.kv_get,
+                                kv_set=self._chat_db.kv_set,
+                                user_names_provider=(
+                                    self._fact_check_user_names
+                                ),
+                                assistant_name_provider=(
+                                    self._fact_check_assistant_name
+                                ),
+                                notify_memory_added=(
+                                    self._notify_memory_added
+                                ),
+                                query_reformulator=(
+                                    self._build_query_reformulator()
+                                ),
+                            )
+                            self._idle_scheduler.register(
+                                self._idle_knowledge,
+                            )
+                    except Exception:
+                        log.warning(
+                            "IdleKnowledgeWorker boot failed",
+                            exc_info=True,
+                        )
+                        self._idle_knowledge = None
 
                 # F2.1: IdleGapResolver. Closes ``knowledge_gap`` rows
                 # whose answer is already living in the memory store as
@@ -4357,6 +4476,143 @@ class SessionController(
         worker_model = self._effective_worker_model
         self._cascade_worker_model(worker_model)
         self._proactive.update_runtime(model=normalized)
+
+    # ── web-search provider (DuckDuckGo / LangSearch) ────────────────
+
+    def _get_search_provider(self) -> Any:
+        """Lazily build + cache the shared web-search provider.
+
+        Built from ``settings.search`` (DuckDuckGo by default, LangSearch
+        when a key resolves). Shared by the F1/G3/F9 workers'
+        ``WebSearchTool`` and the workflow ``WebSearchHandler`` so a
+        single credential/config change re-points every consumer.
+        """
+        provider = getattr(self, "_search_provider", None)
+        if provider is None:
+            from app.llm.search import build_search_provider
+
+            provider = build_search_provider(
+                getattr(self._settings, "search", None)
+            )
+            self._search_provider = provider
+        return provider
+
+    def _register_search_consumer(self, consumer: Any) -> Any:
+        """Track a WebSearchTool/Handler so it can be re-pointed live."""
+        consumers = getattr(self, "_search_consumers", None)
+        if consumers is None:
+            consumers = []
+            self._search_consumers = consumers
+        consumers.append(consumer)
+        return consumer
+
+    def _search_public_snapshot(self) -> dict[str, Any]:
+        """Masked ``search`` block for the REST GET (no raw API key)."""
+        s = getattr(self._settings, "search", None)
+        if s is None:
+            return {}
+        return {
+            "provider": str(getattr(s, "provider", "duckduckgo")),
+            "has_api_key": bool(
+                resolve_search_api_key(
+                    getattr(s, "api_key", "") or "",
+                    getattr(s, "api_key_env", "") or "",
+                )
+            ),
+            "api_key_env": str(getattr(s, "api_key_env", "")),
+            "langsearch_summary": bool(getattr(s, "langsearch_summary", True)),
+            "langsearch_freshness": str(
+                getattr(s, "langsearch_freshness", "noLimit")
+            ),
+            "langsearch_count": int(getattr(s, "langsearch_count", 10)),
+            "fallback_to_duckduckgo": bool(
+                getattr(s, "fallback_to_duckduckgo", True)
+            ),
+            "timeout_seconds": float(getattr(s, "timeout_seconds", 12.0)),
+            "query_reformulation_enabled": bool(
+                getattr(s, "query_reformulation_enabled", True)
+            ),
+        }
+
+    def reconfigure_search(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Apply a partial ``search`` patch, rebuild + re-point the provider.
+
+        Mutates ``settings.search`` in place, persists to ``user.json``
+        (the API key routed through the OS keychain via
+        :func:`secret_store.store_or_passthrough`), rebuilds the shared
+        provider, and swaps it onto every live ``WebSearchTool`` /
+        ``WebSearchHandler`` consumer. Returns the masked snapshot.
+        """
+        s = self._settings.search
+
+        def _set(field: str, value: Any) -> None:
+            if hasattr(s, field):
+                setattr(s, field, value)
+
+        if "provider" in payload:
+            raw = str(payload["provider"] or "").strip().lower()
+            if raw in {"duckduckgo", "langsearch"}:
+                _set("provider", raw)
+        if "api_key" in payload:
+            _set("api_key", str(payload["api_key"] or "").strip())
+        if "api_key_env" in payload:
+            _set("api_key_env", str(payload["api_key_env"] or "").strip())
+        if "langsearch_summary" in payload:
+            _set("langsearch_summary", bool(payload["langsearch_summary"]))
+        if "langsearch_freshness" in payload:
+            _set(
+                "langsearch_freshness",
+                str(payload["langsearch_freshness"] or "noLimit").strip(),
+            )
+        if "langsearch_count" in payload:
+            try:
+                _set("langsearch_count", max(1, min(10, int(payload["langsearch_count"]))))
+            except (TypeError, ValueError):
+                pass
+        if "fallback_to_duckduckgo" in payload:
+            _set("fallback_to_duckduckgo", bool(payload["fallback_to_duckduckgo"]))
+        if "timeout_seconds" in payload:
+            try:
+                _set("timeout_seconds", max(1.0, float(payload["timeout_seconds"])))
+            except (TypeError, ValueError):
+                pass
+        if "query_reformulation_enabled" in payload:
+            _set(
+                "query_reformulation_enabled",
+                bool(payload["query_reformulation_enabled"]),
+            )
+
+        # Persist (API key -> keychain when a backend exists, else
+        # plaintext fallback so it isn't lost).
+        try:
+            persist_user_overrides({"search": {
+                "provider": s.provider,
+                "api_key": secret_store.store_or_passthrough(
+                    secret_store.SEARCH_API_KEY_ACCOUNT, s.api_key
+                ),
+                "api_key_env": s.api_key_env,
+                "langsearch_summary": s.langsearch_summary,
+                "langsearch_freshness": s.langsearch_freshness,
+                "langsearch_count": s.langsearch_count,
+                "fallback_to_duckduckgo": s.fallback_to_duckduckgo,
+                "timeout_seconds": s.timeout_seconds,
+                "query_reformulation_enabled": s.query_reformulation_enabled,
+            }})
+        except Exception:
+            log.warning("persist search overrides failed", exc_info=True)
+
+        # Rebuild + re-point every live consumer.
+        from app.llm.search import build_search_provider
+
+        provider = build_search_provider(s)
+        self._search_provider = provider
+        for consumer in getattr(self, "_search_consumers", []) or []:
+            try:
+                consumer.set_provider(provider)
+            except Exception:
+                log.debug("set_provider on search consumer failed", exc_info=True)
+        log.info("search reconfigured: provider=%s", s.provider)
+        return self._search_public_snapshot()
 
     def reconfigure_chat_llm(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Rebuild ``self._chat_client`` from a partial ``chat_llm`` patch.

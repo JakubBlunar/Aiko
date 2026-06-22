@@ -46,6 +46,9 @@ SERVICE_NAME = "aiko-assistant"
 # the controller, which prefers the ``main_chat`` provider's account).
 CHAT_LLM_ACCOUNT = "chat_llm"
 
+# Account name for the web-search backend (LangSearch) API key.
+SEARCH_API_KEY_ACCOUNT = "search_api_key"
+
 
 def provider_account(provider_id: str) -> str:
     """Keychain account name for a catalogue provider row."""

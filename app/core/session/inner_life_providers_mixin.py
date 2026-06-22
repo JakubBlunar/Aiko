@@ -1025,6 +1025,122 @@ class InnerLifeProvidersMixin:
             + bullet
         )
 
+    def _render_knowledge_grounding_block(self, user_text: str) -> str:
+        """K61: on informational turns, commit to learned specifics.
+
+        When the live turn is a question AND Aiko has facts she's
+        actually learned (F9 ``knowledge`` rows, G3
+        ``curiosity_finding`` rows) topically close to what was asked,
+        surface up to ``knowledge_grounding_max_items`` of them and
+        nudge her to name the real things instead of survey-hedging
+        ("there are many...", "it depends") or lecturing. Pure local
+        work: one regex (K4 dialogue act), one embed of ``user_text``,
+        and a cosine scan over the two memory kinds. No LLM, no extra
+        brain-path turn. Empty when the master switch is off, the turn
+        isn't informational, there are no learned facts, or nothing
+        clears the similarity threshold.
+        """
+        if not bool(
+            getattr(
+                self._settings.agent, "knowledge_grounding_enabled", True,
+            )
+        ):
+            return ""
+        text = (user_text or "").strip()
+        if len(text) < 8:
+            return ""
+        # K4 informational gate -- regex only, no LLM on the hot path.
+        try:
+            from app.core.conversation.dialogue_act_tagger import tag_regex
+
+            if tag_regex(text).act != "question":
+                return ""
+        except Exception:
+            log.debug("knowledge-grounding: dialogue-act tag failed", exc_info=True)
+            return ""
+
+        store = getattr(self, "_memory_store", None)
+        embedder = getattr(self, "_embedder", None)
+        if store is None or embedder is None:
+            return ""
+        try:
+            rows = list(store.iter_by_kind("knowledge")) + list(
+                store.iter_by_kind("curiosity_finding")
+            )
+        except Exception:
+            log.debug("knowledge-grounding: kind snapshot failed", exc_info=True)
+            return ""
+        if not rows:
+            return ""
+        try:
+            qvec = embedder.embed(text)
+        except Exception:
+            log.debug("knowledge-grounding: embed failed", exc_info=True)
+            return ""
+
+        from app.llm.embedder import cosine_similarity
+
+        mem_settings = self._memory_settings
+        threshold = float(
+            getattr(
+                mem_settings, "knowledge_grounding_min_similarity", 0.45,
+            )
+        )
+        max_items = max(
+            1,
+            int(
+                getattr(
+                    mem_settings, "knowledge_grounding_max_items", 2,
+                )
+            ),
+        )
+        scored: list[tuple[float, str]] = []
+        for mem in rows:
+            emb = getattr(mem, "embedding", None)
+            if emb is None or getattr(emb, "size", 0) == 0:
+                continue
+            try:
+                sim = float(cosine_similarity(qvec, emb))
+            except Exception:
+                continue
+            if sim < threshold:
+                continue
+            content = (getattr(mem, "content", "") or "").strip()
+            if content:
+                scored.append((sim, content))
+        if not scored:
+            return ""
+        scored.sort(key=lambda t: t[0], reverse=True)
+
+        bullets: list[str] = []
+        seen: set[str] = set()
+        for _sim, content in scored:
+            key = content.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            snippet = (
+                content
+                if len(content) <= 160
+                else content[:159].rstrip() + "\u2026"
+            )
+            bullets.append(f"- {snippet}")
+            if len(bullets) >= max_items:
+                break
+
+        log.info(
+            "knowledge-grounding fire: candidates=%d surfaced=%d top=%.3f",
+            len(scored),
+            len(bullets),
+            scored[0][0],
+        )
+        return (
+            "You actually know specifics here -- commit to them. Name the "
+            "real things below in your own voice; skip the survey hedges "
+            "(\"there are lots of...\", \"it depends\") and don't lecture:\n"
+            + "\n".join(bullets)
+        )
+
     def _render_belief_gaps_block(self) -> str:
         """K2: surface up to two belief-gap lines from the previous turn.
 

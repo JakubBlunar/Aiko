@@ -131,21 +131,35 @@ class RecallTool:
 # ── web_search ──────────────────────────────────────────────────────────────
 
 
+_WEB_SEARCH_SNIPPET_CAP = 600
+
+
 class WebSearchTool:
-    """DuckDuckGo HTML search. Returns top results so the LLM can ground a
-    reply in current info (news, prices, recent releases, etc.).
+    """Web search wrapper used by the background workers.
+
+    Delegates the actual lookup to a pluggable
+    :class:`app.llm.search.providers.SearchProvider` (DuckDuckGo by
+    default, LangSearch when configured), then re-shapes the hits into
+    the ``{"results": [{title, url, snippet}]}`` JSON the F1 / G3 / F9
+    workers parse. The snippet cap is generous (600 chars) so a
+    LangSearch long-text summary survives to the worker, which applies
+    its own tighter cap.
     """
 
-    def __init__(self) -> None:
-        # Import lazily so the module load doesn't fail when ddg isn't
-        # installed -- the registry will skip registration in that case.
-        try:
-            from duckduckgo_search import DDGS  # type: ignore
-        except Exception as exc:  # pragma: no cover -- missing optional dep
-            raise RuntimeError(
-                "duckduckgo-search must be installed to use the web_search tool"
-            ) from exc
-        self._ddgs_cls = DDGS
+    def __init__(self, provider: "Any | None" = None) -> None:
+        # Provider is injected by SessionController; default to the
+        # keyless DuckDuckGo backend so a bare ``WebSearchTool()`` (and
+        # any test) keeps working. Construction never raises — a missing
+        # ``duckduckgo-search`` dependency surfaces at search time.
+        if provider is None:
+            from app.llm.search.providers import DuckDuckGoProvider
+
+            provider = DuckDuckGoProvider()
+        self._provider = provider
+
+    def set_provider(self, provider: "Any") -> None:
+        """Swap the backend live (used by ``reconfigure_search``)."""
+        self._provider = provider
 
     def schema(self) -> ToolSchema:
         return ToolSchema(
@@ -185,17 +199,18 @@ class WebSearchTool:
             limit = 5
         limit = max(1, min(8, limit))
         try:
-            with self._ddgs_cls() as ddgs:
-                raw = list(ddgs.text(query, max_results=limit))
+            hits = self._provider.search(query, limit)
         except Exception as exc:
             raise ToolError(f"web_search failed: {exc}") from exc
-        if not raw:
+        if not hits:
             return json.dumps({"results": [], "note": "no results"})
         results = []
-        for r in raw:
+        for r in hits:
             results.append({
-                "title": str(r.get("title", "") or "")[:160],
-                "url": str(r.get("href") or r.get("url", "") or ""),
-                "snippet": str(r.get("body", "") or "")[:280],
+                "title": str(getattr(r, "title", "") or "")[:160],
+                "url": str(getattr(r, "url", "") or ""),
+                "snippet": str(getattr(r, "snippet", "") or "")[
+                    :_WEB_SEARCH_SNIPPET_CAP
+                ],
             })
         return json.dumps({"results": results}, ensure_ascii=False)

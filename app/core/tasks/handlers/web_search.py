@@ -99,8 +99,25 @@ class WebSearchHandler:
 
     name: str = HANDLER_WEB_SEARCH
 
-    def __init__(self, *, max_results: int = DEFAULT_MAX_RESULTS) -> None:
+    def __init__(
+        self,
+        *,
+        max_results: int = DEFAULT_MAX_RESULTS,
+        provider: "Any | None" = None,
+    ) -> None:
         self._max_results = max(1, min(_MAX_RESULTS_CEIL, int(max_results)))
+        # Pluggable backend (DuckDuckGo by default, LangSearch when
+        # configured). Injected by the orchestrator; defaults to the
+        # keyless DuckDuckGo provider so a bare construction still works.
+        if provider is None:
+            from app.llm.search.providers import DuckDuckGoProvider
+
+            provider = DuckDuckGoProvider()
+        self._provider = provider
+
+    def set_provider(self, provider: "Any") -> None:
+        """Swap the backend live (used by ``reconfigure_search``)."""
+        self._provider = provider
 
     # ── lifecycle ────────────────────────────────────────────────────
 
@@ -112,32 +129,18 @@ class WebSearchHandler:
         # Clamp the per-call cap under the handler ceiling.
         max_results = max(1, min(self._max_results, parsed.max_results))
         try:
-            from duckduckgo_search import DDGS  # type: ignore
-        except Exception:
-            emit(
-                TaskFailed(
-                    error=(
-                        "web search is unavailable (duckduckgo-search not "
-                        "installed)"
-                    )
-                )
-            )
-            log.warning("web_search: duckduckgo-search import failed")
-            return {"args": args, "phase": "rejected"}
-        try:
-            with DDGS() as ddgs:
-                raw = list(ddgs.text(parsed.query, max_results=max_results))
+            hits = self._provider.search(parsed.query, max_results)
         except Exception as exc:
             emit(TaskFailed(error=f"web search failed: {exc}"[:200]))
             log.info("web_search: query=%r failed: %s", parsed.query, exc)
             return {"args": args, "phase": "rejected"}
         results: list[dict[str, Any]] = []
-        for r in raw:
+        for r in hits:
             results.append(
                 {
-                    "title": str(r.get("title", "") or "")[:_TITLE_CAP],
-                    "url": str(r.get("href") or r.get("url", "") or ""),
-                    "snippet": str(r.get("body", "") or "")[:_SNIPPET_CAP],
+                    "title": str(getattr(r, "title", "") or "")[:_TITLE_CAP],
+                    "url": str(getattr(r, "url", "") or ""),
+                    "snippet": str(getattr(r, "snippet", "") or "")[:_SNIPPET_CAP],
                 }
             )
         result = {

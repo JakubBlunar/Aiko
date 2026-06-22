@@ -191,6 +191,22 @@ VALID_KINDS = {
     # ``(pre-thought)`` suffix in the RAG block so Aiko reads it as a
     # draft she already mulled, not a fact.
     "pre_thought",
+    # F8 personality backlog — a distilled, impersonal, non-time-
+    # sensitive fact Aiko learned (band names in a genre, a studio's
+    # filmography, how a thing works), distinct from personal
+    # ``fact``/``event`` memory about the user. Written by
+    # :class:`app.core.proactive.idle_knowledge_worker.IdleKnowledgeWorker`
+    # (F9) from the topic graph during idle windows, and by future
+    # F1/F7 writers. Carries ``{topic, source_query, source_url,
+    # source_urls, learned_at, cluster_key}`` in the ``metadata`` JSON
+    # column (F4 — every knowledge row is source-cited). Surfaced
+    # through ordinary cosine RAG with a ``(learned)`` suffix tag and a
+    # small retrieval boost on informational (K4 dialogue-act
+    # ``question``) turns; the K61 ``knowledge_grounding`` inner-life
+    # block then nudges Aiko to commit to the specifics instead of
+    # survey-hedging. The persona tells her to surface these naturally
+    # ("oh -- try Slowdive"), never as a lecture.
+    "knowledge",
 }
 
 

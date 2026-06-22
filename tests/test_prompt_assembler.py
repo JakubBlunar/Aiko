@@ -1081,6 +1081,77 @@ class PromiseFollowthroughProviderTests(unittest.TestCase):
         )
 
 
+class KnowledgeGroundingProviderSlotTests(unittest.TestCase):
+    """K61 knowledge-grounding block lands in the system prompt, is
+    silent when the provider returns empty, is dropped under aggressive
+    mode (it's a non-critical steer), and is registered in the T6 tier
+    table right after the knowledge-gap slot."""
+
+    _CUE = "commit to them"
+
+    def _cue_line(self) -> str:
+        return (
+            "You actually know specifics here -- commit to them. Name the "
+            "real things below in your own voice; skip the survey hedges:\n"
+            "- Italian roast is one of the darkest roast levels."
+        )
+
+    def test_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="kg1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                knowledge_grounding=lambda _t: self._cue_line(),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "kg1", "x", context_window=4096, response_budget=256,
+            )
+            self.assertIn(self._CUE, messages[0]["content"])
+
+    def test_silent_when_empty(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="kg2", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                knowledge_grounding=lambda _t: "",
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "kg2", "x", context_window=4096, response_budget=256,
+            )
+            self.assertNotIn(self._CUE, messages[0]["content"])
+
+    def test_dropped_under_aggressive(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="kg3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                knowledge_grounding=lambda _t: self._cue_line(),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "kg3", "x", context_window=4096, response_budget=256,
+                aggressive=True,
+            )
+            self.assertNotIn(self._CUE, messages[0]["content"])
+
+    def test_registered_in_t6_tier_table(self) -> None:
+        from app.core.session.prompt_assembler import _PROMPT_BLOCK_TIERS
+
+        t6 = _PROMPT_BLOCK_TIERS["T6_detectors"]
+        self.assertIn("knowledge_grounding_block", t6)
+        # Pinned ordering: right after the knowledge-gap slot — both
+        # are "what Aiko knows / wonders about" surfaces.
+        self.assertEqual(
+            t6.index("knowledge_grounding_block"),
+            t6.index("knowledge_gaps_block") + 1,
+        )
+
+
 class MoodShellProviderTests(unittest.TestCase):
     """K5 mood-shell tilt: lands in the system prompt, survives
     ``aggressive=True`` (tonal cue is exactly what aggressive mode
