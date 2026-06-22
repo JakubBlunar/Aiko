@@ -98,6 +98,20 @@ guilt — never "you abandoned me."
 
 ## J6. Conflict-repair memory — "we worked through this"
 
+> **STATUS: SHIPPED.** K8 has no resolution event, so J6 adds an in-memory
+> `RepairWatch` (`app/core/relationship/conflict_repair.py`): a rupture arms it
+> (dip floor + recovery target + topic hint from the user's message), and a
+> later post-turn valence recovery (`has_recovered`, within
+> `conflict_repair_watch_turns`) records a durable `repair`-vibe shared moment
+> via `SharedMomentsStore.add(...)`. Producer is `_maybe_track_conflict_repair`
+> / `_record_conflict_repair` in `post_turn_mixin.py` (cooldown-watermarked).
+> Recall rides generic T3 RAG; `repair` added to `VIBE_VOCABULARY` and
+> **excluded from anniversary surfacing** (no "anniversary of our fight"). The
+> deterministic summary is tone-safe ("worked through it … okay after"), never
+> a grievance ledger. Settings `agent.conflict_repair_*`. Tests:
+> `tests/test_conflict_repair.py`, anniversary-exclusion in
+> `tests/test_anniversary_provider.py`.
+
 **Motivation.** K8 (rupture-and-repair) detects an in-the-moment affect
 dip and repair, but the *fact that a disagreement happened and was
 resolved* isn't durably remembered. A relationship deepens partly through

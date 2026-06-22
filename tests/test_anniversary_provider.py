@@ -52,6 +52,15 @@ class TestPickAnniversary(unittest.TestCase):
         moment = _row(1, self.now - timedelta(days=17))
         self.assertIsNone(pick_anniversary([moment], now=self.now))
 
+    def test_repair_vibe_excluded(self) -> None:
+        # J6: a resolved-conflict moment must never surface as a cheerful
+        # anniversary, even on a perfect calendar match.
+        repair = _row(9, self.now - timedelta(days=30), vibe="repair")
+        self.assertIsNone(pick_anniversary([repair], now=self.now))
+        # A non-repair moment on the same day still matches.
+        warm = _row(10, self.now - timedelta(days=30), vibe="warm")
+        self.assertIsNotNone(pick_anniversary([repair, warm], now=self.now))
+
     def test_one_month_match_within_tolerance(self) -> None:
         # 29 days back falls inside the ±1 day tolerance for the 30d window.
         moment = _row(1, self.now - timedelta(days=29))

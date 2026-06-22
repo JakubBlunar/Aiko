@@ -57,6 +57,9 @@ VIBE_VOCABULARY: tuple[str, ...] = (
     "victory",
     "creative",
     "vulnerable",
+    # J6: a disagreement that got resolved ("we worked through this").
+    # Distinct from "comfort" (which is non-conflict consolation).
+    "repair",
     "general",
 )
 

@@ -614,6 +614,16 @@ class AgentSettings:
     reciprocal_vulnerability_enabled: bool = True
     reciprocal_vulnerability_cooldown_hours: float = 96.0
     reciprocal_vulnerability_min_trust: float = 0.2
+    # J6: conflict-repair memory. When a K8 rupture resolves (the user's
+    # valence recovers within a turn window), record a durable
+    # ``repair``-vibe shared moment so Aiko can reference "we sorted this
+    # out" instead of re-litigating. Cooldown stops one rough patch from
+    # spawning several rows.
+    conflict_repair_enabled: bool = True
+    conflict_repair_watch_turns: int = 5
+    conflict_repair_recovery_epsilon: float = 0.05
+    conflict_repair_min_recovery_rise: float = 0.10
+    conflict_repair_cooldown_hours: float = 12.0
     # ── F1 personality backlog: background fact-checker ───────────────
     # Master switch. When off, the queue still persists but the
     # IdleFactChecker worker never runs (so any pending claims simply
@@ -4221,6 +4231,27 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                 -1.0, min(1.0, float(
                     agent_raw.get("reciprocal_vulnerability_min_trust", 0.2),
                 )),
+            ),
+            conflict_repair_enabled=bool(
+                agent_raw.get("conflict_repair_enabled", True),
+            ),
+            conflict_repair_watch_turns=max(
+                1, int(agent_raw.get("conflict_repair_watch_turns", 5)),
+            ),
+            conflict_repair_recovery_epsilon=max(
+                0.0, float(
+                    agent_raw.get("conflict_repair_recovery_epsilon", 0.05),
+                ),
+            ),
+            conflict_repair_min_recovery_rise=max(
+                0.0, float(
+                    agent_raw.get("conflict_repair_min_recovery_rise", 0.10),
+                ),
+            ),
+            conflict_repair_cooldown_hours=max(
+                0.0, float(
+                    agent_raw.get("conflict_repair_cooldown_hours", 12.0),
+                ),
             ),
             summary_idle_seconds=max(2.0, float(agent_raw.get("summary_idle_seconds", 15.0))),
             summary_min_unsummarized_messages=max(2, int(agent_raw.get("summary_min_unsummarized_messages", 6))),
