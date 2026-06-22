@@ -58,8 +58,17 @@ class _AssistantStub:
 
 
 @dataclass
+class _AgentStub:
+    # K47: the open_question narrative branch reads this through
+    # ``_question_balance_suppressed``. Enabled + a zero suppress
+    # countdown means "not suppressed", so the label renders.
+    question_balance_enabled: bool = True
+
+
+@dataclass
 class _SettingsStub:
     assistant: _AssistantStub
+    agent: _AgentStub
 
 
 def _make_controller(
@@ -73,7 +82,9 @@ def _make_controller(
     controller = SessionController.__new__(SessionController)
     controller._prepared_nudge_store = store  # type: ignore[attr-defined]
     controller._user_id = user_id  # type: ignore[attr-defined]
-    controller._settings = _SettingsStub(assistant=_AssistantStub())  # type: ignore[attr-defined]
+    controller._settings = _SettingsStub(  # type: ignore[attr-defined]
+        assistant=_AssistantStub(), agent=_AgentStub(),
+    )
     return controller
 
 

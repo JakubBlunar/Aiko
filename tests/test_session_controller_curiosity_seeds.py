@@ -107,6 +107,10 @@ def _make_fixture(
         _memory_store=store,
         _embedder=embedder,
         _notify_memory_updated=MagicMock(),
+        # K47: the render block early-returns when the question/share
+        # gate is armed. Stub it to "not suppressed" so these tests
+        # exercise the curiosity-seed path itself.
+        _question_balance_suppressed=lambda: False,
     )
     return fixture
 

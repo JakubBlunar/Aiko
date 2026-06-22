@@ -239,8 +239,16 @@ class WorkerRunTests(unittest.TestCase):
     def test_writes_pre_thoughts(self) -> None:
         store = _FakeMemoryStore()
         client = _FakeClient('{"questions": ["do you like jazz?", "fav food?"]}')
+        # Pin the two question embeddings to orthogonal vectors so the
+        # novelty dedupe can't reject the second write under an
+        # unlucky PYTHONHASHSEED (the default embedder hashes text).
+        embedder = _FakeEmbedder({
+            "do you like jazz?": np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+            "fav food?": np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32),
+        })
         notified: list[dict] = []
-        worker = _make_worker(store=store, client=client, notify=notified.append)
+        worker = _make_worker(store=store, client=client, embedder=embedder,
+                              notify=notified.append)
 
         result = worker.run()
 
@@ -338,15 +346,25 @@ class WorkerRunTests(unittest.TestCase):
 
     def test_prune_to_cap(self) -> None:
         # 2 existing + write up to 2 → 4 active, cap 3 → prune 1 oldest.
+        # Pin every embedding to an orthogonal basis vector so the
+        # novelty dedupe (cosine >= 0.85) never rejects a write. The
+        # default _FakeEmbedder derives vectors from hash(text), which
+        # is PYTHONHASHSEED-randomised and occasionally collides — that
+        # made this test fail intermittently across process runs.
+        e0 = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        e1 = np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32)
+        e2 = np.array([0.0, 0.0, 1.0, 0.0], dtype=np.float32)
+        e3 = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
         existing = [
-            _FakeMemory(1, "pre_thought", _unit(1.0), "scratchpad",
+            _FakeMemory(1, "pre_thought", e0, "scratchpad",
                         {"question": "old1"}, 0.4, "2026-06-19T00:00:00+00:00"),
-            _FakeMemory(2, "pre_thought", _unit(2.0), "scratchpad",
+            _FakeMemory(2, "pre_thought", e1, "scratchpad",
                         {"question": "old2"}, 0.4, "2026-06-20T00:00:00+00:00"),
         ]
         store = _FakeMemoryStore(existing)
         client = _FakeClient('{"questions": ["new a?", "new b?"]}')
-        worker = _make_worker(store=store, client=client,
+        embedder = _FakeEmbedder({"new a?": e2, "new b?": e3})
+        worker = _make_worker(store=store, client=client, embedder=embedder,
                               agent=_agent(pre_thought_max_active=3,
                                            pre_thought_max_per_run=2))
         result = worker.run()
