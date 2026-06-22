@@ -1,0 +1,20 @@
+{
+  "mixin_path": "app/core/session/llm_clients_mixin.py",
+  "class_name": "LlmClientsMixin",
+  "docstring": "Worker LLM client mixin.\n\nExtracted from :mod:`app.core.session.session_controller`. Owns the\nworker/maintenance/workflow client construction, the worker-model\ncascade, ``set_chat_model``, and context-window resolution. The chat\nclient factory ``_build_chat_client`` and ``list_chat_models`` stay in\nthe controller / llm-settings group (they touch the secret/route\nmachinery and are patched by tests there). State ownership stays on\n``SessionController.__init__``.\n\nNB: tests that patched ``app.core.session.session_controller.<symbol>``\nfor any moved method must patch\n``app.core.session.llm_clients_mixin.<symbol>`` instead.",
+  "class_doc": "Worker/workflow client build + worker-model cascade + set_chat_model.",
+  "methods": [
+    "_apply_model_to_worker",
+    "_build_worker_runtime_updaters",
+    "_cascade_worker_model",
+    "_worker_route_model_ctx",
+    "_build_worker_ollama_client",
+    "_install_worker_clients",
+    "_build_workflow_client",
+    "_resolve_context_window",
+    "set_chat_model"
+  ],
+  "extra_imports": [],
+  "omit_auto": ["log"],
+  "stub": "# Worker/workflow LLM client build + cascade + set_chat_model methods\n    # live in llm_clients_mixin.py."
+}

@@ -397,7 +397,7 @@ class TestConnectionTests(unittest.TestCase):
             "app.core.session.session_controller._build_chat_client",
             return_value=stub,
         ), patch(
-            "app.core.session.session_controller.persist_user_overrides",
+            "app.core.session.llm_settings_mixin.persist_user_overrides",
         ) as persist:
             response = client.post(
                 "/api/llm/test-connection",

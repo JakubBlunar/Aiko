@@ -203,7 +203,7 @@ class SwitchSessionPersistenceTests(unittest.TestCase):
         controller._session_id = "main"
         controller._clear_merge_buffer = MagicMock()
         with mock.patch(
-            "app.core.session.session_controller.persist_user_overrides",
+            "app.core.session.lifecycle_mixin.persist_user_overrides",
             side_effect=OSError("locked"),
         ):
             controller.switch_session("survives")

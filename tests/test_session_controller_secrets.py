@@ -77,7 +77,7 @@ class SecretMigrationTests(unittest.TestCase):
             persisted.append(patch_dict)
 
         with patch(
-            "app.core.session.session_controller.persist_user_overrides",
+            "app.core.session.llm_settings_mixin.persist_user_overrides",
             side_effect=_capture,
         ), patch.object(secret_store, "running_under_test", return_value=False), \
                 patch.object(secret_store, "_keyring", return_value=fake):
@@ -121,7 +121,7 @@ class SecretMigrationTests(unittest.TestCase):
         controller = SessionController.__new__(SessionController)
         controller._settings = settings
         with patch(
-            "app.core.session.session_controller.persist_user_overrides",
+            "app.core.session.llm_settings_mixin.persist_user_overrides",
             side_effect=lambda p: persisted.append(p),
         ), patch.object(secret_store, "running_under_test", return_value=False), \
                 patch.object(secret_store, "_keyring", return_value=None):
@@ -139,7 +139,7 @@ class SecretMigrationTests(unittest.TestCase):
         controller = SessionController.__new__(SessionController)
         controller._settings = settings
         with patch(
-            "app.core.session.session_controller.persist_user_overrides",
+            "app.core.session.llm_settings_mixin.persist_user_overrides",
         ) as persist, patch.object(secret_store, "set_secret") as set_secret:
             controller._init_secret_storage()
         persist.assert_not_called()

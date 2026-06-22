@@ -1,0 +1,22 @@
+{
+  "mixin_path": "app/core/session/chat_turn_mixin.py",
+  "class_name": "ChatTurnMixin",
+  "docstring": "Chat-turn mixin.\n\nExtracted from :mod:`app.core.session.session_controller`. Owns the\nsynchronous chat loop (``chat_once`` / ``chat_once_streaming``), the\nper-turn metrics packing (``_set_last_metrics``), and the bootstrap-time\nscheduling helpers that prime the next turn (dream-pass scheduling,\nresume-opener, RAG prefetch lookup, prompt prebuild). State ownership\nstays on ``SessionController.__init__``; these methods only read/write\n``self.*``.\n\nNB: tests that patched ``app.core.session.session_controller.<symbol>``\nfor any moved method must patch\n``app.core.session.chat_turn_mixin.<symbol>`` instead.",
+  "class_doc": "Chat loop + per-turn metrics + next-turn scheduling helpers.",
+  "methods": [
+    "chat_once",
+    "chat_once_streaming",
+    "_set_last_metrics",
+    "_maybe_schedule_dream_pass",
+    "_top_inner_life_contents",
+    "_compute_user_reply_latency_seconds",
+    "_last_assistant_age_hours",
+    "_maybe_schedule_resume_opener",
+    "_lookup_prefetched_rag_block",
+    "_recent_turn_texts",
+    "_submit_prompt_prebuild"
+  ],
+  "extra_imports": [],
+  "omit_auto": ["log"],
+  "stub": "# Chat-turn methods (chat_once / chat_once_streaming / metrics /\n    # next-turn scheduling helpers) live in chat_turn_mixin.py."
+}
