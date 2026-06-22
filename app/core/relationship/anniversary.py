@@ -47,6 +47,12 @@ _TOLERANCE_DAYS = 1.0
 # multi-turn conversation only surfaces the same anniversary once.
 _RATE_LIMIT_SECONDS = 6 * 3600.0
 
+# J6: vibes never surfaced as an anniversary. A "repair" moment marks a
+# resolved disagreement; "happy anniversary of our fight" is exactly the
+# grievance-ledger tone the feature must avoid. Repairs still ride normal
+# RAG recall when the topic genuinely resurfaces.
+_ANNIVERSARY_EXCLUDED_VIBES: frozenset[str] = frozenset({"repair"})
+
 
 @dataclass(slots=True)
 class AnniversaryMatch:
@@ -92,6 +98,8 @@ def pick_anniversary(
     """
     candidates_by_window: dict[int, list["SharedMomentRow"]] = {}
     for moment in moments:
+        if str(getattr(moment, "vibe", "")) in _ANNIVERSARY_EXCLUDED_VIBES:
+            continue
         when = _parse_iso(moment.when)
         if when is None:
             continue

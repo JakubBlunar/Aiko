@@ -2939,6 +2939,11 @@ class SessionController(
         # K8 — one-shot affect-rupture slot. Same shape as above:
         # post-turn detector fills, next-turn provider clears.
         self._pending_rupture: Any = None
+        # J6 — conflict-repair watch. Armed when a rupture fires; a later
+        # post-turn valence recovery records a durable ``repair`` shared
+        # moment and clears it. In-memory (a watch lost on restart is an
+        # acceptable miss). Holds a ``conflict_repair.RepairWatch``.
+        self._repair_watch: Any = None
         # K45 — mood inertia. ``_mood_inertia_reactions`` is a short
         # oldest-first ring of recent reaction tags (whiplash
         # detection); ``_pending_mood_inertia`` is the one-shot cue

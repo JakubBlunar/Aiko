@@ -3404,5 +3404,68 @@ class ReciprocalVulnerabilitySettingsTests(unittest.TestCase):
         self.assertAlmostEqual(a.reciprocal_vulnerability_min_trust, 1.0)
 
 
+class ConflictRepairSettingsTests(unittest.TestCase):
+    """J6: conflict-repair agent knobs default / round-trip / clamp."""
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(self, agent_extra: dict | None = None) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(json.loads(default_path.read_text(encoding="utf-8")))
+        for k in (
+            "conflict_repair_enabled",
+            "conflict_repair_watch_turns",
+            "conflict_repair_recovery_epsilon",
+            "conflict_repair_min_recovery_rise",
+            "conflict_repair_cooldown_hours",
+        ):
+            cfg.get("agent", {}).pop(k, None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults(self) -> None:
+        a = load_settings(config_path=self._write_config()).agent
+        self.assertTrue(a.conflict_repair_enabled)
+        self.assertEqual(a.conflict_repair_watch_turns, 5)
+        self.assertAlmostEqual(a.conflict_repair_recovery_epsilon, 0.05)
+        self.assertAlmostEqual(a.conflict_repair_min_recovery_rise, 0.10)
+        self.assertAlmostEqual(a.conflict_repair_cooldown_hours, 12.0)
+
+    def test_overrides_round_trip(self) -> None:
+        path = self._write_config(agent_extra={
+            "conflict_repair_enabled": False,
+            "conflict_repair_watch_turns": 8,
+            "conflict_repair_recovery_epsilon": 0.2,
+            "conflict_repair_min_recovery_rise": 0.3,
+            "conflict_repair_cooldown_hours": 6.0,
+        })
+        a = load_settings(config_path=path).agent
+        self.assertFalse(a.conflict_repair_enabled)
+        self.assertEqual(a.conflict_repair_watch_turns, 8)
+        self.assertAlmostEqual(a.conflict_repair_recovery_epsilon, 0.2)
+        self.assertAlmostEqual(a.conflict_repair_min_recovery_rise, 0.3)
+        self.assertAlmostEqual(a.conflict_repair_cooldown_hours, 6.0)
+
+    def test_watch_turns_floor(self) -> None:
+        path = self._write_config(
+            agent_extra={"conflict_repair_watch_turns": 0}
+        )
+        a = load_settings(config_path=path).agent
+        self.assertEqual(a.conflict_repair_watch_turns, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

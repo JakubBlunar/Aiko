@@ -28,6 +28,10 @@ from typing import Any
 
 log = logging.getLogger("app.session")
 
+# J6: kv_meta watermark so one extended rough patch doesn't spawn several
+# repair moments in quick succession.
+_KV_CONFLICT_REPAIR_AT = "conflict_repair.last_recorded_at"
+
 
 class PostTurnMixin:
     """``_resolve_curiosity_seeds``, revival detection, ``_post_turn_inner_life``."""
@@ -1171,6 +1175,142 @@ class PostTurnMixin:
             )
         self._tease_cue_cooldown = cooldown
 
+    def _maybe_track_conflict_repair(
+        self,
+        *,
+        rupture_result: Any,
+        current_valence: float,
+        user_text: str,
+        user_message_id: int | None,
+        assistant_message_id: int | None,
+    ) -> None:
+        """J6: arm a repair watch on rupture; record on recovery.
+
+        * A fresh rupture this turn (re)arms the watch with the dip floor
+          + recovery target + a topic hint, and never records on the same
+          turn (recovery hasn't happened yet).
+        * Otherwise, if a watch is active and the user's valence has
+          recovered, write the repair shared moment and clear the watch.
+        * If the watch window runs out without recovery, drop it silently
+          (an unresolved rupture is not a repair).
+        """
+        agent = self._settings.agent
+        if not bool(getattr(agent, "conflict_repair_enabled", True)):
+            self._repair_watch = None
+            return
+
+        from app.core.relationship import conflict_repair as _cr
+
+        if rupture_result is not None:
+            topic = _cr.clean_topic(user_text)
+            existing = getattr(self, "_repair_watch", None)
+            if not topic and existing is not None:
+                topic = existing.topic
+            self._repair_watch = _cr.RepairWatch(
+                recovery_target=float(rupture_result.prior_valence),
+                dip_floor=float(rupture_result.current_valence),
+                topic=topic,
+                turns_left=int(getattr(agent, "conflict_repair_watch_turns", 5)),
+            )
+            return
+
+        watch = getattr(self, "_repair_watch", None)
+        if watch is None:
+            return
+
+        if _cr.has_recovered(
+            current_valence,
+            watch,
+            epsilon=float(
+                getattr(agent, "conflict_repair_recovery_epsilon", 0.05)
+            ),
+            min_rise=float(
+                getattr(agent, "conflict_repair_min_recovery_rise", 0.10)
+            ),
+        ):
+            self._record_conflict_repair(
+                watch,
+                user_message_id=user_message_id,
+                assistant_message_id=assistant_message_id,
+            )
+            self._repair_watch = None
+            return
+
+        watch.turns_left -= 1
+        if watch.turns_left <= 0:
+            self._repair_watch = None
+
+    def _record_conflict_repair(
+        self,
+        watch: Any,
+        *,
+        user_message_id: int | None,
+        assistant_message_id: int | None,
+    ) -> None:
+        """J6: persist the repair as a ``repair``-vibe shared moment."""
+        store = getattr(self, "_shared_moments_store", None)
+        if store is None:
+            return
+
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc)
+        chat_db = getattr(self, "_chat_db", None)
+        cooldown_h = float(
+            getattr(self._settings.agent, "conflict_repair_cooldown_hours", 12.0)
+        )
+        if chat_db is not None and cooldown_h > 0:
+            try:
+                last = chat_db.kv_get(_KV_CONFLICT_REPAIR_AT)
+            except Exception:
+                last = None
+            if last:
+                try:
+                    last_ts = datetime.fromisoformat(
+                        str(last).replace("Z", "+00:00")
+                    )
+                    if last_ts.tzinfo is None:
+                        last_ts = last_ts.replace(tzinfo=timezone.utc)
+                    if (now - last_ts).total_seconds() < cooldown_h * 3600.0:
+                        return
+                except Exception:
+                    pass
+
+        from app.core.relationship import conflict_repair as _cr
+
+        summary = _cr.build_repair_summary(self.user_display_name, watch.topic)
+        ids = [
+            i for i in (user_message_id, assistant_message_id) if i is not None
+        ]
+        try:
+            row = store.add(
+                summary=summary,
+                vibe="repair",
+                source="repair",
+                confidence=0.7,
+                salience=0.7,
+                source_message_ids=ids or None,
+                source_session=getattr(self, "session_key", None),
+            )
+        except Exception:
+            log.debug("conflict-repair moment write failed", exc_info=True)
+            return
+        if row is None:
+            return
+        if chat_db is not None:
+            try:
+                chat_db.kv_set(_KV_CONFLICT_REPAIR_AT, now.isoformat())
+            except Exception:
+                log.debug("conflict-repair watermark write failed", exc_info=True)
+        log.info(
+            "J6 conflict-repair recorded: moment_id=%s topic=%r",
+            row.id, watch.topic,
+        )
+        try:
+            self._notify_shared_moment_added(row)
+        except Exception:
+            log.debug("conflict-repair notify failed", exc_info=True)
+
     def _post_turn_inner_life(
         self,
         *,
@@ -1256,6 +1396,7 @@ class PostTurnMixin:
         # have both ``affect_before`` (pre-turn) and ``state``
         # (post-turn) in scope. One-shot slot on the controller is
         # consumed by the next turn's inner-life provider.
+        rupture_result = None
         if (
             affect_before is not None
             and bool(
@@ -1290,6 +1431,22 @@ class PostTurnMixin:
                     )
             except Exception:
                 log.debug("rupture detector raised", exc_info=True)
+
+        # J6 — conflict-repair tracking. Arms a watch on a fresh rupture
+        # and records a durable ``repair`` shared moment when the user's
+        # valence recovers within the watch window. Runs every post-turn
+        # so it can see the recovery on a later turn than the rupture.
+        if state is not None:
+            try:
+                self._maybe_track_conflict_repair(
+                    rupture_result=rupture_result,
+                    current_valence=float(state.valence),
+                    user_text=user_text,
+                    user_message_id=user_message_id,
+                    assistant_message_id=assistant_message_id,
+                )
+            except Exception:
+                log.debug("conflict-repair tracking failed", exc_info=True)
 
         # K45 — mood inertia. Compare the fresh reaction tag's implied
         # affect target against the PRE-impulse smoothed state
