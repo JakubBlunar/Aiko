@@ -1,0 +1,17 @@
+{
+  "mixin_path": "app/core/session/voice_capture_mixin.py",
+  "class_name": "VoiceCaptureMixin",
+  "docstring": "Voice-capture pipeline mixin.\n\nExtracted from :mod:`app.core.session.session_controller`. Owns the\nmicrophone capture / STT / live-phrase pipeline: ``record_and_chat``,\n``listen_once_and_chat``, ``capture_live_phrase``, ``capture_ptt_phrase``,\n``process_live_capture`` and ``run_stt_diagnostic``. State ownership\nstays on ``SessionController.__init__``.\n\nNB: tests that patched ``app.core.session.session_controller.<symbol>``\nfor any moved method must patch\n``app.core.session.voice_capture_mixin.<symbol>`` instead.",
+  "class_doc": "Mic capture + STT + live/PTT phrase pipeline.",
+  "methods": [
+    "record_and_chat",
+    "listen_once_and_chat",
+    "capture_live_phrase",
+    "capture_ptt_phrase",
+    "process_live_capture",
+    "run_stt_diagnostic"
+  ],
+  "extra_imports": [],
+  "omit_auto": ["log"],
+  "stub": "# Voice-capture pipeline methods (record_and_chat /\n    # capture_live_phrase / process_live_capture / ...) live in\n    # voice_capture_mixin.py."
+}

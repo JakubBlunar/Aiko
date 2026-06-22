@@ -1,0 +1,20 @@
+{
+  "mixin_path": "app/core/session/proactive_presence_mixin.py",
+  "class_name": "ProactivePresenceMixin",
+  "docstring": "Proactive + presence mixin.\n\nExtracted from :mod:`app.core.session.session_controller`. Owns the\nproactive-message surface (startup greeting, proactive generation, live\nvoice-session flag), the typed-silence timer machinery, and the\nuser-presence / active-app signals. State ownership stays on\n``SessionController.__init__``.\n\nNB: tests that patched ``app.core.session.session_controller.<symbol>``\nfor any moved method must patch\n``app.core.session.proactive_presence_mixin.<symbol>`` instead.",
+  "class_doc": "Proactive messages + typed-silence timer + presence/activity.",
+  "methods": [
+    "build_startup_greeting",
+    "generate_proactive_message",
+    "set_live_voice_session_active",
+    "_is_typed_proactive_eligible",
+    "_arm_typed_silence_timer",
+    "_disarm_typed_silence_timer",
+    "_on_typed_silence_fire",
+    "set_user_present",
+    "set_user_active_app"
+  ],
+  "extra_imports": [],
+  "omit_auto": ["log"],
+  "stub": "# Proactive + presence methods live in proactive_presence_mixin.py."
+}

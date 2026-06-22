@@ -1,0 +1,12 @@
+{
+  "mixin_path": "app/core/session/speaking_workers_init_mixin.py",
+  "class_name": "SpeakingWorkersInitMixin",
+  "docstring": "Speaking-window worker bootstrap mixin.\n\nExtracted from ``SessionController.__init__``. Holds the construction of\nthe foreground/background workers built before the scheduler\n(``_init_speaking_workers``: reflection, dream, catchphrase, curiosity,\nrelationship, agenda, promise, dialogue-act, user-profile, self-image,\nconsolidator, shared-moments, knowledge-gap, goals, fact-check,\nrelationship-axes, touch) and the speaking-window scheduler + its\nregistered jobs (``_init_speaking_window``). Runs in the same order it\nused to inline; state ownership is unchanged.\n\nNB: tests that patched ``app.core.session.session_controller.<symbol>``\nfor a symbol used here must patch\n``app.core.session.speaking_workers_init_mixin.<symbol>`` instead.",
+  "class_doc": "__init__ bootstrap: speaking-window workers + scheduler/jobs.",
+  "extra_imports": [],
+  "omit_auto": ["log"],
+  "helpers": [
+    {"name": "_init_speaking_workers", "start": 1021, "end": 1645, "sig_params": ["settings: AppSettings", "self_image_path"], "call_args": ["settings", "self_image_path"]},
+    {"name": "_init_speaking_window", "start": 1646, "end": 2553, "sig_params": ["settings: AppSettings"], "call_args": ["settings"]}
+  ]
+}

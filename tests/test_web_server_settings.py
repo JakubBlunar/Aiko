@@ -208,7 +208,7 @@ class CompanionSettingsTests(unittest.TestCase):
 
     def test_patch_grounding_line_mode_runs_hook(self) -> None:
         client, session, settings = _build_client()
-        with patch("app.web.server.persist_user_overrides") as persist:
+        with patch("app.web.rest.sessions_settings_routes.persist_user_overrides") as persist:
             response = client.patch(
                 "/api/settings",
                 json={"companion": {"grounding_line_mode": "replace"}},
@@ -222,7 +222,7 @@ class CompanionSettingsTests(unittest.TestCase):
 
     def test_patch_grounding_line_mode_invalid_falls_back(self) -> None:
         client, _session, settings = _build_client()
-        with patch("app.web.server.persist_user_overrides"):
+        with patch("app.web.rest.sessions_settings_routes.persist_user_overrides"):
             client.patch(
                 "/api/settings",
                 json={"companion": {"grounding_line_mode": "bogus"}},
@@ -231,7 +231,7 @@ class CompanionSettingsTests(unittest.TestCase):
 
     def test_patch_world_notice_clamps_and_persists(self) -> None:
         client, _session, settings = _build_client()
-        with patch("app.web.server.persist_user_overrides") as persist:
+        with patch("app.web.rest.sessions_settings_routes.persist_user_overrides") as persist:
             client.patch(
                 "/api/settings",
                 json={
@@ -250,7 +250,7 @@ class CompanionSettingsTests(unittest.TestCase):
 
     def test_patch_banner_duration_clamps(self) -> None:
         client, _session, settings = _build_client()
-        with patch("app.web.server.persist_user_overrides"):
+        with patch("app.web.rest.sessions_settings_routes.persist_user_overrides"):
             client.patch(
                 "/api/settings",
                 json={
@@ -270,7 +270,7 @@ class CompanionSettingsTests(unittest.TestCase):
 
     def test_patch_expression_mask_sets_and_persists(self) -> None:
         client, _session, settings = _build_client()
-        with patch("app.web.server.persist_user_overrides") as persist:
+        with patch("app.web.rest.sessions_settings_routes.persist_user_overrides") as persist:
             response = client.patch(
                 "/api/settings",
                 json={"companion": {"expression_mask": "tsundere_light"}},
@@ -285,7 +285,7 @@ class CompanionSettingsTests(unittest.TestCase):
 
     def test_patch_expression_mask_invalid_falls_back(self) -> None:
         client, _session, settings = _build_client()
-        with patch("app.web.server.persist_user_overrides"):
+        with patch("app.web.rest.sessions_settings_routes.persist_user_overrides"):
             client.patch(
                 "/api/settings",
                 json={"companion": {"expression_mask": "bogus"}},
@@ -294,7 +294,7 @@ class CompanionSettingsTests(unittest.TestCase):
 
     def test_patch_earcons_runs_runtime_hook(self) -> None:
         client, session, settings = _build_client()
-        with patch("app.web.server.persist_user_overrides") as persist:
+        with patch("app.web.rest.sessions_settings_routes.persist_user_overrides") as persist:
             response = client.patch(
                 "/api/settings",
                 json={"audio": {"earcons_enabled": False}},

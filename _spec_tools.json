@@ -1,0 +1,14 @@
+{
+  "mixin_path": "app/core/session/tools_registry_mixin.py",
+  "class_name": "ToolsRegistryMixin",
+  "docstring": "Agent tool-registry mixin.\n\nExtracted from :mod:`app.core.session.session_controller`. Owns the\nper-turn agent tool registry rebuild + accessors. State ownership stays\non ``SessionController.__init__``.\n\nNB: tests that patched ``app.core.session.session_controller.<symbol>``\nfor any moved method must patch\n``app.core.session.tools_registry_mixin.<symbol>`` instead.",
+  "class_doc": "rebuild_tool_registry + tool_registry / available_tool_names.",
+  "methods": [
+    "tool_registry",
+    "available_tool_names",
+    "rebuild_tool_registry"
+  ],
+  "extra_imports": [],
+  "omit_auto": ["log"],
+  "stub": "# Tool-registry methods live in tools_registry_mixin.py."
+}

@@ -26,23 +26,47 @@ up*. See each mixin's docstring for the exact replacement path.
 from __future__ import annotations
 
 from app.core.session.avatar_mixin import AvatarMixin
+from app.core.session.chat_turn_mixin import ChatTurnMixin
+from app.core.session.detectors_init_mixin import DetectorsInitMixin
+from app.core.session.idle_workers_init_mixin import IdleWorkersInitMixin
 from app.core.session.inner_life_providers_mixin import InnerLifeProvidersMixin
+from app.core.session.lifecycle_mixin import LifecycleMixin
+from app.core.session.listeners_metrics_mixin import ListenersMetricsMixin
+from app.core.session.llm_clients_mixin import LlmClientsMixin
+from app.core.session.llm_settings_mixin import LlmSettingsMixin
 from app.core.session.memory_facade_mixin import MemoryFacadeMixin
 from app.core.session.persona_regression_mixin import PersonaRegressionMixin
 from app.core.session.post_turn_mixin import PostTurnMixin
+from app.core.session.proactive_presence_mixin import ProactivePresenceMixin
 from app.core.session.search_provider_mixin import SearchProviderMixin
 from app.core.session.speaking_window_jobs_mixin import SpeakingWindowJobsMixin
+from app.core.session.speaking_workers_init_mixin import SpeakingWorkersInitMixin
 from app.core.session.task_orchestration_mixin import TaskOrchestrationMixin
+from app.core.session.tools_registry_mixin import ToolsRegistryMixin
+from app.core.session.voice_capture_mixin import VoiceCaptureMixin
+from app.core.session.voice_mixin import VoiceMixin
 from app.core.session.world_mixin import WorldMixin
 
 __all__ = [
     "AvatarMixin",
+    "ChatTurnMixin",
+    "DetectorsInitMixin",
+    "IdleWorkersInitMixin",
     "InnerLifeProvidersMixin",
+    "LifecycleMixin",
+    "ListenersMetricsMixin",
+    "LlmClientsMixin",
+    "LlmSettingsMixin",
     "MemoryFacadeMixin",
     "PersonaRegressionMixin",
     "PostTurnMixin",
+    "ProactivePresenceMixin",
     "SearchProviderMixin",
     "SpeakingWindowJobsMixin",
+    "SpeakingWorkersInitMixin",
     "TaskOrchestrationMixin",
+    "ToolsRegistryMixin",
+    "VoiceCaptureMixin",
+    "VoiceMixin",
     "WorldMixin",
 ]

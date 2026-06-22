@@ -1,0 +1,27 @@
+{
+  "mixin_path": "app/core/session/listeners_metrics_mixin.py",
+  "class_name": "ListenersMetricsMixin",
+  "docstring": "WS listeners + metrics mixin.\n\nExtracted from :mod:`app.core.session.session_controller`. Owns the\nWebSocket listener registries (message / tool-event / tts-state /\nmetrics / tts-amplitude) and their notify helpers, the TTS-state\nbridge, plus the per-turn latency metrics + decision-trace surface.\nState ownership stays on ``SessionController.__init__``.\n\nNB: tests that patched ``app.core.session.session_controller.<symbol>``\nfor any moved method must patch\n``app.core.session.listeners_metrics_mixin.<symbol>`` instead.",
+  "class_doc": "WS listeners + TTS-state bridge + latency metrics + decision trace.",
+  "methods": [
+    "add_message_listener",
+    "_notify_message",
+    "add_tool_event_listener",
+    "_notify_tool_event",
+    "add_tts_state_listener",
+    "add_metrics_listener",
+    "_notify_metrics_updated",
+    "_on_tts_state",
+    "add_tts_amplitude_listener",
+    "_on_tts_amplitude",
+    "get_decision_trace",
+    "clear_decision_trace",
+    "_zero_metrics",
+    "get_last_metrics",
+    "get_average_metrics",
+    "reset_latency_metrics"
+  ],
+  "extra_imports": [],
+  "omit_auto": ["log"],
+  "stub": "# WS listeners + metrics + decision-trace methods live in\n    # listeners_metrics_mixin.py."
+}

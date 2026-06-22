@@ -148,7 +148,7 @@ class AddProviderTests(unittest.TestCase):
             provider_id="local_ollama", model="llama3.1:8b",
         )
         with patch(
-            "app.core.session.session_controller.persist_user_overrides",
+            "app.core.session.llm_settings_mixin.persist_user_overrides",
         ):
             entry = controller.add_provider(
                 template_id="openai",
@@ -164,7 +164,7 @@ class AddProviderTests(unittest.TestCase):
     def test_add_with_id_collision_raises(self) -> None:
         controller = _make_controller()
         with patch(
-            "app.core.session.session_controller.persist_user_overrides",
+            "app.core.session.llm_settings_mixin.persist_user_overrides",
         ), self.assertRaises(ValueError):
             controller.add_provider(
                 template_id="openai",
@@ -174,7 +174,7 @@ class AddProviderTests(unittest.TestCase):
     def test_add_auto_generates_id_when_template_taken(self) -> None:
         controller = _make_controller()
         with patch(
-            "app.core.session.session_controller.persist_user_overrides",
+            "app.core.session.llm_settings_mixin.persist_user_overrides",
         ):
             entry = controller.add_provider(
                 template_id="openai",
@@ -190,7 +190,7 @@ class UpdateProviderTests(unittest.TestCase):
     def test_patch_non_credential_field(self) -> None:
         controller = _make_controller()
         with patch(
-            "app.core.session.session_controller.persist_user_overrides",
+            "app.core.session.llm_settings_mixin.persist_user_overrides",
         ):
             entry = controller.update_provider("openai", {"name": "Renamed"})
         self.assertEqual(entry["name"], "Renamed")
@@ -204,7 +204,7 @@ class UpdateProviderTests(unittest.TestCase):
         hits the new endpoint)."""
         controller = _make_controller()
         with patch(
-            "app.core.session.session_controller.persist_user_overrides",
+            "app.core.session.llm_settings_mixin.persist_user_overrides",
         ), patch.object(
             controller._client_cache, "invalidate",
         ) as invalidate:
@@ -232,7 +232,7 @@ class UpdateProviderCredentialsTests(unittest.TestCase):
     def test_credentials_rebuild_client(self) -> None:
         controller = _make_controller()
         with patch(
-            "app.core.session.session_controller.persist_user_overrides",
+            "app.core.session.llm_settings_mixin.persist_user_overrides",
         ), patch.object(
             controller._client_cache, "invalidate",
         ) as invalidate:
@@ -268,7 +268,7 @@ class RemoveProviderTests(unittest.TestCase):
             base_url="http://x:11434",
         ))
         with patch(
-            "app.core.session.session_controller.persist_user_overrides",
+            "app.core.session.llm_settings_mixin.persist_user_overrides",
         ):
             controller.remove_provider("extra")
         ids = [p.id for p in controller._settings.llm.providers]
@@ -323,7 +323,7 @@ class UpdateRouteTests(unittest.TestCase):
         chat client is NOT rebuilt (workers pick it up on restart)."""
         controller = _make_controller()
         with patch(
-            "app.core.session.session_controller.persist_user_overrides",
+            "app.core.session.llm_settings_mixin.persist_user_overrides",
         ) as persist, patch.object(
             controller, "reconfigure_chat_llm",
         ) as reconfig:
@@ -368,7 +368,7 @@ class ReconfigureMirrorTests(unittest.TestCase):
     def test_legacy_reconfigure_updates_catalogue(self) -> None:
         controller = _make_controller()
         with patch(
-            "app.core.session.session_controller.persist_user_overrides",
+            "app.core.session.llm_settings_mixin.persist_user_overrides",
         ), patch(
             "app.core.session.session_controller.OllamaClient.get_context_length",
             return_value=None,

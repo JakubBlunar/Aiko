@@ -1,0 +1,12 @@
+{
+  "mixin_path": "app/core/session/detectors_init_mixin.py",
+  "class_name": "DetectorsInitMixin",
+  "docstring": "Detectors + runtime bootstrap mixin.\n\nExtracted from ``SessionController.__init__``. Holds the construction of\nthe per-turn detectors + one-shot inner-life state slots\n(``_init_detectors_and_state``) and the proactive director + runtime\nflags + WS listeners + MCP server + post-hook wiring\n(``_init_runtime_and_hooks``). These run in the same order they used to\ninline; state ownership is unchanged (every ``self.*`` assignment stays\nverbatim).\n\nNB: tests that patched ``app.core.session.session_controller.<symbol>``\nfor a symbol used here must patch\n``app.core.session.detectors_init_mixin.<symbol>`` instead.",
+  "class_doc": "__init__ bootstrap: detectors/state + proactive/runtime/hooks.",
+  "extra_imports": [],
+  "omit_auto": ["log"],
+  "helpers": [
+    {"name": "_init_detectors_and_state", "start": 3043, "end": 3590, "sig_params": ["settings: AppSettings"], "call_args": ["settings"]},
+    {"name": "_init_runtime_and_hooks", "start": 3592, "end": 3786, "sig_params": ["settings: AppSettings"], "call_args": ["settings"]}
+  ]
+}

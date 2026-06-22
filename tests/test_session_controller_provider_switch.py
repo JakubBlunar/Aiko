@@ -295,7 +295,7 @@ class ReconfigureChatLlmTests(unittest.TestCase):
         controller = self._make_stub_controller()
         maint_before = controller._maintenance_client
         with patch(
-            "app.core.session.session_controller.persist_user_overrides",
+            "app.core.session.llm_settings_mixin.persist_user_overrides",
         ), patch(
             "app.core.session.session_controller.OllamaClient.get_context_length",
             return_value=None,
@@ -316,7 +316,7 @@ class ReconfigureChatLlmTests(unittest.TestCase):
     def test_reconfigure_persists_and_rebuilds_clients(self) -> None:
         controller = self._make_stub_controller()
         with patch(
-            "app.core.session.session_controller.persist_user_overrides",
+            "app.core.session.llm_settings_mixin.persist_user_overrides",
         ) as persist, patch(
             "app.core.session.session_controller.OllamaClient.get_context_length",
             return_value=None,
@@ -374,7 +374,7 @@ class ReconfigureChatLlmTests(unittest.TestCase):
     def test_reconfigure_workers_use_local_false_shares_client(self) -> None:
         controller = self._make_stub_controller()
         with patch(
-            "app.core.session.session_controller.persist_user_overrides",
+            "app.core.session.llm_settings_mixin.persist_user_overrides",
         ):
             controller.reconfigure_chat_llm({
                 "provider": "openai_compatible",
@@ -393,7 +393,7 @@ class ReconfigureChatLlmTests(unittest.TestCase):
             initial_model="gpt-4o-mini",
         )
         with patch(
-            "app.core.session.session_controller.persist_user_overrides",
+            "app.core.session.llm_settings_mixin.persist_user_overrides",
         ):
             controller.reconfigure_chat_llm({
                 "provider": "ollama",
@@ -424,7 +424,7 @@ class ReconfigureChatLlmTests(unittest.TestCase):
         if worker_route is not None:
             worker_route.model = "llama3.1:8b"
         with patch(
-            "app.core.session.session_controller.persist_user_overrides",
+            "app.core.session.llm_settings_mixin.persist_user_overrides",
         ), patch(
             "app.core.session.session_controller.OllamaClient.get_context_length",
             return_value=None,

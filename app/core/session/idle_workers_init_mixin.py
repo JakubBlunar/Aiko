@@ -1,0 +1,506 @@
+"""Idle/background worker bootstrap mixin.
+
+Extracted from ``SessionController.__init__``. Holds the construction +
+registration of the idle-window background workers (forward curiosity,
+away-activity, wants ledger, promise follow-through, schedule learner,
+conflict detector, consolidation, opinion rate limiter, belief store,
+...). Runs in the same order it used to inline; state ownership is
+unchanged.
+
+NB: tests that patched ``app.core.session.session_controller.<symbol>``
+for a symbol used here must patch
+``app.core.session.idle_workers_init_mixin.<symbol>`` instead."""
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+
+log = logging.getLogger("app.session")
+
+
+class IdleWorkersInitMixin:
+    """__init__ bootstrap: idle/background workers + their stores."""
+
+    def _init_idle_workers(self, settings: AppSettings) -> None:
+        if (
+            self._idle_scheduler is not None
+            and self._memory_store is not None
+        ):
+            try:
+                from app.core.proactive.follow_up_worker import FollowUpWorker
+
+                mem = self._memory_settings
+                self._follow_up_worker = FollowUpWorker(
+                    memory_store=self._memory_store,
+                    kv_get=self._chat_db.kv_get,
+                    kv_set=self._chat_db.kv_set,
+                    user_id_provider=lambda: self._user_id,
+                    user_display_name_provider=(
+                        lambda: self.user_display_name
+                    ),
+                    enabled_provider=lambda: bool(
+                        getattr(
+                            self._settings.agent,
+                            "follow_up_enabled",
+                            True,
+                        )
+                    ),
+                    ollama=self._maintenance_client,
+                    model=self._effective_worker_model,
+                    journal_max=getattr(mem, "follow_up_journal_max", 8),
+                )
+                self._idle_scheduler.register(self._follow_up_worker)
+            except Exception:
+                log.warning("FollowUpWorker init failed", exc_info=True)
+
+        # WorldNoticeWorker — proactive "I noticed my room / the thing you
+        # left me" nudges. Rides the same idle scheduler + prepared-nudge
+        # store as the FollowUpWorker, and composes its line on the local
+        # worker LLM (``_maintenance_client``) so it's free and non-blocking.
+        # A no-op when the WorldStore never loaded; failures only drop the
+        # proactive room path.
+        if (
+            self._idle_scheduler is not None
+            and getattr(self, "_world_store", None) is not None
+            and self._prepared_nudge_store is not None
+        ):
+            try:
+                from app.core.world.world_notice_worker import WorldNoticeWorker
+
+                mem = self._memory_settings
+                self._idle_scheduler.register(
+                    WorldNoticeWorker(
+                        world_store=self._world_store,
+                        prepared_nudge_store=self._prepared_nudge_store,
+                        kv_get=self._chat_db.kv_get,
+                        kv_set=self._chat_db.kv_set,
+                        user_id_provider=lambda: self._user_id,
+                        user_display_name_provider=(
+                            lambda: self.user_display_name
+                        ),
+                        enabled_provider=lambda: bool(
+                            getattr(
+                                self._settings.agent,
+                                "world_notice_enabled",
+                                True,
+                            )
+                        ),
+                        ollama=self._maintenance_client,
+                        model=self._effective_worker_model,
+                        interval_seconds=mem.world_notice_interval_seconds,
+                        cooldown_seconds=mem.world_notice_cooldown_seconds,
+                        daily_cap=mem.world_notice_daily_cap,
+                        ttl_seconds=mem.world_notice_ttl_seconds,
+                    )
+                )
+            except Exception:
+                log.warning("WorldNoticeWorker init failed", exc_info=True)
+
+        # K36 IdleAwayActivityWorker — Aiko's quiet room life. Mutates the
+        # world during idle windows + journals it; the away-activities
+        # provider surfaces one line on the first turn back. Shares the
+        # idle scheduler + world-store gate; no prepared-nudge dependency
+        # (it's a silent producer, not a proactive nudge). Failures only
+        # drop the away-activities path.
+        if (
+            self._idle_scheduler is not None
+            and getattr(self, "_world_store", None) is not None
+        ):
+            try:
+                from app.core.world.idle_activity_worker import (
+                    IdleAwayActivityWorker,
+                )
+
+                mem = self._memory_settings
+                self._away_activity_worker = IdleAwayActivityWorker(
+                    world_store=self._world_store,
+                    kv_get=self._chat_db.kv_get,
+                    kv_set=self._chat_db.kv_set,
+                    user_display_name_provider=(
+                        lambda: self.user_display_name
+                    ),
+                    enabled_provider=lambda: bool(
+                        getattr(
+                            self._settings.agent,
+                            "away_activities_enabled",
+                            True,
+                        )
+                    ),
+                    notify=self._notify_world,
+                    ollama=self._maintenance_client,
+                    model=self._effective_worker_model,
+                    interval_seconds=mem.away_activities_interval_seconds,
+                    cooldown_seconds=mem.away_activities_cooldown_seconds,
+                    daily_cap=mem.away_activities_daily_cap,
+                    journal_max=mem.away_activities_journal_max,
+                )
+                self._idle_scheduler.register(self._away_activity_worker)
+            except Exception:
+                log.warning(
+                    "IdleAwayActivityWorker init failed", exc_info=True
+                )
+
+        # K34 ForwardCuriosityWorker — drafts "I've been wondering ..."
+        # questions about the user's life during quiet windows. No world
+        # dependency (reads memory + profile only); shares the idle
+        # scheduler + the gap-return surfacing path. Failures only drop
+        # the forward-curiosity path.
+        if (
+            self._idle_scheduler is not None
+            and getattr(self, "_memory_store", None) is not None
+        ):
+            try:
+                from app.core.proactive.forward_curiosity_worker import (
+                    ForwardCuriosityWorker,
+                )
+
+                mem = self._memory_settings
+                self._forward_curiosity_worker = ForwardCuriosityWorker(
+                    memory_store=self._memory_store,
+                    kv_get=self._chat_db.kv_get,
+                    kv_set=self._chat_db.kv_set,
+                    user_id_provider=lambda: self._user_id,
+                    user_display_name_provider=(
+                        lambda: self.user_display_name
+                    ),
+                    user_profile_store=getattr(
+                        self, "_user_profile_store", None
+                    ),
+                    enabled_provider=lambda: bool(
+                        getattr(
+                            self._settings.agent,
+                            "forward_curiosity_enabled",
+                            True,
+                        )
+                    ),
+                    ollama=self._maintenance_client,
+                    model=self._effective_worker_model,
+                    interval_seconds=mem.forward_curiosity_interval_seconds,
+                    cooldown_seconds=mem.forward_curiosity_cooldown_seconds,
+                    daily_cap=mem.forward_curiosity_daily_cap,
+                    journal_max=mem.forward_curiosity_journal_max,
+                )
+                self._idle_scheduler.register(self._forward_curiosity_worker)
+            except Exception:
+                log.warning(
+                    "ForwardCuriosityWorker init failed", exc_info=True
+                )
+
+        # K52 WantsLedgerWorker — keeps the wants ledger stocked from
+        # curiosity seeds / forward-curiosity questions / goals during
+        # quiet windows. Pure ingestion, no LLM. Failures only drop
+        # the feeder; manual MCP adds still work.
+        self._wants_ledger_worker = None
+        if self._idle_scheduler is not None:
+            try:
+                from app.core.conversation.wants_ledger_worker import (
+                    WantsLedgerWorker,
+                )
+
+                agent = settings.agent
+                self._wants_ledger_worker = WantsLedgerWorker(
+                    kv_get=self._chat_db.kv_get,
+                    kv_set=self._chat_db.kv_set,
+                    user_display_name_provider=(
+                        lambda: self.user_display_name
+                    ),
+                    memory_store=getattr(self, "_memory_store", None),
+                    goal_store=getattr(self, "_goal_store", None),
+                    enabled_provider=lambda: bool(
+                        getattr(
+                            self._settings.agent,
+                            "wants_ledger_enabled",
+                            True,
+                        )
+                    ),
+                    interval_seconds=float(
+                        getattr(agent, "wants_worker_interval_seconds", 3600.0)
+                    ),
+                    cap=int(getattr(agent, "wants_cap", 8)),
+                    growth_per_day=float(
+                        getattr(agent, "wants_growth_per_day", 0.25)
+                    ),
+                    max_age_days=float(
+                        getattr(agent, "wants_max_age_days", 14.0)
+                    ),
+                    reentry_cooldown_days=float(
+                        getattr(agent, "wants_reentry_cooldown_days", 5.0)
+                    ),
+                )
+                self._idle_scheduler.register(self._wants_ledger_worker)
+            except Exception:
+                log.warning(
+                    "WantsLedgerWorker init failed", exc_info=True
+                )
+
+        # K43 PromiseFollowthroughWorker — closes the loop on Aiko's own
+        # "I'll look into that" commitments. Scans assistant-side promise
+        # memories during quiet windows, arms a one-shot follow-through
+        # cue, and ages out stale promises. Failures only drop the
+        # follow-through path.
+        if (
+            self._idle_scheduler is not None
+            and getattr(self, "_memory_store", None) is not None
+        ):
+            try:
+                from app.core.proactive.promise_followthrough_worker import (
+                    PromiseFollowthroughWorker,
+                )
+
+                mem = self._memory_settings
+                self._promise_followthrough_worker = PromiseFollowthroughWorker(
+                    memory_store=self._memory_store,
+                    kv_get=self._chat_db.kv_get,
+                    kv_set=self._chat_db.kv_set,
+                    enabled_provider=lambda: bool(
+                        getattr(
+                            self._settings.agent,
+                            "promise_followthrough_enabled",
+                            True,
+                        )
+                    ),
+                    interval_seconds=(
+                        mem.promise_followthrough_interval_seconds
+                    ),
+                    min_age_hours=mem.promise_followthrough_min_age_hours,
+                    cooldown_hours=mem.promise_followthrough_cooldown_hours,
+                    drop_after_days=(
+                        mem.promise_followthrough_drop_after_days
+                    ),
+                )
+                self._idle_scheduler.register(
+                    self._promise_followthrough_worker
+                )
+            except Exception:
+                log.warning(
+                    "PromiseFollowthroughWorker init failed", exc_info=True
+                )
+
+        # G2 — schedule learner. Independent of the FollowUpWorker
+        # gate above (no prepared-nudge dependency), so wired after
+        # the same idle scheduler. Reads only ``messages.created_at``
+        # — never message content — and writes a single
+        # ``usual_hours`` profile field. Failures only drop the
+        # schedule field; the rest of the scheduler stays.
+        if (
+            self._idle_scheduler is not None
+            and self._user_profile_store is not None
+            and bool(
+                getattr(settings.agent, "schedule_learner_enabled", True)
+            )
+        ):
+            try:
+                from app.core.infra.schedule_learner import ScheduleLearner
+
+                self._idle_scheduler.register(
+                    ScheduleLearner(
+                        chat_db=self._chat_db,
+                        profile_store=self._user_profile_store,
+                        user_id_provider=lambda: self._user_id,
+                        agent_settings=settings.agent,
+                        memory_settings=self._memory_settings,
+                    )
+                )
+            except Exception:
+                log.warning("ScheduleLearner init failed", exc_info=True)
+
+        # F5 — conflicting-memory detector. Always builds the store
+        # (REST endpoints and the ``[[conflict:reason]]`` tag dispatch
+        # need it even when the worker is disabled), then conditionally
+        # builds + registers the worker. The cascade-cleanup hook on
+        # ``MemoryStore.delete`` keeps ``memory_conflicts`` rows from
+        # dangling when a user deletes a memory through the Memory
+        # drawer.
+        self._memory_conflict_store = None
+        self._memory_conflict_worker = None
+        self._memory_conflict_rate_limiter = None
+        if self._memory_store is not None and self._chat_db is not None:
+            try:
+                from app.core.memory.memory_conflict_store import (
+                    MemoryConflictStore,
+                )
+
+                self._memory_conflict_store = MemoryConflictStore(
+                    self._chat_db,
+                )
+                self._memory_store.add_delete_listener(
+                    self._memory_conflict_store.delete_for_memory,
+                )
+            except Exception:
+                log.warning(
+                    "MemoryConflictStore init failed", exc_info=True,
+                )
+                self._memory_conflict_store = None
+        if (
+            self._idle_scheduler is not None
+            and self._memory_conflict_store is not None
+            and self._fact_check_cancel is not None
+            and bool(
+                getattr(settings.agent, "conflict_detector_enabled", True)
+            )
+        ):
+            try:
+                from app.core.memory.fact_check_rate_limiter import (
+                    FactCheckRateLimiter,
+                )
+                from app.core.memory.memory_conflict_worker import (
+                    MemoryConflictWorker,
+                )
+
+                self._memory_conflict_rate_limiter = FactCheckRateLimiter(
+                    self._chat_db,
+                    per_hour_cap=int(
+                        getattr(
+                            settings.agent,
+                            "conflict_detector_per_hour_cap",
+                            6,
+                        )
+                    ),
+                    per_day_cap=int(
+                        getattr(
+                            settings.agent,
+                            "conflict_detector_per_day_cap",
+                            30,
+                        )
+                    ),
+                    state_key="conflict_detector.rate_state",
+                )
+                self._memory_conflict_worker = MemoryConflictWorker(
+                    memory_store=self._memory_store,
+                    conflict_store=self._memory_conflict_store,
+                    # Idle-scheduler worker → maintenance tier.
+                    ollama=self._maintenance_client,
+                    chat_model=self._effective_worker_model,
+                    rate_limiter=self._memory_conflict_rate_limiter,
+                    cancel_event=self._fact_check_cancel,
+                    agent_settings=settings.agent,
+                    memory_settings=self._memory_settings,
+                    notify_memory_updated=self._notify_memory_updated,
+                )
+                self._idle_scheduler.register(self._memory_conflict_worker)
+            except Exception:
+                log.warning(
+                    "MemoryConflictWorker init failed", exc_info=True,
+                )
+                self._memory_conflict_worker = None
+                self._memory_conflict_rate_limiter = None
+
+        # K35 — memory consolidation worker. Fuses near-duplicate
+        # scratchpad rows into one long_term memory during quiet
+        # windows. Needs the embedder (re-embeds merged text) + a worker
+        # LLM (rate-limited merge with deterministic fallback). Its own
+        # FactCheckRateLimiter state_key keeps the merge budget
+        # independent of F1 / F5 / G3. Failures only drop consolidation.
+        self._memory_consolidation_worker = None
+        self._memory_consolidation_rate_limiter = None
+        if (
+            self._idle_scheduler is not None
+            and getattr(self, "_memory_store", None) is not None
+            and self._embedder is not None
+            and self._fact_check_cancel is not None
+            and bool(
+                getattr(settings.agent, "memory_consolidation_enabled", True)
+            )
+        ):
+            try:
+                from app.core.memory.fact_check_rate_limiter import (
+                    FactCheckRateLimiter,
+                )
+                from app.core.memory.memory_consolidation_worker import (
+                    MemoryConsolidationWorker,
+                )
+
+                self._memory_consolidation_rate_limiter = FactCheckRateLimiter(
+                    self._chat_db,
+                    per_hour_cap=int(
+                        getattr(
+                            settings.agent,
+                            "memory_consolidation_per_hour_cap",
+                            6,
+                        )
+                    ),
+                    per_day_cap=int(
+                        getattr(
+                            settings.agent,
+                            "memory_consolidation_per_day_cap",
+                            30,
+                        )
+                    ),
+                    state_key="memory_consolidation.rate_state",
+                )
+                self._memory_consolidation_worker = MemoryConsolidationWorker(
+                    memory_store=self._memory_store,
+                    embedder=self._embedder,
+                    # Idle-scheduler worker → maintenance tier.
+                    ollama=self._maintenance_client,
+                    chat_model=self._effective_worker_model,
+                    rate_limiter=self._memory_consolidation_rate_limiter,
+                    cancel_event=self._fact_check_cancel,
+                    agent_settings=settings.agent,
+                    memory_settings=self._memory_settings,
+                    notify_memory_updated=self._notify_memory_updated,
+                )
+                self._idle_scheduler.register(
+                    self._memory_consolidation_worker
+                )
+            except Exception:
+                log.warning(
+                    "MemoryConsolidationWorker init failed", exc_info=True,
+                )
+                self._memory_consolidation_worker = None
+                self._memory_consolidation_rate_limiter = None
+
+        # K29 — opinion-injection rate limiter (LLM YES/NO gate on
+        # borderline-heuristic stance contradictions). Independent
+        # ``state_key`` so the budget can't be exhausted by the F5
+        # conflict detector or the K2 belief worker. Lives off the
+        # same ``FactCheckRateLimiter`` plumbing all three share.
+        # Off-by-default if the chat_db isn't available (in-memory
+        # transient configurations); the detector silently falls
+        # back to Path C (definite-only) in that case via the
+        # caller's ``llm_gate=None`` branch.
+        if self._chat_db is not None:
+            try:
+                from app.core.memory.fact_check_rate_limiter import (
+                    FactCheckRateLimiter,
+                )
+
+                self._opinion_injection_rate_limiter = FactCheckRateLimiter(
+                    self._chat_db,
+                    per_hour_cap=int(
+                        getattr(
+                            self._memory_settings,
+                            "opinion_injection_per_hour_cap",
+                            6,
+                        )
+                    ),
+                    per_day_cap=int(
+                        getattr(
+                            self._memory_settings,
+                            "opinion_injection_per_day_cap",
+                            30,
+                        )
+                    ),
+                    state_key="opinion_injection.rate_state",
+                )
+            except Exception:
+                log.warning(
+                    "OpinionInjection rate limiter init failed",
+                    exc_info=True,
+                )
+                self._opinion_injection_rate_limiter = None
+
+        # K2 — theory-of-mind / belief tracking. Always builds the store
+        # (the [[predict:...]] tag dispatch + REST endpoints need it
+        # even when the worker is disabled), then conditionally builds
+        # the gap detector and the inference worker. Inner-life
+        # provider is registered against the prompt assembler below
+        # once the detector exists.
+        self._belief_store = None
+        self._belief_worker = None
+        self._belief_rate_limiter = None
+        self._belief_gap_detector = None
+        # Cached gap list produced by the post-turn detector for the
+        # NEXT turn's inner-life provider. Cleared after each render.
+        self._pending_belief_gaps: list[Any] = []
