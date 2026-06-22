@@ -182,6 +182,15 @@ class AgentSettings:
     # shares counters with F1 / G3.
     knowledge_enrichment_per_hour_cap: int = 1
     knowledge_enrichment_per_day_cap: int = 4
+    # When on, the knowledge worker runs a small worker-LLM "research
+    # planner" before searching: it reads the chosen cluster's member
+    # memories, decides whether there's an evergreen, impersonal subject
+    # worth researching at all (skipping relationship/feeling/plan-only
+    # clusters), and emits up to N neutral search queries. The extra
+    # queries are queued so a later pass deepens the same interest from a
+    # different angle. When off, the worker falls back to the legacy path
+    # (privacy-scrub the cluster summary and search that verbatim).
+    knowledge_topic_extraction_enabled: bool = True
     # ── K61 personality backlog: knowledge-grounding steer ────────────
     # Master switch for the ``knowledge_grounding`` inner-life block
     # (:meth:`InnerLifeProvidersMixin._render_knowledge_grounding_block`).

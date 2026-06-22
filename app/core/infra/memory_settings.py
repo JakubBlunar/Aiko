@@ -373,6 +373,21 @@ class MemorySettings:
     # skipped, so the worker spreads its budget across the user's
     # breadth of interests rather than over-mining one.
     knowledge_enrichment_max_per_cluster: int = 3
+    # F9 (research planner): how many candidate clusters a single tick may
+    # try before giving up. When the top-scored cluster is judged
+    # "unresearchable" by the planner (purely personal/relationship
+    # material) the worker advances to the next-best cluster in the SAME
+    # tick rather than burning the tick on a junk query.
+    knowledge_enrichment_max_clusters_per_run: int = 3
+    # F9 (research planner): max impersonal search queries the planner may
+    # emit per cluster. The worker researches one per tick and queues the
+    # rest, so a single cluster is mined from several angles over time.
+    knowledge_research_queries_per_cluster: int = 3
+    # F9 (research planner): cooldown applied to a cluster the planner
+    # deems unresearchable. Much longer than the normal per-cluster
+    # cooldown so a personal-only cluster doesn't re-burn a planner call
+    # every few days.
+    knowledge_unresearchable_cooldown_hours: int = 336
     # K61: minimum cosine similarity for a learned fact to count as
     # "relevant to what the user just asked" in the knowledge-grounding
     # inner-life block. Higher → the steer fires only on a tight
@@ -1010,6 +1025,30 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                 0,
                 int(
                     memory_raw.get("knowledge_enrichment_max_per_cluster", 3)
+                ),
+            ),
+            knowledge_enrichment_max_clusters_per_run=max(
+                1,
+                int(
+                    memory_raw.get(
+                        "knowledge_enrichment_max_clusters_per_run", 3,
+                    )
+                ),
+            ),
+            knowledge_research_queries_per_cluster=max(
+                1,
+                int(
+                    memory_raw.get(
+                        "knowledge_research_queries_per_cluster", 3,
+                    )
+                ),
+            ),
+            knowledge_unresearchable_cooldown_hours=max(
+                0,
+                int(
+                    memory_raw.get(
+                        "knowledge_unresearchable_cooldown_hours", 336,
+                    )
                 ),
             ),
             knowledge_grounding_min_similarity=max(

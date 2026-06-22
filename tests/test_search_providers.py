@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import sys
+import time
 import types
 import unittest
 from typing import Any
+from unittest import mock
 
 from app.core.infra.settings import SearchSettings
+from app.llm.search import providers as providers_mod
 from app.llm.search.providers import (
     DuckDuckGoProvider,
     FallbackProvider,
@@ -18,8 +21,9 @@ from app.llm.search.providers import (
 
 
 def _install_fake_ddgs(results: list[dict[str, Any]] | None, *, raises: bool = False):
-    mod = types.ModuleType("duckduckgo_search")
-
+    # The provider prefers the new ``ddgs`` package and falls back to the
+    # legacy ``duckduckgo_search`` name, so inject the fake under both to
+    # exercise whichever import path the install resolves to first.
     class _DDGS:
         def __enter__(self):
             return self
@@ -32,8 +36,10 @@ def _install_fake_ddgs(results: list[dict[str, Any]] | None, *, raises: bool = F
                 raise RuntimeError("network down")
             return list((results or [])[:max_results])
 
-    mod.DDGS = _DDGS  # type: ignore[attr-defined]
-    sys.modules["duckduckgo_search"] = mod
+    for name in ("ddgs", "duckduckgo_search"):
+        mod = types.ModuleType(name)
+        mod.DDGS = _DDGS  # type: ignore[attr-defined]
+        sys.modules[name] = mod
 
 
 class _FakeResponse:
@@ -52,6 +58,7 @@ class _FakeResponse:
 class DuckDuckGoProviderTests(unittest.TestCase):
     def tearDown(self) -> None:
         sys.modules.pop("duckduckgo_search", None)
+        sys.modules.pop("ddgs", None)
 
     def test_maps_fields(self) -> None:
         _install_fake_ddgs([
@@ -77,6 +84,19 @@ class LangSearchProviderTests(unittest.TestCase):
         # exactly in tearDown (popping + re-importing leaves a fresh
         # object that can confuse other suites' lazy imports).
         self._real_requests = sys.modules.get("requests")
+        # Reset the process-wide throttle so a previous test's request
+        # timestamp can't make this test sleep (~1.1s) or couple to it.
+        LangSearchProvider._last_request_monotonic = 0.0
+
+    def tearDown(self) -> None:  # noqa: D401 - see body
+        LangSearchProvider._last_request_monotonic = 0.0
+        self._restore_requests()
+
+    def _restore_requests(self) -> None:
+        if self._real_requests is not None:
+            sys.modules["requests"] = self._real_requests
+        else:
+            sys.modules.pop("requests", None)
 
     def _patch_requests(self, response: _FakeResponse) -> dict[str, Any]:
         captured: dict[str, Any] = {}
@@ -92,14 +112,6 @@ class LangSearchProviderTests(unittest.TestCase):
         mod.post = _post  # type: ignore[attr-defined]
         sys.modules["requests"] = mod
         return captured
-
-    def tearDown(self) -> None:
-        # Restore the exact original module object (or remove the fake
-        # if requests had not been imported before this test).
-        if self._real_requests is not None:
-            sys.modules["requests"] = self._real_requests
-        else:
-            sys.modules.pop("requests", None)
 
     def _body(self, values: list[dict[str, Any]], *, code: int = 200) -> dict[str, Any]:
         return {
@@ -159,6 +171,61 @@ class LangSearchProviderTests(unittest.TestCase):
         captured = self._patch_requests(_FakeResponse(self._body([])))
         LangSearchProvider(api_key="k", freshness="bogus").search("q", 5)
         self.assertEqual(captured["json"]["freshness"], "noLimit")
+
+
+class LangSearchThrottleTests(unittest.TestCase):
+    """The process-wide 1/sec spacing gate on LangSearch requests."""
+
+    def setUp(self) -> None:
+        self._real_requests = sys.modules.get("requests")
+        LangSearchProvider._last_request_monotonic = 0.0
+
+    def tearDown(self) -> None:
+        LangSearchProvider._last_request_monotonic = 0.0
+        if self._real_requests is not None:
+            sys.modules["requests"] = self._real_requests
+        else:
+            sys.modules.pop("requests", None)
+
+    def _patch_requests(self) -> None:
+        mod = types.ModuleType("requests")
+
+        def _post(url, json=None, headers=None, timeout=None):  # noqa: A002
+            return _FakeResponse({"code": 200, "data": {"webPages": {"value": []}}})
+
+        mod.post = _post  # type: ignore[attr-defined]
+        sys.modules["requests"] = mod
+
+    def test_consecutive_requests_are_spaced(self) -> None:
+        self._patch_requests()
+        clock = {"t": 10_000.0}
+        sleeps: list[float] = []
+
+        def fake_monotonic() -> float:
+            return clock["t"]
+
+        def fake_sleep(secs: float) -> None:
+            sleeps.append(secs)
+            clock["t"] += secs
+
+        prov = LangSearchProvider(api_key="k", min_interval_seconds=1.1)
+        with mock.patch.object(providers_mod.time, "monotonic", fake_monotonic), \
+                mock.patch.object(providers_mod.time, "sleep", fake_sleep):
+            prov.search("a", 3)  # first request: no wait
+            prov.search("b", 3)  # immediate second: must wait ~1.1s
+        self.assertEqual(len(sleeps), 1)
+        self.assertAlmostEqual(sleeps[0], 1.1, places=3)
+
+    def test_interval_zero_never_sleeps(self) -> None:
+        self._patch_requests()
+        sleeps: list[float] = []
+        prov = LangSearchProvider(api_key="k", min_interval_seconds=0.0)
+        with mock.patch.object(
+            providers_mod.time, "sleep", lambda s: sleeps.append(s)
+        ):
+            prov.search("a", 3)
+            prov.search("b", 3)
+        self.assertEqual(sleeps, [])
 
 
 class _StubProvider:

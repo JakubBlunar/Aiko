@@ -605,6 +605,12 @@ class SearchSettings:
     langsearch_count: int = 10
     fallback_to_duckduckgo: bool = True
     timeout_seconds: float = 12.0
+    # LangSearch enforces a ~1 request/second API limit. This is the
+    # minimum wall-clock spacing the provider keeps between consecutive
+    # LangSearch requests process-wide (across every background worker +
+    # the brain's web_search tool), so a burst of queued topics can't trip
+    # the limit. Set to 0 to disable the throttle.
+    langsearch_min_interval_seconds: float = 1.1
     # F6: rewrite a personal claim into a neutral, name-free topic query
     # with the local worker model before searching (post-filtered by the
     # deterministic scrubber). Master switch for the whole reformulation
@@ -1697,6 +1703,12 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             ),
             timeout_seconds=max(
                 1.0, float(search_raw.get("timeout_seconds", 12.0))
+            ),
+            langsearch_min_interval_seconds=max(
+                0.0,
+                float(
+                    search_raw.get("langsearch_min_interval_seconds", 1.1)
+                ),
             ),
             query_reformulation_enabled=bool(
                 search_raw.get("query_reformulation_enabled", True)

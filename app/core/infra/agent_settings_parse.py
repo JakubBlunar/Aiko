@@ -81,6 +81,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             knowledge_enrichment_per_day_cap=max(
                 0, int(agent_raw.get("knowledge_enrichment_per_day_cap", 4)),
             ),
+            knowledge_topic_extraction_enabled=bool(
+                agent_raw.get("knowledge_topic_extraction_enabled", True),
+            ),
             knowledge_grounding_enabled=bool(
                 agent_raw.get("knowledge_grounding_enabled", True),
             ),

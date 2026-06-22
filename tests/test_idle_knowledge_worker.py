@@ -100,8 +100,23 @@ class _StubOllamaClient:
             ],
         }
     )
+    # When set, the research-planner call (recognised by the
+    # ``RESEARCH_QUERIES`` marker in the system prompt) returns this JSON
+    # instead of ``facts_json``. Left ``None`` so existing tests exercise
+    # the "planner undetermined -> fall back to summary" path.
+    plan_json: dict[str, Any] | None = None
     raise_on_call: bool = False
     chat_calls: list[dict[str, Any]] = field(default_factory=list)
+    plan_calls: list[dict[str, Any]] = field(default_factory=list)
+
+    @staticmethod
+    def _is_plan_call(messages: list[dict[str, Any]]) -> bool:
+        for m in messages:
+            if m.get("role") == "system" and "RESEARCH_QUERIES" in str(
+                m.get("content", "")
+            ):
+                return True
+        return False
 
     def chat_stream(
         self,
@@ -115,16 +130,22 @@ class _StubOllamaClient:
         think: bool = False,
         **kwargs: Any,
     ) -> Iterable[str]:
-        self.chat_calls.append(
-            {
-                "messages": messages,
-                "model": model,
-                "format_json": format_json,
-            }
-        )
+        is_plan = self._is_plan_call(messages)
+        record = {
+            "messages": messages,
+            "model": model,
+            "format_json": format_json,
+        }
+        if is_plan:
+            self.plan_calls.append(record)
+        else:
+            self.chat_calls.append(record)
         if self.raise_on_call:
             raise RuntimeError("simulated ollama outage")
         if stop_event is not None and stop_event.is_set():
+            return
+        if is_plan and self.plan_json is not None:
+            yield json.dumps(self.plan_json)
             return
         yield json.dumps(self.facts_json)
 
@@ -134,6 +155,7 @@ class _StubAgent:
     knowledge_enrichment_enabled: bool = True
     knowledge_enrichment_per_hour_cap: int = 5
     knowledge_enrichment_per_day_cap: int = 20
+    knowledge_topic_extraction_enabled: bool = True
 
 
 @dataclass
@@ -141,6 +163,9 @@ class _StubMemorySettings:
     knowledge_enrichment_interval_seconds: int = 3600
     knowledge_cluster_cooldown_hours: int = 72
     knowledge_enrichment_max_per_cluster: int = 3
+    knowledge_enrichment_max_clusters_per_run: int = 3
+    knowledge_research_queries_per_cluster: int = 3
+    knowledge_unresearchable_cooldown_hours: int = 336
 
 
 # ── snapshot fixture ───────────────────────────────────────────────────
@@ -156,6 +181,7 @@ def _cluster(
     summary: str = "italian dark roast coffee and espresso",
     size: int = 5,
     knowledge_count: int = 0,
+    members: list[str] | None = None,
 ) -> dict[str, Any]:
     kind_counts: dict[str, int] = {"preference": size}
     if knowledge_count:
@@ -165,6 +191,7 @@ def _cluster(
         "summary": summary,
         "size": size,
         "kind_counts": kind_counts,
+        "members": [{"content": c} for c in (members or [])],
     }
 
 
@@ -175,6 +202,8 @@ def _build_world(
     *,
     enabled: bool = True,
     facts_json: dict[str, Any] | None = None,
+    plan_json: dict[str, Any] | None = None,
+    extraction_enabled: bool = True,
     user_names: list[str] | None = None,
     raise_search: bool = False,
 ) -> dict[str, Any]:
@@ -193,6 +222,8 @@ def _build_world(
     ollama = _StubOllamaClient()
     if facts_json is not None:
         ollama.facts_json = facts_json
+    if plan_json is not None:
+        ollama.plan_json = plan_json
     cancel_event = threading.Event()
     added_calls: list[dict[str, Any]] = []
 
@@ -204,7 +235,10 @@ def _build_world(
         web_search_tool=web_search,
         rate_limiter=rate_limiter,
         cancel_event=cancel_event,
-        agent_settings=_StubAgent(knowledge_enrichment_enabled=enabled),
+        agent_settings=_StubAgent(
+            knowledge_enrichment_enabled=enabled,
+            knowledge_topic_extraction_enabled=extraction_enabled,
+        ),
         memory_settings=_StubMemorySettings(),
         topic_graph_provider=lambda: object(),
         kv_get=chat_db.kv_get,
@@ -458,6 +492,181 @@ class TestRunGuards(unittest.TestCase):
         with _patched_snapshot(snap):
             result = world["worker"].run()
         self.assertEqual(result.get("reason"), "cancelled_before_start")
+
+
+class TestParsePlan(unittest.TestCase):
+    def test_parses_queries(self) -> None:
+        out = IdleKnowledgeWorker._parse_plan(
+            json.dumps(
+                {"researchable": True, "queries": ["italian roast", "espresso"]}
+            ),
+            max_queries=3,
+        )
+        self.assertEqual(out, ["italian roast", "espresso"])
+
+    def test_unresearchable_returns_empty(self) -> None:
+        out = IdleKnowledgeWorker._parse_plan(
+            json.dumps({"researchable": False, "queries": []}),
+            max_queries=3,
+        )
+        self.assertEqual(out, [])
+
+    def test_no_queries_key_returns_none(self) -> None:
+        # A response that doesn't speak the planner schema -> undetermined.
+        out = IdleKnowledgeWorker._parse_plan(
+            json.dumps({"facts": [{"text": "x", "confidence": 0.9}]}),
+            max_queries=3,
+        )
+        self.assertIsNone(out)
+
+    def test_garbage_returns_none(self) -> None:
+        self.assertIsNone(
+            IdleKnowledgeWorker._parse_plan("not json", max_queries=3)
+        )
+
+    def test_caps_and_dedupes(self) -> None:
+        out = IdleKnowledgeWorker._parse_plan(
+            json.dumps(
+                {
+                    "researchable": True,
+                    "queries": ["A", "a", "B", "C", "D"],
+                }
+            ),
+            max_queries=2,
+        )
+        assert out is not None
+        self.assertEqual(out, ["A", "B"])
+
+
+class TestResearchPlanner(unittest.TestCase):
+    def test_unresearchable_cluster_advances_to_next(self) -> None:
+        # Two clusters; planner says the big one is unresearchable, so the
+        # worker should research the second instead of burning the tick.
+        big_key = hashlib.sha1(
+            " ".join("a relationship milestone first week".lower().split()).encode()
+        ).hexdigest()[:12]
+
+        class _PlannerOllama(_StubOllamaClient):
+            def chat_stream(self, messages, options=None, **kwargs):  # type: ignore[override]
+                is_plan = self._is_plan_call(messages)
+                if is_plan:
+                    self.plan_calls.append({"messages": messages})
+                    user = next(
+                        (m for m in messages if m.get("role") == "user"), {}
+                    )
+                    content = str(user.get("content", ""))
+                    if "milestone" in content:
+                        yield json.dumps({"researchable": False, "queries": []})
+                    else:
+                        yield json.dumps(
+                            {"researchable": True, "queries": ["woodworking joints"]}
+                        )
+                    return
+                self.chat_calls.append({"messages": messages})
+                yield json.dumps(self.facts_json)
+
+        world = _build_world()
+        world["worker"]._ollama = _PlannerOllama()
+        snap = _snapshot(
+            _cluster(
+                cluster_id=1,
+                summary="a relationship milestone first week",
+                size=9,
+            ),
+            _cluster(
+                cluster_id=2,
+                summary="hand-cut woodworking dovetail joints",
+                size=4,
+            ),
+        )
+        with _patched_snapshot(snap):
+            result = world["worker"].run()
+        self.assertEqual(result.get("outcome"), "wrote")
+        # The unresearchable big cluster got a (long) cooldown stamp too.
+        cooldowns = world["worker"]._load_cooldowns()
+        self.assertIn(big_key, cooldowns)
+        self.assertIsInstance(cooldowns[big_key], dict)
+        # The query that actually hit the web was the woodworking one.
+        self.assertEqual(len(world["web_search"].calls), 1)
+        self.assertIn(
+            "woodworking", world["web_search"].calls[0]["query"].lower()
+        )
+
+    def test_extra_queries_are_queued_and_drained(self) -> None:
+        world = _build_world(
+            plan_json={
+                "researchable": True,
+                "queries": ["espresso extraction", "coffee roast levels"],
+            }
+        )
+        snap = _snapshot(_cluster(summary="italian coffee and espresso gear"))
+        with _patched_snapshot(snap):
+            world["worker"].run()
+        # First query researched now; the second is queued.
+        queue = world["worker"]._load_queue()
+        queued = [q["query"] for items in queue.values() for q in items]
+        self.assertIn("coffee roast levels", queued)
+        self.assertNotIn("espresso extraction", queued)
+
+        # Expire the cooldown and run again: it should drain the queued
+        # subtopic WITHOUT a fresh planner call.
+        pick_key = next(iter(queue.keys()))
+        world["worker"]._stamp_cooldown(
+            pick_key, now=datetime.now(timezone.utc) - timedelta(hours=100),
+        )
+        world["ollama"].plan_calls.clear()
+        with _patched_snapshot(snap):
+            world["worker"].run()
+        self.assertEqual(len(world["ollama"].plan_calls), 0)
+        self.assertEqual(
+            world["web_search"].calls[-1]["query"].lower(),
+            "coffee roast levels",
+        )
+        self.assertEqual(world["worker"]._load_queue(), {})
+
+    def test_extraction_disabled_uses_summary(self) -> None:
+        world = _build_world(extraction_enabled=False)
+        snap = _snapshot(_cluster(summary="italian dark roast coffee beans"))
+        with _patched_snapshot(snap):
+            result = world["worker"].run()
+        self.assertEqual(result.get("outcome"), "wrote")
+        # No planner call at all when extraction is off.
+        self.assertEqual(len(world["ollama"].plan_calls), 0)
+
+    def test_all_unresearchable_returns_skip(self) -> None:
+        world = _build_world(
+            plan_json={"researchable": False, "queries": []}
+        )
+        snap = _snapshot(
+            _cluster(cluster_id=1, summary="how the day went together", size=9),
+            _cluster(cluster_id=2, summary="our weekend plans and feelings", size=5),
+        )
+        with _patched_snapshot(snap):
+            result = world["worker"].run()
+        self.assertEqual(result.get("reason"), "no_researchable_topic")
+        self.assertEqual(world["web_search"].calls, [])
+
+
+class TestCoverageScoring(unittest.TestCase):
+    def test_under_researched_can_beat_bigger_saturated(self) -> None:
+        # A bigger cluster that already has 2/3 knowledge rows should lose
+        # to a fresh, smaller cluster with full headroom.
+        world = _build_world()
+        snap = _snapshot(
+            _cluster(
+                cluster_id=1, summary="big topic mostly mined already", size=10,
+                knowledge_count=2,
+            ),
+            _cluster(
+                cluster_id=2, summary="fresh untouched interest cluster", size=5,
+                knowledge_count=0,
+            ),
+        )
+        with _patched_snapshot(snap):
+            ranked = world["worker"]._score_candidates(
+                now=datetime.now(timezone.utc)
+            )
+        self.assertEqual(ranked[0].cluster_id, 2)
 
 
 class TestIsReady(unittest.TestCase):

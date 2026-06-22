@@ -24,8 +24,8 @@ class _Emitter:
 
 
 def _install_fake_ddgs(results: list[dict[str, Any]] | None, *, raises: bool = False):
-    """Install a fake ``duckduckgo_search`` module returning ``results``."""
-    mod = types.ModuleType("duckduckgo_search")
+    """Install a fake search module under both the new (``ddgs``) and legacy
+    (``duckduckgo_search``) names, returning ``results``."""
 
     class _DDGS:
         def __enter__(self):
@@ -39,13 +39,16 @@ def _install_fake_ddgs(results: list[dict[str, Any]] | None, *, raises: bool = F
                 raise RuntimeError("network down")
             return list((results or [])[:max_results])
 
-    mod.DDGS = _DDGS  # type: ignore[attr-defined]
-    sys.modules["duckduckgo_search"] = mod
+    for name in ("ddgs", "duckduckgo_search"):
+        mod = types.ModuleType(name)
+        mod.DDGS = _DDGS  # type: ignore[attr-defined]
+        sys.modules[name] = mod
 
 
 class WebSearchHandlerTests(unittest.TestCase):
     def tearDown(self) -> None:
         sys.modules.pop("duckduckgo_search", None)
+        sys.modules.pop("ddgs", None)
 
     def test_name(self) -> None:
         self.assertEqual(WebSearchHandler.name, HANDLER_WEB_SEARCH)
@@ -77,7 +80,6 @@ class WebSearchHandlerTests(unittest.TestCase):
 
     def test_max_results_clamped_to_handler_ceiling(self) -> None:
         captured: dict[str, Any] = {}
-        mod = types.ModuleType("duckduckgo_search")
 
         class _DDGS:
             def __enter__(self):
@@ -90,8 +92,10 @@ class WebSearchHandlerTests(unittest.TestCase):
                 captured["max_results"] = max_results
                 return []
 
-        mod.DDGS = _DDGS  # type: ignore[attr-defined]
-        sys.modules["duckduckgo_search"] = mod
+        for name in ("ddgs", "duckduckgo_search"):
+            mod = types.ModuleType(name)
+            mod.DDGS = _DDGS  # type: ignore[attr-defined]
+            sys.modules[name] = mod
         h = WebSearchHandler(max_results=3)
         emit = _Emitter()
         h.start({"query": "x", "max_results": 100}, emit)
@@ -106,11 +110,10 @@ class WebSearchHandlerTests(unittest.TestCase):
         self.assertIsInstance(emit.outcomes[0], TaskFailed)
 
     def test_missing_dependency_fails_gracefully(self) -> None:
-        sys.modules.pop("duckduckgo_search", None)
-        # Force import failure by inserting a sentinel that raises on
-        # attribute access of DDGS.
-        broken = types.ModuleType("duckduckgo_search")
-        sys.modules["duckduckgo_search"] = broken  # no DDGS attribute
+        # Break BOTH import names (new + legacy) with modules that have no
+        # DDGS attribute, so the provider exhausts both and raises.
+        for name in ("ddgs", "duckduckgo_search"):
+            sys.modules[name] = types.ModuleType(name)  # no DDGS attribute
         h = WebSearchHandler()
         emit = _Emitter()
         state = h.start({"query": "x"}, emit)
