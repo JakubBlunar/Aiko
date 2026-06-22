@@ -1529,6 +1529,16 @@ class SessionController(
         self._pending_milestone_celebration: str | None = None
         # J4: cached bond stage for the hysteresis band (axes + tenure).
         self._last_relationship_stage: str | None = None
+        # J5: created_at of the assistant message the reconnection cue last
+        # greeted from, so the same return isn't re-greeted before Aiko's
+        # reply collapses the gap.
+        self._reconnection_anchored_at: str | None = None
+        # J10: MCP one-shot bypass for the appreciation-beat cooldown.
+        self._appreciation_force_next: bool = False
+        # J9: MCP one-shot bypass for the reciprocal-vulnerability gates.
+        self._reciprocal_vulnerability_force_next: bool = False
+        # J9: MCP one-shot bypass for the reciprocal-vulnerability gates.
+        self._reciprocal_vulnerability_force_next: bool = False
         self._last_turn_promise_kept: bool = False
         self._last_turn_gift_received: bool = False
         # Wire all hot-path providers (each cheap: SQL/mirror reads or
@@ -1569,6 +1579,9 @@ class SessionController(
             misattunement=self._render_misattunement_block,
             opinion_injection=self._render_opinion_injection_block,
             absence_curiosity=self._render_absence_curiosity_block,
+            reconnection=self._render_reconnection_block,
+            appreciation=self._render_appreciation_block,
+            reciprocal_vulnerability=self._render_reciprocal_vulnerability_block,
             turning_over=self._render_turning_over_block,
             away_activities=self._render_away_activities_block,
             forward_curiosity=self._render_forward_curiosity_block,

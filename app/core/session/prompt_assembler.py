@@ -502,11 +502,14 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "promise_followthrough_block",
         "misattunement_block",
         "opinion_injection_block",
+        "reconnection_block",
         "absence_curiosity_block",
         "turning_over_block",
         "away_activities_block",
         "forward_curiosity_block",
         "follow_up_block",
+        "appreciation_block",
+        "reciprocal_vulnerability_block",
         "novelty_block",
         "stagnation_block",
         "style_pattern_block",
@@ -864,6 +867,18 @@ class PromptAssembler:
         # lands in the configured band; this provider renders the cue
         # on the very next turn and clears the slot.
         self._absence_curiosity_provider: Callable[[], str] | None = None
+        # J5 reconnection ritual. Unlike the rest of the gap family this
+        # one self-computes the gap at assembly time (so it can colour the
+        # FIRST reply back), closeness-scaled, one-shot per return.
+        self._reconnection_provider: Callable[[], str] | None = None
+        # J10 appreciation beat. Rare, specific gratitude anchored to a
+        # recent positive shared moment; closeness + long cooldown gated.
+        self._appreciation_provider: Callable[[], str] | None = None
+        # J9 reciprocal vulnerability. user_text provider (live low-mood
+        # gate); stage + trust + K15-budget gated, long cooldown.
+        self._reciprocal_vulnerability_provider: (
+            Callable[[str], str] | None
+        ) = None
         # K28 "What I've been turning over" one-shot. Sibling of the
         # K14 absence_curiosity provider: same post-turn-armed slot
         # mechanic but a longer gap threshold (default 90 min) and
@@ -1211,6 +1226,9 @@ class PromptAssembler:
         misattunement: Callable[[str], str] | None = None,
         opinion_injection: Callable[[str], str] | None = None,
         absence_curiosity: Callable[[], str] | None = None,
+        reconnection: Callable[[], str] | None = None,
+        appreciation: Callable[[], str] | None = None,
+        reciprocal_vulnerability: Callable[[str], str] | None = None,
         turning_over: Callable[[], str] | None = None,
         away_activities: Callable[[], str] | None = None,
         forward_curiosity: Callable[[], str] | None = None,
@@ -1312,6 +1330,12 @@ class PromptAssembler:
             self._opinion_injection_provider = opinion_injection
         if absence_curiosity is not None:
             self._absence_curiosity_provider = absence_curiosity
+        if reconnection is not None:
+            self._reconnection_provider = reconnection
+        if appreciation is not None:
+            self._appreciation_provider = appreciation
+        if reciprocal_vulnerability is not None:
+            self._reciprocal_vulnerability_provider = reciprocal_vulnerability
         if turning_over is not None:
             self._turning_over_provider = turning_over
         if away_activities is not None:
@@ -1985,6 +2009,21 @@ class PromptAssembler:
                     )
                     opinion_injection_block = ""
 
+        # J5 reconnection ritual. Self-computes the gap at assembly time
+        # (so it can colour the FIRST reply back after a long absence),
+        # closeness-scaled, one-shot per return. Leads the gap cluster.
+        # NOT gated on aggressive mode -- a returning user's welcome is
+        # exactly the wrong thing to drop under context pressure, and the
+        # block is short.
+        reconnection_block = ""
+        if getattr(self, "_reconnection_provider", None) is not None:
+            with _timed_phase(provider_ms, "reconnection"):
+                try:
+                    reconnection_block = self._reconnection_provider() or ""
+                except Exception:
+                    log.debug("reconnection provider raised", exc_info=True)
+                    reconnection_block = ""
+
         # K14 typed-mode absence-curiosity one-shot. Empty on most
         # turns (only fires when the post-turn tracker stashed an
         # absence_seconds in the configured band). NOT gated on
@@ -2078,6 +2117,36 @@ class PromptAssembler:
                 except Exception:
                     log.debug("follow_up provider raised", exc_info=True)
                     follow_up_block = ""
+
+        # J10 appreciation beat. Rare (long cooldown), specific, anchored
+        # to a recent positive shared moment. Volatile one-shot so it
+        # lives in T6 with the gap family rather than T1 — when it fires
+        # it shouldn't bust the stable prefix.
+        appreciation_block = ""
+        if getattr(self, "_appreciation_provider", None) is not None:
+            with _timed_phase(provider_ms, "appreciation"):
+                try:
+                    appreciation_block = self._appreciation_provider() or ""
+                except Exception:
+                    log.debug("appreciation provider raised", exc_info=True)
+                    appreciation_block = ""
+
+        # J9 reciprocal vulnerability. user_text provider so the low-mood
+        # suppression reads the live message. Rare (long cooldown),
+        # stage/trust/K15-budget gated.
+        reciprocal_vulnerability_block = ""
+        if getattr(self, "_reciprocal_vulnerability_provider", None) is not None:
+            with _timed_phase(provider_ms, "reciprocal_vulnerability"):
+                try:
+                    reciprocal_vulnerability_block = (
+                        self._reciprocal_vulnerability_provider(user_text) or ""
+                    )
+                except Exception:
+                    log.debug(
+                        "reciprocal_vulnerability provider raised",
+                        exc_info=True,
+                    )
+                    reciprocal_vulnerability_block = ""
 
         # K5 mood-shell tilt. Stateless: derives a one-line emotional
         # directive from current affect + relationship axes + pending
@@ -2816,6 +2885,13 @@ class PromptAssembler:
             # fused grounding line never carries stance signal so
             # K29 is purely additive on top.
             system_parts.append(opinion_injection_block)
+        if reconnection_block:
+            # J5: leads the gap cluster — the warm "good to see you, it's
+            # been a while" re-anchoring beat that colours the first reply
+            # back after a long absence. Sits before the K14 welcome-back
+            # curiosity so the greeting reads before the "what were you up
+            # to" follow-ons.
+            system_parts.append(reconnection_block)
         if absence_curiosity_block:
             # K14 typed-mode: "Jacob was away for a few hours before
             # this message" sits right next to the other reaction-
@@ -2849,6 +2925,14 @@ class PromptAssembler:
             # how it went". Time-anchored, independent of the gap-cue
             # family, watermark-gated one-shot.
             system_parts.append(follow_up_block)
+        if appreciation_block:
+            # J10: rare specific gratitude anchored to a recent positive
+            # shared moment. Cooldown + anti-repeat watermarked one-shot.
+            system_parts.append(appreciation_block)
+        if reciprocal_vulnerability_block:
+            # J9: rare cue letting Aiko open up so the user can be the
+            # supportive one. Suppressed when the user reads low-mood.
+            system_parts.append(reciprocal_vulnerability_block)
         if novelty_block:
             # K6: surface the "Heads-up: Jacob just brought up
             # something new" line right after belief_gaps so reaction

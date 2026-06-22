@@ -3236,5 +3236,173 @@ class ExternalMcpSettingsTests(unittest.TestCase):
         self.assertFalse(result.agent.mcp_clients_enabled)
 
 
+class ReconnectionSettingsTests(unittest.TestCase):
+    """J5: reconnection ritual agent knobs default / round-trip / clamp."""
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(self, agent_extra: dict | None = None) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(json.loads(default_path.read_text(encoding="utf-8")))
+        for k in ("reconnection_enabled", "reconnection_base_gap_hours"):
+            cfg.get("agent", {}).pop(k, None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults(self) -> None:
+        a = load_settings(config_path=self._write_config()).agent
+        self.assertTrue(a.reconnection_enabled)
+        self.assertAlmostEqual(a.reconnection_base_gap_hours, 24.0)
+
+    def test_overrides_round_trip(self) -> None:
+        path = self._write_config(agent_extra={
+            "reconnection_enabled": False,
+            "reconnection_base_gap_hours": 48.0,
+        })
+        a = load_settings(config_path=path).agent
+        self.assertFalse(a.reconnection_enabled)
+        self.assertAlmostEqual(a.reconnection_base_gap_hours, 48.0)
+
+    def test_base_gap_floor(self) -> None:
+        path = self._write_config(
+            agent_extra={"reconnection_base_gap_hours": 0.1}
+        )
+        a = load_settings(config_path=path).agent
+        self.assertAlmostEqual(a.reconnection_base_gap_hours, 1.0)
+
+
+class AppreciationSettingsTests(unittest.TestCase):
+    """J10: appreciation-beat agent knobs default / round-trip / clamp."""
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(self, agent_extra: dict | None = None) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(json.loads(default_path.read_text(encoding="utf-8")))
+        for k in (
+            "appreciation_beats_enabled",
+            "appreciation_min_closeness",
+            "appreciation_cooldown_hours",
+            "appreciation_max_anchor_age_days",
+        ):
+            cfg.get("agent", {}).pop(k, None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults(self) -> None:
+        a = load_settings(config_path=self._write_config()).agent
+        self.assertTrue(a.appreciation_beats_enabled)
+        self.assertAlmostEqual(a.appreciation_min_closeness, 0.25)
+        self.assertAlmostEqual(a.appreciation_cooldown_hours, 72.0)
+        self.assertAlmostEqual(a.appreciation_max_anchor_age_days, 21.0)
+
+    def test_overrides_round_trip(self) -> None:
+        path = self._write_config(agent_extra={
+            "appreciation_beats_enabled": False,
+            "appreciation_min_closeness": 0.6,
+            "appreciation_cooldown_hours": 12.0,
+            "appreciation_max_anchor_age_days": 7.0,
+        })
+        a = load_settings(config_path=path).agent
+        self.assertFalse(a.appreciation_beats_enabled)
+        self.assertAlmostEqual(a.appreciation_min_closeness, 0.6)
+        self.assertAlmostEqual(a.appreciation_cooldown_hours, 12.0)
+        self.assertAlmostEqual(a.appreciation_max_anchor_age_days, 7.0)
+
+    def test_clamps(self) -> None:
+        path = self._write_config(agent_extra={
+            "appreciation_min_closeness": 9.0,
+            "appreciation_cooldown_hours": 0.0,
+            "appreciation_max_anchor_age_days": 0.0,
+        })
+        a = load_settings(config_path=path).agent
+        self.assertAlmostEqual(a.appreciation_min_closeness, 1.0)
+        self.assertAlmostEqual(a.appreciation_cooldown_hours, 1.0)
+        self.assertAlmostEqual(a.appreciation_max_anchor_age_days, 1.0)
+
+
+class ReciprocalVulnerabilitySettingsTests(unittest.TestCase):
+    """J9: reciprocal-vulnerability agent knobs default / round-trip / clamp."""
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(self, agent_extra: dict | None = None) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(json.loads(default_path.read_text(encoding="utf-8")))
+        for k in (
+            "reciprocal_vulnerability_enabled",
+            "reciprocal_vulnerability_cooldown_hours",
+            "reciprocal_vulnerability_min_trust",
+        ):
+            cfg.get("agent", {}).pop(k, None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults(self) -> None:
+        a = load_settings(config_path=self._write_config()).agent
+        self.assertTrue(a.reciprocal_vulnerability_enabled)
+        self.assertAlmostEqual(a.reciprocal_vulnerability_cooldown_hours, 96.0)
+        self.assertAlmostEqual(a.reciprocal_vulnerability_min_trust, 0.2)
+
+    def test_overrides_round_trip(self) -> None:
+        path = self._write_config(agent_extra={
+            "reciprocal_vulnerability_enabled": False,
+            "reciprocal_vulnerability_cooldown_hours": 24.0,
+            "reciprocal_vulnerability_min_trust": 0.5,
+        })
+        a = load_settings(config_path=path).agent
+        self.assertFalse(a.reciprocal_vulnerability_enabled)
+        self.assertAlmostEqual(a.reciprocal_vulnerability_cooldown_hours, 24.0)
+        self.assertAlmostEqual(a.reciprocal_vulnerability_min_trust, 0.5)
+
+    def test_clamps(self) -> None:
+        path = self._write_config(agent_extra={
+            "reciprocal_vulnerability_cooldown_hours": 0.0,
+            "reciprocal_vulnerability_min_trust": 9.0,
+        })
+        a = load_settings(config_path=path).agent
+        self.assertAlmostEqual(a.reciprocal_vulnerability_cooldown_hours, 1.0)
+        self.assertAlmostEqual(a.reciprocal_vulnerability_min_trust, 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()
