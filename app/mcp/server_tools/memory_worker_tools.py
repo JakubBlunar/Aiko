@@ -441,6 +441,13 @@ def register(mcp, session: "SessionController") -> None:
                     True,
                 )
             ),
+            "topic_extraction_enabled": bool(
+                getattr(
+                    session._settings.agent,
+                    "knowledge_topic_extraction_enabled",
+                    True,
+                )
+            ),
         }
         if worker is None:
             return json.dumps(out, indent=2, default=str)
@@ -458,7 +465,20 @@ def register(mcp, session: "SessionController") -> None:
         except Exception as exc:  # pragma: no cover -- diag tool
             out["cooldowns_error"] = str(exc)
         try:
-            pick = worker._pick_cluster(now=now)
+            out["research_queue"] = worker._load_queue()
+        except Exception as exc:  # pragma: no cover -- diag tool
+            out["research_queue_error"] = str(exc)
+        try:
+            ranked = worker._score_candidates(now=now)
+            out["candidates"] = [
+                {
+                    "cluster_key": p.cluster_key,
+                    "topic": p.topic[:120],
+                    "size": p.size,
+                }
+                for p in ranked[:5]
+            ]
+            pick = ranked[0] if ranked else None
             out["next_pick"] = (
                 None
                 if pick is None

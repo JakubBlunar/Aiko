@@ -109,6 +109,7 @@ def _search_public_snapshot(search: Any) -> dict[str, Any]:
             "langsearch_count": 10,
             "fallback_to_duckduckgo": True,
             "timeout_seconds": 12.0,
+            "langsearch_min_interval_seconds": 1.1,
             "query_reformulation_enabled": True,
         }
     from app.llm.search.providers import resolve_api_key
@@ -128,6 +129,9 @@ def _search_public_snapshot(search: Any) -> dict[str, Any]:
             getattr(search, "fallback_to_duckduckgo", True)
         ),
         "timeout_seconds": float(getattr(search, "timeout_seconds", 12.0)),
+        "langsearch_min_interval_seconds": float(
+            getattr(search, "langsearch_min_interval_seconds", 1.1)
+        ),
         "query_reformulation_enabled": bool(
             getattr(search, "query_reformulation_enabled", True)
         ),

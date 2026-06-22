@@ -411,6 +411,9 @@
     "task_approval_mode": "ask",
     "task_approval_overrides": {},
     "builtin_file_skills_enabled": true,
+    "knowledge_topic_extraction_enabled ": false,
+    "knowledge_enrichment_max_clusters_per_run ": 3,
+    "knowledge_unresearchable_cooldown_hours ": 336,
     "file_write": {
       "enabled": false,
       "max_bytes": 262144,
@@ -453,6 +456,7 @@
     "langsearch_count": 10,
     "fallback_to_duckduckgo": true,
     "timeout_seconds": 12.0,
+    "langsearch_min_interval_seconds": 1.1,
     "query_reformulation_enabled": true
   },
   "endpointing": {

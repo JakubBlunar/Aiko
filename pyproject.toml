@@ -22,8 +22,8 @@ dependencies = [
   "pyarrow>=16.0.0",
   # Optional document ingestion (PDF). Pure-python; tiny footprint.
   "pypdf>=4.0.0",
-  # Web search tool
-  "duckduckgo-search>=6.0.0",
+  # Web search tool (the package formerly published as duckduckgo-search)
+  "ddgs>=9.0.0",
   # Secure API-key storage in the OS keychain (Windows Credential
   # Manager / macOS Keychain / Freedesktop Secret Service). Falls back
   # to plaintext config when no backend is present.

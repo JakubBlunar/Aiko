@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -74,12 +76,18 @@ class DuckDuckGoProvider:
     name = "duckduckgo"
 
     def search(self, query: str, max_results: int) -> list[SearchResult]:
+        # The package was renamed ``duckduckgo_search`` -> ``ddgs``. Prefer
+        # the new name and fall back to the legacy one so an older install
+        # keeps working without a hard pin.
         try:
-            from duckduckgo_search import DDGS  # type: ignore
-        except Exception as exc:  # pragma: no cover - missing optional dep
-            raise RuntimeError(
-                "duckduckgo-search must be installed to use web search"
-            ) from exc
+            from ddgs import DDGS  # type: ignore
+        except Exception:
+            try:
+                from duckduckgo_search import DDGS  # type: ignore
+            except Exception as exc:  # pragma: no cover - missing optional dep
+                raise RuntimeError(
+                    "the 'ddgs' package must be installed to use web search"
+                ) from exc
         limit = max(1, int(max_results))
         with DDGS() as ddgs:
             raw = list(ddgs.text(query, max_results=limit))
@@ -110,6 +118,15 @@ class LangSearchProvider:
 
     name = "langsearch"
 
+    # Process-wide spacing gate. LangSearch caps at ~1 request/second, and
+    # several independent callers (F1 / G3 / F9 workers + the brain's
+    # web_search tool) can each build their own provider instance, so the
+    # throttle state lives on the class — shared across every instance —
+    # rather than per-instance. ``_last_request_monotonic`` is the start
+    # time of the most recently *issued* request.
+    _rate_lock = threading.Lock()
+    _last_request_monotonic: float = 0.0
+
     def __init__(
         self,
         *,
@@ -118,6 +135,7 @@ class LangSearchProvider:
         freshness: str = "noLimit",
         count: int = 10,
         timeout_seconds: float = 12.0,
+        min_interval_seconds: float = 1.1,
     ) -> None:
         if not api_key:
             raise ValueError("LangSearchProvider requires a non-empty api_key")
@@ -128,6 +146,27 @@ class LangSearchProvider:
         )
         self._count = max(1, min(10, int(count)))
         self._timeout = max(1.0, float(timeout_seconds))
+        self._min_interval = max(0.0, float(min_interval_seconds))
+
+    def _throttle(self) -> None:
+        """Block until at least ``_min_interval`` has passed since the last
+        LangSearch request, then reserve this request's slot.
+
+        Held inside the class lock so concurrent callers queue up and the
+        issued requests stay spaced ~1/sec apart regardless of how many
+        topics arrive at once.
+        """
+        if self._min_interval <= 0.0:
+            return
+        cls = LangSearchProvider
+        with cls._rate_lock:
+            now = time.monotonic()
+            wait = self._min_interval - (now - cls._last_request_monotonic)
+            if wait > 0:
+                log.debug("langsearch throttle: sleeping %.2fs", wait)
+                time.sleep(wait)
+                now = time.monotonic()
+            cls._last_request_monotonic = now
 
     def search(self, query: str, max_results: int) -> list[SearchResult]:
         import requests
@@ -143,6 +182,7 @@ class LangSearchProvider:
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
         }
+        self._throttle()
         resp = requests.post(
             _LANGSEARCH_URL,
             json=payload,
@@ -266,6 +306,9 @@ def build_search_provider(settings: "SearchSettings | None") -> SearchProvider:
         freshness=str(getattr(settings, "langsearch_freshness", "noLimit")),
         count=int(getattr(settings, "langsearch_count", 10)),
         timeout_seconds=float(getattr(settings, "timeout_seconds", 12.0)),
+        min_interval_seconds=float(
+            getattr(settings, "langsearch_min_interval_seconds", 1.1)
+        ),
     )
     if bool(getattr(settings, "fallback_to_duckduckgo", True)):
         return FallbackProvider(langsearch, ddg)
