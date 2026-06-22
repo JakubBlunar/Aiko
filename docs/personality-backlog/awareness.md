@@ -8,6 +8,17 @@ column), and F5 (conflicting-memory detector) shipped together; see
 [`shipped.md`](shipped.md) for the implementation summary. The one
 remaining follow-up below builds on that foundation.
 
+**Web-search backend (2026).** Web search is now pluggable behind
+[`app/llm/search/providers.py`](../../app/llm/search/providers.py):
+DuckDuckGo (keyless default) or LangSearch (hybrid search + long-text
+summaries, when an API key is configured under the `search` settings
+block), with a DuckDuckGo fallback. F6 (query reformulation) shipped
+with it; F7 (domain routing) is obsolete as a result. LangSearch's
+**Semantic Rerank API** is intentionally **not** wired — Aiko's RAG is
+already a local cosine pass and web results come back ranked +
+summarized, so a second per-call API hit against the free-tier quota
+isn't worth it. Revisit only if a concrete relevance problem appears.
+
 ---
 
 ## F4. Source-cited memories
@@ -42,7 +53,23 @@ fact-checker, G3 curiosity). Keep this in mind for F6-F9 below.
 
 ---
 
-## F6. Privacy-preserving query *reformulation* (not reject)
+## F6. Privacy-preserving query *reformulation* (not reject) — SHIPPED
+
+**Status: shipped.** Implemented as
+[`app/core/memory/query_reformulation.py`](../../app/core/memory/query_reformulation.py)
+(`reformulate_query_for_search` + `make_reformulator`). The local worker
+model rewrites a personal claim into a neutral, name-free topic query;
+the deterministic `scrub_claim_for_search` runs as a hard **post-filter**
+on the LLM output so a hallucinated name can never slip through, and the
+deterministic scrub of the original is the fallback when the model
+returns `NONE` / fails / fails the post-filter. Threaded into all three
+workers' scrub methods (`idle_fact_checker._scrub_claim`,
+`idle_curiosity_worker._scrub`, `idle_knowledge_worker._scrub`) via an
+optional `query_reformulator` closure built by
+`SessionController._build_query_reformulator`. Gated by
+`search.query_reformulation_enabled` (default on). Shipped alongside the
+LangSearch web-search backend (see
+[`docs/configuration.md`](../configuration.md) `search` block).
 
 **Motivation.** The single biggest reason Aiko "tries to search but it's
 blocked": the privacy gate
@@ -81,7 +108,19 @@ win in the whole knowledge theme — unblocks F7/F8/F9.
 
 ---
 
-## F7. Domain-aware source routing (MyAnimeList, music, games, film)
+## F7. Domain-aware source routing (MyAnimeList, music, games, film) — OBSOLETE
+
+**Status: obsolete / superseded.** The web-search backend is now
+pluggable and defaults to LangSearch when configured (a hybrid
+keyword + vector search that returns clean long-text summaries from
+billions of documents — see the `search` block in
+[`docs/configuration.md`](../configuration.md) and
+[`app/llm/search/providers.py`](../../app/llm/search/providers.py)).
+That directly attacks the "generic web slop" problem this entry was
+meant to solve, and LangSearch has no `site:` parameter to inject
+anyway, so the per-domain routing mechanism does not port. If a future
+need for structured per-source data (e.g. Jikan/MAL fields) reappears it
+should be a dedicated fetch handler, not query routing. No code planned.
 
 **Motivation.** Search is DuckDuckGo-only with no source steering, so
 domain questions get generic web slop instead of the canonical source.

@@ -568,14 +568,14 @@ def _tenure_ceiling_rank(tenure_days: float) -> int:
     """Max stage reachable at a given tenure — you can't be intimate on day 1."""
     if tenure_days < 3.0:
         return 1  # familiar
-    if tenure_days < 21.0:
+    if tenure_days < 14.0:
         return 2  # close
     return 3  # intimate
 
 
 def _tenure_floor_rank(tenure_days: float) -> int:
     """Min stage once a relationship has simply *lasted* (cold or not)."""
-    if tenure_days >= 14.0:
+    if tenure_days >= 8.0:
         return 1  # familiar
     return 0  # new
 
@@ -631,7 +631,7 @@ _STAGE_REGISTER_HINTS: dict[str, str] = {
         "and light teasing land well; you don't have to keep your guard up."
     ),
     STAGE_INTIMATE: (
-        "You and {name} are very close — deep familiarity, comfortable "
+        "You and {name} are intimate — deep familiarity and trust between you both, comfortable "
         "silences, candor and softness are all welcome; speak like someone "
         "who knows them well."
     ),

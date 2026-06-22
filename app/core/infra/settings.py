@@ -666,6 +666,29 @@ class AgentSettings:
     # return. Token-bucket persisted to ``kv_meta`` under a separate key.
     idle_curiosity_per_hour_cap: int = 2
     idle_curiosity_per_day_cap: int = 6
+    # ── F9 personality backlog: interest-driven knowledge worker ──────
+    # Master switch for
+    # :class:`app.core.proactive.idle_knowledge_worker.IdleKnowledgeWorker`.
+    # When disabled the worker never registers its idle tick and the
+    # ``knowledge`` memory pool only grows from manual/other writers.
+    knowledge_enrichment_enabled: bool = True
+    # Hourly + daily caps on web searches the knowledge worker may
+    # issue. Strictly tighter than the curiosity worker — F9 researches
+    # the user's *standing* interests (which change slowly), so a slow
+    # drip is the right cadence and a long absence must never dump a
+    # wall of "I was reading about…" facts. Own token-bucket persisted
+    # to ``kv_meta`` under ``"idle_knowledge.rate_state"`` so it never
+    # shares counters with F1 / G3.
+    knowledge_enrichment_per_hour_cap: int = 1
+    knowledge_enrichment_per_day_cap: int = 4
+    # ── K61 personality backlog: knowledge-grounding steer ────────────
+    # Master switch for the ``knowledge_grounding`` inner-life block
+    # (:meth:`InnerLifeProvidersMixin._render_knowledge_grounding_block`).
+    # When on, informational turns that have matching learned facts get
+    # a one-line cue nudging Aiko to commit to specifics instead of
+    # survey-hedging. Disabling leaves the F8 retrieval surfacing intact
+    # (the facts still appear in the RAG block); only the steer is gone.
+    knowledge_grounding_enabled: bool = True
     # ── F5 personality backlog: conflicting-memory detector ──────────
     # Master switch for
     # :class:`app.core.memory.memory_conflict_worker.MemoryConflictWorker`.
@@ -2500,6 +2523,34 @@ class MemorySettings:
     # rate-cap gives the worker room to chip away at a backlog without
     # hammering the search engine.
     idle_curiosity_interval_seconds: int = 1800
+    # F9: knowledge-enrichment worker cadence. Each successful tick
+    # web-searches one topic cluster and distils up to two facts, so an
+    # hour between runs (combined with the tight hour/day search caps)
+    # keeps the knowledge pool growing as a slow drip rather than a
+    # firehose.
+    knowledge_enrichment_interval_seconds: int = 3600
+    # F9: per-cluster cooldown. After researching (or trying to
+    # research) an interest cluster, the worker won't touch the same
+    # topic again for this many hours, so it rotates across interests
+    # instead of grinding the densest one. Keyed on a hash of the
+    # cluster summary in ``kv_meta``.
+    knowledge_cluster_cooldown_hours: int = 72
+    # F9: per-cluster knowledge ceiling. A cluster that already has this
+    # many ``knowledge`` rows is considered "researched enough" and
+    # skipped, so the worker spreads its budget across the user's
+    # breadth of interests rather than over-mining one.
+    knowledge_enrichment_max_per_cluster: int = 3
+    # K61: minimum cosine similarity for a learned fact to count as
+    # "relevant to what the user just asked" in the knowledge-grounding
+    # inner-life block. Higher → the steer fires only on a tight
+    # topical match (fewer, more on-point cues). Lower → fires more
+    # readily (risk of nudging Aiko to "commit to specifics" that only
+    # loosely relate).
+    knowledge_grounding_min_similarity: float = 0.45
+    # K61: how many learned facts the grounding cue lists inline. Kept
+    # tiny so the block stays a steer ("you actually know this — name
+    # it"), not a data dump.
+    knowledge_grounding_max_items: int = 2
     # K9: curiosity-seed worker cadence. One LLM call + a handful of
     # embeddings per tick, so an hour between successful runs is
     # plenty -- the worker also ``is_ready=False``s when the seed
@@ -2845,6 +2896,36 @@ class ToolsSettings:
 
 
 @dataclass(slots=True)
+class SearchSettings:
+    """Web-search backend configuration.
+
+    Aiko's background workers (F1 fact-checker, G3 curiosity, F9
+    knowledge) and the goal-workflow ``web_search`` lane share one
+    pluggable provider built from this block (see
+    :func:`app.llm.search.build_search_provider`). DuckDuckGo is the
+    keyless default; LangSearch is used when ``provider == "langsearch"``
+    and an API key resolves (explicit ``api_key`` or the ``api_key_env``
+    environment variable). ``api_key`` is masked in the REST snapshot
+    (``has_api_key``) and only written via the dedicated credential path.
+    """
+
+    provider: str = "duckduckgo"  # ``"duckduckgo"`` | ``"langsearch"``
+    api_key: str = ""  # write-only; masked in REST as ``has_api_key``
+    api_key_env: str = "LANGSEARCH_API_KEY"
+    # LangSearch request knobs (ignored by the DuckDuckGo path).
+    langsearch_summary: bool = True
+    langsearch_freshness: str = "noLimit"
+    langsearch_count: int = 10
+    fallback_to_duckduckgo: bool = True
+    timeout_seconds: float = 12.0
+    # F6: rewrite a personal claim into a neutral, name-free topic query
+    # with the local worker model before searching (post-filtered by the
+    # deterministic scrubber). Master switch for the whole reformulation
+    # step; when off the workers fall back to the deterministic scrub.
+    query_reformulation_enabled: bool = True
+
+
+@dataclass(slots=True)
 class AppSettings:
     assistant: AssistantSettings
     ollama: OllamaSettings
@@ -2875,6 +2956,7 @@ class AppSettings:
     # downgrade still boots.
     llm: LlmSettings = field(default_factory=LlmSettings)
     tools: ToolsSettings = field(default_factory=ToolsSettings)
+    search: SearchSettings = field(default_factory=SearchSettings)
     endpointing: EndpointingSettings = field(default_factory=EndpointingSettings)
     avatar: AvatarSettings = field(default_factory=AvatarSettings)
 
@@ -2899,7 +2981,15 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
     return merged
 
 
-_config_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+# Cache signature is ``(st_mtime_ns, st_size)``: nanosecond mtime
+# resolution plus a size discriminator. The old float-seconds
+# ``st_mtime`` key collided whenever the same path was rewritten
+# within one coarse mtime tick (notably in tests that rewrite a temp
+# config repeatedly), returning a stale parse. ``st_mtime_ns`` gives
+# far finer granularity and ``st_size`` catches the residual
+# same-tick-different-content case (distinct config values almost
+# always change the serialised byte length).
+_config_cache: dict[str, tuple[tuple[int, int], dict[str, Any]]] = {}
 
 
 def _read_config(path: Path) -> dict[str, Any]:
@@ -2907,15 +2997,16 @@ def _read_config(path: Path) -> dict[str, Any]:
         return {}
     key = str(path)
     try:
-        mtime = path.stat().st_mtime
+        st = path.stat()
+        sig = (st.st_mtime_ns, st.st_size)
     except OSError:
-        mtime = 0.0
+        sig = (0, 0)
     cached = _config_cache.get(key)
-    if cached is not None and cached[0] == mtime:
+    if cached is not None and cached[0] == sig:
         return cached[1]
     raw = json.loads(path.read_text(encoding="utf-8"))
     result = raw if isinstance(raw, dict) else {}
-    _config_cache[key] = (mtime, result)
+    _config_cache[key] = (sig, result)
     return result
 
 
@@ -3791,6 +3882,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
     chat_llm_raw = raw.get("chat_llm", {}) or {}
     llm_raw = raw.get("llm", {}) or {}
     tools_raw = raw.get("tools", {}) or {}
+    search_raw = raw.get("search", {}) or {}
     endpointing_raw = raw.get("endpointing", {}) or {}
     avatar_raw = raw.get("avatar", {}) or {}
 
@@ -3897,6 +3989,18 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             ),
             idle_curiosity_per_day_cap=max(
                 0, int(agent_raw.get("idle_curiosity_per_day_cap", 6)),
+            ),
+            knowledge_enrichment_enabled=bool(
+                agent_raw.get("knowledge_enrichment_enabled", True),
+            ),
+            knowledge_enrichment_per_hour_cap=max(
+                0, int(agent_raw.get("knowledge_enrichment_per_hour_cap", 1)),
+            ),
+            knowledge_enrichment_per_day_cap=max(
+                0, int(agent_raw.get("knowledge_enrichment_per_day_cap", 4)),
+            ),
+            knowledge_grounding_enabled=bool(
+                agent_raw.get("knowledge_grounding_enabled", True),
             ),
             conflict_detector_enabled=bool(
                 agent_raw.get("conflict_detector_enabled", True),
@@ -5428,6 +5532,39 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                 60,
                 int(memory_raw.get("idle_curiosity_interval_seconds", 1800)),
             ),
+            knowledge_enrichment_interval_seconds=max(
+                60,
+                int(
+                    memory_raw.get(
+                        "knowledge_enrichment_interval_seconds", 3600,
+                    )
+                ),
+            ),
+            knowledge_cluster_cooldown_hours=max(
+                0,
+                int(memory_raw.get("knowledge_cluster_cooldown_hours", 72)),
+            ),
+            knowledge_enrichment_max_per_cluster=max(
+                0,
+                int(
+                    memory_raw.get("knowledge_enrichment_max_per_cluster", 3)
+                ),
+            ),
+            knowledge_grounding_min_similarity=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get(
+                            "knowledge_grounding_min_similarity", 0.45,
+                        )
+                    ),
+                ),
+            ),
+            knowledge_grounding_max_items=max(
+                1,
+                int(memory_raw.get("knowledge_grounding_max_items", 2)),
+            ),
             curiosity_seed_interval_seconds=max(
                 60,
                 int(memory_raw.get("curiosity_seed_interval_seconds", 3600)),
@@ -5801,6 +5938,34 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             file_tasks=bool(tools_raw.get("file_tasks", True)),
             workflow=bool(tools_raw.get("workflow", True)),
             calculate=bool(tools_raw.get("calculate", True)),
+        ),
+        search=SearchSettings(
+            provider=(
+                str(search_raw.get("provider", "duckduckgo") or "duckduckgo")
+                .strip()
+                .lower()
+            ),
+            api_key=str(search_raw.get("api_key", "") or ""),
+            api_key_env=str(
+                search_raw.get("api_key_env", "LANGSEARCH_API_KEY")
+                or "LANGSEARCH_API_KEY"
+            ).strip(),
+            langsearch_summary=bool(search_raw.get("langsearch_summary", True)),
+            langsearch_freshness=str(
+                search_raw.get("langsearch_freshness", "noLimit") or "noLimit"
+            ).strip(),
+            langsearch_count=max(
+                1, min(10, int(search_raw.get("langsearch_count", 10)))
+            ),
+            fallback_to_duckduckgo=bool(
+                search_raw.get("fallback_to_duckduckgo", True)
+            ),
+            timeout_seconds=max(
+                1.0, float(search_raw.get("timeout_seconds", 12.0))
+            ),
+            query_reformulation_enabled=bool(
+                search_raw.get("query_reformulation_enabled", True)
+            ),
         ),
         endpointing=EndpointingSettings(
             enabled=bool(endpointing_raw.get("enabled", True)),

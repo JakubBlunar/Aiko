@@ -116,6 +116,7 @@ class IdleFactChecker:
         notify_memory_updated: Any | None = None,
         user_names_provider: Any | None = None,
         assistant_name_provider: Any | None = None,
+        query_reformulator: Any | None = None,
     ) -> None:
         self._queue = queue
         self._memory_store = memory_store
@@ -134,6 +135,10 @@ class IdleFactChecker:
         # up on the next tick without rebuilding the worker.
         self._user_names_provider = user_names_provider
         self._assistant_name_provider = assistant_name_provider
+        # F6: optional local-LLM query reformulator. When set, personal
+        # claims are rewritten into neutral topic queries (post-filtered
+        # by the deterministic scrubber) before search.
+        self._query_reformulator = query_reformulator
 
     # ── IdleWorker protocol ──────────────────────────────────────────
 
@@ -324,6 +329,17 @@ class IdleFactChecker:
                 assistant_name = self._assistant_name_provider() or None
             except Exception:
                 assistant_name = None
+        if self._query_reformulator is not None:
+            from app.core.memory.query_reformulation import (
+                reformulate_query_for_search,
+            )
+
+            return reformulate_query_for_search(
+                claim.claim_text,
+                reformulate_fn=self._query_reformulator,
+                user_names=user_names,
+                assistant_name=assistant_name,
+            )
         return scrub_claim_for_search(
             claim.claim_text,
             user_names=user_names,

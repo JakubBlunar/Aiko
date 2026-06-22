@@ -160,6 +160,7 @@ class IdleCuriosityWorker:
         notify_memory_added: Callable[[dict[str, Any]], None] | None = None,
         notify_memory_updated: Callable[[dict[str, Any]], None] | None = None,
         clock: Callable[[], datetime] | None = None,
+        query_reformulator: Callable[[str], str | None] | None = None,
     ) -> None:
         self._memory_store = memory_store
         self._embedder = embedder
@@ -175,6 +176,7 @@ class IdleCuriosityWorker:
         self._notify_memory_added = notify_memory_added
         self._notify_memory_updated = notify_memory_updated
         self._clock = clock or _utcnow
+        self._query_reformulator = query_reformulator
 
     # ── IdleWorker protocol ──────────────────────────────────────────
 
@@ -446,6 +448,17 @@ class IdleCuriosityWorker:
                 assistant_name = self._assistant_name_provider() or None
             except Exception:
                 assistant_name = None
+        if self._query_reformulator is not None:
+            from app.core.memory.query_reformulation import (
+                reformulate_query_for_search,
+            )
+
+            return reformulate_query_for_search(
+                question_text,
+                reformulate_fn=self._query_reformulator,
+                user_names=user_names,
+                assistant_name=assistant_name,
+            )
         return scrub_claim_for_search(
             question_text,
             user_names=user_names,

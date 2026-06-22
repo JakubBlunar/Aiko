@@ -3467,5 +3467,67 @@ class ConflictRepairSettingsTests(unittest.TestCase):
         self.assertEqual(a.conflict_repair_watch_turns, 1)
 
 
+class SearchSettingsTests(unittest.TestCase):
+    """Web-search backend (`search` block) parsing + clamps."""
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(self, search_extra: dict | None = None) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(json.loads(default_path.read_text(encoding="utf-8")))
+        if search_extra is not None:
+            cfg["search"] = {**cfg.get("search", {}), **search_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults_load_when_block_missing(self) -> None:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(json.loads(default_path.read_text(encoding="utf-8")))
+        cfg.pop("search", None)
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        s = load_settings(config_path=path).search
+        self.assertEqual(s.provider, "duckduckgo")
+        self.assertEqual(s.api_key_env, "LANGSEARCH_API_KEY")
+        self.assertTrue(s.fallback_to_duckduckgo)
+        self.assertTrue(s.query_reformulation_enabled)
+        self.assertEqual(s.langsearch_count, 10)
+
+    def test_overrides_round_trip(self) -> None:
+        path = self._write_config({
+            "provider": "LangSearch",
+            "langsearch_freshness": "oneWeek",
+            "query_reformulation_enabled": False,
+            "fallback_to_duckduckgo": False,
+        })
+        s = load_settings(config_path=path).search
+        self.assertEqual(s.provider, "langsearch")  # normalised lower
+        self.assertEqual(s.langsearch_freshness, "oneWeek")
+        self.assertFalse(s.query_reformulation_enabled)
+        self.assertFalse(s.fallback_to_duckduckgo)
+
+    def test_count_and_timeout_clamped(self) -> None:
+        path = self._write_config({
+            "langsearch_count": 999,
+            "timeout_seconds": 0.1,
+        })
+        s = load_settings(config_path=path).search
+        self.assertEqual(s.langsearch_count, 10)
+        self.assertGreaterEqual(s.timeout_seconds, 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -114,67 +114,84 @@ class RecallToolTests(unittest.TestCase):
 # ── web_search ────────────────────────────────────────────────────────────
 
 
-class _FakeDDGS:
-    """Context-manager stub for :class:`duckduckgo_search.DDGS`."""
+from app.llm.search.providers import SearchResult
 
-    last_kwargs: dict[str, Any] = {}
-    fixed_results: list[dict[str, Any]] = []
 
-    def __enter__(self) -> "_FakeDDGS":
-        return self
+class _FakeProvider:
+    """Stub :class:`app.llm.search.providers.SearchProvider`."""
 
-    def __exit__(self, *_a: Any) -> None:
-        return None
+    name = "fake"
 
-    def text(self, query: str, **kwargs: Any) -> list[dict[str, Any]]:
-        _FakeDDGS.last_kwargs = {"query": query, **kwargs}
-        return list(self.fixed_results)
+    def __init__(self, results: list[SearchResult], *, raises: bool = False) -> None:
+        self._results = list(results)
+        self._raises = raises
+        self.last_query: str | None = None
+        self.last_max: int | None = None
+
+    def search(self, query: str, max_results: int) -> list[SearchResult]:
+        self.last_query = query
+        self.last_max = max_results
+        if self._raises:
+            raise RuntimeError("boom")
+        return list(self._results)
 
 
 class WebSearchToolTests(unittest.TestCase):
-    def _build(self, results: list[dict[str, Any]]) -> WebSearchTool:
-        # Bypass the real import; inject a fake DDGS class on the instance.
-        tool = WebSearchTool.__new__(WebSearchTool)
-        _FakeDDGS.fixed_results = list(results)
-        tool._ddgs_cls = _FakeDDGS  # type: ignore[attr-defined]
-        return tool
+    def _build(self, results: list[SearchResult], *, raises: bool = False):
+        provider = _FakeProvider(results, raises=raises)
+        return WebSearchTool(provider=provider), provider
 
     def test_run_returns_results(self) -> None:
-        tool = self._build([
-            {
-                "title": "Cursor 1.0 announcement",
-                "href": "https://cursor.com/post",
-                "body": "We're shipping Cursor 1.0 today.",
-            },
-            {
-                "title": "Hacker News thread",
-                "url": "https://news.ycombinator.com/item?id=1",
-                "body": "Discussion of the launch.",
-            },
+        tool, provider = self._build([
+            SearchResult(
+                title="Cursor 1.0 announcement",
+                url="https://cursor.com/post",
+                snippet="We're shipping Cursor 1.0 today.",
+            ),
+            SearchResult(
+                title="Hacker News thread",
+                url="https://news.ycombinator.com/item?id=1",
+                snippet="Discussion of the launch.",
+            ),
         ])
         result = tool.run({"query": "cursor 1.0"})
         payload = json.loads(result)
-        self.assertEqual(_FakeDDGS.last_kwargs["query"], "cursor 1.0")
-        self.assertEqual(_FakeDDGS.last_kwargs["max_results"], 5)
+        self.assertEqual(provider.last_query, "cursor 1.0")
+        self.assertEqual(provider.last_max, 5)
         self.assertEqual(len(payload["results"]), 2)
         self.assertEqual(payload["results"][0]["title"], "Cursor 1.0 announcement")
         self.assertEqual(payload["results"][1]["url"], "https://news.ycombinator.com/item?id=1")
 
     def test_run_clamps_max_results(self) -> None:
-        tool = self._build([])
+        tool, provider = self._build([])
         tool.run({"query": "x", "max_results": 99})
-        self.assertEqual(_FakeDDGS.last_kwargs["max_results"], 8)
+        self.assertEqual(provider.last_max, 8)
 
     def test_run_no_results_returns_note(self) -> None:
-        tool = self._build([])
+        tool, _ = self._build([])
         payload = json.loads(tool.run({"query": "anything"}))
         self.assertEqual(payload["results"], [])
         self.assertIn("note", payload)
 
     def test_run_empty_query_raises(self) -> None:
-        tool = self._build([])
+        tool, _ = self._build([])
         with self.assertRaises(ToolError):
             tool.run({"query": ""})
+
+    def test_run_provider_error_raises_tool_error(self) -> None:
+        tool, _ = self._build([], raises=True)
+        with self.assertRaises(ToolError):
+            tool.run({"query": "x"})
+
+    def test_set_provider_swaps_backend(self) -> None:
+        tool, _ = self._build([])
+        new = _FakeProvider([
+            SearchResult(title="t", url="u", snippet="s"),
+        ])
+        tool.set_provider(new)
+        payload = json.loads(tool.run({"query": "q"}))
+        self.assertEqual(len(payload["results"]), 1)
+        self.assertEqual(new.last_query, "q")
 
 
 # ── ToolRegistry ──────────────────────────────────────────────────────────

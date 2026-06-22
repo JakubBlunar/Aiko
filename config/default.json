@@ -444,6 +444,17 @@
     "goals": true,
     "calculate": true
   },
+  "search": {
+    "provider": "duckduckgo",
+    "api_key": "",
+    "api_key_env": "LANGSEARCH_API_KEY",
+    "langsearch_summary": true,
+    "langsearch_freshness": "noLimit",
+    "langsearch_count": 10,
+    "fallback_to_duckduckgo": true,
+    "timeout_seconds": 12.0,
+    "query_reformulation_enabled": true
+  },
   "endpointing": {
     "enabled": true,
     "use_partial_transcript": true,
