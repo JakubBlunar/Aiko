@@ -380,21 +380,30 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(host._render_emotion_episode_block("hi"), "")
 
     def test_live_episode_renders_strongest(self) -> None:
-        state = _state_with(intensity=0.4)
+        # Anchor in real wall-clock time — the provider decays against
+        # datetime.now(), not the fixed NOW constant, so episodes pinned
+        # at NOW would decay away once the calendar moves past it.
+        now = datetime.now(timezone.utc)
+        state = _state_with(intensity=0.4, now=now)
         state = ee.add_episode(
             state,
             emotion=ee.EMOTION_SMUG,
             cause="you called the plot twist",
             intensity=0.8,
             source="test",
-            now=NOW,
+            now=now,
         )
         host = _Host(initial=ee.serialize(state))
         block = host._render_emotion_episode_block("hello")
         self.assertIn("you called the plot twist", block)
 
     def test_acknowledgment_resolves_and_renders_thaw(self) -> None:
-        host = _Host(initial=ee.serialize(_state_with(intensity=0.6)))
+        # Anchor in real wall-clock time (see above) so the episode is
+        # still live when acknowledgment detection runs.
+        now = datetime.now(timezone.utc)
+        host = _Host(
+            initial=ee.serialize(_state_with(intensity=0.6, now=now)),
+        )
         block = host._render_emotion_episode_block(
             "I'm sorry about earlier, that was on me",
         )
