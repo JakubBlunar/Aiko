@@ -113,6 +113,8 @@
     "topic_label_interval_seconds": 1800,
     "topic_label_max_per_run": 4,
     "topic_label_max_tokens": 32,
+    "rag_cluster_diversity_enabled": true,
+    "rag_max_per_cluster": 3,
     "curiosity_seed_enabled": true,
     "curiosity_seed_max_active": 10,
     "curiosity_seed_max_per_run": 2,

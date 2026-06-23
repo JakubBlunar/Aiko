@@ -687,6 +687,20 @@ class SessionController(
                                 "confidence_decay_distant_threshold",
                                 0.5,
                             ),
+                            cluster_diversity_enabled=bool(
+                                getattr(
+                                    self._settings.agent,
+                                    "rag_cluster_diversity_enabled",
+                                    True,
+                                )
+                            ),
+                            max_per_cluster=int(
+                                getattr(
+                                    self._settings.agent,
+                                    "rag_max_per_cluster",
+                                    3,
+                                )
+                            ),
                         )
                     except Exception:
                         log.warning("RagRetriever failed to init", exc_info=True)

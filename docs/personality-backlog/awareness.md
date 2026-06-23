@@ -243,11 +243,28 @@ feeds K9 curiosity dedup + F9 cluster-pick + the observability browser —
   cluster `summary` in the snapshot / `GET /api/topic-graph` / Memory
   drawer. Settings: `agent.topic_label_{enabled,interval_seconds,max_per_run,max_tokens}`.
   Tests: [`tests/test_topic_label_worker.py`](../../tests/test_topic_label_worker.py).
-- **F10b. Cluster-aware RAG diversity (MMR).** In
-  [`rag_retriever.py`](../../app/core/rag/rag_retriever.py), dedupe the
-  top-k by cluster so a dense knot can't crowd out other relevant
-  context — broader, less repetitive grounding. Pure retrieval re-rank,
-  no prompt-shape change.
+- **F10b. Cluster-aware RAG diversity. ✅ SHIPPED.** In
+  [`rag_retriever.py`](../../app/core/rag/rag_retriever.py), the final
+  top-k selection now caps how many hits may come from a single topic
+  cluster so a dense knot (e.g. the big "get to know the user" cluster)
+  can't monopolise every slot and crowd out other relevant context.
+  Implemented as a deterministic MMR-lite: walk the deduped,
+  score-descending candidates and defer a memory hit once its cluster
+  already holds `rag_max_per_cluster` (default 3) admitted hits, then
+  **backfill** from the deferred overflow in score order so the re-rank
+  only ever *reorders* the top-k — it never shrinks it. Cluster id comes
+  from [`TopicGraph.cluster_id_for`](../../app/core/conversation/topic_graph.py)
+  (O(1) read against the warm assignment map, never forces a rebuild);
+  the graph is wired into the retriever via a second-pass `set_topic_graph`
+  (mirroring `set_goal_store`). Only `memory` hits with a known cluster are
+  capped — message / document hits and unclustered memories are always
+  admitted. Note this is **not** about context bloat (the `top_k` cap
+  already bounds total context regardless of cluster size); it's about
+  *monoculture* — diversifying which topics fill the slots. Gated by
+  `agent.rag_cluster_diversity_enabled` (default on) + `rag_max_per_cluster`;
+  no-op on the in-memory / non-persistent topic-graph path. Pure retrieval
+  re-rank, no prompt-shape change. Tests:
+  [`tests/test_rag_retriever_cluster_diversity.py`](../../tests/test_rag_retriever_cluster_diversity.py).
 - **F10c. Topic expansion / multi-hop.** When a query hits a cluster
   strongly, optionally pull 1-2 sibling members from the same cluster to
   round out context. This is the **graph-aware multi-hop retrieval**
@@ -269,6 +286,8 @@ feeds K9 curiosity dedup + F9 cluster-pick + the observability browser —
   also natural merge targets to point the K35 consolidation worker at.
 
 **Effort.** F10a/F10b/F10e small-medium each; F10c/F10d medium and
-riskier (touch retrieval + prompt). **F10a is shipped** — next is F10b
-(cluster-aware RAG diversity, pure retrieval re-rank, low risk), then
-F10e (interest-map prompt block, consumes the F10a labels).
+riskier (touch retrieval + prompt). **F10a and F10b are shipped** — next
+is F10e (interest-map prompt block, consumes the F10a labels), then the
+riskier F10c/F10d coarse / multi-hop retrieval tiers (a cluster-scoped
+`recall` variant fits here — the base `recall` tool already lets Aiko
+search memory on demand).
