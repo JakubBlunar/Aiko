@@ -274,11 +274,32 @@ feeds K9 curiosity dedup + F9 cluster-pick + the observability browser —
   and retrieve at the *cluster* level first, then drill into members —
   cheaper recall on a large corpus and a natural "what do I actually
   know about X" answer.
-- **F10e. "Interest map" prompt block.** A terse inner-life block (pick
-  the right prompt-cache tier) listing Aiko's top few interest clusters
-  by size/recency, so she has a sense of "the things we keep coming back
-  to" without a per-turn LLM cost. Pairs with the relationship/affect
-  blocks.
+- **F10e. "Interest map" prompt block. ✅ SHIPPED.** A terse **T1
+  (semi-stable)** inner-life line listing Aiko's top few topic clusters by
+  size — "Topics you and {user} keep coming back to: …" — so she carries a
+  sense of "the things we keep coming back to" without any per-turn LLM
+  cost. Built by a new cheap
+  [`TopicGraph.interest_map`](../../app/core/conversation/topic_graph.py)
+  that reads **only** the live cluster map (label + member count, no join
+  back to the memory mirror), so it's safe on the hot path unlike
+  `topic_clusters()`. Each topic renders its F10a clean label once the
+  [`ClusterLabelWorker`](../../app/core/conversation/topic_label_worker.py)
+  has named it, falling back to the heuristic representative summary the
+  batch rebuild stamps on every cluster — and since the label worker names
+  the densest clusters first and the interest map *shows* the densest
+  clusters, the line converges on clean F10a labels within a couple of
+  worker ticks. Rendered by `_render_interest_map_block`
+  ([`inner_life_part1.py`](../../app/core/session/inner_life_part1.py)),
+  registered as the `interest_map` provider, and appended in T1 right
+  after `goals_block` (the "things Aiko is carrying" cluster: agenda →
+  goals → recurring interests). Owned by the assembler's `_StaticSlices`
+  cache (paid once per listening window), dropped under `aggressive`
+  alongside agenda/goals, no-op in the non-persistent topic-graph mode.
+  Settings: `agent.interest_map_{enabled,max_clusters,min_size}`. Tests:
+  `InterestMapTests` in
+  [`tests/test_topic_graph_persistent.py`](../../tests/test_topic_graph_persistent.py)
+  + `InterestMapProviderTests` in
+  [`tests/test_prompt_assembler.py`](../../tests/test_prompt_assembler.py).
 - **F10f. Knowledge-gap + consolidation targeting.** Clusters that are
   conversationally dense but low on `kind="knowledge"` coverage are
   exactly where F9 should dig and where a "I realised I don't actually
@@ -286,8 +307,8 @@ feeds K9 curiosity dedup + F9 cluster-pick + the observability browser —
   also natural merge targets to point the K35 consolidation worker at.
 
 **Effort.** F10a/F10b/F10e small-medium each; F10c/F10d medium and
-riskier (touch retrieval + prompt). **F10a and F10b are shipped** — next
-is F10e (interest-map prompt block, consumes the F10a labels), then the
-riskier F10c/F10d coarse / multi-hop retrieval tiers (a cluster-scoped
-`recall` variant fits here — the base `recall` tool already lets Aiko
-search memory on demand).
+riskier (touch retrieval + prompt). **F10a, F10b and F10e are shipped** —
+remaining are the riskier F10c/F10d coarse / multi-hop retrieval tiers (a
+cluster-scoped `recall` variant fits here — the base `recall` tool
+already lets Aiko search memory on demand) and F10f (knowledge-gap +
+consolidation targeting).

@@ -108,6 +108,7 @@ class PromptAssemblerHelpersMixin:
         narrative: Callable[[], str] | None = None,
         agenda: Callable[[], str] | None = None,
         goals: Callable[[], str] | None = None,
+        interest_map: Callable[[], str] | None = None,
         vocal_tone: Callable[[], str] | None = None,
         catchphrase: Callable[[], str] | None = None,
         petname: Callable[[], str] | None = None,
@@ -189,6 +190,8 @@ class PromptAssemblerHelpersMixin:
             self._agenda_provider = agenda
         if goals is not None:
             self._goals_provider = goals
+        if interest_map is not None:
+            self._interest_map_provider = interest_map
         if vocal_tone is not None:
             self._vocal_tone_provider = vocal_tone
         if catchphrase is not None:
@@ -430,6 +433,9 @@ class PromptAssemblerHelpersMixin:
         arc_block = _safe_provider(self._arc_provider)
         agenda_block = "" if aggressive else _safe_provider(self._agenda_provider)
         goals_block = "" if aggressive else _safe_provider(self._goals_provider)
+        interest_map_block = (
+            "" if aggressive else _safe_provider(self._interest_map_provider)
+        )
         cache_key = self._compute_static_cache_key(
             session_key, history_msgs, recent_window, aggressive,
         )
@@ -451,6 +457,7 @@ class PromptAssemblerHelpersMixin:
             arc_block=arc_block,
             agenda_block=agenda_block,
             goals_block=goals_block,
+            interest_map_block=interest_map_block,
             built_at=time.monotonic(),
         )
 

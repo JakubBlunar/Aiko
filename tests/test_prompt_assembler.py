@@ -1345,6 +1345,73 @@ class GoalsProviderTests(unittest.TestCase):
             )
 
 
+class InterestMapProviderTests(unittest.TestCase):
+    """F10e ``interest_map`` provider: lands in the system prompt next to
+    goals, silent when empty, dropped under ``aggressive=True`` (like its
+    sibling goals/agenda blocks), and registered in the T1 tier table."""
+
+    _CUE = "Topics you and Jacob keep coming back to:"
+
+    def test_interest_map_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="im1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                interest_map=lambda: (
+                    f"{self._CUE} weekend hiking, jazz piano. "
+                    "don't recite the list."
+                ),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "im1", "x", context_window=4096, response_budget=256,
+            )
+            self.assertIn(self._CUE, messages[0]["content"])
+            self.assertIn("weekend hiking", messages[0]["content"])
+
+    def test_interest_map_silent_when_empty(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="im2", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(interest_map=lambda: "")
+            messages, _ = assembler.assemble_with_budget(
+                "im2", "x", context_window=4096, response_budget=256,
+            )
+            self.assertNotIn(self._CUE, messages[0]["content"])
+
+    def test_interest_map_dropped_under_aggressive_mode(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="im3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                interest_map=lambda: f"{self._CUE} weekend hiking.",
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "im3",
+                "x",
+                context_window=4096,
+                response_budget=256,
+                aggressive=True,
+            )
+            self.assertNotIn(self._CUE, messages[0]["content"])
+
+    def test_registered_in_t1_tier_table(self) -> None:
+        from app.core.session.prompt_assembler import _PROMPT_BLOCK_TIERS
+
+        t1 = _PROMPT_BLOCK_TIERS["T1_semi_stable"]
+        self.assertIn("interest_map_block", t1)
+        # Pinned ordering: right after the goals slot — both are
+        # "things Aiko is carrying" T1 cues.
+        self.assertEqual(
+            t1.index("interest_map_block"), t1.index("goals_block") + 1,
+        )
+
+
 class NoveltyBlockProviderTests(unittest.TestCase):
     """K6 novelty provider lands in the system prompt, is dropped under
     ``aggressive=True``, and receives the current ``user_text``."""

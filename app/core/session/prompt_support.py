@@ -540,5 +540,6 @@ class _StaticSlices:
     arc_block: str
     agenda_block: str
     goals_block: str
+    interest_map_block: str
     built_at: float
 

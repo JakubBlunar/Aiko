@@ -204,6 +204,25 @@ class CuriositySeedSettingsTests(unittest.TestCase):
         self.assertFalse(result.agent.rag_cluster_diversity_enabled)
         self.assertEqual(result.agent.rag_max_per_cluster, 1)
 
+    def test_interest_map_settings_round_trip(self) -> None:
+        # Defaults.
+        result = load_settings(config_path=self._write_config())
+        self.assertTrue(result.agent.interest_map_enabled)
+        self.assertEqual(result.agent.interest_map_max_clusters, 5)
+        self.assertEqual(result.agent.interest_map_min_size, 4)
+        # Overrides + floors.
+        path = self._write_config(
+            agent_extra={
+                "interest_map_enabled": False,
+                "interest_map_max_clusters": 0,  # below min 1
+                "interest_map_min_size": 0,      # below min 1
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.interest_map_enabled)
+        self.assertEqual(result.agent.interest_map_max_clusters, 1)
+        self.assertEqual(result.agent.interest_map_min_size, 1)
+
     def test_overrides_round_trip(self) -> None:
         path = self._write_config(
             agent_extra={

@@ -101,6 +101,7 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "arc_block",
         "agenda_block",
         "goals_block",
+        "interest_map_block",
         "day_color_block",
         "anniversary_block",
         "milestone_block",
@@ -422,6 +423,14 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # under tight contexts. Empty until the worker bootstrap (or a
         # user / self-tag write) lands the first goal.
         self._goals_provider: Callable[[], str] | None = None
+        # F10e: "interest map" -- terse T1 line listing the top few
+        # labelled topic clusters ("the things we keep coming back to").
+        # Derived from the topic graph's live cluster map (label + size),
+        # no per-turn LLM cost. Clusters with ``goals_block`` /
+        # ``agenda_block`` in the "things Aiko is carrying" T1 group;
+        # dropped in aggressive mode alongside them. Empty until the F10a
+        # label worker has named at least one dense cluster.
+        self._interest_map_provider: Callable[[], str] | None = None
         # K6 personality backlog: surprise/novelty signal. Takes the
         # current ``user_text`` (like the F2 knowledge-gap provider)
         # because the detector compares the live turn embedding to a
@@ -777,6 +786,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         arc_block = slices.arc_block
         agenda_block = slices.agenda_block
         goals_block = slices.goals_block
+        interest_map_block = slices.interest_map_block
 
         memory_block = ""
         rag_prefetch_event = "skip"
@@ -1799,6 +1809,15 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # bootstrap or a manual write seeds the ring; dropped
             # in aggressive mode alongside agenda.
             system_parts.append(goals_block)
+        if interest_map_block:
+            # F10e: "interest map" -- the topic threads Aiko and the user
+            # keep returning to, derived from the topic graph's labelled
+            # clusters (no per-turn LLM cost). Lands right after goals so
+            # the "what she's carrying" cluster reads agenda -> goals ->
+            # the broader interests that frame them. Dropped in aggressive
+            # mode alongside agenda / goals; empty until the F10a label
+            # worker has named at least one dense cluster.
+            system_parts.append(interest_map_block)
         if day_color_block:
             # K27 -- daily personality colour. Trend/phase block (slow
             # daily under-current), not a situational block, so it

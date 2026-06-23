@@ -172,6 +172,17 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
                 1,
                 int(agent_raw.get("rag_max_per_cluster", 3)),
             ),
+            interest_map_enabled=bool(
+                agent_raw.get("interest_map_enabled", True),
+            ),
+            interest_map_max_clusters=max(
+                1,
+                int(agent_raw.get("interest_map_max_clusters", 5)),
+            ),
+            interest_map_min_size=max(
+                1,
+                int(agent_raw.get("interest_map_min_size", 4)),
+            ),
             curiosity_seed_enabled=bool(
                 agent_raw.get("curiosity_seed_enabled", True),
             ),
