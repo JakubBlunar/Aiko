@@ -166,6 +166,28 @@ class CuriositySeedSettingsTests(unittest.TestCase):
         )
         self.assertEqual(result.agent.topic_graph_refit_pending_threshold, 1)
 
+    def test_topic_label_settings_round_trip(self) -> None:
+        # Defaults.
+        result = load_settings(config_path=self._write_config())
+        self.assertTrue(result.agent.topic_label_enabled)
+        self.assertEqual(result.agent.topic_label_interval_seconds, 1800.0)
+        self.assertEqual(result.agent.topic_label_max_per_run, 4)
+        self.assertEqual(result.agent.topic_label_max_tokens, 32)
+        # Overrides + floors.
+        path = self._write_config(
+            agent_extra={
+                "topic_label_enabled": False,
+                "topic_label_interval_seconds": 5,  # below 60s floor
+                "topic_label_max_per_run": 0,       # below min 1
+                "topic_label_max_tokens": 1,        # below min 8
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.topic_label_enabled)
+        self.assertEqual(result.agent.topic_label_interval_seconds, 60.0)
+        self.assertEqual(result.agent.topic_label_max_per_run, 1)
+        self.assertEqual(result.agent.topic_label_max_tokens, 8)
+
     def test_overrides_round_trip(self) -> None:
         path = self._write_config(
             agent_extra={

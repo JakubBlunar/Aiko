@@ -1193,6 +1193,45 @@ class SpeakingWorkersInitMixin:
                                         "TopicGraphRebuildWorker register failed",
                                         exc_info=True,
                                     )
+
+                                # F10a: name each cluster with a worker-LLM
+                                # pass during quiet windows (cached in
+                                # kv_meta by representative). Needs the
+                                # maintenance client + a kv-backed cache.
+                                if (
+                                    self._chat_db is not None
+                                    and self._maintenance_client is not None
+                                    and self._fact_check_cancel is not None
+                                    and bool(
+                                        getattr(
+                                            settings.agent,
+                                            "topic_label_enabled",
+                                            True,
+                                        )
+                                    )
+                                ):
+                                    try:
+                                        from app.core.conversation.topic_label_worker import (
+                                            ClusterLabelWorker,
+                                        )
+
+                                        self._idle_scheduler.register(
+                                            ClusterLabelWorker(
+                                                topic_graph=self._topic_graph,
+                                                memory_store=self._memory_store,
+                                                ollama=self._maintenance_client,
+                                                chat_model=self._effective_worker_model,
+                                                cancel_event=self._fact_check_cancel,
+                                                agent_settings=settings.agent,
+                                                kv_get=self._chat_db.kv_get,
+                                                kv_set=self._chat_db.kv_set,
+                                            )
+                                        )
+                                    except Exception:
+                                        log.debug(
+                                            "ClusterLabelWorker register failed",
+                                            exc_info=True,
+                                        )
                     except Exception:
                         log.warning(
                             "TopicGraph init failed", exc_info=True,

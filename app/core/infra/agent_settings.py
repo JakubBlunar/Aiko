@@ -308,6 +308,22 @@ class AgentSettings:
     # on the next idle tick regardless of the interval, so a burst of new
     # topics (e.g. a web-knowledge enrichment run) is folded in promptly.
     topic_graph_refit_pending_threshold: int = 25
+    # F10a: LLM-labelled topic clusters. A background worker
+    # (:class:`app.core.conversation.topic_label_worker.ClusterLabelWorker`)
+    # names each cluster ("weekend hiking plans") via a worker-LLM pass,
+    # cached in ``kv_meta`` keyed by the cluster representative so it is
+    # not recomputed every build. Entirely off the chat path (zero
+    # per-turn cost). The label surfaces in the topic-graph snapshot
+    # (Memory drawer) and feeds the F10e interest-map prompt block.
+    topic_label_enabled: bool = True
+    # How often the label worker runs a pass (default 30 min). Clamped to
+    # a 60s floor in the parser.
+    topic_label_interval_seconds: float = 1800.0
+    # Max clusters (re)labelled per worker tick. Bounds worker-LLM spend
+    # on a large or churned corpus; the rest are picked up next tick.
+    topic_label_max_per_run: int = 4
+    # Token cap for each label generation (a label is a 2-5 word phrase).
+    topic_label_max_tokens: int = 32
     # Master switch for
     # :class:`app.core.proactive.curiosity_seed_worker.CuriositySeedWorker`.
     # When ``False`` the worker never registers its idle tick and

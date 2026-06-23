@@ -150,6 +150,21 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
                     "topic_graph_refit_pending_threshold", 25,
                 )),
             ),
+            topic_label_enabled=bool(
+                agent_raw.get("topic_label_enabled", True),
+            ),
+            topic_label_interval_seconds=max(
+                60.0,
+                float(agent_raw.get("topic_label_interval_seconds", 1800.0)),
+            ),
+            topic_label_max_per_run=max(
+                1,
+                int(agent_raw.get("topic_label_max_per_run", 4)),
+            ),
+            topic_label_max_tokens=max(
+                8,
+                int(agent_raw.get("topic_label_max_tokens", 32)),
+            ),
             curiosity_seed_enabled=bool(
                 agent_raw.get("curiosity_seed_enabled", True),
             ),
