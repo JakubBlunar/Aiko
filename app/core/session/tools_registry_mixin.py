@@ -54,11 +54,17 @@ class ToolsRegistryMixin:
 
         registry = ToolRegistry()
         try:
-            from app.llm.tools.builtins import GetTimeTool, RecallTool
+            from app.llm.tools.builtins import GetTimeTool, RecallTool, RecallTopicTool
             if getattr(tools_cfg, "get_time", True):
                 registry.register(GetTimeTool())
             if getattr(tools_cfg, "recall", True) and getattr(self, "_rag_retriever", None) is not None:
                 registry.register(RecallTool(self._rag_retriever))
+            # F10d cluster-scoped recall. Gated by its own switch but needs
+            # the same retriever; only useful once the topic graph is wired
+            # (the tool returns an empty result otherwise, so it is safe to
+            # register regardless).
+            if getattr(tools_cfg, "recall_topic", True) and getattr(self, "_rag_retriever", None) is not None:
+                registry.register(RecallTopicTool(self._rag_retriever))
             # Synchronous exact-arithmetic tool. No external deps, no
             # store — safe to register whenever the switch is on so Aiko
             # never has to guess a number.

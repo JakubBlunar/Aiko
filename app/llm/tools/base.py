@@ -163,12 +163,18 @@ def build_default_registry(
     ``rag_retriever`` is required for the ``recall`` tool. ``web_search`` is
     skipped when disabled or when :mod:`duckduckgo_search` isn't installed.
     """
-    from app.llm.tools.builtins import GetTimeTool, RecallTool, WebSearchTool
+    from app.llm.tools.builtins import (
+        GetTimeTool,
+        RecallTool,
+        RecallTopicTool,
+        WebSearchTool,
+    )
 
     registry = ToolRegistry()
     registry.register(GetTimeTool())
     if rag_retriever is not None:
         registry.register(RecallTool(rag_retriever))
+        registry.register(RecallTopicTool(rag_retriever))
     if web_search_enabled:
         try:
             registry.register(WebSearchTool())

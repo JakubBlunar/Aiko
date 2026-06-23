@@ -104,7 +104,12 @@ class CuriositySeedSettingsTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def _write_config(self, agent_extra: dict | None = None, memory_extra: dict | None = None) -> Path:
+    def _write_config(
+        self,
+        agent_extra: dict | None = None,
+        memory_extra: dict | None = None,
+        tools_extra: dict | None = None,
+    ) -> Path:
         default_path = (
             Path(__file__).resolve().parents[1] / "config" / "default.json"
         )
@@ -125,6 +130,8 @@ class CuriositySeedSettingsTests(unittest.TestCase):
             cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
         if memory_extra is not None:
             cfg["memory"] = {**cfg.get("memory", {}), **memory_extra}
+        if tools_extra is not None:
+            cfg["tools"] = {**cfg.get("tools", {}), **tools_extra}
         path = Path(self._tmp.name) / "config.json"
         path.write_text(json.dumps(cfg), encoding="utf-8")
         return path
@@ -203,6 +210,35 @@ class CuriositySeedSettingsTests(unittest.TestCase):
         result = load_settings(config_path=path)
         self.assertFalse(result.agent.rag_cluster_diversity_enabled)
         self.assertEqual(result.agent.rag_max_per_cluster, 1)
+
+    def test_rag_topic_expansion_settings_round_trip(self) -> None:
+        # Defaults.
+        result = load_settings(config_path=self._write_config())
+        self.assertTrue(result.agent.rag_topic_expansion_enabled)
+        self.assertEqual(result.agent.rag_expand_max, 2)
+        self.assertAlmostEqual(result.agent.rag_expand_trigger_score, 0.55)
+        self.assertAlmostEqual(result.agent.rag_expand_min_sim, 0.45)
+        # Overrides + floor (expand_max clamps to >= 0).
+        path = self._write_config(
+            agent_extra={
+                "rag_topic_expansion_enabled": False,
+                "rag_expand_max": -5,
+                "rag_expand_trigger_score": 0.7,
+                "rag_expand_min_sim": 0.6,
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.rag_topic_expansion_enabled)
+        self.assertEqual(result.agent.rag_expand_max, 0)
+        self.assertAlmostEqual(result.agent.rag_expand_trigger_score, 0.7)
+        self.assertAlmostEqual(result.agent.rag_expand_min_sim, 0.6)
+
+    def test_recall_topic_tool_setting_round_trip(self) -> None:
+        result = load_settings(config_path=self._write_config())
+        self.assertTrue(result.tools.recall_topic)
+        path = self._write_config(tools_extra={"recall_topic": False})
+        result = load_settings(config_path=path)
+        self.assertFalse(result.tools.recall_topic)
 
     def test_interest_map_settings_round_trip(self) -> None:
         # Defaults.

@@ -265,15 +265,49 @@ feeds K9 curiosity dedup + F9 cluster-pick + the observability browser —
   no-op on the in-memory / non-persistent topic-graph path. Pure retrieval
   re-rank, no prompt-shape change. Tests:
   [`tests/test_rag_retriever_cluster_diversity.py`](../../tests/test_rag_retriever_cluster_diversity.py).
-- **F10c. Topic expansion / multi-hop.** When a query hits a cluster
-  strongly, optionally pull 1-2 sibling members from the same cluster to
-  round out context. This is the **graph-aware multi-hop retrieval**
-  explicitly deferred in the K9 spec (see [`patterns.md`](patterns.md)
-  K9). Riskier — changes prompt content — so gate it and measure.
-- **F10d. Cluster-summary coarse retrieval tier.** Embed the F10a labels
-  and retrieve at the *cluster* level first, then drill into members —
-  cheaper recall on a large corpus and a natural "what do I actually
-  know about X" answer.
+- **F10c. Topic expansion / multi-hop. ✅ SHIPPED.** When a turn's
+  strongest memory hit (score ≥ `agent.rag_expand_trigger_score`, default
+  `0.55`) belongs to a topic cluster,
+  [`RagRetriever._expand_topic`](../../app/core/rag/rag_retriever.py)
+  appends up to `agent.rag_expand_max` (default `2`) sibling members of
+  that cluster — **beyond** the top-k — whose cosine to the live query
+  clears `agent.rag_expand_min_sim` (default `0.45`), so Aiko gets the
+  surrounding context, not just the single closest line. Siblings are
+  reached by id via two cheap graph readers
+  ([`TopicGraph.cluster_id_for`](../../app/core/conversation/topic_graph.py)
+  + `cluster_member_ids`) and scored by a dot product against the query
+  embedding (no extra embed, no extra DB search). The new hits carry a
+  `RagHit.expansion=True` flag and render in their own
+  "Related notes from the same topic" section of `format_block`, so the
+  LLM reads them as associative rather than direct recall. This is the
+  **graph-aware multi-hop retrieval** explicitly deferred in the K9 spec
+  (see [`patterns.md`](patterns.md) K9). It **does** change prompt content,
+  so it's gated + bounded; flip `agent.rag_topic_expansion_enabled=false`
+  (or `rag_expand_max=0`) to revert to pure top-k. No-op without a
+  persistent topic graph + memory store. Tests: `TopicExpansionTests` +
+  `FormatBlockExpansionTests` in
+  [`tests/test_rag_retriever_topic_expansion.py`](../../tests/test_rag_retriever_topic_expansion.py).
+- **F10d. Cluster-summary coarse retrieval tier (cluster-scoped recall).
+  ✅ SHIPPED.** Coarse → fine retrieval: match a query to a whole topic
+  cluster by **centroid cosine**
+  ([`TopicGraph.best_clusters_for`](../../app/core/conversation/topic_graph.py)
+  — a handful of dot products against cluster centroids, no member join,
+  no embed) then drill into that cluster's members ranked by cosine to the
+  query ([`RagRetriever.recall_topic`](../../app/core/rag/rag_retriever.py)
+  returns `(cluster_label, hits)`). Surfaced as the new **`recall_topic`
+  tool** ([`builtins.py`](../../app/llm/tools/builtins.py)): where the base
+  `recall` does a global search for the few closest snippets, `recall_topic`
+  enumerates one coherent theme — the natural "what do I actually know
+  about X?" answer when the user asks Aiko to round up / summarise a
+  subject. Gated by `tools.recall_topic` (default on; registered in
+  [`tools_registry_mixin.py`](../../app/core/session/tools_registry_mixin.py)
+  + [`base.py`](../../app/llm/tools/base.py), mapped to the `recall` family
+  in [`tool_pass_gate.py`](../../app/core/session/tool_pass_gate.py)).
+  No-op (empty result) without a persistent topic graph. Tests:
+  `RecallTopicTests` + `RecallTopicToolTests` in
+  [`tests/test_rag_retriever_topic_expansion.py`](../../tests/test_rag_retriever_topic_expansion.py)
+  + `ClusterMemberAndCoarseMatchTests` in
+  [`tests/test_topic_graph_persistent.py`](../../tests/test_topic_graph_persistent.py).
 - **F10e. "Interest map" prompt block. ✅ SHIPPED.** A terse **T1
   (semi-stable)** inner-life line listing Aiko's top few topic clusters by
   size — "Topics you and {user} keep coming back to: …" — so she carries a
@@ -307,8 +341,6 @@ feeds K9 curiosity dedup + F9 cluster-pick + the observability browser —
   also natural merge targets to point the K35 consolidation worker at.
 
 **Effort.** F10a/F10b/F10e small-medium each; F10c/F10d medium and
-riskier (touch retrieval + prompt). **F10a, F10b and F10e are shipped** —
-remaining are the riskier F10c/F10d coarse / multi-hop retrieval tiers (a
-cluster-scoped `recall` variant fits here — the base `recall` tool
-already lets Aiko search memory on demand) and F10f (knowledge-gap +
+riskier (touch retrieval + prompt). **F10a, F10b, F10c, F10d and F10e are
+shipped** — the only remaining item is F10f (knowledge-gap +
 consolidation targeting).

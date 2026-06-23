@@ -172,6 +172,19 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
                 1,
                 int(agent_raw.get("rag_max_per_cluster", 3)),
             ),
+            rag_topic_expansion_enabled=bool(
+                agent_raw.get("rag_topic_expansion_enabled", True),
+            ),
+            rag_expand_max=max(
+                0,
+                int(agent_raw.get("rag_expand_max", 2)),
+            ),
+            rag_expand_trigger_score=float(
+                agent_raw.get("rag_expand_trigger_score", 0.55),
+            ),
+            rag_expand_min_sim=float(
+                agent_raw.get("rag_expand_min_sim", 0.45),
+            ),
             interest_map_enabled=bool(
                 agent_raw.get("interest_map_enabled", True),
             ),

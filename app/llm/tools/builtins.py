@@ -128,6 +128,84 @@ class RecallTool:
         return json.dumps({"hits": out}, ensure_ascii=False)
 
 
+# ── recall_topic ─────────────────────────────────────────────────────────────
+
+
+class RecallTopicTool:
+    """Browse everything Aiko knows about one coherent topic / theme.
+
+    Where :class:`RecallTool` does a global semantic search for the few
+    closest snippets, this tool (F10d cluster-scoped recall) matches the
+    query to a whole **topic cluster** of the memory graph and returns that
+    cluster's members. It answers "what do I actually know about X?" by
+    enumerating one theme rather than the single best line — use it when the
+    user asks Aiko to gather / summarise / list what she remembers about a
+    subject, not for a one-off "did I mention Y?" lookup.
+    """
+
+    def __init__(self, rag_retriever: Any) -> None:
+        self._rag = rag_retriever
+
+    def schema(self) -> ToolSchema:
+        return ToolSchema(
+            name="recall_topic",
+            description=(
+                "Pull up everything Aiko remembers about one topic or theme "
+                "(a whole cluster of related notes), not just the single "
+                "closest line. Use this when the user asks her to round up / "
+                "summarise / go over what she knows about a subject (e.g. "
+                "'what do you remember about my job?', 'tell me everything "
+                "you know about my trip')."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "topic": {
+                        "type": "string",
+                        "description": "The topic / theme to gather notes about.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max number of notes to return (1-15). Defaults to 8.",
+                        "minimum": 1,
+                        "maximum": 15,
+                    },
+                },
+                "required": ["topic"],
+            },
+        )
+
+    def run(self, arguments: dict[str, Any]) -> str:
+        topic = (arguments.get("topic") or "").strip()
+        if not topic:
+            raise ToolError("recall_topic: 'topic' is required and must be non-empty")
+        try:
+            limit = int(arguments.get("limit", 8))
+        except (TypeError, ValueError):
+            limit = 8
+        limit = max(1, min(15, limit))
+        if self._rag is None or not hasattr(self._rag, "recall_topic"):
+            raise ToolError("recall_topic: retrieval store is not available")
+        try:
+            label, hits = self._rag.recall_topic(topic, limit=limit)
+        except Exception as exc:
+            raise ToolError(f"recall_topic failed: {exc}") from exc
+        if not hits:
+            return json.dumps(
+                {"topic_label": label, "hits": [], "note": "no matching topic cluster"},
+                ensure_ascii=False,
+            )
+        out = []
+        for hit in hits:
+            out.append({
+                "score": round(float(hit.score), 3),
+                "text": (hit.text or "")[:280],
+            })
+        return json.dumps(
+            {"topic_label": label, "hits": out}, ensure_ascii=False
+        )
+
+
 # ── web_search ──────────────────────────────────────────────────────────────
 
 

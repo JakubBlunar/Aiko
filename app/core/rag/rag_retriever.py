@@ -615,6 +615,10 @@ class RagRetriever:
         topic_graph: "TopicGraph | None" = None,
         cluster_diversity_enabled: bool = True,
         max_per_cluster: int = 3,
+        topic_expansion_enabled: bool = True,
+        expand_max: int = 2,
+        expand_trigger_score: float = 0.55,
+        expand_min_sim: float = 0.45,
     ) -> None:
         self._store = store
         self._embedder = embedder
@@ -691,6 +695,16 @@ class RagRetriever:
         self._topic_graph = topic_graph
         self._cluster_diversity_enabled = bool(cluster_diversity_enabled)
         self._max_per_cluster = max(1, int(max_per_cluster))
+        # F10c — topic multi-hop expansion. When a turn's strongest memory
+        # hit (score >= ``expand_trigger_score``) belongs to a cluster, up
+        # to ``expand_max`` sibling members of that cluster whose cosine to
+        # the query clears ``expand_min_sim`` are appended (beyond the
+        # top-k) as ``expansion`` hits, rounding out the topic. Needs both
+        # the topic graph and the memory store wired; no-op otherwise.
+        self._topic_expansion_enabled = bool(topic_expansion_enabled)
+        self._expand_max = max(0, int(expand_max))
+        self._expand_trigger_score = float(expand_trigger_score)
+        self._expand_min_sim = float(expand_min_sim)
         # Schema v8 — IDs of memories surfaced in the last
         # :meth:`retrieve` call. ``SessionController._post_turn_inner_life``
         # reads this snapshot to run the keyword-overlap revival check
@@ -731,6 +745,10 @@ class RagRetriever:
         include_documents: bool | None = None,
         cluster_diversity_enabled: bool | None = None,
         max_per_cluster: int | None = None,
+        topic_expansion_enabled: bool | None = None,
+        expand_max: int | None = None,
+        expand_trigger_score: float | None = None,
+        expand_min_sim: float | None = None,
     ) -> None:
         if top_k is not None:
             self._top_k = max(0, int(top_k))
@@ -744,6 +762,14 @@ class RagRetriever:
             self._cluster_diversity_enabled = bool(cluster_diversity_enabled)
         if max_per_cluster is not None:
             self._max_per_cluster = max(1, int(max_per_cluster))
+        if topic_expansion_enabled is not None:
+            self._topic_expansion_enabled = bool(topic_expansion_enabled)
+        if expand_max is not None:
+            self._expand_max = max(0, int(expand_max))
+        if expand_trigger_score is not None:
+            self._expand_trigger_score = float(expand_trigger_score)
+        if expand_min_sim is not None:
+            self._expand_min_sim = float(expand_min_sim)
 
     # ── retrieval ───────────────────────────────────────────────────────
 
@@ -1041,6 +1067,25 @@ class RagRetriever:
         # overflow so we never return fewer hits than the plain cut would.
         unique = self._select_diverse(candidates)
 
+        # F10c — topic multi-hop expansion. If this turn landed strongly on
+        # a cluster, append a couple of its sibling members (beyond the
+        # top-k) so Aiko gets the surrounding context, not just the single
+        # closest line. Best-effort and bounded; a failure leaves the
+        # direct top-k untouched.
+        if (
+            self._topic_expansion_enabled
+            and self._expand_max > 0
+            and self._topic_graph is not None
+            and self._memory_store is not None
+        ):
+            try:
+                expansions = self._expand_topic(unique, embedding)
+            except Exception:
+                log.debug("topic expansion failed", exc_info=True)
+                expansions = []
+            if expansions:
+                unique = unique + expansions
+
         # Bump ``last_used_at`` / ``use_count`` for every memory we're
         # actually surfacing this turn. Closes the loop with the recency
         # penalty above: a memory we just sent the LLM gets penalised on
@@ -1082,6 +1127,84 @@ class RagRetriever:
         run the post-turn revival keyword-overlap check.
         """
         return list(self._last_surfaced_memory_ids)
+
+    # ── cluster-scoped recall (F10d) ────────────────────────────────────
+
+    def recall_topic(
+        self,
+        topic_query: str,
+        *,
+        limit: int = 8,
+        min_cluster_sim: float = 0.30,
+    ) -> tuple[str, list[RagHit]]:
+        """Coarse cluster match, then drill into that cluster's members.
+
+        The F10d "retrieve at the cluster level first, then drill into
+        members" tier, surfaced to Aiko as the ``recall_topic`` tool. Embeds
+        ``topic_query``, finds the single best-matching topic cluster by
+        centroid cosine (``best_clusters_for``), then returns that cluster's
+        members ranked by cosine to the query, capped at ``limit``. Unlike
+        :meth:`retrieve` this is *not* a global vector search -- it answers
+        "what do I actually know about X?" by enumerating one coherent
+        topic. Returns ``(cluster_label, hits)``; the label may be empty
+        (cluster not yet F10a-named) and ``hits`` is ``[]`` when no cluster
+        clears ``min_cluster_sim`` or the graph / store isn't wired.
+        """
+        query = (topic_query or "").strip()
+        if not query or self._topic_graph is None or self._memory_store is None:
+            return "", []
+        cap = max(1, int(limit))
+        try:
+            embedding = self._embedder.embed(query)
+        except Exception:
+            log.debug("recall_topic: embed failed", exc_info=True)
+            return "", []
+        q = np.asarray(embedding, dtype=np.float32).ravel()
+        q_norm = float(np.linalg.norm(q))
+        if q_norm == 0.0:
+            return "", []
+        q = q / q_norm
+        try:
+            clusters = self._topic_graph.best_clusters_for(
+                q, top_n=1, min_sim=float(min_cluster_sim)
+            )
+        except Exception:
+            log.debug("recall_topic: best_clusters_for failed", exc_info=True)
+            return "", []
+        if not clusters:
+            return "", []
+        cid, label, _sim = clusters[0]
+        try:
+            member_ids = self._topic_graph.cluster_member_ids(cid)
+        except Exception:
+            log.debug("recall_topic: cluster_member_ids failed", exc_info=True)
+            return "", []
+        if not member_ids:
+            return label, []
+
+        scored: list[tuple[float, Any]] = []
+        for mid in member_ids:
+            try:
+                mem = self._memory_store.get(mid)
+            except Exception:
+                continue
+            if mem is None:
+                continue
+            vec = getattr(mem, "embedding", None)
+            if vec is None:
+                continue
+            v = np.asarray(vec, dtype=np.float32).ravel()
+            v_norm = float(np.linalg.norm(v))
+            if v_norm == 0.0 or v.size != q.size:
+                continue
+            sim = float(np.dot(q, v)) / v_norm
+            scored.append((sim, mem))
+        scored.sort(key=lambda t: t[0], reverse=True)
+        hits = [
+            self._memory_to_hit(mem, score=sim)
+            for sim, mem in scored[:cap]
+        ]
+        return label, hits
 
     # ── cluster-aware diversity (F10b) ──────────────────────────────────
 
@@ -1150,6 +1273,122 @@ class RagRetriever:
         except Exception:
             log.debug("cluster_id_for lookup failed", exc_info=True)
             return None
+
+    # ── topic multi-hop expansion (F10c) ────────────────────────────────
+
+    def _expand_topic(
+        self, selected: list[RagHit], query_embedding: Sequence[float]
+    ) -> list[RagHit]:
+        """Pull up to ``expand_max`` sibling memories from the dominant cluster.
+
+        The "dominant cluster" is the topic of the strongest memory hit in
+        ``selected`` whose score clears ``expand_trigger_score``. Its member
+        ids (minus the memories already surfaced this turn) are scored by
+        cosine to the live query embedding; the closest few above
+        ``expand_min_sim`` are returned as ``expansion``-flagged hits. Reads
+        the memory mirror only -- no extra DB hit, no embed. Returns ``[]``
+        when nothing clears the gates (no strong hit, no cluster, no
+        sibling close enough), leaving the direct top-k unchanged.
+        """
+        # Find the strongest memory hit and its cluster.
+        anchor_cid: int | None = None
+        for hit in selected:
+            if hit.source != "memory":
+                continue
+            if float(hit.score) < self._expand_trigger_score:
+                continue
+            cid = self._hit_cluster_id(hit)
+            if cid is not None:
+                anchor_cid = cid
+                break
+        if anchor_cid is None:
+            return []
+
+        try:
+            member_ids = self._topic_graph.cluster_member_ids(anchor_cid)
+        except Exception:
+            log.debug("cluster_member_ids lookup failed", exc_info=True)
+            return []
+        if not member_ids:
+            return []
+
+        # Don't re-surface anything already in the top-k this turn.
+        already: set[int] = set()
+        for hit in selected:
+            if hit.source != "memory":
+                continue
+            raw = getattr(hit.record, "id", None)
+            try:
+                already.add(int(raw))
+            except (TypeError, ValueError):
+                continue
+
+        q = np.asarray(query_embedding, dtype=np.float32).ravel()
+        q_norm = float(np.linalg.norm(q))
+        if q_norm == 0.0:
+            return []
+        q = q / q_norm
+
+        scored: list[tuple[float, "Any"]] = []
+        for mid in member_ids:
+            if mid in already:
+                continue
+            try:
+                mem = self._memory_store.get(mid)
+            except Exception:
+                continue
+            if mem is None:
+                continue
+            vec = getattr(mem, "embedding", None)
+            if vec is None:
+                continue
+            v = np.asarray(vec, dtype=np.float32).ravel()
+            v_norm = float(np.linalg.norm(v))
+            if v_norm == 0.0 or v.size != q.size:
+                continue
+            sim = float(np.dot(q, v)) / v_norm
+            if sim < self._expand_min_sim:
+                continue
+            scored.append((sim, mem))
+        if not scored:
+            return []
+        scored.sort(key=lambda t: t[0], reverse=True)
+        return [
+            self._memory_to_hit(mem, score=sim, expansion=True)
+            for sim, mem in scored[: self._expand_max]
+        ]
+
+    @staticmethod
+    def _memory_to_hit(mem: "Any", *, score: float, expansion: bool = False) -> RagHit:
+        """Build a ``RagHit`` from a :class:`MemoryStore` mirror row.
+
+        Used by the F10c expansion and F10d cluster-scoped recall, which
+        reach memories by id (via the topic graph) rather than through a
+        vector search, so they have a ``Memory`` object instead of a
+        ``RagHit``. Carries the canonical fields ``format_block`` reads;
+        the tier / pinned suffix joins are left ``None`` (these hits render
+        in their own sections, not the main "(faded)"/"(distant)" path).
+        """
+        from app.core.rag.rag_store import MemoryRecord
+
+        record = MemoryRecord(
+            id=str(mem.id),
+            content=mem.content,
+            kind=mem.kind,
+            salience=float(mem.salience),
+            source_session=mem.source_session,
+            source_message_id=mem.source_message_id,
+            created_at=mem.created_at,
+            last_used_at=mem.last_used_at,
+            use_count=int(mem.use_count),
+        )
+        return RagHit(
+            source="memory",
+            score=float(score),
+            record=record,
+            memory_tier=getattr(mem, "tier", None),
+            expansion=bool(expansion),
+        )
 
     # ── alignment boost (H1 + K4) ───────────────────────────────────────
 
@@ -1278,10 +1517,16 @@ class RagRetriever:
         self_lines: list[str] = []
         message_lines: list[str] = []
         document_lines: list[str] = []
+        expansion_lines: list[str] = []
         now = datetime.now(timezone.utc)
         for hit in hits:
             text = (hit.text or "").strip()
             if not text:
+                continue
+            # F10c — sibling memories pulled in by topic expansion render
+            # in their own associative section, not the direct-recall list.
+            if getattr(hit, "expansion", False):
+                expansion_lines.append(f"- {_truncate(text, 240)}")
                 continue
             if hit.source == "memory":
                 kind = (getattr(hit.record, "kind", "") or "").lower()
@@ -1401,6 +1646,12 @@ class RagRetriever:
             )
         if document_lines:
             sections.append("From your notes:\n" + "\n".join(document_lines))
+        if expansion_lines:
+            sections.append(
+                "Related notes from the same topic (you've circled around this "
+                "before — lean on them only if they fit naturally):\n"
+                + "\n".join(expansion_lines)
+            )
         return "\n\n".join(sections)
 
     def block_for(

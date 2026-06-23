@@ -640,6 +640,82 @@ class TopicGraph:
         entries.sort(key=lambda e: e.size, reverse=True)
         return entries[:n]
 
+    def cluster_member_ids(self, cluster_id: int) -> list[int]:
+        """Sorted member ids of a live cluster, or ``[]``.
+
+        Cheap O(members) read of the live cluster map -- used by the F10c
+        topic multi-hop expansion (pull siblings of the cluster the query
+        landed in) and the F10d cluster-scoped recall drill-in. Does not
+        force a warm-start: an un-warmed graph returns ``[]`` so the
+        per-turn expansion path stays cheap (the graph is warmed in the
+        background by the rebuild / label workers). Always ``[]`` in the
+        non-persistent / in-memory mode.
+        """
+        if not self.persistent:
+            return []
+        try:
+            cid = int(cluster_id)
+        except (TypeError, ValueError):
+            return []
+        with self._lock:
+            cluster = self._live.get(cid)
+            if cluster is None:
+                return []
+            return sorted(int(m) for m in cluster.member_ids)
+
+    def best_clusters_for(
+        self,
+        query_vec: np.ndarray,
+        *,
+        top_n: int = 1,
+        min_sim: float = 0.0,
+        min_size: int | None = None,
+    ) -> list[tuple[int, str, float]]:
+        """Coarse cluster match: rank clusters by centroid cosine to a query.
+
+        This is the F10d "retrieve at the cluster level first" tier. Reads
+        only the live centroids + labels (no member join, no embed), so it
+        is a handful of dot products against the cluster centroids. Returns
+        ``(cluster_id, label, similarity)`` rows sorted by similarity
+        descending, filtered to clusters of at least ``min_size`` members
+        (defaults to the configured ``min_cluster_size``) whose centroid
+        cosine clears ``min_sim``, capped at ``top_n``. The label may be
+        empty (a cluster the F10a worker hasn't named yet still matches and
+        is still a valid drill-in target). Always empty in the
+        non-persistent / in-memory mode.
+        """
+        if not self.persistent:
+            return []
+        floor = (
+            self._min_cluster_size
+            if min_size is None
+            else max(self._min_cluster_size, int(min_size))
+        )
+        q = np.asarray(query_vec, dtype=np.float32).ravel()
+        q_norm = float(np.linalg.norm(q))
+        if q_norm == 0.0:
+            return []
+        q = q / q_norm
+        self._ensure_warm()
+        scored: list[tuple[float, int, str]] = []
+        with self._lock:
+            for cid, cluster in self._live.items():
+                if len(cluster.member_ids) < floor:
+                    continue
+                centroid = cluster.centroid
+                if centroid is None or centroid.size != q.size:
+                    continue
+                c_norm = float(np.linalg.norm(centroid))
+                if c_norm == 0.0:
+                    continue
+                sim = float(np.dot(q, centroid)) / c_norm
+                if sim < float(min_sim):
+                    continue
+                scored.append((sim, int(cid), (cluster.label or "").strip()))
+        scored.sort(key=lambda t: t[0], reverse=True)
+        n = max(1, int(top_n))
+        return [(cid, label, sim) for sim, cid, label in scored[:n]]
+
     def is_close_to_any_cluster(
         self,
         vec: np.ndarray,

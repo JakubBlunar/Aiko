@@ -179,6 +179,12 @@ class RagHit:
     # downstream predicate, since the helper only fires on an explicit
     # truthy ``pinned``).
     memory_pinned: bool | None = None
+    # F10c — topic multi-hop expansion flag. ``True`` for sibling
+    # memories pulled from the same topic cluster as a strong query hit
+    # (rather than matched directly on cosine). ``RagRetriever.format_block``
+    # routes these into a separate "Related notes from the same topic"
+    # section so Aiko reads them as associative context, not direct recall.
+    expansion: bool = False
 
     @property
     def text(self) -> str:

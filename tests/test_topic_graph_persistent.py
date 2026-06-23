@@ -336,5 +336,57 @@ class InterestMapTests(unittest.TestCase):
         self.assertEqual([e.label for e in entries], ["cats"])
 
 
+class ClusterMemberAndCoarseMatchTests(unittest.TestCase):
+    """F10c/F10d graph readers: ``cluster_member_ids`` (sibling drill-in)
+    and ``best_clusters_for`` (coarse centroid match)."""
+
+    def _graph(self, mem, cs) -> TopicGraph:
+        return TopicGraph(
+            mem, similarity=0.55, min_cluster_size=2,
+            filter_threshold=0.65, cluster_store=cs,
+        )
+
+    def test_cluster_member_ids_returns_sorted_members(self) -> None:
+        mem = _two_cluster_store()
+        _, cs = _cluster_store()
+        g = self._graph(mem, cs)
+        clusters = g.topic_clusters()
+        cat = next(c for c in clusters if 1 in c.member_ids)
+        self.assertEqual(g.cluster_member_ids(cat.cluster_id), [1, 2, 3])
+        # Unknown cluster id -> empty.
+        self.assertEqual(g.cluster_member_ids(999999), [])
+
+    def test_cluster_member_ids_non_persistent_empty(self) -> None:
+        g = TopicGraph(_two_cluster_store(), min_cluster_size=2)
+        self.assertFalse(g.persistent)
+        self.assertEqual(g.cluster_member_ids(1), [])
+
+    def test_best_clusters_for_picks_nearest_centroid(self) -> None:
+        mem = _two_cluster_store()
+        _, cs = _cluster_store()
+        g = self._graph(mem, cs)
+        clusters = g.topic_clusters()
+        cat = next(c for c in clusters if 1 in c.member_ids)
+        # Query aligned with the cat cluster axis.
+        out = g.best_clusters_for(_vec([1.0, 0.0, 0.0, 0.0]), top_n=1, min_sim=0.3)
+        self.assertEqual(len(out), 1)
+        cid, _label, sim = out[0]
+        self.assertEqual(cid, cat.cluster_id)
+        self.assertGreater(sim, 0.5)
+
+    def test_best_clusters_for_min_sim_filters(self) -> None:
+        mem = _two_cluster_store()
+        _, cs = _cluster_store()
+        g = self._graph(mem, cs)
+        g.topic_clusters()
+        # Orthogonal query: nothing clears a high floor.
+        out = g.best_clusters_for(_vec([0.0, 1.0, 0.0, 0.0]), top_n=2, min_sim=0.9)
+        self.assertEqual(out, [])
+
+    def test_best_clusters_for_non_persistent_empty(self) -> None:
+        g = TopicGraph(_two_cluster_store(), min_cluster_size=2)
+        self.assertEqual(g.best_clusters_for(_vec([1.0, 0.0, 0.0, 0.0])), [])
+
+
 if __name__ == "__main__":
     unittest.main()
