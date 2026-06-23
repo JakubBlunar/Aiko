@@ -324,6 +324,19 @@ class AgentSettings:
     topic_label_max_per_run: int = 4
     # Token cap for each label generation (a label is a 2-5 word phrase).
     topic_label_max_tokens: int = 32
+    # F10b: cluster-aware RAG diversity. When True (and a persistent topic
+    # graph is wired), the retriever's final top-k selection caps how many
+    # hits may come from a single topic cluster, so one dense cluster (e.g.
+    # a big "get to know the user" knot) can't monopolise every slot and
+    # crowd out other relevant context. Backfill guarantees the top-k is
+    # still filled when only one topic is genuinely relevant -- diversity
+    # is preferred, never enforced at the cost of dropping context.
+    rag_cluster_diversity_enabled: bool = True
+    # Max memory hits the retriever will take from one cluster before
+    # deferring the rest (only applied while diversity is enabled and the
+    # top-k still has room from other clusters). Clamped to a floor of 1
+    # in the parser.
+    rag_max_per_cluster: int = 3
     # Master switch for
     # :class:`app.core.proactive.curiosity_seed_worker.CuriositySeedWorker`.
     # When ``False`` the worker never registers its idle tick and

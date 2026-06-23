@@ -1014,6 +1014,30 @@ class TopicGraph:
         with self._lock:
             return int(self._pending_unclustered)
 
+    def cluster_id_for(self, memory_id: int) -> int | None:
+        """Return the cluster a memory currently belongs to, or ``None``.
+
+        Used by the F10b cluster-aware RAG diversity re-rank
+        (:class:`app.core.rag.rag_retriever.RagRetriever`) to look up the
+        topic of each surfaced memory so no single dense cluster can
+        monopolise the top-k. Read-only and O(1) against the warm
+        ``_assignment`` map -- it deliberately does **not** trigger a
+        warm-start / rebuild so the retrieval hot path stays cheap; if the
+        graph hasn't been warmed yet (or the row is unclustered) it simply
+        returns ``None`` and the caller treats that hit as un-capped that
+        turn. Always ``None`` in the non-persistent/in-memory mode, where
+        there is no stable cluster identity to map onto.
+        """
+        if not self.persistent:
+            return None
+        try:
+            mid = int(memory_id)
+        except (TypeError, ValueError):
+            return None
+        with self._lock:
+            cid = self._assignment.get(mid)
+        return int(cid) if cid is not None else None
+
     def set_cluster_label(self, cluster_id: int, label: str) -> bool:
         """Set an (LLM-generated) label on a live cluster and persist it.
 

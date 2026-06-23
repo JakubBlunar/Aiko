@@ -188,6 +188,22 @@ class CuriositySeedSettingsTests(unittest.TestCase):
         self.assertEqual(result.agent.topic_label_max_per_run, 1)
         self.assertEqual(result.agent.topic_label_max_tokens, 8)
 
+    def test_rag_cluster_diversity_settings_round_trip(self) -> None:
+        # Defaults.
+        result = load_settings(config_path=self._write_config())
+        self.assertTrue(result.agent.rag_cluster_diversity_enabled)
+        self.assertEqual(result.agent.rag_max_per_cluster, 3)
+        # Overrides + floor.
+        path = self._write_config(
+            agent_extra={
+                "rag_cluster_diversity_enabled": False,
+                "rag_max_per_cluster": 0,  # below min 1
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.rag_cluster_diversity_enabled)
+        self.assertEqual(result.agent.rag_max_per_cluster, 1)
+
     def test_overrides_round_trip(self) -> None:
         path = self._write_config(
             agent_extra={

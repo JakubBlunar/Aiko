@@ -38,6 +38,7 @@ from app.core.rag.rag_store import RagHit
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
     from app.core.conversation.conversation_arc import ArcState
+    from app.core.conversation.topic_graph import TopicGraph
     from app.core.goals.goal_store import GoalStore
     from app.core.memory.memory_store import MemoryStore
     from app.core.rag.rag_store import RagStore
@@ -611,6 +612,9 @@ class RagRetriever:
         confidence_decay_horizon_days: int = _CONFIDENCE_DECAY_DEFAULT_HORIZON_DAYS,
         confidence_decay_floor: float = _CONFIDENCE_DECAY_DEFAULT_FLOOR,
         confidence_decay_distant_threshold: float = _CONFIDENCE_DECAY_DEFAULT_THRESHOLD,
+        topic_graph: "TopicGraph | None" = None,
+        cluster_diversity_enabled: bool = True,
+        max_per_cluster: int = 3,
     ) -> None:
         self._store = store
         self._embedder = embedder
@@ -675,6 +679,18 @@ class RagRetriever:
         self._confidence_decay_distant_threshold = max(
             0.0, min(1.0, float(confidence_decay_distant_threshold)),
         )
+        # F10b — cluster-aware RAG diversity. ``topic_graph`` is the
+        # optional persistent :class:`TopicGraph`; when wired *and*
+        # ``cluster_diversity_enabled`` is True, the final top-k selection
+        # caps how many memory hits may come from a single topic cluster
+        # (``max_per_cluster``) so one dense cluster can't monopolise every
+        # slot. Backfill guarantees the top-k is still filled when only one
+        # topic is relevant. ``None`` topic_graph (tests / lean deployments
+        # / non-persistent mode) cleanly disables the re-rank: behaviour is
+        # then byte-identical to the plain score-sorted top-k cut.
+        self._topic_graph = topic_graph
+        self._cluster_diversity_enabled = bool(cluster_diversity_enabled)
+        self._max_per_cluster = max(1, int(max_per_cluster))
         # Schema v8 — IDs of memories surfaced in the last
         # :meth:`retrieve` call. ``SessionController._post_turn_inner_life``
         # reads this snapshot to run the keyword-overlap revival check
@@ -695,6 +711,17 @@ class RagRetriever:
         """
         self._goal_store = store
 
+    def set_topic_graph(self, graph: "TopicGraph | None") -> None:
+        """Attach (or detach) the F10b :class:`TopicGraph` after construction.
+
+        SessionController builds the retriever before the topic graph
+        exists, so the cluster-diversity dependency is wired in a second
+        pass (mirroring :meth:`set_goal_store`). Passing ``None`` cleanly
+        disables the cluster-aware re-rank; retrieval then falls back to
+        the plain score-sorted top-k cut.
+        """
+        self._topic_graph = graph
+
     def update_settings(
         self,
         *,
@@ -702,6 +729,8 @@ class RagRetriever:
         score_threshold: float | None = None,
         include_messages: bool | None = None,
         include_documents: bool | None = None,
+        cluster_diversity_enabled: bool | None = None,
+        max_per_cluster: int | None = None,
     ) -> None:
         if top_k is not None:
             self._top_k = max(0, int(top_k))
@@ -711,6 +740,10 @@ class RagRetriever:
             self._include_messages = bool(include_messages)
         if include_documents is not None:
             self._include_documents = bool(include_documents)
+        if cluster_diversity_enabled is not None:
+            self._cluster_diversity_enabled = bool(cluster_diversity_enabled)
+        if max_per_cluster is not None:
+            self._max_per_cluster = max(1, int(max_per_cluster))
 
     # ── retrieval ───────────────────────────────────────────────────────
 
@@ -993,7 +1026,7 @@ class RagRetriever:
         # filter (e.g. expired past_events) are dropped here before
         # the top-k cut so they never make it into the prompt block.
         seen: set[str] = set()
-        unique: list[RagHit] = []
+        candidates: list[RagHit] = []
         for h in sorted(merged, key=lambda x: x.score, reverse=True):
             if h.score < 0:
                 continue
@@ -1001,9 +1034,12 @@ class RagRetriever:
             if not key or key in seen:
                 continue
             seen.add(key)
-            unique.append(h)
-            if len(unique) >= self._top_k:
-                break
+            candidates.append(h)
+
+        # F10b — cluster-aware diversity. Cap how many of the top-k may
+        # come from one topic cluster, backfilling from the deferred
+        # overflow so we never return fewer hits than the plain cut would.
+        unique = self._select_diverse(candidates)
 
         # Bump ``last_used_at`` / ``use_count`` for every memory we're
         # actually surfacing this turn. Closes the loop with the recency
@@ -1046,6 +1082,74 @@ class RagRetriever:
         run the post-turn revival keyword-overlap check.
         """
         return list(self._last_surfaced_memory_ids)
+
+    # ── cluster-aware diversity (F10b) ──────────────────────────────────
+
+    def _select_diverse(self, candidates: list[RagHit]) -> list[RagHit]:
+        """Pick the final top-k, capping hits per topic cluster.
+
+        ``candidates`` is the deduped, score-descending hit list. When the
+        cluster-diversity re-rank is disabled or no :class:`TopicGraph` is
+        wired this is a plain ``candidates[: top_k]`` cut, so behaviour is
+        unchanged for tests / lean deployments.
+
+        Otherwise we walk the candidates in score order and admit each one
+        unless its cluster already holds ``max_per_cluster`` admitted hits,
+        in which case it is deferred. Only ``memory`` hits with a known
+        cluster id are capped -- message / document hits and unclustered
+        memories are always admitted (they don't belong to a topic knot).
+        If diversity leaves us short of ``top_k`` (e.g. only one cluster is
+        relevant this turn), we backfill from the deferred overflow in
+        score order, so the re-rank only ever *reorders* the top-k -- it
+        never shrinks it.
+        """
+        if self._top_k <= 0:
+            return []
+        if not self._cluster_diversity_enabled or self._topic_graph is None:
+            return candidates[: self._top_k]
+
+        selected: list[RagHit] = []
+        deferred: list[RagHit] = []
+        per_cluster: dict[int, int] = {}
+        cap = self._max_per_cluster
+        for h in candidates:
+            if len(selected) >= self._top_k:
+                break
+            cid = self._hit_cluster_id(h)
+            if cid is not None:
+                if per_cluster.get(cid, 0) >= cap:
+                    deferred.append(h)
+                    continue
+                per_cluster[cid] = per_cluster.get(cid, 0) + 1
+            selected.append(h)
+        if len(selected) < self._top_k and deferred:
+            for h in deferred:
+                selected.append(h)
+                if len(selected) >= self._top_k:
+                    break
+        return selected
+
+    def _hit_cluster_id(self, hit: RagHit) -> int | None:
+        """Cluster id for a memory hit via the topic graph, or ``None``.
+
+        Non-memory hits and any lookup failure return ``None`` (treated as
+        un-capped). The topic graph's :meth:`cluster_id_for` is an O(1)
+        read against the warm assignment map and never forces a rebuild.
+        """
+        if hit.source != "memory" or self._topic_graph is None:
+            return None
+        raw = getattr(hit.record, "id", None)
+        if raw is None:
+            return None
+        try:
+            mid = int(raw)
+        except (TypeError, ValueError):
+            return None
+        try:
+            return self._topic_graph.cluster_id_for(mid)
+        except Exception:
+            log.debug("cluster_id_for lookup failed", exc_info=True)
+            return None
 
     # ── alignment boost (H1 + K4) ───────────────────────────────────────
 

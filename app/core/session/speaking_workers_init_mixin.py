@@ -1144,6 +1144,25 @@ class SpeakingWorkersInitMixin:
                             cluster_store=topic_cluster_store,
                             rag_store=getattr(self, "_rag_store", None),
                         )
+                        # F10b: wire the topic graph into the RagRetriever so
+                        # its final top-k selection can cap hits per cluster
+                        # (cluster-aware diversity). Second-pass setter,
+                        # mirroring set_goal_store -- the retriever is built
+                        # before the graph exists. No-op on the in-memory /
+                        # non-persistent path (cluster_id_for returns None).
+                        if (
+                            getattr(self, "_rag_retriever", None) is not None
+                            and hasattr(self._rag_retriever, "set_topic_graph")
+                        ):
+                            try:
+                                self._rag_retriever.set_topic_graph(
+                                    self._topic_graph,
+                                )
+                            except Exception:
+                                log.debug(
+                                    "RagRetriever set_topic_graph failed",
+                                    exc_info=True,
+                                )
                         # Incremental maintenance: a new memory is assigned
                         # to the nearest cluster, a deleted one is dropped,
                         # without re-clustering the whole corpus. No-ops in

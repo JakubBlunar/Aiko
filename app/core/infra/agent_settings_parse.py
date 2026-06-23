@@ -165,6 +165,13 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
                 8,
                 int(agent_raw.get("topic_label_max_tokens", 32)),
             ),
+            rag_cluster_diversity_enabled=bool(
+                agent_raw.get("rag_cluster_diversity_enabled", True),
+            ),
+            rag_max_per_cluster=max(
+                1,
+                int(agent_raw.get("rag_max_per_cluster", 3)),
+            ),
             curiosity_seed_enabled=bool(
                 agent_raw.get("curiosity_seed_enabled", True),
             ),
