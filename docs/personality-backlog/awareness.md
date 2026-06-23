@@ -209,3 +209,54 @@ knowledge just quietly makes her next on-topic reply sharper. MCP debug:
 `force_run("knowledge_worker")`, `get_knowledge_worker_state`.
 
 **Effort.** Medium-Large (but mostly composition of F6-F8).
+
+---
+
+## F10. Topic-graph utilisation (RAG / prompt / knowledge integration)
+
+**Foundation shipped.** The topic graph used to be **one giant
+single-link cluster** — useless for anything downstream. It now uses an
+**adaptive mutual-k-NN clusterer** ([`topic_graph.py`](../../app/core/conversation/topic_graph.py)
+`_cluster_memories_adaptive`): an edge forms only when two memories are
+in each other's top-`k` nearest neighbours (`k ≈ log2(n)+1`, clamped),
+so a generic "bridge" memory can't chain two dense families together,
+and there's no global threshold to hand-tune. The snapshot now reports
+`algorithm` + `neighbors_k`. With the graph carving cleanly into real
+topics, these consumers become worth building (today the graph only
+feeds K9 curiosity dedup + F9 cluster-pick + the observability browser —
+**nothing in RAG or the prompt reads it**).
+
+**Sub-ideas (pick independently).**
+- **F10a. LLM-labelled clusters.** Today a cluster's label is just the
+  first sentence of its highest-salience member. A tiny worker-LLM pass
+  (reuse the F9 planner shape) names each cluster ("Rust async
+  runtimes", "weekend hiking plans"). Prerequisite for everything below
+  being *readable*. Cheapest. Store the label on a `kv_meta` cache keyed
+  by cluster representative so it's not recomputed every build.
+- **F10b. Cluster-aware RAG diversity (MMR).** In
+  [`rag_retriever.py`](../../app/core/rag/rag_retriever.py), dedupe the
+  top-k by cluster so a dense knot can't crowd out other relevant
+  context — broader, less repetitive grounding. Pure retrieval re-rank,
+  no prompt-shape change.
+- **F10c. Topic expansion / multi-hop.** When a query hits a cluster
+  strongly, optionally pull 1-2 sibling members from the same cluster to
+  round out context. This is the **graph-aware multi-hop retrieval**
+  explicitly deferred in the K9 spec (see [`patterns.md`](patterns.md)
+  K9). Riskier — changes prompt content — so gate it and measure.
+- **F10d. Cluster-summary coarse retrieval tier.** Embed the F10a labels
+  and retrieve at the *cluster* level first, then drill into members —
+  cheaper recall on a large corpus and a natural "what do I actually
+  know about X" answer.
+- **F10e. "Interest map" prompt block.** A terse inner-life block (pick
+  the right prompt-cache tier) listing Aiko's top few interest clusters
+  by size/recency, so she has a sense of "the things we keep coming back
+  to" without a per-turn LLM cost. Pairs with the relationship/affect
+  blocks.
+- **F10f. Knowledge-gap + consolidation targeting.** Clusters that are
+  conversationally dense but low on `kind="knowledge"` coverage are
+  exactly where F9 should dig and where a "I realised I don't actually
+  know much about X" proactive beat could come from; dense clusters are
+  also natural merge targets to point the K35 consolidation worker at.
+
+**Effort.** F10a/F10b/F10e small-medium each; F10c/F10d medium and
+riskier (touch retrieval + prompt). Do F10a first.

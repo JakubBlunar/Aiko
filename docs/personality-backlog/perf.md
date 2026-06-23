@@ -735,3 +735,85 @@ python, so a python child is something else). Pairs with P6 /
 P8 which already added per-subsystem stat tools.
 
 **Effort.** Small (breakdown tool), Small (children enumeration).
+
+---
+
+## P30. Raise / disable the `memory.max_memories` cap
+
+**Motivation.** `memory.max_memories` defaults to 5000 and
+`MemoryStore.prune()` enforces it (plus per-tier
+`scratchpad` / `archive` caps). The cap exists mostly because the
+old topic graph recomputed an `O(n²)` cosine clustering in-process
+on every read — a hard scaling wall. That wall is now gone: the
+topic graph is persisted + incrementally maintained and its batch
+refit routes through LanceDB ANN (`O(n·k)`), so clustering no
+longer caps the corpus. With web-search knowledge enrichment
+landing distilled `kind="knowledge"` rows, 5000 will fill *fast*,
+and the user wants to let the corpus grow much larger (ideally
+uncapped) and lean on **topic-relevant RAG** rather than a small
+flat pool. This entry is the "actually let it grow" follow-up to
+the topic-graph persistence work.
+
+**What's already safe at scale.**
+- Topic graph: persisted (`topic_clusters` / `memory_topic_assignments`),
+  incremental add/delete, ANN batch refit. See
+  [`patterns.md` → K9](patterns.md#k9-topic-graph--interest-network-browser).
+- RAG retrieval: LanceDB ANN (`search_memories`) is sub-linear
+  *once an index exists* (`RagStore.ensure_vector_index` builds one
+  above 256 rows).
+
+**What still assumes a small corpus (the actual work).**
+1. **In-memory mirror.** `MemoryStore._mirror` holds every row +
+   its embedding in process. At 5000 rows that's ~20 MB (per P29);
+   at 100k+ it's hundreds of MB and `_reload_mirror` / `decay` /
+   `prune` walk it linearly. Either accept the larger RSS (still
+   cheap vs the STT/TTS weights in P27/P28) or move the cold tail
+   (archive tier) out of the mirror and read it from LanceDB on
+   demand.
+2. **O(n) mirror sweeps.** `decay()`, `prune()`, the K22 callback
+   detector (P17), and the K6/K28 warm scans (P5/P23) all walk the
+   full mirror. These need the P5/P17 fixes first, or they become
+   the new wall the moment the cap lifts.
+3. **`search()` brute-force fallback.** `MemoryStore.search` (the
+   non-RAG path, if still used anywhere) is a NumPy matmul over the
+   whole mirror — fine at 5000, not at 100k. Confirm every read
+   path goes through RAG ANN, not the mirror matmul.
+4. **prune() semantics.** With the cap raised/disabled, decide what
+   (if anything) still bounds growth: keep a generous hard ceiling
+   as a safety valve, rely on decay + archive-tier demotion to keep
+   the *hot* set small, or both. Pinned rows must stay immune
+   either way.
+
+**Key files.**
+[`app/core/memory/memory_store.py`](../../app/core/memory/memory_store.py)
+(`_max` / `_tier_caps`, `prune`, `decay`, `_reload_mirror`,
+`search`),
+[`app/core/infra/memory_settings.py`](../../app/core/infra/memory_settings.py)
+(`max_memories` default / a new `max_memories: 0 = uncapped`
+sentinel),
+[`app/core/rag/rag_store.py`](../../app/core/rag/rag_store.py)
+(call `ensure_vector_index` on a schedule / after bulk knowledge
+ingest so the ANN index actually exists at scale),
+[`config/default.json`](../../config/default.json),
+[`docs/configuration.md`](../../docs/configuration.md).
+
+**Sketched approach.** Phase it: (a) bump the default cap (e.g.
+5000 → 20000) and add a `0 = uncapped` sentinel, cheap and
+reversible; (b) land P5 + P17 (and confirm P4) so the per-turn /
+post-turn mirror sweeps stay sub-linear; (c) ensure
+`ensure_vector_index` is invoked from a maintenance worker (e.g.
+the topic-graph rebuild worker, or the idle scheduler) so the ANN
+index is rebuilt as the corpus grows rather than only opportunistically;
+(d) optionally evict the `archive` tier from the in-memory mirror,
+reading it lazily from LanceDB only when retrieval needs it, so
+RSS tracks the *hot* set, not the whole history.
+
+**Open questions.** Is the in-memory mirror worth keeping at all
+once retrieval is fully ANN-backed, or should the mirror become a
+bounded LRU of the hot set? That's the deeper architectural fork
+behind "RAG should focus on relevant topics instead of fetching
+memories directly" — overlaps with the F10 topic-graph utilisation
+cluster ([`awareness.md`](awareness.md)).
+
+**Effort.** Small (a, cap bump + sentinel) → Medium (b/c, depends
+on P5/P17) → Large (d, mirror eviction / LRU rework).

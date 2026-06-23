@@ -772,6 +772,102 @@ class RagStore:
         hits.sort(key=lambda h: h.score, reverse=True)
         return hits[: int(top_k)]
 
+    def knn_memories(
+        self,
+        query_embedding: Sequence[float],
+        *,
+        top_k: int,
+        min_score: float = 0.0,
+        exclude_id: str | None = None,
+    ) -> list[tuple[int, float]]:
+        """Return ``[(memory_id, cosine_sim), ...]`` nearest to the query.
+
+        A lean nearest-neighbour helper for the topic-graph clustering
+        paths (incremental assignment + batch k-NN graph build) that
+        skips the ``RagHit`` / SQLite-join machinery of
+        :meth:`search_memories`. Uses whatever Lance index is present
+        (ANN when :meth:`ensure_vector_index` has built one, flat scan
+        otherwise) so it scales without the caller changing. ``exclude_id``
+        drops the query memory itself when finding a node's neighbours.
+        """
+        if top_k <= 0:
+            return []
+        self._check_dim(query_embedding)
+        q = self._norm(query_embedding)
+        want = int(top_k) + (1 if exclude_id is not None else 0)
+        with self._lock:
+            try:
+                rows = (
+                    self._memories.search(q)
+                    .metric("cosine")
+                    .limit(want + 2)
+                    .to_list()
+                )
+            except Exception:
+                log.debug("knn_memories search failed", exc_info=True)
+                return []
+        out: list[tuple[int, float]] = []
+        for row in rows:
+            rid = str(row.get("id", ""))
+            if exclude_id is not None and rid == exclude_id:
+                continue
+            distance = float(row.get("_distance", 0.0))
+            similarity = max(-1.0, min(1.0, 1.0 - distance))
+            if similarity < min_score:
+                continue
+            try:
+                out.append((int(rid), similarity))
+            except (TypeError, ValueError):
+                continue
+            if len(out) >= int(top_k):
+                break
+        return out
+
+    def ensure_vector_index(self, *, min_rows: int = 256) -> bool:
+        """Build an ANN index on the ``memories`` vector column once the
+        table is large enough to benefit.
+
+        Below ``min_rows`` a flat (brute-force) cosine scan is faster and
+        more accurate than IVF_PQ, so we skip. Idempotent + best-effort:
+        any failure (old lancedb, index already present, too few rows for
+        the chosen partition count) is swallowed and we simply keep the
+        flat path. Returns ``True`` when an index now exists / was built.
+
+        Safe to call repeatedly (e.g. after a bulk knowledge ingest); the
+        ``replace=False`` default means a second call is a cheap no-op
+        once the index exists.
+        """
+        with self._lock:
+            try:
+                rows = self._memories.count_rows()
+            except Exception:
+                return False
+            if rows < int(min_rows):
+                return False
+            try:
+                # Modern lancedb picks sensible IVF_PQ params from the row
+                # count when called bare; the metric must match the search
+                # path (cosine).
+                self._memories.create_index(metric="cosine")
+                log.info("RagStore: built ANN index on memories (rows=%d)", rows)
+                return True
+            except TypeError:
+                try:
+                    self._memories.create_index()
+                    log.info(
+                        "RagStore: built ANN index on memories (rows=%d, default metric)",
+                        rows,
+                    )
+                    return True
+                except Exception:
+                    log.debug("ensure_vector_index fallback failed", exc_info=True)
+                    return False
+            except Exception:
+                # Most commonly "index already exists" or "not enough rows
+                # for N partitions" -- both are fine, keep flat search.
+                log.debug("ensure_vector_index skipped", exc_info=True)
+                return False
+
     # ── stats / maintenance ─────────────────────────────────────────────
 
     def counts(self) -> dict[str, int]:

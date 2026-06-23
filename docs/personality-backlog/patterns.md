@@ -50,7 +50,11 @@ Shipped — see [`shipped.md`](shipped.md) "K8. Affect rupture-and-repair
 
 **Shipped (browser surface).** See [`shipped.md`](shipped.md#k9-topic-graph-browser--observability-surface). The lazy cosine-cluster engine ([`topic_graph.py`](../../app/core/conversation/topic_graph.py)) and the `CuriositySeedWorker` that consumes it shipped earlier; the observability surface ships now: [`build_topic_graph_snapshot`](../../app/core/conversation/topic_graph.py) backs a read-only `GET /api/topic-graph` REST endpoint, `get_topic_graph` / `force_topic_graph_rebuild` MCP tools, and a "Topic graph" cluster-list panel in the Memory drawer tab so the user can see what Aiko sees.
 
-**Deferred follow-up:** the **graph-aware multi-hop retrieval** half of the original K9 spec (expanding [`rag_retriever.py`](../../app/core/rag/rag_retriever.py) hits along the topic graph for "this touches three threads we've been on") is intentionally NOT built yet -- it changes prompt content + retrieval behaviour and is a separate, riskier project from the inspection browser.
+**Clustering upgrade (2026).** The engine was changed from plain single-link cosine (which chained every topic into **one giant cluster** as the corpus grew) to a two-stage **mutual-k-NN graph + Louvain community detection** pipeline ([`_cluster_memories_adaptive`](../../app/core/conversation/topic_graph.py)). Stage 1 builds an adaptive, similarity-weighted mutual-k-NN graph: an edge forms only when two memories are in each other's top-`k` nearest neighbours, `k ≈ log2(n)+1`, so there is no global threshold to tune and a generic "bridge" memory can't fuse two dense families. **Mutual-k-NN alone was insufficient on a real corpus**, though: a single-person memory store is densely + *uniformly* similar (everything relates to the same life), so there is always a chain of mutual edges through the dense core and connected-components still collapsed it into one ~400-memory blob (observed: 393/425 in one cluster). Stage 2 fixes this by partitioning the graph with **Louvain modularity** ([`_partition_graph`](../../app/core/conversation/topic_graph.py), via networkx — already a dependency), which finds densely-internal sub-communities (actual topics) *within* a connected graph. Granularity is the Louvain **resolution**, auto-calibrated never hand-tuned: a corpus-size base (`_adaptive_resolution ≈ 0.7 + 0.3·log10(n)`, capped 2.5) is **escalated** (×1.5, up to 8.0) while any single community still holds > 35% of the nodes, so the "one huge cluster" symptom self-corrects regardless of how tightly the embeddings pack. On a synthetic 420-memory dense-baseline corpus this turns one blob into ~19 well-distributed clusters (largest ~7%). Connected-components ([`_connected_components`](../../app/core/conversation/topic_graph.py)) remains the fallback when networkx is unavailable; the snapshot/MCP surface reports `algorithm` (`mutual_knn_louvain` | `mutual_knn`) + `resolution`. This is the prerequisite for the deferred follow-up below + the F10 utilisation cluster.
+
+**Persistence + incremental maintenance (schema v20).** The graph no longer recomputes `O(n²)` clustering on every read and no longer evaporates on restart. It is persisted to SQLite ([`topic_clusters`](../../app/core/infra/chat_database.py) + `memory_topic_assignments`, managed by [`TopicClusterStore`](../../app/core/conversation/topic_cluster_store.py)) and maintained incrementally: **warm-starts** from SQLite on boot (instant, no cold rebuild); a `MemoryStore` **add listener** assigns each new memory to the nearest cluster centroid (a tiny in-memory matmul over the handful of centroids, `O(C)` — not `O(n²)`) and updates the centroid as a running mean; a **delete listener** drops members + empty clusters; and a [`TopicGraphRebuildWorker`](../../app/core/conversation/topic_graph_rebuild_worker.py) idle worker runs the full mutual-k-NN **batch refit** during quiet windows (daily, or sooner once `topic_graph_refit_pending_threshold` unclustered memories pile up) to correct drift and form genuinely new clusters. At scale the batch refit routes through **LanceDB ANN** ([`RagStore.knn_memories` / `ensure_vector_index`](../../app/core/rag/rag_store.py), [`_cluster_memories_ann`](../../app/core/conversation/topic_graph.py)) so it stays `O(n·k)` instead of allocating an `n×n` matrix — the structural prerequisite for **removing the `memory.max_memories` cap**. `best_match` / `is_close_to_any_cluster` also delegate to a single ANN query in persistent mode rather than holding a full `all_vectors` matrix. Gated by `agent.topic_graph_persistent_enabled` (default on); MCP `get_topic_graph_persistence_state` / `force_topic_graph_rebuild`.
+
+**Deferred follow-up:** the **graph-aware multi-hop retrieval** half of the original K9 spec (expanding [`rag_retriever.py`](../../app/core/rag/rag_retriever.py) hits along the topic graph for "this touches three threads we've been on") is intentionally NOT built yet -- it changes prompt content + retrieval behaviour and is a separate, riskier project from the inspection browser. Now tracked as **F10c** in [`awareness.md`](awareness.md), alongside the rest of the topic-graph utilisation ideas (RAG diversity, interest-map prompt block, LLM cluster labels, knowledge-gap targeting).
 
 ---
 
@@ -928,3 +932,56 @@ to offer it tentatively ("didn't you once say...?") rather than asserting
 a possibly-faded detail as fact. Leans on K25 (confidence time-decay) so
 an old callback is hedged appropriately. Rarity is the whole point —
 over-firing turns "she remembers" into "she's combing a database."
+
+---
+
+## K64. Freedom of thought — mind-wandering over the topic graph
+
+**Motivation.** Aiko's "thinking" is almost entirely *reactive*: she
+responds to the user, and her background workers extract / fact-check /
+consolidate. What she lacks is the human thing of **drifting** — letting
+the mind wander, noticing an unexpected connection between two unrelated
+things, developing and losing interests on her own. The newly-cleaned
+**topic graph** (adaptive mutual-k-NN clustering, see
+[`topic_graph.py`](../../app/core/conversation/topic_graph.py) + F10 in
+[`awareness.md`](awareness.md)) is the substrate that makes this
+buildable, because it now actually carves memory into distinct topic
+territories. This is a *family* of ideas around giving her more
+autonomous interior life; pick any sub-idea independently.
+
+**Sub-ideas.**
+- **K64a. Associative wandering.** An idle worker traverses the topic
+  graph, picks two *distant* clusters (low centroid cosine, not
+  neighbours), and asks the worker LLM for a genuine, non-forced
+  connection between them ("her hiking memories and her Rust debugging
+  both share a 'follow the trail patiently' feeling"). The result is a
+  **cue** (not a verbatim nudge — see the prepared-nudge rule in
+  AGENTS.md), surfaced one-shot via an inner-life block so she can bring
+  it up *in her own words* if it fits ("funny, this reminds me of...").
+  Strong human-ness signal; rarity + a cooldown are essential.
+- **K64b. Interest drift.** Track cluster *mass over time* (size +
+  recency deltas between graph builds, persisted to `kv_meta`). A
+  cluster gaining mass = a budding interest ("I've been weirdly into X
+  lately"); one decaying = a fading one. Surfaces as a slow,
+  self-aware register shift, not an announcement. Pairs with K27 day
+  colour as another slow under-current.
+- **K64c. Curiosity gradient from graph sparsity.** Find regions
+  *adjacent* to dense clusters that are themselves thin (she's been
+  near a topic a lot but never actually explored its edges) and let
+  that drive a genuinely curious question or an F9 research pick —
+  curiosity about the boundary of what she knows, not random.
+- **K64d. Self-reflection on her own knowledge map.** A periodic
+  (low-frequency) reflection where she "looks at the shape of what she
+  knows" — which territories are rich, which are blank — and forms a
+  light meta-thought about it. Reuses the DreamWorker / ReflectionWorker
+  machinery seeded by the graph instead of raw recent memories.
+
+**Key files.** [`topic_graph.py`](../../app/core/conversation/topic_graph.py)
+(centroids + cluster mass are already computed; K64b needs a small
+time-series in `kv_meta`), the [`IdleWorkerScheduler`](../../app/core/proactive/idle_worker_scheduler.py)
+(every K64 worker is a quiet-window job), an inner-life provider in
+[`prompt_assembler.py`](../../app/core/session/prompt_assembler.py) for
+the one-shot cues, and persona copy teaching her the *register* (never
+narrate the mechanism; a drifted thought IS the response). The whole
+family leans on the cue-not-verbatim discipline and heavy cooldowns so
+interior life reads as texture, not a feature firing.

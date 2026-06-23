@@ -392,6 +392,12 @@ class MemoryStore:
         # thread and any exception is swallowed so a buggy listener
         # cannot break a legit delete.
         self._delete_listeners: list[Any] = []
+        # Symmetric add listeners: ``callback(memory: Memory)`` fired
+        # AFTER a genuinely new row is inserted (not on a dedupe-bump).
+        # Used by the topic graph for incremental cluster assignment so
+        # a new memory never triggers a full re-cluster. Fired outside
+        # the store lock (same discipline as delete listeners).
+        self._added_listeners: list[Any] = []
         self._reload_mirror()
 
     def add_delete_listener(self, callback: Any) -> None:
@@ -402,6 +408,17 @@ class MemoryStore:
     def remove_delete_listener(self, callback: Any) -> None:
         try:
             self._delete_listeners.remove(callback)
+        except ValueError:
+            pass
+
+    def add_memory_listener(self, callback: Any) -> None:
+        """Register ``callback(memory: Memory)`` invoked after a new insert."""
+        if callback is not None and callback not in self._added_listeners:
+            self._added_listeners.append(callback)
+
+    def remove_memory_listener(self, callback: Any) -> None:
+        try:
+            self._added_listeners.remove(callback)
         except ValueError:
             pass
 
@@ -750,6 +767,19 @@ class MemoryStore:
                 )
             except Exception:
                 log.debug("rag add_memory failed", exc_info=True)
+        # Notify add listeners (topic-graph incremental assignment). Fired
+        # before the opportunistic prune so the new row is settled in both
+        # the mirror and the LanceDB ANN table when the listener runs.
+        if self._added_listeners:
+            for listener in list(self._added_listeners):
+                try:
+                    listener(memory)
+                except Exception:
+                    log.debug(
+                        "memory add listener raised for id=%s",
+                        new_id,
+                        exc_info=True,
+                    )
         # Per-tier opportunistic prune. Cheaper to check the just-grown
         # tier than to walk every row.
         with self._lock:
