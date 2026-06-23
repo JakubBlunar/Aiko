@@ -16,6 +16,8 @@ import numpy as np
 
 from app.core.conversation.topic_graph import (
     TopicGraph,
+    _adaptive_k,
+    _cluster_memories_adaptive,
     _normalise,
     build_topic_graph_snapshot,
 )
@@ -93,6 +95,54 @@ class ClusteringTests(unittest.TestCase):
         cluster_ids = {tuple(sorted(c.member_ids)) for c in clusters}
         self.assertIn((1, 2, 3), cluster_ids)
         self.assertIn((10, 11, 12), cluster_ids)
+
+    def test_bridge_memory_does_not_chain_families(self) -> None:
+        """The mutual-k-NN clusterer must NOT fuse two dense families
+        through a single weak bridge memory (the single-link failure
+        mode that produces "one huge cluster")."""
+        store = _StubMemoryStore()
+        # Family A: tight knot on axis 0.
+        for i in range(5):
+            store.add(
+                _StubMemory(
+                    id=i + 1,
+                    content=f"A-{i}",
+                    embedding=_vec([1.0, 0.04 * i, 0.0]),
+                )
+            )
+        # Family B: tight knot on axis 2.
+        for i in range(5):
+            store.add(
+                _StubMemory(
+                    id=20 + i,
+                    content=f"B-{i}",
+                    embedding=_vec([0.0, 0.04 * i, 1.0]),
+                )
+            )
+        # A single bridge memory sitting roughly between the two knots.
+        # Single-link at a modest threshold would union A and B through
+        # it; mutual-k-NN should not, because the bridge cannot be in
+        # the mutual top-k of members on *both* dense sides.
+        store.add(
+            _StubMemory(id=99, content="bridge", embedding=_vec([0.7, 0.0, 0.7])),
+        )
+        graph = TopicGraph(
+            store, similarity=0.55, min_cluster_size=3, filter_threshold=0.65,
+        )
+        clusters = graph.topic_clusters()
+        # The two families stay as separate clusters (the bridge may or
+        # may not attach to one of them, but it must never merge them).
+        family_ids = [
+            set(c.member_ids) for c in clusters if len(c.member_ids) >= 3
+        ]
+        merged = any(
+            ({1, 2, 3, 4, 5} <= ids) and ({20, 21, 22, 23, 24} <= ids)
+            for ids in family_ids
+        )
+        self.assertFalse(merged, "bridge memory chained the two families")
+        # Both dense families survive as their own clusters.
+        self.assertTrue(any({1, 2, 3, 4, 5} <= ids for ids in family_ids))
+        self.assertTrue(any({20, 21, 22, 23, 24} <= ids for ids in family_ids))
 
     def test_below_min_cluster_size_drops_singletons(self) -> None:
         store = _StubMemoryStore()
@@ -272,6 +322,15 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(sizes, sorted(sizes, reverse=True))
         self.assertEqual(sizes[0], 4)
 
+    def test_snapshot_reports_algorithm_and_k(self) -> None:
+        store = _build_two_cluster_store()
+        graph = TopicGraph(store, similarity=0.55, min_cluster_size=2)
+        snap = build_topic_graph_snapshot(graph, store)
+        self.assertEqual(snap["algorithm"], "mutual_knn_louvain")
+        # k is derived from the corpus size and recorded on build.
+        self.assertEqual(snap["neighbors_k"], _adaptive_k(6))
+        self.assertGreaterEqual(snap["neighbors_k"], 2)
+
     def test_member_content_trimmed(self) -> None:
         store = _StubMemoryStore()
         long_text = "x" * 500
@@ -287,6 +346,68 @@ class SnapshotTests(unittest.TestCase):
         snap = build_topic_graph_snapshot(graph, store, max_member_chars=160)
         member = snap["clusters"][0]["members"][0]
         self.assertLessEqual(len(member["content"]), 160)
+
+
+class LouvainPartitionTests(unittest.TestCase):
+    """The reason for the upgrade: connectivity merges a densely-linked
+    blob into one cluster; Louvain modularity splits it into topics."""
+
+    def test_splits_connected_blob_into_communities(self) -> None:
+        from app.core.conversation.topic_graph import (
+            _connected_components,
+            _partition_graph,
+        )
+
+        # Three dense triangles (0-1-2, 3-4-5, 6-7-8) linked by two weak
+        # bridge edges (2-3, 5-6): ONE connected component, but THREE
+        # modular communities.
+        strong, weak = 0.95, 0.56
+        edges = [
+            (0, 1, strong), (1, 2, strong), (0, 2, strong),
+            (3, 4, strong), (4, 5, strong), (3, 5, strong),
+            (6, 7, strong), (7, 8, strong), (6, 8, strong),
+            (2, 3, weak), (5, 6, weak),
+        ]
+        # Connected components collapses the whole thing into one blob.
+        cc_big = [c for c in _connected_components(9, edges) if len(c) >= 3]
+        self.assertEqual(len(cc_big), 1)
+        # Louvain recovers the three dense triangles.
+        meta: dict = {}
+        comms = _partition_graph(9, edges, meta=meta)
+        big = [c for c in comms if len(c) >= 3]
+        self.assertGreaterEqual(len(big), 3)
+        self.assertEqual(meta["algorithm"], "mutual_knn_louvain")
+        self.assertGreater(meta["resolution"], 0.0)
+
+    def test_empty_edges_yields_singletons(self) -> None:
+        from app.core.conversation.topic_graph import _partition_graph
+
+        comms = _partition_graph(4, [])
+        self.assertEqual(sorted(len(c) for c in comms), [1, 1, 1, 1])
+
+    def test_adaptive_resolution_grows_and_clamps(self) -> None:
+        from app.core.conversation.topic_graph import _adaptive_resolution
+
+        self.assertEqual(_adaptive_resolution(5), 1.0)
+        self.assertGreater(_adaptive_resolution(1000), _adaptive_resolution(50))
+        self.assertLessEqual(_adaptive_resolution(10_000_000), 2.5)
+
+
+class AdaptiveKTests(unittest.TestCase):
+    def test_scales_logarithmically_and_clamps(self) -> None:
+        # Tiny corpora: "everyone is a neighbour".
+        self.assertEqual(_adaptive_k(2), 1)
+        self.assertEqual(_adaptive_k(3), 2)
+        # Grows ~log2(n)+1.
+        self.assertEqual(_adaptive_k(6), 4)
+        self.assertGreaterEqual(_adaptive_k(100), 7)
+        # Clamped to the upper bound on huge corpora.
+        self.assertLessEqual(_adaptive_k(1_000_000), 12)
+
+    def test_empty_input_returns_no_clusters(self) -> None:
+        self.assertEqual(
+            _cluster_memories_adaptive([], min_size=3, floor=0.55), []
+        )
 
 
 if __name__ == "__main__":

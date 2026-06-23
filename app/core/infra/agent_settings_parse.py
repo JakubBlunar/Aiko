@@ -135,6 +135,21 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             topic_graph_enabled=bool(
                 agent_raw.get("topic_graph_enabled", True),
             ),
+            topic_graph_persistent_enabled=bool(
+                agent_raw.get("topic_graph_persistent_enabled", True),
+            ),
+            topic_graph_rebuild_interval_seconds=max(
+                60.0,
+                float(agent_raw.get(
+                    "topic_graph_rebuild_interval_seconds", 86_400.0,
+                )),
+            ),
+            topic_graph_refit_pending_threshold=max(
+                1,
+                int(agent_raw.get(
+                    "topic_graph_refit_pending_threshold", 25,
+                )),
+            ),
             curiosity_seed_enabled=bool(
                 agent_raw.get("curiosity_seed_enabled", True),
             ),

@@ -84,6 +84,66 @@ same plumbing.
 
 ---
 
+## D3. Fast synchronous web-search brain tool (+ knowledge-DB write-back)
+
+**Motivation.** `web_search` already exists ([`WebSearchTool`](../../app/llm/tools/builtins.py))
+but was **deliberately pulled out of the brain's live registry** — see
+the comment in [`tools_registry_mixin.py`](../../app/core/session/tools_registry_mixin.py)
+(`rebuild_tool_registry`): "web_search is intentionally NOT a brain
+builtin anymore. A DuckDuckGo round-trip is too slow for the fast
+conversational lane." Today the only two web-search paths are
+**asynchronous** (results land a *later* turn): the goal-workflow skill
+and the F1/F9/G3 workers' private instances. The idea is to add a
+**third path — a fast, synchronous brain tool** so Aiko can look
+something up mid-turn and answer with the result in the same reply,
+optionally persisting what she learned to the knowledge DB for future
+turns. More viable now than when it was cut: LangSearch is far faster
+than the old DDG HTML scrape, the P14 tool-pass gate keeps it from
+firing on banter turns, and the 1.1s LangSearch throttle is in place.
+
+**Key files (existing).**
+- [`tools_registry_mixin.py`](../../app/core/session/tools_registry_mixin.py)
+  `rebuild_tool_registry` — re-register `WebSearchTool` (gated on
+  `tools.web_search`), injecting the live provider from
+  `reconfigure_search`.
+- [`tool_pass_gate.py`](../../app/core/session/tool_pass_gate.py) — add
+  `web_search` to `_TOOL_FAMILY` + patterns so a "look it up / what's
+  the latest on…" turn is recognized as a tool-shaped signal (an
+  unmapped tool forces always-run).
+- [`idle_knowledge_worker.py`](../../app/core/proactive/idle_knowledge_worker.py)
+  `_write_knowledge` — the existing `kind="knowledge"`, `tier="long_term"`,
+  embedded + deduped + provenance-stamped write path to reuse for
+  the knowledge-DB copy.
+
+**Cost model (answers to the design questions).**
+- **Context size:** the tool result inflates **only the current turn's**
+  prompt (injected as a tool message before the reply pass); it does
+  *not* bloat the system prompt or every future turn. Caveat: it also
+  enters conversation **history**, so it lingers in the next few turns'
+  history window until it ages out / compacts. The knowledge-DB copy
+  re-enters later only via bounded RAG top-k (T3 `rag_tokens`), never as
+  permanent context growth.
+- **Latency:** only on turns where the model actually picks the tool
+  (P14 gate skips no-signal turns). Added cost = network round-trip
+  (LangSearch sub-second to ~2s) **+ up to ~1.1s** if a background
+  worker just fired (shared process-wide throttle) **+** a slightly
+  larger reply pass. Non-firing turns pay only one extra tool schema in
+  the decision pass.
+
+**Open questions / decisions to lock first.**
+- **LangSearch-only?** Strongly lean yes (or DuckDuckGo opt-in) — a slow
+  scrape in the fast lane is exactly what got the tool cut originally.
+- **Throttle priority:** the brain tool sharing the 1.1s gate with
+  workers means a user-facing search could queue behind a worker. Give
+  the brain tool a shorter reservation / queue-jump, or accept the
+  occasional wait?
+- **Storage shape:** distill-then-store (better RAG quality, +latency on
+  the turn) vs. **fire-and-forget raw → distill async after the turn**
+  (faster reply; recommended). Don't write raw snippets straight to
+  memory — it pollutes RAG.
+
+---
+
 ## D2. Image vision tool — SHIPPED (Part A: local-vision describe task; Part B: in-chat attachments)
 
 **Status.** Shipped in two parts. **Part A** — a **background workflow skill** (`describe_image`), not a fast brain tool, reusing the **single local worker model already in VRAM** (no second model, no cloud image tokens). The `VisionDescribeHandler` ([`app/core/tasks/handlers/vision_describe.py`](../../app/core/tasks/handlers/vision_describe.py)) resolves an image inside a configured file root, base64-encodes it (extension + byte-cap gated), and calls the worker `OllamaClient.chat(images=[...])`. Gated by `agent.vision.enabled`; the worker model must be multimodal (`qwen3.5:27b` / `qwen3.6:27b`). MCP debug: `get_vision_state()` / `describe_image_now(path)`. **Part B** — in-chat file attachments: the composer accepts image + text files (paperclip / drag-drop / paste), they land in a managed read-only `Attachments` sandbox root (`data/attachments/`), persist on the user message (`messages.attachments`, schema v18), and surface as a per-turn hint that routes Aiko to `start_workflow` (`describe_image` for images, `read_file` for text). See [`shipped.md`](shipped.md). The original sketch is kept below for reference.

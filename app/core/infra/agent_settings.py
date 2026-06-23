@@ -291,6 +291,23 @@ class AgentSettings:
     # functioning unchanged. Cheap on its own (rebuilds from the
     # existing in-memory mirror; no embedding work).
     topic_graph_enabled: bool = True
+    # Schema v20: persist the topic graph (clusters + centroids +
+    # assignments) and maintain it incrementally instead of recomputing
+    # the whole O(n^2) clustering on every read. When ``True`` (default)
+    # the graph warm-starts from SQLite on boot, assigns each new memory
+    # to the nearest cluster on the fly, and only batch-refits during
+    # quiet windows (see the two knobs below). When ``False`` it falls
+    # back to the legacy in-memory, rebuild-on-read behaviour.
+    topic_graph_persistent_enabled: bool = True
+    # How often the TopicGraphRebuildWorker runs a full batch refit
+    # (default daily). Pressure can trigger it sooner -- see the pending
+    # threshold below. Clamped to a 60s floor.
+    topic_graph_rebuild_interval_seconds: float = 86_400.0
+    # Pending-pressure trigger: once this many incrementally-added
+    # memories have failed to join any existing cluster, the refit runs
+    # on the next idle tick regardless of the interval, so a burst of new
+    # topics (e.g. a web-knowledge enrichment run) is folded in promptly.
+    topic_graph_refit_pending_threshold: int = 25
     # Master switch for
     # :class:`app.core.proactive.curiosity_seed_worker.CuriositySeedWorker`.
     # When ``False`` the worker never registers its idle tick and

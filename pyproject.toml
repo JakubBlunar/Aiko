@@ -20,6 +20,8 @@ dependencies = [
   # RAG: LanceDB-backed vector store for memories, messages, and documents.
   "lancedb>=0.13.0",
   "pyarrow>=16.0.0",
+  # K9 topic graph: Louvain community detection over the mutual-k-NN graph.
+  "networkx>=3.0",
   # Optional document ingestion (PDF). Pure-python; tiny footprint.
   "pypdf>=4.0.0",
   # Web search tool (the package formerly published as duckduckgo-search)

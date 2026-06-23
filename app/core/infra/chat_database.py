@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_SCHEMA_VERSION = 19
+_SCHEMA_VERSION = 20
 
 _CREATE_TABLES = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -285,6 +285,38 @@ CREATE TABLE IF NOT EXISTS kv_meta (
     value TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+-- Schema v20: persisted K9 topic graph. The graph used to be a fully
+-- in-memory, recomputed-on-read cosine clustering over every memory
+-- (O(n^2) every rebuild, nothing surviving a restart). It is now
+-- persisted + incrementally maintained: ``topic_clusters`` holds one
+-- row per cluster (centroid stored as raw float32 bytes so a new memory
+-- can be assigned to the nearest cluster cheaply, plus an LLM/heuristic
+-- ``label`` and a running ``size``); ``memory_topic_assignments`` maps
+-- each clustered memory to its cluster (one row per memory; absence =
+-- unclustered/pending). Both are managed by
+-- :class:`app.core.conversation.topic_cluster_store.TopicClusterStore`,
+-- which (like ``memory_conflicts``) does cascade cleanup in Python
+-- rather than via SQL foreign keys because ``memories`` rows are owned
+-- by ``MemoryStore``'s in-memory mirror.
+CREATE TABLE IF NOT EXISTS topic_clusters (
+    cluster_id INTEGER PRIMARY KEY,
+    label TEXT,
+    centroid BLOB,
+    dim INTEGER NOT NULL DEFAULT 0,
+    size INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS memory_topic_assignments (
+    memory_id INTEGER PRIMARY KEY,
+    cluster_id INTEGER NOT NULL,
+    assigned_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_topic_assign_cluster
+    ON memory_topic_assignments(cluster_id);
 
 -- Schema v11: F5 conflicting-memory detector. Each row pins ONE
 -- pair of conflicting memories (memory_a_id < memory_b_id, enforced

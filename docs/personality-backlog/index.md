@@ -37,11 +37,16 @@ prompt for the next brainstorm, not a queue.
 
 - **D1.** Calendar / reminders tool.
 - **D2.** Image vision tool.
+- **D3.** Fast synchronous web-search brain tool (+ knowledge-DB
+  write-back).
 
 ### F. Awareness + grounding — [`awareness.md`](awareness.md)
 
 - **F4.** Source-cited memories (`metadata.source_url`).
 - **F5.** Conflicting-memory detector.
+- **F10.** Topic-graph utilisation — RAG diversity/expansion, cluster
+  labels, interest-map prompt block, knowledge-gap targeting (adaptive
+  mutual-k-NN clustering foundation shipped).
 
 ### G. Background workers — [`workers.md`](workers.md)
 
@@ -100,7 +105,11 @@ K46 stance persistence (don't cave on taste pushback) ·
 K47 question/share balance (stop interviewing) (SHIPPED) ·
 K48 tease rhythm budget (SHIPPED) ·
 K49 messiness permission (typed imperfection) ·
-K50 typed-mode delivery pacing.
+K50 typed-mode delivery pacing ·
+K62 co-experience companion · K63 long-arc callbacks ·
+K64 freedom of thought (mind-wandering over the topic graph —
+associative wandering, interest drift, curiosity gradient,
+knowledge-map reflection).
 
 **The "will" family (K52–K56)** — Aiko follows every topic the user
 sets and never opens her own; every initiative cue is hedged into
@@ -185,6 +194,9 @@ compound across every K-series entry:
   never released.
 - **P29.** No process-memory observability (RSS breakdown + the
   unidentified second python process).
+- **P30.** Raise / disable the `memory.max_memories` cap (topic-graph
+  persistence removed the `O(n²)` wall; mirror sweeps P5/P17 are the
+  remaining blockers).
 
 (P1 per-turn embed budget + timing, P2 prompt-build phase
 telemetry, P8 idle-worker queue visibility + multi-worker drain,

@@ -1097,6 +1097,39 @@ class SpeakingWorkersInitMixin:
                     try:
                         from app.core.conversation.topic_graph import TopicGraph
 
+                        # Persisted/incremental mode (schema v20): inject a
+                        # TopicClusterStore so the graph warm-starts from
+                        # SQLite, assigns new memories incrementally, and
+                        # only batch-refits on the idle worker — no more
+                        # O(n^2) rebuild on every read. The rag_store powers
+                        # the ANN batch path + ANN best_match at scale.
+                        topic_cluster_store = None
+                        if (
+                            self._chat_db is not None
+                            and bool(
+                                getattr(
+                                    settings.agent,
+                                    "topic_graph_persistent_enabled",
+                                    True,
+                                )
+                            )
+                        ):
+                            try:
+                                from app.core.conversation.topic_cluster_store import (
+                                    TopicClusterStore,
+                                )
+
+                                topic_cluster_store = TopicClusterStore(
+                                    self._chat_db,
+                                )
+                            except Exception:
+                                log.warning(
+                                    "TopicClusterStore init failed; "
+                                    "topic graph falls back to in-memory mode",
+                                    exc_info=True,
+                                )
+                                topic_cluster_store = None
+
                         self._topic_graph = TopicGraph(
                             self._memory_store,
                             similarity=0.55,
@@ -1108,7 +1141,58 @@ class SpeakingWorkersInitMixin:
                                     0.65,
                                 )
                             ),
+                            cluster_store=topic_cluster_store,
+                            rag_store=getattr(self, "_rag_store", None),
                         )
+                        # Incremental maintenance: a new memory is assigned
+                        # to the nearest cluster, a deleted one is dropped,
+                        # without re-clustering the whole corpus. No-ops in
+                        # the in-memory fallback mode.
+                        if self._topic_graph.persistent:
+                            try:
+                                self._memory_store.add_memory_listener(
+                                    self._topic_graph.on_memory_added,
+                                )
+                                self._memory_store.add_delete_listener(
+                                    self._topic_graph.on_memory_deleted,
+                                )
+                            except Exception:
+                                log.debug(
+                                    "topic graph listener wiring failed",
+                                    exc_info=True,
+                                )
+                            # Batch refit during quiet windows (periodic +
+                            # pending-pressure triggered).
+                            if self._idle_scheduler is not None:
+                                try:
+                                    from app.core.conversation.topic_graph_rebuild_worker import (
+                                        TopicGraphRebuildWorker,
+                                    )
+
+                                    self._idle_scheduler.register(
+                                        TopicGraphRebuildWorker(
+                                            self._topic_graph,
+                                            interval_seconds=float(
+                                                getattr(
+                                                    settings.agent,
+                                                    "topic_graph_rebuild_interval_seconds",
+                                                    86_400.0,
+                                                )
+                                            ),
+                                            pending_threshold=int(
+                                                getattr(
+                                                    settings.agent,
+                                                    "topic_graph_refit_pending_threshold",
+                                                    25,
+                                                )
+                                            ),
+                                        )
+                                    )
+                                except Exception:
+                                    log.debug(
+                                        "TopicGraphRebuildWorker register failed",
+                                        exc_info=True,
+                                    )
                     except Exception:
                         log.warning(
                             "TopicGraph init failed", exc_info=True,

@@ -48,6 +48,63 @@ class _TmpRagBase(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
 
+class RagStoreKnnTests(_TmpRagBase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.store = RagStore(self.tmp, embedding_model="x", vector_dim=4)
+
+    def test_knn_returns_ids_and_scores_sorted(self) -> None:
+        self.store.add_memory(
+            record_id="1", content="a", kind="fact",
+            embedding=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        )
+        self.store.add_memory(
+            record_id="2", content="b", kind="fact",
+            embedding=np.array([0.92, 0.39, 0.0, 0.0], dtype=np.float32),
+        )
+        self.store.add_memory(
+            record_id="3", content="c", kind="fact",
+            embedding=np.array([0.0, 0.0, 1.0, 0.0], dtype=np.float32),
+        )
+        hits = self.store.knn_memories(
+            np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32), top_k=3
+        )
+        self.assertTrue(hits)
+        ids = [mid for mid, _ in hits]
+        self.assertEqual(ids[0], 1)
+        # Scores are descending cosine.
+        scores = [s for _, s in hits]
+        self.assertEqual(scores, sorted(scores, reverse=True))
+
+    def test_knn_exclude_id_drops_self(self) -> None:
+        self.store.add_memory(
+            record_id="1", content="a", kind="fact",
+            embedding=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        )
+        self.store.add_memory(
+            record_id="2", content="b", kind="fact",
+            embedding=np.array([0.92, 0.39, 0.0, 0.0], dtype=np.float32),
+        )
+        hits = self.store.knn_memories(
+            np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+            top_k=3, exclude_id="1",
+        )
+        self.assertNotIn(1, [mid for mid, _ in hits])
+        self.assertIn(2, [mid for mid, _ in hits])
+
+    def test_ensure_index_noop_below_threshold(self) -> None:
+        self.store.add_memory(
+            record_id="1", content="a", kind="fact",
+            embedding=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        )
+        # Far below min_rows -> skipped, flat search still works.
+        self.assertFalse(self.store.ensure_vector_index(min_rows=256))
+        hits = self.store.knn_memories(
+            np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32), top_k=1
+        )
+        self.assertEqual(hits[0][0], 1)
+
+
 class RagStoreCRUDTests(_TmpRagBase):
     def setUp(self) -> None:
         super().setUp()

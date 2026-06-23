@@ -143,7 +143,28 @@ class CuriositySeedSettingsTests(unittest.TestCase):
         self.assertAlmostEqual(
             result.agent.topic_graph_filter_threshold, 0.65,
         )
+        self.assertTrue(result.agent.topic_graph_persistent_enabled)
+        self.assertEqual(
+            result.agent.topic_graph_rebuild_interval_seconds, 86_400.0,
+        )
+        self.assertEqual(result.agent.topic_graph_refit_pending_threshold, 25)
         self.assertEqual(result.memory.curiosity_seed_interval_seconds, 3600)
+
+    def test_topic_graph_persistence_overrides_round_trip(self) -> None:
+        path = self._write_config(
+            agent_extra={
+                "topic_graph_persistent_enabled": False,
+                "topic_graph_rebuild_interval_seconds": 10,  # below floor
+                "topic_graph_refit_pending_threshold": 0,    # below min
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.topic_graph_persistent_enabled)
+        # Floors apply.
+        self.assertEqual(
+            result.agent.topic_graph_rebuild_interval_seconds, 60.0,
+        )
+        self.assertEqual(result.agent.topic_graph_refit_pending_threshold, 1)
 
     def test_overrides_round_trip(self) -> None:
         path = self._write_config(

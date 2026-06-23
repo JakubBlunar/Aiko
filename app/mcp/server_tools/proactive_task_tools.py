@@ -1055,13 +1055,14 @@ def register(mcp, session: "SessionController") -> None:
 
     @mcp.tool()
     def force_topic_graph_rebuild() -> str:
-        """K9 — drop the cached cluster snapshot and rebuild immediately.
+        """K9 — force a full batch re-cluster and return the fresh snapshot.
 
-        Handy after hand-inserting memories during debugging: the graph
-        is normally cache-keyed on the mirror identity, so a manual
-        ``MemoryStore`` poke that doesn't bump the key won't show up
-        until the next real write. This invalidates the cache and
-        returns the freshly-built snapshot.
+        Handy after hand-inserting memories during debugging. In the
+        persisted/incremental mode (schema v20) this runs the same
+        ``TopicGraphRebuildWorker`` path — a full mutual-k-NN refit over
+        the whole mirror (ANN-backed at scale) that re-derives centroids
+        + memberships and re-persists. In the legacy in-memory mode it
+        just drops the cache so the next read rebuilds.
         """
         try:
             graph = getattr(session, "_topic_graph", None)
@@ -1071,9 +1072,51 @@ def register(mcp, session: "SessionController") -> None:
                     indent=2,
                 )
             graph.invalidate()
+            if getattr(graph, "persistent", False):
+                graph.rebuild()
             return json.dumps(session.topic_graph_snapshot(), indent=2)
         except Exception as exc:
             return f"force_topic_graph_rebuild raised: {exc}"
+
+    @mcp.tool()
+    def get_topic_graph_persistence_state() -> str:
+        """K9 v20 — inspect the persisted/incremental topic-graph state.
+
+        Returns whether the graph is in persistent mode, the live cluster
+        count, how many incrementally-added memories are pending the next
+        batch refit (``pending_unclustered``), the SQLite-persisted row
+        counts (``persisted_clusters`` / ``persisted_assignments``), and
+        whether an ANN index is being used for the batch path. First stop
+        for "is the graph actually persisting / why hasn't it refit yet?".
+        """
+        try:
+            graph = getattr(session, "_topic_graph", None)
+            if graph is None:
+                return json.dumps(
+                    {"error": "topic graph not registered (disabled?)"},
+                    indent=2,
+                )
+            out: dict = {
+                "persistent": bool(getattr(graph, "persistent", False)),
+                "warm": bool(getattr(graph, "_warm", False)),
+                "live_clusters": len(getattr(graph, "_live", {}) or {}),
+                "live_assignments": len(getattr(graph, "_assignment", {}) or {}),
+                "pending_unclustered": int(getattr(graph, "_pending_unclustered", 0)),
+                "assign_threshold": float(getattr(graph, "_assign_threshold", 0.0)),
+                "last_k": int(getattr(graph, "_last_k", 0)),
+                "rag_store_wired": getattr(graph, "_rag_store", None) is not None,
+            }
+            store = getattr(graph, "_cluster_store", None)
+            if store is not None:
+                try:
+                    rows, assignments = store.load_all()
+                    out["persisted_clusters"] = len(rows)
+                    out["persisted_assignments"] = len(assignments)
+                except Exception as exc:
+                    out["persisted_load_error"] = str(exc)
+            return json.dumps(out, indent=2)
+        except Exception as exc:
+            return f"get_topic_graph_persistence_state raised: {exc}"
 
     @mcp.tool()
     def get_memory_consolidation_state() -> str:
