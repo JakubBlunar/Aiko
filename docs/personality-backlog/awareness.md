@@ -227,12 +227,22 @@ feeds K9 curiosity dedup + F9 cluster-pick + the observability browser —
 **nothing in RAG or the prompt reads it**).
 
 **Sub-ideas (pick independently).**
-- **F10a. LLM-labelled clusters.** Today a cluster's label is just the
-  first sentence of its highest-salience member. A tiny worker-LLM pass
-  (reuse the F9 planner shape) names each cluster ("Rust async
-  runtimes", "weekend hiking plans"). Prerequisite for everything below
-  being *readable*. Cheapest. Store the label on a `kv_meta` cache keyed
-  by cluster representative so it's not recomputed every build.
+- **F10a. LLM-labelled clusters. ✅ SHIPPED.** A cluster's label used to
+  be the first sentence of its highest-salience member. The
+  [`ClusterLabelWorker`](../../app/core/conversation/topic_label_worker.py)
+  idle worker now names each cluster ("weekend hiking plans") via a tiny
+  worker-LLM pass, applied through
+  [`TopicGraph.set_cluster_label`](../../app/core/conversation/topic_graph.py)
+  (updates the live `_LiveCluster.label` + persists to `topic_clusters`).
+  Labels are cached in `kv_meta` keyed by the cluster representative
+  (`aiko.topic_label.<rep>`) with the size-at-label-time, so a batch
+  refit doesn't force a re-label: the next tick re-applies the cached
+  label for free (no LLM) and only regenerates when the representative is
+  new or the size drifted >50%. Per-tick LLM spend bounded by
+  `agent.topic_label_max_per_run` (largest-first). Surfaces as the
+  cluster `summary` in the snapshot / `GET /api/topic-graph` / Memory
+  drawer. Settings: `agent.topic_label_{enabled,interval_seconds,max_per_run,max_tokens}`.
+  Tests: [`tests/test_topic_label_worker.py`](../../tests/test_topic_label_worker.py).
 - **F10b. Cluster-aware RAG diversity (MMR).** In
   [`rag_retriever.py`](../../app/core/rag/rag_retriever.py), dedupe the
   top-k by cluster so a dense knot can't crowd out other relevant
@@ -259,4 +269,6 @@ feeds K9 curiosity dedup + F9 cluster-pick + the observability browser —
   also natural merge targets to point the K35 consolidation worker at.
 
 **Effort.** F10a/F10b/F10e small-medium each; F10c/F10d medium and
-riskier (touch retrieval + prompt). Do F10a first.
+riskier (touch retrieval + prompt). **F10a is shipped** — next is F10b
+(cluster-aware RAG diversity, pure retrieval re-rank, low risk), then
+F10e (interest-map prompt block, consumes the F10a labels).

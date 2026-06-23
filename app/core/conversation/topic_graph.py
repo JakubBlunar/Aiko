@@ -1014,6 +1014,38 @@ class TopicGraph:
         with self._lock:
             return int(self._pending_unclustered)
 
+    def set_cluster_label(self, cluster_id: int, label: str) -> bool:
+        """Set an (LLM-generated) label on a live cluster and persist it.
+
+        Used by the F10a :class:`ClusterLabelWorker` to replace the
+        heuristic first-sentence label with a concise topic name. Returns
+        ``True`` when a live cluster matched ``cluster_id``. No-op (returns
+        ``False``) in the non-persistent/in-memory mode -- there the label
+        is derived per-build from the representative's content and there is
+        no stable cluster identity to attach an override to.
+        """
+        if not self.persistent:
+            return False
+        clean = (label or "").strip()
+        if not clean:
+            return False
+        row = None
+        with self._lock:
+            cluster = self._live.get(int(cluster_id))
+            if cluster is None:
+                return False
+            if cluster.label == clean:
+                return True
+            cluster.label = clean
+            row = _LiveClusterToRow(cluster)
+        store = self._cluster_store
+        if store is not None and row is not None:
+            try:
+                store.upsert_cluster(row)
+            except Exception:
+                log.debug("set_cluster_label persist failed", exc_info=True)
+        return True
+
     def _live_to_topic_clusters_locked(self) -> list[TopicCluster]:
         """Build the public ``TopicCluster`` list from live state.
 
