@@ -85,6 +85,7 @@ _TOOL_FAMILY: dict[str, str] = {
     "get_time": "time",
     "web_search": "web",
     "recall": "recall",
+    "recall_topic": "recall",
     # file tasks
     "list_file_roots": "files",
     "start_file_read": "files",

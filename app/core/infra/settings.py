@@ -548,6 +548,10 @@ class ToolsSettings:
     enabled: bool = True
     get_time: bool = True
     recall: bool = True
+    # F10d cluster-scoped recall (``recall_topic``): browse a whole topic
+    # cluster of the memory graph rather than the few closest snippets.
+    # Needs the topic graph wired (no-ops to an empty result otherwise).
+    recall_topic: bool = True
     web_search: bool = True
     # Aiko's room: small set of tools that let her look around / move /
     # consume cookies. See :mod:`app.llm.tools.world`.
@@ -1673,6 +1677,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             enabled=bool(tools_raw.get("enabled", True)),
             get_time=bool(tools_raw.get("get_time", True)),
             recall=bool(tools_raw.get("recall", True)),
+            recall_topic=bool(tools_raw.get("recall_topic", True)),
             web_search=bool(tools_raw.get("web_search", True)),
             world=bool(tools_raw.get("world", True)),
             goals=bool(tools_raw.get("goals", True)),

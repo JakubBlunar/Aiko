@@ -337,6 +337,28 @@ class AgentSettings:
     # top-k still has room from other clusters). Clamped to a floor of 1
     # in the parser.
     rag_max_per_cluster: int = 3
+    # F10c: topic multi-hop expansion. When a turn's strongest memory hit
+    # (score >= ``rag_expand_trigger_score``) belongs to a topic cluster,
+    # the retriever appends up to ``rag_expand_max`` sibling members of that
+    # cluster whose cosine to the query clears ``rag_expand_min_sim`` --
+    # beyond the top-k -- so Aiko gets the surrounding context, not just the
+    # single closest line. Needs both the persistent topic graph and the
+    # memory store wired; no-op otherwise. This *does* change prompt content
+    # (a separate "Related notes from the same topic" section), so it is
+    # gated and bounded. Set ``rag_topic_expansion_enabled=False`` to revert
+    # to pure top-k retrieval.
+    rag_topic_expansion_enabled: bool = True
+    # Max sibling memories topic expansion appends per turn. Clamped to a
+    # floor of 0 in the parser (0 disables expansion as surely as the flag).
+    rag_expand_max: int = 2
+    # The turn's strongest memory hit must score at least this for expansion
+    # to fire (avoids rounding out weak/incidental cluster touches). Scores
+    # include the small memory prior, so this sits a touch above the bare
+    # cosine ``score_threshold``.
+    rag_expand_trigger_score: float = 0.55
+    # Minimum cosine (query vs sibling memory) for a cluster member to be
+    # pulled in by expansion. Keeps the appended notes genuinely on-topic.
+    rag_expand_min_sim: float = 0.45
     # F10e: "interest map" prompt block. A terse T1 (semi-stable) inner-
     # life line listing the top few labelled topic clusters by size --
     # "the things you and the user keep coming back to" -- so Aiko carries

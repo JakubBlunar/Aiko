@@ -701,6 +701,34 @@ class SessionController(
                                     3,
                                 )
                             ),
+                            topic_expansion_enabled=bool(
+                                getattr(
+                                    self._settings.agent,
+                                    "rag_topic_expansion_enabled",
+                                    True,
+                                )
+                            ),
+                            expand_max=int(
+                                getattr(
+                                    self._settings.agent,
+                                    "rag_expand_max",
+                                    2,
+                                )
+                            ),
+                            expand_trigger_score=float(
+                                getattr(
+                                    self._settings.agent,
+                                    "rag_expand_trigger_score",
+                                    0.55,
+                                )
+                            ),
+                            expand_min_sim=float(
+                                getattr(
+                                    self._settings.agent,
+                                    "rag_expand_min_sim",
+                                    0.45,
+                                )
+                            ),
                         )
                     except Exception:
                         log.warning("RagRetriever failed to init", exc_info=True)
