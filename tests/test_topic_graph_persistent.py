@@ -388,5 +388,83 @@ class ClusterMemberAndCoarseMatchTests(unittest.TestCase):
         self.assertEqual(g.best_clusters_for(_vec([1.0, 0.0, 0.0, 0.0])), [])
 
 
+def _gap_store() -> _StubMemoryStore:
+    """Three clusters with deliberately different knowledge coverage:
+
+    * python — 3 ``fact`` rows (0 knowledge, fraction 0.0) → a clear gap
+    * guitar — 1 ``knowledge`` + 2 ``fact`` (fraction ~0.33)
+    * wine   — 3 ``knowledge`` rows (fraction 1.0) → fully researched
+    """
+    store = _StubMemoryStore()
+    for mem in [
+        _StubMemory(1, "python debugging", _vec([0.95, 0.30, 0, 0, 0, 0]), kind="fact"),
+        _StubMemory(2, "python tracebacks", _vec([0.92, 0.39, 0, 0, 0, 0]), kind="fact"),
+        _StubMemory(3, "python errors", _vec([0.97, 0.25, 0, 0, 0, 0]), kind="fact"),
+        _StubMemory(10, "guitar chords", _vec([0, 0, 0.95, 0.30, 0, 0]), kind="knowledge"),
+        _StubMemory(11, "guitar practice", _vec([0, 0, 0.92, 0.39, 0, 0]), kind="fact"),
+        _StubMemory(12, "guitar songs", _vec([0, 0, 0.97, 0.25, 0, 0]), kind="fact"),
+        _StubMemory(20, "wine regions", _vec([0, 0, 0, 0, 0.95, 0.30]), kind="knowledge"),
+        _StubMemory(21, "wine tasting", _vec([0, 0, 0, 0, 0.92, 0.39]), kind="knowledge"),
+        _StubMemory(22, "wine grapes", _vec([0, 0, 0, 0, 0.97, 0.25]), kind="knowledge"),
+    ]:
+        store.add(mem)
+    return store
+
+
+class KnowledgeGapClustersTests(unittest.TestCase):
+    """F10f reader: ``knowledge_gap_clusters`` (dense, low-knowledge)."""
+
+    def _graph(self, mem, cs) -> TopicGraph:
+        return TopicGraph(
+            mem, similarity=0.55, min_cluster_size=2,
+            filter_threshold=0.65, cluster_store=cs,
+        )
+
+    def test_only_low_knowledge_clusters_returned(self) -> None:
+        mem = _gap_store()
+        _, cs = _cluster_store()
+        g = self._graph(mem, cs)
+        g.topic_clusters()  # build
+        gaps = g.knowledge_gap_clusters(
+            min_size=2, max_knowledge_fraction=0.15, top_n=5,
+        )
+        labels = {gp.label.lower() for gp in gaps}
+        # python (frac 0) qualifies; guitar (0.33) and wine (1.0) don't.
+        self.assertTrue(any("python" in lbl for lbl in labels))
+        self.assertFalse(any("wine" in lbl for lbl in labels))
+        self.assertFalse(any("guitar" in lbl for lbl in labels))
+
+    def test_fraction_threshold_admits_partial(self) -> None:
+        mem = _gap_store()
+        _, cs = _cluster_store()
+        g = self._graph(mem, cs)
+        g.topic_clusters()
+        gaps = g.knowledge_gap_clusters(
+            min_size=2, max_knowledge_fraction=0.5, top_n=5,
+        )
+        labels = [gp.label.lower() for gp in gaps]
+        # python (score 3.0) ranks above guitar (score ~2.0); wine excluded.
+        self.assertTrue(any("python" in lbl for lbl in labels))
+        self.assertTrue(any("guitar" in lbl for lbl in labels))
+        self.assertFalse(any("wine" in lbl for lbl in labels))
+        self.assertIn("python", labels[0])  # densest gap first
+
+    def test_min_size_filters_small_clusters(self) -> None:
+        mem = _gap_store()
+        _, cs = _cluster_store()
+        g = self._graph(mem, cs)
+        g.topic_clusters()
+        # All clusters are size 3, so a floor of 4 yields nothing.
+        self.assertEqual(
+            g.knowledge_gap_clusters(min_size=4, max_knowledge_fraction=1.0),
+            [],
+        )
+
+    def test_non_persistent_returns_empty(self) -> None:
+        g = TopicGraph(_gap_store(), min_cluster_size=2)
+        self.assertFalse(g.persistent)
+        self.assertEqual(g.knowledge_gap_clusters(), [])
+
+
 if __name__ == "__main__":
     unittest.main()

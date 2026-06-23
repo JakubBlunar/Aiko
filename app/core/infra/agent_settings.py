@@ -191,6 +191,13 @@ class AgentSettings:
     # different angle. When off, the worker falls back to the legacy path
     # (privacy-scrub the cluster summary and search that verbatim).
     knowledge_topic_extraction_enabled: bool = True
+    # F10f: master switch for the knowledge-gap *notice* — the self-aware
+    # "I keep circling X but never dug into it" beat. Independent of F9
+    # ``knowledge_enrichment_enabled`` (which silently *researches* the same
+    # clusters): this one only controls whether Aiko ever voices the gap.
+    # Off → the KnowledgeGapNoticeWorker never registers and the inner-life
+    # provider stays empty. Cadence / thresholds live under MemorySettings.
+    knowledge_gap_notice_enabled: bool = True
     # ── K61 personality backlog: knowledge-grounding steer ────────────
     # Master switch for the ``knowledge_grounding`` inner-life block
     # (:meth:`InnerLifeProvidersMixin._render_knowledge_grounding_block`).

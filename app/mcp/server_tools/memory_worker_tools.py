@@ -1102,4 +1102,126 @@ def register(mcp, session: "SessionController") -> None:
         except Exception as exc:
             return f"force_opinion_injection raised: {exc}"
 
+    @mcp.tool()
+    def get_knowledge_gap_notice_state() -> str:
+        """F10f — dump the KnowledgeGapNoticeWorker + provider state.
+
+        Shows the master switch, cadence/threshold knobs, the kv journal
+        ring of drafted notices (``aiko.knowledge_gap_notices``), the
+        per-topic cooldown map, the surfaced-keys set the provider tracks,
+        the one-shot provider force flag, and a dry-run of the topic-graph
+        gap picker (which dense, low-knowledge clusters would be drafted
+        on the next tick). First stop for "why didn't Aiko admit she
+        doesn't know about X?".
+        """
+        worker = getattr(session, "_knowledge_gap_notice_worker", None)
+        out: dict[str, Any] = {
+            "registered": worker is not None,
+            "enabled": bool(
+                getattr(
+                    session._settings.agent,
+                    "knowledge_gap_notice_enabled",
+                    True,
+                )
+            ),
+            "provider_force_next": bool(
+                getattr(session, "_knowledge_gap_notice_force_next", False)
+            ),
+        }
+        chat_db = getattr(session, "_chat_db", None)
+        if chat_db is not None and hasattr(chat_db, "kv_get"):
+            try:
+                from app.core.proactive.knowledge_gap_notice_worker import (
+                    load_notices,
+                )
+
+                out["journal"] = load_notices(chat_db.kv_get)
+            except Exception as exc:  # pragma: no cover -- diag tool
+                out["journal_error"] = str(exc)
+            try:
+                raw = chat_db.kv_get("knowledge_gap_notice.surfaced_keys")
+                out["surfaced_keys"] = json.loads(raw) if raw else []
+            except Exception:
+                out["surfaced_keys"] = []
+        if worker is not None:
+            try:
+                out["interval_seconds"] = worker.interval_seconds
+                out["topic_cooldowns"] = worker._load_cooldowns()
+            except Exception as exc:  # pragma: no cover -- diag tool
+                out["worker_error"] = str(exc)
+            graph = getattr(session, "_topic_graph", None)
+            if graph is not None:
+                try:
+                    cands = graph.knowledge_gap_clusters(
+                        min_size=worker._min_size,
+                        max_knowledge_fraction=worker._max_knowledge_fraction,
+                        top_n=5,
+                    )
+                    out["candidates"] = [
+                        {
+                            "label": c.label[:120],
+                            "size": c.size,
+                            "knowledge_count": c.knowledge_count,
+                            "knowledge_fraction": round(
+                                c.knowledge_fraction, 3
+                            ),
+                        }
+                        for c in cands
+                    ]
+                except Exception as exc:  # pragma: no cover -- diag tool
+                    out["candidates_error"] = str(exc)
+        return json.dumps(out, indent=2, default=str)
+
+    @mcp.tool()
+    def force_knowledge_gap_notice() -> str:
+        """F10f — run the KnowledgeGapNoticeWorker once, bypassing cooldown.
+
+        Drafts a notice for the strongest knowledge-gap cluster even if
+        it's on its per-topic cooldown (the topic graph must still have a
+        qualifying dense, low-knowledge cluster). Returns the run result
+        (``drafted``, ``topic``, ``size``, …) or a skip reason. Pair with
+        ``force_knowledge_gap_notice_surface`` + ``send_message`` to land
+        the cue end-to-end.
+        """
+        worker = getattr(session, "_knowledge_gap_notice_worker", None)
+        if worker is None:
+            return (
+                "knowledge_gap_notice worker not registered "
+                "(agent.knowledge_gap_notice_enabled may be off, or no "
+                "memory store / topic graph)"
+            )
+        try:
+            worker.force_next()
+            result = worker.run()
+        except Exception as exc:
+            return f"force_knowledge_gap_notice raised: {exc}"
+        return json.dumps(result or {}, indent=2, default=str)
+
+    @mcp.tool()
+    def force_knowledge_gap_notice_surface() -> str:
+        """F10f — arm a one-shot bypass on the provider's gates.
+
+        Sets ``_knowledge_gap_notice_force_next`` so the next provider
+        call surfaces the newest journal entry regardless of topic
+        relevance or the surfaced-keys set (the ring must still be
+        non-empty — draft one first via ``force_knowledge_gap_notice``).
+        Then ``send_message`` and verify the "X keeps coming up but you've
+        never dug in" line lands in ``get_last_response_detail``'s
+        system_prompt.
+        """
+        try:
+            session._knowledge_gap_notice_force_next = True
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next provider call surfaces the newest notice, "
+                        "ignoring topic-relevance + surfaced gates"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_knowledge_gap_notice_surface raised: {exc}"
+
 

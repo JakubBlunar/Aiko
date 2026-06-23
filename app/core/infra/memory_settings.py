@@ -388,6 +388,28 @@ class MemorySettings:
     # cooldown so a personal-only cluster doesn't re-burn a planner call
     # every few days.
     knowledge_unresearchable_cooldown_hours: int = 336
+    # ── F10f: knowledge-gap notice worker (self-aware "I don't know X") ──
+    # How often the KnowledgeGapNoticeWorker may draft a cue during quiet
+    # windows. Hourly is plenty — the cue surfaces only when the user
+    # raises the topic, so over-drafting just fills the small ring.
+    knowledge_gap_notice_interval_seconds: int = 3600
+    # A cluster must have at least this many members to count as a gap Aiko
+    # "keeps coming back to" — small clusters aren't a recurring theme worth
+    # admitting ignorance about.
+    knowledge_gap_notice_min_size: int = 5
+    # Upper bound on a cluster's ``knowledge``-row fraction for it to still
+    # read as a gap. At/below this the topic is "barely researched"; above
+    # it Aiko already knows enough that the admit-the-gap beat would be a
+    # lie. Default 0.15 ≈ "fewer than ~1 in 6 members are learned facts".
+    knowledge_gap_notice_max_knowledge_fraction: float = 0.15
+    # Per-topic cooldown: once a gap is drafted (and likely voiced) for a
+    # topic, don't re-draft it for this long, so Aiko doesn't keep harping
+    # on "I still don't know much about your job". Keyed on a stable hash
+    # of the label in ``kv_meta`` (survives cluster renumbering).
+    knowledge_gap_notice_topic_cooldown_hours: int = 72
+    # Size of the kv journal ring of drafted notices. Tiny — the provider
+    # surfaces the newest topic-relevant unseen entry.
+    knowledge_gap_notice_journal_max: int = 6
     # K61: minimum cosine similarity for a learned fact to count as
     # "relevant to what the user just asked" in the knowledge-grounding
     # inner-life block. Higher → the steer fires only on a tight
@@ -1050,6 +1072,42 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                         "knowledge_unresearchable_cooldown_hours", 336,
                     )
                 ),
+            ),
+            knowledge_gap_notice_interval_seconds=max(
+                60,
+                int(
+                    memory_raw.get(
+                        "knowledge_gap_notice_interval_seconds", 3600,
+                    )
+                ),
+            ),
+            knowledge_gap_notice_min_size=max(
+                2,
+                int(memory_raw.get("knowledge_gap_notice_min_size", 5)),
+            ),
+            knowledge_gap_notice_max_knowledge_fraction=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get(
+                            "knowledge_gap_notice_max_knowledge_fraction",
+                            0.15,
+                        )
+                    ),
+                ),
+            ),
+            knowledge_gap_notice_topic_cooldown_hours=max(
+                0,
+                int(
+                    memory_raw.get(
+                        "knowledge_gap_notice_topic_cooldown_hours", 72,
+                    )
+                ),
+            ),
+            knowledge_gap_notice_journal_max=max(
+                1,
+                int(memory_raw.get("knowledge_gap_notice_journal_max", 6)),
             ),
             knowledge_grounding_min_similarity=max(
                 0.0,

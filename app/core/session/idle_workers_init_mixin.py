@@ -187,6 +187,54 @@ class IdleWorkersInitMixin:
                     "ForwardCuriosityWorker init failed", exc_info=True
                 )
 
+        # F10f KnowledgeGapNoticeWorker — drafts a self-aware "I keep
+        # circling X but never dug in" cue from dense, low-knowledge topic
+        # clusters during quiet windows. Cheap kv pass (no LLM); the
+        # provider only surfaces it when the live turn is on that topic.
+        # Sibling of F9 IdleKnowledgeWorker, which silently *researches*
+        # the same clusters.
+        self._knowledge_gap_notice_worker = None
+        if (
+            self._idle_scheduler is not None
+            and getattr(self, "_memory_store", None) is not None
+        ):
+            try:
+                from app.core.proactive.knowledge_gap_notice_worker import (
+                    KnowledgeGapNoticeWorker,
+                )
+
+                mem = self._memory_settings
+                self._knowledge_gap_notice_worker = KnowledgeGapNoticeWorker(
+                    topic_graph_provider=lambda: getattr(
+                        self, "_topic_graph", None
+                    ),
+                    kv_get=self._chat_db.kv_get,
+                    kv_set=self._chat_db.kv_set,
+                    enabled_provider=lambda: bool(
+                        getattr(
+                            self._settings.agent,
+                            "knowledge_gap_notice_enabled",
+                            True,
+                        )
+                    ),
+                    interval_seconds=mem.knowledge_gap_notice_interval_seconds,
+                    min_size=mem.knowledge_gap_notice_min_size,
+                    max_knowledge_fraction=(
+                        mem.knowledge_gap_notice_max_knowledge_fraction
+                    ),
+                    topic_cooldown_hours=(
+                        mem.knowledge_gap_notice_topic_cooldown_hours
+                    ),
+                    journal_max=mem.knowledge_gap_notice_journal_max,
+                )
+                self._idle_scheduler.register(
+                    self._knowledge_gap_notice_worker
+                )
+            except Exception:
+                log.warning(
+                    "KnowledgeGapNoticeWorker init failed", exc_info=True
+                )
+
         # K52 WantsLedgerWorker — keeps the wants ledger stocked from
         # curiosity seeds / forward-curiosity questions / goals during
         # quiet windows. Pure ingestion, no LLM. Failures only drop

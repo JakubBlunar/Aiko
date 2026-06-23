@@ -200,6 +200,10 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         # knowledge-gap line — both are "what Aiko knows / wonders
         # about" surfaces.
         "knowledge_grounding_block",
+        # F10f: "I keep circling X but never dug in" — clusters with the
+        # knowledge-gap / grounding surfaces (all "what Aiko does /
+        # doesn't know about a recurring topic").
+        "knowledge_gap_notice_block",
     ),
 }
 
@@ -298,6 +302,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # empty when no gap is sufficiently relevant. Dropped in
         # aggressive mode.
         self._knowledge_gaps_provider: Callable[[str], str] | None = None
+        # F10f: surface a "I keep circling X but never dug in" cue when the
+        # live turn is on a dense-but-unresearched topic. Query-aware
+        # (consumes ``user_text``); dropped in aggressive mode.
+        self._knowledge_gap_notice_provider: Callable[[str], str] | None = None
         # K61: informational-turn knowledge-grounding steer.
         self._knowledge_grounding_provider: Callable[[str], str] | None = (
             None
@@ -925,6 +933,23 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                 except Exception:
                     log.debug("knowledge gaps provider raised", exc_info=True)
                     knowledge_gaps_block = ""
+
+        # F10f: surface a self-aware "I keep circling X but never dug in"
+        # cue when the live turn is on a dense-but-unresearched topic.
+        # Query-aware (the provider gates on user_text topic relevance),
+        # dropped in aggressive mode like the F2 gap block above.
+        knowledge_gap_notice_block = ""
+        if not aggressive and self._knowledge_gap_notice_provider is not None:
+            with _timed_phase(provider_ms, "knowledge_gap_notice"):
+                try:
+                    knowledge_gap_notice_block = (
+                        self._knowledge_gap_notice_provider(user_text) or ""
+                    )
+                except Exception:
+                    log.debug(
+                        "knowledge gap notice provider raised", exc_info=True
+                    )
+                    knowledge_gap_notice_block = ""
 
         # K61: on informational turns, steer Aiko toward learned
         # specifics (F9 ``knowledge`` / G3 ``curiosity_finding`` rows)
@@ -2185,6 +2210,11 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # Sits right after the knowledge-gap line so the "what Aiko
             # knows / wonders about" surfaces cluster together.
             system_parts.append(knowledge_grounding_block)
+        if knowledge_gap_notice_block:
+            # F10f: "I keep circling X but never dug in" — clusters with
+            # the knowledge-gap / grounding surfaces (all "what Aiko does
+            # / doesn't know about a recurring topic").
+            system_parts.append(knowledge_gap_notice_block)
 
         system_prompt = "\n\n---\n\n".join(p for p in system_parts if p)
 

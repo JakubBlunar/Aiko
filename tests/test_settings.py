@@ -240,6 +240,46 @@ class CuriositySeedSettingsTests(unittest.TestCase):
         result = load_settings(config_path=path)
         self.assertFalse(result.tools.recall_topic)
 
+    def test_knowledge_gap_notice_settings_round_trip(self) -> None:
+        # Defaults.
+        result = load_settings(config_path=self._write_config())
+        self.assertTrue(result.agent.knowledge_gap_notice_enabled)
+        self.assertEqual(
+            result.memory.knowledge_gap_notice_interval_seconds, 3600,
+        )
+        self.assertEqual(result.memory.knowledge_gap_notice_min_size, 5)
+        self.assertAlmostEqual(
+            result.memory.knowledge_gap_notice_max_knowledge_fraction, 0.15,
+        )
+        self.assertEqual(
+            result.memory.knowledge_gap_notice_topic_cooldown_hours, 72,
+        )
+        self.assertEqual(result.memory.knowledge_gap_notice_journal_max, 6)
+        # Overrides + floors.
+        path = self._write_config(
+            agent_extra={"knowledge_gap_notice_enabled": False},
+            memory_extra={
+                "knowledge_gap_notice_interval_seconds": 5,   # below 60s
+                "knowledge_gap_notice_min_size": 1,           # below min 2
+                "knowledge_gap_notice_max_knowledge_fraction": 2.0,  # >1
+                "knowledge_gap_notice_topic_cooldown_hours": -3,     # <0
+                "knowledge_gap_notice_journal_max": 0,        # below min 1
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.knowledge_gap_notice_enabled)
+        self.assertEqual(
+            result.memory.knowledge_gap_notice_interval_seconds, 60,
+        )
+        self.assertEqual(result.memory.knowledge_gap_notice_min_size, 2)
+        self.assertAlmostEqual(
+            result.memory.knowledge_gap_notice_max_knowledge_fraction, 1.0,
+        )
+        self.assertEqual(
+            result.memory.knowledge_gap_notice_topic_cooldown_hours, 0,
+        )
+        self.assertEqual(result.memory.knowledge_gap_notice_journal_max, 1)
+
     def test_interest_map_settings_round_trip(self) -> None:
         # Defaults.
         result = load_settings(config_path=self._write_config())
