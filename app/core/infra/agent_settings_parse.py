@@ -84,6 +84,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             knowledge_topic_extraction_enabled=bool(
                 agent_raw.get("knowledge_topic_extraction_enabled", True),
             ),
+            knowledge_gap_notice_enabled=bool(
+                agent_raw.get("knowledge_gap_notice_enabled", True),
+            ),
             knowledge_grounding_enabled=bool(
                 agent_raw.get("knowledge_grounding_enabled", True),
             ),

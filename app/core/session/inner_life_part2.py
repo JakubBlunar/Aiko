@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 
 
@@ -961,6 +962,103 @@ class InnerLifePart2Mixin:
             "follow-up cue fire: at=%s source=%s", at, newest.get("source_id"),
         )
         return line
+
+    def _render_knowledge_gap_notice_block(self, user_text: str) -> str:
+        """F10f: surface one "I keep circling X but never dug in" cue.
+
+        Consumer side of the
+        :class:`~app.core.proactive.knowledge_gap_notice_worker.KnowledgeGapNoticeWorker`
+        producer. The worker drafts dense-but-unresearched topics into the
+        ``aiko.knowledge_gap_notices`` kv ring during quiet windows; this
+        provider surfaces one **only when the live turn is actually on that
+        topic** (lexical overlap with ``user_text``), so the beat lands in
+        context — "oh, this again; honestly I still don't know much about
+        it" — rather than as a standalone non-sequitur.
+
+        Once-per-topic: a surfaced ``cluster_key`` is recorded in
+        ``knowledge_gap_notice.surfaced_keys`` and never resurfaces (the
+        worker's per-topic cooldown also stops it being re-drafted). The
+        cue is a private prompt hint, NEVER spoken verbatim — Aiko phrases
+        the admission herself. Independent of the gap-return cue family
+        (does not touch ``_gap_cue_surfaced``); it's tied to the live topic,
+        not to a long-absence return. MCP debug: ``force_knowledge_gap_notice_surface``
+        arms ``_knowledge_gap_notice_force_next`` to bypass the
+        topic-relevance + surfaced gates (the ring must still be non-empty).
+        """
+        if not bool(
+            getattr(self._settings.agent, "knowledge_gap_notice_enabled", True)
+        ):
+            return ""
+
+        force_next = bool(getattr(self, "_knowledge_gap_notice_force_next", False))
+        if force_next:
+            self._knowledge_gap_notice_force_next = False
+
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is None or not hasattr(chat_db, "kv_get"):
+            return ""
+
+        text = (user_text or "").strip()
+        if not text and not force_next:
+            return ""
+
+        try:
+            from app.core.proactive.knowledge_gap_notice_worker import (
+                load_notices,
+                topic_relevant,
+            )
+        except Exception:
+            log.debug("knowledge_gap_notice import failed", exc_info=True)
+            return ""
+
+        ring = load_notices(chat_db.kv_get)
+        if not ring:
+            return ""
+
+        surfaced_key = "knowledge_gap_notice.surfaced_keys"
+        try:
+            raw = chat_db.kv_get(surfaced_key)
+            surfaced = set(json.loads(raw)) if raw else set()
+        except Exception:
+            surfaced = set()
+
+        chosen: dict | None = None
+        for entry in reversed(ring):  # newest first
+            key = str(entry.get("cluster_key") or "")
+            topic = str(entry.get("topic") or "").strip()
+            if not topic:
+                continue
+            if not force_next:
+                if key and key in surfaced:
+                    continue
+                if not topic_relevant(topic, text):
+                    continue
+            chosen = entry
+            break
+        if chosen is None:
+            return ""
+
+        key = str(chosen.get("cluster_key") or "")
+        topic = str(chosen.get("topic") or "").strip()
+        if key:
+            surfaced.add(key)
+            try:
+                # Cap the surfaced set so it can't grow unbounded.
+                trimmed = list(surfaced)[-64:]
+                chat_db.kv_set(surfaced_key, json.dumps(trimmed))
+            except Exception:
+                log.debug(
+                    "knowledge_gap_notice surfaced write failed", exc_info=True
+                )
+
+        log.info("knowledge-gap-notice fire: topic=%r key=%s", topic[:80], key)
+        return (
+            f"Heads-up: \"{topic}\" keeps coming up between you two, but you've "
+            "never actually dug into it — you don't really know much about it "
+            "yet. If it fits, it's honest to say so and show you're curious to "
+            "learn more, rather than bluffing or glossing over it. One light "
+            "line; don't over-apologise for not knowing."
+        )
 
     def _render_promise_followthrough_block(self) -> str:
         """K43: surface one "close the loop on what you said you'd do" cue.

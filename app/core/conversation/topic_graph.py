@@ -438,6 +438,25 @@ class InterestEntry:
     size: int
 
 
+@dataclass(slots=True, frozen=True)
+class KnowledgeGapCluster:
+    """One F10f knowledge-gap candidate: a dense topic cluster that is
+    *thin* on ``kind="knowledge"`` coverage.
+
+    Carries the label + size + how many members are learned-knowledge
+    rows so the consumers (the F9 research picker already scores on this
+    signal; the F10f ``KnowledgeGapNoticeWorker`` drafts a self-aware
+    "I don't really know much about X" beat) can rank "Aiko keeps
+    circling this topic but has never actually dug into it" candidates.
+    """
+
+    cluster_id: int
+    label: str
+    size: int
+    knowledge_count: int
+    knowledge_fraction: float
+
+
 @dataclass(slots=True)
 class _LiveCluster:
     """Mutable in-process cluster used by the persistent/incremental
@@ -639,6 +658,66 @@ class TopicGraph:
                 entries.append(InterestEntry(label=label, size=size))
         entries.sort(key=lambda e: e.size, reverse=True)
         return entries[:n]
+
+    def knowledge_gap_clusters(
+        self,
+        *,
+        min_size: int = 5,
+        max_knowledge_fraction: float = 0.15,
+        top_n: int = 3,
+    ) -> list[KnowledgeGapCluster]:
+        """F10f: dense topic clusters that are thin on learned knowledge.
+
+        A "knowledge gap" is a cluster Aiko keeps coming back to (member
+        count >= ``min_size``) yet has barely researched -- the fraction of
+        its members that are ``kind="knowledge"`` rows is at or below
+        ``max_knowledge_fraction``. Candidates are ranked by a gap score
+        (``size * (1 - knowledge_fraction)``) so the densest, least-explored
+        topics come first, and the top ``top_n`` are returned. Built from
+        :meth:`topic_clusters` (which joins member kinds back to the
+        mirror), so it carries the same F10a-label-or-heuristic ``summary``
+        as the interest map. Clusters with a blank label are skipped (the
+        consumers want a nameable topic). Always empty in the
+        non-persistent / in-memory mode.
+
+        Consumed by the F10f ``KnowledgeGapNoticeWorker`` (drafts the
+        "I keep circling X but never dug in" self-aware cue); the F9
+        ``IdleKnowledgeWorker`` independently scores the same signal to
+        pick what to *research*, so the two stay in lockstep -- F9 quietly
+        fills the gap while F10f lets Aiko own it out loud.
+        """
+        if not self.persistent:
+            return []
+        floor = max(self._min_cluster_size, int(min_size))
+        max_frac = float(max_knowledge_fraction)
+        n = max(1, int(top_n))
+        out: list[KnowledgeGapCluster] = []
+        for cluster in self.topic_clusters():
+            size = cluster.size
+            if size < floor:
+                continue
+            label = (cluster.summary or "").strip()
+            if not label:
+                continue
+            knowledge_count = sum(
+                1 for k in cluster.member_kinds if k == "knowledge"
+            )
+            frac = (knowledge_count / size) if size else 0.0
+            if frac > max_frac:
+                continue
+            out.append(
+                KnowledgeGapCluster(
+                    cluster_id=cluster.cluster_id,
+                    label=label,
+                    size=size,
+                    knowledge_count=knowledge_count,
+                    knowledge_fraction=frac,
+                )
+            )
+        out.sort(
+            key=lambda g: g.size * (1.0 - g.knowledge_fraction), reverse=True
+        )
+        return out[:n]
 
     def cluster_member_ids(self, cluster_id: int) -> list[int]:
         """Sorted member ids of a live cluster, or ``[]``.
@@ -1358,6 +1437,8 @@ def build_topic_graph_snapshot(
 
 __all__ = [
     "TopicCluster",
+    "InterestEntry",
+    "KnowledgeGapCluster",
     "TopicGraph",
     "build_topic_graph_snapshot",
 ]

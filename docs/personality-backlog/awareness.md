@@ -334,13 +334,137 @@ feeds K9 curiosity dedup + F9 cluster-pick + the observability browser —
   [`tests/test_topic_graph_persistent.py`](../../tests/test_topic_graph_persistent.py)
   + `InterestMapProviderTests` in
   [`tests/test_prompt_assembler.py`](../../tests/test_prompt_assembler.py).
-- **F10f. Knowledge-gap + consolidation targeting.** Clusters that are
-  conversationally dense but low on `kind="knowledge"` coverage are
-  exactly where F9 should dig and where a "I realised I don't actually
-  know much about X" proactive beat could come from; dense clusters are
-  also natural merge targets to point the K35 consolidation worker at.
+- **F10f. Knowledge-gap targeting — the self-aware beat. ✅ SHIPPED
+  (notice half).** The original F10f had three sub-parts; their status:
+  (1) **F9 research targeting — already shipped with F9.** The
+  [`IdleKnowledgeWorker`](../../app/core/proactive/idle_knowledge_worker.py)
+  picker (`_score_candidates`) already weights *knowledge headroom*
+  (0.45) + size (0.35) + freshness, so dense, low-`knowledge`-coverage
+  clusters are exactly where F9 digs. No change needed. (2) **The "I
+  realised I don't actually know much about X" proactive beat — built
+  here.** A new cue producer
+  [`KnowledgeGapNoticeWorker`](../../app/core/proactive/knowledge_gap_notice_worker.py)
+  (`name="knowledge_gap_notice"`, no LLM — a cheap kv pass) reads a new
+  topic-graph reader
+  [`TopicGraph.knowledge_gap_clusters`](../../app/core/conversation/topic_graph.py)
+  (dense clusters whose `kind="knowledge"` fraction is at/below
+  `memory.knowledge_gap_notice_max_knowledge_fraction`, ranked by a gap
+  score `size·(1−frac)`), and drafts `{at, topic, cluster_key, size,
+  knowledge_count}` into the `aiko.knowledge_gap_notices` kv ring with a
+  per-topic cooldown (stable label hash, survives cluster renumbering).
+  The consumer
+  [`_render_knowledge_gap_notice_block`](../../app/core/session/inner_life_part2.py)
+  is a **T6, `user_text`-gated** provider (mirrors the F2 `knowledge_gaps`
+  block): it surfaces a drafted notice **only when the live turn is
+  lexically on that topic** (so the beat lands in context, not as a
+  non-sequitur), once-per-topic via a `knowledge_gap_notice.surfaced_keys`
+  set. The cue is a private prompt hint — Aiko phrases the admission
+  herself (persona "Topics you keep circling but never dug into" block);
+  it is **never** a verbatim nudge. Gated by
+  `agent.knowledge_gap_notice_enabled`. F9 quietly *fills* the same gap
+  while F10f lets Aiko *own* it out loud — symmetric halves of one
+  signal. MCP: `get_knowledge_gap_notice_state` /
+  `force_knowledge_gap_notice` (draft, bypass cooldown) /
+  `force_knowledge_gap_notice_surface` (bypass relevance + surfaced gates).
+  Logs: `knowledge-gap-notice drafted:` (worker) / `knowledge-gap-notice
+  fire:` (provider). Tests: `KnowledgeGapClustersTests` in
+  [`tests/test_topic_graph_persistent.py`](../../tests/test_topic_graph_persistent.py),
+  [`tests/test_knowledge_gap_notice.py`](../../tests/test_knowledge_gap_notice.py)
+  (worker + helpers + provider), `test_knowledge_gap_notice_settings_round_trip`
+  in [`tests/test_settings.py`](../../tests/test_settings.py). (3) **K35
+  consolidation targeting → tracked as F10j** (cluster-scoped memory
+  hygiene): F9's research-targeting already covered the "point F9 at gaps"
+  intent, so the consolidation re-scoping is the genuinely-separate
+  remaining work and lives under F10j below.
 
-**Effort.** F10a/F10b/F10e small-medium each; F10c/F10d medium and
-riskier (touch retrieval + prompt). **F10a, F10b, F10c, F10d and F10e are
-shipped** — the only remaining item is F10f (knowledge-gap +
-consolidation targeting).
+**New sub-ideas (added after the F10a-e ship — pick independently).**
+The shipped foundation gives every consumer below a cheap, warm set of
+primitives on [`topic_graph.py`](../../app/core/conversation/topic_graph.py):
+cluster `centroid`s, `cluster_id_for` (O(1) memory→cluster), `cluster_member_ids`,
+`best_clusters_for` (coarse query→cluster), `interest_map` (top-N by size),
+and per-cluster `label`s. The ideas below are all just *new readers* of
+those primitives — none needs a schema change beyond a `kv_meta` row.
+
+- **F10g. Per-cluster rolling digest memory.** The true realisation of
+  the original "cluster-*summary*" idea (F10d shipped as on-demand member
+  enumeration, not a stored summary). An idle worker writes one
+  high-salience `kind="topic_digest"` memory per dense cluster — a
+  worker-LLM one-paragraph compression of its members — refreshed only on
+  size drift (same cache-by-representative trick as F10a labels). RAG then
+  surfaces *the digest* as the coarse "what I know about X" answer and
+  only drills into raw members when the turn needs specifics, which also
+  caps prompt size on a 40-member cluster (today F10c expansion just
+  appends more lines). Key files: a new worker beside
+  [`topic_label_worker.py`](../../app/core/conversation/topic_label_worker.py),
+  `MemoryStore` for the digest write, `rag_retriever.py` for the
+  surface-digest-first path. **Open Q:** does the digest live in the
+  normal memory pool (so it decays / shows in the Memory tab) or in a
+  side table keyed by cluster? Pool is simpler and lets pinning work.
+- **F10h. Topic temperature / per-cluster affect.** A cluster isn't just
+  a bag of facts — it has a *vibe*. Aggregate an affect tag per cluster
+  from the signals already lying around: `shared_moment` vibes whose
+  source ids fall in the cluster, K57 emotion episodes, reaction history
+  on member-sourced turns. When the live turn maps (via `best_clusters_for`)
+  to a "charged" cluster (warm or tense), surface a one-line tonal nudge
+  so Aiko approaches a sensitive topic more gently and a fond one more
+  warmly — a topic-scoped sibling of the relationship axes. Key files:
+  a small aggregator over `topic_graph` + `RelationshipAxesStore` +
+  shared-moments, an inner-life provider in `prompt_assembler.py`.
+  Pairs with K8 rupture-repair (don't barrel into a tense cluster).
+- **F10i. Per-topic confidence self-model (metacognition).** Distinct
+  from F10f, which *researches* gaps — this lets Aiko *express* how much
+  she actually knows about a topic. Derive a per-cluster confidence from
+  member count + `kind="knowledge"` coverage + recency, so when the turn
+  lands on a thin cluster she hedges proportionally ("I only know a
+  little about your work, but…") and on a rich one she speaks with earned
+  familiarity. A topic-scoped extension of K20 metacognitive calibration.
+  Key files: a cheap per-cluster stat on `topic_graph`, an inner-life
+  provider. **Open Q:** fold this into the F10e interest-map block (which
+  already names the top clusters) rather than a second block?
+- **F10j. Cluster-scoped memory hygiene.** (Also absorbs the K35
+  consolidation-targeting sub-part of the original F10f — its F9 research
+  half shipped with F9 and its notice half shipped as the F10f beat, so
+  pointing K35 at dense clusters is the one remaining piece.) Point the
+  F5 conflict detector and K35 consolidation worker at *within-cluster*
+  pairs first. Two wins:
+  the O(n²) pairwise sweep is far cheaper inside one cluster than across
+  the whole mirror (directly unblocks P30's mirror-sweep concern), and
+  contradictions / near-dupes are *topically* clustered — two beliefs
+  about the same subject are exactly what you want to compare. Key files:
+  [`memory_conflict_worker.py`](../../app/core/memory/memory_conflict_worker.py),
+  the K35 consolidation worker, both reading `cluster_member_ids` to scope
+  the candidate set. Mostly a re-scoping of existing sweeps — low risk.
+- **F10k. Semantic topic tracking for K6 / K18.** Today novelty (K6) and
+  stagnation (K18) reason about a rolling *centroid* of recent user
+  vectors — a fuzzy, identity-less notion of "the current topic". Map
+  recent turns to actual clusters via `best_clusters_for` and the shift
+  becomes *nameable*: "we moved from the `weekend hiking` cluster to the
+  `work stress` cluster" is a cleaner, more robust topic-change signal
+  than a cosine drift, and it lets a pivot back to a *previously-visited*
+  cluster read differently from a brand-new one. Key files:
+  [`novelty_detector.py`](../../app/core/conversation/novelty_detector.py),
+  [`topic_stagnation.py`](../../app/core/conversation/topic_stagnation.py).
+  **Open Q:** additive signal alongside the centroid, or a replacement?
+  Start additive and measure.
+- **F10l. Cluster management UX (user agency over her mental map).** The
+  Memory tab can already edit/pin individual memories; a cluster browser
+  would let the user rename a cluster (overriding the F10a label),
+  merge / split, pin a *whole* cluster, or "forget this topic" (bulk
+  archive). Makes the topic graph a thing the user *steers*, not just an
+  internal index. Key files: `GET /api/topic-graph` already serves the
+  snapshot; add mutation endpoints + a panel under
+  [`web/src/components/settings/`](../../web/src/components/settings/).
+  **Open Q:** how do user renames survive a batch refit that reassigns
+  the cluster representative? (Pin the label to the cluster id, not the
+  representative.)
+
+**Effort.** F10a/F10b/F10e small-medium each; F10c/F10d medium. **F10a-f
+are shipped** (F10f = the self-aware knowledge-gap notice; F9 already
+covered research-targeting and the K35 consolidation re-scope moved to
+F10j). Remaining: the new F10g-F10l batch — F10j/F10k are low-risk
+re-scopings,
+F10g/F10h/F10i are medium (worker + prompt block each), F10l is a
+self-contained UX slice. Several overlap the K64 mind-wandering family in
+[`patterns.md`](patterns.md) (esp. F10h/F10i vs K64b interest-drift) —
+cross-check before picking one up so two passes don't build the same
+per-cluster aggregator twice.
