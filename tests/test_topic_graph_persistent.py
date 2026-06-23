@@ -257,5 +257,84 @@ class AnnClustererTests(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+class InterestMapTests(unittest.TestCase):
+    """F10e ``TopicGraph.interest_map``: top-N clusters by size, cheap (no
+    mirror join), persistent-only, renders the F10a label (clean name) over
+    the heuristic fallback."""
+
+    def _graph(self, mem, cs) -> TopicGraph:
+        return TopicGraph(
+            mem, similarity=0.55, min_cluster_size=2,
+            filter_threshold=0.65, cluster_store=cs,
+        )
+
+    def test_non_persistent_returns_empty(self) -> None:
+        g = TopicGraph(_two_cluster_store(), min_cluster_size=2)
+        self.assertFalse(g.persistent)
+        self.assertEqual(g.interest_map(), [])
+
+    def test_clusters_sorted_by_size_with_f10a_labels(self) -> None:
+        mem = _two_cluster_store()
+        # Make the cat cluster bigger so size ordering is determinate.
+        mem.add(_StubMemory(4, "more cats", _vec([0.93, 0.36, 0.0, 0.0])))
+        mem.add(_StubMemory(5, "a cat", _vec([0.94, 0.33, 0.0, 0.0])))
+        _, cs = _cluster_store()
+        g = self._graph(mem, cs)
+        clusters = g.topic_clusters()  # warm + build (2 clusters)
+        self.assertEqual(len(clusters), 2)
+        # After a build every cluster carries a heuristic label, so the
+        # map is already populated (sizes 5 and 3, largest first).
+        sizes = [e.size for e in g.interest_map(top_n=5, min_size=2)]
+        self.assertEqual(sizes, [5, 3])
+        # The F10a worker's clean label replaces the heuristic one.
+        cat = next(c for c in clusters if 1 in c.member_ids)
+        herb = next(c for c in clusters if 10 in c.member_ids)
+        g.set_cluster_label(cat.cluster_id, "cats")
+        g.set_cluster_label(herb.cluster_id, "herbs")
+        entries = g.interest_map(top_n=5, min_size=2)
+        self.assertEqual(
+            [(e.label, e.size) for e in entries],
+            [("cats", 5), ("herbs", 3)],
+        )
+
+    def test_blank_label_is_skipped(self) -> None:
+        # Defensive: a cluster whose label is somehow blank never surfaces.
+        mem = _two_cluster_store()
+        _, cs = _cluster_store()
+        g = self._graph(mem, cs)
+        g.topic_clusters()
+        with g._lock:  # type: ignore[attr-defined]
+            for cluster in g._live.values():  # type: ignore[attr-defined]
+                cluster.label = ""
+        self.assertEqual(g.interest_map(top_n=5, min_size=2), [])
+
+    def test_top_n_cap(self) -> None:
+        mem = _two_cluster_store()
+        mem.add(_StubMemory(4, "more cats", _vec([0.93, 0.36, 0.0, 0.0])))
+        _, cs = _cluster_store()
+        g = self._graph(mem, cs)
+        clusters = g.topic_clusters()
+        for c in clusters:
+            g.set_cluster_label(
+                c.cluster_id, "cats" if 1 in c.member_ids else "herbs",
+            )
+        entries = g.interest_map(top_n=1, min_size=2)
+        self.assertEqual([e.label for e in entries], ["cats"])
+
+    def test_min_size_floor_excludes_small_clusters(self) -> None:
+        mem = _two_cluster_store()
+        mem.add(_StubMemory(4, "more cats", _vec([0.93, 0.36, 0.0, 0.0])))
+        _, cs = _cluster_store()
+        g = self._graph(mem, cs)
+        clusters = g.topic_clusters()  # cats=4, herbs=3
+        for c in clusters:
+            g.set_cluster_label(
+                c.cluster_id, "cats" if 1 in c.member_ids else "herbs",
+            )
+        # min_size=4 drops the 3-member herb cluster.
+        entries = g.interest_map(top_n=5, min_size=4)
+        self.assertEqual([e.label for e in entries], ["cats"])
+
+
 if __name__ == "__main__":
     unittest.main()

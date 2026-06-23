@@ -838,6 +838,55 @@ class InnerLifePart1Mixin:
             return ""
         return "\n".join(lines)
 
+    def _render_interest_map_block(self) -> str:
+        """F10e: "interest map" — the topic threads we keep coming back to.
+
+        Lists the top ``agent.interest_map_max_clusters`` labelled topic
+        clusters (largest first) as a single terse line so Aiko carries a
+        sense of her recurring threads with the user. Built from the topic
+        graph's live cluster map (label + member count only — no join back
+        to the memory mirror), so render cost is negligible even with a
+        large corpus, and it is owned by the assembler's ``_StaticSlices``
+        cache so it is paid once per listening window.
+
+        Each topic shows the F10a clean label once the
+        :class:`~app.core.conversation.topic_label_worker.ClusterLabelWorker`
+        has named it, falling back to the heuristic representative summary
+        otherwise (the densest clusters -- the ones shown -- are labelled
+        first, so the line converges on clean names quickly). Empty when
+        the feature is disabled, the topic graph is missing / non-
+        persistent, or no cluster clears the size floor.
+        """
+        if not bool(
+            getattr(self._settings.agent, "interest_map_enabled", True)
+        ):
+            return ""
+        graph = getattr(self, "_topic_graph", None)
+        if graph is None:
+            return ""
+        top_n = max(
+            1,
+            int(getattr(self._settings.agent, "interest_map_max_clusters", 5)),
+        )
+        min_size = max(
+            1,
+            int(getattr(self._settings.agent, "interest_map_min_size", 4)),
+        )
+        try:
+            entries = graph.interest_map(top_n=top_n, min_size=min_size)
+        except Exception:
+            log.debug("interest_map raised", exc_info=True)
+            return ""
+        if not entries:
+            return ""
+        labels = ", ".join(e.label for e in entries)
+        return (
+            f"Topics you and {self.user_display_name} keep coming back to: "
+            f"{labels}. These are the threads of your time together — let "
+            "them colour what you notice or bring up, but don't recite the "
+            "list."
+        )
+
     def _question_balance_suppressed(self) -> bool:
         """K47: True when the question/share gate is currently muting the
         question-pushing cues. Read by the question-pushing providers as

@@ -426,6 +426,18 @@ class TopicCluster:
         return len(self.member_ids)
 
 
+@dataclass(slots=True, frozen=True)
+class InterestEntry:
+    """One row of the F10e "interest map": a labelled topic cluster and
+    its member count. Deliberately tiny -- it carries only what the
+    interest-map prompt block needs (label + size), so the producer can
+    build it from the live cluster map without joining the memory mirror.
+    """
+
+    label: str
+    size: int
+
+
 @dataclass(slots=True)
 class _LiveCluster:
     """Mutable in-process cluster used by the persistent/incremental
@@ -583,6 +595,50 @@ class TopicGraph:
         self._ensure_warm()
         with self._lock:
             return self._live_to_topic_clusters_locked()
+
+    def interest_map(
+        self, *, top_n: int = 5, min_size: int | None = None,
+    ) -> list[InterestEntry]:
+        """Top-N interest clusters for the F10e prompt block.
+
+        Returns the largest clusters as ``(label, size)`` rows, sorted by
+        size descending and capped at ``top_n``. Reads **only** the live
+        cluster map (label + member count) -- no joins back to the memory
+        mirror -- so it is cheap enough to call on the per-turn prompt hot
+        path, unlike :meth:`topic_clusters`. Each row carries the cluster's
+        current ``label``: the F10a clean topic name once the
+        :class:`~app.core.conversation.topic_label_worker.ClusterLabelWorker`
+        has named it, otherwise the heuristic representative summary the
+        batch rebuild stamps on every cluster. Because the label worker
+        names the densest clusters first and the interest map shows the
+        densest clusters, the top-N rows converge on clean F10a labels
+        within a couple of worker ticks. Clusters below ``min_size``
+        (defaults to the configured ``min_cluster_size``) and any with a
+        blank label are skipped. Always empty in the non-persistent /
+        in-memory mode, where there is no stable cluster identity to carry
+        a label.
+        """
+        if not self.persistent:
+            return []
+        floor = (
+            self._min_cluster_size
+            if min_size is None
+            else max(self._min_cluster_size, int(min_size))
+        )
+        n = max(1, int(top_n))
+        self._ensure_warm()
+        entries: list[InterestEntry] = []
+        with self._lock:
+            for cluster in self._live.values():
+                size = len(cluster.member_ids)
+                if size < floor:
+                    continue
+                label = (cluster.label or "").strip()
+                if not label:
+                    continue
+                entries.append(InterestEntry(label=label, size=size))
+        entries.sort(key=lambda e: e.size, reverse=True)
+        return entries[:n]
 
     def is_close_to_any_cluster(
         self,

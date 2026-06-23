@@ -337,6 +337,23 @@ class AgentSettings:
     # top-k still has room from other clusters). Clamped to a floor of 1
     # in the parser.
     rag_max_per_cluster: int = 3
+    # F10e: "interest map" prompt block. A terse T1 (semi-stable) inner-
+    # life line listing the top few labelled topic clusters by size --
+    # "the things you and the user keep coming back to" -- so Aiko carries
+    # a sense of her recurring threads without any per-turn LLM cost. Built
+    # from the live topic-graph cluster map (label + member count only, no
+    # mirror join). Each topic shows the F10a clean label once the label
+    # worker has named it, falling back to the heuristic representative
+    # summary otherwise. No-op in the non-persistent topic-graph mode.
+    # Dropped under aggressive context pressure.
+    interest_map_enabled: bool = True
+    # How many topic clusters the interest-map block lists (largest first).
+    # Clamped to a floor of 1 in the parser.
+    interest_map_max_clusters: int = 5
+    # Minimum cluster size for a topic to count as a recurring "interest"
+    # worth surfacing. Raised to the topic graph's own min_cluster_size if
+    # set lower; floor of 1 in the parser.
+    interest_map_min_size: int = 4
     # Master switch for
     # :class:`app.core.proactive.curiosity_seed_worker.CuriositySeedWorker`.
     # When ``False`` the worker never registers its idle tick and
