@@ -304,6 +304,15 @@ class CuriositySeedSettingsTests(unittest.TestCase):
         self.assertAlmostEqual(result.memory.topic_temperature_threshold, 0.0)
         self.assertEqual(result.memory.topic_temperature_cooldown_turns, 0)
 
+    def test_cluster_scoped_memory_hygiene_round_trip(self) -> None:
+        result = load_settings(config_path=self._write_config())
+        self.assertTrue(result.agent.cluster_scoped_memory_hygiene_enabled)
+        path = self._write_config(
+            agent_extra={"cluster_scoped_memory_hygiene_enabled": False},
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.cluster_scoped_memory_hygiene_enabled)
+
     def test_topic_confidence_settings_round_trip(self) -> None:
         # Defaults.
         result = load_settings(config_path=self._write_config())

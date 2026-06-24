@@ -475,19 +475,40 @@ those primitives — none needs a schema change beyond a `kv_meta` row.
   a `ClusterKnowledgeStatsTests` block in
   [`tests/test_topic_graph_persistent.py`](../../tests/test_topic_graph_persistent.py),
   + a settings round-trip in `test_settings.py`.
-- **F10j. Cluster-scoped memory hygiene.** (Also absorbs the K35
-  consolidation-targeting sub-part of the original F10f — its F9 research
-  half shipped with F9 and its notice half shipped as the F10f beat, so
-  pointing K35 at dense clusters is the one remaining piece.) Point the
-  F5 conflict detector and K35 consolidation worker at *within-cluster*
-  pairs first. Two wins:
-  the O(n²) pairwise sweep is far cheaper inside one cluster than across
-  the whole mirror (directly unblocks P30's mirror-sweep concern), and
-  contradictions / near-dupes are *topically* clustered — two beliefs
-  about the same subject are exactly what you want to compare. Key files:
-  [`memory_conflict_worker.py`](../../app/core/memory/memory_conflict_worker.py),
-  the K35 consolidation worker, both reading `cluster_member_ids` to scope
-  the candidate set. Mostly a re-scoping of existing sweeps — low risk.
+- **F10j. Cluster-scoped memory hygiene.** **SHIPPED.** Both the F5
+  conflict detector and the K35 consolidation worker now partition their
+  candidate snapshot by topic cluster and scan *within* a cluster instead
+  of all-pairs across the whole mirror. Two wins, as designed: the O(n²)
+  pairwise cosine drops to `sum(O(k_c²))` over the (much smaller)
+  per-cluster sizes (directly unblocks P30's mirror-sweep concern), and
+  the surviving pairs are *topically adjacent* — exactly where
+  contradictions / near-dupes live, so the rate-limited LLM
+  verifier/merger stops burning its budget on cross-topic noise.
+  Implementation: one shared helper
+  [`partition_by_cluster`](../../app/core/memory/cluster_scope.py) groups
+  candidates by `TopicGraph.cluster_id_for` (O(1) per row), drops
+  singleton groups, orders groups newest-first (preserving each worker's
+  freshness priority under its shared per-run cap), and buckets
+  unclustered rows together. Both workers take a late-bound
+  `topic_graph_provider` and a single master switch
+  `agent.cluster_scoped_memory_hygiene_enabled` (default on). The conflict
+  worker's pairwise loop was extracted into `_scan_group` driven by a
+  shared `_ScanState` so the `max_pairs` budget still bounds the whole
+  tick; the consolidation worker calls `_build_clusters` per group under a
+  shared `max_clusters` budget. **Graceful degradation:** switch off / no
+  graph / non-persistent / unwarmed graph → a single group == the full
+  candidate list == exact pre-F10j behaviour (the legacy worker tests pass
+  untouched because they pass no provider). **Tradeoff** (documented in
+  the module + config): a pair split across two clusters is no longer
+  compared, but the clustering floor (0.55) is far looser than the
+  conflict band (`[0.80, 0.92)`) / dedupe threshold (~0.90), so close
+  pairs almost always co-cluster, and it's eventually-consistent across
+  re-clusters. The `groups` + `cluster_scoped` fields on each worker's
+  result dict (and the per-run INFO line) show whether scoping was active.
+  Tests: [`tests/test_cluster_scope.py`](../../tests/test_cluster_scope.py),
+  a `ClusterScopingTests` block in
+  [`tests/test_memory_conflict_worker.py`](../../tests/test_memory_conflict_worker.py),
+  + a settings round-trip in `test_settings.py`.
 - **F10k. Semantic topic tracking for K6 / K18.** Today novelty (K6) and
   stagnation (K18) reason about a rolling *centroid* of recent user
   vectors — a fuzzy, identity-less notion of "the current topic". Map
@@ -513,13 +534,14 @@ those primitives — none needs a schema change beyond a `kv_meta` row.
   representative.)
 
 **Effort.** F10a/F10b/F10e small-medium each; F10c/F10d medium. **F10a-f +
-F10h + F10i are shipped** (F10f = the self-aware knowledge-gap notice; F9
-already covered research-targeting and the K35 consolidation re-scope
-moved to F10j; F10h = per-cluster topic temperature from shared-moment
-vibes; F10i = per-topic confidence self-model from size + learned-fact
-coverage — both provider-only). Remaining: F10g/F10j/F10k/F10l — F10j/F10k
-are low-risk re-scopings, F10g is medium (digest worker + prompt block),
-F10l is a self-contained UX slice. Several overlap the K64 mind-wandering
+F10h + F10i + F10j are shipped** (F10f = the self-aware knowledge-gap
+notice; F9 already covered research-targeting; F10h = per-cluster topic
+temperature from shared-moment vibes; F10i = per-topic confidence
+self-model from size + learned-fact coverage — both provider-only; F10j =
+cluster-scoped memory hygiene, which also delivered F10f's K35
+consolidation re-scope alongside the F5 conflict re-scope). Remaining:
+F10g/F10k/F10l — F10k is a low-risk re-scoping, F10g is medium (digest
+worker + prompt block), F10l is a self-contained UX slice. Several overlap the K64 mind-wandering
 family in [`patterns.md`](patterns.md) (esp. K64b interest-drift) —
 cross-check before picking one up so two passes don't build the same
 per-cluster aggregator twice. **Provider-walk note:** F10h/F10i both

@@ -95,6 +95,19 @@ class _StubAgent:
     conflict_detector_enabled: bool = True
     conflict_detector_per_hour_cap: int = 10
     conflict_detector_per_day_cap: int = 50
+    cluster_scoped_memory_hygiene_enabled: bool = True
+
+
+class _FakeGraph:
+    """Minimal topic graph: a fixed memory_id -> cluster_id assignment."""
+
+    persistent = True
+
+    def __init__(self, assignment: dict[int, int | None]) -> None:
+        self._assignment = assignment
+
+    def cluster_id_for(self, memory_id: int) -> int | None:
+        return self._assignment.get(int(memory_id))
 
 
 @dataclass
@@ -114,6 +127,8 @@ def _build_world(
     per_hour_cap: int = 10,
     per_day_cap: int = 50,
     auto_resolve_delta: float = 0.30,
+    cluster_scoped: bool = True,
+    topic_graph_provider: Any | None = None,
 ) -> dict[str, Any]:
     """Spin up a fresh world with a real DB, memory store, and worker."""
     d = tempfile.mkdtemp()
@@ -143,11 +158,13 @@ def _build_world(
             conflict_detector_enabled=enabled,
             conflict_detector_per_hour_cap=per_hour_cap,
             conflict_detector_per_day_cap=per_day_cap,
+            cluster_scoped_memory_hygiene_enabled=cluster_scoped,
         ),
         memory_settings=_StubMemorySettings(
             conflict_detector_auto_resolve_delta=auto_resolve_delta,
         ),
         notify_memory_updated=lambda d: updated_calls.append(d),
+        topic_graph_provider=topic_graph_provider,
     )
 
     return {
@@ -496,6 +513,49 @@ class ParseVerdictTests(unittest.TestCase):
     def test_garbage_returns_none(self) -> None:
         self.assertIsNone(MemoryConflictWorker._parse_verdict("not json"))
         self.assertIsNone(MemoryConflictWorker._parse_verdict(""))
+
+
+class ClusterScopingTests(unittest.TestCase):
+    """F10j: the sweep is partitioned by topic cluster."""
+
+    _A = "Bea loves spicy food deeply and often"
+    _B = "Bea hates spicy food deeply and often"
+
+    def test_same_cluster_still_detected(self) -> None:
+        w = _build_world()
+        ma = _add_fact(w["memory_store"], w["embedder"], self._A, confidence=0.9)
+        mb = _add_fact(w["memory_store"], w["embedder"], self._B, confidence=0.5)
+        # Re-bind the worker's graph provider now that ids exist.
+        w["worker"]._topic_graph_provider = lambda: _FakeGraph({ma: 1, mb: 1})
+        result = w["worker"].run()
+        self.assertTrue(result.get("cluster_scoped"))
+        self.assertEqual(result.get("definite"), 1)
+        self.assertEqual(result.get("auto_resolved"), 1)
+
+    def test_different_clusters_skips_pair(self) -> None:
+        w = _build_world()
+        ma = _add_fact(w["memory_store"], w["embedder"], self._A, confidence=0.9)
+        mb = _add_fact(w["memory_store"], w["embedder"], self._B, confidence=0.5)
+        # Each fact in its own cluster → both groups are singletons →
+        # the contradicting pair is never compared.
+        w["worker"]._topic_graph_provider = lambda: _FakeGraph({ma: 1, mb: 2})
+        result = w["worker"].run()
+        self.assertTrue(result.get("cluster_scoped"))
+        self.assertEqual(result.get("pairs_scanned"), 0)
+        self.assertEqual(result.get("definite"), 0)
+        self.assertEqual(result.get("auto_resolved"), 0)
+        # And the memory is untouched.
+        self.assertEqual(w["memory_store"].get(mb).tier, "long_term")
+
+    def test_switch_off_falls_back_to_full_sweep(self) -> None:
+        # Even with a splitting graph, the disabled switch ignores it.
+        w = _build_world(cluster_scoped=False)
+        ma = _add_fact(w["memory_store"], w["embedder"], self._A, confidence=0.9)
+        mb = _add_fact(w["memory_store"], w["embedder"], self._B, confidence=0.5)
+        w["worker"]._topic_graph_provider = lambda: _FakeGraph({ma: 1, mb: 2})
+        result = w["worker"].run()
+        self.assertFalse(result.get("cluster_scoped"))
+        self.assertEqual(result.get("auto_resolved"), 1)
 
 
 if __name__ == "__main__":

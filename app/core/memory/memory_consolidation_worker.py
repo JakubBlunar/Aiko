@@ -51,6 +51,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from app.core.memory.cluster_scope import partition_by_cluster
 from app.core.memory.conflict_heuristics import HEURISTIC_NO, classify_pair
 from app.core.proactive.idle_worker import default_is_ready
 
@@ -136,6 +137,7 @@ class MemoryConsolidationWorker:
         agent_settings: "AgentSettings",
         memory_settings: "MemorySettings",
         notify_memory_updated: Any | None = None,
+        topic_graph_provider: Any | None = None,
         clock: Any | None = None,
     ) -> None:
         self._memory_store = memory_store
@@ -147,6 +149,9 @@ class MemoryConsolidationWorker:
         self._agent_settings = agent_settings
         self._memory_settings = memory_settings
         self._notify_memory_updated = notify_memory_updated
+        # F10j: late-bound accessor for the K9 topic graph so the
+        # near-duplicate sweep can be scoped to within-cluster groups.
+        self._topic_graph_provider = topic_graph_provider
         self._clock = clock or _utcnow
 
     # ── IdleWorker protocol ──────────────────────────────────────────
@@ -224,20 +229,62 @@ class MemoryConsolidationWorker:
                 "corpus_size": len(candidates),
             }
 
-        emb_matrix = np.asarray(
-            [m.embedding for m in candidates], dtype=np.float32,
-        )
-        if emb_matrix.ndim != 2 or emb_matrix.shape[0] != len(candidates):
-            log.warning(
-                "memory-consolidation: bad embedding matrix shape=%s; bailing",
-                emb_matrix.shape,
+        # F10j: scope the near-duplicate sweep to within topic-cluster
+        # groups. When the switch is off / the graph is absent or unwarmed,
+        # this is a single group == the full candidate list (legacy).
+        cluster_scoped = bool(
+            getattr(
+                self._agent_settings,
+                "cluster_scoped_memory_hygiene_enabled",
+                True,
             )
-            return {"skipped": True, "reason": "bad_embeddings"}
-
-        clusters = self._build_clusters(
-            candidates, emb_matrix, threshold, min_cluster, max_clusters,
         )
-        log.info("memory-consolidation: %d cluster(s) found", len(clusters))
+        graph = None
+        if cluster_scoped and self._topic_graph_provider is not None:
+            try:
+                graph = self._topic_graph_provider()
+            except Exception:
+                log.debug(
+                    "memory-consolidation: topic_graph_provider raised",
+                    exc_info=True,
+                )
+                graph = None
+        groups = partition_by_cluster(
+            candidates, graph, enabled=cluster_scoped, min_group=min_cluster,
+        )
+
+        clusters: list[_Cluster] = []
+        for group in groups:
+            if len(clusters) >= max_clusters:
+                break
+            if len(group) < min_cluster:
+                continue
+            emb_matrix = np.asarray(
+                [m.embedding for m in group], dtype=np.float32,
+            )
+            if emb_matrix.ndim != 2 or emb_matrix.shape[0] != len(group):
+                log.warning(
+                    "memory-consolidation: bad embedding matrix shape=%s; "
+                    "skipping group",
+                    emb_matrix.shape,
+                )
+                continue
+            clusters.extend(
+                self._build_clusters(
+                    group,
+                    emb_matrix,
+                    threshold,
+                    min_cluster,
+                    max_clusters - len(clusters),
+                )
+            )
+        log.info(
+            "memory-consolidation: %d cluster(s) found across %d group(s) "
+            "(cluster_scoped=%s)",
+            len(clusters),
+            len(groups),
+            bool(cluster_scoped and graph is not None),
+        )
 
         merged = 0
         absorbed_total = 0
@@ -255,6 +302,8 @@ class MemoryConsolidationWorker:
 
         result = {
             "corpus_size": len(candidates),
+            "groups": len(groups),
+            "cluster_scoped": bool(cluster_scoped and graph is not None),
             "clusters": len(clusters),
             "merged": merged,
             "absorbed": absorbed_total,

@@ -249,6 +249,14 @@ class AgentSettings:
     memory_consolidation_enabled: bool = True
     memory_consolidation_per_hour_cap: int = 6
     memory_consolidation_per_day_cap: int = 30
+    # F10j: scope the F5 conflict detector + K35 consolidation sweeps to
+    # within topic-graph clusters. Turns each worker's O(n^2) all-pairs
+    # cosine into a per-cluster O(k^2) sweep (cheaper as the store grows,
+    # and the surviving pairs are topically adjacent — exactly where
+    # contradictions / near-dupes live). Off → both workers fall back to
+    # the full all-pairs sweep. No effect until the topic graph is warm /
+    # persistent (degrades to the full sweep).
+    cluster_scoped_memory_hygiene_enabled: bool = True
     # ── K2 personality backlog: theory-of-mind / belief tracking ─────
     # Master switch for the whole K2 surface (worker + gap detector +
     # tag parser + REST + UI). When disabled the worker never runs,
