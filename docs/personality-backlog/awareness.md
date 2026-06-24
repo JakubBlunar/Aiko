@@ -509,18 +509,40 @@ those primitives — none needs a schema change beyond a `kv_meta` row.
   a `ClusterScopingTests` block in
   [`tests/test_memory_conflict_worker.py`](../../tests/test_memory_conflict_worker.py),
   + a settings round-trip in `test_settings.py`.
-- **F10k. Semantic topic tracking for K6 / K18.** Today novelty (K6) and
-  stagnation (K18) reason about a rolling *centroid* of recent user
-  vectors — a fuzzy, identity-less notion of "the current topic". Map
-  recent turns to actual clusters via `best_clusters_for` and the shift
-  becomes *nameable*: "we moved from the `weekend hiking` cluster to the
-  `work stress` cluster" is a cleaner, more robust topic-change signal
-  than a cosine drift, and it lets a pivot back to a *previously-visited*
-  cluster read differently from a brand-new one. Key files:
-  [`novelty_detector.py`](../../app/core/conversation/novelty_detector.py),
-  [`topic_stagnation.py`](../../app/core/conversation/topic_stagnation.py).
-  **Open Q:** additive signal alongside the centroid, or a replacement?
-  Start additive and measure.
+- **F10k. Semantic topic tracking for K6 / K18.** **SHIPPED (additive).**
+  The novelty detector (K6) now maps each *measured* turn to its best
+  topic-graph cluster via `TopicGraph.best_clusters_for(vec, top_n=1,
+  min_sim=topic_tracking_min_sim)` — reusing the vector it already embeds,
+  so the only added cost is a handful of centroid dot-products. It keeps
+  rolling `_prev_cluster_id` / `_prev_cluster_label` / `_visited_clusters`
+  state and exposes per-turn signals (`last_cluster_id` / `_label` /
+  `_changed` / `_returning` / `last_prev_cluster_label`, all reset at the
+  top of `detect()` like `last_distance`). The **centroid math is
+  untouched** — cluster identity is layered *on top* of the existing band
+  classification (the "start additive and measure" call), so K6/K18 still
+  fire on exactly the same turns; the clusters only enrich the rendered
+  cue. K6's `render_inner_life_block` gained a private, don't-quote context
+  clause: a *return* to a previously-visited cluster reads "circles back to
+  the X thread -- pick it up, not brand-new", a fresh move reads "shift
+  from X to Y". K18's render names the looped-on cluster ("(the X thread)")
+  by reading K6's just-computed `last_cluster_label` (K18 runs right after
+  K6 in the provider order, no re-embed). **Robustness:** a turn below
+  `min_sim` is a non-match that *keeps* the prior cluster (a transient miss
+  never reads as a topic change); labels are spliced only when clean
+  (non-empty, single-line, ≤48 chars) so a heuristic representative
+  sentence falls back to label-less copy rather than dumping into the
+  prompt; the cue is internal (persona "Surprise and novelty" / "Same topic
+  for a while" blocks tell Aiko never to read the topic name aloud). Gated
+  by `agent.topic_tracking_enabled` (default on; bound at detector
+  construction → restart to toggle); off → the provider is `None` and the
+  detectors run byte-identically to pre-F10k. MCP: `get_topic_tracking_state`
+  dumps the switch, `min_sim`, the last-turn signals, and the rolling
+  prev/visited state. Tests: a `TopicTrackingTests` + `TopicContextRenderTests`
+  block in
+  [`tests/test_novelty_detector.py`](../../tests/test_novelty_detector.py),
+  topic-label render tests in
+  [`tests/test_topic_stagnation.py`](../../tests/test_topic_stagnation.py),
+  + a settings round-trip in `test_settings.py`.
 - **F10l. Cluster management UX (user agency over her mental map).** The
   Memory tab can already edit/pin individual memories; a cluster browser
   would let the user rename a cluster (overriding the F10a label),
@@ -534,14 +556,16 @@ those primitives — none needs a schema change beyond a `kv_meta` row.
   representative.)
 
 **Effort.** F10a/F10b/F10e small-medium each; F10c/F10d medium. **F10a-f +
-F10h + F10i + F10j are shipped** (F10f = the self-aware knowledge-gap
-notice; F9 already covered research-targeting; F10h = per-cluster topic
-temperature from shared-moment vibes; F10i = per-topic confidence
-self-model from size + learned-fact coverage — both provider-only; F10j =
-cluster-scoped memory hygiene, which also delivered F10f's K35
-consolidation re-scope alongside the F5 conflict re-scope). Remaining:
-F10g/F10k/F10l — F10k is a low-risk re-scoping, F10g is medium (digest
-worker + prompt block), F10l is a self-contained UX slice. Several overlap the K64 mind-wandering
+F10h + F10i + F10j + F10k are shipped** (F10f = the self-aware
+knowledge-gap notice; F9 already covered research-targeting; F10h =
+per-cluster topic temperature from shared-moment vibes; F10i = per-topic
+confidence self-model from size + learned-fact coverage — both
+provider-only; F10j = cluster-scoped memory hygiene, which also delivered
+F10f's K35 consolidation re-scope alongside the F5 conflict re-scope;
+F10k = additive semantic topic tracking layered onto K6/K18 — names the
+topic transition and tells a return apart from a brand-new pivot).
+Remaining: F10g/F10l — F10g is medium (digest worker + prompt block), F10l
+is a self-contained UX slice. Several overlap the K64 mind-wandering
 family in [`patterns.md`](patterns.md) (esp. K64b interest-drift) —
 cross-check before picking one up so two passes don't build the same
 per-cluster aggregator twice. **Provider-walk note:** F10h/F10i both

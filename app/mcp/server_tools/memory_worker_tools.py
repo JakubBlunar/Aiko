@@ -1438,4 +1438,52 @@ def register(mcp, session: "SessionController") -> None:
         except Exception as exc:
             return f"force_topic_confidence_surface raised: {exc}"
 
+    @mcp.tool()
+    def get_topic_tracking_state() -> str:
+        """F10k — dump the novelty detector's semantic topic-tracking state.
+
+        Shows the master switch, the ``topic_tracking_min_sim`` floor, and
+        the per-turn cluster signals from the last ``detect()`` call
+        (matched cluster id + label, whether it changed, whether it's a
+        *return* to a previously-visited cluster, and the label of the
+        cluster moved from), plus the rolling prev-cluster + visited-set
+        state. First stop for "why did the novelty cue say brand-new when
+        Jacob came back to a topic?" — a low ``last_cluster_*`` with the
+        graph warm usually means the turn fell below ``topic_tracking_min_sim``.
+        """
+        det = getattr(session, "_novelty_detector", None)
+        out: dict[str, Any] = {
+            "enabled": bool(
+                getattr(session._settings.agent, "topic_tracking_enabled", True)
+            ),
+            "detector_present": det is not None,
+            "tracking_active": bool(
+                det is not None
+                and getattr(det, "_topic_graph_provider", None) is not None
+            ),
+            "min_sim": float(
+                getattr(
+                    getattr(session, "_memory_settings", None),
+                    "topic_tracking_min_sim",
+                    0.30,
+                )
+            ),
+        }
+        if det is not None:
+            out["last_turn"] = {
+                "cluster_id": getattr(det, "last_cluster_id", None),
+                "cluster_label": getattr(det, "last_cluster_label", ""),
+                "changed": bool(getattr(det, "last_cluster_changed", False)),
+                "returning": bool(getattr(det, "last_cluster_returning", False)),
+                "prev_cluster_label": getattr(
+                    det, "last_prev_cluster_label", ""
+                ),
+            }
+            out["rolling"] = {
+                "prev_cluster_id": getattr(det, "_prev_cluster_id", None),
+                "prev_cluster_label": getattr(det, "_prev_cluster_label", ""),
+                "visited_count": len(getattr(det, "_visited_clusters", ()) or ()),
+            }
+        return json.dumps(out, indent=2, default=str)
+
 

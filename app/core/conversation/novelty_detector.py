@@ -109,12 +109,19 @@ class NoveltyDetector:
         rag_store: Any | None,
         user_id: str,
         memory_settings: Any | None = None,
+        topic_graph_provider: Callable[[], Any] | None = None,
         clock: Callable[[], Any] | None = None,
     ) -> None:
         self._embedder = embedder
         self._rag_store = rag_store
         self._user_id = (user_id or "").strip()
         self._memory_settings = memory_settings
+        # F10k: late-bound accessor for the K9 topic graph. When present,
+        # each measured turn is mapped to its best cluster so the novelty
+        # cue can name the topic transition and tell a *return* to a
+        # known cluster apart from a brand-new one. None → tracking off,
+        # K6/K18 behave exactly as before.
+        self._topic_graph_provider = topic_graph_provider
         self._clock = clock  # unused today; kept for symmetry w/ other detectors
         window = max(2, int(self._setting("novelty_window", _DEFAULT_WINDOW)))
         self._ring: collections.deque[np.ndarray] = collections.deque(
@@ -122,6 +129,25 @@ class NoveltyDetector:
         )
         self._warmed = False
         self._cooldown_remaining = 0
+        # F10k topic-tracking rolling state (across turns):
+        self._prev_cluster_id: int | None = None
+        self._prev_cluster_label: str = ""
+        self._visited_clusters: set[int] = set()
+        # F10k per-turn signals, reset at the top of every ``detect`` so a
+        # stale value never leaks across turns (mirrors last_distance):
+        #   last_cluster_id        — best-matching cluster this turn (None
+        #                            when no confident match / tracking off)
+        #   last_cluster_label     — its label ("" when unnamed)
+        #   last_cluster_changed   — True when it differs from the prior
+        #                            confidently-matched cluster
+        #   last_cluster_returning — True when a changed cluster is one we
+        #                            have already visited this session
+        #   last_prev_cluster_label — label of the cluster we moved *from*
+        self.last_cluster_id: int | None = None
+        self.last_cluster_label: str = ""
+        self.last_cluster_changed: bool = False
+        self.last_cluster_returning: bool = False
+        self.last_prev_cluster_label: str = ""
         # K18 (topic stagnation) consumes these per-turn signals:
         # ``last_distance`` is the cosine distance the most recent
         # ``detect()`` call computed against the live centroid (None
@@ -150,6 +176,12 @@ class NoveltyDetector:
         # session.
         self.last_distance = None
         self.last_band = None
+        # F10k: clear per-turn cluster signals too.
+        self.last_cluster_id = None
+        self.last_cluster_label = ""
+        self.last_cluster_changed = False
+        self.last_cluster_returning = False
+        self.last_prev_cluster_label = ""
         text = (user_text or "").strip()
         if len(text) < _MIN_TEXT_LENGTH:
             log.debug(
@@ -191,6 +223,10 @@ class NoveltyDetector:
                 similarity_pre = float(np.dot(vec, centroid_pre))
                 self.last_distance = max(0.0, 1.0 - similarity_pre)
                 self._ring.append(vec)
+                # Keep cluster-tracking state moving even while the
+                # novelty signal is suppressed (so "returning" detection
+                # stays accurate). The result isn't rendered this turn.
+                self._track_cluster(vec)
             log.debug(
                 "novelty-detector: cooldown remaining=%d distance=%s",
                 self._cooldown_remaining,
@@ -217,6 +253,10 @@ class NoveltyDetector:
         # the mild band -- the stagnation detector needs every
         # measured distance to track "we've been close to centroid".
         self.last_distance = distance
+        # F10k: map this turn to its best topic cluster and update the
+        # transition signals (cheap centroid dot-products; no-op when no
+        # topic_graph_provider was supplied).
+        self._track_cluster(vec)
 
         mild = float(self._setting("novelty_mild_threshold", _DEFAULT_MILD_THRESHOLD))
         strong = float(
@@ -264,6 +304,65 @@ class NoveltyDetector:
 
     def _setting(self, name: str, default: Any) -> Any:
         return getattr(self._memory_settings, name, default)
+
+    def _track_cluster(self, vec: np.ndarray) -> None:
+        """F10k: map ``vec`` to its best topic cluster and update signals.
+
+        Populates the per-turn ``last_cluster_*`` attributes and advances
+        the rolling ``_prev_cluster_*`` / ``_visited_clusters`` state. A
+        no-op (leaving the cleared per-turn signals) when no provider was
+        supplied, the graph is absent / unwarmed, or no cluster clears the
+        ``topic_tracking_min_sim`` centroid-cosine floor — so a
+        low-confidence turn never resets the "from" cluster.
+        """
+        provider = self._topic_graph_provider
+        if provider is None:
+            return
+        try:
+            graph = provider()
+        except Exception:
+            log.debug("novelty-detector: topic_graph_provider raised", exc_info=True)
+            return
+        if graph is None:
+            return
+        min_sim = float(self._setting("topic_tracking_min_sim", 0.30))
+        try:
+            matches = graph.best_clusters_for(vec, top_n=1, min_sim=min_sim)
+        except Exception:
+            log.debug("novelty-detector: best_clusters_for raised", exc_info=True)
+            return
+        if not matches:
+            # No confident cluster this turn — leave prev state intact so
+            # a transient miss doesn't read as a topic change next turn.
+            return
+        cid, label, _sim = matches[0]
+        try:
+            cid = int(cid)
+        except (TypeError, ValueError):
+            return
+        label = (label or "").strip()
+        prev = self._prev_cluster_id
+        changed = prev is not None and cid != prev
+        returning = changed and cid in self._visited_clusters
+
+        self.last_cluster_id = cid
+        self.last_cluster_label = label
+        self.last_cluster_changed = changed
+        self.last_cluster_returning = returning
+        self.last_prev_cluster_label = self._prev_cluster_label
+
+        # Advance rolling state.
+        self._prev_cluster_id = cid
+        if label:
+            self._prev_cluster_label = label
+        self._visited_clusters.add(cid)
+        log.debug(
+            "novelty-detector: cluster=%s label=%r changed=%s returning=%s",
+            cid,
+            label,
+            changed,
+            returning,
+        )
 
     def _embed(self, text: str) -> np.ndarray | None:
         if self._embedder is None:
@@ -318,25 +417,93 @@ class NoveltyDetector:
         )
 
 
-def render_inner_life_block(result: NoveltyResult | None) -> str:
+# F10k: cap on how long a cluster label we'll splice into the cue.
+# The F10a worker produces clean short topic names; the heuristic
+# fallback can be a whole representative sentence, which would read
+# badly inside a parenthetical and invite the model to parrot it.
+_MAX_TOPIC_LABEL_CHARS = 48
+
+
+def _clean_topic_label(label: str | None) -> str:
+    """Return a short, single-line label safe to splice, or ``""``."""
+    s = (label or "").strip()
+    if not s or "\n" in s:
+        return ""
+    if len(s) > _MAX_TOPIC_LABEL_CHARS:
+        return ""
+    return s
+
+
+def render_inner_life_block(
+    result: NoveltyResult | None,
+    *,
+    user_display_name: str = "Jacob",
+    topic_changed: bool = False,
+    topic_returning: bool = False,
+    topic_label: str = "",
+    prev_topic_label: str = "",
+) -> str:
     """Render the one-line inner-life signal for the given band.
 
     Two bands, two copies. ``mild_shift`` nudges Aiko to acknowledge
     a small topic pivot; ``strong_novelty`` asks for real curiosity.
     Returns ``""`` when ``result`` is ``None`` so the assembler can
     drop the block entirely.
+
+    F10k: when the K9 topic graph identified this turn's cluster, the
+    optional ``topic_*`` arguments add a private context clause that
+    names the transition — a *return* to a topic discussed earlier
+    reads differently from a brand-new one. The clause is internal
+    context only; the persona block tells Aiko never to quote it.
     """
     if result is None:
         return ""
+    name = (user_display_name or "").strip() or "Jacob"
     if result.band == BAND_STRONG:
-        return (
-            "Heads-up: Jacob just brought up something well outside the "
+        base = (
+            f"Heads-up: {name} just brought up something well outside the "
             "recent baseline -- react with real curiosity, not a flat "
             "acknowledgement."
         )
-    if result.band == BAND_MILD:
-        return (
-            "Heads-up: Jacob just nudged the topic sideways from what "
+    elif result.band == BAND_MILD:
+        base = (
+            f"Heads-up: {name} just nudged the topic sideways from what "
             "you've been on -- small pivot, not a hard reset."
         )
+    else:
+        return ""
+    return base + _topic_context_clause(
+        topic_changed=topic_changed,
+        topic_returning=topic_returning,
+        topic_label=topic_label,
+        prev_topic_label=prev_topic_label,
+    )
+
+
+def _topic_context_clause(
+    *,
+    topic_changed: bool,
+    topic_returning: bool,
+    topic_label: str,
+    prev_topic_label: str,
+) -> str:
+    """Build the F10k private topic-transition clause (or ``""``)."""
+    if not topic_changed:
+        return ""
+    label = _clean_topic_label(topic_label)
+    prev = _clean_topic_label(prev_topic_label)
+    if topic_returning:
+        if label:
+            return (
+                f" (Context, don't quote: this circles back to something "
+                f"you've been into before -- the {label} thread -- so pick "
+                "it back up rather than treating it as brand-new.)"
+            )
+        return (
+            " (Context, don't quote: this is a topic you've circled before, "
+            "so pick the thread back up rather than treating it as "
+            "brand-new.)"
+        )
+    if label and prev:
+        return f" (Context, don't quote: that's a shift from {prev} to {label}.)"
     return ""

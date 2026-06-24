@@ -240,6 +240,28 @@ class RenderTests(unittest.TestCase):
     def test_render_none_is_empty(self) -> None:
         self.assertEqual(render_inner_life_block(None), "")
 
+    def test_render_names_clean_topic_label(self) -> None:
+        # F10k: a clean cluster label is spliced as a don't-quote clause.
+        block = render_inner_life_block(
+            StagnationResult(
+                band=BAND_MILD_LULL, mean_distance=0.15, window_size=6,
+            ),
+            topic_label="work stress",
+        )
+        self.assertIn("work stress", block)
+        self.assertIn("don't quote", block)
+
+    def test_render_drops_dirty_topic_label(self) -> None:
+        # F10k: an over-long / multiline label is not spliced verbatim.
+        block = render_inner_life_block(
+            StagnationResult(
+                band=BAND_STRONG_LULL, mean_distance=0.05, window_size=6,
+            ),
+            topic_label="y" * 80,
+        )
+        self.assertNotIn("y" * 80, block)
+        self.assertNotIn("Context", block)
+
 
 if __name__ == "__main__":
     unittest.main()

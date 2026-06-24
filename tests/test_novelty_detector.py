@@ -87,6 +87,7 @@ def _build(
     warm: Sequence[np.ndarray] | None = None,
     settings: SimpleNamespace | None = None,
     user_id: str = "alice",
+    topic_graph_provider=None,
 ) -> tuple[NoveltyDetector, _StubEmbedder, _StubRag]:
     emb = _StubEmbedder(book=book or {})
     rag = _StubRag(vectors=list(warm or []))
@@ -95,8 +96,33 @@ def _build(
         rag_store=rag,
         user_id=user_id,
         memory_settings=settings or _settings(),
+        topic_graph_provider=topic_graph_provider,
     )
     return det, emb, rag
+
+
+class _FakeGraph:
+    """Maps a query vector to a fixed (cluster_id, label) by nearest key.
+
+    The detector calls ``best_clusters_for(vec, top_n, min_sim)``; we
+    return whatever the test queued for the next call, honouring the
+    ``min_sim`` gate so "no confident match" can be simulated.
+    """
+
+    def __init__(self, queue):
+        # queue: list of (cluster_id, label, sim) | None
+        self._queue = list(queue)
+
+    def best_clusters_for(self, query_vec, *, top_n=1, min_sim=0.0):
+        if not self._queue:
+            return []
+        item = self._queue.pop(0)
+        if item is None:
+            return []
+        cid, label, sim = item
+        if sim < float(min_sim):
+            return []
+        return [(cid, label, sim)]
 
 
 # ── tests ───────────────────────────────────────────────────────────
@@ -393,6 +419,146 @@ class K18ExposureTests(unittest.TestCase):
         det.detect("alpha alpha alpha")
         self.assertIsNone(det.last_distance)
         self.assertIsNone(det.last_band)
+
+
+class TopicTrackingTests(unittest.TestCase):
+    """F10k: semantic topic tracking via the topic graph."""
+
+    def _warm_settings(self) -> SimpleNamespace:
+        # warmup_min=2 so the ring fills fast; cooldown=0 so every
+        # measured turn fires (we want to inspect tracking per turn).
+        return _settings(
+            novelty_warmup_min=2,
+            novelty_cooldown_turns=0,
+            novelty_mild_threshold=0.20,
+            novelty_strong_threshold=0.60,
+            topic_tracking_min_sim=0.30,
+        )
+
+    def _prime(self, det: NoveltyDetector) -> None:
+        # warmup_min=2: the first two detects fill the ring and return
+        # before any cluster tracking happens. Measured turns (which run
+        # _track_cluster) only start on the third detect.
+        det.detect("prime one filler")
+        det.detect("prime two filler")
+
+    def test_no_provider_leaves_signals_inert(self) -> None:
+        det, _, _ = _build(
+            book={"a": _unit(1, 0, 0), "b": _unit(0, 1, 0)},
+            settings=self._warm_settings(),
+        )
+        self._prime(det)
+        det.detect("alpha measured turn")  # measured, but no provider
+        self.assertIsNone(det.last_cluster_id)
+        self.assertFalse(det.last_cluster_changed)
+
+    def test_tracks_cluster_change_and_return(self) -> None:
+        # Tracked turns: -> cluster 7 (hiking), -> cluster 9 (work),
+        # -> back to cluster 7. cooldown=0 so all measured.
+        graph = _FakeGraph(
+            [
+                (7, "weekend hiking", 0.8),
+                (9, "work stress", 0.8),
+                (7, "weekend hiking", 0.8),
+            ]
+        )
+        det, _, _ = _build(
+            book={"a": _unit(1, 0, 0), "b": _unit(0, 1, 0), "c": _unit(0, 0, 1)},
+            settings=self._warm_settings(),
+            topic_graph_provider=lambda: graph,
+        )
+        self._prime(det)
+        det.detect("alpha first topic")  # cluster 7, prev None -> not changed
+        self.assertEqual(det.last_cluster_id, 7)
+        self.assertFalse(det.last_cluster_changed)
+
+        det.detect("beta second topic")  # cluster 9 -> changed, not returning
+        self.assertEqual(det.last_cluster_id, 9)
+        self.assertTrue(det.last_cluster_changed)
+        self.assertFalse(det.last_cluster_returning)
+        self.assertEqual(det.last_prev_cluster_label, "weekend hiking")
+
+        det.detect("clever third topic")  # back to 7 -> changed + returning
+        self.assertEqual(det.last_cluster_id, 7)
+        self.assertTrue(det.last_cluster_changed)
+        self.assertTrue(det.last_cluster_returning)
+
+    def test_low_similarity_miss_keeps_prev_cluster(self) -> None:
+        # Second tracked turn returns sim below min_sim -> no match; prev
+        # cluster (7) must persist so the next turn doesn't read as a
+        # spurious change.
+        graph = _FakeGraph(
+            [
+                (7, "hiking", 0.8),
+                (9, "work", 0.1),  # below min_sim 0.30 -> dropped
+                (7, "hiking", 0.8),
+            ]
+        )
+        det, _, _ = _build(
+            book={"a": _unit(1, 0, 0), "b": _unit(0, 1, 0), "c": _unit(0, 0, 1)},
+            settings=self._warm_settings(),
+            topic_graph_provider=lambda: graph,
+        )
+        self._prime(det)
+        det.detect("alpha topic one")  # cluster 7
+        self.assertEqual(det.last_cluster_id, 7)
+        det.detect("beta topic two")  # miss (sim below floor)
+        self.assertIsNone(det.last_cluster_id)  # no confident match this turn
+        det.detect("clever topic three")  # cluster 7 again == prev -> no change
+        self.assertEqual(det.last_cluster_id, 7)
+        self.assertFalse(det.last_cluster_changed)
+
+
+class TopicContextRenderTests(unittest.TestCase):
+    """F10k: the render splices a private, don't-quote context clause."""
+
+    _strong = NoveltyResult(
+        distance=0.7, band=BAND_STRONG, window_size=5, mean_similarity=0.3,
+    )
+
+    def test_no_change_is_base_copy_only(self) -> None:
+        out = render_inner_life_block(self._strong, topic_changed=False)
+        self.assertIn("well outside the recent baseline", out)
+        self.assertNotIn("Context", out)
+
+    def test_returning_with_label(self) -> None:
+        out = render_inner_life_block(
+            self._strong,
+            topic_changed=True,
+            topic_returning=True,
+            topic_label="weekend hiking",
+        )
+        self.assertIn("circles back", out)
+        self.assertIn("weekend hiking", out)
+        self.assertIn("don't quote", out)
+
+    def test_change_names_from_and_to(self) -> None:
+        out = render_inner_life_block(
+            self._strong,
+            topic_changed=True,
+            topic_returning=False,
+            topic_label="work stress",
+            prev_topic_label="weekend hiking",
+        )
+        self.assertIn("shift from weekend hiking to work stress", out)
+
+    def test_dirty_label_is_dropped(self) -> None:
+        # A long / multiline heuristic label is not spliced verbatim.
+        long_label = "x" * 80
+        out = render_inner_life_block(
+            self._strong,
+            topic_changed=True,
+            topic_returning=True,
+            topic_label=long_label,
+        )
+        self.assertNotIn(long_label, out)
+        # Falls back to the label-less returning copy.
+        self.assertIn("circled before", out)
+
+    def test_name_interpolates(self) -> None:
+        out = render_inner_life_block(self._strong, user_display_name="Sam")
+        self.assertIn("Sam", out)
+        self.assertNotIn("Jacob", out)
 
 
 if __name__ == "__main__":
