@@ -385,21 +385,44 @@ cluster `centroid`s, `cluster_id_for` (O(1) memory→cluster), `cluster_member_i
 and per-cluster `label`s. The ideas below are all just *new readers* of
 those primitives — none needs a schema change beyond a `kv_meta` row.
 
-- **F10g. Per-cluster rolling digest memory.** The true realisation of
-  the original "cluster-*summary*" idea (F10d shipped as on-demand member
-  enumeration, not a stored summary). An idle worker writes one
-  high-salience `kind="topic_digest"` memory per dense cluster — a
-  worker-LLM one-paragraph compression of its members — refreshed only on
-  size drift (same cache-by-representative trick as F10a labels). RAG then
-  surfaces *the digest* as the coarse "what I know about X" answer and
-  only drills into raw members when the turn needs specifics, which also
-  caps prompt size on a 40-member cluster (today F10c expansion just
-  appends more lines). Key files: a new worker beside
-  [`topic_label_worker.py`](../../app/core/conversation/topic_label_worker.py),
-  `MemoryStore` for the digest write, `rag_retriever.py` for the
-  surface-digest-first path. **Open Q:** does the digest live in the
-  normal memory pool (so it decays / shows in the Memory tab) or in a
-  side table keyed by cluster? Pool is simpler and lets pinning work.
+- **F10g. Per-cluster rolling digest memory.** **SHIPPED.** The true
+  realisation of the original "cluster-*summary*" idea (F10d shipped as
+  on-demand member enumeration, not a stored summary). A
+  [`TopicDigestWorker`](../../app/core/conversation/topic_digest_worker.py)
+  idle worker (beside the F10a label worker, same cache-by-representative
+  trick) writes one high-salience `kind="topic_digest"` memory per dense
+  cluster — a worker-LLM one-paragraph "what I know about X" compression
+  of its members — refreshed only on material size drift, updated **in
+  place** so the memory id (and the Memory-tab row) is stable. **Open Q
+  resolved: the digest lives in the normal pool** (decays, pinnable,
+  shows in the Memory tab), but is **excluded from topic-graph
+  clustering** (`topic_graph._NON_CLUSTERING_KINDS`, filtered at all three
+  mirror chokepoints — `_snapshot_mirror` / `_ensure_cached` /
+  `on_memory_added`) so a digest never feeds back into the cluster it
+  summarises (no self-summarisation loop, no representative hijack). It's
+  also naturally outside the F5/K35 hygiene allow-lists. **Surfacing:**
+  the digest shows up through ordinary cosine RAG (it's a high-salience
+  embedded memory), and the F10c expansion path *prefers* it — when an
+  anchor cluster has a digest, the retriever surfaces the digest as the
+  coarse line (its own "What you know about this topic so far:" section,
+  longer 600-char truncation) and caps raw sibling enumeration to
+  `rag_digest_sibling_cap` (default 1), so a 40-member cluster contributes
+  a gist + a specific instead of N lines. The worker rebuilds a
+  `{cluster_id: memory_id}` map each tick (persisted to `kv_meta`,
+  warm-loaded at construction) that the retriever reads via an injected
+  `topic_digest_provider`; stale entries degrade gracefully (the retriever
+  verifies the row is still a `topic_digest`). Entirely off the chat path.
+  Settings: `agent.topic_digest_enabled` /
+  `topic_digest_interval_seconds` (1 h, 60 s floor) /
+  `topic_digest_max_per_run` (3) / `topic_digest_max_tokens` (256) /
+  `topic_digest_min_cluster_size` (6) / `topic_digest_surface_in_rag` +
+  `agent.rag_digest_sibling_cap` (1). MCP: `get_topic_digest_state`
+  (switches + the live cluster→digest map with label + content preview).
+  Logs `topic_digest run done:`. Tests:
+  [`tests/test_topic_digest_worker.py`](../../tests/test_topic_digest_worker.py),
+  a `DigestSurfacingTests` block in
+  [`tests/test_rag_retriever_topic_expansion.py`](../../tests/test_rag_retriever_topic_expansion.py),
+  + a settings round-trip in `test_settings.py`.
 - **F10h. Topic temperature / per-cluster affect.** **SHIPPED.** A cluster
   isn't just a bag of facts — it has a *vibe*. When the live turn maps (via
   `best_clusters_for`) to a *charged* cluster, Aiko gets a one-line tonal
@@ -563,9 +586,12 @@ confidence self-model from size + learned-fact coverage — both
 provider-only; F10j = cluster-scoped memory hygiene, which also delivered
 F10f's K35 consolidation re-scope alongside the F5 conflict re-scope;
 F10k = additive semantic topic tracking layered onto K6/K18 — names the
-topic transition and tells a return apart from a brand-new pivot).
-Remaining: F10g/F10l — F10g is medium (digest worker + prompt block), F10l
-is a self-contained UX slice. Several overlap the K64 mind-wandering
+topic transition and tells a return apart from a brand-new pivot; F10g =
+per-cluster rolling digest memory — a `topic_digest` pool memory per dense
+cluster, excluded from clustering, surfaced as the coarse RAG line that
+caps sibling expansion).
+Remaining: **F10l only** — a self-contained UX slice (cluster management
+in the Memory drawer). Several overlap the K64 mind-wandering
 family in [`patterns.md`](patterns.md) (esp. K64b interest-drift) —
 cross-check before picking one up so two passes don't build the same
 per-cluster aggregator twice. **Provider-walk note:** F10h/F10i both

@@ -1089,6 +1089,7 @@ class SpeakingWorkersInitMixin:
                 # the seed surface.
                 self._topic_graph = None
                 self._curiosity_seed_worker = None
+                self._topic_digest_worker = None
                 if (
                     self._memory_store is not None
                     and self._embedder is not None
@@ -1253,6 +1254,63 @@ class SpeakingWorkersInitMixin:
                                     except Exception:
                                         log.debug(
                                             "ClusterLabelWorker register failed",
+                                            exc_info=True,
+                                        )
+
+                                # F10g: per-cluster rolling digest memory.
+                                # Writes one ``topic_digest`` pool memory per
+                                # dense cluster; the RAG retriever surfaces it
+                                # as the coarse "what I know about X" line.
+                                # Needs the maintenance client + embedder.
+                                if (
+                                    self._chat_db is not None
+                                    and self._maintenance_client is not None
+                                    and self._embedder is not None
+                                    and self._fact_check_cancel is not None
+                                    and bool(
+                                        getattr(
+                                            settings.agent,
+                                            "topic_digest_enabled",
+                                            True,
+                                        )
+                                    )
+                                ):
+                                    try:
+                                        from app.core.conversation.topic_digest_worker import (
+                                            TopicDigestWorker,
+                                        )
+
+                                        self._topic_digest_worker = TopicDigestWorker(
+                                            topic_graph=self._topic_graph,
+                                            memory_store=self._memory_store,
+                                            embedder=self._embedder,
+                                            ollama=self._maintenance_client,
+                                            chat_model=self._effective_worker_model,
+                                            cancel_event=self._fact_check_cancel,
+                                            agent_settings=settings.agent,
+                                            kv_get=self._chat_db.kv_get,
+                                            kv_set=self._chat_db.kv_set,
+                                            notify_memory_added=self._notify_memory_added,
+                                            notify_memory_updated=self._notify_memory_updated,
+                                        )
+                                        self._idle_scheduler.register(
+                                            self._topic_digest_worker
+                                        )
+                                        # Wire the F10g digest lookup into the
+                                        # retriever (second pass — the worker
+                                        # exists only now).
+                                        retriever = getattr(
+                                            self, "_rag_retriever", None
+                                        )
+                                        if retriever is not None and hasattr(
+                                            retriever, "set_topic_digest_provider"
+                                        ):
+                                            retriever.set_topic_digest_provider(
+                                                self._topic_digest_worker.digest_for_cluster
+                                            )
+                                    except Exception:
+                                        log.debug(
+                                            "TopicDigestWorker register failed",
                                             exc_info=True,
                                         )
                     except Exception:
