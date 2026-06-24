@@ -204,6 +204,9 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         # knowledge-gap / grounding surfaces (all "what Aiko does /
         # doesn't know about a recurring topic").
         "knowledge_gap_notice_block",
+        # F10h: per-cluster affect ("topic temperature") — a topical
+        # tonal cue, sits with the other topic-graph-derived surfaces.
+        "topic_temperature_block",
     ),
 }
 
@@ -306,6 +309,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # live turn is on a dense-but-unresearched topic. Query-aware
         # (consumes ``user_text``); dropped in aggressive mode.
         self._knowledge_gap_notice_provider: Callable[[str], str] | None = None
+        # F10h: per-cluster affect ("topic temperature"). Nudges tone when
+        # the live turn lands on a warm / tender cluster. Query-aware
+        # (consumes ``user_text``); dropped in aggressive mode.
+        self._topic_temperature_provider: Callable[[str], str] | None = None
         # K61: informational-turn knowledge-grounding steer.
         self._knowledge_grounding_provider: Callable[[str], str] | None = (
             None
@@ -950,6 +957,22 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                         "knowledge gap notice provider raised", exc_info=True
                     )
                     knowledge_gap_notice_block = ""
+
+        # F10h: per-cluster affect — nudge tone when the live turn lands
+        # on a warm / tender cluster. Query-aware (the provider embeds
+        # user_text + matches a cluster), dropped in aggressive mode.
+        topic_temperature_block = ""
+        if not aggressive and self._topic_temperature_provider is not None:
+            with _timed_phase(provider_ms, "topic_temperature"):
+                try:
+                    topic_temperature_block = (
+                        self._topic_temperature_provider(user_text) or ""
+                    )
+                except Exception:
+                    log.debug(
+                        "topic temperature provider raised", exc_info=True
+                    )
+                    topic_temperature_block = ""
 
         # K61: on informational turns, steer Aiko toward learned
         # specifics (F9 ``knowledge`` / G3 ``curiosity_finding`` rows)
@@ -2215,6 +2238,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # the knowledge-gap / grounding surfaces (all "what Aiko does
             # / doesn't know about a recurring topic").
             system_parts.append(knowledge_gap_notice_block)
+        if topic_temperature_block:
+            # F10h: per-cluster affect — tonal nudge for a warm / tender
+            # topic, sits with the other topic-graph-derived cues.
+            system_parts.append(topic_temperature_block)
 
         system_prompt = "\n\n---\n\n".join(p for p in system_parts if p)
 

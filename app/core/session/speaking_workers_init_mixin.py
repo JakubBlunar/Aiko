@@ -578,6 +578,7 @@ class SpeakingWorkersInitMixin:
             axes=self._render_axes_block,
             knowledge_gaps=self._render_knowledge_gaps_block,
             knowledge_gap_notice=self._render_knowledge_gap_notice_block,
+            topic_temperature=self._render_topic_temperature_block,
             knowledge_grounding=self._render_knowledge_grounding_block,
             belief_gaps=self._render_belief_gaps_block,
             clarification=self._render_clarification_block,

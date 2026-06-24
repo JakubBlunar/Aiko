@@ -1224,4 +1224,115 @@ def register(mcp, session: "SessionController") -> None:
         except Exception as exc:
             return f"force_knowledge_gap_notice_surface raised: {exc}"
 
+    @mcp.tool()
+    def get_topic_temperature_state() -> str:
+        """F10h — dump per-cluster affect ("topic temperature") state.
+
+        Shows the master switch, the similarity / charge / cooldown knobs,
+        the live cooldown remaining, the last fire, and a dry-run scan of
+        every topic cluster's temperature scored from its shared-moment
+        vibes (only the *charged* clusters — warm or tender — are listed).
+        First stop for "why didn't Aiko soften on that tender topic?".
+        """
+        out: dict[str, Any] = {
+            "enabled": bool(
+                getattr(
+                    session._settings.agent, "topic_temperature_enabled", True
+                )
+            ),
+            "provider_force_next": bool(
+                getattr(session, "_topic_temperature_force_next", False)
+            ),
+            "cooldown_remaining": int(
+                getattr(session, "_topic_temperature_cooldown", 0) or 0
+            ),
+            "last_fire": getattr(session, "_topic_temperature_last", None),
+        }
+        mem = getattr(session, "_memory_settings", None)
+        out["settings"] = {
+            "min_sim": float(getattr(mem, "topic_temperature_min_sim", 0.45)),
+            "threshold": float(
+                getattr(mem, "topic_temperature_threshold", 0.5)
+            ),
+            "cooldown_turns": int(
+                getattr(mem, "topic_temperature_cooldown_turns", 6)
+            ),
+        }
+        graph = getattr(session, "_topic_graph", None)
+        store = getattr(session, "_memory_store", None)
+        if graph is not None and store is not None:
+            try:
+                from app.core.conversation.topic_temperature import (
+                    score_cluster,
+                )
+
+                threshold = out["settings"]["threshold"]
+                charged: list[dict[str, Any]] = []
+                for cluster in graph.topic_clusters():
+                    ids = getattr(cluster, "member_ids", ()) or ()
+                    kinds = getattr(cluster, "member_kinds", ()) or ()
+                    vibes: list[str] = []
+                    for mid, kind in zip(ids, kinds):
+                        if kind != "shared_moment":
+                            continue
+                        m = store.get(mid)
+                        meta = (
+                            getattr(m, "metadata", None) or {}
+                            if m is not None
+                            else {}
+                        )
+                        vibe = (
+                            meta.get("vibe")
+                            if isinstance(meta, dict)
+                            else None
+                        )
+                        if vibe:
+                            vibes.append(str(vibe))
+                    if not vibes:
+                        continue
+                    temp = score_cluster(vibes, threshold=threshold)
+                    if temp.dominant is None:
+                        continue
+                    charged.append(
+                        {
+                            "cluster_id": cluster.cluster_id,
+                            "label": (cluster.summary or "")[:120],
+                            "dominant": temp.dominant,
+                            "warmth": temp.warmth,
+                            "tenderness": temp.tenderness,
+                            "moment_count": temp.moment_count,
+                        }
+                    )
+                out["charged_clusters"] = charged
+            except Exception as exc:  # pragma: no cover -- diag tool
+                out["charged_clusters_error"] = str(exc)
+        return json.dumps(out, indent=2, default=str)
+
+    @mcp.tool()
+    def force_topic_temperature_surface() -> str:
+        """F10h — arm a one-shot bypass on the topic-temperature provider.
+
+        Sets ``_topic_temperature_force_next`` so the next provider call
+        ignores the cooldown and drops the similarity + charge thresholds
+        to 0 (the matched cluster must still have at least one vibed
+        shared moment). Then ``send_message`` with text on that topic and
+        verify the warm / tender Heads-up line lands in
+        ``get_last_response_detail``'s system_prompt.
+        """
+        try:
+            session._topic_temperature_force_next = True
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next provider call ignores cooldown + drops the "
+                        "min_sim / charge thresholds to 0 for the matched "
+                        "cluster"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_topic_temperature_surface raised: {exc}"
+
 

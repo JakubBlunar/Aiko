@@ -1060,6 +1060,130 @@ class InnerLifePart2Mixin:
             "line; don't over-apologise for not knowing."
         )
 
+    def _render_topic_temperature_block(self, user_text: str) -> str:
+        """F10h: nudge tone when the live turn lands on a *charged* topic.
+
+        Maps ``user_text`` to its nearest topic cluster
+        (``TopicGraph.best_clusters_for`` — centroid dot products over the
+        live embedding), gathers the ``vibe`` tags of that cluster's
+        ``shared_moment`` members, and scores a per-cluster emotional
+        temperature
+        (:func:`~app.core.conversation.topic_temperature.score_cluster`).
+        When the cluster reads **warm** (good moments live here) or
+        **tender** (vulnerable / patched-up ground), it surfaces one
+        private Heads-up line so Aiko meets the topic with the right
+        register instead of flat. A topic-scoped sibling of the
+        relationship-axes block.
+
+        Computed live (no worker / kv): shared moments are few, and the
+        per-turn cost is one embed (usually a cache hit, since novelty /
+        knowledge-grounding embed the same ``user_text``) plus a handful
+        of centroid dots and a member walk over the *one* matched cluster.
+        Paced by a global turn cooldown so a charged topic isn't re-nudged
+        every turn. MCP debug: ``force_topic_temperature_surface`` arms
+        ``_topic_temperature_force_next`` to bypass the cooldown + the
+        similarity / charge thresholds (the cluster must still have at
+        least one vibed shared moment).
+        """
+        if not bool(
+            getattr(self._settings.agent, "topic_temperature_enabled", True)
+        ):
+            return ""
+        text = (user_text or "").strip()
+        if len(text) < 8:
+            return ""
+        graph = getattr(self, "_topic_graph", None)
+        embedder = getattr(self, "_embedder", None)
+        store = getattr(self, "_memory_store", None)
+        if graph is None or embedder is None or store is None:
+            return ""
+        if not bool(getattr(graph, "persistent", False)):
+            return ""
+
+        force = bool(getattr(self, "_topic_temperature_force_next", False))
+        if force:
+            self._topic_temperature_force_next = False
+
+        cooldown = int(getattr(self, "_topic_temperature_cooldown", 0) or 0)
+        if cooldown > 0 and not force:
+            self._topic_temperature_cooldown = cooldown - 1
+            return ""
+
+        mem_settings = self._memory_settings
+        min_sim = float(
+            getattr(mem_settings, "topic_temperature_min_sim", 0.45)
+        )
+        threshold = float(
+            getattr(mem_settings, "topic_temperature_threshold", 0.5)
+        )
+
+        try:
+            qvec = embedder.embed(text)
+        except Exception:
+            log.debug("topic-temperature: embed failed", exc_info=True)
+            return ""
+        try:
+            matches = graph.best_clusters_for(
+                qvec, top_n=1, min_sim=(0.0 if force else min_sim),
+            )
+        except Exception:
+            log.debug("topic-temperature: best_clusters_for failed", exc_info=True)
+            return ""
+        if not matches:
+            return ""
+        cid, label, _sim = matches[0]
+
+        try:
+            member_ids = graph.cluster_member_ids(cid)
+        except Exception:
+            log.debug("topic-temperature: member walk failed", exc_info=True)
+            return ""
+        vibes: list[str] = []
+        for mid in member_ids:
+            mem = store.get(mid)
+            if mem is None or getattr(mem, "kind", "") != "shared_moment":
+                continue
+            meta = getattr(mem, "metadata", None) or {}
+            vibe = meta.get("vibe") if isinstance(meta, dict) else None
+            if vibe:
+                vibes.append(str(vibe))
+        if not vibes:
+            return ""
+
+        from app.core.conversation.topic_temperature import (
+            render_block,
+            score_cluster,
+        )
+
+        temp = score_cluster(vibes, threshold=(0.0 if force else threshold))
+        if temp.dominant is None:
+            return ""
+        line = render_block(temp, label or "this topic", self.user_display_name)
+        if not line:
+            return ""
+
+        self._topic_temperature_cooldown = max(
+            0, int(getattr(mem_settings, "topic_temperature_cooldown_turns", 6))
+        )
+        self._topic_temperature_last = {
+            "cluster_id": int(cid),
+            "label": label,
+            "warmth": temp.warmth,
+            "tenderness": temp.tenderness,
+            "dominant": temp.dominant,
+            "moment_count": temp.moment_count,
+        }
+        log.info(
+            "topic-temperature fire: cluster=%s dominant=%s warmth=%.2f "
+            "tender=%.2f moments=%d",
+            cid,
+            temp.dominant,
+            temp.warmth,
+            temp.tenderness,
+            temp.moment_count,
+        )
+        return line
+
     def _render_promise_followthrough_block(self) -> str:
         """K43: surface one "close the loop on what you said you'd do" cue.
 
