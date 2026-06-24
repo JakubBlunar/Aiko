@@ -252,6 +252,53 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         """
         return JSONResponse(session.topic_graph_snapshot())
 
+    @app.patch("/api/topic-graph/clusters/{cluster_id}")
+    async def rename_topic_cluster(
+        cluster_id: int, payload: dict[str, Any]
+    ) -> JSONResponse:
+        """F10l: override a cluster's label (sticky across refits)."""
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "expected JSON object body")
+        label = payload.get("label")
+        if not isinstance(label, str) or not label.strip():
+            raise HTTPException(400, "label must be a non-empty string")
+        try:
+            result = session.rename_topic_cluster(int(cluster_id), label)
+        except Exception as exc:
+            raise HTTPException(500, f"rename failed: {exc}") from exc
+        if result is None:
+            raise HTTPException(404, "cluster not found (or topic graph off)")
+        return JSONResponse(result)
+
+    @app.post("/api/topic-graph/clusters/{cluster_id}/pin")
+    async def pin_topic_cluster(
+        cluster_id: int, payload: dict[str, Any]
+    ) -> JSONResponse:
+        """F10l: pin / unpin every member of a cluster."""
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "expected JSON object body")
+        pinned = payload.get("pinned")
+        if not isinstance(pinned, bool):
+            raise HTTPException(400, "pinned must be a boolean")
+        try:
+            result = session.set_topic_cluster_pinned(int(cluster_id), pinned)
+        except Exception as exc:
+            raise HTTPException(500, f"pin failed: {exc}") from exc
+        if result is None:
+            raise HTTPException(404, "cluster not found (or topic graph off)")
+        return JSONResponse(result)
+
+    @app.post("/api/topic-graph/clusters/{cluster_id}/forget")
+    def forget_topic_cluster(cluster_id: int) -> JSONResponse:
+        """F10l: bulk-archive a topic (skips pinned members)."""
+        try:
+            result = session.forget_topic_cluster(int(cluster_id))
+        except Exception as exc:
+            raise HTTPException(500, f"forget failed: {exc}") from exc
+        if result is None:
+            raise HTTPException(404, "cluster not found (or topic graph off)")
+        return JSONResponse(result)
+
     @app.get("/api/persona-drift")
     def get_persona_drift() -> JSONResponse:
         """K10: last persona-regression snapshot (``{}`` until first run).

@@ -31,6 +31,29 @@ const CONFIDENCE_BANDS: ReadonlyArray<{ id: ConfidenceBand; label: string }> = [
   { id: "conflicted", label: "conflicted" },
 ];
 
+// The Memory tab used to stack every panel vertically, which meant a lot
+// of scrolling to reach Beliefs / Topics / Goals at the bottom. We split
+// it into sub-tabs: the main memory list plus one tab per panel. The
+// FactChecker status footer stays persistent below all sub-tabs.
+type MemorySubTab =
+  | "memories"
+  | "gaps"
+  | "conflicts"
+  | "beliefs"
+  | "curiosity"
+  | "topics"
+  | "goals";
+
+const MEMORY_SUB_TABS: ReadonlyArray<{ id: MemorySubTab; label: string }> = [
+  { id: "memories", label: "Memories" },
+  { id: "gaps", label: "Knowledge gaps" },
+  { id: "conflicts", label: "Conflicts" },
+  { id: "beliefs", label: "Beliefs" },
+  { id: "curiosity", label: "Curiosity" },
+  { id: "topics", label: "Topics" },
+  { id: "goals", label: "Goals" },
+];
+
 function memoryIsConflicted(memory: Memory): boolean {
   const flags = (memory.metadata as { flags?: { conflict?: unknown } } | undefined)?.flags;
   return Boolean(flags?.conflict);
@@ -173,6 +196,7 @@ export function MemoryTab({
   // filter so we don't need backend query support for it; per-tier
   // totals stay accurate because the API call is unchanged.
   const [confidenceBand, setConfidenceBand] = useState<ConfidenceBand>("all");
+  const [subTab, setSubTab] = useState<MemorySubTab>("memories");
   const visibleItems = useMemo(
     () => view.items.filter((m) => memoryMatchesConfidenceBand(m, confidenceBand)),
     [view.items, confidenceBand],
@@ -189,6 +213,32 @@ export function MemoryTab({
 
   return (
     <Section title="Memory">
+      <nav
+        className="flex flex-wrap gap-1 border-b border-white/5 pb-2"
+        aria-label="Memory sections"
+      >
+        {MEMORY_SUB_TABS.map((t) => {
+          const isActive = subTab === t.id;
+          return (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => setSubTab(t.id)}
+              aria-pressed={isActive}
+              className={`shrink-0 rounded-md px-2.5 py-1 text-[11px] font-medium transition ${
+                isActive
+                  ? "bg-ink-500/30 text-ink-100 ring-1 ring-ink-400/50"
+                  : "text-ink-100/55 hover:bg-white/5 hover:text-ink-100/90"
+              }`}
+            >
+              {t.label}
+            </button>
+          );
+        })}
+      </nav>
+
+      {subTab === "memories" ? (
+        <div className="space-y-2">
       <div className="flex items-center justify-between gap-2 text-[11px] text-ink-100/50">
         <span>
           Showing {rangeLabel}
@@ -549,18 +599,20 @@ export function MemoryTab({
           </button>
         </div>
       ) : null}
+        </div>
+      ) : null}
 
-      <KnowledgeGapsPanel />
+      {subTab === "gaps" ? <KnowledgeGapsPanel /> : null}
 
-      <MemoryConflictsPanel />
+      {subTab === "conflicts" ? <MemoryConflictsPanel /> : null}
 
-      <BeliefsPanel />
+      {subTab === "beliefs" ? <BeliefsPanel /> : null}
 
-      <CuriositySeedsPanel />
+      {subTab === "curiosity" ? <CuriositySeedsPanel /> : null}
 
-      <TopicGraphPanel />
+      {subTab === "topics" ? <TopicGraphPanel /> : null}
 
-      <GoalsPanel />
+      {subTab === "goals" ? <GoalsPanel /> : null}
 
       <FactCheckerStatusFooter />
     </Section>
