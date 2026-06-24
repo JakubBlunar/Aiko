@@ -448,6 +448,10 @@ F9 is the `idle_knowledge` worker: on an idle tick it reads the K9 topic graph, 
 - `memory.knowledge_grounding_min_similarity` *(float, `0.45`, clamped `[0, 1]`)* — K61 cosine threshold; a learned fact must be at least this close to the question to surface.
 - `memory.knowledge_grounding_max_items` *(int, `2`, min `1`)* — K61 max bullets surfaced per turn.
 
+### F10j — cluster-scoped memory hygiene
+
+- `agent.cluster_scoped_memory_hygiene_enabled` *(bool, `true`)* — F10j: scope the F5 conflict detector **and** the K35 consolidation worker to *within* topic-graph clusters. When on, each worker partitions its candidate snapshot by cluster (`TopicGraph.cluster_id_for`) and runs its all-pairs cosine inside each group instead of across the whole mirror — turning `O(n²)` into `sum(O(k²))` (the P30 scaling win) and keeping only topically-adjacent pairs, where contradictions / near-dupes actually live. Off → both workers fall back to the full all-pairs sweep. No effect until the topic graph is warm / persistent (degrades to the full sweep automatically; the legacy behaviour is byte-identical). **Tradeoff:** a pair whose members landed in different clusters is no longer compared — rare in practice (the clustering floor 0.55 is far looser than the conflict band `[0.80, 0.92)` and the ~0.90 dedupe threshold, so close pairs almost always co-cluster) and eventually-consistent across re-clusters. The per-run `groups` + `cluster_scoped` fields on each worker's result/log line show whether scoping was active.
+
 ### F5 — conflicting-memory detector
 
 - `agent.conflict_detector_enabled` *(bool, `true`)* — master switch.

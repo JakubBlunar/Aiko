@@ -425,6 +425,9 @@ class IdleWorkersInitMixin:
                     agent_settings=settings.agent,
                     memory_settings=self._memory_settings,
                     notify_memory_updated=self._notify_memory_updated,
+                    topic_graph_provider=lambda: getattr(
+                        self, "_topic_graph", None
+                    ),
                 )
                 self._idle_scheduler.register(self._memory_conflict_worker)
             except Exception:
@@ -488,6 +491,9 @@ class IdleWorkersInitMixin:
                     agent_settings=settings.agent,
                     memory_settings=self._memory_settings,
                     notify_memory_updated=self._notify_memory_updated,
+                    topic_graph_provider=lambda: getattr(
+                        self, "_topic_graph", None
+                    ),
                 )
                 self._idle_scheduler.register(
                     self._memory_consolidation_worker

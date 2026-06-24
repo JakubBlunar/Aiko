@@ -93,6 +93,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             topic_confidence_enabled=bool(
                 agent_raw.get("topic_confidence_enabled", True),
             ),
+            cluster_scoped_memory_hygiene_enabled=bool(
+                agent_raw.get("cluster_scoped_memory_hygiene_enabled", True),
+            ),
             knowledge_grounding_enabled=bool(
                 agent_raw.get("knowledge_grounding_enabled", True),
             ),

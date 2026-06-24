@@ -65,6 +65,7 @@ from app.core.memory.conflict_heuristics import (
     HeuristicResult,
     classify_pair,
 )
+from app.core.memory.cluster_scope import partition_by_cluster
 from app.core.proactive.idle_worker import default_is_ready
 from app.core.memory.memory_conflict_store import (
     FLAGGED_BY_AUTO,
@@ -169,6 +170,29 @@ class _ResolutionPlan:
     delta: float
 
 
+@dataclass(slots=True)
+class _ScanState:
+    """Mutable accumulators shared across cluster-scoped group scans.
+
+    ``processed_pairs`` is the budget counter: it counts only pairs that
+    cost real work (a definite commit or an LLM call), and it is shared
+    across every group so the per-run ``max_pairs`` cap bounds the whole
+    tick, not each cluster.
+    """
+
+    pairs_scanned: int = 0
+    pairs_skipped_existing: int = 0
+    definite: int = 0
+    borderline_consulted: int = 0
+    borderline_skipped_rate_limit: int = 0
+    borderline_dropped_by_llm: int = 0
+    opened: int = 0
+    auto_resolved: int = 0
+    llm_total_ms: float = 0.0
+    processed_pairs: int = 0
+    cancelled: bool = False
+
+
 class MemoryConflictWorker:
     """IdleWorker that finds and resolves contradicting memory pairs."""
 
@@ -186,6 +210,7 @@ class MemoryConflictWorker:
         agent_settings: "AgentSettings",
         memory_settings: "MemorySettings",
         notify_memory_updated: Any | None = None,
+        topic_graph_provider: Any | None = None,
         clock: Any | None = None,
     ) -> None:
         self._memory_store = memory_store
@@ -197,6 +222,9 @@ class MemoryConflictWorker:
         self._agent_settings = agent_settings
         self._memory_settings = memory_settings
         self._notify_memory_updated = notify_memory_updated
+        # F10j: late-bound accessor for the K9 topic graph so the
+        # conflict sweep can be scoped to within-cluster pairs.
+        self._topic_graph_provider = topic_graph_provider
         self._clock = clock or _utcnow
 
     # ── IdleWorker protocol ──────────────────────────────────────────
@@ -287,58 +315,121 @@ class MemoryConflictWorker:
                 "corpus_size": len(candidates),
             }
 
-        pairs_scanned = 0
-        pairs_skipped_existing = 0
-        definite_count = 0
-        borderline_consulted = 0
-        borderline_skipped_rate_limit = 0
-        borderline_dropped_by_llm = 0
-        opened = 0
-        auto_resolved = 0
-        # Also track LLM-call timings so we can report them in the
-        # summary line at the end.
-        llm_total_ms = 0.0
+        # F10j: scope the all-pairs sweep to within-cluster groups. When
+        # the switch is off / the graph is absent or unwarmed, this is a
+        # single group == the full candidate list (legacy behaviour).
+        cluster_scoped = bool(
+            getattr(
+                self._agent_settings,
+                "cluster_scoped_memory_hygiene_enabled",
+                True,
+            )
+        )
+        graph = None
+        if cluster_scoped and self._topic_graph_provider is not None:
+            try:
+                graph = self._topic_graph_provider()
+            except Exception:
+                log.debug("conflict-detector: topic_graph_provider raised", exc_info=True)
+                graph = None
+        groups = partition_by_cluster(
+            candidates, graph, enabled=cluster_scoped,
+        )
 
+        state = _ScanState()
+        for group in groups:
+            if self._cancel_event.is_set():
+                state.cancelled = True
+                break
+            if state.processed_pairs >= max_pairs:
+                break
+            if len(group) < 2:
+                continue
+            self._scan_group(
+                group,
+                now=now,
+                sim_min=sim_min,
+                sim_max=sim_max,
+                auto_resolve_delta=auto_resolve_delta,
+                max_pairs=max_pairs,
+                state=state,
+            )
+            if state.cancelled:
+                break
+
+        if state.cancelled:
+            log.info("conflict-detector cancelled mid-scan")
+            return {"cancelled": True, "pairs_scanned": state.pairs_scanned}
+
+        result = {
+            "corpus_size": len(candidates),
+            "groups": len(groups),
+            "cluster_scoped": bool(cluster_scoped and graph is not None),
+            "pairs_scanned": state.pairs_scanned,
+            "pairs_skipped_existing": state.pairs_skipped_existing,
+            "definite": state.definite,
+            "borderline_consulted": state.borderline_consulted,
+            "borderline_skipped_rate_limit": state.borderline_skipped_rate_limit,
+            "borderline_dropped_by_llm": state.borderline_dropped_by_llm,
+            "opened": state.opened,
+            "auto_resolved": state.auto_resolved,
+            "llm_total_ms": round(state.llm_total_ms, 1),
+        }
+        log.info("conflict-detector done: %s", result)
+        return result
+
+    def _scan_group(
+        self,
+        group: list["Memory"],
+        *,
+        now: datetime,
+        sim_min: float,
+        sim_max: float,
+        auto_resolve_delta: float,
+        max_pairs: int,
+        state: _ScanState,
+    ) -> None:
+        """Run the band-scan over one group, accumulating into ``state``.
+
+        Identical pairwise logic to the pre-F10j single sweep, just bounded
+        to one topic cluster. The per-run ``max_pairs`` budget
+        (``state.processed_pairs``) is shared across every group so the
+        whole tick stays bounded.
+        """
         # Pre-compute embeddings as a single (n, d) matrix so we can
         # vectorise the cosine in NumPy. Each row is already
         # unit-normalised by ``MemoryStore`` on insert/update, so the
         # cosine is just the dot product.
         emb_matrix = np.asarray(
-            [m.embedding for m in candidates], dtype=np.float32,
+            [m.embedding for m in group], dtype=np.float32,
         )
-        if emb_matrix.ndim != 2 or emb_matrix.shape[0] != len(candidates):
+        if emb_matrix.ndim != 2 or emb_matrix.shape[0] != len(group):
             log.warning(
-                "conflict-detector: bad embedding matrix shape=%s; bailing",
+                "conflict-detector: bad embedding matrix shape=%s; "
+                "skipping group",
                 emb_matrix.shape,
             )
-            return {"skipped": True, "reason": "bad_embeddings"}
+            return
 
-        # We process pairs in row-major order with i < j, but we
-        # short-circuit as soon as ``max_pairs`` borderline+definite
-        # checks have been processed (heuristic-or-LLM work counts;
-        # cheap drops don't).
-        processed_pairs = 0
-        for i, mem_a in enumerate(candidates):
+        for i, mem_a in enumerate(group):
             if self._cancel_event.is_set():
-                log.info("conflict-detector cancelled mid-scan")
-                return {"cancelled": True, "pairs_scanned": pairs_scanned}
-            if processed_pairs >= max_pairs:
-                break
+                state.cancelled = True
+                return
+            if state.processed_pairs >= max_pairs:
+                return
             # Vectorised cosine of row i vs every j > i.
             sims = emb_matrix[i + 1:] @ emb_matrix[i]
-            # Indices (in the j-suffix) where the cosine is in band.
-            # ``np.nonzero`` returns a 1D tuple; take element 0.
             band_idx = np.nonzero((sims >= sim_min) & (sims < sim_max))[0]
             for offset_j in band_idx.tolist():
-                if processed_pairs >= max_pairs:
-                    break
+                if state.processed_pairs >= max_pairs:
+                    return
                 j = i + 1 + int(offset_j)
-                mem_b = candidates[j]
-                pairs_scanned += 1
+                mem_b = group[j]
+                state.pairs_scanned += 1
                 similarity = float(sims[offset_j])
 
                 if self._conflict_store.has_pair(mem_a.id, mem_b.id):
-                    pairs_skipped_existing += 1
+                    state.pairs_skipped_existing += 1
                     continue
 
                 heuristic = classify_pair(mem_a.content, mem_b.content)
@@ -347,10 +438,10 @@ class MemoryConflictWorker:
 
                 # From here on the pair counts toward the per-run cap
                 # because we either spend an LLM call or commit a row.
-                processed_pairs += 1
+                state.processed_pairs += 1
 
                 if heuristic.label == HEURISTIC_DEFINITE:
-                    definite_count += 1
+                    state.definite += 1
                     log.info(
                         "conflict-detector definite: a_id=%s b_id=%s "
                         "sim=%.3f signals=%s a=%r b=%r",
@@ -375,14 +466,14 @@ class MemoryConflictWorker:
                         now=now,
                     ):
                         if plan.auto_resolve:
-                            auto_resolved += 1
+                            state.auto_resolved += 1
                         else:
-                            opened += 1
+                            state.opened += 1
                     continue
 
                 # Borderline -- needs an LLM check.
                 if not self._rate_limiter.allow(now):
-                    borderline_skipped_rate_limit += 1
+                    state.borderline_skipped_rate_limit += 1
                     log.info(
                         "conflict-detector borderline skip (rate-limited): "
                         "a_id=%s b_id=%s sim=%.3f",
@@ -395,7 +486,7 @@ class MemoryConflictWorker:
                 t0 = time.monotonic()
                 verdict = self._verify_with_llm(mem_a.content, mem_b.content)
                 elapsed_ms = (time.monotonic() - t0) * 1000.0
-                llm_total_ms += elapsed_ms
+                state.llm_total_ms += elapsed_ms
                 if verdict is None:
                     log.info(
                         "conflict-detector borderline LLM unparseable: "
@@ -405,9 +496,9 @@ class MemoryConflictWorker:
                         similarity,
                         elapsed_ms,
                     )
-                    borderline_dropped_by_llm += 1
+                    state.borderline_dropped_by_llm += 1
                     continue
-                borderline_consulted += 1
+                state.borderline_consulted += 1
                 log.info(
                     "conflict-detector borderline verdict=%s reason=%r "
                     "a_id=%s b_id=%s sim=%.3f elapsed_ms=%.0f",
@@ -419,7 +510,7 @@ class MemoryConflictWorker:
                     elapsed_ms,
                 )
                 if verdict.verdict != "YES":
-                    borderline_dropped_by_llm += 1
+                    state.borderline_dropped_by_llm += 1
                     continue
                 plan = self._plan_resolution(
                     mem_a, mem_b, auto_resolve_delta,
@@ -435,24 +526,9 @@ class MemoryConflictWorker:
                     now=now,
                 ):
                     if plan.auto_resolve:
-                        auto_resolved += 1
+                        state.auto_resolved += 1
                     else:
-                        opened += 1
-
-        result = {
-            "corpus_size": len(candidates),
-            "pairs_scanned": pairs_scanned,
-            "pairs_skipped_existing": pairs_skipped_existing,
-            "definite": definite_count,
-            "borderline_consulted": borderline_consulted,
-            "borderline_skipped_rate_limit": borderline_skipped_rate_limit,
-            "borderline_dropped_by_llm": borderline_dropped_by_llm,
-            "opened": opened,
-            "auto_resolved": auto_resolved,
-            "llm_total_ms": round(llm_total_ms, 1),
-        }
-        log.info("conflict-detector done: %s", result)
-        return result
+                        state.opened += 1
 
     # ── corpus + plumbing ────────────────────────────────────────────
 
