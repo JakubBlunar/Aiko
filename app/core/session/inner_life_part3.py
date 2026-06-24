@@ -291,7 +291,21 @@ class InnerLifePart3Mixin:
         try:
             from app.core.conversation.novelty_detector import render_inner_life_block
 
-            return render_inner_life_block(result)
+            # F10k: thread the per-turn cluster-transition signals the
+            # detector just computed into the render so the cue can name
+            # the topic move (return-to-known vs brand-new).
+            return render_inner_life_block(
+                result,
+                user_display_name=self.user_display_name,
+                topic_changed=bool(getattr(detector, "last_cluster_changed", False)),
+                topic_returning=bool(
+                    getattr(detector, "last_cluster_returning", False)
+                ),
+                topic_label=str(getattr(detector, "last_cluster_label", "") or ""),
+                prev_topic_label=str(
+                    getattr(detector, "last_prev_cluster_label", "") or ""
+                ),
+            )
         except Exception:
             log.debug("novelty block render failed", exc_info=True)
             return ""
@@ -342,9 +356,15 @@ class InnerLifePart3Mixin:
         try:
             from app.core.conversation.topic_stagnation import render_inner_life_block
 
+            # F10k: K6 just mapped this turn to its best cluster; name the
+            # looped-on topic in the lull cue if it has a clean label.
+            topic_label = str(
+                getattr(novelty, "last_cluster_label", "") or ""
+            ) if novelty is not None else ""
             return render_inner_life_block(
                 result,
                 user_display_name=self.user_display_name,
+                topic_label=topic_label,
             )
         except Exception:
             log.debug("topic stagnation block render failed", exc_info=True)

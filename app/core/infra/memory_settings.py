@@ -724,6 +724,11 @@ class MemorySettings:
     # few turns; waiting a beat avoids the "you just pivoted, but
     # also you've been on this forever" weirdness.
     stagnation_post_novelty_suppression_turns: int = 3
+    # F10k: minimum cluster-centroid cosine for the novelty detector to
+    # treat a turn as confidently "on" a topic-graph cluster. Below this
+    # the turn has no cluster identity and the prior cluster is kept
+    # (a transient miss must not read as a topic change). Clamped [0, 1].
+    topic_tracking_min_sim: float = 0.30
     # IdleWorkerScheduler tick + quiet gate. Lowering ``wake_seconds``
     # makes workers fire sooner after a quiet period starts but
     # increases idle CPU; ``quiet_threshold`` is how long since the
@@ -1540,6 +1545,13 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                     memory_raw.get(
                         "stagnation_post_novelty_suppression_turns", 3,
                     )
+                ),
+            ),
+            topic_tracking_min_sim=max(
+                0.0,
+                min(
+                    1.0,
+                    float(memory_raw.get("topic_tracking_min_sim", 0.30)),
                 ),
             ),
             idle_worker_wake_seconds=max(

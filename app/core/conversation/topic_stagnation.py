@@ -252,10 +252,23 @@ class TopicStagnationDetector:
         return getattr(self._memory_settings, name, default)
 
 
+# F10k: cap on how long a cluster label we'll splice into the cue
+# (mirrors ``novelty_detector._MAX_TOPIC_LABEL_CHARS``).
+_MAX_TOPIC_LABEL_CHARS = 48
+
+
+def _clean_topic_label(label: str | None) -> str:
+    s = (label or "").strip()
+    if not s or "\n" in s or len(s) > _MAX_TOPIC_LABEL_CHARS:
+        return ""
+    return s
+
+
 def render_inner_life_block(
     result: StagnationResult | None,
     *,
     user_display_name: str = "Jacob",
+    topic_label: str = "",
 ) -> str:
     """Render the one-line inner-life signal for the given band.
 
@@ -267,21 +280,29 @@ def render_inner_life_block(
 
     ``user_display_name`` is interpolated into the mild copy so a
     rename via onboarding / settings is reflected without a restart.
+
+    F10k: when the K9 topic graph named the cluster the conversation
+    has been looping on, ``topic_label`` adds a private "(the X
+    thread)" context clause so the lull cue points at the actual
+    topic instead of a vague "this". Internal context only — the
+    persona block tells Aiko never to quote it.
     """
     if result is None:
         return ""
     name = (user_display_name or "").strip() or "Jacob"
+    label = _clean_topic_label(topic_label)
+    clause = f" (Context, don't quote: the {label} thread.)" if label else ""
     if result.band == BAND_STRONG_LULL:
         return (
             "Heads-up: this thread has been pretty looped for a while -- "
             "lean toward either deepening it on purpose or offering a "
-            "real off-ramp, whichever fits the moment."
+            "real off-ramp, whichever fits the moment." + clause
         )
     if result.band == BAND_MILD_LULL:
         return (
             f"Heads-up: you've been circling the same topic with {name} "
             "for a bit -- a soft pivot's fine if one fits, otherwise just "
-            "keep going."
+            "keep going." + clause
         )
     return ""
 

@@ -144,6 +144,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             topic_stagnation_enabled=bool(
                 agent_raw.get("topic_stagnation_enabled", True),
             ),
+            topic_tracking_enabled=bool(
+                agent_raw.get("topic_tracking_enabled", True),
+            ),
             topic_graph_enabled=bool(
                 agent_raw.get("topic_graph_enabled", True),
             ),

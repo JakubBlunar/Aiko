@@ -313,6 +313,20 @@ class CuriositySeedSettingsTests(unittest.TestCase):
         result = load_settings(config_path=path)
         self.assertFalse(result.agent.cluster_scoped_memory_hygiene_enabled)
 
+    def test_topic_tracking_settings_round_trip(self) -> None:
+        result = load_settings(config_path=self._write_config())
+        self.assertTrue(result.agent.topic_tracking_enabled)
+        self.assertAlmostEqual(
+            result.memory.topic_tracking_min_sim, 0.30, places=6,
+        )
+        path = self._write_config(
+            agent_extra={"topic_tracking_enabled": False},
+            memory_extra={"topic_tracking_min_sim": 5.0},  # clamps to 1.0
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.topic_tracking_enabled)
+        self.assertEqual(result.memory.topic_tracking_min_sim, 1.0)
+
     def test_topic_confidence_settings_round_trip(self) -> None:
         # Defaults.
         result = load_settings(config_path=self._write_config())

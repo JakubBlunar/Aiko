@@ -311,6 +311,15 @@ class AgentSettings:
     # to focus on K6 alone. Leaving it on with conservative
     # thresholds is the intended default.
     topic_stagnation_enabled: bool = True
+    # F10k: semantic topic tracking for K6/K18. When on, the novelty
+    # detector maps each measured turn to its best topic-graph cluster
+    # and the K6/K18 cues gain a private "(shift from X to Y)" /
+    # "(circling back to X)" / "(the X thread)" context clause, and a
+    # return to a previously-visited cluster reads differently from a
+    # brand-new topic. Off → the detectors run exactly as before (no
+    # cluster lookups). Toggling requires a restart (the provider is
+    # bound at detector construction).
+    topic_tracking_enabled: bool = True
     # ── K9 personality backlog: topic graph + curiosity seeds ─────────
     # Master switch for the in-process topic graph wrapper around
     # :attr:`MemoryStore._mirror`. Disabling skips both the seed
