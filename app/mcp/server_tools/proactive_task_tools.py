@@ -1079,6 +1079,68 @@ def register(mcp, session: "SessionController") -> None:
             return f"force_topic_graph_rebuild raised: {exc}"
 
     @mcp.tool()
+    def rename_topic_cluster(cluster_id: int, label: str) -> str:
+        """F10l — override a cluster's label (sticky across batch refits).
+
+        Mirrors ``PATCH /api/topic-graph/clusters/{id}``. Sets the live
+        label and writes a ``user_pinned`` entry into the F10a label cache
+        keyed by the cluster's representative id, so the
+        ``ClusterLabelWorker`` re-applies it for free after a refit and
+        never regenerates over it. Returns ``{cluster_id, summary}`` or an
+        error when the cluster can't be found (persistent mode only).
+        """
+        try:
+            result = session.rename_topic_cluster(int(cluster_id), label)
+            if result is None:
+                return json.dumps(
+                    {"error": "cluster not found (or topic graph off)"},
+                    indent=2,
+                )
+            return json.dumps(result, indent=2)
+        except Exception as exc:
+            return f"rename_topic_cluster raised: {exc}"
+
+    @mcp.tool()
+    def pin_topic_cluster(cluster_id: int, pinned: bool = True) -> str:
+        """F10l — pin / unpin every member of a cluster in one action.
+
+        Mirrors ``POST /api/topic-graph/clusters/{id}/pin``. Pinned rows
+        are immune to decay / prune and get a small RAG boost. Returns
+        ``{cluster_id, pinned, affected}``.
+        """
+        try:
+            result = session.set_topic_cluster_pinned(
+                int(cluster_id), bool(pinned)
+            )
+            if result is None:
+                return json.dumps(
+                    {"error": "cluster not found (or topic graph off)"},
+                    indent=2,
+                )
+            return json.dumps(result, indent=2)
+        except Exception as exc:
+            return f"pin_topic_cluster raised: {exc}"
+
+    @mcp.tool()
+    def forget_topic_cluster(cluster_id: int) -> str:
+        """F10l — bulk-archive a topic (skips pinned members).
+
+        Mirrors ``POST /api/topic-graph/clusters/{id}/forget``. Demotes
+        every non-pinned member to ``tier=archive`` (reversible from the
+        Memory list). Returns ``{cluster_id, archived, skipped_pinned}``.
+        """
+        try:
+            result = session.forget_topic_cluster(int(cluster_id))
+            if result is None:
+                return json.dumps(
+                    {"error": "cluster not found (or topic graph off)"},
+                    indent=2,
+                )
+            return json.dumps(result, indent=2)
+        except Exception as exc:
+            return f"forget_topic_cluster raised: {exc}"
+
+    @mcp.tool()
     def get_topic_graph_persistence_state() -> str:
         """K9 v20 — inspect the persisted/incremental topic-graph state.
 

@@ -45,3 +45,25 @@ describe("TopicGraphPanel wiring", () => {
     expect(apiSource).toMatch(/\/api\/topic-graph/);
   });
 });
+
+describe("TopicGraphPanel cluster management (F10l)", () => {
+  it("api exposes rename/pin/forget hitting the cluster endpoints", () => {
+    expect(apiSource).toMatch(/renameTopicCluster/);
+    expect(apiSource).toMatch(/pinTopicCluster/);
+    expect(apiSource).toMatch(/forgetTopicCluster/);
+    expect(apiSource).toMatch(/\/api\/topic-graph\/clusters\//);
+    expect(apiSource).toMatch(/\/pin/);
+    expect(apiSource).toMatch(/\/forget/);
+  });
+
+  it("panel wires the three cluster actions", () => {
+    expect(panelSource).toMatch(/api\.renameTopicCluster\s*\(/);
+    expect(panelSource).toMatch(/api\.pinTopicCluster\s*\(/);
+    expect(panelSource).toMatch(/api\.forgetTopicCluster\s*\(/);
+  });
+
+  it("gates management on persistent mode and confirms forget", () => {
+    expect(panelSource).toMatch(/manageable/);
+    expect(panelSource).toMatch(/confirmForget/);
+  });
+});

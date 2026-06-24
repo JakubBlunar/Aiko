@@ -13,6 +13,7 @@ State ownership (``self._memory_store``, ``self._memory_extractor``,
 """
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -782,6 +783,152 @@ class MemoryFacadeMixin:
                 "filter_threshold": 0.0,
                 "clusters": [],
             }
+
+    # ── F10l: cluster management (user agency over the topic graph) ──────
+
+    def _resolve_cluster(self, cluster_id: int) -> Any | None:
+        """Find a live :class:`TopicCluster` by id, or ``None``.
+
+        Best-effort: returns ``None`` when the graph is disabled / absent /
+        non-persistent or no live cluster matches. Cluster management is a
+        persistent-mode-only feature (the in-memory mode has no stable
+        cluster identity to act on).
+        """
+        graph = getattr(self, "_topic_graph", None)
+        if graph is None or not getattr(graph, "persistent", False):
+            return None
+        try:
+            for cluster in graph.topic_clusters():
+                if int(cluster.cluster_id) == int(cluster_id):
+                    return cluster
+        except Exception:
+            log.debug("_resolve_cluster failed", exc_info=True)
+        return None
+
+    def rename_topic_cluster(
+        self, cluster_id: int, label: str
+    ) -> dict[str, Any] | None:
+        """F10l: override a cluster's label and make the rename sticky.
+
+        Sets the label on the live cluster (persisted via the cluster
+        store), and also writes it into the F10a label cache keyed by the
+        cluster's *representative* id with ``user_pinned=True`` so it (a)
+        survives a batch refit that resets live labels, and (b) is never
+        overwritten by the :class:`ClusterLabelWorker`'s drift-driven
+        regeneration. Returns ``{cluster_id, summary}`` or ``None`` when
+        the cluster can't be found / the label is blank.
+        """
+        graph = getattr(self, "_topic_graph", None)
+        cluster = self._resolve_cluster(cluster_id)
+        if graph is None or cluster is None:
+            return None
+        clean = (label or "").strip()
+        if not clean:
+            return None
+        if not graph.set_cluster_label(int(cluster_id), clean):
+            return None
+        rep = int(cluster.representative_id)
+        size = int(len(cluster.member_ids))
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is not None:
+            try:
+                chat_db.kv_set(
+                    "aiko.topic_label." + str(rep),
+                    json.dumps(
+                        {"label": clean, "size": size, "user_pinned": True}
+                    ),
+                )
+            except Exception:
+                log.debug("rename_topic_cluster cache write failed", exc_info=True)
+        log.info(
+            "topic cluster renamed: cluster=%s rep=%s label=%r",
+            cluster_id,
+            rep,
+            clean,
+        )
+        return {"cluster_id": int(cluster_id), "summary": clean}
+
+    def set_topic_cluster_pinned(
+        self, cluster_id: int, pinned: bool
+    ) -> dict[str, Any] | None:
+        """F10l: pin (or unpin) every member of a cluster in one action.
+
+        Pinned rows are immune to decay / prune and get a small RAG boost,
+        so pinning a whole cluster says "this topic matters, always keep
+        it". Reuses :meth:`set_memory_pinned` per member (so each emits the
+        usual ``memory_updated`` WS event and the Memory tab stays live).
+        Returns ``{cluster_id, pinned, affected}`` or ``None`` when the
+        cluster can't be found.
+        """
+        cluster = self._resolve_cluster(cluster_id)
+        if cluster is None:
+            return None
+        affected = 0
+        for mid in list(cluster.member_ids):
+            try:
+                if self.set_memory_pinned(int(mid), bool(pinned)) is not None:
+                    affected += 1
+            except Exception:
+                log.debug(
+                    "cluster pin: member %s failed", mid, exc_info=True
+                )
+        log.info(
+            "topic cluster %s: cluster=%s affected=%d",
+            "pinned" if pinned else "unpinned",
+            cluster_id,
+            affected,
+        )
+        return {
+            "cluster_id": int(cluster_id),
+            "pinned": bool(pinned),
+            "affected": affected,
+        }
+
+    def forget_topic_cluster(self, cluster_id: int) -> dict[str, Any] | None:
+        """F10l: bulk-archive a topic ("forget this").
+
+        Demotes every *non-pinned* member to ``tier=archive`` (kept in the
+        DB for audit, dropped from active prompt/retrieval surfacing).
+        Pinned members are deliberately spared — a pin is an explicit
+        "always keep" that outranks a forget. Reuses :meth:`update_memory`
+        per member so each broadcasts ``memory_updated``. Returns
+        ``{cluster_id, archived, skipped_pinned}`` or ``None`` when the
+        cluster can't be found.
+        """
+        cluster = self._resolve_cluster(cluster_id)
+        if cluster is None:
+            return None
+        store = self._memory_store
+        archived = 0
+        skipped_pinned = 0
+        for mid in list(cluster.member_ids):
+            mem = None
+            if store is not None:
+                try:
+                    mem = store.get(int(mid))
+                except Exception:
+                    mem = None
+            if mem is not None and bool(getattr(mem, "pinned", False)):
+                skipped_pinned += 1
+                continue
+            try:
+                if self.update_memory(int(mid), tier="archive") is not None:
+                    archived += 1
+            except Exception:
+                log.debug(
+                    "cluster forget: member %s failed", mid, exc_info=True
+                )
+        log.info(
+            "topic cluster forgotten: cluster=%s archived=%d skipped_pinned=%d",
+            cluster_id,
+            archived,
+            skipped_pinned,
+        )
+        return {
+            "cluster_id": int(cluster_id),
+            "archived": archived,
+            "skipped_pinned": skipped_pinned,
+        }
 
     def resolve_memory_conflict(
         self,

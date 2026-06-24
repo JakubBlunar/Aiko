@@ -160,7 +160,12 @@ class ClusterLabelWorker:
             rep = int(cluster.representative_id)
             size = int(cluster.size)
             cached = self._read_cache(rep)
-            if cached is not None and not self._drifted(size, cached.get("size")):
+            # F10l: a user rename pins the label (``user_pinned``) so it is
+            # always re-applied and never regenerated, even on size drift.
+            user_pinned = bool(cached.get("user_pinned")) if cached else False
+            if cached is not None and (
+                user_pinned or not self._drifted(size, cached.get("size"))
+            ):
                 label = str(cached.get("label") or "").strip()
                 if label and label != (cluster.summary or ""):
                     if self._topic_graph.set_cluster_label(

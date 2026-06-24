@@ -566,20 +566,44 @@ those primitives — none needs a schema change beyond a `kv_meta` row.
   topic-label render tests in
   [`tests/test_topic_stagnation.py`](../../tests/test_topic_stagnation.py),
   + a settings round-trip in `test_settings.py`.
-- **F10l. Cluster management UX (user agency over her mental map).** The
-  Memory tab can already edit/pin individual memories; a cluster browser
-  would let the user rename a cluster (overriding the F10a label),
-  merge / split, pin a *whole* cluster, or "forget this topic" (bulk
-  archive). Makes the topic graph a thing the user *steers*, not just an
-  internal index. Key files: `GET /api/topic-graph` already serves the
-  snapshot; add mutation endpoints + a panel under
-  [`web/src/components/settings/`](../../web/src/components/settings/).
-  **Open Q:** how do user renames survive a batch refit that reassigns
-  the cluster representative? (Pin the label to the cluster id, not the
-  representative.)
+- **F10l. Cluster management UX (user agency over her mental map). SHIPPED.**
+  The read-only `TopicGraphPanel` in the Memory tab grew three per-cluster
+  actions (persistent-mode only — the panel shows "read-only" otherwise):
+  **rename** (overrides the F10a label), **pin all / unpin all** (bulk
+  pins/unpins every member), and **forget** (a two-click confirm that
+  bulk-archives every *non-pinned* member to `tier=archive`; pinned rows
+  are spared — a pin outranks a forget). Wiring:
+  [`MemoryFacadeMixin`](../../app/core/session/memory_facade_mixin.py) gained
+  `rename_topic_cluster` / `set_topic_cluster_pinned` / `forget_topic_cluster`
+  (each resolves the live cluster via `_resolve_cluster`, then reuses the
+  existing per-memory `set_memory_pinned` / `update_memory` so each member
+  change still broadcasts `memory_updated` and the Memory list stays live);
+  REST `PATCH /api/topic-graph/clusters/{id}` + `POST .../pin` + `POST
+  .../forget` in [`memory_world_routes.py`](../../app/web/rest/memory_world_routes.py);
+  `api.renameTopicCluster` / `pinTopicCluster` / `forgetTopicCluster` in
+  [`web/src/api.ts`](../../web/src/api.ts). **Rename durability (the Open Q):**
+  cluster ids are reassigned on a full refit, so a rename keyed to the
+  cluster id alone would be lost. Instead `rename_topic_cluster` writes the
+  label into the **F10a label cache keyed by the cluster's representative
+  id** with `user_pinned=true`; the `ClusterLabelWorker` now always
+  re-applies a `user_pinned` cache entry and **never regenerates over it**
+  (even on size drift), so a user rename survives a refit and is sticky
+  until the user renames again. (The one residual limitation: if a refit
+  promotes a *new* representative, the rep-keyed cache is orphaned and the
+  worker LLM-labels the new rep fresh — reps are the highest-salience
+  member so this is rare.) **Merge / split deliberately not built** — they
+  fight the auto-clustering (the next refit would undo them) and need real
+  persistence design; the high-value, durable verbs (rename / pin / forget)
+  are the slice. MCP: `rename_topic_cluster` / `pin_topic_cluster` /
+  `forget_topic_cluster` mirror the REST. Tests:
+  [`tests/test_topic_cluster_management.py`](../../tests/test_topic_cluster_management.py)
+  (facade rename/pin/forget against a real store+graph) + a
+  `user_pinned`-stickiness test in
+  [`tests/test_topic_label_worker.py`](../../tests/test_topic_label_worker.py)
+  + F10l wiring assertions in `TopicGraphPanel.test.tsx`.
 
-**Effort.** F10a/F10b/F10e small-medium each; F10c/F10d medium. **F10a-f +
-F10h + F10i + F10j + F10k are shipped** (F10f = the self-aware
+**Effort.** F10a/F10b/F10e small-medium each; F10c/F10d medium. **The
+entire F10 line (F10a–F10l) is shipped** (F10f = the self-aware
 knowledge-gap notice; F9 already covered research-targeting; F10h =
 per-cluster topic temperature from shared-moment vibes; F10i = per-topic
 confidence self-model from size + learned-fact coverage — both
@@ -589,9 +613,10 @@ F10k = additive semantic topic tracking layered onto K6/K18 — names the
 topic transition and tells a return apart from a brand-new pivot; F10g =
 per-cluster rolling digest memory — a `topic_digest` pool memory per dense
 cluster, excluded from clustering, surfaced as the coarse RAG line that
-caps sibling expansion).
-Remaining: **F10l only** — a self-contained UX slice (cluster management
-in the Memory drawer). Several overlap the K64 mind-wandering
+caps sibling expansion; F10l = cluster management UX — rename / pin / forget
+per cluster in the Memory tab, with renames pinned to the representative so
+they survive a refit).
+Remaining: **none.** Several follow-on ideas overlap the K64 mind-wandering
 family in [`patterns.md`](patterns.md) (esp. K64b interest-drift) —
 cross-check before picking one up so two passes don't build the same
 per-cluster aggregator twice. **Provider-walk note:** F10h/F10i both

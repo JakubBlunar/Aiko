@@ -889,6 +889,14 @@ export interface TopicGraphSnapshot {
   similarity: number;
   min_cluster_size: number;
   filter_threshold: number;
+  // Persistence telemetry (v20). ``persistent`` flips true once the
+  // cluster store is wired; cluster management (rename / pin / forget) is
+  // only available in that mode.
+  persistent?: boolean;
+  pending_unclustered?: number;
+  algorithm?: string;
+  neighbors_k?: number;
+  resolution?: number;
   clusters: TopicGraphCluster[];
 }
 

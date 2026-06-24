@@ -232,6 +232,36 @@ class ClusterLabelWorkerTests(unittest.TestCase):
         self.assertTrue(result.get("skipped"))
         self.assertEqual(fake.calls, 0)
 
+    def test_user_pinned_label_survives_drift_without_llm(self) -> None:
+        # F10l: a user rename writes ``user_pinned`` into the cache; the
+        # worker must always re-apply it and never regenerate, even when
+        # the cluster size has drifted past the relabel threshold.
+        mem = _two_cluster_store()
+        db, g = _persistent_graph(mem)
+        g.rebuild()
+        fake = _FakeOllama(label="should not fire")
+        worker = self._worker(db, g, mem, fake)
+        # Pin a user label on every cluster with a deliberately drifted
+        # (stale) cached size so the only thing that can keep the LLM idle
+        # is the ``user_pinned`` flag.
+        clusters = g.topic_clusters()
+        for cluster in clusters:
+            db.kv_set(
+                "aiko.topic_label." + str(cluster.representative_id),
+                json.dumps(
+                    {
+                        "label": f"pinned {cluster.cluster_id}",
+                        "size": 1,
+                        "user_pinned": True,
+                    }
+                ),
+            )
+        result = worker.run()
+        self.assertEqual(fake.calls, 0)  # never regenerated
+        for cluster in g.topic_clusters():
+            self.assertEqual(cluster.summary, f"pinned {cluster.cluster_id}")
+        self.assertEqual(result["reapplied"], len(clusters))
+
     def test_max_per_run_bounds_llm_calls(self) -> None:
         mem = _two_cluster_store()
         db, g = _persistent_graph(mem)

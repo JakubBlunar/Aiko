@@ -372,8 +372,31 @@ export const api = {
       `/api/memory-conflicts/${pairId}/dismiss`,
       { method: "POST" },
     ),
-  // ── Topic-graph browser (K9) ─────────────────────────────────────
+  // ── Topic-graph browser (K9) + cluster management (F10l) ─────────
   getTopicGraph: () => jsonFetch<TopicGraphSnapshot>("/api/topic-graph"),
+  renameTopicCluster: (clusterId: number, label: string) =>
+    jsonFetch<{ cluster_id: number; summary: string }>(
+      `/api/topic-graph/clusters/${clusterId}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label }),
+      },
+    ),
+  pinTopicCluster: (clusterId: number, pinned: boolean) =>
+    jsonFetch<{ cluster_id: number; pinned: boolean; affected: number }>(
+      `/api/topic-graph/clusters/${clusterId}/pin`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pinned }),
+      },
+    ),
+  forgetTopicCluster: (clusterId: number) =>
+    jsonFetch<{ cluster_id: number; archived: number; skipped_pinned: number }>(
+      `/api/topic-graph/clusters/${clusterId}/forget`,
+      { method: "POST" },
+    ),
   // ── Persona regression (K10) ─────────────────────────────────────
   getPersonaDrift: () =>
     jsonFetch<PersonaRegressionSnapshot>("/api/persona-drift"),
