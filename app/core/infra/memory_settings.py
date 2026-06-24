@@ -410,6 +410,18 @@ class MemorySettings:
     # Size of the kv journal ring of drafted notices. Tiny — the provider
     # surfaces the newest topic-relevant unseen entry.
     knowledge_gap_notice_journal_max: int = 6
+    # ── F10h: topic temperature (per-cluster affect) ─────────────────────
+    # Minimum centroid cosine for the live turn to count as "on" a topic
+    # cluster before its temperature is even considered. Keeps the tonal
+    # nudge from firing on a loose, incidental brush with a cluster.
+    topic_temperature_min_sim: float = 0.45
+    # A cluster's dominant pole (warmth or tenderness, both in [0, 1]) must
+    # reach this for the cue to surface. Higher → only strongly-charged
+    # topics nudge tone.
+    topic_temperature_threshold: float = 0.5
+    # Global cooldown (in turns) after a temperature cue fires, so a
+    # charged topic isn't re-nudged every single turn it comes up.
+    topic_temperature_cooldown_turns: int = 6
     # K61: minimum cosine similarity for a learned fact to count as
     # "relevant to what the user just asked" in the knowledge-grounding
     # inner-life block. Higher → the steer fires only on a tight
@@ -1108,6 +1120,24 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             knowledge_gap_notice_journal_max=max(
                 1,
                 int(memory_raw.get("knowledge_gap_notice_journal_max", 6)),
+            ),
+            topic_temperature_min_sim=max(
+                0.0,
+                min(
+                    1.0,
+                    float(memory_raw.get("topic_temperature_min_sim", 0.45)),
+                ),
+            ),
+            topic_temperature_threshold=max(
+                0.0,
+                min(
+                    1.0,
+                    float(memory_raw.get("topic_temperature_threshold", 0.5)),
+                ),
+            ),
+            topic_temperature_cooldown_turns=max(
+                0,
+                int(memory_raw.get("topic_temperature_cooldown_turns", 6)),
             ),
             knowledge_grounding_min_similarity=max(
                 0.0,

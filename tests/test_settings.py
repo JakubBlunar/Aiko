@@ -280,6 +280,30 @@ class CuriositySeedSettingsTests(unittest.TestCase):
         )
         self.assertEqual(result.memory.knowledge_gap_notice_journal_max, 1)
 
+    def test_topic_temperature_settings_round_trip(self) -> None:
+        # Defaults.
+        result = load_settings(config_path=self._write_config())
+        self.assertTrue(result.agent.topic_temperature_enabled)
+        self.assertAlmostEqual(result.memory.topic_temperature_min_sim, 0.45)
+        self.assertAlmostEqual(result.memory.topic_temperature_threshold, 0.5)
+        self.assertEqual(
+            result.memory.topic_temperature_cooldown_turns, 6,
+        )
+        # Overrides + clamps.
+        path = self._write_config(
+            agent_extra={"topic_temperature_enabled": False},
+            memory_extra={
+                "topic_temperature_min_sim": 2.0,        # clamped to 1.0
+                "topic_temperature_threshold": -1.0,     # clamped to 0.0
+                "topic_temperature_cooldown_turns": -5,  # floor 0
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.topic_temperature_enabled)
+        self.assertAlmostEqual(result.memory.topic_temperature_min_sim, 1.0)
+        self.assertAlmostEqual(result.memory.topic_temperature_threshold, 0.0)
+        self.assertEqual(result.memory.topic_temperature_cooldown_turns, 0)
+
     def test_interest_map_settings_round_trip(self) -> None:
         # Defaults.
         result = load_settings(config_path=self._write_config())

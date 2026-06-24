@@ -428,6 +428,7 @@
     "task_approval_overrides": {},
     "builtin_file_skills_enabled": true,
     "knowledge_gap_notice_enabled": true,
+    "topic_temperature_enabled": true,
     "knowledge_topic_extraction_enabled ": false,
     "knowledge_enrichment_max_clusters_per_run ": 3,
     "knowledge_unresearchable_cooldown_hours ": 336,

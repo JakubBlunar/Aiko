@@ -400,17 +400,46 @@ those primitives — none needs a schema change beyond a `kv_meta` row.
   surface-digest-first path. **Open Q:** does the digest live in the
   normal memory pool (so it decays / shows in the Memory tab) or in a
   side table keyed by cluster? Pool is simpler and lets pinning work.
-- **F10h. Topic temperature / per-cluster affect.** A cluster isn't just
-  a bag of facts — it has a *vibe*. Aggregate an affect tag per cluster
-  from the signals already lying around: `shared_moment` vibes whose
-  source ids fall in the cluster, K57 emotion episodes, reaction history
-  on member-sourced turns. When the live turn maps (via `best_clusters_for`)
-  to a "charged" cluster (warm or tense), surface a one-line tonal nudge
-  so Aiko approaches a sensitive topic more gently and a fond one more
-  warmly — a topic-scoped sibling of the relationship axes. Key files:
-  a small aggregator over `topic_graph` + `RelationshipAxesStore` +
-  shared-moments, an inner-life provider in `prompt_assembler.py`.
-  Pairs with K8 rupture-repair (don't barrel into a tense cluster).
+- **F10h. Topic temperature / per-cluster affect.** **SHIPPED.** A cluster
+  isn't just a bag of facts — it has a *vibe*. When the live turn maps (via
+  `best_clusters_for`) to a *charged* cluster, Aiko gets a one-line tonal
+  Heads-up so she meets a **warm** topic (good moments live there) with a
+  little fondness and a **tender** one (vulnerable / patched-up ground)
+  gently instead of flat — a topic-scoped sibling of the relationship-axes
+  block. **Signal (v1): shared-moment vibes only.** They're the one affect
+  source cleanly cluster-attributable — each `shared_moment` is a real
+  memory id, so `cluster_member_ids` maps it straight to its cluster and
+  its `metadata["vibe"]` is a closed vocabulary
+  ([`shared_moment_extractor.VIBE_VOCABULARY`](../../app/core/relationship/shared_moment_extractor.py)).
+  K57 emotion episodes are deferred (global, user-directed, no topic link)
+  and K32 reactions deferred (need fragile message→cluster linkage). The
+  vibe taxonomy splits into two poles: warm (`warm`/`playful`/`silly`/
+  `proud`/`milestone`/`gift`/`victory`/`creative`) lifts `warmth`, tender
+  (`tender`/`vulnerable`/`comfort`/`repair`) lifts `tenderness`; both
+  saturate so a couple of strong beats is enough and one warm moment in a
+  40-member cluster doesn't read as "all warm". **Computed live in the
+  provider — no worker, no kv, no schema:** shared moments are few, so the
+  per-turn cost is one embed (usually a cache hit — novelty / knowledge-
+  grounding embed the same `user_text`) + a few centroid dots + a member
+  walk over the *one* matched cluster. Paced by a global turn cooldown.
+  Pure scoring in
+  [`topic_temperature.py`](../../app/core/conversation/topic_temperature.py)
+  (`score_cluster` / `render_block` / `ClusterTemperature`); provider
+  `_render_topic_temperature_block(user_text)` in
+  [`inner_life_part2.py`](../../app/core/session/inner_life_part2.py),
+  registered in the **T6** tier right after the F10f gap-notice block (all
+  topic-graph-derived cues clustered), dropped under `aggressive=True`.
+  Persona: the "Topics that carry weight" block in
+  [`aiko_companion.txt`](../../data/persona/aiko_companion.txt) teaches the
+  warm-vs-tender register (it's a tone shift, never a line said out loud).
+  Settings: `agent.topic_temperature_enabled` + `memory.topic_temperature_*`
+  (`min_sim` 0.45, `threshold` 0.5, `cooldown_turns` 6). MCP:
+  `get_topic_temperature_state` (dry-run scan of every charged cluster) +
+  `force_topic_temperature_surface` (drops cooldown + thresholds on the
+  next turn). Logs `topic-temperature fire:` per surfacing. Tests:
+  [`tests/test_topic_temperature.py`](../../tests/test_topic_temperature.py)
+  (pure module + provider) + a settings round-trip in `test_settings.py`.
+  Pairs with K8 rupture-repair (don't barrel into a tender cluster).
 - **F10i. Per-topic confidence self-model (metacognition).** Distinct
   from F10f, which *researches* gaps — this lets Aiko *express* how much
   she actually knows about a topic. Derive a per-cluster confidence from
@@ -458,13 +487,16 @@ those primitives — none needs a schema change beyond a `kv_meta` row.
   the cluster representative? (Pin the label to the cluster id, not the
   representative.)
 
-**Effort.** F10a/F10b/F10e small-medium each; F10c/F10d medium. **F10a-f
-are shipped** (F10f = the self-aware knowledge-gap notice; F9 already
+**Effort.** F10a/F10b/F10e small-medium each; F10c/F10d medium. **F10a-f +
+F10h are shipped** (F10f = the self-aware knowledge-gap notice; F9 already
 covered research-targeting and the K35 consolidation re-scope moved to
-F10j). Remaining: the new F10g-F10l batch — F10j/F10k are low-risk
-re-scopings,
-F10g/F10h/F10i are medium (worker + prompt block each), F10l is a
-self-contained UX slice. Several overlap the K64 mind-wandering family in
-[`patterns.md`](patterns.md) (esp. F10h/F10i vs K64b interest-drift) —
+F10j; F10h = per-cluster topic temperature from shared-moment vibes,
+provider-only). Remaining: F10g/F10i/F10j/F10k/F10l — F10j/F10k are
+low-risk re-scopings, F10g/F10i are medium (worker + prompt block each),
+F10l is a self-contained UX slice. Several overlap the K64 mind-wandering
+family in [`patterns.md`](patterns.md) (esp. F10i vs K64b interest-drift) —
 cross-check before picking one up so two passes don't build the same
-per-cluster aggregator twice.
+per-cluster aggregator twice. **F10h note:** it computes temperature live
+in the provider (shared moments are cheap), so any future per-cluster
+aggregator (F10i confidence, K64b drift) could share that member-walk
+pattern rather than each re-deriving it.

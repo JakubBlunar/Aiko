@@ -44,11 +44,11 @@ prompt for the next brainstorm, not a queue.
 
 - **F4.** Source-cited memories (`metadata.source_url`).
 - **F5.** Conflicting-memory detector.
-- **F10.** Topic-graph utilisation. **F10a-f shipped** (LLM cluster
+- **F10.** Topic-graph utilisation. **F10a-f + F10h shipped** (LLM cluster
   labels, RAG diversity, multi-hop expansion, cluster-scoped `recall_topic`,
-  interest-map prompt block, self-aware knowledge-gap notice). **Open:**
-  F10g per-cluster digest memory; F10h topic temperature
-  (per-cluster affect); F10i per-topic confidence self-model; F10j
+  interest-map prompt block, self-aware knowledge-gap notice, per-cluster
+  topic temperature from shared-moment vibes). **Open:**
+  F10g per-cluster digest memory; F10i per-topic confidence self-model; F10j
   cluster-scoped memory hygiene (also owns F10f's K35-consolidation
   re-scope); F10k semantic topic tracking for K6/K18;
   F10l cluster management UX.

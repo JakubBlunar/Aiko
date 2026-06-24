@@ -198,6 +198,12 @@ class AgentSettings:
     # Off → the KnowledgeGapNoticeWorker never registers and the inner-life
     # provider stays empty. Cadence / thresholds live under MemorySettings.
     knowledge_gap_notice_enabled: bool = True
+    # F10h: master switch for the per-cluster affect ("topic temperature")
+    # cue. When on, a turn that lands on a warm / tender topic cluster gets
+    # a one-line tonal nudge so Aiko meets it with the right register. Off
+    # → the provider stays empty. Computed live from shared-moment vibes
+    # (no worker); thresholds / cooldown live under MemorySettings.
+    topic_temperature_enabled: bool = True
     # ── K61 personality backlog: knowledge-grounding steer ────────────
     # Master switch for the ``knowledge_grounding`` inner-life block
     # (:meth:`InnerLifeProvidersMixin._render_knowledge_grounding_block`).
