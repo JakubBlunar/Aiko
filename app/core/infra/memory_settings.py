@@ -422,6 +422,18 @@ class MemorySettings:
     # Global cooldown (in turns) after a temperature cue fires, so a
     # charged topic isn't re-nudged every single turn it comes up.
     topic_temperature_cooldown_turns: int = 6
+    # ── F10i: per-topic confidence self-model ────────────────────────────
+    # Minimum centroid cosine for the live turn to count as "on" a topic
+    # cluster before its confidence is judged (mirrors the temperature gate).
+    topic_confidence_min_sim: float = 0.45
+    # Confidence (in [0, 1]) at/below which the topic reads as *thin* ground
+    # → hedge / ask. Genuinely small clusters; F10f owns dense-but-thin.
+    topic_confidence_thin_threshold: float = 0.25
+    # Confidence at/above which the topic reads as *familiar* ground →
+    # stop over-hedging. Rich clusters with real learned-fact coverage.
+    topic_confidence_familiar_threshold: float = 0.7
+    # Global cooldown (in turns) after a confidence cue fires.
+    topic_confidence_cooldown_turns: int = 6
     # K61: minimum cosine similarity for a learned fact to count as
     # "relevant to what the user just asked" in the knowledge-grounding
     # inner-life block. Higher → the steer fires only on a tight
@@ -1138,6 +1150,37 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             topic_temperature_cooldown_turns=max(
                 0,
                 int(memory_raw.get("topic_temperature_cooldown_turns", 6)),
+            ),
+            topic_confidence_min_sim=max(
+                0.0,
+                min(
+                    1.0,
+                    float(memory_raw.get("topic_confidence_min_sim", 0.45)),
+                ),
+            ),
+            topic_confidence_thin_threshold=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get("topic_confidence_thin_threshold", 0.25)
+                    ),
+                ),
+            ),
+            topic_confidence_familiar_threshold=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get(
+                            "topic_confidence_familiar_threshold", 0.7
+                        )
+                    ),
+                ),
+            ),
+            topic_confidence_cooldown_turns=max(
+                0,
+                int(memory_raw.get("topic_confidence_cooldown_turns", 6)),
             ),
             knowledge_grounding_min_similarity=max(
                 0.0,

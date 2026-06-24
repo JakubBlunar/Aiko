@@ -204,6 +204,13 @@ class AgentSettings:
     # → the provider stays empty. Computed live from shared-moment vibes
     # (no worker); thresholds / cooldown live under MemorySettings.
     topic_temperature_enabled: bool = True
+    # F10i: master switch for the per-topic confidence self-model. When on,
+    # a turn that lands on a *thin* topic cluster nudges Aiko to admit she
+    # doesn't know much yet (rather than bluff), and a *rich* one nudges her
+    # to stop over-hedging. Off → the provider stays empty. Computed live
+    # from cluster size + learned-fact coverage (no worker); thresholds /
+    # cooldown live under MemorySettings.
+    topic_confidence_enabled: bool = True
     # ── K61 personality backlog: knowledge-grounding steer ────────────
     # Master switch for the ``knowledge_grounding`` inner-life block
     # (:meth:`InnerLifeProvidersMixin._render_knowledge_grounding_block`).

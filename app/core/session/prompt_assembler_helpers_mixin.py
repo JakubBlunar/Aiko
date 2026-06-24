@@ -124,6 +124,7 @@ class PromptAssemblerHelpersMixin:
         knowledge_gaps: Callable[[str], str] | None = None,
         knowledge_gap_notice: Callable[[str], str] | None = None,
         topic_temperature: Callable[[str], str] | None = None,
+        topic_confidence: Callable[[str], str] | None = None,
         knowledge_grounding: Callable[[str], str] | None = None,
         belief_gaps: Callable[[], str] | None = None,
         clarification: Callable[[], str] | None = None,
@@ -224,6 +225,8 @@ class PromptAssemblerHelpersMixin:
             self._knowledge_gap_notice_provider = knowledge_gap_notice
         if topic_temperature is not None:
             self._topic_temperature_provider = topic_temperature
+        if topic_confidence is not None:
+            self._topic_confidence_provider = topic_confidence
         if knowledge_grounding is not None:
             self._knowledge_grounding_provider = knowledge_grounding
         if belief_gaps is not None:
