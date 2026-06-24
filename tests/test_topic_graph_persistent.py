@@ -466,5 +466,45 @@ class KnowledgeGapClustersTests(unittest.TestCase):
         self.assertEqual(g.knowledge_gap_clusters(), [])
 
 
+class ClusterKnowledgeStatsTests(unittest.TestCase):
+    """F10i reader: ``cluster_knowledge_stats`` (size + learned_count)."""
+
+    def _graph(self, mem, cs) -> TopicGraph:
+        return TopicGraph(
+            mem, similarity=0.55, min_cluster_size=2,
+            filter_threshold=0.65, cluster_store=cs,
+        )
+
+    def test_counts_learned_kinds(self) -> None:
+        mem = _gap_store()
+        _, cs = _cluster_store()
+        g = self._graph(mem, cs)
+        clusters = g.topic_clusters()  # build + warm
+        by_label = {
+            (c.summary or "").split()[0].lower(): c for c in clusters
+        }
+        # python: 3 members, 0 learned (all "fact").
+        py = by_label["python"]
+        self.assertEqual(g.cluster_knowledge_stats(py.cluster_id), (3, 0))
+        # guitar: 3 members, 1 learned ("knowledge").
+        guitar = by_label["guitar"]
+        self.assertEqual(g.cluster_knowledge_stats(guitar.cluster_id), (3, 1))
+        # wine: 3 members, 3 learned (all "knowledge").
+        wine = by_label["wine"]
+        self.assertEqual(g.cluster_knowledge_stats(wine.cluster_id), (3, 3))
+
+    def test_unknown_cluster_returns_none(self) -> None:
+        mem = _gap_store()
+        _, cs = _cluster_store()
+        g = self._graph(mem, cs)
+        g.topic_clusters()
+        self.assertIsNone(g.cluster_knowledge_stats(999999))
+
+    def test_non_persistent_returns_none(self) -> None:
+        g = TopicGraph(_gap_store(), min_cluster_size=2)
+        self.assertFalse(g.persistent)
+        self.assertIsNone(g.cluster_knowledge_stats(1))
+
+
 if __name__ == "__main__":
     unittest.main()

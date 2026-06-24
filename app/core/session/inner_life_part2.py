@@ -1184,6 +1184,126 @@ class InnerLifePart2Mixin:
         )
         return line
 
+    def _render_topic_confidence_block(self, user_text: str) -> str:
+        """F10i: calibrate how confidently Aiko speaks about the live topic.
+
+        Maps ``user_text`` to its nearest topic cluster
+        (``TopicGraph.best_clusters_for``), reads that cluster's
+        ``(size, learned_count)`` (``TopicGraph.cluster_knowledge_stats``),
+        scores a per-topic confidence
+        (:func:`~app.core.conversation.topic_confidence.score_confidence`),
+        and surfaces a one-line register nudge on the extremes: **thin**
+        ground → it's okay to admit she doesn't know much and ask rather
+        than bluff; **familiar** ground → trust what she knows, stop
+        over-hedging. The silent middle is the common case. A topic-scoped
+        sibling of K20 metacognitive calibration.
+
+        Distinct from F10f (which owns the *dense-but-unresearched* "I keep
+        circling X" beat — those clusters score mid/high here, so they
+        never read as thin) and from K61 knowledge-grounding (which pushes
+        *specific facts* on informational turns — the familiar band here is
+        only an anti-over-hedge register cue, no content). Computed live in
+        the provider (no worker / kv); same cheap shape as F10h. MCP debug:
+        ``force_topic_confidence_surface`` arms ``_topic_confidence_force_next``
+        to bypass the cooldown + min-sim and force a band on the matched
+        cluster.
+        """
+        if not bool(
+            getattr(self._settings.agent, "topic_confidence_enabled", True)
+        ):
+            return ""
+        text = (user_text or "").strip()
+        if len(text) < 8:
+            return ""
+        graph = getattr(self, "_topic_graph", None)
+        embedder = getattr(self, "_embedder", None)
+        if graph is None or embedder is None:
+            return ""
+        if not bool(getattr(graph, "persistent", False)):
+            return ""
+
+        force = bool(getattr(self, "_topic_confidence_force_next", False))
+        if force:
+            self._topic_confidence_force_next = False
+
+        cooldown = int(getattr(self, "_topic_confidence_cooldown", 0) or 0)
+        if cooldown > 0 and not force:
+            self._topic_confidence_cooldown = cooldown - 1
+            return ""
+
+        mem_settings = self._memory_settings
+        min_sim = float(
+            getattr(mem_settings, "topic_confidence_min_sim", 0.45)
+        )
+        thin = float(
+            getattr(mem_settings, "topic_confidence_thin_threshold", 0.25)
+        )
+        familiar = float(
+            getattr(mem_settings, "topic_confidence_familiar_threshold", 0.7)
+        )
+        if force:
+            # Force a band on whatever cluster matches: split at 0.5.
+            min_sim, thin, familiar = 0.0, 0.5, 0.5
+
+        try:
+            qvec = embedder.embed(text)
+        except Exception:
+            log.debug("topic-confidence: embed failed", exc_info=True)
+            return ""
+        try:
+            matches = graph.best_clusters_for(qvec, top_n=1, min_sim=min_sim)
+        except Exception:
+            log.debug("topic-confidence: best_clusters_for failed", exc_info=True)
+            return ""
+        if not matches:
+            return ""
+        cid, label, _sim = matches[0]
+
+        try:
+            stats = graph.cluster_knowledge_stats(cid)
+        except Exception:
+            log.debug("topic-confidence: stats failed", exc_info=True)
+            return ""
+        if stats is None:
+            return ""
+        size, learned = stats
+
+        from app.core.conversation.topic_confidence import (
+            render_block,
+            score_confidence,
+        )
+
+        conf = score_confidence(
+            size, learned, thin_threshold=thin, familiar_threshold=familiar,
+        )
+        if conf.band is None:
+            return ""
+        line = render_block(conf, label or "this topic", self.user_display_name)
+        if not line:
+            return ""
+
+        self._topic_confidence_cooldown = max(
+            0, int(getattr(mem_settings, "topic_confidence_cooldown_turns", 6))
+        )
+        self._topic_confidence_last = {
+            "cluster_id": int(cid),
+            "label": label,
+            "size": conf.size,
+            "learned_count": conf.learned_count,
+            "confidence": conf.confidence,
+            "band": conf.band,
+        }
+        log.info(
+            "topic-confidence fire: cluster=%s band=%s confidence=%.2f "
+            "size=%d learned=%d",
+            cid,
+            conf.band,
+            conf.confidence,
+            conf.size,
+            conf.learned_count,
+        )
+        return line
+
     def _render_promise_followthrough_block(self) -> str:
         """K43: surface one "close the loop on what you said you'd do" cue.
 

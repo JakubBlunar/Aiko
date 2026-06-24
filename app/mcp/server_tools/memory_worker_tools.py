@@ -1335,4 +1335,107 @@ def register(mcp, session: "SessionController") -> None:
         except Exception as exc:
             return f"force_topic_temperature_surface raised: {exc}"
 
+    @mcp.tool()
+    def get_topic_confidence_state() -> str:
+        """F10i — dump per-topic confidence self-model state.
+
+        Shows the master switch, the similarity / thin / familiar / cooldown
+        knobs, the live cooldown remaining, the last fire, and a dry-run
+        scan of every cluster's confidence (size + learned-fact coverage),
+        listing only the *banded* ones (thin → hedge, familiar → speak
+        from what you know). First stop for "why did Aiko bluff / over-hedge
+        about that topic?".
+        """
+        out: dict[str, Any] = {
+            "enabled": bool(
+                getattr(
+                    session._settings.agent, "topic_confidence_enabled", True
+                )
+            ),
+            "provider_force_next": bool(
+                getattr(session, "_topic_confidence_force_next", False)
+            ),
+            "cooldown_remaining": int(
+                getattr(session, "_topic_confidence_cooldown", 0) or 0
+            ),
+            "last_fire": getattr(session, "_topic_confidence_last", None),
+        }
+        mem = getattr(session, "_memory_settings", None)
+        out["settings"] = {
+            "min_sim": float(getattr(mem, "topic_confidence_min_sim", 0.45)),
+            "thin_threshold": float(
+                getattr(mem, "topic_confidence_thin_threshold", 0.25)
+            ),
+            "familiar_threshold": float(
+                getattr(mem, "topic_confidence_familiar_threshold", 0.7)
+            ),
+            "cooldown_turns": int(
+                getattr(mem, "topic_confidence_cooldown_turns", 6)
+            ),
+        }
+        graph = getattr(session, "_topic_graph", None)
+        if graph is not None:
+            try:
+                from app.core.conversation.topic_confidence import (
+                    score_confidence,
+                )
+
+                learned_kinds = {"knowledge", "curiosity_finding"}
+                thin = out["settings"]["thin_threshold"]
+                familiar = out["settings"]["familiar_threshold"]
+                banded: list[dict[str, Any]] = []
+                for cluster in graph.topic_clusters():
+                    kinds = getattr(cluster, "member_kinds", ()) or ()
+                    size = len(kinds)
+                    learned = sum(1 for k in kinds if k in learned_kinds)
+                    conf = score_confidence(
+                        size,
+                        learned,
+                        thin_threshold=thin,
+                        familiar_threshold=familiar,
+                    )
+                    if conf.band is None:
+                        continue
+                    banded.append(
+                        {
+                            "cluster_id": cluster.cluster_id,
+                            "label": (cluster.summary or "")[:120],
+                            "band": conf.band,
+                            "confidence": conf.confidence,
+                            "size": conf.size,
+                            "learned_count": conf.learned_count,
+                        }
+                    )
+                out["banded_clusters"] = banded
+            except Exception as exc:  # pragma: no cover -- diag tool
+                out["banded_clusters_error"] = str(exc)
+        return json.dumps(out, indent=2, default=str)
+
+    @mcp.tool()
+    def force_topic_confidence_surface() -> str:
+        """F10i — arm a one-shot bypass on the topic-confidence provider.
+
+        Sets ``_topic_confidence_force_next`` so the next provider call
+        ignores the cooldown, drops ``min_sim`` to 0, and splits the bands
+        at 0.5 (so the matched cluster always lands in thin or familiar).
+        Then ``send_message`` with text on that topic and verify the hedge
+        / earned-familiarity line lands in ``get_last_response_detail``'s
+        system_prompt.
+        """
+        try:
+            session._topic_confidence_force_next = True
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next provider call ignores cooldown + min_sim and "
+                        "forces a thin/familiar band (split at 0.5) on the "
+                        "matched cluster"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_topic_confidence_surface raised: {exc}"
+
 

@@ -440,16 +440,41 @@ those primitives — none needs a schema change beyond a `kv_meta` row.
   [`tests/test_topic_temperature.py`](../../tests/test_topic_temperature.py)
   (pure module + provider) + a settings round-trip in `test_settings.py`.
   Pairs with K8 rupture-repair (don't barrel into a tender cluster).
-- **F10i. Per-topic confidence self-model (metacognition).** Distinct
-  from F10f, which *researches* gaps — this lets Aiko *express* how much
-  she actually knows about a topic. Derive a per-cluster confidence from
-  member count + `kind="knowledge"` coverage + recency, so when the turn
-  lands on a thin cluster she hedges proportionally ("I only know a
-  little about your work, but…") and on a rich one she speaks with earned
-  familiarity. A topic-scoped extension of K20 metacognitive calibration.
-  Key files: a cheap per-cluster stat on `topic_graph`, an inner-life
-  provider. **Open Q:** fold this into the F10e interest-map block (which
-  already names the top clusters) rather than a second block?
+- **F10i. Per-topic confidence self-model (metacognition).** **SHIPPED.**
+  Distinct from F10f, which *researches* gaps — this lets Aiko *express*
+  how much she actually knows about a topic. When the live turn maps (via
+  `best_clusters_for`) to a cluster, she reads its confidence from
+  `(size, learned_count)` — size = conversational familiarity,
+  learned_count = `kind in {knowledge, curiosity_finding}` rows = studied
+  facts — blended (0.6·size + 0.4·learned, both saturating) into a `[0, 1]`
+  score and banded: **thin** (hedge / ask rather than bluff), **familiar**
+  (stop over-hedging on what she clearly knows), or silent (the common
+  middle). A topic-scoped extension of K20 metacognitive calibration.
+  **Separation:** F10f owns *dense-but-unresearched* clusters (high size,
+  ~0 knowledge) — those score mid/high here, so they never read as thin;
+  the familiar band is an anti-over-hedge *register* cue only, NOT K61's
+  "name these specific facts" content push. **Resolved open Q:** kept as
+  its own **T6** block, NOT folded into the F10e interest map — the
+  interest map is turn-independent (T1) while this is query-aware (depends
+  on the live turn's cluster). Cheap reader `cluster_knowledge_stats`
+  ([`topic_graph.py`](../../app/core/conversation/topic_graph.py),
+  `O(members)` mirror join, no warm-start); pure scoring in
+  [`topic_confidence.py`](../../app/core/conversation/topic_confidence.py);
+  provider `_render_topic_confidence_block(user_text)` in
+  [`inner_life_part2.py`](../../app/core/session/inner_life_part2.py),
+  registered in T6 right after the F10h temperature block (all
+  topic-graph cues clustered), dropped under `aggressive=True`, paced by a
+  global turn cooldown. Persona: the "How much you actually know" block in
+  [`aiko_companion.txt`](../../data/persona/aiko_companion.txt). Settings:
+  `agent.topic_confidence_enabled` + `memory.topic_confidence_*`
+  (`min_sim` 0.45, `thin_threshold` 0.25, `familiar_threshold` 0.7,
+  `cooldown_turns` 6). MCP: `get_topic_confidence_state` (dry-run scan of
+  every banded cluster) + `force_topic_confidence_surface` (drops cooldown
+  + min_sim, splits bands at 0.5). Logs `topic-confidence fire:`. Tests:
+  [`tests/test_topic_confidence.py`](../../tests/test_topic_confidence.py),
+  a `ClusterKnowledgeStatsTests` block in
+  [`tests/test_topic_graph_persistent.py`](../../tests/test_topic_graph_persistent.py),
+  + a settings round-trip in `test_settings.py`.
 - **F10j. Cluster-scoped memory hygiene.** (Also absorbs the K35
   consolidation-targeting sub-part of the original F10f — its F9 research
   half shipped with F9 and its notice half shipped as the F10f beat, so
@@ -488,15 +513,17 @@ those primitives — none needs a schema change beyond a `kv_meta` row.
   representative.)
 
 **Effort.** F10a/F10b/F10e small-medium each; F10c/F10d medium. **F10a-f +
-F10h are shipped** (F10f = the self-aware knowledge-gap notice; F9 already
-covered research-targeting and the K35 consolidation re-scope moved to
-F10j; F10h = per-cluster topic temperature from shared-moment vibes,
-provider-only). Remaining: F10g/F10i/F10j/F10k/F10l — F10j/F10k are
-low-risk re-scopings, F10g/F10i are medium (worker + prompt block each),
+F10h + F10i are shipped** (F10f = the self-aware knowledge-gap notice; F9
+already covered research-targeting and the K35 consolidation re-scope
+moved to F10j; F10h = per-cluster topic temperature from shared-moment
+vibes; F10i = per-topic confidence self-model from size + learned-fact
+coverage — both provider-only). Remaining: F10g/F10j/F10k/F10l — F10j/F10k
+are low-risk re-scopings, F10g is medium (digest worker + prompt block),
 F10l is a self-contained UX slice. Several overlap the K64 mind-wandering
-family in [`patterns.md`](patterns.md) (esp. F10i vs K64b interest-drift) —
+family in [`patterns.md`](patterns.md) (esp. K64b interest-drift) —
 cross-check before picking one up so two passes don't build the same
-per-cluster aggregator twice. **F10h note:** it computes temperature live
-in the provider (shared moments are cheap), so any future per-cluster
-aggregator (F10i confidence, K64b drift) could share that member-walk
-pattern rather than each re-deriving it.
+per-cluster aggregator twice. **Provider-walk note:** F10h/F10i both
+compute their per-cluster signal live in the provider (member walk over
+the *one* matched cluster — cheap), so any future per-cluster aggregator
+(K64b drift, F10g digest input) can share `cluster_member_ids` /
+`cluster_knowledge_stats` rather than re-deriving it.

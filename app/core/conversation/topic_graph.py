@@ -92,6 +92,13 @@ _DEFAULT_SIMILARITY: float = 0.55
 _DEFAULT_MIN_CLUSTER_SIZE: int = 3
 _DEFAULT_FILTER_THRESHOLD: float = 0.65
 
+# F10i: memory kinds that count as *learned facts* about a topic (as
+# opposed to incidental conversational rows). ``knowledge`` rows come
+# from F9 enrichment, ``curiosity_finding`` from the G3 curiosity worker;
+# both represent something Aiko has actually studied. Used by
+# ``cluster_knowledge_stats`` to score per-topic confidence.
+_LEARNED_KINDS: frozenset[str] = frozenset({"knowledge", "curiosity_finding"})
+
 # Upper bound on the per-node neighbour fan-out. Keeps the mutual-k-NN
 # graph sparse on large corpora even though ``k`` grows with ``log2(n)``.
 _K_MAX: int = 12
@@ -741,6 +748,54 @@ class TopicGraph:
             if cluster is None:
                 return []
             return sorted(int(m) for m in cluster.member_ids)
+
+    def cluster_knowledge_stats(
+        self, cluster_id: int
+    ) -> tuple[int, int] | None:
+        """F10i: ``(size, learned_count)`` for a live cluster, or ``None``.
+
+        ``learned_count`` is how many of the cluster's members are
+        *learned-fact* rows -- ``kind`` in ``_LEARNED_KINDS`` (``knowledge``
+        from F9 enrichment, ``curiosity_finding`` from G3) -- i.e. things
+        Aiko has actually studied about the topic, as opposed to incidental
+        conversational memories. Feeds the per-topic confidence self-model
+        (a thin cluster -> hedge, a rich + well-learned one -> earned
+        familiarity).
+
+        Cheap ``O(members)`` join to the mirror, mirroring
+        :meth:`_live_to_topic_clusters_locked`: member ids are read under
+        ``self._lock`` then the lock is released before the per-member
+        ``memory_store.get`` calls (TG->MS order, never the inverse, so no
+        deadlock and no holding the graph lock across the store lock).
+        Does **not** force a warm-start (the caller has typically just
+        warmed the graph via :meth:`best_clusters_for`); an un-warmed or
+        unknown cluster returns ``None``. Always ``None`` in the
+        non-persistent / in-memory mode.
+        """
+        if not self.persistent:
+            return None
+        try:
+            cid = int(cluster_id)
+        except (TypeError, ValueError):
+            return None
+        with self._lock:
+            cluster = self._live.get(cid)
+            if cluster is None:
+                return None
+            member_ids = list(cluster.member_ids)
+        get = self._memory_store.get
+        size = 0
+        learned = 0
+        for mid in member_ids:
+            mem = get(mid)
+            if mem is None:
+                continue
+            size += 1
+            if str(mem.kind) in _LEARNED_KINDS:
+                learned += 1
+        if size == 0:
+            return None
+        return (size, learned)
 
     def best_clusters_for(
         self,
