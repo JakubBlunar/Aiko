@@ -136,6 +136,9 @@ def _build(
     expand_max: int = 2,
     trigger: float = 0.55,
     min_sim: float = 0.45,
+    digest_provider: Any | None = None,
+    digest_surface: bool = True,
+    digest_cap: int = 1,
 ) -> tuple[RagRetriever, _MemoryStore]:
     ms = _MemoryStore(store_mems)
     retriever = RagRetriever(
@@ -151,6 +154,9 @@ def _build(
         expand_max=expand_max,
         expand_trigger_score=trigger,
         expand_min_sim=min_sim,
+        topic_digest_surface_enabled=digest_surface,
+        digest_sibling_cap=digest_cap,
+        topic_digest_provider=digest_provider,
     )
     retriever.set_topic_graph(graph)  # type: ignore[arg-type]
     return retriever, ms
@@ -235,6 +241,127 @@ class FormatBlockExpansionTests(unittest.TestCase):
         self.assertIn("memory 1", before)
         self.assertIn("memory 2", after)
         self.assertNotIn("memory 2", before)
+
+
+class DigestSurfacingTests(unittest.TestCase):
+    """F10g — the cluster digest surfaces as the coarse line + caps siblings."""
+
+    def _store_with_digest(self) -> dict[int, _Mem]:
+        return {
+            2: _Mem(2, "sibling two", _e(0)),
+            3: _Mem(3, "sibling three", _e(0)),
+            4: _Mem(4, "sibling four", _e(0)),
+            99: _Mem(99, "what I know about X", _e(0), kind="topic_digest"),
+        }
+
+    def test_digest_surfaces_and_caps_siblings(self) -> None:
+        hits = [_mem_hit(1, 0.9)]
+        graph = _StubGraph(cluster_of={1: 10}, members={10: [1, 2, 3, 4]})
+        retriever, ms = _build(
+            hits=hits,
+            store_mems=self._store_with_digest(),
+            graph=graph,
+            expand_max=3,
+            digest_provider=lambda cid: 99 if cid == 10 else None,
+            digest_cap=1,
+        )
+        results = retriever.retrieve("x")
+        ids = _ids(results)
+        # anchor + digest + exactly one capped sibling.
+        self.assertIn(99, ids)
+        self.assertEqual(ids[0], 1)
+        sibling_ids = [i for i in ids if i in (2, 3, 4)]
+        self.assertEqual(len(sibling_ids), 1)
+        # The digest hit is flagged expansion and carries its kind.
+        digest_hit = next(h for h in results if int(h.record.id) == 99)
+        self.assertTrue(digest_hit.expansion)
+        self.assertEqual((digest_hit.record.kind or "").lower(), "topic_digest")
+
+    def test_digest_cap_zero_yields_digest_only(self) -> None:
+        hits = [_mem_hit(1, 0.9)]
+        graph = _StubGraph(cluster_of={1: 10}, members={10: [1, 2, 3, 4]})
+        retriever, _ = _build(
+            hits=hits,
+            store_mems=self._store_with_digest(),
+            graph=graph,
+            expand_max=3,
+            digest_provider=lambda cid: 99,
+            digest_cap=0,
+        )
+        ids = _ids(retriever.retrieve("x"))
+        self.assertIn(99, ids)
+        self.assertEqual([i for i in ids if i in (2, 3, 4)], [])
+
+    def test_no_provider_falls_back_to_siblings(self) -> None:
+        hits = [_mem_hit(1, 0.9)]
+        graph = _StubGraph(cluster_of={1: 10}, members={10: [1, 2, 3, 4]})
+        retriever, _ = _build(
+            hits=hits,
+            store_mems=self._store_with_digest(),
+            graph=graph,
+            expand_max=3,
+            digest_provider=None,
+        )
+        ids = _ids(retriever.retrieve("x"))
+        self.assertNotIn(99, ids)
+        # Pure F10c: anchor + up to expand_max real siblings (not the digest).
+        self.assertEqual(sorted(i for i in ids if i in (2, 3, 4)), [2, 3, 4])
+
+    def test_stale_provider_entry_ignored(self) -> None:
+        # Provider points at a memory id that doesn't exist -> graceful skip.
+        hits = [_mem_hit(1, 0.9)]
+        graph = _StubGraph(cluster_of={1: 10}, members={10: [1, 2, 3]})
+        retriever, _ = _build(
+            hits=hits,
+            store_mems={2: _Mem(2, "s2", _e(0)), 3: _Mem(3, "s3", _e(0))},
+            graph=graph,
+            expand_max=3,
+            digest_provider=lambda cid: 12345,
+        )
+        ids = _ids(retriever.retrieve("x"))
+        self.assertNotIn(12345, ids)
+        self.assertEqual(sorted(i for i in ids if i in (2, 3)), [2, 3])
+
+    def test_wrong_kind_provider_entry_ignored(self) -> None:
+        # Provider points at a non-digest memory -> not surfaced as digest.
+        hits = [_mem_hit(1, 0.9)]
+        graph = _StubGraph(cluster_of={1: 10}, members={10: [1, 2]})
+        retriever, _ = _build(
+            hits=hits,
+            store_mems={2: _Mem(2, "fact two", _e(0), kind="fact")},
+            graph=graph,
+            expand_max=3,
+            digest_provider=lambda cid: 2,  # id 2 is a plain fact
+        )
+        ids = _ids(retriever.retrieve("x"))
+        # id 2 still appears as a normal sibling, never as the capped digest
+        # line (sibling cap would have been 1 had it been treated as digest).
+        self.assertIn(2, ids)
+
+    def test_digest_renders_in_own_section(self) -> None:
+        direct = _mem_hit(1, 0.9)
+        digest = RagHit(
+            source="memory",
+            score=0.8,
+            record=MemoryRecord(
+                id="99",
+                content="A running sense of the X topic.",
+                kind="topic_digest",
+                salience=0.8,
+                source_session=None,
+                source_message_id=None,
+                created_at=None,
+                last_used_at=None,
+                use_count=0,
+            ),
+            expansion=True,
+        )
+        block = RagRetriever.format_block([direct, digest], user_display_name="Jacob")
+        self.assertIn("What you know about this topic so far", block)
+        self.assertIn("A running sense of the X topic.", block)
+        # The digest text is NOT under the sibling "Related notes" header.
+        _, _, after_related = block.partition("Related notes from the same topic")
+        self.assertNotIn("A running sense of the X topic.", after_related)
 
 
 class RecallTopicTests(unittest.TestCase):

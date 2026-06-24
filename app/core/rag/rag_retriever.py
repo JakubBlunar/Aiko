@@ -619,6 +619,9 @@ class RagRetriever:
         expand_max: int = 2,
         expand_trigger_score: float = 0.55,
         expand_min_sim: float = 0.45,
+        topic_digest_surface_enabled: bool = True,
+        digest_sibling_cap: int = 1,
+        topic_digest_provider: "Callable[[int], int | None] | None" = None,
     ) -> None:
         self._store = store
         self._embedder = embedder
@@ -705,6 +708,16 @@ class RagRetriever:
         self._expand_max = max(0, int(expand_max))
         self._expand_trigger_score = float(expand_trigger_score)
         self._expand_min_sim = float(expand_min_sim)
+        # F10g — surface a cluster's stored ``topic_digest`` memory as the
+        # coarse "what I know about X" line during expansion, capping the
+        # raw sibling enumeration to ``digest_sibling_cap`` so a dense
+        # cluster contributes a gist + a couple of specifics instead of N
+        # lines. ``topic_digest_provider`` maps an anchor cluster id to its
+        # digest memory id (the :class:`TopicDigestWorker`'s live map);
+        # ``None`` keeps the pre-F10g sibling-only expansion.
+        self._topic_digest_surface_enabled = bool(topic_digest_surface_enabled)
+        self._digest_sibling_cap = max(0, int(digest_sibling_cap))
+        self._topic_digest_provider = topic_digest_provider
         # Schema v8 — IDs of memories surfaced in the last
         # :meth:`retrieve` call. ``SessionController._post_turn_inner_life``
         # reads this snapshot to run the keyword-overlap revival check
@@ -736,6 +749,19 @@ class RagRetriever:
         """
         self._topic_graph = graph
 
+    def set_topic_digest_provider(
+        self, provider: "Callable[[int], int | None] | None"
+    ) -> None:
+        """Attach (or detach) the F10g digest lookup after construction.
+
+        ``provider`` maps an anchor cluster id to its stored
+        ``topic_digest`` memory id (the :class:`TopicDigestWorker`'s live
+        ``cluster_digest_map``). SessionController builds the retriever
+        before the worker exists, so this is wired in a second pass.
+        Passing ``None`` reverts to pre-F10g sibling-only expansion.
+        """
+        self._topic_digest_provider = provider
+
     def update_settings(
         self,
         *,
@@ -749,6 +775,8 @@ class RagRetriever:
         expand_max: int | None = None,
         expand_trigger_score: float | None = None,
         expand_min_sim: float | None = None,
+        topic_digest_surface_enabled: bool | None = None,
+        digest_sibling_cap: int | None = None,
     ) -> None:
         if top_k is not None:
             self._top_k = max(0, int(top_k))
@@ -770,6 +798,10 @@ class RagRetriever:
             self._expand_trigger_score = float(expand_trigger_score)
         if expand_min_sim is not None:
             self._expand_min_sim = float(expand_min_sim)
+        if topic_digest_surface_enabled is not None:
+            self._topic_digest_surface_enabled = bool(topic_digest_surface_enabled)
+        if digest_sibling_cap is not None:
+            self._digest_sibling_cap = max(0, int(digest_sibling_cap))
 
     # ── retrieval ───────────────────────────────────────────────────────
 
@@ -1072,9 +1104,13 @@ class RagRetriever:
         # top-k) so Aiko gets the surrounding context, not just the single
         # closest line. Best-effort and bounded; a failure leaves the
         # direct top-k untouched.
+        _digest_active = (
+            self._topic_digest_surface_enabled
+            and self._topic_digest_provider is not None
+        )
         if (
             self._topic_expansion_enabled
-            and self._expand_max > 0
+            and (self._expand_max > 0 or _digest_active)
             and self._topic_graph is not None
             and self._memory_store is not None
         ):
@@ -1292,6 +1328,7 @@ class RagRetriever:
         """
         # Find the strongest memory hit and its cluster.
         anchor_cid: int | None = None
+        anchor_score: float = self._expand_trigger_score
         for hit in selected:
             if hit.source != "memory":
                 continue
@@ -1300,6 +1337,7 @@ class RagRetriever:
             cid = self._hit_cluster_id(hit)
             if cid is not None:
                 anchor_cid = cid
+                anchor_score = float(hit.score)
                 break
         if anchor_cid is None:
             return []
@@ -1308,9 +1346,7 @@ class RagRetriever:
             member_ids = self._topic_graph.cluster_member_ids(anchor_cid)
         except Exception:
             log.debug("cluster_member_ids lookup failed", exc_info=True)
-            return []
-        if not member_ids:
-            return []
+            member_ids = []
 
         # Don't re-surface anything already in the top-k this turn.
         already: set[int] = set()
@@ -1323,40 +1359,91 @@ class RagRetriever:
             except (TypeError, ValueError):
                 continue
 
-        q = np.asarray(query_embedding, dtype=np.float32).ravel()
-        q_norm = float(np.linalg.norm(q))
-        if q_norm == 0.0:
-            return []
-        q = q / q_norm
+        # F10g — surface the cluster's stored digest as the coarse "what I
+        # know about X" line. When present it replaces bulk sibling
+        # enumeration: only ``_digest_sibling_cap`` raw siblings follow.
+        digest_mem = self._lookup_cluster_digest(anchor_cid, already)
+        sibling_limit = (
+            self._digest_sibling_cap if digest_mem is not None else self._expand_max
+        )
 
         scored: list[tuple[float, "Any"]] = []
-        for mid in member_ids:
-            if mid in already:
-                continue
-            try:
-                mem = self._memory_store.get(mid)
-            except Exception:
-                continue
-            if mem is None:
-                continue
-            vec = getattr(mem, "embedding", None)
-            if vec is None:
-                continue
-            v = np.asarray(vec, dtype=np.float32).ravel()
-            v_norm = float(np.linalg.norm(v))
-            if v_norm == 0.0 or v.size != q.size:
-                continue
-            sim = float(np.dot(q, v)) / v_norm
-            if sim < self._expand_min_sim:
-                continue
-            scored.append((sim, mem))
-        if not scored:
-            return []
+        if member_ids and sibling_limit > 0:
+            q = np.asarray(query_embedding, dtype=np.float32).ravel()
+            q_norm = float(np.linalg.norm(q))
+            if q_norm != 0.0:
+                q = q / q_norm
+                for mid in member_ids:
+                    if mid in already:
+                        continue
+                    try:
+                        mem = self._memory_store.get(mid)
+                    except Exception:
+                        continue
+                    if mem is None:
+                        continue
+                    vec = getattr(mem, "embedding", None)
+                    if vec is None:
+                        continue
+                    v = np.asarray(vec, dtype=np.float32).ravel()
+                    v_norm = float(np.linalg.norm(v))
+                    if v_norm == 0.0 or v.size != q.size:
+                        continue
+                    sim = float(np.dot(q, v)) / v_norm
+                    if sim < self._expand_min_sim:
+                        continue
+                    scored.append((sim, mem))
         scored.sort(key=lambda t: t[0], reverse=True)
-        return [
+
+        out: list[RagHit] = []
+        if digest_mem is not None:
+            out.append(
+                self._memory_to_hit(digest_mem, score=anchor_score, expansion=True)
+            )
+        out.extend(
             self._memory_to_hit(mem, score=sim, expansion=True)
-            for sim, mem in scored[: self._expand_max]
-        ]
+            for sim, mem in scored[:sibling_limit]
+        )
+        return out
+
+    def _lookup_cluster_digest(
+        self, cluster_id: int, already: set[int]
+    ) -> "Any | None":
+        """Resolve the F10g digest memory for ``cluster_id`` (or ``None``).
+
+        Reads the injected provider (the :class:`TopicDigestWorker`'s live
+        ``cluster_digest_map``), then verifies the row still exists, is a
+        ``topic_digest``, and isn't already surfaced this turn. Stale
+        provider entries (between a graph rebuild and the next worker tick)
+        degrade gracefully to ``None`` -- the digest still surfaces through
+        ordinary cosine RAG, it just doesn't get the special expansion
+        treatment that turn.
+        """
+        if not self._topic_digest_surface_enabled:
+            return None
+        provider = self._topic_digest_provider
+        if provider is None or self._memory_store is None:
+            return None
+        try:
+            mem_id = provider(int(cluster_id))
+        except Exception:
+            log.debug("topic_digest provider raised", exc_info=True)
+            return None
+        if mem_id is None:
+            return None
+        try:
+            mid = int(mem_id)
+        except (TypeError, ValueError):
+            return None
+        if mid in already:
+            return None
+        try:
+            mem = self._memory_store.get(mid)
+        except Exception:
+            return None
+        if mem is None or str(getattr(mem, "kind", "")) != "topic_digest":
+            return None
+        return mem
 
     @staticmethod
     def _memory_to_hit(mem: "Any", *, score: float, expansion: bool = False) -> RagHit:
@@ -1518,15 +1605,23 @@ class RagRetriever:
         message_lines: list[str] = []
         document_lines: list[str] = []
         expansion_lines: list[str] = []
+        digest_lines: list[str] = []
         now = datetime.now(timezone.utc)
         for hit in hits:
             text = (hit.text or "").strip()
             if not text:
                 continue
-            # F10c — sibling memories pulled in by topic expansion render
-            # in their own associative section, not the direct-recall list.
+            # F10c/F10g — associative pulls (sibling members + the cluster
+            # digest) render in their own sections, not the direct-recall
+            # list. A digest is a paragraph "what I know about X", so it
+            # gets a clearer label and a longer truncation than the bullet
+            # siblings.
             if getattr(hit, "expansion", False):
-                expansion_lines.append(f"- {_truncate(text, 240)}")
+                kind = (getattr(hit.record, "kind", "") or "").lower()
+                if kind == "topic_digest":
+                    digest_lines.append(_truncate(text, 600))
+                else:
+                    expansion_lines.append(f"- {_truncate(text, 240)}")
                 continue
             if hit.source == "memory":
                 kind = (getattr(hit.record, "kind", "") or "").lower()
@@ -1646,6 +1741,12 @@ class RagRetriever:
             )
         if document_lines:
             sections.append("From your notes:\n" + "\n".join(document_lines))
+        if digest_lines:
+            sections.append(
+                "What you know about this topic so far (your own running "
+                "sense of it — lean on it only if it fits naturally):\n"
+                + "\n".join(digest_lines)
+            )
         if expansion_lines:
             sections.append(
                 "Related notes from the same topic (you've circled around this "

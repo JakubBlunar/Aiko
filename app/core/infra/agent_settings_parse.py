@@ -180,6 +180,28 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
                 8,
                 int(agent_raw.get("topic_label_max_tokens", 32)),
             ),
+            topic_digest_enabled=bool(
+                agent_raw.get("topic_digest_enabled", True),
+            ),
+            topic_digest_interval_seconds=max(
+                60.0,
+                float(agent_raw.get("topic_digest_interval_seconds", 3600.0)),
+            ),
+            topic_digest_max_per_run=max(
+                1,
+                int(agent_raw.get("topic_digest_max_per_run", 3)),
+            ),
+            topic_digest_max_tokens=max(
+                32,
+                int(agent_raw.get("topic_digest_max_tokens", 256)),
+            ),
+            topic_digest_min_cluster_size=max(
+                2,
+                int(agent_raw.get("topic_digest_min_cluster_size", 6)),
+            ),
+            topic_digest_surface_in_rag=bool(
+                agent_raw.get("topic_digest_surface_in_rag", True),
+            ),
             rag_cluster_diversity_enabled=bool(
                 agent_raw.get("rag_cluster_diversity_enabled", True),
             ),
@@ -199,6 +221,10 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             ),
             rag_expand_min_sim=float(
                 agent_raw.get("rag_expand_min_sim", 0.45),
+            ),
+            rag_digest_sibling_cap=max(
+                0,
+                int(agent_raw.get("rag_digest_sibling_cap", 1)),
             ),
             interest_map_enabled=bool(
                 agent_raw.get("interest_map_enabled", True),

@@ -729,6 +729,20 @@ class SessionController(
                                     0.45,
                                 )
                             ),
+                            topic_digest_surface_enabled=bool(
+                                getattr(
+                                    self._settings.agent,
+                                    "topic_digest_surface_in_rag",
+                                    True,
+                                )
+                            ),
+                            digest_sibling_cap=int(
+                                getattr(
+                                    self._settings.agent,
+                                    "rag_digest_sibling_cap",
+                                    1,
+                                )
+                            ),
                         )
                     except Exception:
                         log.warning("RagRetriever failed to init", exc_info=True)

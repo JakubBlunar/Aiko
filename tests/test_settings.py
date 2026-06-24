@@ -195,6 +195,37 @@ class CuriositySeedSettingsTests(unittest.TestCase):
         self.assertEqual(result.agent.topic_label_max_per_run, 1)
         self.assertEqual(result.agent.topic_label_max_tokens, 8)
 
+    def test_topic_digest_settings_round_trip(self) -> None:
+        # Defaults.
+        result = load_settings(config_path=self._write_config())
+        self.assertTrue(result.agent.topic_digest_enabled)
+        self.assertEqual(result.agent.topic_digest_interval_seconds, 3600.0)
+        self.assertEqual(result.agent.topic_digest_max_per_run, 3)
+        self.assertEqual(result.agent.topic_digest_max_tokens, 256)
+        self.assertEqual(result.agent.topic_digest_min_cluster_size, 6)
+        self.assertTrue(result.agent.topic_digest_surface_in_rag)
+        self.assertEqual(result.agent.rag_digest_sibling_cap, 1)
+        # Overrides + floors.
+        path = self._write_config(
+            agent_extra={
+                "topic_digest_enabled": False,
+                "topic_digest_interval_seconds": 5,    # below 60s floor
+                "topic_digest_max_per_run": 0,         # below min 1
+                "topic_digest_max_tokens": 1,          # below min 32
+                "topic_digest_min_cluster_size": 1,    # below min 2
+                "topic_digest_surface_in_rag": False,
+                "rag_digest_sibling_cap": -3,          # below min 0
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.topic_digest_enabled)
+        self.assertEqual(result.agent.topic_digest_interval_seconds, 60.0)
+        self.assertEqual(result.agent.topic_digest_max_per_run, 1)
+        self.assertEqual(result.agent.topic_digest_max_tokens, 32)
+        self.assertEqual(result.agent.topic_digest_min_cluster_size, 2)
+        self.assertFalse(result.agent.topic_digest_surface_in_rag)
+        self.assertEqual(result.agent.rag_digest_sibling_cap, 0)
+
     def test_rag_cluster_diversity_settings_round_trip(self) -> None:
         # Defaults.
         result = load_settings(config_path=self._write_config())

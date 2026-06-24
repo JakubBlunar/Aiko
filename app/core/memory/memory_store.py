@@ -207,6 +207,21 @@ VALID_KINDS = {
     # survey-hedging. The persona tells her to surface these naturally
     # ("oh -- try Slowdive"), never as a lecture.
     "knowledge",
+    # F10g personality backlog — a rolling, worker-LLM one-paragraph
+    # digest of a *dense topic cluster* ("what I know about X"). Written
+    # and refreshed by
+    # :class:`app.core.conversation.topic_digest_worker.TopicDigestWorker`
+    # during idle windows, one per cluster, cached by the cluster's
+    # representative id and only regenerated on material size drift.
+    # Carries ``{cluster_representative_id, member_count, refreshed_at,
+    # source_ids}`` in the ``metadata`` JSON column. Lives in the normal
+    # pool (decays, pinnable, shows in the Memory tab) but is EXCLUDED
+    # from topic-graph clustering (it's a derived artifact, not a raw
+    # memory — see ``topic_graph._NON_CLUSTERING_KINDS``) and from the
+    # F5/K35 hygiene allow-lists. Surfaces through ordinary cosine RAG as
+    # the coarse answer, and the F10c expansion path prefers it over raw
+    # sibling enumeration to cap prompt size on big clusters.
+    "topic_digest",
 }
 
 

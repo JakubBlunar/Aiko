@@ -99,6 +99,15 @@ _DEFAULT_FILTER_THRESHOLD: float = 0.65
 # ``cluster_knowledge_stats`` to score per-topic confidence.
 _LEARNED_KINDS: frozenset[str] = frozenset({"knowledge", "curiosity_finding"})
 
+# F10g: memory kinds that are *derived artifacts* of the graph itself and
+# must never feed back into clustering. A ``topic_digest`` is a worker-LLM
+# summary of a cluster's members; if it were clustered it would inflate
+# the cluster, could become its own representative, and the digest worker
+# would end up summarising its own prior output (a feedback loop). The
+# mirror-read chokepoints (``_snapshot_mirror`` / ``_ensure_cached``) and
+# the incremental ``on_memory_added`` path all skip these kinds.
+_NON_CLUSTERING_KINDS: frozenset[str] = frozenset({"topic_digest"})
+
 # Upper bound on the per-node neighbour fan-out. Keeps the mutual-k-NN
 # graph sparse on large corpora even though ``k`` grows with ``log2(n)``.
 _K_MAX: int = 12
@@ -966,6 +975,7 @@ class TopicGraph:
             mems = [
                 m for m in memory_store._mirror.values()  # type: ignore[attr-defined]
                 if m.embedding is not None and m.embedding.size > 0
+                and str(m.kind) not in _NON_CLUSTERING_KINDS
             ]
 
         key = self._cache_key(mems)
@@ -1054,6 +1064,7 @@ class TopicGraph:
                 m
                 for m in ms._mirror.values()  # type: ignore[attr-defined]
                 if m.embedding is not None and m.embedding.size > 0
+                and str(m.kind) not in _NON_CLUSTERING_KINDS
             ]
 
     def _best_match_ann(self, vec: np.ndarray) -> tuple[float, int | None]:
@@ -1199,6 +1210,9 @@ class TopicGraph:
         running unit-norm mean and persists just the touched rows.
         """
         if not self.persistent:
+            return
+        # F10g: derived artifacts (topic digests) never join clusters.
+        if str(getattr(memory, "kind", "")) in _NON_CLUSTERING_KINDS:
             return
         emb = getattr(memory, "embedding", None)
         if emb is None or getattr(emb, "size", 0) == 0:

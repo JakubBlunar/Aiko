@@ -1486,4 +1486,73 @@ def register(mcp, session: "SessionController") -> None:
             }
         return json.dumps(out, indent=2, default=str)
 
+    @mcp.tool()
+    def get_topic_digest_state() -> str:
+        """F10g — dump the per-cluster rolling digest worker's state.
+
+        Shows the master switch, the RAG surfacing switch + sibling cap,
+        and the live ``cluster_digest_map`` (``{cluster_id: memory_id}``)
+        the worker rebuilds each tick and the retriever reads to surface a
+        cluster's digest as the coarse "what I know about X" line. For each
+        mapped cluster it resolves the current label (from the live graph)
+        and a short preview of the digest memory's content. First stop for
+        "why didn't Aiko's reply lean on the topic digest?" — an empty map
+        means the worker hasn't run yet (or no cluster is dense enough);
+        a populated map with a missing/garbage preview means the digest
+        memory was deleted out from under the map (stale until next tick).
+        """
+        worker = getattr(session, "_topic_digest_worker", None)
+        graph = getattr(session, "_topic_graph", None)
+        store = getattr(session, "_memory_store", None)
+        out: dict[str, Any] = {
+            "enabled": bool(
+                getattr(session._settings.agent, "topic_digest_enabled", True)
+            ),
+            "worker_present": worker is not None,
+            "surface_in_rag": bool(
+                getattr(
+                    session._settings.agent, "topic_digest_surface_in_rag", True
+                )
+            ),
+            "sibling_cap": int(
+                getattr(session._settings.agent, "rag_digest_sibling_cap", 1)
+            ),
+            "min_cluster_size": int(
+                getattr(session._settings.agent, "topic_digest_min_cluster_size", 6)
+            ),
+        }
+        labels: dict[int, str] = {}
+        if graph is not None:
+            try:
+                for c in graph.topic_clusters():
+                    labels[int(c.cluster_id)] = str(
+                        getattr(c, "summary", "") or ""
+                    )[:60]
+            except Exception:
+                pass
+        mapped: list[dict[str, Any]] = []
+        if worker is not None:
+            for cid, mem_id in dict(
+                getattr(worker, "cluster_digest_map", {}) or {}
+            ).items():
+                row: dict[str, Any] = {
+                    "cluster_id": int(cid),
+                    "memory_id": int(mem_id),
+                    "label": labels.get(int(cid), ""),
+                }
+                if store is not None:
+                    try:
+                        mem = store.get(int(mem_id))
+                    except Exception:
+                        mem = None
+                    row["preview"] = (
+                        (str(getattr(mem, "content", "")) or "")[:120]
+                        if mem is not None
+                        else None
+                    )
+                mapped.append(row)
+        out["mapped_count"] = len(mapped)
+        out["mapped"] = mapped[:30]
+        return json.dumps(out, indent=2, default=str)
+
 

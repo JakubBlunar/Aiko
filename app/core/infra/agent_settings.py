@@ -361,6 +361,28 @@ class AgentSettings:
     topic_label_max_per_run: int = 4
     # Token cap for each label generation (a label is a 2-5 word phrase).
     topic_label_max_tokens: int = 32
+    # F10g: per-cluster rolling digest memory. When True (persistent topic
+    # graph), a worker writes one high-salience ``kind="topic_digest"``
+    # memory per dense cluster -- a worker-LLM one-paragraph "what I know
+    # about X" summary -- refreshed only on material size drift. Lives in
+    # the normal pool (decays / pinnable / Memory tab) but is excluded
+    # from clustering. Entirely off the chat path.
+    topic_digest_enabled: bool = True
+    # How often the digest worker runs a pass (default 1 h). 60s floor.
+    topic_digest_interval_seconds: float = 3600.0
+    # Max clusters (re)digested per worker tick (largest-first). Bounds the
+    # worker-LLM spend; the rest are picked up next tick. Floor 1.
+    topic_digest_max_per_run: int = 3
+    # Token cap per digest generation (a 2-4 sentence paragraph). Floor 32.
+    topic_digest_max_tokens: int = 256
+    # A cluster needs at least this many members before it earns a stored
+    # digest (small clusters are cheap to read raw). Floor 2.
+    topic_digest_min_cluster_size: int = 6
+    # When True, the F10c expansion path surfaces a cluster's digest as the
+    # coarse "what I know about X" line and caps raw sibling enumeration to
+    # ``rag_digest_sibling_cap`` (keeps a 40-member cluster from dumping 40
+    # lines). No-op when no digest exists for the anchor cluster.
+    topic_digest_surface_in_rag: bool = True
     # F10b: cluster-aware RAG diversity. When True (and a persistent topic
     # graph is wired), the retriever's final top-k selection caps how many
     # hits may come from a single topic cluster, so one dense cluster (e.g.
@@ -396,6 +418,11 @@ class AgentSettings:
     # Minimum cosine (query vs sibling memory) for a cluster member to be
     # pulled in by expansion. Keeps the appended notes genuinely on-topic.
     rag_expand_min_sim: float = 0.45
+    # F10g: when an anchor cluster has a stored digest and
+    # ``topic_digest_surface_in_rag`` is on, the digest line replaces bulk
+    # sibling enumeration and at most this many raw siblings still follow
+    # (the digest is the gist; a couple of specifics drill in). Floor 0.
+    rag_digest_sibling_cap: int = 1
     # F10e: "interest map" prompt block. A terse T1 (semi-stable) inner-
     # life line listing the top few labelled topic clusters by size --
     # "the things you and the user keep coming back to" -- so Aiko carries
