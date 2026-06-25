@@ -858,3 +858,46 @@ surfaced keys), `force_interest_drift` (run once bypassing caps),
 (pure classifier + worker warmup/cooldown gates + provider plumbing).
 **Remaining K64 family:** K64c curiosity gradient, K64d knowledge-map
 self-reflection (open in [`patterns.md`](../patterns.md)).
+
+---
+
+## K64c. Curiosity gradient ("I keep brushing past X, I'm curious")
+
+**Shipped.** Third member of the K64 *freedom of thought* family. Where K64a
+connects two distant topics and K64b tracks a topic's mass drifting, K64c
+notices the **boundary** of what Aiko knows: a *thin* topic cluster sitting
+right next to a *dense* one — the under-explored edge of familiar territory,
+exactly where genuine curiosity lives. The
+[`CuriosityGradientWorker`](../../../app/core/proactive/curiosity_gradient_worker.py)
+is an `IdleWorker` (cue producer, **no LLM** — pure cluster geometry) that,
+on each tick, reads the labelled clusters and, for each *thin* cluster
+(members in `[curiosity_gradient_thin_min_size=2,
+curiosity_gradient_thin_max_size=4]`), finds its nearest *dense* cluster
+(size ≥ `curiosity_gradient_dense_min_size`=8) by centroid cosine via the
+pure `find_gradient_edges`. The pair qualifies as a curiosity edge when that
+cosine lands in `[curiosity_gradient_adjacency_min_cosine=0.40,
+curiosity_gradient_adjacency_max_cosine=0.90]` (genuinely on the rim — close
+enough to be the edge of the familiar topic, not a near-duplicate of it).
+The strongest off-cooldown edge drafts to the `aiko.curiosity_gradients` ring
+as `{at, dense_topic, thin_topic, edge_key, cosine}`. The consumer
+[`InnerLifePart2Mixin._render_curiosity_gradient_block`](../../../app/core/session/inner_life_part2.py)
+surfaces one **only when the live turn is on either topic**
+(`gradient_relevant`, reusing F10f's `topic_relevant`), one-shot per
+`edge_key` (`curiosity_gradient.surfaced_keys`), as a private **T6** hint
+after `interest_drift_block` (dropped under `aggressive`). The cue steers the
+chat model toward **ONE genuine, specific question** — never spoken verbatim,
+never a survey or interrogation. Paced by a 90-min interval, daily cap 3, and
+a 96h per-edge cooldown (keyed on a stable hash of the unordered label pair).
+Persona copy lives in the "When you're curious about the edge of something
+familiar" block of [`aiko_companion.txt`](../../../data/persona/aiko_companion.txt).
+**MCP-debuggable**: `get_curiosity_gradient_state` (switch / ring / cooldowns
+/ surfaced keys / dry-run of the edge picker), `force_curiosity_gradient`
+(run once bypassing caps), `force_curiosity_gradient_surface` (arm the
+provider one-shot). Grep `tail_logs(module_contains="curiosity_gradient")`
+for `curiosity-gradient drafted:` / `fire:`. Settings:
+`agent.curiosity_gradient_enabled` + the nine `memory.curiosity_gradient_*`
+knobs. Tests:
+[`tests/test_curiosity_gradient.py`](../../../tests/test_curiosity_gradient.py)
+(pure edge finder + worker cooldown/cap gates + provider plumbing).
+**Remaining K64 family:** K64d knowledge-map self-reflection (open in
+[`patterns.md`](../patterns.md)).

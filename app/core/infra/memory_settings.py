@@ -471,6 +471,28 @@ class MemorySettings:
     # Per-topic cooldown: once a drift is noticed for a topic, don't
     # re-notice it for this long. Keyed on a stable hash of the label.
     interest_drift_topic_cooldown_hours: int = 72
+    # ── K64c: curiosity gradient (thin edge of a dense topic) ────────────
+    # How often the CuriosityGradientWorker may draft a curiosity-edge cue.
+    curiosity_gradient_interval_seconds: int = 5400
+    # Max curiosity-edge cues drafted per local day. Small — rarity matters.
+    curiosity_gradient_daily_cap: int = 3
+    # Size of the kv journal ring of drafted curiosity edges.
+    curiosity_gradient_journal_max: int = 6
+    # A cluster must have at least this many members to be the *dense* anchor
+    # of an edge (the familiar territory Aiko's been spending time around).
+    curiosity_gradient_dense_min_size: int = 8
+    # Member-count band for the *thin* cluster (the under-explored edge):
+    # big enough to be a real topic, small enough to be unexplored.
+    curiosity_gradient_thin_min_size: int = 2
+    curiosity_gradient_thin_max_size: int = 4
+    # Centroid-cosine band for a thin cluster to count as "adjacent" to its
+    # nearest dense cluster: at/above the min it's genuinely on the rim of
+    # the familiar topic; at/below the max it isn't a near-duplicate of it.
+    curiosity_gradient_adjacency_min_cosine: float = 0.40
+    curiosity_gradient_adjacency_max_cosine: float = 0.90
+    # Per-edge cooldown: once a curiosity edge is noticed, don't re-notice
+    # it for this long. Keyed on a stable hash of the unordered label pair.
+    curiosity_gradient_edge_cooldown_hours: int = 96
     # ── F10h: topic temperature (per-cluster affect) ─────────────────────
     # Minimum centroid cosine for the live turn to count as "on" a topic
     # cluster before its temperature is even considered. Keeps the tonal
@@ -1309,6 +1331,64 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                 int(
                     memory_raw.get(
                         "interest_drift_topic_cooldown_hours", 72,
+                    )
+                ),
+            ),
+            curiosity_gradient_interval_seconds=max(
+                60,
+                int(
+                    memory_raw.get(
+                        "curiosity_gradient_interval_seconds", 5400,
+                    )
+                ),
+            ),
+            curiosity_gradient_daily_cap=max(
+                0,
+                int(memory_raw.get("curiosity_gradient_daily_cap", 3)),
+            ),
+            curiosity_gradient_journal_max=max(
+                1,
+                int(memory_raw.get("curiosity_gradient_journal_max", 6)),
+            ),
+            curiosity_gradient_dense_min_size=max(
+                2,
+                int(memory_raw.get("curiosity_gradient_dense_min_size", 8)),
+            ),
+            curiosity_gradient_thin_min_size=max(
+                1,
+                int(memory_raw.get("curiosity_gradient_thin_min_size", 2)),
+            ),
+            curiosity_gradient_thin_max_size=max(
+                1,
+                int(memory_raw.get("curiosity_gradient_thin_max_size", 4)),
+            ),
+            curiosity_gradient_adjacency_min_cosine=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get(
+                            "curiosity_gradient_adjacency_min_cosine", 0.40,
+                        )
+                    ),
+                ),
+            ),
+            curiosity_gradient_adjacency_max_cosine=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get(
+                            "curiosity_gradient_adjacency_max_cosine", 0.90,
+                        )
+                    ),
+                ),
+            ),
+            curiosity_gradient_edge_cooldown_hours=max(
+                0,
+                int(
+                    memory_raw.get(
+                        "curiosity_gradient_edge_cooldown_hours", 96,
                     )
                 ),
             ),

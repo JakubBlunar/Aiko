@@ -1279,6 +1279,110 @@ class InnerLifePart2Mixin:
             "you announce. If it doesn't fit, just engage normally."
         )
 
+    def _render_curiosity_gradient_block(self, user_text: str) -> str:
+        """K64c: surface one "I keep brushing past X, I'm curious" edge.
+
+        Consumer side of the
+        :class:`~app.core.proactive.curiosity_gradient_worker.CuriosityGradientWorker`
+        producer. The worker finds a *thin* topic cluster sitting right next
+        to a *dense* one (the under-explored edge of familiar territory) and
+        drafts it into the ``aiko.curiosity_gradients`` kv ring during quiet
+        windows; this provider surfaces one **only when the live turn is on
+        either topic** (lexical overlap with ``user_text``), so the curious
+        beat lands in context — "we talk about X all the time, but I realise
+        I've never actually asked you about Y".
+
+        One-shot per edge: a surfaced ``edge_key`` is recorded in
+        ``curiosity_gradient.surfaced_keys`` and never resurfaces (the
+        worker's per-edge cooldown also stops it being re-drafted). The cue
+        is a private prompt hint, NEVER spoken verbatim — the chat model
+        phrases the actual question. Independent of the gap-return cue family
+        (does not touch ``_gap_cue_surfaced``); tied to the live topic. MCP
+        debug: ``force_curiosity_gradient_surface`` arms
+        ``_curiosity_gradient_force_next`` to bypass the topic-relevance +
+        surfaced gates (the ring must still be non-empty).
+        """
+        if not bool(
+            getattr(self._settings.agent, "curiosity_gradient_enabled", True)
+        ):
+            return ""
+
+        force_next = bool(
+            getattr(self, "_curiosity_gradient_force_next", False)
+        )
+        if force_next:
+            self._curiosity_gradient_force_next = False
+
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is None or not hasattr(chat_db, "kv_get"):
+            return ""
+
+        text = (user_text or "").strip()
+        if not text and not force_next:
+            return ""
+
+        try:
+            from app.core.proactive.curiosity_gradient_worker import (
+                gradient_relevant,
+                load_gradients,
+            )
+        except Exception:
+            log.debug("curiosity_gradient import failed", exc_info=True)
+            return ""
+
+        ring = load_gradients(chat_db.kv_get)
+        if not ring:
+            return ""
+
+        surfaced_key = "curiosity_gradient.surfaced_keys"
+        try:
+            raw = chat_db.kv_get(surfaced_key)
+            surfaced = set(json.loads(raw)) if raw else set()
+        except Exception:
+            surfaced = set()
+
+        chosen: dict | None = None
+        for entry in reversed(ring):  # newest first
+            key = str(entry.get("edge_key") or "")
+            thin = str(entry.get("thin_topic") or "").strip()
+            if not thin:
+                continue
+            if not force_next:
+                if key and key in surfaced:
+                    continue
+                if not gradient_relevant(entry, text):
+                    continue
+            chosen = entry
+            break
+        if chosen is None:
+            return ""
+
+        key = str(chosen.get("edge_key") or "")
+        dense = str(chosen.get("dense_topic") or "").strip()
+        thin = str(chosen.get("thin_topic") or "").strip()
+        if key:
+            surfaced.add(key)
+            try:
+                trimmed = list(surfaced)[-64:]
+                chat_db.kv_set(surfaced_key, json.dumps(trimmed))
+            except Exception:
+                log.debug(
+                    "curiosity_gradient surfaced write failed", exc_info=True
+                )
+
+        log.info(
+            "curiosity-gradient fire: dense=%r thin=%r key=%s",
+            dense[:60], thin[:60], key,
+        )
+        return (
+            f"Heads-up: you spend a lot of time around \"{dense}\", but "
+            f"\"{thin}\" sits right on its edge and you've barely explored it "
+            "— and you're genuinely curious about it. If it fits, let that "
+            "curiosity out as ONE real, specific question (not a survey, not "
+            "an interrogation) — the kind you'd ask because you actually want "
+            "to know. If it doesn't fit the moment, let it go silently."
+        )
+
     def _render_topic_temperature_block(self, user_text: str) -> str:
         """F10h: nudge tone when the live turn lands on a *charged* topic.
 

@@ -1456,6 +1456,135 @@ def register(mcp, session: "SessionController") -> None:
             return f"force_interest_drift_surface raised: {exc}"
 
     @mcp.tool()
+    def get_curiosity_gradient_state() -> str:
+        """K64c — dump the curiosity-gradient worker + provider state.
+
+        Shows the master switch, the worker registration, the kv journal
+        ring of drafted edges (``aiko.curiosity_gradients``), the per-edge
+        cooldown map, the surfaced-keys set the provider tracks, the
+        one-shot provider force flag, and a dry-run of the gradient-edge
+        picker (which thin-on-the-rim-of-dense edges would be drafted next).
+        First stop for "why isn't Aiko curious about the edges of X?".
+        """
+        worker = getattr(session, "_curiosity_gradient_worker", None)
+        out: dict[str, Any] = {
+            "registered": worker is not None,
+            "enabled": bool(
+                getattr(
+                    session._settings.agent,
+                    "curiosity_gradient_enabled",
+                    True,
+                )
+            ),
+            "provider_force_next": bool(
+                getattr(session, "_curiosity_gradient_force_next", False)
+            ),
+        }
+        chat_db = getattr(session, "_chat_db", None)
+        if chat_db is not None and hasattr(chat_db, "kv_get"):
+            try:
+                from app.core.proactive.curiosity_gradient_worker import (
+                    load_gradients,
+                )
+
+                out["journal"] = load_gradients(chat_db.kv_get)
+            except Exception as exc:  # pragma: no cover -- diag tool
+                out["journal_error"] = str(exc)
+            try:
+                raw = chat_db.kv_get("curiosity_gradient.surfaced_keys")
+                out["surfaced_keys"] = json.loads(raw) if raw else []
+            except Exception:
+                out["surfaced_keys"] = []
+            try:
+                raw = chat_db.kv_get("curiosity_gradient.edge_cooldowns")
+                out["edge_cooldowns"] = json.loads(raw) if raw else {}
+            except Exception:
+                out["edge_cooldowns"] = {}
+        if worker is not None:
+            try:
+                out["interval_seconds"] = worker.interval_seconds
+            except Exception as exc:  # pragma: no cover -- diag tool
+                out["worker_error"] = str(exc)
+            graph = getattr(session, "_topic_graph", None)
+            if graph is not None:
+                try:
+                    from app.core.proactive.curiosity_gradient_worker import (
+                        find_gradient_edges,
+                    )
+
+                    edges = find_gradient_edges(
+                        graph.topic_clusters(),
+                        dense_min_size=worker._dense_min_size,
+                        thin_min_size=worker._thin_min_size,
+                        thin_max_size=worker._thin_max_size,
+                        adjacency_min=worker._adjacency_min_cosine,
+                        adjacency_max=worker._adjacency_max_cosine,
+                    )
+                    out["candidate_edges"] = [
+                        {
+                            "dense_topic": e.dense_label[:80],
+                            "thin_topic": e.thin_label[:80],
+                            "cosine": round(e.cosine, 3),
+                            "key": e.key,
+                        }
+                        for e in edges[:5]
+                    ]
+                except Exception as exc:  # pragma: no cover -- diag tool
+                    out["candidate_edges_error"] = str(exc)
+        return json.dumps(out, indent=2, default=str)
+
+    @mcp.tool()
+    def force_curiosity_gradient() -> str:
+        """K64c — run the CuriosityGradientWorker once, bypassing caps.
+
+        Drafts the strongest curiosity edge (thin cluster on the rim of a
+        dense one) even if it's on its per-edge cooldown or the daily cap is
+        spent (the topic graph must still have a qualifying edge). Returns
+        the run result (``drafted``, ``dense_topic``, ``thin_topic`` …) or a
+        skip reason. Pair with ``force_curiosity_gradient_surface`` +
+        ``send_message`` to land the cue end-to-end.
+        """
+        worker = getattr(session, "_curiosity_gradient_worker", None)
+        if worker is None:
+            return (
+                "curiosity_gradient worker not registered "
+                "(agent.curiosity_gradient_enabled may be off, or no memory "
+                "store / topic graph)"
+            )
+        try:
+            worker.force_next()
+            result = worker.run()
+        except Exception as exc:
+            return f"force_curiosity_gradient raised: {exc}"
+        return json.dumps(result or {}, indent=2, default=str)
+
+    @mcp.tool()
+    def force_curiosity_gradient_surface() -> str:
+        """K64c — arm a one-shot bypass on the provider's gates.
+
+        Sets ``_curiosity_gradient_force_next`` so the next provider call
+        surfaces the newest journal entry regardless of topic relevance or
+        the surfaced-keys set (the ring must still be non-empty — draft one
+        first via ``force_curiosity_gradient``). Then ``send_message`` and
+        verify the "you spend a lot of time around X but Y sits on its edge"
+        line lands in ``get_last_response_detail``'s system_prompt.
+        """
+        try:
+            session._curiosity_gradient_force_next = True
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next provider call surfaces the newest edge, "
+                        "ignoring topic-relevance + surfaced gates"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_curiosity_gradient_surface raised: {exc}"
+
+    @mcp.tool()
     def get_topic_temperature_state() -> str:
         """F10h — dump per-cluster affect ("topic temperature") state.
 

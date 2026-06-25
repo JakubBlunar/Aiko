@@ -213,6 +213,13 @@ class AgentSettings:
     # topic. Off → the worker never registers and the provider stays empty.
     # Cadence / thresholds live under MemorySettings.
     interest_drift_enabled: bool = True
+    # K64c: master switch for the curiosity gradient. When on, the
+    # CuriosityGradientWorker finds a thin topic cluster on the rim of a
+    # dense one (the under-explored edge of familiar territory) and the
+    # inner-life provider surfaces a genuinely-curious-question cue when the
+    # live turn is on either topic. Off → the worker never registers and the
+    # provider stays empty. Cadence / thresholds live under MemorySettings.
+    curiosity_gradient_enabled: bool = True
     # F10h: master switch for the per-cluster affect ("topic temperature")
     # cue. When on, a turn that lands on a warm / tender topic cluster gets
     # a one-line tonal nudge so Aiko meets it with the right register. Off
