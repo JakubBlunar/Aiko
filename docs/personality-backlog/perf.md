@@ -14,40 +14,18 @@ unblocks the testing flow you're stuck on.
 
 (P1 per-turn embed budget + timing, P2 prompt-build phase
 telemetry, P3 cheap slice-cache validation, P4 RAG memory-hit
-batch lookup, P8 idle-worker queue visibility + multi-worker
-drain, P12 bulk memory-mirror on startup, P13 route-driven worker
+batch lookup, P5 + P23 Lance scan push-down for
+`list_recent_user_vectors`, P8 idle-worker queue visibility +
+multi-worker drain, P10 `(role, created_at)` schedule-learner
+index, P12 bulk memory-mirror on startup, P13 route-driven worker
 model + context (with the declarative `_worker_runtime_updaters`
 cascade + worker-LLM priority gate), P14 heuristic tool-pass
-gate, P18 streaming-accumulator O(n²) fix, and P21 K29 borderline
-gate moved off the hot path have shipped — see
-[`shipped.md`](shipped.md). P15 was validated as **invalid** —
-the embedder LRU already collapses repeated `user_text` embeds, so
-the hot path is already at the 2-embed steady state it targeted;
-see its shipped.md note.)
-
----
-
-## P5. Novelty warm-up: full Lance scan
-
-**Motivation.** `RagStore.list_recent_user_vectors` materialises
-the entire Lance `messages` table via `to_arrow()` then filters in
-Python. Cheap on day one, linear with chat history, runs once per
-session on the first K6 detect. Multi-month installs will pay
-real wall-time on the first novel turn after a fresh start.
-
-**Key files.**
-[`app/core/rag/rag_store.py`](../../app/core/rag/rag_store.py)
-(`list_recent_user_vectors`),
-[`app/core/conversation/novelty_detector.py`](../../app/core/conversation/novelty_detector.py)
-(warmer call site).
-
-**Sketched approach.** Push the role/session-prefix filter into
-the Lance query (Lance supports SQL-like predicates), cap the row
-limit at `2 * novelty_window`, and order by `created_at DESC`
-server-side so we drop the Python sort entirely. Alternative: a
-small `kv_meta` cache of the latest N user vector ids per user, refilled by the message indexer on write.
-
-**Effort.** Medium.
+gate, P17 K22 callback-detector filtered mirror walk, P18
+streaming-accumulator O(n²) fix, and P21 K29 borderline gate moved
+off the hot path have shipped — see [`shipped.md`](shipped.md).
+P15 was validated as **invalid** — the embedder LRU already
+collapses repeated `user_text` embeds, so the hot path is already
+at the 2-embed steady state it targeted; see its shipped.md note.)
 
 ---
 
@@ -127,31 +105,6 @@ fit because it lets us render a "speaking" bubble distinctly
 from finalised history.
 
 **Effort.** Medium.
-
----
-
-## P10. Schedule-learner missing index
-
-**Motivation.** G2 / K3 query
-`WHERE role='user' AND created_at >= ?` against `messages`. Code
-comments assume row count stays small ("per-day, not per-message
-so a full scan is cheap enough"), which is true today. Multi-year
-installs will full-scan; a tiny `(role, created_at)` index closes
-that out before it bites.
-
-**Key files.**
-[`app/core/infra/chat_database.py`](../../app/core/infra/chat_database.py)
-(schema bump + migration),
-[`app/core/infra/schedule_learner.py`](../../app/core/infra/schedule_learner.py)
-(comment update).
-
-**Alternative.** Persist daily/hourly aggregated buckets in
-`kv_meta` keyed by `(user_id, iso_week, weekday, bucket)` so the
-worker reads compact rows instead of raw messages. Heavier but
-also unlocks multi-week recurrence trends past the rolling
-window.
-
-**Effort.** Small (index) or medium (aggregate cache).
 
 ---
 
@@ -253,31 +206,6 @@ splitting — a wrong call here makes cues silently miss a turn.
 
 ---
 
-## P17. K22 callback detector scans the full memory mirror every turn
-
-**Motivation.** Post-turn, `callback_detector.detect` calls
-`memory_store.list_recent(limit=10_000)` — copies the entire
-in-memory mirror, sorts it twice, cosine-walks the candidates.
-O(n) with n up to the 5000-row cap, on the brain-loop thread,
-after **every** turn longer than 12 chars. Tens of ms today,
-~100 ms+ as installs age.
-
-**Key files.**
-[`app/core/conversation/callback_detector.py`](../../app/core/conversation/callback_detector.py)
-(`detect`),
-[`app/core/session/post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py)
-(call site).
-
-**Sketched approach.** Maintain a small pre-filtered candidate
-index (callback-eligible kinds, salience floor, recency cap)
-refreshed lazily on memory writes, so the per-turn walk touches
-dozens of rows instead of thousands. Pairs naturally with P4's
-`get_many` batch shape.
-
-**Effort.** Medium.
-
----
-
 ## P19. RAG: one global lock + three sequential Lance searches
 
 **Motivation.** All Lance reads and writes share one
@@ -359,32 +287,6 @@ existing `provider_ms` telemetry makes the win measurable
 per-provider.
 
 **Effort.** Medium–large.
-
----
-
-## P23. K28 turning-over provider triggers the full Lance scan on the hot path
-
-**Motivation.** Sibling of P5, but worse placed: on
-return-after-gap turns, `_render_turning_over_block` reaches
-`list_recent_user_vectors`, which materialises the *entire* Lance
-`messages` table via `to_arrow()` and filters in Python — a full
-scan exactly on the "welcome back" turn, which is also the turn
-that pays cold caches everywhere else. Fixing P5 fixes this; the
-entry exists so the hot-path call site is on the map too.
-
-**Key files.**
-[`app/core/session/inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py)
-(`_render_turning_over_block`),
-[`app/core/rag/rag_store.py`](../../app/core/rag/rag_store.py)
-(`list_recent_user_vectors`).
-
-**Sketched approach.** Same as P5 (predicate push-down + row cap
-+ server-side order). Additionally consider reusing the K6
-novelty ring (already warmed with recent user vectors) as the
-candidate pool for K28's topical-similarity gate, dropping the
-Lance call from this path entirely.
-
-**Effort.** Small once P5 lands.
 
 ---
 

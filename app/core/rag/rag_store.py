@@ -572,36 +572,46 @@ class RagStore:
         The returned vectors are already L2-normalized -- ``add_message``
         applies :meth:`_norm` before write -- so callers can dot them
         directly without renormalisation.
+
+        P5/P23: the ``role`` / session-prefix filter is pushed into the
+        Lance scan (``where(..., prefilter=True)``) and only the three
+        columns we actually read are projected -- so the ``content``
+        payload and every assistant / other-user row never leave disk.
+        On an aged corpus this turns a full-table materialisation
+        (which sat on the K6 warm-up and the K28 "welcome back" turn)
+        into a filtered scan over just this user's messages. Falls back
+        to the legacy full ``to_arrow`` path if the predicate query
+        raises (older Lance builds / odd schemas).
         """
         cap = max(1, int(limit))
+        prefix = (user_id_prefix or "").strip()
+        predicate = "role = 'user'"
+        if prefix:
+            safe = prefix.replace("'", "''")
+            predicate = f"{predicate} AND session_id LIKE '{safe}:%'"
         with self._lock:
             try:
-                table = self._messages.to_arrow().select(
-                    ["role", "session_id", "created_at", "vector"],
+                table = (
+                    self._messages.search()
+                    .where(predicate, prefilter=True)
+                    .select(["created_at", "vector"])
+                    .to_arrow()
                 )
             except Exception:
                 log.debug(
-                    "list_recent_user_vectors to_arrow failed",
+                    "list_recent_user_vectors filtered scan failed; "
+                    "falling back to full scan",
                     exc_info=True,
                 )
-                return []
+                table = self._recent_user_vectors_fallback(prefix)
+                if table is None:
+                    return []
         if table.num_rows == 0:
             return []
-        roles = table.column("role").to_pylist()
-        session_ids = table.column("session_id").to_pylist()
         created_ats = table.column("created_at").to_pylist()
         vectors = table.column("vector").to_pylist()
-        prefix = (user_id_prefix or "").strip()
-        scope = f"{prefix}:" if prefix else None
         rows: list[tuple[str, np.ndarray]] = []
-        for role, session_id, created_at, vec in zip(
-            roles, session_ids, created_ats, vectors,
-        ):
-            if str(role) != "user":
-                continue
-            sid = str(session_id or "")
-            if scope is not None and not sid.startswith(scope):
-                continue
+        for created_at, vec in zip(created_ats, vectors):
             if vec is None:
                 continue
             try:
@@ -613,6 +623,34 @@ class RagStore:
             rows.append((str(created_at or ""), arr))
         rows.sort(key=lambda r: r[0], reverse=True)
         return [arr for _, arr in rows[:cap]]
+
+    def _recent_user_vectors_fallback(self, prefix: str):
+        """Legacy full-table scan for :meth:`list_recent_user_vectors`.
+
+        Only reached when the pushed-down predicate query raises. Returns
+        a PyArrow table projected to ``created_at`` / ``vector`` with the
+        ``role`` / prefix filter applied row-wise, or ``None`` on failure.
+        """
+        try:
+            full = self._messages.to_arrow().select(
+                ["role", "session_id", "created_at", "vector"],
+            )
+        except Exception:
+            log.debug(
+                "list_recent_user_vectors fallback to_arrow failed",
+                exc_info=True,
+            )
+            return None
+        if full.num_rows == 0:
+            return full.select(["created_at", "vector"])
+        import pyarrow.compute as pc
+
+        mask = pc.equal(full.column("role"), "user")
+        if prefix:
+            scope = f"{prefix}:"
+            starts = pc.starts_with(full.column("session_id"), scope)
+            mask = pc.and_(mask, starts)
+        return full.filter(mask).select(["created_at", "vector"])
 
     def search_messages(
         self,

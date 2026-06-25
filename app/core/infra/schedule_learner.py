@@ -623,10 +623,11 @@ class ScheduleLearner:
     ) -> list[tuple[Any, ...]]:
         """Pull ``created_at`` for user messages newer than ``cutoff``.
 
-        The ``messages`` table only carries a composite
-        ``(session_id, created_at)`` index, but the ``role='user'``
-        filter combined with the cutoff keeps the row count tiny
-        (per-day, not per-message) so a full scan is cheap enough.
+        Served by ``idx_messages_role_created`` (``role, created_at``,
+        added for P10): the ``role='user'`` equality + ``created_at >=``
+        range maps straight onto the index, so this stays a bounded
+        range scan rather than the full table scan it was before the
+        index existed.
         """
         return self._chat_db.execute_fetchall(
             "SELECT created_at FROM messages "

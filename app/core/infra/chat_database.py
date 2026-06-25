@@ -45,6 +45,19 @@ CREATE TABLE IF NOT EXISTS messages (
     attachments TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at);
+-- P10: the G2/K3 schedule-learner queries ``role='user' AND created_at >= ?``
+-- with no session_id, so idx_messages_session (session_id-leading) can't
+-- serve it. This covering-ish index turns that recurring full scan into a
+-- range scan as multi-year installs accumulate history. Base-column index,
+-- so it lives in the schema script (idempotent, picked up on every open).
+CREATE INDEX IF NOT EXISTS idx_messages_role_created ON messages(role, created_at);
+-- P10: the G2 schedule-learner / K3 routine miner query
+-- ``WHERE role='user' AND created_at >= ?`` has no session_id, so the
+-- composite index above doesn't help it -- it full-scanned ``messages``.
+-- ``role`` / ``created_at`` exist since v1, so this lands on fresh and
+-- existing databases alike (executescript re-runs every startup, IF NOT
+-- EXISTS makes it idempotent -- no schema-version bump required).
+CREATE INDEX IF NOT EXISTS idx_messages_role_created ON messages(role, created_at);
 
 CREATE TABLE IF NOT EXISTS session_summaries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
