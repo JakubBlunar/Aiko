@@ -10,6 +10,7 @@
     "serve:prod:web": "node scripts/serve-prod.mjs",
     "serve:prod:web:tailscale": "node scripts/serve-prod.mjs --tailscale",
     "serve:web": "node scripts/serve-prod.mjs --no-build",
+    "gen:icons": "node scripts/gen-icons.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "tauri": "tauri",

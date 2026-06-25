@@ -44,6 +44,44 @@ html.persona #root {
   }
 }
 
+/* Portrait lock for phones (see the .rotate-lock element in index.html).
+   Hidden by default; only covers the screen when a SHORT viewport is in
+   landscape — i.e. a phone turned sideways. The max-height ceiling keeps
+   it from ever firing on desktops or tablets, which are tall even in
+   landscape. iOS has no orientation-lock API, so this is the only way to
+   keep the app portrait-only there. */
+.rotate-lock {
+  display: none;
+}
+@media (orientation: landscape) and (max-height: 500px) {
+  .rotate-lock {
+    display: flex;
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    text-align: center;
+    background: linear-gradient(180deg, #0f0a1f 0%, #16102b 50%, #1c1336 100%);
+    color: #f4f1ff;
+  }
+  .rotate-lock__icon {
+    font-size: 40px;
+    margin-bottom: 12px;
+  }
+  .rotate-lock__title {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 600;
+  }
+  .rotate-lock__hint {
+    margin: 6px 0 0;
+    font-size: 14px;
+    opacity: 0.6;
+  }
+}
+
 /* Subtle scrollbar styling matching the dark theme */
 ::-webkit-scrollbar {
   width: 10px;

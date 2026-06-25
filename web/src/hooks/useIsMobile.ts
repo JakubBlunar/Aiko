@@ -13,6 +13,13 @@ function matches(): boolean {
   return window.matchMedia(QUERY).matches;
 }
 
+/** Imperative one-shot check of the phone-sized media query, for code
+ * outside the React render tree (e.g. WS event handlers). SSR / test-node
+ * safe (returns ``false`` when ``matchMedia`` is unavailable). */
+export function isMobileViewport(): boolean {
+  return matches();
+}
+
 /**
  * ``true`` when the viewport is phone-sized. Subscribes to the
  * ``matchMedia`` change event so the layout flips live on rotation /

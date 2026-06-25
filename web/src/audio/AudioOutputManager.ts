@@ -42,6 +42,18 @@ type StreamTag = "tts" | "earcon";
  */
 const FIRST_CLIP_IDLE_MARGIN_SEC = 0.1;
 
+// ── Real-output lipsync tap (mobile) ────────────────────────────────
+// On mobile the buffered PCM playback lands well after the server's
+// paced ``audio_amplitude`` events (idle margin + iOS output latency),
+// so a mouth driven by those events runs ahead of the sound. Reading the
+// amplitude of what's ACTUALLY at the context destination removes that
+// drift. Adaptive normalisation (running peak with a floor) self-
+// calibrates the mouth-open range so we don't hand-tune a gain.
+const LIP_NOISE_FLOOR = 0.005; // below this RMS the mouth is closed
+const LIP_PEAK_FLOOR = 0.08; // minimum reference peak (quiet speech)
+const LIP_PEAK_DECAY = 0.9995; // per-frame decay of the running peak
+const LIP_TARGET = 0.9; // loudest recent speech maps to ~0.9 open
+
 interface PerStream {
   sampleRate: number;
   channels: number;
@@ -93,9 +105,40 @@ export class AudioOutputManager {
     tts: false,
     earcon: false,
   };
+  // Real-output lipsync tap. ``_outputNode`` is the node every scheduled
+  // source connects to: an ``AnalyserNode`` (sitting before
+  // ``destination``) when the browser supports one, else ``destination``
+  // itself. The RAF loop samples the analyser and feeds the smoothed
+  // amplitude to ``_lipListener`` so the mouth tracks the *audible*
+  // audio rather than the server's paced (and, on mobile, drifted)
+  // ``audio_amplitude`` events. All best-effort: a context without
+  // ``createAnalyser`` (e.g. the test fake) just routes straight to the
+  // destination and never starts the loop.
+  private _analyser: AnalyserNode | null = null;
+  private _outputNode: AudioNode | null = null;
+  private _lipListener: ((level: number) => void) | null = null;
+  private _lipRaf: number | null = null;
+  private _lipBuf: Float32Array | null = null;
+  private _lipPeak = LIP_PEAK_FLOOR;
 
   constructor(options: AudioOutputOptions = {}) {
     this._sinkId = options.sinkId ?? "";
+  }
+
+  /**
+   * Register a callback that receives the lip-sync amplitude (``[0, 1]``)
+   * derived from the real playback output, ~60 Hz. Pass ``null`` to stop.
+   * Callers that prefer the server's broadcast ``audio_amplitude`` (e.g.
+   * windows that don't play audio, or desktop where buffering is
+   * negligible) simply never register here.
+   */
+  setLipsyncListener(listener: ((level: number) => void) | null): void {
+    this._lipListener = listener;
+    if (listener) {
+      this._startLipLoop();
+    } else {
+      this._stopLipLoop();
+    }
   }
 
   /**
@@ -205,6 +248,10 @@ export class AudioOutputManager {
   /** Tear down the audio context entirely. */
   async dispose(): Promise<void> {
     this.flush();
+    this._stopLipLoop();
+    this._analyser = null;
+    this._outputNode = null;
+    this._lipBuf = null;
     if (this._keepAlive) {
       try {
         this._keepAlive.stop();
@@ -229,13 +276,45 @@ export class AudioOutputManager {
     }
   }
 
+  /**
+   * iOS plays Web Audio through a session category that the hardware
+   * ring/silent switch mutes — so on an iPhone with the switch flipped to
+   * silent, TTS produces no sound even though everything else works. The
+   * Web Audio Session API (Safari 16.4+) lets us declare the page as media
+   * playback, which routes audio through the media channel and ignores the
+   * silent switch. Best-effort + idempotent: a no-op on browsers without
+   * the API (Chrome/Firefox/older Safari), where the silent switch never
+   * gated Web Audio in the first place.
+   */
+  private _configureAudioSession(): void {
+    try {
+      const nav = navigator as unknown as {
+        audioSession?: { type?: string };
+      };
+      if (nav.audioSession && nav.audioSession.type !== "playback") {
+        nav.audioSession.type = "playback";
+      }
+    } catch {
+      /* Audio Session API unavailable — nothing to configure. */
+    }
+  }
+
   private async _ensureContext(): Promise<AudioContext> {
     if (!this._ctx) {
+      // Declare media playback BEFORE the context is created so iOS picks
+      // the right session category for it from the start.
+      this._configureAudioSession();
       const AC = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       if (!AC) {
         throw new Error("Web Audio API is not available in this browser.");
       }
+      // Fresh context: any analyser from a prior (disposed) context is
+      // dead, so clear the routing before we (re)build it.
+      this._analyser = null;
+      this._outputNode = null;
+      this._lipBuf = null;
       this._ctx = new AC();
+      this._setupAnalyser(this._ctx);
       if (this._sinkId) {
         await this.setSinkId(this._sinkId);
       }
@@ -258,6 +337,86 @@ export class AudioOutputManager {
     // clip of every turn never plays into a cold device.
     this._startKeepAlive(this._ctx);
     return this._ctx;
+  }
+
+  /**
+   * Build the analyser → destination chain for the lipsync tap. The
+   * analyser sits between the scheduled sources and the speakers so it
+   * reads exactly what's audible. Best-effort: contexts without
+   * ``createAnalyser`` (the test fake, ancient browsers) route sources
+   * straight to the destination and the lipsync loop is a no-op.
+   */
+  private _setupAnalyser(ctx: AudioContext): void {
+    if (this._outputNode) return;
+    const ctxAny = ctx as unknown as { createAnalyser?: () => AnalyserNode };
+    if (typeof ctxAny.createAnalyser !== "function") {
+      this._outputNode = ctx.destination;
+      return;
+    }
+    try {
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      // We critically-damp in the LipsyncChannel already; let the raw
+      // RMS through here so the mouth tracks transients.
+      analyser.smoothingTimeConstant = 0;
+      analyser.connect(ctx.destination);
+      this._analyser = analyser;
+      this._outputNode = analyser;
+      this._lipBuf = new Float32Array(analyser.fftSize);
+      this._lipPeak = LIP_PEAK_FLOOR;
+      // A listener may already be registered from before the context
+      // existed; (re)start the loop now that we have an analyser.
+      if (this._lipListener) {
+        this._startLipLoop();
+      }
+    } catch {
+      this._analyser = null;
+      this._outputNode = ctx.destination;
+      this._lipBuf = null;
+    }
+  }
+
+  /** RAF loop sampling the analyser and feeding the lipsync listener. */
+  private _startLipLoop(): void {
+    if (this._lipRaf !== null) return;
+    if (typeof requestAnimationFrame !== "function") return;
+    const tick = () => {
+      const analyser = this._analyser;
+      const buf = this._lipBuf;
+      const listener = this._lipListener;
+      if (analyser && buf && listener) {
+        try {
+          analyser.getFloatTimeDomainData(buf);
+          let sum = 0;
+          for (let i = 0; i < buf.length; i++) {
+            const v = buf[i];
+            sum += v * v;
+          }
+          const rms = Math.sqrt(sum / buf.length);
+          if (rms > this._lipPeak) {
+            this._lipPeak = rms;
+          } else {
+            this._lipPeak = Math.max(LIP_PEAK_FLOOR, this._lipPeak * LIP_PEAK_DECAY);
+          }
+          const level =
+            rms < LIP_NOISE_FLOOR
+              ? 0
+              : Math.min(1, (rms / this._lipPeak) * LIP_TARGET);
+          listener(level);
+        } catch {
+          /* analyser read unavailable on this frame */
+        }
+      }
+      this._lipRaf = requestAnimationFrame(tick);
+    };
+    this._lipRaf = requestAnimationFrame(tick);
+  }
+
+  private _stopLipLoop(): void {
+    if (this._lipRaf !== null && typeof cancelAnimationFrame === "function") {
+      cancelAnimationFrame(this._lipRaf);
+    }
+    this._lipRaf = null;
   }
 
   private async _onAudioStart(
@@ -401,7 +560,10 @@ export class AudioOutputManager {
     }
     const source = ctx.createBufferSource();
     source.buffer = buffer;
-    source.connect(ctx.destination);
+    // Route through the analyser (when present) so the lipsync tap reads
+    // the real playback; falls back to the destination on contexts
+    // without ``createAnalyser``.
+    source.connect(this._outputNode ?? ctx.destination);
     // Compute the start time: never schedule in the past, otherwise
     // the Web Audio scheduler silently drops the buffer.
     const startAt = Math.max(state.nextStartTime, ctx.currentTime + 0.005);

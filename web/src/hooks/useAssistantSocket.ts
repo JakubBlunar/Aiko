@@ -8,6 +8,7 @@ import {
 import { desktop } from "../desktop/commands";
 import { backendBase } from "../desktop/runtime";
 import { playDone, playThinking } from "../earcons";
+import { isMobileViewport } from "./useIsMobile";
 import { debugLog } from "../log";
 import { useAssistantStore } from "../store";
 import type { WsClientCommand, WsServerEvent } from "../types";
@@ -66,6 +67,20 @@ export function useAssistantSocket(): {
   if (audioOutputRef.current === null) {
     audioOutputRef.current = new AudioOutputManager({
       sinkId: getStoredOutputDeviceId(),
+    });
+    // Drive lipsync from the real playback amplitude on the mobile window
+    // that plays audio. The listener only writes the store when this
+    // window both is phone-sized and owns playback; otherwise the
+    // server's broadcast ``audio_amplitude`` keeps the mouth moving
+    // (desktop, or a silent non-owner persona window). The analyser tap
+    // can't drift from the buffered audio the way the paced server events
+    // do on mobile.
+    audioOutputRef.current.setLipsyncListener((level) => {
+      const { audioOwnerId, clientId } = useAssistantStore.getState();
+      const playsAudioHere = !audioOwnerId || audioOwnerId === clientId;
+      if (isMobileViewport() && playsAudioHere) {
+        useAssistantStore.getState().setAudioAmplitude(level);
+      }
     });
   }
   // Set true on the first successful ``open`` event. Until then we
@@ -528,9 +543,21 @@ export function useAssistantSocket(): {
         store.applyTaskCompleted(evt.task);
         break;
 
-      case "audio_amplitude":
-        store.setAudioAmplitude(evt.level);
+      case "audio_amplitude": {
+        // On the mobile window that actually plays audio, lipsync is
+        // driven from the real playback output (see the
+        // ``setLipsyncListener`` wiring below) because the server's paced
+        // amplitude lands ahead of the buffered audio there — the mouth
+        // would run visibly ahead of the sound. Every other case
+        // (desktop, or a window that doesn't own playback and animates
+        // its mouth silently) uses the broadcast value as before.
+        const playsAudioHere =
+          !store.audioOwnerId || store.audioOwnerId === store.clientId;
+        if (!(isMobileViewport() && playsAudioHere)) {
+          store.setAudioAmplitude(evt.level);
+        }
         break;
+      }
 
       case "tool_event":
         store.pushToolEvent({

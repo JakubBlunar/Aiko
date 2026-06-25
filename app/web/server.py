@@ -140,6 +140,13 @@ def _search_public_snapshot(search: Any) -> dict[str, Any]:
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _DIST_DIR = _PROJECT_ROOT / "web" / "dist"
+
+# The PWA manifest is served via the SPA fallback's ``FileResponse``, which
+# infers the content type from the extension. ``.webmanifest`` isn't in the
+# stdlib table, so register it (browsers want ``application/manifest+json``).
+import mimetypes as _mimetypes
+
+_mimetypes.add_type("application/manifest+json", ".webmanifest")
 # ``data/persona`` is unrelated to the Live2D pipeline — it stores the
 # self-image text used by the inner-life prompt. We rename the static
 # mount to ``/persona-text/`` so it doesn't collide with the new

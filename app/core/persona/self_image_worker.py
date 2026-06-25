@@ -132,6 +132,11 @@ class SelfImageWorker:
                     "num_predict": self._max_tokens,
                 },
                 model=self._model,
+                # Reasoning model: let it think. num_predict stays the
+                # answer budget; the client adds think headroom for the
+                # trace so the parsed answer isn't starved (was truncating
+                # to an empty answer with think off).
+                think=True,
                 surface="self_image_worker",
             )
         except Exception:
