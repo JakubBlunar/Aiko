@@ -122,6 +122,137 @@ feel interruptible and alive. Key files:
 
 ---
 
+## H8. Topic mood-origin memory — "ever since you told me about X"
+
+A topic's *feel* (F10h topic temperature) currently has no **origin story**:
+a cluster is warm or tender, but Aiko doesn't remember *what made it that
+way*. When a cluster first crosses into warm / tender territory, stamp the
+triggering `shared_moment` (or the message that tipped it) onto the cluster,
+so later she can name the origin instead of just the feeling: "ever since you
+told me about your dad, this subject's stayed gentle for me." This ties the
+shared-moments system to the topic graph and makes per-topic affect feel
+*caused* rather than ambient. Cheap to ship on top of existing pieces: a
+`mood_origin` field in the cluster's metadata (or a small kv side-table keyed
+by `cluster_key`) written when F10h first flips a cluster's pole, read by the
+topic-temperature provider to optionally append the origin clause. Key files:
+[`app/core/conversation/topic_temperature.py`](../../app/core/conversation/topic_temperature.py)
+(detect the pole flip + write the origin),
+[`app/core/conversation/topic_graph.py`](../../app/core/conversation/topic_graph.py)
+(cluster metadata), the topic-temperature inner-life provider, persona copy
+teaching the "name the origin once, gently" register.
+
+---
+
+## H9. Aiko's diary — a readable window into her inner life
+
+**Motivation.** Aiko already *writes* a rich private inner life — `reflection`
+/ `[dream]` / `[mindmap]` (K64d) / `shared_moment` / `open_question` memories
+accumulate every day — but the user never sees it; it only leaks out
+indirectly through K28 turning-over and RAG. For a companion / waifu project,
+letting the user **open her diary and read what she's been thinking about
+them** is one of the highest-immersion, lowest-cost features available: the
+data already exists, it just has no surface. A new "Diary" tab renders these
+memories as dated, first-person journal entries (newest first, grouped by
+day), prefix-stripped (`[dream]` → a "dream" badge, `[mindmap]` → a "noticing"
+badge), read-only. It reframes the memory store from a debug table into an
+emotional artifact — you watch the relationship through *her* eyes. Optional
+later: a gentle "she wrote something new" indicator, or a one-line daily
+"diary highlight" she occasionally references.
+
+**Key files.** New `web/src/components/DiaryTab.tsx` + Zustand slice; a thin
+`GET /api/diary?limit=&offset=&kind=` in
+[`app/web/server.py`](../../app/web/server.py) (filtered view over
+[`memory_store.py`](../../app/core/memory/memory_store.py) for the
+journal-flavoured kinds, reusing the existing `/api/memories` pagination
+shape); render-side prefix stripping mirroring
+[`turning_over.py`](../../app/core/session/inner_life/turning_over.py). No new
+worker, no model spend — pure surfacing.
+
+---
+
+## H10. Autonomous idle-life on the avatar — act out the room, not just narrate it
+
+**Motivation.** K36 ([`idle_activity_worker.py`](../../app/core/world/idle_activity_worker.py))
+already gives Aiko an autonomous life *in data* — it mutates `world_state`
+(posture / activity) and broadcasts the patch — but the **avatar itself
+doesn't act any of it out**. When she "curls up with a book" or "sips the tea
+you left", the Live2D rig keeps doing its default ambient idle. Closing that
+loop is pure frontend embodiment (no TTS, no persona): map the broadcast
+`world_state.activity` / `posture` to Live2D behaviour through a new idle-life
+channel — drowsy half-lidded eyes + slower breath late at night, a
+looking-out-the-window gaze drift, a content settle when reading, a little
+perk-up on the first frame after a long absence (the visual reunion beat the
+gap-return systems never got). Driven entirely by the existing world patches
++ circadian time, so it stays in lockstep with what the World tab already
+shows. Makes the persona window feel *inhabited* during the long silent
+stretches that dominate a companion app.
+
+**Key files.** New `web/src/live2d/channels/IdleLifeChannel.ts` (consumes the
+`world_updated` patch + clock, writes posture/gaze/breath overrides via the
+`tickPreModel` hook like `AmbientBodyChannel`), wired in
+[`web/src/components/Live2DAvatar.tsx`](../../web/src/components/Live2DAvatar.tsx);
+read the existing `world_updated` WS frame in
+[`web/src/hooks/useAssistantSocket.ts`](../../web/src/hooks/useAssistantSocket.ts)
+/ [`web/src/store.ts`](../../web/src/store.ts). Capability-gate every override
+(rigs without `breath` / `body_angle` pay nothing), per the Live2D channel
+rules. Tested with Vitest in Node like the other channels.
+
+---
+
+## H11. Real-world co-location — weather + season sync
+
+**Motivation.** Aiko's "weather" today is purely metaphorical (K27 day
+colour). Letting her share the user's *actual* sky — "it's grey and rainy
+here too, perfect tea weather" — is a strong co-presence beat: it makes the
+single shared room feel like it sits in the same world the user is in, not a
+sealed box. With coarse, consent-gated location (city granularity, or a
+manually entered location — never GPS), a low-frequency provider pulls current
+conditions + season from a weather API and (a) tints the room ambiance
+(rain/snow/sun overlay on the persona backdrop), (b) feeds a terse ambient
+prompt cue ("it's snowing where {user} is") with the usual "mention only when
+natural" nudge, and (c) optionally nudges K27's colour palette (a grey rainy
+day biases toward `cozy` / `low_key`). Seasonal shifts can also drive
+room/outfit decor (a blanket in winter, the window open in summer).
+
+**Key files.** New `app/core/world/weather_provider.py` (cached fetch, coarse
+location only, swallow-and-skip on failure) + a new ambient inner-life
+provider alongside `_render_circadian_block` in
+[`app/core/session/inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py),
+wired into [`prompt_assembler.py`](../../app/core/session/prompt_assembler.py)
+T4 ambient cluster; a backdrop overlay on the persona window
+(`web/src/components/`), `agent.weather_sync_enabled` (OFF by default) +
+location field in settings. Privacy posture documented like
+[`docs/presence-and-activity.md`](../../docs/presence-and-activity.md).
+
+---
+
+## H12. Aiko-initiated intentional gifts — she leaves you something
+
+**Motivation.** The world gift flow is one-directional today: the *user*
+gives Aiko items (cookies, tea) and she notices them. The reciprocal beat —
+**Aiko leaving the user a small, intentional thing tied to what she knows
+about them** — is missing, and it's exactly the kind of unprompted care that
+makes a companion feel like she's thinking about you when you're gone. On a
+quiet window, a worker occasionally places a themed item in the room with
+`given_by="aiko"` and a reason drawn from memory / routine ("left you a
+coffee — you've got that early meeting", "found a song that reminded me of
+you"), then arms a **one-shot** inner-life cue so she mentions it naturally on
+your next turn rather than firing a verbatim nudge (per the prepared-nudge
+rule). Bounded hard: rare cadence, daily cap, never about anything heavy.
+Reuses the entire world + cue-producer machinery already shipped for K36 /
+forward-curiosity.
+
+**Key files.** New `app/core/world/gift_worker.py` (idle worker; reads
+`future_plan` / routine / interest-map signals, writes a `world` item via
+[`world_store.py`](../../app/core/world/world_store.py), appends to a kv cue
+ring), a `_render_aiko_gift_block` one-shot provider mirroring
+[`idle_activity_worker.py`](../../app/core/world/idle_activity_worker.py) +
+its K36 surfacing, `agent.aiko_gifts_enabled`. The `world_updated` patch
+already lights up the World tab; the persona side can reuse
+[`PersonaActionBanner.tsx`](../../web/src/components/PersonaActionBanner.tsx).
+
+---
+
 ## Minor polish
 
 These were in the bottom "Other ideas considered" of the legacy
