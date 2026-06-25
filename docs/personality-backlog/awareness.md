@@ -117,3 +117,119 @@ source so a user can disable any of them.
 **Shipped** — see [`shipped/awareness.md`](shipped/awareness.md#f10-topic-graph-utilisation-rag--prompt--knowledge-integration).
 
 ---
+
+# Temporal awareness (K-time family)
+
+Continues the **K-time1** lineage (wall-clock prefixes on chat history —
+shipped, see [`shipped.md`](shipped.md)). Relative time is one of the
+hardest things for an LLM companion: even with a "now" anchor in the
+prompt, the model does date *arithmetic* by reasoning, which it gets
+wrong ("yesterday" / "in 3 days" / "last Tuesday" drift constantly).
+
+**What's already solid** (don't rebuild): the chat prompt carries a
+date+time anchor (`_ambient_block` → "Right now it's Friday, June 26,
+afternoon (1:33 PM)" + the circadian weekday/period line); chat history
+is pre-tagged (`[2 min ago]` / `[yesterday 18:45]`, K-time1); retrieved
+memories are pre-tagged via `rag_retriever._humanize_past/_future`
+("(yesterday)", "(planned for tonight 20:00)", "(ongoing)"); the
+`MemoryExtractor` resolves the user's relative phrases to absolute
+`event_time` at **write** time (schema v10); and K25 hedges stale
+high-confidence rows as "(distant)". The items below fill the gaps those
+leave.
+
+---
+
+## K-time2. Date-anchored retrieval for relative-time queries
+
+**Motivation.** The single highest-value temporal fix. The extractor
+resolves relative phrases at **write** time, but **nothing resolves them
+at query time** — RAG is a pure semantic cosine pass, so "what did I tell
+you *yesterday* about the dashboard?" or "remember that thing from *last
+week*?" retrieves the semantic nearest neighbours regardless of when they
+were said. Aiko then answers confidently off the wrong day. Parse the time
+expression in the user's message deterministically and use it to *filter
+or boost* retrieval toward that window. Key files: a new
+[`app/core/infra/time_expr.py`](../../app/core/infra/) (regex set —
+`yesterday`, `this morning`, `last week`, `on Monday`, `N days/weeks ago`,
+`last month`, `back in March` — resolved against the now-anchor to a
+`(start, end)` range), [`rag_retriever.py`](../../app/core/rag/rag_retriever.py)
+(a date-window score bonus / filter over the existing `created_at` +
+`event_time`), and [`chat_database.py`](../../app/core/infra/chat_database.py)
+(a direct "messages in `[start, end]`" lookup for "what did we say
+then"). **Tonal guard:** when the window is empty, Aiko should say she
+doesn't have anything from then, not confabulate. **Effort.** Medium.
+
+---
+
+## K-time3. Upcoming-horizon block — pre-computed future relative times
+
+**Motivation.** Future date arithmetic is exactly where the LLM fails, and
+future plans only reach Aiko today if *semantic* RAG happens to surface
+them. Add a proactive **forward scan** over `event_time` rows
+(`future_plan` / agenda / D1 reminders) within a horizon window (e.g. the
+next 7 days) and render a single terse "coming up" inner-life cue with the
+relative phrasing **already resolved** ("tomorrow morning", "in 3 days",
+"this weekend") so Aiko never computes a future date herself.
+`rag_retriever._humanize_future` already exists — this is the missing
+*forward sweep* that doesn't wait for a semantic hit. Surfaces only when
+something falls in the window; one-shot / anti-repeat watermarked so it
+doesn't nag. Pairs with D1 (reminders), the agenda block, and the
+[`follow_up_worker`](../../app/core/proactive/follow_up_worker.py). Key
+files: a forward scan in the memory/agenda layer, a new inner-life
+provider + its tier in [`prompt_assembler.py`](../../app/core/session/prompt_assembler.py).
+**Tonal guard:** a heads-up, not a calendar readout. **Effort.** Medium.
+
+---
+
+## K-time4. Session-elapsed & mid-session gap awareness
+
+**Motivation.** There's cross-session gap awareness (J5 reconnection, K28)
+and per-message history age (K-time1), but **nothing about the current
+conversation's own clock**: how long *this* session has run ("we've been
+at this a while now") or a notable *mid-session* pause ("you stepped away
+for 20 min and came back" — too short for a full reconnection beat, too
+long to ignore). A tiny derived signal off the session's first-message
+timestamp plus the delta between the last two messages, rendered as an
+optional one-line cue, lets Aiko land natural beats like "it's gotten
+late and we've been talking an hour — you should sleep." Key files:
+[`session_controller.py`](../../app/core/session/session_controller.py)
+(session start time + last-message delta, both already nearly available —
+`_last_assistant_age_hours` is a cousin), a small grounding cue in the
+ambient cluster. **Tonal guard:** observe, don't police ("you've been on
+here too long"). **Effort.** Small.
+
+---
+
+## K-time5. Unified time-phrasing module + single "now" seam
+
+**Motivation.** Relative phrasing is computed in **~6 independent
+humanizers** with slightly different bandings —
+[`reconnection.humanize_gap`](../../app/core/relationship/reconnection.py),
+[`promise_lifecycle.humanize_age`](../../app/core/memory/promise_lifecycle.py),
+[`rag_retriever._humanize_past/_future`](../../app/core/rag/rag_retriever.py),
+the [`prompt_assembler_helpers`](../../app/core/session/prompt_assembler_helpers_mixin.py)
+age-prefix, [`follow_up._humanize_clock`](../../app/core/proactive/follow_up_worker.py),
+and [`wants_ledger`](../../app/core/conversation/wants_ledger.py) — so the
+*same instant* can read "yesterday" on one surface and "1 day ago" on
+another in the same turn. Consolidate into one
+[`app/core/infra/timephrase.py`](../../app/core/infra/) (past / future /
+duration / clock formatters) used everywhere, reading a **single
+injectable "now"** — which is also exactly where the DT1 virtual clock
+plugs in. Removes drift, keeps every relative phrase consistent, and is
+the prerequisite that makes DT1 (and DT4's deterministic scenarios) clean.
+**Effort.** Medium (mechanical), high consistency payoff. Do before DT1.
+
+---
+
+## K-time6. Enrich the "now" anchor with year + ISO
+
+**Motivation.** `_ambient_block` renders "Right now it's Friday, June 26,
+afternoon (1:33 PM)" — **no year**, friendly-form only. For the residual
+cases where the model still does its own arithmetic (cross-year spans,
+"how long ago was X"), append the year and a compact ISO stamp
+(`2026-06-26`) so the anchor is unambiguous. Trivial one-liner in
+[`prompt_assembler_helpers_mixin.py`](../../app/core/session/prompt_assembler_helpers_mixin.py)
+`_ambient_block`. **Effort.** Trivial. (Fold into K-time5 if that lands
+first.)
+
+---
