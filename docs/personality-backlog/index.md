@@ -67,7 +67,7 @@ earn a G-letter; several (K1, K8, K10, K14, K21) are worker-shaped.
 Shipped-but-under-wired features (no UI, no live WS update, or a
 silent failure path). Cheap individually, compounding in aggregate.
 
-- ~~**I1.** Beliefs tab doesn't live-update (WS handlers missing).~~ **Shipped** → [`shipped.md`](shipped.md#reliability-pass--i1--i2--i4--i5-finish-the-wiring-batch).
+- ~~**I1.** Beliefs tab doesn't live-update (WS handlers missing).~~ **Shipped** → [`shipped.md`](shipped/features.md#reliability-pass--i1--i2--i4--i5-finish-the-wiring-batch).
 - ~~**I2.** MessageIndexer silently drops messages on embed failure.~~ **Shipped**.
 - **I3.** Agenda has no REST endpoint or UI.
 - ~~**I4.** Settings-drawer coverage gaps for shipped knobs.~~ **Shipped**.

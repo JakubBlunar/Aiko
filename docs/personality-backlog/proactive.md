@@ -87,4 +87,4 @@ forever — typed-proactive is *meant* to be text-only.
 ## C6. Worker-model decides task-result interrupt-worthiness — SHIPPED
 
 Shipped as the worker-model task-report decision + angle cue. See
-[`shipped.md` → Worker-model task-report decision](shipped.md#worker-model-task-report-decision--angle-cue-c6).
+[`shipped.md` → Worker-model task-report decision](shipped/proactive-tasks.md#worker-model-task-report-decision--angle-cue-c6).

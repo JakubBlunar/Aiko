@@ -48,7 +48,7 @@ Shipped — see [`shipped.md`](shipped.md) "K8. Affect rupture-and-repair
 
 ## K9. Topic-graph / interest-network browser
 
-**Shipped (browser surface).** See [`shipped.md`](shipped.md#k9-topic-graph-browser--observability-surface). The lazy cosine-cluster engine ([`topic_graph.py`](../../app/core/conversation/topic_graph.py)) and the `CuriositySeedWorker` that consumes it shipped earlier; the observability surface ships now: [`build_topic_graph_snapshot`](../../app/core/conversation/topic_graph.py) backs a read-only `GET /api/topic-graph` REST endpoint, `get_topic_graph` / `force_topic_graph_rebuild` MCP tools, and a "Topic graph" cluster-list panel in the Memory drawer tab so the user can see what Aiko sees.
+**Shipped (browser surface).** See [`shipped.md`](shipped/patterns-k01-k15.md#k9-topic-graph-browser--observability-surface). The lazy cosine-cluster engine ([`topic_graph.py`](../../app/core/conversation/topic_graph.py)) and the `CuriositySeedWorker` that consumes it shipped earlier; the observability surface ships now: [`build_topic_graph_snapshot`](../../app/core/conversation/topic_graph.py) backs a read-only `GET /api/topic-graph` REST endpoint, `get_topic_graph` / `force_topic_graph_rebuild` MCP tools, and a "Topic graph" cluster-list panel in the Memory drawer tab so the user can see what Aiko sees.
 
 **Clustering upgrade (2026).** The engine was changed from plain single-link cosine (which chained every topic into **one giant cluster** as the corpus grew) to a two-stage **mutual-k-NN graph + Louvain community detection** pipeline ([`_cluster_memories_adaptive`](../../app/core/conversation/topic_graph.py)). Stage 1 builds an adaptive, similarity-weighted mutual-k-NN graph: an edge forms only when two memories are in each other's top-`k` nearest neighbours, `k ≈ log2(n)+1`, so there is no global threshold to tune and a generic "bridge" memory can't fuse two dense families. **Mutual-k-NN alone was insufficient on a real corpus**, though: a single-person memory store is densely + *uniformly* similar (everything relates to the same life), so there is always a chain of mutual edges through the dense core and connected-components still collapsed it into one ~400-memory blob (observed: 393/425 in one cluster). Stage 2 fixes this by partitioning the graph with **Louvain modularity** ([`_partition_graph`](../../app/core/conversation/topic_graph.py), via networkx — already a dependency), which finds densely-internal sub-communities (actual topics) *within* a connected graph. Granularity is the Louvain **resolution**, auto-calibrated never hand-tuned: a corpus-size base (`_adaptive_resolution ≈ 0.7 + 0.3·log10(n)`, capped 2.5) is **escalated** (×1.5, up to 8.0) while any single community still holds > 35% of the nodes, so the "one huge cluster" symptom self-corrects regardless of how tightly the embeddings pack. On a synthetic 420-memory dense-baseline corpus this turns one blob into ~19 well-distributed clusters (largest ~7%). Connected-components ([`_connected_components`](../../app/core/conversation/topic_graph.py)) remains the fallback when networkx is unavailable; the snapshot/MCP surface reports `algorithm` (`mutual_knn_louvain` | `mutual_knn`) + `resolution`. This is the prerequisite for the deferred follow-up below + the F10 utilisation cluster.
 
@@ -60,38 +60,9 @@ Shipped — see [`shipped.md`](shipped.md) "K8. Affect rupture-and-repair
 
 ## K10. Persona regression tests — SHIPPED (on-demand)
 
-Golden-prompt evals: a small fixture file
-(`data/persona/golden_turns.jsonl`) with canonical prompts + expected
-style markers (advisory `require_any` tone words, `require_all`,
-`require_tags` literal self-tag substrings like `[[reaction:`, and
-`forbid` corporate-tell phrases). Each reply is scored against the
-markers and drift is surfaced in the Diagnostics tab. Catches the
-persona quietly drifting from the sheet via prompt rot or memory
-contamination.
+**Shipped** — see [`shipped/patterns-k01-k15.md`](shipped/patterns-k01-k15.md#k10-persona-regression-tests--shipped-on-demand). The deferred piece below is the only part still open:
 
-**Shipped on-demand only** (no background token spend): trigger via the
-MCP `run_persona_regression()` tool, the "Run check" button in
-Settings → Diagnostics → Persona regression, or
-`POST /api/persona-drift/run`. Each golden turn declares
-`"scope": "minimal"` (persona sheet + grammar addenda, isolates
-persona-sheet drift) or `"scope": "full"` (the live assembled system
-prompt + RAG, catches memory contamination). Scoring is pure
-case-insensitive substring matching in
-[`app/core/persona/persona_regression.py`](../../app/core/persona/persona_regression.py).
-
-Key files: pure scorer `app/core/persona/persona_regression.py`,
-fixture `data/persona/golden_turns.jsonl`,
-`PromptAssembler.build_eval_messages`, orchestration
-`app/core/session/persona_regression_mixin.py`, REST
-`GET/POST /api/persona-drift[/run]`, MCP
-`get_persona_regression_state()` / `run_persona_regression()`, panel
-`web/src/components/settings/PersonaRegressionPanel.tsx`. Settings:
-`agent.persona_regression_enabled`,
-`agent.persona_regression_fixture_path`. Tests:
-`tests/test_persona_regression.py`,
-`tests/test_web_server_persona_drift.py`.
-
-### K10-followup — background auto-eval worker (deferred)
+## K10-followup — background auto-eval worker (deferred)
 
 The on-demand path is the whole eval engine; the only missing piece is
 a scheduler. Register a thin `IdleWorker` that calls the same
@@ -108,48 +79,7 @@ spend until there's demand for unattended drift alerts.
 
 ## K11. Counterfactual / pre-thought cache — SHIPPED
 
-G3 covers factual `open_question`s. A natural cousin is "what would I
-say if Jacob asked me X" — Aiko drafts replies to plausible upcoming
-questions during idle windows and caches them in scratchpad memory,
-smoothing future first responses without needing web access.
-
-**Shipped** as a two-stage idle worker
-([`app/core/proactive/pre_thought_worker.py`](../../app/core/proactive/pre_thought_worker.py),
-`PreThoughtWorker`), modeled on the K9 `CuriositySeedWorker`. Each
-quiet-window tick (rate-limited via a dedicated `FactCheckRateLimiter`,
-`state_key="pre_thought.rate_state"`): (1) **generate** — one local-LLM
-JSON call proposes `pre_thought_candidates` (default 4) likely
-near-future user questions, grounded in the rolling summary + persona;
-(2) **draft** — for up to `pre_thought_max_per_run` (default 2) of the
-survivors (deduped vs existing pre-thoughts by question embedding at
-`pre_thought_min_novelty`), it builds the **K10
-`PromptAssembler.build_eval_messages(full_context=False)`** minimal
-persona prompt and drafts Aiko's in-persona reply, then strips meta
-tags. Each draft is written via `MemoryStore.add` with the new
-`pre_thought` kind on the **scratchpad** tier, **embedded on the
-question** so it surfaces through ordinary cosine RAG when the user
-later asks something similar. The store prunes oldest beyond
-`pre_thought_max_active` (default 12) and ages out naturally via decay.
-
-Surfacing is RAG-only: `RagRetriever.format_block` tags the bullet
-`(pre-thought)` and the persona ("Memories tagged `(pre-thought)`")
-teaches Aiko to lean on the thinking, not recite the draft, and to
-trust the live moment if the real question differs.
-
-Key files: `app/core/proactive/pre_thought_worker.py`,
-[`app/core/memory/memory_store.py`](../../app/core/memory/memory_store.py)
-(`pre_thought` in `VALID_KINDS`),
-[`app/core/rag/rag_retriever.py`](../../app/core/rag/rag_retriever.py)
-(`(pre-thought)` suffix),
-[`app/core/session/prompt_assembler.py`](../../app/core/session/prompt_assembler.py)
-(`build_eval_messages` reuse), registration in
-`SessionController.__init__`. Settings: `agent.pre_thought_enabled`,
-`pre_thought_max_active`, `pre_thought_candidates`,
-`pre_thought_max_per_run`, `pre_thought_min_novelty`,
-`pre_thought_per_hour_cap`, `pre_thought_per_day_cap`,
-`memory.pre_thought_interval_seconds`. MCP: `get_pre_thought_state()`,
-`force_pre_thought()`. Tests: `tests/test_pre_thought_worker.py`,
-`PreThoughtSettingsTests` in `tests/test_settings.py`.
+**Shipped** — see [`shipped/patterns-k01-k15.md`](shipped/patterns-k01-k15.md#k11-counterfactual--pre-thought-cache--shipped).
 
 ---
 
@@ -182,7 +112,7 @@ signals (latency + length)".
 
 ## K15. Self-disclosure / vulnerability budget
 
-**Shipped** — see [shipped.md → K15](shipped.md#k15-self-disclosure--vulnerability-budget).
+**Shipped** — see [shipped.md → K15](shipped/patterns-k01-k15.md#k15-self-disclosure--vulnerability-budget).
 
 ---
 
@@ -230,43 +160,7 @@ calibration — per-user trust scalar + topic slots".
 
 ## K21. Fresh-eyes thread re-summarisation
 
-**SHIPPED.** Compaction (the `SummaryWorker`) compresses old history
-when context overflows; it doesn't periodically re-synthesise "what
-this ongoing thread is *about* now". K21 adds a separate
-[`ThreadResummaryWorker`](../../app/core/proactive/thread_resummary_worker.py)
-(`IdleWorker` on the maintenance client) that, once the active session
-has `thread_resummary_min_messages` (12) messages AND either has no
-note yet / has gained `thread_resummary_message_interval` (50) new
-messages since the note's watermark / the note is older than
-`thread_resummary_max_age_hours` (24h), makes ONE LLM call producing a
-JSON `{title, note}`: a short ≤6-word title and a 3-sentence
-present-tense "where this conversation stands now" read in Aiko's
-voice.
-
-Storage is a new `thread_notes` table (schema v19, one upserted row per
-session: `session_id` PK, `title`, `note`, `messages_at`, `updated_at`)
-with `ChatDatabase.get_thread_note` / `save_thread_note`. Two consumers:
-(1) **prompt** — the note renders as its own small T2 block ("Where
-this conversation stands now: …") immediately after the rolling summary
-(complement, not replace — the rolling summary keeps its factual
-coverage and its history watermark), cached in `_StaticSlices` so the
-cache prefix stays stable; (2) **sidebar** — `list_sessions` returns a
-`title` per session, preferring the note title and falling back to a
-truncated first-user-message snippet for new/short threads, so the
-left sidebar shows readable labels instead of raw ids. A
-`thread_note_updated` WS event nudges the sidebar to refetch live.
-
-LLM spend bounded by a dedicated `FactCheckRateLimiter`
-(`state_key="thread_resummary.rate_state"`, 6/hr · 24/day). Opt-out via
-`agent.thread_resummary_enabled`. MCP-debuggable:
-`get_thread_note_state()` (switch + knobs + rate snapshot + current
-note) and `force_thread_resummary()` (run once, bypassing the interval
-gate; min-message + trigger gates still apply). Logs:
-`tail_logs(module_contains="thread_resummary")` shows
-`thread_resummary wrote: session=… title=…`. Tests:
-`tests/test_thread_resummary_worker.py`, `TestThreadNotes` in
-`tests/test_chat_database.py`, `ThreadResummarySettingsTests` in
-`tests/test_settings.py`.
+**Shipped** — see [`shipped/patterns-k16-k30.md`](shipped/patterns-k16-k30.md#k21-fresh-eyes-thread-re-summarisation).
 
 ---
 
@@ -281,14 +175,14 @@ inside-joke detector (post-turn cosine pass + read-side bonus)".
 
 **Shipped** — per-turn provider-time detector with shrink + pivot
 triggers, cooldown, and MCP-debuggable bypass. See
-[`shipped.md` → K23](shipped.md#k23-subtle-misattunement-detection).
+[`shipped.md` → K23](shipped/patterns-k16-k30.md#k23-subtle-misattunement-detection).
 
 ---
 
 ## K24. Sensory anchoring layer
 
 **Shipped** — adaptive per-arc cadence + posture-kind matrix.
-See [`shipped.md` → K24](shipped.md#k24-sensory-anchoring-layer--adaptive-per-arc-cadence--posture-kind-matrix).
+See [`shipped.md` → K24](shipped/patterns-k16-k30.md#k24-sensory-anchoring-layer--adaptive-per-arc-cadence--posture-kind-matrix).
 
 ---
 
@@ -296,7 +190,7 @@ See [`shipped.md` → K24](shipped.md#k24-sensory-anchoring-layer--adaptive-per-
 
 **Shipped** — read-side `effective_confidence` with a new
 `(distant)` suffix distinct from `(uncertain)` and `(faded)`. See
-[`shipped.md` → K25](shipped.md#k25-memory-confidence-time-decay).
+[`shipped.md` → K25](shipped/patterns-k16-k30.md#k25-memory-confidence-time-decay).
 
 ---
 
@@ -324,37 +218,37 @@ block consumer.
 
 ## K27. Aiko's day — daily personality colour
 
-**Shipped** — see [`docs/personality-backlog/shipped.md#k27-aikos-day--daily-personality-colour`](shipped.md#k27-aikos-day--daily-personality-colour).
+**Shipped** — see [`docs/personality-backlog/shipped/patterns-k16-k30.md#k27-aikos-day--daily-personality-colour`](shipped/patterns-k16-k30.md#k27-aikos-day--daily-personality-colour).
 
 ---
 
 ## K28. "What I've been turning over" — between-session thought thread
 
-**Shipped** — see [`docs/personality-backlog/shipped.md#k28-what-ive-been-turning-over-between-session-thought-thread`](shipped.md#k28-what-ive-been-turning-over-between-session-thought-thread).
+**Shipped** — see [`docs/personality-backlog/shipped/patterns-k16-k30.md#k28-what-ive-been-turning-over--between-session-thought-thread`](shipped/patterns-k16-k30.md#k28-what-ive-been-turning-over--between-session-thought-thread).
 
 ---
 
 ## K29. Opinion injection — actually push back when she has a stance
 
-**Shipped** — see [`docs/personality-backlog/shipped.md#k29-opinion-injection`](shipped.md#k29-opinion-injection-push-back-when-she-has-a-stance).
+**Shipped** — see [`docs/personality-backlog/shipped/patterns-k16-k30.md#k29-opinion-injection--push-back-when-she-has-a-stance`](shipped/patterns-k16-k30.md#k29-opinion-injection--push-back-when-she-has-a-stance).
 
 ---
 
 ## K30. Self-noticing cues — agreement-streak / flat-affect / repeated-thought
 
-**Shipped** — see [`shipped.md` → K30](shipped.md#k30-self-noticing-cues--agreement-streak--flat-affect--repeated-thought).
+**Shipped** — see [`shipped.md` → K30](shipped/patterns-k16-k30.md#k30-self-noticing-cues--agreement-streak--flat-affect--repeated-thought).
 
 ---
 
 ## K31. Soft physicality — virtual gestures *toward* the user
 
-**Shipped** — see [`shipped.md` → K31 + K32](shipped.md#k31--k32-soft-physicality-round-trip--virtual-touch--user-side-reactions).
+**Shipped** — see [`shipped.md` → K31 + K32](shipped/patterns-k31-k60.md#k31--k32-soft-physicality-round-trip--virtual-touch--user-side-reactions).
 
 ---
 
 ## K32. Reciprocity — user-side quick reactions on Aiko's bubbles
 
-**Shipped** — see [`shipped.md` → K31 + K32](shipped.md#k31--k32-soft-physicality-round-trip--virtual-touch--user-side-reactions).
+**Shipped** — see [`shipped.md` → K31 + K32](shipped/patterns-k31-k60.md#k31--k32-soft-physicality-round-trip--virtual-touch--user-side-reactions).
 
 ---
 
@@ -378,68 +272,31 @@ the voice toggle in `ChatView.tsx`.
 
 ## K34. Forward curiosity worker — "I've been wondering"
 
-**Shipped.** See [`shipped.md`](shipped.md#k34-forward-curiosity-worker--ive-been-wondering). The [`ForwardCuriosityWorker`](../../app/core/proactive/forward_curiosity_worker.py) drafts one forward question about the user's life (from their `future_plan` + `callback` memories, biased by K3 routines) into a `kv_meta` ring during quiet windows; the [`_render_forward_curiosity_block`](../../app/core/session/inner_life_providers_mixin.py) provider surfaces one casual "you've been wondering ..." line on the first turn after a ≥4h typed gap, deferring to K28 turning-over + K36 away-activities so only one gap cue fires per return.
+**Shipped.** See [`shipped.md`](shipped/patterns-k31-k60.md#k34-forward-curiosity-worker--ive-been-wondering). The [`ForwardCuriosityWorker`](../../app/core/proactive/forward_curiosity_worker.py) drafts one forward question about the user's life (from their `future_plan` + `callback` memories, biased by K3 routines) into a `kv_meta` ring during quiet windows; the [`_render_forward_curiosity_block`](../../app/core/session/inner_life_providers_mixin.py) provider surfaces one casual "you've been wondering ..." line on the first turn after a ≥4h typed gap, deferring to K28 turning-over + K36 away-activities so only one gap cue fires per return.
 
 ---
 
 ## K35. Memory consolidation worker — nightly merge of near-duplicates
 
-**Shipped.** See [`shipped.md`](shipped.md#k35-memory-consolidation-worker--nightly-near-duplicate-merge). The [`MemoryConsolidationWorker`](../../app/core/memory/memory_consolidation_worker.py) clusters near-duplicate scratchpad rows (same-kind, non-contradicting, cosine >= `consolidation_similarity_threshold`) during quiet windows, fuses each cluster into its strongest member via a rate-limited worker-LLM merge (deterministic fallback), promotes that primary to `long_term` with `metadata.source_ids` provenance + a re-embedded vector, and archives the absorbed duplicates with `metadata.consolidated_into`. Complements F5 (which only handles contradicting pairs); the F5 contradiction heuristic is reused as a guard so the two workers never fight over a pair.
+**Shipped.** See [`shipped.md`](shipped/patterns-k31-k60.md#k35-memory-consolidation-worker--nightly-near-duplicate-merge). The [`MemoryConsolidationWorker`](../../app/core/memory/memory_consolidation_worker.py) clusters near-duplicate scratchpad rows (same-kind, non-contradicting, cosine >= `consolidation_similarity_threshold`) during quiet windows, fuses each cluster into its strongest member via a rate-limited worker-LLM merge (deterministic fallback), promotes that primary to `long_term` with `metadata.source_ids` provenance + a re-embedded vector, and archives the absorbed duplicates with `metadata.consolidated_into`. Complements F5 (which only handles contradicting pairs); the F5 contradiction heuristic is reused as a guard so the two workers never fight over a pair.
 
 ---
 
 ## K36. "Things I did while you were away" — idle-time world activities
 
-**Shipped.** See [`shipped.md`](shipped.md#k36-things-i-did-while-you-were-away--idle-time-world-activities). The [`IdleAwayActivityWorker`](../../app/core/world/idle_activity_worker.py) mutates the world during quiet windows + journals each beat to a `kv_meta` ring; the [`_render_away_activities_block`](../../app/core/session/inner_life_providers_mixin.py) provider surfaces one casual line on the first turn after a ≥4h typed gap, deferring to K28 turning-over so only one gap cue fires per return.
+**Shipped.** See [`shipped.md`](shipped/patterns-k31-k60.md#k36-things-i-did-while-you-were-away--idle-time-world-activities). The [`IdleAwayActivityWorker`](../../app/core/world/idle_activity_worker.py) mutates the world during quiet windows + journals each beat to a `kv_meta` ring; the [`_render_away_activities_block`](../../app/core/session/inner_life_providers_mixin.py) provider surfaces one casual line on the first turn after a ≥4h typed gap, deferring to K28 turning-over so only one gap cue fires per return.
 
 ---
 
 ## K37. Emotional contagion — Jacob's affect tilts Aiko's affect
 
-**SHIPPED.** Previously `AffectUpdater.apply_turn` only moved Aiko's
-affect toward a target built from her own `[[reaction:...]]` (plus a
-tiny user-keyword hint and a confident vocal-tone arousal nudge). K37
-adds a distinct contagion pass: each turn, the post-turn hook estimates
-Jacob's current `(valence, arousal)` and Aiko's affect is tilted a
-small, capped amount toward it — the residual "I'm picking up on him"
-pull.
-
-The estimate is a pure function
-[`estimate_user_affect`](../../app/core/affect/affect_state.py) fed by
-cheap per-turn signals: perceived **mood** + **energy** bands (from
-`UserStateEstimator`, low → negative/lower-arousal, high →
-positive/higher-arousal), **dialogue-act** sentiment (`vent` → negative
-pull, `banter` → mild positive pull), and a confident **vocal-tone**
-`arousal_hint`. It returns `None` when nothing is readable
-(mood/energy unknown, no sentiment-bearing act, no confident tone), so
-contagion stays silent rather than dragging toward neutral.
-
-[`_apply_user_contagion`](../../app/core/affect/affect_state.py) runs
-*after* the reaction blend+clamp inside `apply_turn`: it closes a
-`contagion_strength` (0.15) fraction of the per-axis gap, clamped to
-`±contagion_max_per_turn` (0.05) so a big mismatch can only ever pull
-her 0.05/turn, then re-clamps to the valid ranges. The reaction math is
-untouched (the strength/cap knobs don't entangle with it). Wired in
-[`PostTurnMixin._post_turn_inner_life`](../../app/core/session/post_turn_mixin.py)
-via `_estimate_user_affect_for_contagion`, which only fires the next
-turn's felt-affect read — no per-turn LLM cost.
-
-Settings: `agent.contagion_enabled` / `contagion_strength` /
-`contagion_max_per_turn`. Persona: a new bullet under "Reading
-{user_name}:" in [`aiko_companion.txt`](../../data/persona/aiko_companion.txt)
-("you catch their mood a little … never announce it"). MCP:
-`get_contagion_state(user_text)` previews the detected bands + the
-capped `(dv, da)` Aiko would move. Logs: the per-turn
-`affect:` DEBUG line now carries `contagion_dv` / `contagion_da` /
-`user_affect`. Tests: `EstimateUserAffectTests` + `ContagionTests` in
-`tests/test_affect_state.py`, `ContagionSettingsTests` in
-`tests/test_settings.py`.
+**Shipped** — see [`shipped/patterns-k31-k60.md`](shipped/patterns-k31-k60.md#k37-emotional-contagion--jacobs-affect-tilts-aikos-affect).
 
 ---
 
 ## K38. Self-correction "actually..." — next-turn contradiction catch
 
-**Shipped.** See [`shipped.md`](shipped.md#k38-self-correction-cue--next-turn-contradiction-catch). The pure, embedding-free [`detect_self_correction`](../../app/core/conversation/self_correction_detector.py) runs post-turn over Aiko's just-finished reply: a content-word overlap shortlist picks candidate `fact`/`preference` memories (confidence ≥ floor), then the shared F5 [`conflict_heuristics.classify_pair`](../../app/core/memory/conflict_heuristics.py) decides whether a reply sentence actually contradicts one. On a hit, [`_maybe_arm_self_correction`](../../app/core/session/post_turn_mixin.py) stashes a one-shot `_pending_self_correction` slot (gated by a per-fire cooldown), and the [`_render_self_correction_block`](../../app/core/session/inner_life_providers_mixin.py) provider surfaces a gentle "oh wait — earlier I said X, that's not right" cue on the NEXT turn. Independent of the gap-cue family. The streaming same-reply "wait, actually" beat (abort + splice mid-stream) is deferred to **K41** below.
+**Shipped.** See [`shipped.md`](shipped/patterns-k31-k60.md#k38-self-correction-cue--next-turn-contradiction-catch). The pure, embedding-free [`detect_self_correction`](../../app/core/conversation/self_correction_detector.py) runs post-turn over Aiko's just-finished reply: a content-word overlap shortlist picks candidate `fact`/`preference` memories (confidence ≥ floor), then the shared F5 [`conflict_heuristics.classify_pair`](../../app/core/memory/conflict_heuristics.py) decides whether a reply sentence actually contradicts one. On a hit, [`_maybe_arm_self_correction`](../../app/core/session/post_turn_mixin.py) stashes a one-shot `_pending_self_correction` slot (gated by a per-fire cooldown), and the [`_render_self_correction_block`](../../app/core/session/inner_life_providers_mixin.py) provider surfaces a gentle "oh wait — earlier I said X, that's not right" cue on the NEXT turn. Independent of the gap-cue family. The streaming same-reply "wait, actually" beat (abort + splice mid-stream) is deferred to **K41** below.
 
 ---
 
@@ -586,114 +443,13 @@ tweak in the "When you have your own take" block.
 
 ## K47. Question/share balance — stop interviewing
 
-**SHIPPED.** Several workers *push* questions (`CuriosityWorker` drafts
-"maybe ask {name}...", forward-curiosity, `open_question` memories),
-while the only counterweight — the `question_saturation` style-rut cue
-— fires reactively after 75% of recent turns end in "?". The persona
-wants ≥1/3 of turns question-free; the worker pipeline pulls the other
-way, so default drift is interview mode.
-
-K47 adds a **proactive** per-session gate. A pure, dependency-free
-module [`app/core/conversation/question_balance.py`](../../app/core/conversation/question_balance.py)
-owns the math: `is_question_turn(text)` (any `?` → a "question turn",
-the complement of "question-free"), `compute_ratio`, `should_suppress`,
-and `render_share_first_cue`. The per-session state lives on
-`SessionController`: a `deque[bool]` ring (`_question_turn_flags`,
-maxlen=`question_balance_window`, default 10) and an int countdown
-`_question_balance_suppress_remaining`.
-
-`PostTurnMixin._update_question_balance(assistant_text)` runs once per
-committed turn (right before the reflection schedule): append the new
-question flag, consume one suppressed turn for the turn that just
-completed, then re-arm the countdown to `question_balance_suppress_turns`
-(default 2) when the rolling ratio is strictly above
-`question_balance_ratio_threshold` (default 0.55) over at least
-`max(4, window//2)` samples. Re-arming while the ratio stays high keeps
-the gate up until the question/share mix rebalances; a gentle tail lets
-it release. The countdown is **only** mutated post-turn, so a same-turn
-re-render of the prompt is consistent (no double-decrement worry, and
-T6 detectors aren't built during the listening-window prebuild anyway).
-
-Provider time (`InnerLifeProvidersMixin`): `_question_balance_suppressed()`
-is the shared guard (master switch + `remaining > 0`).
-`_render_question_balance_block()` surfaces the share-first cue while
-armed (a new T6 detector cue, clustered right after `style_pattern`,
-dropped under `aggressive=True`). The four question-pushing providers —
-`_render_curiosity_seeds_block`, `_render_forward_curiosity_block`,
-`_render_follow_up_block`, `_render_knowledge_gaps_block` — early-return
-`""` while suppressed, and `_render_narrative_block` drops *only* the
-`open_question` nudge. (RAG-surfaced `open_question` memories are left
-as-is this pass — provider suppression + the cue + persona dominate;
-RAG filtering is a noted follow-up.)
-
-Settings (`AgentSettings`): `question_balance_enabled` /
-`_ratio_threshold` / `_window` / `_suppress_turns`. Persona reinforcement
-in the "Style patterns I'm in" block of
-[`aiko_companion.txt`](../../data/persona/aiko_companion.txt). MCP debug:
-`get_question_balance_state()` (ring, ratio, remaining, cue preview) and
-`force_question_balance()` (arm without a real streak). Key files:
-[`app/core/conversation/question_balance.py`](../../app/core/conversation/question_balance.py),
-[`app/core/session/post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py)
-(counter), [`app/core/session/prompt_assembler.py`](../../app/core/session/prompt_assembler.py)
-+ [`inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py)
-(provider gating). Tests: `tests/test_question_balance.py`,
-`QuestionBalanceSettingsTests` in `tests/test_settings.py`,
-`QuestionBalanceProviderSlotTests` in `tests/test_prompt_assembler.py`.
+**Shipped** — see [`shipped/patterns-k31-k60.md`](shipped/patterns-k31-k60.md#k47-questionshare-balance--stop-interviewing).
 
 ---
 
 ## K48. Tease rhythm — banter as a budget, not random snark
 
-**SHIPPED.** The persona promises "gently roast when it's earned" and
-the `humor` axis drifts on laughs, but nothing tracked *comedic rhythm*:
-no "three teases in a row with zero warmth" guard, no "the roast landed
-— you can push one step further" green light.
-
-K48 adds a small tease-budget sibling of K47/K15. A pure,
-dependency-free module
-[`app/core/conversation/tease_rhythm.py`](../../app/core/conversation/tease_rhythm.py)
-owns the logic: `classify_tease(text, reaction)` (primary signal = a
-tease-shaped `[[reaction:X]]` — `smug` / `mischievous` / `defiant` /
-`pouty`; secondary = a small playful-jab text-marker net),
-`landed_verdict(laughed, user_reply)` (laugh 😂 → landed; no laugh +
-short/curt reply → missed; substantive reply → ambiguous/None),
-`trailing_tease_streak`, `decide_cue`, and `render_cue`. Per-session
-state on `SessionController`: a `deque[bool]` tease-flag ring
-(`_tease_flags`, maxlen=`tease_rhythm_window`, default 6),
-`_last_tease_message_id` (so the next turn can read that message's K32
-reactions), a one-shot `_pending_tease_cue`, and a `_tease_cue_cooldown`.
-
-`PostTurnMixin._update_tease_rhythm` runs once per committed turn:
-(1) read the verdict on the most recent tease using this turn's
-`user_text` + the prior tease message's persisted K32 reactions (via
-`WorldMixin._load_message_reactions`); (2) classify the current reply,
-roll the ring, and remember its id if it was a tease; (3) `decide_cue`
-+ arm a one-shot cue (cooldown-gated). `decide_cue` priority: a tease
-that just missed → `ease_off`; `consecutive_cap` (default 3) teases in
-a row → `ease_off` (the "zero-warmth" guard); the last tease landed AND
-`humor >= tease_rhythm_green_light_humor` (default 0.2) → `green_light`.
-The humor floor is what keeps early-relationship Aiko gentle (a new user
-sits near humor 0, so escalation never greenlights). The cue surfaces on
-the *next* turn via `InnerLifeProvidersMixin._render_tease_rhythm_block`
-(a new T6 detector cue, clustered right after `question_balance`,
-dropped under `aggressive=True`, one-shot consume).
-
-Settings (`AgentSettings`): `tease_rhythm_enabled` / `_window` /
-`_consecutive_cap` / `_green_light_humor` / `_cooldown_turns`. Persona
-reinforcement in the "Style patterns I'm in" block of
-[`aiko_companion.txt`](../../data/persona/aiko_companion.txt). MCP debug:
-`get_tease_rhythm_state()` (ring, streak, watched message id, humor,
-pending cue + text, cooldown) and `force_tease_rhythm(cue)`
-(`ease_off` / `green_light`). Key files:
-[`app/core/conversation/tease_rhythm.py`](../../app/core/conversation/tease_rhythm.py),
-[`app/core/session/post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py),
-[`app/core/relationship/user_reactions.py`](../../app/core/relationship/user_reactions.py)
-(`laugh` reaction signal),
-[`app/core/session/prompt_assembler.py`](../../app/core/session/prompt_assembler.py)
-+ [`inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py).
-Tests: `tests/test_tease_rhythm.py`, `TeaseRhythmSettingsTests` in
-`tests/test_settings.py`, `TeaseRhythmProviderSlotTests` in
-`tests/test_prompt_assembler.py`.
+**Shipped** — see [`shipped/patterns-k31-k60.md`](shipped/patterns-k31-k60.md#k48-tease-rhythm--banter-as-a-budget-not-random-snark).
 
 ---
 
@@ -742,7 +498,7 @@ files: [`app/core/session/turn_runner.py`](../../app/core/session/turn_runner.py
 
 ## K51. Cue-register rotation — de-"Heads-up" the inner life
 
-**Shipped** — see [`shipped.md` → K51](shipped.md#k51-cue-register-rotation--de-heads-up-the-inner-life).
+**Shipped** — see [`shipped.md` → K51](shipped/patterns-k31-k60.md#k51-cue-register-rotation--de-heads-up-the-inner-life).
 Central prefix rotation in the prompt assembler (producers keep
 emitting the literal `Heads-up: ...`): four register shapes rotated
 on a deterministic per-turn seed, plus a shared-prefix lint and the
@@ -758,7 +514,7 @@ cue was hedged into silence and nothing structurally countered the
 helpful-assistant prior. **The whole family is SHIPPED** — K56
 (persona counterweight), K52 (wants ledger), K53 (initiative
 turns), K55 (thread ownership), and K54 (topic appetite) — see
-[shipped.md](shipped.md#k56-persona-counterweight--the-leading-vs-following-rewrite)
+[shipped.md](shipped/patterns-k31-k60.md#k56-persona-counterweight--the-leading-vs-following-rewrite)
 for the full designs. Siblings still in the backlog: K46 stance
 persistence, K47 question/share balance.
 
@@ -766,7 +522,7 @@ persistence, K47 question/share balance.
 
 ## K54. Aiko-side topic appetite — she's allowed to be bored
 
-**Shipped** — see [`shipped.md` → K54](shipped.md#k54-aiko-side-topic-appetite--shes-allowed-to-be-bored).
+**Shipped** — see [`shipped.md` → K54](shipped/patterns-k31-k60.md#k54-aiko-side-topic-appetite--shes-allowed-to-be-bored).
 Once-per-conversation negotiation slip gated on the K18 standing
 lull (`TopicStagnationDetector.last_mean`), her own short-reply
 share, a pressured K52 want as the offer, and warm axes.
@@ -775,7 +531,7 @@ share, a pressured K52 want as the offer, and warm axes.
 
 ## K55. Thread ownership — she defends what she opened
 
-**Shipped** — see [`shipped.md` → K55](shipped.md#k55-thread-ownership--she-defends-what-she-opened).
+**Shipped** — see [`shipped.md` → K55](shipped/patterns-k31-k60.md#k55-thread-ownership--she-defends-what-she-opened).
 K53/K52-imperative turns stamp an owned thread (topic + embedding);
 the next real reply gets one engaged-or-pivot evaluation; a pivot
 grants exactly one "circle back" cue, then the thread is dropped
@@ -822,7 +578,7 @@ promise*. **The whole family is SHIPPED** — K57 (directed emotion
 episodes), K58 (emotion speech weighting), K59 (tease economy),
 and K60 (tsundere mask, `agent.expression_mask` dial, off by
 default) — see
-[shipped.md](shipped.md#k57-directed-emotion-episodes--feelings-at-the-user-with-a-cause)
+[shipped.md](shipped/patterns-k31-k60.md#k57-directed-emotion-episodes--feelings-at-the-user-with-a-cause)
 for the full designs. Tonal safety remained the design constraint
 throughout: playful-not-manipulative, capped intensity, wall-clock
 decay, never guilt-trips. Backlog siblings that pair with the
@@ -833,7 +589,7 @@ vulnerability budget (already shipped).
 
 ## K57. Directed emotion episodes — feelings *at* the user, with a cause
 
-**Shipped** — see [`shipped.md` → K57](shipped.md#k57-directed-emotion-episodes--feelings-at-the-user-with-a-cause).
+**Shipped** — see [`shipped.md` → K57](shipped/patterns-k31-k60.md#k57-directed-emotion-episodes--feelings-at-the-user-with-a-cause).
 kv-backed episode store (`{emotion, cause, intensity, decay}` over
 `aiko.emotion_episodes`) with a staged trigger queue (kept promise,
 K32 reactions, K55 pivot, closeness-scaled absence), per-emotion
@@ -843,7 +599,7 @@ acknowledgment resolution, and a one-shot visible-thaw cue.
 
 ## K58. Emotion speech weighting — moods that actually land in the voice
 
-**Shipped** — see [`shipped.md` → K58](shipped.md#k58-emotion-speech-weighting--moods-that-actually-land-in-the-voice).
+**Shipped** — see [`shipped.md` → K58](shipped/patterns-k31-k60.md#k58-emotion-speech-weighting--moods-that-actually-land-in-the-voice).
 Minted `smug` / `pouty` / `sulky` / `mischievous` end-to-end,
 persona register recipes per K57 emotion, and intensity-banded
 prompt copy with `[[reaction:X]]` + `[[prosody:Y]]` hints at the
@@ -853,7 +609,7 @@ high band.
 
 ## K59. Tease economy — "you'll pay for that one"
 
-**Shipped** — see [`shipped.md` → K59](shipped.md#k59-tease-economy--youll-pay-for-that-one).
+**Shipped** — see [`shipped.md` → K59](shipped/patterns-k31-k60.md#k59-tease-economy--youll-pay-for-that-one).
 Payback ledger over `aiko.tease_ledger` (bank on K29 pushback +
 the K57 light-miffed lane-picker; collect as a humor-axis-gated,
 cooldown-limited callback; settle post-turn by content-word
@@ -863,7 +619,7 @@ overlap; 14-day expiry, cap 5).
 
 ## K60. Tsundere mask — warmth expressed through denial
 
-**Shipped** — see [`shipped.md` → K60](shipped.md#k60-tsundere-mask--warmth-expressed-through-denial).
+**Shipped** — see [`shipped.md` → K60](shipped/patterns-k31-k60.md#k60-tsundere-mask--warmth-expressed-through-denial).
 Expression policy between K57 (felt) and K58 (sounded): transform
 table for lonely/warm_glow, caught-caring beat, wall-clock-budgeted
 dere-slips, closeness+trust erosion to token protests, support-arc

@@ -118,7 +118,7 @@ export class AudioOutputManager {
   private _outputNode: AudioNode | null = null;
   private _lipListener: ((level: number) => void) | null = null;
   private _lipRaf: number | null = null;
-  private _lipBuf: Float32Array | null = null;
+  private _lipBuf: Float32Array<ArrayBuffer> | null = null;
   private _lipPeak = LIP_PEAK_FLOOR;
 
   constructor(options: AudioOutputOptions = {}) {
