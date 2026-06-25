@@ -812,5 +812,49 @@ drafted:` / `no-connection:` / `fire:`. Settings: `agent.associative_wander_enab
 + the eight `memory.associative_wander_*` knobs. Tests:
 [`tests/test_associative_wander.py`](../../../tests/test_associative_wander.py)
 (pure helpers + worker gates + provider plumbing). **Remaining K64 family:**
-K64b interest drift, K64c curiosity gradient, K64d knowledge-map
-self-reflection (all open in [`patterns.md`](../patterns.md)).
+K64c curiosity gradient, K64d knowledge-map self-reflection (open in
+[`patterns.md`](../patterns.md)).
+
+---
+
+## K64b. Interest drift ("I've been weirdly into X lately")
+
+**Shipped.** Second member of the K64 *freedom of thought* family — the slow
+under-current sibling of K27 day-colour. Where K64a connects two *distant*
+topics, K64b notices Aiko's own attention **shifting over time**. The
+[`InterestDriftWorker`](../../../app/core/proactive/interest_drift_worker.py)
+is an `IdleWorker` (cue producer, **no LLM** — pure size-delta math) that, on
+each tick: reads every labelled cluster's current mass via the cheap
+[`TopicGraph.interest_map`](../../../app/core/conversation/topic_graph.py)
+(`(label, size)` rows, no member join), appends `(now, size)` to a per-topic
+mass time-series in `kv_meta` (`aiko.interest_mass`, keyed by a stable label
+hash so it survives cluster renumbering, capped to
+`memory.interest_drift_window_samples`=8), and once a topic has
+`interest_drift_min_samples`=3 snapshots classifies its drift via the pure
+`classify_drift`: fast recent growth (≥ `_RISE_MIN_DELTA`=3 members **and** ≥
+`interest_drift_rise_ratio`=0.5 of the starting mass) → `rising`; a sizable
+cluster whose window growth is ≤ `interest_drift_fade_max_growth_ratio`=0.05
+→ `fading` (attention cooled). The strongest off-cooldown candidate drafts to
+the `aiko.interest_drifts` ring as `{at, topic, topic_key, direction,
+from_size, to_size}`. The consumer
+[`InnerLifePart2Mixin._render_interest_drift_block`](../../../app/core/session/inner_life_part2.py)
+surfaces one **only when the live turn is on that topic** (`drift_relevant`,
+reusing F10f's `topic_relevant`), one-shot per `topic_key`
+(`interest_drift.surfaced_keys`), with distinct rising / fading copy, as a
+private **T6** hint after `associative_wander_block` (dropped under
+`aggressive`). Phrased by the chat model as a **register shift, never a
+verbatim line**. **Rarity is the point** (interests drift slowly): 6h draft
+interval, daily cap 3, 72h per-topic cooldown; stale topics are pruned from
+the series once their newest sample ages past the window horizon. Persona
+copy lives in the "When your interests shift over time" block of
+[`aiko_companion.txt`](../../../data/persona/aiko_companion.txt). **MCP-debuggable**:
+`get_interest_drift_state` (switch / ring / mass series / cooldowns /
+surfaced keys), `force_interest_drift` (run once bypassing caps),
+`force_interest_drift_surface` (arm the provider one-shot). Grep
+`tail_logs(module_contains="interest_drift")` for `interest-drift drafted:` /
+`fire:`. Settings: `agent.interest_drift_enabled` + the ten
+`memory.interest_drift_*` knobs. Tests:
+[`tests/test_interest_drift.py`](../../../tests/test_interest_drift.py)
+(pure classifier + worker warmup/cooldown gates + provider plumbing).
+**Remaining K64 family:** K64c curiosity gradient, K64d knowledge-map
+self-reflection (open in [`patterns.md`](../patterns.md)).

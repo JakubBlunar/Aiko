@@ -288,6 +288,57 @@ class IdleWorkersInitMixin:
                     "AssociativeWanderWorker init failed", exc_info=True
                 )
 
+        # K64b InterestDriftWorker — tracks each topic cluster's mass over
+        # time and notices Aiko's own budding / fading interests ("I've been
+        # weirdly into X lately"). Cheap kv pass (no LLM); the provider only
+        # surfaces it when the live turn is on that topic. Second member of
+        # the K64 freedom-of-thought family; the slow under-current sibling
+        # of K27 day-colour.
+        self._interest_drift_worker = None
+        if (
+            self._idle_scheduler is not None
+            and getattr(self, "_memory_store", None) is not None
+        ):
+            try:
+                from app.core.proactive.interest_drift_worker import (
+                    InterestDriftWorker,
+                )
+
+                mem = self._memory_settings
+                self._interest_drift_worker = InterestDriftWorker(
+                    topic_graph_provider=lambda: getattr(
+                        self, "_topic_graph", None
+                    ),
+                    kv_get=self._chat_db.kv_get,
+                    kv_set=self._chat_db.kv_set,
+                    enabled_provider=lambda: bool(
+                        getattr(
+                            self._settings.agent,
+                            "interest_drift_enabled",
+                            True,
+                        )
+                    ),
+                    interval_seconds=mem.interest_drift_interval_seconds,
+                    daily_cap=mem.interest_drift_daily_cap,
+                    journal_max=mem.interest_drift_journal_max,
+                    min_size=mem.interest_drift_min_size,
+                    max_clusters=mem.interest_drift_max_clusters,
+                    window_samples=mem.interest_drift_window_samples,
+                    min_samples=mem.interest_drift_min_samples,
+                    rise_ratio=mem.interest_drift_rise_ratio,
+                    fade_max_growth_ratio=(
+                        mem.interest_drift_fade_max_growth_ratio
+                    ),
+                    topic_cooldown_hours=(
+                        mem.interest_drift_topic_cooldown_hours
+                    ),
+                )
+                self._idle_scheduler.register(self._interest_drift_worker)
+            except Exception:
+                log.warning(
+                    "InterestDriftWorker init failed", exc_info=True
+                )
+
         # K52 WantsLedgerWorker — keeps the wants ledger stocked from
         # curiosity seeds / forward-curiosity questions / goals during
         # quiet windows. Pure ingestion, no LLM. Failures only drop

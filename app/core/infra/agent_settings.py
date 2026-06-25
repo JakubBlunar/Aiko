@@ -206,6 +206,13 @@ class AgentSettings:
     # worker never registers and the provider stays empty. Cadence /
     # thresholds live under MemorySettings.
     associative_wander_enabled: bool = True
+    # K64b: master switch for interest drift. When on, the
+    # InterestDriftWorker tracks each topic cluster's mass over time and the
+    # inner-life provider surfaces a slow "I've been drawn to X lately" /
+    # "X has gone quiet" register shift when the live turn is on a drifting
+    # topic. Off → the worker never registers and the provider stays empty.
+    # Cadence / thresholds live under MemorySettings.
+    interest_drift_enabled: bool = True
     # F10h: master switch for the per-cluster affect ("topic temperature")
     # cue. When on, a turn that lands on a warm / tender topic cluster gets
     # a one-line tonal nudge so Aiko meets it with the right register. Off

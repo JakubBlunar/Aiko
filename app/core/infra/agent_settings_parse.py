@@ -87,6 +87,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             associative_wander_enabled=bool(
                 agent_raw.get("associative_wander_enabled", True),
             ),
+            interest_drift_enabled=bool(
+                agent_raw.get("interest_drift_enabled", True),
+            ),
             knowledge_gap_notice_enabled=bool(
                 agent_raw.get("knowledge_gap_notice_enabled", True),
             ),

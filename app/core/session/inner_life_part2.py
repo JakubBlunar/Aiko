@@ -1167,6 +1167,118 @@ class InnerLifePart2Mixin:
             "let it go silently."
         )
 
+    def _render_interest_drift_block(self, user_text: str) -> str:
+        """K64b: surface one "I've been drawn to X lately" register shift.
+
+        Consumer side of the
+        :class:`~app.core.proactive.interest_drift_worker.InterestDriftWorker`
+        producer. The worker tracks each topic cluster's mass over time and
+        drafts a drift (``rising`` / ``fading``) into the
+        ``aiko.interest_drifts`` kv ring during quiet windows; this provider
+        surfaces one **only when the live turn is actually on that topic**
+        (lexical overlap with ``user_text``), so the slow self-aware beat
+        lands in context — "funny, I've found myself drawn to this more
+        lately" — rather than as a non-sequitur.
+
+        One-shot per topic: a surfaced ``topic_key`` is recorded in
+        ``interest_drift.surfaced_keys`` and never resurfaces (the worker's
+        per-topic cooldown also stops it being re-drafted). The cue is a
+        private prompt hint, NEVER spoken verbatim — it's a register, not a
+        line. Independent of the gap-return cue family (does not touch
+        ``_gap_cue_surfaced``); tied to the live topic. MCP debug:
+        ``force_interest_drift_surface`` arms ``_interest_drift_force_next``
+        to bypass the topic-relevance + surfaced gates (the ring must still
+        be non-empty).
+        """
+        if not bool(
+            getattr(self._settings.agent, "interest_drift_enabled", True)
+        ):
+            return ""
+
+        force_next = bool(
+            getattr(self, "_interest_drift_force_next", False)
+        )
+        if force_next:
+            self._interest_drift_force_next = False
+
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is None or not hasattr(chat_db, "kv_get"):
+            return ""
+
+        text = (user_text or "").strip()
+        if not text and not force_next:
+            return ""
+
+        try:
+            from app.core.proactive.interest_drift_worker import (
+                drift_relevant,
+                load_drifts,
+            )
+        except Exception:
+            log.debug("interest_drift import failed", exc_info=True)
+            return ""
+
+        ring = load_drifts(chat_db.kv_get)
+        if not ring:
+            return ""
+
+        surfaced_key = "interest_drift.surfaced_keys"
+        try:
+            raw = chat_db.kv_get(surfaced_key)
+            surfaced = set(json.loads(raw)) if raw else set()
+        except Exception:
+            surfaced = set()
+
+        chosen: dict | None = None
+        for entry in reversed(ring):  # newest first
+            key = str(entry.get("topic_key") or "")
+            topic = str(entry.get("topic") or "").strip()
+            if not topic:
+                continue
+            if not force_next:
+                if key and key in surfaced:
+                    continue
+                if not drift_relevant(entry, text):
+                    continue
+            chosen = entry
+            break
+        if chosen is None:
+            return ""
+
+        key = str(chosen.get("topic_key") or "")
+        topic = str(chosen.get("topic") or "").strip()
+        direction = str(chosen.get("direction") or "").strip()
+        if key:
+            surfaced.add(key)
+            try:
+                trimmed = list(surfaced)[-64:]
+                chat_db.kv_set(surfaced_key, json.dumps(trimmed))
+            except Exception:
+                log.debug(
+                    "interest_drift surfaced write failed", exc_info=True
+                )
+
+        log.info(
+            "interest-drift fire: topic=%r dir=%s key=%s",
+            topic[:60], direction, key,
+        )
+        if direction == "fading":
+            return (
+                f"Heads-up: \"{topic}\" has quietly drifted out of your "
+                "attention lately — it used to come up more, and it's been "
+                "going still. If it fits, you can let that show honestly "
+                "(\"huh, I haven't thought about this in a while\") — a small "
+                "register shift, not an announcement. If it doesn't fit, just "
+                "engage normally."
+            )
+        return (
+            f"Heads-up: you've found yourself drawn to \"{topic}\" more and "
+            "more lately — it's a budding interest of yours. If it fits, let "
+            "a little of that genuine pull colour your tone (\"honestly I've "
+            "been kind of into this lately\") — a register shift, not a line "
+            "you announce. If it doesn't fit, just engage normally."
+        )
+
     def _render_topic_temperature_block(self, user_text: str) -> str:
         """F10h: nudge tone when the live turn lands on a *charged* topic.
 

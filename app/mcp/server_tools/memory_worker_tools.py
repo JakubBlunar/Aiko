@@ -1349,6 +1349,113 @@ def register(mcp, session: "SessionController") -> None:
             return f"force_associative_wander_surface raised: {exc}"
 
     @mcp.tool()
+    def get_interest_drift_state() -> str:
+        """K64b — dump the interest-drift worker + provider state.
+
+        Shows the master switch, the worker registration, the kv journal
+        ring of drafted drifts (``aiko.interest_drifts``), the per-topic
+        mass time-series (``aiko.interest_mass`` — label + size history),
+        the per-topic cooldown map, the surfaced-keys set the provider
+        tracks, and the one-shot provider force flag. First stop for "why
+        didn't Aiko notice she's been into X / lost interest in Y?".
+        """
+        worker = getattr(session, "_interest_drift_worker", None)
+        out: dict[str, Any] = {
+            "registered": worker is not None,
+            "enabled": bool(
+                getattr(
+                    session._settings.agent, "interest_drift_enabled", True,
+                )
+            ),
+            "provider_force_next": bool(
+                getattr(session, "_interest_drift_force_next", False)
+            ),
+        }
+        chat_db = getattr(session, "_chat_db", None)
+        if chat_db is not None and hasattr(chat_db, "kv_get"):
+            try:
+                from app.core.proactive.interest_drift_worker import (
+                    load_drifts,
+                )
+
+                out["journal"] = load_drifts(chat_db.kv_get)
+            except Exception as exc:  # pragma: no cover -- diag tool
+                out["journal_error"] = str(exc)
+            try:
+                raw = chat_db.kv_get("aiko.interest_mass")
+                out["mass_series"] = json.loads(raw) if raw else {}
+            except Exception:
+                out["mass_series"] = {}
+            try:
+                raw = chat_db.kv_get("interest_drift.surfaced_keys")
+                out["surfaced_keys"] = json.loads(raw) if raw else []
+            except Exception:
+                out["surfaced_keys"] = []
+            try:
+                raw = chat_db.kv_get("interest_drift.topic_cooldowns")
+                out["topic_cooldowns"] = json.loads(raw) if raw else {}
+            except Exception:
+                out["topic_cooldowns"] = {}
+        if worker is not None:
+            try:
+                out["interval_seconds"] = worker.interval_seconds
+            except Exception as exc:  # pragma: no cover -- diag tool
+                out["worker_error"] = str(exc)
+        return json.dumps(out, indent=2, default=str)
+
+    @mcp.tool()
+    def force_interest_drift() -> str:
+        """K64b — run the InterestDriftWorker once, bypassing the caps.
+
+        Snapshots current cluster mass, then drafts the strongest drift
+        candidate even if it's on its per-topic cooldown or the daily cap is
+        spent (a topic must still have enough mass samples in the window to
+        classify — run it a few times, or pre-seed ``aiko.interest_mass``,
+        if the series is cold). Returns the run result (``drafted``,
+        ``topic``, ``direction`` …) or a skip reason. Pair with
+        ``force_interest_drift_surface`` + ``send_message`` to land the cue.
+        """
+        worker = getattr(session, "_interest_drift_worker", None)
+        if worker is None:
+            return (
+                "interest_drift worker not registered "
+                "(agent.interest_drift_enabled may be off, or no memory "
+                "store / topic graph)"
+            )
+        try:
+            worker.force_next()
+            result = worker.run()
+        except Exception as exc:
+            return f"force_interest_drift raised: {exc}"
+        return json.dumps(result or {}, indent=2, default=str)
+
+    @mcp.tool()
+    def force_interest_drift_surface() -> str:
+        """K64b — arm a one-shot bypass on the provider's gates.
+
+        Sets ``_interest_drift_force_next`` so the next provider call
+        surfaces the newest journal entry regardless of topic relevance or
+        the surfaced-keys set (the ring must still be non-empty — draft one
+        first via ``force_interest_drift``). Then ``send_message`` and
+        verify the "you've been drawn to X lately" / "X has gone quiet" line
+        lands in ``get_last_response_detail``'s system_prompt.
+        """
+        try:
+            session._interest_drift_force_next = True
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next provider call surfaces the newest drift, "
+                        "ignoring topic-relevance + surfaced gates"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_interest_drift_surface raised: {exc}"
+
+    @mcp.tool()
     def get_topic_temperature_state() -> str:
         """F10h — dump per-cluster affect ("topic temperature") state.
 
