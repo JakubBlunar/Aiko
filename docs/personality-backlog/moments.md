@@ -230,3 +230,67 @@ closeness so it stays special. Key files:
 [`prompt_assembler.py`](../../app/core/session/prompt_assembler.py)
 (rare appreciation cue), K15 budget for pacing. Tonal guard: specific
 and earned, never a generic compliment generator.
+
+---
+
+## J11. Affection-style learning — "how he likes to be cared for"
+
+**Motivation.** Aiko expresses care in a roughly fixed mix — teasing
+(K48/K59), appreciation (J10), touch (K31), words, giving space — but she
+never learns *which of those land* for this particular user. Real
+closeness is partly knowing someone's love language: some people warm to
+physical/touch gestures, some to words of affirmation, some to playful
+teasing, some to simply being left room. The raw signal already exists and
+is going unused: which K32 reactions the user clicks on **which kind of
+cue**, which bubbles they mark as moments, and which replies they engage
+with vs. go short on (K14/K23 engagement signals). Distil it into a
+`UserProfile.affection_style` weighting and let the existing
+gesture/tease/appreciation gates read it so her expression *mix* drifts
+toward what reliably lands for him. Key files: a small idle-worker learner
+reading [`user_reactions.py`](../../app/core/relationship/user_reactions.py)
++ engagement signals, a new field on
+[`user_profile.py`](../../app/core/infra/user_profile.py), and a weighting
+read in the K31/K48/J10 gates. **Tonal guard:** bias, don't collapse —
+keep variety so she never feels like a single-note affection machine, and
+never announce the finding ("I've noticed you like it when I…"). Pairs
+with J12. **Effort.** Medium.
+
+---
+
+## J12. Intimacy pacing & boundary calibration
+
+**Motivation.** A companion that escalates intimacy *faster* than the user
+is comfortable with reads as clingy or uncanny; one that lags reads as
+cold. Today forwardness is governed by relationship stage (J4) + the
+`expression_mask` dial (K60) + the vulnerability budget (K15) — but **none
+of them read the user's own affection pace**. Two halves: (a) a learned
+**pacing signal** — track how forward the user himself is (does he use pet
+names, how warm/affectionate are his messages, does he reciprocate touch
+reactions) and keep Aiko calibrated to *slightly follow, never lead by
+much*; (b) an explicit user-facing **comfort dial** in Settings
+(`reserved ↔ affectionate`) that **hard-caps** forwardness regardless of
+stage — a plain consent/boundary control, the thing that makes an
+AI-companion feel safe rather than presumptuous. Key files:
+[`relationship_axes.py`](../../app/core/relationship/relationship_axes.py)
+(stage/axes source), a new pacing estimator, the gesture / disclosure /
+petname / reciprocal-vulnerability gates (read the cap), an
+`agent.intimacy_ceiling` settings field + a Settings → Avatar/Identity
+control. **Tonal guard:** the dial is a *ceiling*, not a target — at a low
+setting she's simply warm-but-contained; the learned signal only nudges
+within that ceiling. **Effort.** Medium.
+
+---
+
+## J13. Pet-name reciprocity & evolution
+
+**Motivation.** Aiko's petname for the user exists but is static and
+one-directional. Pet names are a core companion-intimacy signal and two
+cheap deepeners are missing: (a) let her petname *evolve with stage* (J4)
+— neutral early, warmer once `close`/`intimate` — and notice when the user
+adopts or changes one for her; (b) capture and honour a **name the user
+gives Aiko** (a nickname for *her*) as a durable relationship artifact she
+remembers and responds to. Small surface, outsized warmth. Key files: the
+petname resolution path, [`user_profile.py`](../../app/core/infra/user_profile.py)
+(a field for the user's name-for-Aiko), relationship stage (J4) for the
+evolution gate. **Tonal guard:** never force a pet name; an unused one
+should fade, not be repeated at him. **Effort.** Small.
