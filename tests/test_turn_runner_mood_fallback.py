@@ -192,6 +192,77 @@ class MoodFallbackTtsTests(unittest.TestCase):
         self.assertNotIn("[[motion:", result.text)
 
 
+class ReactionLeadingNewlineFlushTests(unittest.TestCase):
+    """Regression: a reaction tag followed by a newline made the streamed
+    body one char shorter than ``strip_all_meta_tags(full_raw)`` (which
+    keeps the leading newline), so the end-of-stream catch-up flush
+    re-emitted the message's final character to both the UI bubble
+    (doubled trailing char, e.g. "later..") and the TTS buffer (a lone
+    "." synthesized as a garbled micro-utterance). See the 25-Jun
+    investigation of the wistful "...later.." / spoken-"memz" turn.
+    """
+
+    def test_no_doubled_trailing_char_in_ui_stream(self) -> None:
+        # Reaction tag split across deltas, newline after it, a
+        # mid-sentence prosody tag, and a body ending in a period -- the
+        # exact shape that produced "later..".
+        runner = _build_runner(
+            stream_tokens=[
+                "[[reaction:",
+                "wistful]]\n",
+                "...cute. ",
+                "[[prosody:",
+                "soft]] ",
+                "I missed you too, you know. ",
+                "Go rest now, and keep one sleepy thought of me for later.",
+            ],
+        )
+        ui_parts: list[str] = []
+        tts_chunks: list[tuple[str, str]] = []
+        result = runner.run(
+            session_key="default:main",
+            user_text="goodnight",
+            on_token=lambda delta: ui_parts.append(delta),
+            on_tts_chunk=lambda text, mood: tts_chunks.append((text, mood)),
+        )
+        ui_text = "".join(ui_parts)
+        expected = (
+            "...cute. I missed you too, you know. "
+            "Go rest now, and keep one sleepy thought of me for later."
+        )
+        # No leading newline, single space after "cute.", and exactly one
+        # trailing period (not "later..").
+        self.assertEqual(ui_text, expected)
+        self.assertFalse(ui_text.endswith(".."))
+        self.assertNotIn("  ", ui_text)
+        self.assertEqual(result.reaction, "wistful")
+
+    def test_no_lone_punctuation_fragment_to_tts(self) -> None:
+        runner = _build_runner(
+            stream_tokens=[
+                "[[reaction:wistful]]\n",
+                "...cute. ",
+                "[[prosody:soft]] ",
+                "I missed you too.",
+            ],
+        )
+        tts_chunks: list[tuple[str, str]] = []
+        runner.run(
+            session_key="default:main",
+            user_text="goodnight",
+            on_tts_chunk=lambda text, mood: tts_chunks.append((text, mood)),
+        )
+        # The trailing-fragment bug appended a lone "." chunk after a
+        # pause. Every dispatched chunk must carry real speakable content.
+        for text, _mood in tts_chunks:
+            stripped = text.strip()
+            self.assertTrue(stripped, "no empty TTS chunk")
+            self.assertTrue(
+                any(ch.isalnum() for ch in stripped),
+                f"TTS chunk {text!r} is punctuation-only (lone fragment)",
+            )
+
+
 class MoodFallbackMetricTests(unittest.TestCase):
     """The ``mood_fallback`` flag should accurately mirror whether the
     fallback path fired so the MCP debug tool / log greps don't lie."""

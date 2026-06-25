@@ -799,6 +799,11 @@ class IdleKnowledgeWorker:
                 model=self._chat_model,
                 stop_event=self._cancel_event,
                 format_json=True,
+                # Planning which search queries to run to fill a knowledge
+                # gap is a reasoning task. The distil pass below stays
+                # think=False (mechanical summarisation). Headroom added
+                # client-side so the query plan isn't starved.
+                think=True,
                 surface="idle_knowledge_worker",
             )
             for chunk in stream:

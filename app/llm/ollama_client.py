@@ -18,6 +18,7 @@ from app.llm.chat_client import (
     strip_thinking_blocks,
     strip_thinking_blocks_with_signal as _strip_thinking_blocks_with_signal,
 )
+from app.llm.token_utils import estimate_tokens
 
 
 log = logging.getLogger("app.llm.ollama_client")
@@ -69,8 +70,10 @@ _BENIGN_TRUNCATION_SURFACES: frozenset[str] = frozenset({"tool_pass"})
 def _warn_if_truncated(
     usage: "OllamaUsage", *, model: str, surface: str,
     benign: bool = False,
+    answer_tokens: int | None = None,
+    thinking_tokens: int | None = None,
 ) -> None:
-    """Emit a single WARNING when ``done_reason == "length"``.
+    """Emit a single WARNING when the *answer* hit ``num_predict``.
 
     The surface tag (e.g. ``"chat_stream"``) helps distinguish which
     code path produced the truncated response in the log; everything
@@ -80,32 +83,69 @@ def _warn_if_truncated(
     catch-all. Surfaces in :data:`_BENIGN_TRUNCATION_SURFACES` are
     suppressed because their truncation is intentional.
 
-    ``benign=True`` downgrades the warning to a DEBUG line. Use it
-    when the visible answer is complete but a hidden thinking trace
-    tipped the response past ``num_predict`` — that's a tuning hint,
-    not an operational alarm.
+    With a reasoning model, ``completion_tokens`` (Ollama's ``eval_count``)
+    counts the thinking trace AND the answer, but the only thing we parse
+    and act on is the answer. So:
+
+    * ``benign=True`` — the *answer* (``message.content``) is complete and
+      it was only the reasoning trace that pushed the total past
+      ``num_predict``. That's a tuning hint, logged at DEBUG, not an alarm.
+    * otherwise — the answer itself was cut. Real problem; WARN.
+
+    ``answer_tokens`` / ``thinking_tokens`` are estimates (the API reports
+    only the combined ``eval_count``) used purely to show *where the
+    budget went* in the log line — so "raise num_predict" advice is
+    actionable: a large ``thinking_tokens`` with a complete answer means
+    the trace needs room, not the answer.
     """
     if usage.done_reason != "length":
         return
     if surface in _BENIGN_TRUNCATION_SURFACES:
         return
+    # "answer~=A thinking~=T of total=N" suffix, omitted when we have no
+    # split estimate (e.g. the streaming path that doesn't separate them).
+    split = ""
+    if answer_tokens is not None or thinking_tokens is not None:
+        split = " answer_tokens~=%s thinking_tokens~=%s" % (
+            "?" if answer_tokens is None else int(answer_tokens),
+            "?" if thinking_tokens is None else int(thinking_tokens),
+        )
     if benign:
         log.debug(
-            "ollama response capped on thinking trace (answer looks "
-            "complete): surface=%s model=%s completion_tokens=%d",
-            surface,
-            model,
-            int(usage.completion_tokens),
+            "ollama length-capped after a complete answer: surface=%s "
+            "model=%s completion_tokens=%d%s (the reasoning trace used the "
+            "remaining budget; the parsed answer is intact)",
+            surface, model, int(usage.completion_tokens), split,
         )
         return
     log.warning(
-        "ollama response truncated: surface=%s model=%s "
-        "completion_tokens=%d (hit num_predict cap; raise the "
-        "num_predict for this surface if this is frequent)",
-        surface,
-        model,
-        int(usage.completion_tokens),
+        "ollama answer truncated: surface=%s model=%s completion_tokens=%d%s "
+        "(the parsed answer hit the num_predict cap; raise num_predict for "
+        "this surface if frequent)",
+        surface, model, int(usage.completion_tokens), split,
     )
+
+
+def _truncation_split(
+    *, content: str, thinking: str, think: bool, completion_tokens: int,
+) -> tuple[int, int | None]:
+    """Estimate ``(answer_tokens, thinking_tokens)`` for a length-cap log.
+
+    The API reports only the combined ``eval_count`` (here
+    ``completion_tokens``), so we estimate the answer portion from the
+    parsed ``content`` and derive the trace either from the separate
+    ``message.thinking`` text (when present) or by subtracting the answer
+    estimate from the total. ``thinking_tokens`` is ``None`` when thinking
+    is off — there's no trace to attribute. Only worth calling on the
+    truncation path; the estimate is character-based and cheap but not
+    free.
+    """
+    answer = estimate_tokens(content)
+    if not think:
+        return answer, None
+    if thinking:
+        return answer, estimate_tokens(thinking)
+    return answer, max(0, int(completion_tokens) - answer)
 
 
 class OllamaClient:
@@ -139,6 +179,12 @@ class OllamaClient:
         self._default_keep_alive: str = (
             (keep_alive or "").strip() or "30m"
         )
+        # Extra num_predict budget added on think=True calls so the
+        # reasoning trace doesn't eat the answer budget the caller asked
+        # for. See ``OllamaSettings.think_num_predict_headroom``.
+        self._think_headroom: int = max(
+            0, int(getattr(settings, "think_num_predict_headroom", 2048)),
+        )
 
     @property
     def base_url(self) -> str:
@@ -146,6 +192,30 @@ class OllamaClient:
 
     def _request_headers(self) -> dict[str, str] | None:
         return dict(self._headers) if self._headers else None
+
+    def _apply_think_headroom(
+        self, options: dict[str, object], think: bool, *, surface: str,
+    ) -> None:
+        """Add the thinking headroom to ``num_predict`` in place.
+
+        A no-op unless ``think`` is on, a positive ``num_predict`` is set,
+        and the configured headroom is > 0. Workers pass ``num_predict``
+        sized for the ANSWER they parse; on a reasoning model the hidden
+        trace shares that budget, so we extend the cap by the headroom to
+        keep the answer from being starved. Logged at DEBUG so the
+        effective cap is visible without guessing.
+        """
+        if not think or self._think_headroom <= 0:
+            return
+        current = options.get("num_predict")
+        if not isinstance(current, int) or current <= 0:
+            return
+        bumped = current + self._think_headroom
+        options["num_predict"] = bumped
+        log.debug(
+            "think headroom: surface=%s num_predict %d -> %d (+%d for trace)",
+            surface, current, bumped, self._think_headroom,
+        )
 
     def _default_options(self, default_temperature: float) -> dict[str, object]:
         """Assemble the default ``options`` dict for an Ollama call.
@@ -237,6 +307,7 @@ class OllamaClient:
         merged_options = self._default_options(self._settings.temperature)
         if options:
             merged_options.update(options)
+        self._apply_think_headroom(merged_options, think, surface=surface)
         use_model = (model or "").strip() or self._settings.chat_model
         payload: dict[str, Any] = {
             "model": use_model,
@@ -290,6 +361,7 @@ class OllamaClient:
         body = response.json()
         message = body.get("message", {}) if isinstance(body, dict) else {}
         content = str(message.get("content", "") or "")
+        thinking = str(message.get("thinking", "") or "")
         had_thinking = False
         if not think:
             content, had_thinking = _strip_thinking_blocks_with_signal(content)
@@ -302,11 +374,26 @@ class OllamaClient:
             prompt_eval_duration_ms=float(body.get("prompt_eval_duration", 0) or 0) / 1e6,
             done_reason=done_reason,
         )
+        # Judge truncation on the ANSWER we parse, not the thinking+answer
+        # total: with think on, a complete answer followed by a long trace
+        # legitimately hits the cap and is benign. Estimate the split only
+        # when we're actually about to log a length cap.
+        ans_tok = think_tok = None
+        if (
+            self.last_usage.done_reason == "length"
+            and surface not in _BENIGN_TRUNCATION_SURFACES
+        ):
+            ans_tok, think_tok = _truncation_split(
+                content=content, thinking=thinking, think=think,
+                completion_tokens=self.last_usage.completion_tokens,
+            )
         _warn_if_truncated(
             self.last_usage,
             model=use_model,
             surface=surface,
-            benign=had_thinking and _content_looks_complete(content),
+            benign=(had_thinking or think) and _content_looks_complete(content),
+            answer_tokens=ans_tok,
+            thinking_tokens=think_tok,
         )
         self._announce_connection(use_model)
         tool_calls = self._parse_tool_calls(message.get("tool_calls", []))
@@ -351,6 +438,7 @@ class OllamaClient:
         merged_options = self._default_options(self._settings.temperature)
         if options:
             merged_options.update(options)
+        self._apply_think_headroom(merged_options, think, surface=surface)
         use_model = (model or "").strip() or self._settings.chat_model
         payload: dict[str, Any] = {
             "model": use_model,
@@ -449,6 +537,7 @@ class OllamaClient:
         merged_options = self._default_options(0.0)
         if options:
             merged_options.update(options)
+        self._apply_think_headroom(merged_options, think, surface=surface)
         use_model = (model or "").strip() or self._settings.chat_model
         effective_keep_alive = (
             (keep_alive or "").strip() if keep_alive is not None else self._default_keep_alive
@@ -486,6 +575,7 @@ class OllamaClient:
         body = response.json()
         message = body.get("message", {}) if isinstance(body, dict) else {}
         content = str(message.get("content", "") or "")
+        thinking = str(message.get("thinking", "") or "")
         had_thinking = False
         if not think:
             content, had_thinking = _strip_thinking_blocks_with_signal(content)
@@ -497,11 +587,24 @@ class OllamaClient:
             prompt_eval_duration_ms=float(body.get("prompt_eval_duration", 0) or 0) / 1e6,
             done_reason=_extract_done_reason(body),
         )
+        # Truncation is judged on the parsed answer, not the combined
+        # thinking+answer token total (see ``_warn_if_truncated``).
+        ans_tok = think_tok = None
+        if (
+            usage.done_reason == "length"
+            and surface not in _BENIGN_TRUNCATION_SURFACES
+        ):
+            ans_tok, think_tok = _truncation_split(
+                content=content, thinking=thinking, think=think,
+                completion_tokens=usage.completion_tokens,
+            )
         _warn_if_truncated(
             usage,
             model=use_model,
             surface=surface,
-            benign=had_thinking and _content_looks_complete(content),
+            benign=(had_thinking or think) and _content_looks_complete(content),
+            answer_tokens=ans_tok,
+            thinking_tokens=think_tok,
         )
         self._announce_connection(use_model)
         log.debug(

@@ -536,11 +536,23 @@ class MemorySettings:
     # big mood swing doesn't nag on consecutive turns.
     mood_inertia_mismatch_threshold: float = 0.45
     mood_inertia_cooldown_turns: int = 3
-    # Output-token ceiling for the memory extractor's JSON response.
-    # The old hardcoded 512 truncated the ``"memories": [...]`` array
-    # mid-object on longer transcripts, losing the whole batch; 1024
-    # fits the capped output and the salvage parser recovers the rest.
+    # Output-token ceiling for the memory extractor's JSON ANSWER (the
+    # array we parse) — NOT the reasoning trace. The old hardcoded 512
+    # truncated the ``"memories": [...]`` array mid-object on longer
+    # transcripts; 1024 comfortably fits the capped answer (≤5 memories,
+    # each ≤~120 chars). When ``memory_extractor_think`` is on, the client
+    # adds ``ollama.think_num_predict_headroom`` on top of this so the
+    # hidden trace gets its own budget and never starves the answer; this
+    # value stays the answer budget either way.
     memory_extractor_max_tokens: int = 1024
+    # Run the extractor with the model's reasoning trace enabled. The
+    # extractor's judgement ("is this durable? what's the right tense /
+    # event_time?") is exactly the kind of multi-step call that gets
+    # flaky on reasoning models when think is off, so default it ON.
+    # Ollama returns the trace in ``message.thinking`` (separate from
+    # the JSON ``message.content`` we parse) — it never pollutes the
+    # output, it only costs latency + tokens from the budget above.
+    memory_extractor_think: bool = True
     # K1: cap on simultaneously-active long-term goals Aiko carries.
     # When :meth:`GoalStore.add_goal` would push past the cap, the
     # oldest un-pinned active goal is archived (its progress history
@@ -1338,6 +1350,9 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             memory_extractor_max_tokens=max(
                 256,
                 int(memory_raw.get("memory_extractor_max_tokens", 1024)),
+            ),
+            memory_extractor_think=bool(
+                memory_raw.get("memory_extractor_think", True)
             ),
             goal_max_active=max(
                 1, int(memory_raw.get("goal_max_active", 5)),

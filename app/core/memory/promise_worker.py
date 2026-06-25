@@ -488,6 +488,10 @@ class PromiseExtractionWorker:
                 model=self._chat_model,
                 stop_event=self._cancel_event,
                 format_json=True,
+                # Distinguishing a real commitment ("I'll look into X")
+                # from idle phrasing is a judgement call reasoning helps.
+                # Headroom for the trace is added client-side.
+                think=True,
                 surface="promise_worker",
             )
             for chunk in stream:
