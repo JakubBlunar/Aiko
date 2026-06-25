@@ -183,17 +183,20 @@ def detect(
     top_n = max(1, int(top_k))
     sim_floor = float(threshold)
 
-    # Pull a snapshot of the mirror via list_recent (the store exposes
-    # this in a thread-safe way). ``limit`` is the configured
-    # ``memory.max_memories`` upper bound; we read everything because
-    # filtering happens here, not in the store.
+    # P17: pull only the callback-eligible kinds via a single locked
+    # mirror walk (``iter_by_kinds``) instead of ``list_recent(10_000)``,
+    # which copied the entire mirror and paid two O(n log n) sorts before
+    # this loop discarded every non-allow-list row anyway. The kind
+    # filter now happens in the store, so the cosine walk below only
+    # touches eligible rows. Falls back to the legacy full-mirror path
+    # for stores that don't expose ``iter_by_kinds`` (duck-typed doubles).
     try:
-        # Use list_recent with a large limit to grab the full mirror.
-        # Kind filter is applied in Python so we can intersect with
-        # the multi-kind allow-list in one pass.
-        candidates = memory_store.list_recent(limit=10_000)
+        if hasattr(memory_store, "iter_by_kinds"):
+            candidates = memory_store.iter_by_kinds(kinds)
+        else:
+            candidates = memory_store.list_recent(limit=10_000)
     except Exception:
-        log.debug("callback-detector: list_recent failed", exc_info=True)
+        log.debug("callback-detector: candidate fetch failed", exc_info=True)
         return []
     if not candidates:
         return []

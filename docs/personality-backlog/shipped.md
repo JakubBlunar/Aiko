@@ -1171,6 +1171,71 @@ next-turn one-shot render).
 
 ---
 
+## P5 + P23. Lance scan push-down for `list_recent_user_vectors`
+
+[`RagStore.list_recent_user_vectors`](../../app/core/rag/rag_store.py)
+(the K6 novelty warm-up + the K28 "turning over" provider) materialised
+the **entire** Lance `messages` table via `to_arrow()` — every column
+(including the big `content` payload) and every row (all roles, all
+users) — then filtered `role='user'` + the session-id prefix in Python.
+A full-table read on the worst turn there is (the cold "welcome back"
+turn that already pays cold caches everywhere), growing linearly with
+total chat history. P5/P23 pushes the filter into the Lance scan:
+`self._messages.search().where("role = 'user' AND session_id LIKE
+'<prefix>:%'", prefilter=True).select(["created_at", "vector"])` — so
+only this user's user-role rows leave disk, and only the two columns the
+caller actually reads. The Python-side sort + cap is unchanged (Lance
+has no server-side ORDER BY in 0.30), but it now runs over a fraction of
+the rows. A `_recent_user_vectors_fallback` keeps the old full-`to_arrow`
++ PyArrow-compute mask path for older Lance builds where the predicate
+query raises. The `:`-delimited prefix protects against cross-user
+collisions (`alice:%` won't match `alice2:…`), matching the old
+`startswith(f"{prefix}:")` semantics. Tests:
+`tests/test_rag_store.py::*list_recent_user_vectors*` (role/prefix
+filter, most-recent-first ordering, cap, empty case).
+
+---
+
+## P17. K22 callback detector: filtered mirror walk, not a full copy
+
+`callback_detector.detect` ran **every turn** post-turn and pulled the
+whole memory mirror via `memory_store.list_recent(limit=10_000)` — a
+full `list(self._mirror.values())` copy plus two O(n log n) sorts
+(created_at, then pinned) — only to immediately discard every row whose
+kind wasn't in the eight-entry `CALLBACK_KINDS` allow-list. On an aged
+corpus dominated by `observation` / `knowledge_gap` / `scratchpad` rows
+that's a lot of copying + sorting + per-row Python overhead for a
+handful of eligible candidates. P17 adds
+[`MemoryStore.iter_by_kinds`](../../app/core/memory/memory_store.py)
+(plural sibling of `iter_by_kind`): one locked mirror walk filtered to
+the kind set, **no sort** (the detector sorts by cosine itself). The
+detector calls it with the allow-list, so the cosine walk only ever
+touches callback-eligible rows. Falls back to `list_recent(10_000)` for
+duck-typed stores without `iter_by_kinds`. Tests:
+`tests/test_callback_detector.py` (`test_p17_prefers_iter_by_kinds_over_full_mirror`
++ the existing suite re-run through the new path via the fake store's
+`iter_by_kinds`).
+
+---
+
+## P10. `(role, created_at)` index for the schedule learner
+
+The G2/K3 [`ScheduleLearner`](../../app/core/infra/schedule_learner.py)
+query is `WHERE role='user' AND created_at >= ? ORDER BY created_at ASC`
+with **no** `session_id`, so the existing `idx_messages_session`
+(`session_id`-leading) couldn't serve it — SQLite full-scanned the
+`messages` table, fine today but linear with multi-year history. P10
+adds `idx_messages_role_created ON messages(role, created_at)`. Both are
+base columns, so the index lives directly in the `_CREATE_TABLES` schema
+script (`CREATE INDEX IF NOT EXISTS` runs on every open — existing DBs
+pick it up with no version bump). The planner now serves the query as a
+**covering index** scan (it only needs `created_at`, which the index
+carries), so there's zero table access. Tests:
+`tests/test_chat_database.py::TestScheduleLearnerIndex` (index exists +
+`EXPLAIN QUERY PLAN` shows `idx_messages_role_created`, not `SCAN`).
+
+---
+
 ## P8. Idle-worker queue visibility + multi-worker drain
 
 `IdleWorkerScheduler` was capped at one worker per 60 s tick.

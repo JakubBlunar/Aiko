@@ -62,9 +62,25 @@ class _FakeStore:
     def __init__(self, mems: list[_FakeMemory]) -> None:
         self._mems: dict[int, _FakeMemory] = {m.id: m for m in mems}
         self.update_calls: list[tuple[int, dict[str, Any]]] = []
+        self.list_recent_calls = 0
+        self.iter_by_kinds_calls = 0
 
     def list_recent(self, *, limit: int = 10_000) -> list[_FakeMemory]:
+        self.list_recent_calls += 1
         return list(self._mems.values())
+
+    def iter_by_kinds(self, kinds: Any) -> list[_FakeMemory]:
+        # P17: mirror MemoryStore.iter_by_kinds — single filtered walk.
+        self.iter_by_kinds_calls += 1
+        kind_set = {
+            k.strip().lower() for k in kinds if k and str(k).strip()
+        }
+        if not kind_set:
+            return []
+        return [
+            m for m in self._mems.values()
+            if (m.kind or "").lower() in kind_set
+        ]
 
     def get(self, memory_id: int) -> _FakeMemory | None:
         return self._mems.get(int(memory_id))
@@ -360,6 +376,35 @@ class DetectTests(unittest.TestCase):
         )
         self.assertEqual(len(hits), 1)
         self.assertEqual(hits[0].prior_count, 4)
+
+    def test_p17_prefers_iter_by_kinds_over_full_mirror(self) -> None:
+        # P17: when the store exposes iter_by_kinds, detect must use it
+        # (single filtered walk) and never fall back to the full-mirror
+        # list_recent copy + double sort.
+        mems = [
+            _FakeMemory(
+                id=70, content="old fact", kind="fact",
+                embedding=VEC_AB_HIGH,
+                created_at=_iso_days_ago(40),
+            ),
+            _FakeMemory(
+                id=71, content="ineligible bulk row", kind="knowledge_gap",
+                embedding=VEC_A,
+                created_at=_iso_days_ago(40),
+            ),
+        ]
+        store = _FakeStore(mems)
+        hits = detect(
+            assistant_vec=VEC_A,
+            memory_store=store,
+            threshold=0.55,
+            age_floor_days=3,
+            cooldown_hours=24,
+            top_k=3,
+        )
+        self.assertEqual([h.memory_id for h in hits], [70])
+        self.assertEqual(store.iter_by_kinds_calls, 1)
+        self.assertEqual(store.list_recent_calls, 0)
 
 
 # ── record() tests ──────────────────────────────────────────────────

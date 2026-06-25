@@ -1504,6 +1504,28 @@ class MemoryStore:
         with self._lock:
             return [m for m in self._mirror.values() if m.kind == kind_norm]
 
+    def iter_by_kinds(self, kinds: Iterable[str]) -> list[Memory]:
+        """Snapshot of all memories whose kind is in ``kinds``.
+
+        One locked mirror walk, no sort -- the plural sibling of
+        :meth:`iter_by_kind`. The K22 callback detector (P17) calls this
+        instead of ``list_recent(limit=10_000)``: that path copied the
+        *entire* mirror and paid two O(n log n) sorts before the detector
+        discarded every non-callback-kind row anyway. Filtering to the
+        allow-list here means the per-turn cosine walk only ever touches
+        eligible rows (facts / preferences / shared moments / …), not the
+        high-volume observation / knowledge-gap / scratchpad bulk.
+
+        Empty / falsy ``kinds`` returns ``[]`` (no implicit "all").
+        """
+        kind_set = {
+            k.strip().lower() for k in kinds if k and str(k).strip()
+        }
+        if not kind_set:
+            return []
+        with self._lock:
+            return [m for m in self._mirror.values() if m.kind in kind_set]
+
     def iter_by_tier(self, tier: str) -> list[Memory]:
         """Snapshot of all memories in a given tier. Cheap (mirror walk).
 

@@ -174,6 +174,40 @@ class TestSummaries(unittest.TestCase):
             self.assertEqual(row.summary, "new")
 
 
+class TestScheduleLearnerIndex(unittest.TestCase):
+    """P10: (role, created_at) index for the schedule-learner query."""
+
+    def test_index_exists(self):
+        with _TempDB() as db:
+            conn = db._get_conn()
+            names = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type='index' AND tbl_name='messages'"
+                ).fetchall()
+            }
+            self.assertIn("idx_messages_role_created", names)
+
+    def test_role_created_query_uses_index(self):
+        # The G2/K3 query must hit idx_messages_role_created, not a full
+        # table scan. SQLite reports a SEARCH (index) vs SCAN (full).
+        with _TempDB() as db:
+            for i in range(20):
+                db.add_message(
+                    "u1:s1", "user" if i % 2 == 0 else "assistant", f"m{i}",
+                )
+            plan = db._get_conn().execute(
+                "EXPLAIN QUERY PLAN SELECT created_at FROM messages "
+                "WHERE role = 'user' AND created_at >= ? "
+                "ORDER BY created_at ASC",
+                ("2000-01-01",),
+            ).fetchall()
+            detail = " ".join(str(row[-1]) for row in plan)
+            self.assertIn("idx_messages_role_created", detail)
+            self.assertNotIn("SCAN messages", detail)
+
+
 class TestHistoryHead(unittest.TestCase):
     """P3: cheap slice-cache invalidation signature."""
 
