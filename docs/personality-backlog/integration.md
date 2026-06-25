@@ -12,7 +12,7 @@ the verifying file:line.
 **Shipped:** I1 (Beliefs tab live updates), I2 (MessageIndexer
 retry/back-off), I4 (Settings-drawer coverage), and I5 (persona-window
 banner master switches) landed in the reliability pass — see
-[`shipped.md`](shipped.md#reliability-pass--i1--i2--i4--i5-finish-the-wiring-batch).
+[`shipped.md`](shipped/features.md#reliability-pass--i1--i2--i4--i5-finish-the-wiring-batch).
 
 ---
 
