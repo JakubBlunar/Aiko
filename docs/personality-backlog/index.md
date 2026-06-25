@@ -73,6 +73,12 @@ Temporal awareness (K-time family, in [`awareness.md`](awareness.md)):
 - **K-time5.** Unified time-phrasing module + single "now" seam
   (do before DT1).
 - **K-time6.** Enrich the "now" anchor with year + ISO.
+- **K-time7.** Worker time toolkit — shared "today" anchor +
+  memory-age renderer (prereq for K-time8/9).
+- **K-time8.** Give the "today" anchor to every relative-time-resolving
+  worker (promise / belief / reflection / moments / summary).
+- **K-time9.** Feed memory ages to the memory-crunching workers
+  (conflict / consolidation / knowledge-map / curiosity).
 
 ### G. Background workers — [`workers.md`](workers.md)
 
