@@ -1585,6 +1585,90 @@ def register(mcp, session: "SessionController") -> None:
             return f"force_curiosity_gradient_surface raised: {exc}"
 
     @mcp.tool()
+    def get_knowledge_map_reflection_state() -> str:
+        """K64d — dump the knowledge-map self-reflection worker state.
+
+        Shows the master switch, the worker registration + interval, the
+        wall-clock cooldown stamp (``knowledge_map_reflection.last_fired_at``),
+        and a dry-run of the graph *shape* the worker would reflect on (the
+        richest territories via ``interest_map`` + the under-researched ones
+        via ``knowledge_gap_clusters``). First stop for "why hasn't Aiko
+        noticed the lopsidedness of what she knows?". The reflection itself
+        lands as a ``[mindmap]`` ``kind="reflection"`` memory that surfaces
+        through the existing RAG / K28 turning-over path (no dedicated
+        provider), so verify the written row via the Memory tab / RAG, not a
+        prompt block.
+        """
+        worker = getattr(session, "_knowledge_map_reflection_worker", None)
+        out: dict[str, Any] = {
+            "registered": worker is not None,
+            "enabled": bool(
+                getattr(
+                    session._settings.agent,
+                    "knowledge_map_reflection_enabled",
+                    True,
+                )
+            ),
+        }
+        chat_db = getattr(session, "_chat_db", None)
+        if chat_db is not None and hasattr(chat_db, "kv_get"):
+            try:
+                out["last_fired_at"] = chat_db.kv_get(
+                    "knowledge_map_reflection.last_fired_at"
+                )
+            except Exception:
+                out["last_fired_at"] = None
+        if worker is not None:
+            try:
+                out["interval_seconds"] = worker.interval_seconds
+                out["cooldown_hours"] = worker._cooldown_hours
+                out["min_clusters"] = worker._min_clusters
+                out["force_next"] = bool(worker._force_next)
+            except Exception as exc:  # pragma: no cover -- diag tool
+                out["worker_error"] = str(exc)
+            graph = getattr(session, "_topic_graph", None)
+            if graph is not None and worker is not None:
+                try:
+                    rich, gaps = worker._read_shape(graph)
+                    out["rich_territories"] = [
+                        {"topic": label[:80], "size": size}
+                        for label, size in rich[: worker._rich_top_n]
+                    ]
+                    out["under_explored"] = [
+                        {"topic": label[:80], "size": size}
+                        for label, size in gaps
+                    ]
+                except Exception as exc:  # pragma: no cover -- diag tool
+                    out["shape_error"] = str(exc)
+        return json.dumps(out, indent=2, default=str)
+
+    @mcp.tool()
+    def force_knowledge_map_reflection() -> str:
+        """K64d — run the KnowledgeMapReflectionWorker once, bypassing cooldown.
+
+        Reads the live topic-graph shape, runs the worker-LLM meta-thought,
+        and writes one ``[mindmap]`` reflection memory (the graph must still
+        have at least ``min_clusters`` labelled clusters). Returns the run
+        result (``wrote``, ``memory_id``, ``reflection`` …) or a skip reason
+        (``no_graph`` / ``no_context`` / ``no_llm`` / ``deduped`` …). The
+        written reflection then surfaces naturally on a later turn via RAG /
+        K28 turning-over — confirm it landed in the Memory tab.
+        """
+        worker = getattr(session, "_knowledge_map_reflection_worker", None)
+        if worker is None:
+            return (
+                "knowledge_map_reflection worker not registered "
+                "(agent.knowledge_map_reflection_enabled may be off, or no "
+                "memory store / embedder / worker LLM / chat db)"
+            )
+        try:
+            worker.force_next()
+            result = worker.run()
+        except Exception as exc:
+            return f"force_knowledge_map_reflection raised: {exc}"
+        return json.dumps(result or {}, indent=2, default=str)
+
+    @mcp.tool()
     def get_topic_temperature_state() -> str:
         """F10h — dump per-cluster affect ("topic temperature") state.
 

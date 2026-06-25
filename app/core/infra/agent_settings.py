@@ -220,6 +220,13 @@ class AgentSettings:
     # live turn is on either topic. Off → the worker never registers and the
     # provider stays empty. Cadence / thresholds live under MemorySettings.
     curiosity_gradient_enabled: bool = True
+    # K64d: master switch for knowledge-map self-reflection. When on, the
+    # KnowledgeMapReflectionWorker periodically reads the *shape* of the topic
+    # graph (richest territories + under-explored ones), runs a worker-LLM
+    # meta-thought, and writes one [mindmap] kind="reflection" memory that
+    # surfaces through the existing RAG / K28 turning-over path. Off → the
+    # worker never registers. Cadence / thresholds live under MemorySettings.
+    knowledge_map_reflection_enabled: bool = True
     # F10h: master switch for the per-cluster affect ("topic temperature")
     # cue. When on, a turn that lands on a warm / tender topic cluster gets
     # a one-line tonal nudge so Aiko meets it with the right register. Off

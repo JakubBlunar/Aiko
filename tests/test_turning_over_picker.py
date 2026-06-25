@@ -515,6 +515,22 @@ class DreamVariantTests(unittest.TestCase):
         # Stance text rendered inline.
         self.assertIn("interview prep", rendered)
 
+    def test_render_strips_mindmap_prefix(self) -> None:
+        # K64d knowledge-map reflections carry a [mindmap] prefix; the
+        # render strips it and keeps the waking "thinking about" framing.
+        result = TurningOverResult(
+            memory_id=3,
+            content="[mindmap] most of my head's been about work, almost nothing on how he unwinds.",
+            dream=False,
+            topical_score=0.8,
+            age_hours=30.0,
+            topical_source="thread",
+        )
+        rendered = render_inner_life_block(result, user_display_name="Jacob")
+        self.assertNotIn("[mindmap]", rendered)
+        self.assertIn("thinking about", rendered)
+        self.assertIn("how he unwinds", rendered)
+
     def test_render_trims_long_content(self) -> None:
         long_text = "x" * 400
         result = TurningOverResult(
