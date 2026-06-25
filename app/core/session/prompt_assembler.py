@@ -218,6 +218,10 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         # Slow self-aware register shift from per-cluster mass over time;
         # sits with the other topic-graph-derived surfaces.
         "interest_drift_block",
+        # K64c: curiosity gradient — "I keep brushing past X, I'm curious".
+        # A thin cluster on the rim of a dense one; sits with the other
+        # topic-graph-derived surfaces.
+        "curiosity_gradient_block",
     ),
 }
 
@@ -348,6 +352,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # lately" / "X has gone quiet" register shift when the live turn is
         # on a topic whose mass has drifted. Query-aware; dropped aggressive.
         self._interest_drift_provider: Callable[[str], str] | None = None
+        # K64c: curiosity gradient — surface a "I keep brushing past X, I'm
+        # curious" cue when the live turn is on a familiar topic with an
+        # under-explored adjacent edge. Query-aware; dropped aggressive.
+        self._curiosity_gradient_provider: Callable[[str], str] | None = None
         # K61: informational-turn knowledge-grounding steer.
         self._knowledge_grounding_provider: Callable[[str], str] | None = (
             None
@@ -1085,6 +1093,22 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                         "interest drift provider raised", exc_info=True
                     )
                     interest_drift_block = ""
+
+        # K64c: curiosity gradient — surface a "I keep brushing past X, I'm
+        # curious" cue when the live turn is on a familiar topic with an
+        # under-explored adjacent edge. Query-aware, dropped in aggressive.
+        curiosity_gradient_block = ""
+        if not aggressive and self._curiosity_gradient_provider is not None:
+            with _timed_phase(provider_ms, "curiosity_gradient"):
+                try:
+                    curiosity_gradient_block = (
+                        self._curiosity_gradient_provider(user_text) or ""
+                    )
+                except Exception:
+                    log.debug(
+                        "curiosity gradient provider raised", exc_info=True
+                    )
+                    curiosity_gradient_block = ""
 
         # K61: on informational turns, steer Aiko toward learned
         # specifics (F9 ``knowledge`` / G3 ``curiosity_finding`` rows)
@@ -2365,8 +2389,12 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             system_parts.append(associative_wander_block)
         if interest_drift_block:
             # K64b: interest drift — slow "drawn to X lately" / "X gone
-            # quiet" register shift, last of the topic-graph-derived cues.
+            # quiet" register shift.
             system_parts.append(interest_drift_block)
+        if curiosity_gradient_block:
+            # K64c: curiosity gradient — "I keep brushing past X" cue, last
+            # of the topic-graph-derived surfaces.
+            system_parts.append(curiosity_gradient_block)
 
         system_prompt = "\n\n---\n\n".join(p for p in system_parts if p)
 

@@ -707,11 +707,13 @@ autonomous interior life; pick any sub-idea independently.
   fading one. Surfaces as a slow, self-aware register shift (topic-gated,
   one-shot), not an announcement. Pairs with K27 day colour as another slow
   under-current.
-- **K64c. Curiosity gradient from graph sparsity.** Find regions
-  *adjacent* to dense clusters that are themselves thin (she's been
-  near a topic a lot but never actually explored its edges) and let
-  that drive a genuinely curious question or an F9 research pick —
-  curiosity about the boundary of what she knows, not random.
+- **K64c. Curiosity gradient from graph sparsity.** ✅ **Shipped** — see
+  [`shipped/awareness.md#k64c-curiosity-gradient`](shipped/awareness.md#k64c-curiosity-gradient-i-keep-brushing-past-x-im-curious).
+  Finds a *thin* cluster sitting on the rim of a *dense* one (she's been near
+  a topic a lot but never explored its adjacent edge) and surfaces a
+  genuinely-curious-question cue when the live turn is on either topic —
+  curiosity about the boundary of what she knows, not random. LLM-free (pure
+  centroid geometry); the chat model phrases the question.
 - **K64d. Self-reflection on her own knowledge map.** A periodic
   (low-frequency) reflection where she "looks at the shape of what she
   knows" — which territories are rich, which are blank — and forms a

@@ -339,6 +339,59 @@ class IdleWorkersInitMixin:
                     "InterestDriftWorker init failed", exc_info=True
                 )
 
+        # K64c CuriosityGradientWorker — finds a thin topic cluster on the
+        # rim of a dense one (the under-explored edge of familiar territory)
+        # and drafts a genuinely-curious-question cue. Cheap geometry pass
+        # (no LLM); the provider only surfaces it when the live turn is on
+        # either topic. Third member of the K64 freedom-of-thought family.
+        self._curiosity_gradient_worker = None
+        if (
+            self._idle_scheduler is not None
+            and getattr(self, "_memory_store", None) is not None
+        ):
+            try:
+                from app.core.proactive.curiosity_gradient_worker import (
+                    CuriosityGradientWorker,
+                )
+
+                mem = self._memory_settings
+                self._curiosity_gradient_worker = CuriosityGradientWorker(
+                    topic_graph_provider=lambda: getattr(
+                        self, "_topic_graph", None
+                    ),
+                    kv_get=self._chat_db.kv_get,
+                    kv_set=self._chat_db.kv_set,
+                    enabled_provider=lambda: bool(
+                        getattr(
+                            self._settings.agent,
+                            "curiosity_gradient_enabled",
+                            True,
+                        )
+                    ),
+                    interval_seconds=mem.curiosity_gradient_interval_seconds,
+                    daily_cap=mem.curiosity_gradient_daily_cap,
+                    journal_max=mem.curiosity_gradient_journal_max,
+                    dense_min_size=mem.curiosity_gradient_dense_min_size,
+                    thin_min_size=mem.curiosity_gradient_thin_min_size,
+                    thin_max_size=mem.curiosity_gradient_thin_max_size,
+                    adjacency_min_cosine=(
+                        mem.curiosity_gradient_adjacency_min_cosine
+                    ),
+                    adjacency_max_cosine=(
+                        mem.curiosity_gradient_adjacency_max_cosine
+                    ),
+                    edge_cooldown_hours=(
+                        mem.curiosity_gradient_edge_cooldown_hours
+                    ),
+                )
+                self._idle_scheduler.register(
+                    self._curiosity_gradient_worker
+                )
+            except Exception:
+                log.warning(
+                    "CuriosityGradientWorker init failed", exc_info=True
+                )
+
         # K52 WantsLedgerWorker — keeps the wants ledger stocked from
         # curiosity seeds / forward-curiosity questions / goals during
         # quiet windows. Pure ingestion, no LLM. Failures only drop
