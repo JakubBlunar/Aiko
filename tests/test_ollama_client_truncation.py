@@ -787,6 +787,111 @@ class ThinkHeadroomTests(unittest.TestCase):
         self.assertEqual(sent["payload"]["options"]["num_predict"], 300 + 1500)
 
 
+class TruncationAnswerPreviewTests(unittest.TestCase):
+    """The truncation WARNING now carries an ``answer=...`` preview of the
+    generated text (head + tail, whitespace-flattened) so a human can judge
+    whether the response was really cut mid-sentence vs. a benign overrun.
+    """
+
+    def setUp(self) -> None:
+        self._ollama_settings = load_settings().ollama
+
+    def _truncated(self, content: str) -> Mock:
+        body: dict[str, object] = {
+            "message": {"content": content},
+            "prompt_eval_count": 10,
+            "eval_count": 512,
+            "total_duration": 0,
+            "eval_duration": 0,
+            "prompt_eval_duration": 0,
+            "done_reason": "length",
+        }
+        fake = Mock()
+        fake.ok = True
+        fake.raise_for_status.return_value = None
+        fake.json.return_value = body
+        return fake
+
+    def test_warning_includes_answer_preview(self) -> None:
+        client = OllamaClient(self._ollama_settings)
+        with patch(
+            "app.llm.ollama_client.requests.post",
+            return_value=self._truncated("the cap chopped this mid"),
+        ), self.assertLogs("app.llm.ollama_client", level="WARNING") as cap:
+            client.chat_with_tools(
+                [{"role": "user", "content": "hi"}],
+                surface="reflection_worker",
+            )
+        msg = next(
+            (r.getMessage() for r in cap.records if "truncated" in r.getMessage()),
+            "",
+        )
+        self.assertIn("answer=", msg)
+        self.assertIn("the cap chopped this mid", msg)
+
+    def test_chat_json_warning_includes_answer_preview(self) -> None:
+        client = OllamaClient(self._ollama_settings)
+        with patch(
+            "app.llm.ollama_client.requests.post",
+            return_value=self._truncated('{"foo": "ba'),
+        ), self.assertLogs("app.llm.ollama_client", level="WARNING") as cap:
+            client.chat_json(
+                [{"role": "user", "content": "hi"}],
+                surface="memory_extractor",
+            )
+        msg = next(
+            (r.getMessage() for r in cap.records if "truncated" in r.getMessage()),
+            "",
+        )
+        self.assertIn('{"foo": "ba', msg)
+
+    def test_stream_warning_includes_joined_answer(self) -> None:
+        client = OllamaClient(self._ollama_settings)
+        chunks = [
+            {"message": {"content": "partial "}, "done": False},
+            {"message": {"content": "answer that got cut"}, "done": False},
+            {
+                "message": {"content": ""},
+                "done": True,
+                "prompt_eval_count": 10,
+                "eval_count": 512,
+                "total_duration": 0,
+                "eval_duration": 0,
+                "prompt_eval_duration": 0,
+                "done_reason": "length",
+            },
+        ]
+        stub = _StreamResponseStub(_stream_lines(chunks))
+        with patch(
+            "app.llm.ollama_client.requests.post", return_value=stub,
+        ), self.assertLogs("app.llm.ollama_client", level="WARNING") as cap:
+            list(
+                client.chat_stream(
+                    [{"role": "user", "content": "hi"}],
+                    surface="belief_worker",
+                ),
+            )
+        msg = next(
+            (r.getMessage() for r in cap.records if "truncated" in r.getMessage()),
+            "",
+        )
+        self.assertIn("partial answer that got cut", msg)
+
+    def test_preview_helper_head_tail_and_empty(self) -> None:
+        from app.llm.ollama_client import _preview_answer
+
+        self.assertEqual(_preview_answer(""), "<empty>")
+        self.assertEqual(_preview_answer("   \n\t "), "<empty>")
+        # Whitespace runs are flattened to single spaces.
+        self.assertEqual(_preview_answer("a\n\nb   c"), "a b c")
+        # Long text shows head + tail with an omitted-count marker.
+        long = "x" * 2000
+        preview = _preview_answer(long, head=10, tail=10)
+        self.assertTrue(preview.startswith("x" * 10))
+        self.assertTrue(preview.endswith("x" * 10))
+        self.assertIn("chars omitted", preview)
+
+
 class ContentLooksCompleteTests(unittest.TestCase):
     """Pin the heuristic that decides "answer reached a natural stop"
     so the benign-truncation downgrade only fires when we're confident.

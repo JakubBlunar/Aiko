@@ -1060,6 +1060,113 @@ class InnerLifePart2Mixin:
             "line; don't over-apologise for not knowing."
         )
 
+    def _render_associative_wander_block(self, user_text: str) -> str:
+        """K64a: surface one "funny, this reminds me of ..." connection.
+
+        Consumer side of the
+        :class:`~app.core.proactive.associative_wander_worker.AssociativeWanderWorker`
+        producer. The worker drifts across the topic graph during quiet
+        windows and drafts a genuine connection between two *distant*
+        clusters into the ``aiko.associative_wanders`` kv ring; this
+        provider surfaces one **only when the live turn is actually on one
+        of the two topics** (lexical overlap with ``user_text``), so the
+        drift lands in context — "oh, this reminds me of ..." — rather than
+        as a non-sequitur.
+
+        One-shot per pair: a surfaced ``pair_key`` is recorded in
+        ``associative_wander.surfaced_keys`` and never resurfaces (the
+        worker's per-pair cooldown also stops it being re-drafted). The cue
+        is a private prompt hint, NEVER spoken verbatim — Aiko decides
+        whether the connection fits and phrases it herself. Independent of
+        the gap-return cue family (does not touch ``_gap_cue_surfaced``);
+        it's tied to the live topic. MCP debug:
+        ``force_associative_wander_surface`` arms
+        ``_associative_wander_force_next`` to bypass the topic-relevance +
+        surfaced gates (the ring must still be non-empty).
+        """
+        if not bool(
+            getattr(self._settings.agent, "associative_wander_enabled", True)
+        ):
+            return ""
+
+        force_next = bool(
+            getattr(self, "_associative_wander_force_next", False)
+        )
+        if force_next:
+            self._associative_wander_force_next = False
+
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is None or not hasattr(chat_db, "kv_get"):
+            return ""
+
+        text = (user_text or "").strip()
+        if not text and not force_next:
+            return ""
+
+        try:
+            from app.core.proactive.associative_wander_worker import (
+                load_wanders,
+                wander_relevant,
+            )
+        except Exception:
+            log.debug("associative_wander import failed", exc_info=True)
+            return ""
+
+        ring = load_wanders(chat_db.kv_get)
+        if not ring:
+            return ""
+
+        surfaced_key = "associative_wander.surfaced_keys"
+        try:
+            raw = chat_db.kv_get(surfaced_key)
+            surfaced = set(json.loads(raw)) if raw else set()
+        except Exception:
+            surfaced = set()
+
+        chosen: dict | None = None
+        for entry in reversed(ring):  # newest first
+            key = str(entry.get("pair_key") or "")
+            connection = str(entry.get("connection") or "").strip()
+            if not connection:
+                continue
+            if not force_next:
+                if key and key in surfaced:
+                    continue
+                if not wander_relevant(entry, text):
+                    continue
+            chosen = entry
+            break
+        if chosen is None:
+            return ""
+
+        key = str(chosen.get("pair_key") or "")
+        topic_a = str(chosen.get("topic_a") or "").strip()
+        topic_b = str(chosen.get("topic_b") or "").strip()
+        connection = str(chosen.get("connection") or "").strip()
+        if key:
+            surfaced.add(key)
+            try:
+                trimmed = list(surfaced)[-64:]
+                chat_db.kv_set(surfaced_key, json.dumps(trimmed))
+            except Exception:
+                log.debug(
+                    "associative_wander surfaced write failed", exc_info=True
+                )
+
+        log.info(
+            "associative-wander fire: a=%r b=%r key=%s",
+            topic_a[:60], topic_b[:60], key,
+        )
+        return (
+            "Heads-up: while your mind was wandering earlier you noticed a "
+            f"connection between \"{topic_a}\" and \"{topic_b}\" — "
+            f"{connection}. The live turn just brushed one of them. If it "
+            "genuinely fits, you can let the thought surface in your own "
+            "words (\"funny, this kind of reminds me of ...\") — one light, "
+            "real aside, not a forced segue. If it doesn't fit the moment, "
+            "let it go silently."
+        )
+
     def _render_topic_temperature_block(self, user_text: str) -> str:
         """F10h: nudge tone when the live turn lands on a *charged* topic.
 

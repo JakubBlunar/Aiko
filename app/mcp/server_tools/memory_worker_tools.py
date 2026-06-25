@@ -1225,6 +1225,130 @@ def register(mcp, session: "SessionController") -> None:
             return f"force_knowledge_gap_notice_surface raised: {exc}"
 
     @mcp.tool()
+    def get_associative_wander_state() -> str:
+        """K64a — dump the associative-wandering worker + provider state.
+
+        Shows the master switch, the worker registration, the kv journal
+        ring of drafted connections (``aiko.associative_wanders``), the
+        per-pair cooldown map, the surfaced-keys set the provider tracks,
+        the one-shot provider force flag, and a dry-run of the distant-pair
+        picker (which two topic clusters would be connected on the next
+        tick). First stop for "why didn't Aiko make that connection?".
+        """
+        worker = getattr(session, "_associative_wander_worker", None)
+        out: dict[str, Any] = {
+            "registered": worker is not None,
+            "enabled": bool(
+                getattr(
+                    session._settings.agent,
+                    "associative_wander_enabled",
+                    True,
+                )
+            ),
+            "provider_force_next": bool(
+                getattr(session, "_associative_wander_force_next", False)
+            ),
+        }
+        chat_db = getattr(session, "_chat_db", None)
+        if chat_db is not None and hasattr(chat_db, "kv_get"):
+            try:
+                from app.core.proactive.associative_wander_worker import (
+                    load_wanders,
+                )
+
+                out["journal"] = load_wanders(chat_db.kv_get)
+            except Exception as exc:  # pragma: no cover -- diag tool
+                out["journal_error"] = str(exc)
+            try:
+                raw = chat_db.kv_get("associative_wander.surfaced_keys")
+                out["surfaced_keys"] = json.loads(raw) if raw else []
+            except Exception:
+                out["surfaced_keys"] = []
+        if worker is not None:
+            try:
+                out["interval_seconds"] = worker.interval_seconds
+                out["pair_cooldowns"] = worker._load_cooldowns()
+            except Exception as exc:  # pragma: no cover -- diag tool
+                out["worker_error"] = str(exc)
+            graph = getattr(session, "_topic_graph", None)
+            if graph is not None:
+                try:
+                    from app.core.proactive.associative_wander_worker import (
+                        find_distant_pairs,
+                    )
+
+                    pairs = find_distant_pairs(
+                        graph.topic_clusters(),
+                        max_cosine=worker._max_pair_cosine,
+                        min_size=worker._min_size,
+                    )
+                    out["candidate_pairs"] = [
+                        {
+                            "topic_a": p.label_a[:80],
+                            "topic_b": p.label_b[:80],
+                            "cosine": round(p.cosine, 3),
+                            "key": p.key,
+                        }
+                        for p in pairs[:5]
+                    ]
+                except Exception as exc:  # pragma: no cover -- diag tool
+                    out["candidate_pairs_error"] = str(exc)
+        return json.dumps(out, indent=2, default=str)
+
+    @mcp.tool()
+    def force_associative_wander() -> str:
+        """K64a — run the AssociativeWanderWorker once, bypassing cooldowns.
+
+        Picks the single most-distant qualifying pair (ignoring the global
+        cooldown, daily cap, and per-pair cooldown), asks the worker LLM for
+        a connection, and drafts it into the ring (the topic graph must
+        still have two qualifying distant clusters, and the LLM must judge
+        them genuinely connectable). Returns the run result (``drafted``,
+        ``topic_a``, ``topic_b``, ``connection`` …) or a skip reason. Pair
+        with ``force_associative_wander_surface`` + ``send_message`` to land
+        the cue end-to-end.
+        """
+        worker = getattr(session, "_associative_wander_worker", None)
+        if worker is None:
+            return (
+                "associative_wander worker not registered "
+                "(agent.associative_wander_enabled may be off, or no memory "
+                "store / topic graph)"
+            )
+        try:
+            worker.force_next()
+            result = worker.run()
+        except Exception as exc:
+            return f"force_associative_wander raised: {exc}"
+        return json.dumps(result or {}, indent=2, default=str)
+
+    @mcp.tool()
+    def force_associative_wander_surface() -> str:
+        """K64a — arm a one-shot bypass on the provider's gates.
+
+        Sets ``_associative_wander_force_next`` so the next provider call
+        surfaces the newest journal entry regardless of topic relevance or
+        the surfaced-keys set (the ring must still be non-empty — draft one
+        first via ``force_associative_wander``). Then ``send_message`` and
+        verify the "you noticed a connection between X and Y" line lands in
+        ``get_last_response_detail``'s system_prompt.
+        """
+        try:
+            session._associative_wander_force_next = True
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next provider call surfaces the newest connection, "
+                        "ignoring topic-relevance + surfaced gates"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_associative_wander_surface raised: {exc}"
+
+    @mcp.tool()
     def get_topic_temperature_state() -> str:
         """F10h — dump per-cluster affect ("topic temperature") state.
 

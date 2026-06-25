@@ -630,23 +630,7 @@ in Settings → Avatar.
 
 ## K61. Specifics over generalities — knowledge-grounded answers
 
-**Motivation.** When asked something informational ("what are some good
-shoegaze bands?") Aiko gives a survey-shaped, hedge-y answer and never
-names the *actual thing* — because she's reaching for the model's
-generic parametric knowledge, not grounded specifics. The
-read-side companion to the F8/F9 knowledge work: when matching
-`knowledge` memories exist, inject them and tell her to commit to
-specifics instead of generalising. Pairs with K4 (dialogue-act) to know
-when a turn is informational and with F8's retrieval boost. Key files:
-[`app/core/session/prompt_assembler.py`](../../app/core/session/prompt_assembler.py)
-(a T6 detector-tier provider gated on dialogue-act = info-seeking +
-non-empty `knowledge` retrieval), a new "Naming things" persona block in
-[`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt)
-that forbids survey-hedging ("there are many..." / "it depends") when she
-actually has grounded facts, and
-[`app/core/rag/rag_retriever.py`](../../app/core/rag/rag_retriever.py)
-for the `knowledge`-kind surfacing. Tonal guard: never turn into a
-know-it-all — specificity is "oh, try Slowdive," not a lecture.
+**Shipped** — see [`shipped/awareness.md`](shipped/awareness.md#k61-knowledge_grounding-inner-life-block-commit-to-specifics).
 
 ---
 
@@ -706,15 +690,15 @@ territories. This is a *family* of ideas around giving her more
 autonomous interior life; pick any sub-idea independently.
 
 **Sub-ideas.**
-- **K64a. Associative wandering.** An idle worker traverses the topic
-  graph, picks two *distant* clusters (low centroid cosine, not
-  neighbours), and asks the worker LLM for a genuine, non-forced
-  connection between them ("her hiking memories and her Rust debugging
-  both share a 'follow the trail patiently' feeling"). The result is a
-  **cue** (not a verbatim nudge — see the prepared-nudge rule in
-  AGENTS.md), surfaced one-shot via an inner-life block so she can bring
-  it up *in her own words* if it fits ("funny, this reminds me of...").
-  Strong human-ness signal; rarity + a cooldown are essential.
+- **K64a. Associative wandering.** ✅ **Shipped** — see
+  [`shipped/awareness.md#k64a-associative-wandering`](shipped/awareness.md#k64a-associative-wandering-funny-this-reminds-me-of-). An idle
+  worker traverses the topic graph, picks two *distant* clusters (low
+  centroid cosine, not neighbours), and asks the worker LLM for a genuine,
+  non-forced connection between them ("her hiking memories and her Rust
+  debugging both share a 'follow the trail patiently' feeling"). The
+  result is a **cue** (not a verbatim nudge), surfaced one-shot via an
+  inner-life block so she can bring it up *in her own words* if it fits
+  ("funny, this reminds me of..."). Rarity + cooldown are essential.
 - **K64b. Interest drift.** Track cluster *mass over time* (size +
   recency deltas between graph builds, persisted to `kv_meta`). A
   cluster gaining mass = a budding interest ("I've been weirdly into X
