@@ -1458,12 +1458,21 @@ class MemoryStore:
         *,
         offset: int = 0,
         kind: str | None = None,
+        tier: str | None = None,
     ) -> list[Memory]:
         with self._lock:
             mems = list(self._mirror.values())
         if kind:
             kind_norm = kind.strip().lower()
             mems = [m for m in mems if m.kind == kind_norm]
+        # Tier filter must run BEFORE the offset/limit slice so pagination
+        # matches ``count_memories(tier=...)`` — otherwise a tier filter
+        # applied to an already-paginated page only catches the rows of
+        # that tier that happen to fall in the current window (archive
+        # rows sort to the bottom, so the first page showed ~none).
+        if tier:
+            tier_norm = tier.strip().lower()
+            mems = [m for m in mems if m.tier == tier_norm]
         mems.sort(key=lambda m: m.created_at, reverse=True)
         # Pinned rows always float to the top of the recent list so the
         # editor's default view shows curated rows first regardless of
@@ -1479,12 +1488,18 @@ class MemoryStore:
         *,
         offset: int = 0,
         kind: str | None = None,
+        tier: str | None = None,
     ) -> list[Memory]:
         with self._lock:
             mems = list(self._mirror.values())
         if kind:
             kind_norm = kind.strip().lower()
             mems = [m for m in mems if m.kind == kind_norm]
+        # See ``list_recent``: filter tier before the slice so pagination
+        # is consistent with ``count_memories``.
+        if tier:
+            tier_norm = tier.strip().lower()
+            mems = [m for m in mems if m.tier == tier_norm]
         mems.sort(
             key=lambda m: (
                 0 if m.pinned else 1,

@@ -54,17 +54,19 @@ class MemoryFacadeMixin:
         store = self._memory_store
         if store is None:
             return []
+        # Tier is filtered inside the store (before the offset/limit slice)
+        # so a paginated tier view stays consistent with
+        # ``memory_count(tier=...)`` — filtering post-slice only caught the
+        # rows of that tier that happened to land in the current page.
+        tier_norm = tier.strip().lower() if tier else None
         if order == "top":
-            mems = store.list_top(limit=limit, offset=offset, kind=kind)
+            mems = store.list_top(
+                limit=limit, offset=offset, kind=kind, tier=tier_norm,
+            )
         else:
-            mems = store.list_recent(limit=limit, offset=offset, kind=kind)
-        # Tier filtering is applied here (rather than as a kwarg on
-        # ``list_top`` / ``list_recent``) so the existing pinned-first
-        # ordering survives. With per-tier caps capped at ~1000 the
-        # post-filter walk is cheap.
-        if tier:
-            tier_norm = tier.strip().lower()
-            mems = [m for m in mems if getattr(m, "tier", "long_term") == tier_norm]
+            mems = store.list_recent(
+                limit=limit, offset=offset, kind=kind, tier=tier_norm,
+            )
         return [m.to_dict() for m in mems]
 
     def memory_count(
