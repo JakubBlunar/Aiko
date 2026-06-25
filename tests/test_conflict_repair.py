@@ -6,10 +6,12 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from app.core.relationship import conflict_repair as cr
-from app.core.session.post_turn_mixin import (
-    PostTurnMixin,
-    _KV_CONFLICT_REPAIR_AT,
-)
+from app.core.session.post_turn_mixin import PostTurnMixin
+# ``_KV_CONFLICT_REPAIR_AT`` + ``_maybe_track_conflict_repair`` live on the
+# helpers mixin (the file-size split); ``PostTurnMixin`` inherits the
+# method via ``PostTurnMixin(PostTurnHelpersMixin)``. Import the constant
+# from the module that actually defines it.
+from app.core.session.post_turn_helpers_mixin import _KV_CONFLICT_REPAIR_AT
 
 
 class CleanTopicTests(unittest.TestCase):
