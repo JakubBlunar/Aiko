@@ -490,6 +490,24 @@ def register(mcp, session: "SessionController") -> None:
             return f"get_rag_prefetcher_stats failed: {exc}"
 
     @mcp.tool()
+    def get_message_indexer_stats() -> str:
+        """Return MessageIndexer counters + live queue / thread state (P6).
+
+        Watch ``queue_depth`` for embed back-pressure, ``pending_retries``
+        for transient embed/write failures in back-off, and ``gave_up`` +
+        ``last_give_up`` for rows that fell out of RAG until the next
+        startup backfill.
+        """
+        try:
+            indexer = getattr(session, "_message_indexer", None)
+            if indexer is None:
+                return json.dumps({"enabled": False}, indent=2)
+            payload = {"enabled": True, **indexer.stats()}
+            return json.dumps(payload, indent=2, default=str)
+        except Exception as exc:
+            return f"get_message_indexer_stats failed: {exc}"
+
+    @mcp.tool()
     def get_reflection_stats() -> str:
         """Return ReflectionWorker counters (Phase 2c)."""
         try:

@@ -259,6 +259,14 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # ``get_messages`` + ``get_latest_summary`` reads entirely.
         self._slice_head_sig: dict[str, tuple] = {}
         self._last_slice_cache_event: str = "skip"
+        # P22: monotonically-incrementing assembly sequence. Bumped at the
+        # top of every ``assemble_with_budget`` call so inner-life providers
+        # that each need the recent-history window (K23 misattunement, K30
+        # self-noticing, K54 topic-appetite) can share a single
+        # ``get_messages`` read keyed on this seq instead of each issuing
+        # their own overlapping query. See
+        # ``SessionController._inner_life_recent_messages``.
+        self._assembly_seq: int = 0
 
         # Phase-2/3/4 block providers. Each callable returns a short text
         # snippet (or ``""`` to skip) that gets folded into the system
@@ -727,6 +735,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         provider_ms: dict[str, float] = {}
         rag_lookup_ms = 0.0
         assemble_started_at = time.perf_counter()
+        # P22: new assembly -> invalidate the providers' shared
+        # recent-history memo. Wraps at a large bound so it never grows
+        # unboundedly across a long-lived process.
+        self._assembly_seq = (self._assembly_seq + 1) & 0x7FFFFFFF
         # Listening-window cache hit (Phase 3): if the slices we built
         # speculatively while the user was speaking still match the
         # session's static state, skip the persona/self-image disk reads,

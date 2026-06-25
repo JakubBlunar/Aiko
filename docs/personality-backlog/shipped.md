@@ -1294,6 +1294,73 @@ no-overflow leaves the summary worker untouched; `compactions_run` stays
 
 ---
 
+## P6. MessageIndexer queue/stats visibility
+
+The async embed-and-store pipeline
+([`MessageIndexer`](../../app/core/rag/message_indexer.py)) had no
+introspection surface: the unbounded work queue only logged on an
+(effectively impossible) `put_nowait` failure, and there was no MCP
+counterpart to `get_rag_prefetcher_stats`, so a slow embedder silently
+stacking thousands of pending writes — or a row that fell out of RAG on
+the give-up path — was invisible until you went log-diving. P6 adds
+lifecycle counters threaded through every mutation point
+(`enqueued` / `indexed` / `skipped_short` / `already_present` /
+`embed_failures` / `write_failures` / `retries_scheduled` / `gave_up` /
+`dropped_queue_full` / `backfill_walked`), all bumped under a dedicated
+`_stats_lock` since the indexer is written from four threads (DB-listener
+enqueue, worker, backfill, retry timers). A new `stats()` method snapshots
+the counters plus live state computed on demand: `queue_depth`
+(`Queue.qsize`), `pending_retries` (outstanding back-off timers),
+`worker_alive`, `backfill_running`, `last_index_age_seconds` (monotonic
+delta since the last successful write), and `last_give_up`
+(`{message_id, stage, attempts}` for the most recent permanently-dropped
+row — the silent-RAG-rot canary). The unbounded-queue drop log was also
+lifted DEBUG → WARNING so a real backlog drop is visible in `tail_logs`.
+Surfaced over MCP as `get_message_indexer_stats` (mirrors the
+prefetcher-stats tool: `{"enabled": false}` when no indexer, else
+`{"enabled": true, **stats()}`). Tests:
+`tests/test_message_indexer_retry.py::StatsTests` (clean success bumps
+`indexed` + stamps `last_index_age_seconds`; embed failure counts
+`embed_failures` + `retries_scheduled` + `pending_retries`; give-up
+records `last_give_up`; short body counts `skipped_short`).
+
+---
+
+## P22. Inner-life shared recent-history memo
+
+~35 inner-life providers run inside `assemble_with_budget` every turn,
+and three of them — K23 `_render_misattunement_block` (last 6 rows), K30
+`_render_self_noticing_block` and K54 `_render_topic_appetite_block` (last
+`max(window*4, 20)` ≈ 24 rows each) — issued **separate overlapping**
+`chat_db.get_messages` queries for the same recent window within a single
+assembly. P22 collapses them into one read via a per-assembly memo. The
+assembler now bumps a monotonic
+[`_assembly_seq`](../../app/core/session/prompt_assembler.py) at the top
+of every `assemble_with_budget` call; a new host helper
+[`_inner_life_recent_messages(limit)`](../../app/core/session/inner_life_part1.py)
+caches `(token, window, rows)` keyed on `(session_key, _assembly_seq)` and
+serves a wider cached window to a narrower later caller by handing back
+the same rows (callers already walk `reversed(rows)`, so extra older rows
+are harmless). The fetch floor (`_INNER_LIFE_RECENT_MIN = 24`) means the
+first caller — whatever its window — fetches enough for all three, so in
+the default config the three reads become **one**; a larger configured
+window just refetches and updates the memo. Correctness is structural: a
+new turn (or a session switch, which changes `session_key`) always
+mismatches the token and refetches, and when no assembler is wired (seq
+absent — e.g. a provider called outside an assembly, or a test stub) the
+helper never trusts the memo and reads through every time. This shipped
+sub-item (a) of the original P22 sketch; sub-items (b) short-circuit
+disabled providers before their timed block and (c) TTL-cache
+minute-scale trend blocks were assessed as lower-value/higher-risk and
+left for a later pass. Tests:
+`tests/test_inner_life_recent_memo.py` (overlapping reads collapse to one
+query; new seq invalidates; larger window refetches; no-assembler skips
+the cache; floor applies to a small request) plus the unchanged
+`test_misattunement_provider.py` / `test_self_noticing_provider.py` /
+`test_topic_appetite.py` suites still pass against the indirection.
+
+---
+
 ## P8. Idle-worker queue visibility + multi-worker drain
 
 `IdleWorkerScheduler` was capped at one worker per 60 s tick.
