@@ -100,6 +100,7 @@ class _Host(InnerLifeProvidersMixin):
         agent_settings: SimpleNamespace | None = None,
         memory_settings: SimpleNamespace | None = None,
         rate_limiter: Any = None,
+        ollama: Any = None,
     ) -> None:
         self._settings = SimpleNamespace(
             agent=agent_settings or _make_agent_settings(),
@@ -107,15 +108,22 @@ class _Host(InnerLifeProvidersMixin):
         self._memory_settings = memory_settings or _make_memory_settings()
         self._memory_store = _FakeMemoryStore(memories or [])
         self._embedder = _FakeEmbedder(embedder_vec)
-        self._ollama = None  # not exercised in these tests
+        self._ollama = ollama  # P21: non-None enables the deferred path
         self._effective_chat_model = "stub-model"
+        self._effective_worker_model = "stub-worker-model"
         self._fact_check_cancel = None
         self._opinion_injection_cooldown = cooldown
         self._opinion_injection_session_count = session_count
         self._opinion_injection_force_next = force_next
         self._last_opinion_injection: Any = None
         self._opinion_injection_rate_limiter = rate_limiter
+        self._opinion_injection_pending_borderline: Any = None
+        self._opinion_injection_pending_cue: Any = None
         self.user_display_name = "Jacob"
+
+    # No-op so the K59 tease-bank call in the resolver doesn't error.
+    def _bank_tease_debt(self, **_kwargs: Any) -> None:
+        return None
 
 
 def _contradicting_stance(memory_id: int = 1) -> _StubMemory:
@@ -321,6 +329,115 @@ class DependencySurfaceTests(unittest.TestCase):
             host._render_opinion_injection_block(CONTRADICTING_USER_MSG),
             "",
         )
+
+
+class _AllowRateLimiter:
+    def __init__(self, allow: bool = True) -> None:
+        self._allow = allow
+        self.calls = 0
+
+    def allow(self) -> bool:
+        self.calls += 1
+        return self._allow
+
+
+def _borderline_stance(memory_id: int = 11) -> _StubMemory:
+    """Opinion-shaped stance that classifies as borderline (numerical
+    mismatch) against ``BORDERLINE_USER_MSG`` -- not a definite flip."""
+    return _StubMemory(
+        id=memory_id,
+        content="I prefer jogging 4 kilometres every morning",
+        embedding=_VEC_ALIGNED,
+    )
+
+
+BORDERLINE_USER_MSG = "I've been jogging 8 kilometres every morning for years"
+
+
+class DeferredBorderlineTests(unittest.TestCase):
+    """P21: borderline verdict deferred off the hot path."""
+
+    def _host(self, **kw: Any) -> _Host:
+        kw.setdefault("rate_limiter", _AllowRateLimiter(allow=True))
+        return _Host(
+            memories=[_borderline_stance()],
+            ollama=object(),
+            **kw,
+        )
+
+    def test_borderline_arms_pending_not_cooldown(self) -> None:
+        host = self._host()
+        block = host._render_opinion_injection_block(BORDERLINE_USER_MSG)
+        # No cue on the hot path; nothing armed yet.
+        self.assertEqual(block, "")
+        self.assertEqual(host._opinion_injection_cooldown, 0)
+        self.assertEqual(host._opinion_injection_session_count, 0)
+        # The candidate is stashed for the post-turn resolver.
+        pending = host._opinion_injection_pending_borderline
+        self.assertIsNotNone(pending)
+        self.assertEqual(pending["stance_memory_id"], 11)
+        self.assertEqual(pending["user_text"], BORDERLINE_USER_MSG)
+
+    def test_no_ollama_stays_definite_only(self) -> None:
+        # Without a worker client there's no way to resolve the verdict,
+        # so the provider must not arm a pending borderline.
+        host = _Host(
+            memories=[_borderline_stance()],
+            rate_limiter=_AllowRateLimiter(allow=True),
+            ollama=None,
+        )
+        block = host._render_opinion_injection_block(BORDERLINE_USER_MSG)
+        self.assertEqual(block, "")
+        self.assertIsNone(host._opinion_injection_pending_borderline)
+
+    def test_resolver_yes_arms_cue_and_cooldown(self) -> None:
+        host = self._host()
+        host._render_opinion_injection_block(BORDERLINE_USER_MSG)
+        host._opinion_injection_llm_verdict = lambda u, s: "YES"  # type: ignore[assignment]
+        host._resolve_opinion_injection_pending()
+        # Pending consumed; cue armed for the next turn.
+        self.assertIsNone(host._opinion_injection_pending_borderline)
+        self.assertTrue(host._opinion_injection_pending_cue)
+        self.assertIn("Jacob", host._opinion_injection_pending_cue)
+        # Cooldown + session count arm only now (on confirmed fire).
+        self.assertEqual(host._opinion_injection_cooldown, 5)
+        self.assertEqual(host._opinion_injection_session_count, 1)
+
+    def test_resolver_no_drops_silently(self) -> None:
+        host = self._host()
+        host._render_opinion_injection_block(BORDERLINE_USER_MSG)
+        host._opinion_injection_llm_verdict = lambda u, s: "NO"  # type: ignore[assignment]
+        host._resolve_opinion_injection_pending()
+        self.assertIsNone(host._opinion_injection_pending_borderline)
+        self.assertIsNone(host._opinion_injection_pending_cue)
+        self.assertEqual(host._opinion_injection_cooldown, 0)
+        self.assertEqual(host._opinion_injection_session_count, 0)
+
+    def test_pending_cue_renders_next_turn_one_shot(self) -> None:
+        host = self._host()
+        host._opinion_injection_pending_cue = "Heads-up: deferred cue."
+        # Next turn: the cue renders and clears, bypassing detection.
+        block = host._render_opinion_injection_block(NON_FIRING_USER_MSG)
+        self.assertEqual(block, "Heads-up: deferred cue.")
+        self.assertIsNone(host._opinion_injection_pending_cue)
+        # Second turn: nothing left to render.
+        block2 = host._render_opinion_injection_block(NON_FIRING_USER_MSG)
+        self.assertEqual(block2, "")
+
+    def test_resolver_rate_limited_drops(self) -> None:
+        host = self._host(rate_limiter=_AllowRateLimiter(allow=False))
+        host._render_opinion_injection_block(BORDERLINE_USER_MSG)
+        # Even with a YES verdict available, the limiter blocks the spend.
+        host._opinion_injection_llm_verdict = lambda u, s: "YES"  # type: ignore[assignment]
+        host._resolve_opinion_injection_pending()
+        self.assertIsNone(host._opinion_injection_pending_cue)
+        self.assertEqual(host._opinion_injection_cooldown, 0)
+
+    def test_resolver_no_pending_is_noop(self) -> None:
+        host = self._host()
+        # Nothing armed -> resolver does nothing, no crash.
+        host._resolve_opinion_injection_pending()
+        self.assertIsNone(host._opinion_injection_pending_cue)
 
 
 if __name__ == "__main__":

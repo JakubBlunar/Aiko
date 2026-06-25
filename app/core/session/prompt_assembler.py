@@ -254,6 +254,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # process. Last hit/miss is exposed via ``last_slice_cache_event``
         # so :class:`TurnRunner` can fold it into the "turn done:" log.
         self._slice_cache: dict[str, _StaticSlices] = {}
+        # P3: cheap per-session invalidation signature stored alongside the
+        # slice cache. When it still matches, the hit path skips the
+        # ``get_messages`` + ``get_latest_summary`` reads entirely.
+        self._slice_head_sig: dict[str, tuple] = {}
         self._last_slice_cache_event: str = "skip"
 
         # Phase-2/3/4 block providers. Each callable returns a short text
@@ -731,9 +735,27 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         recent_window = (
             self._recent_window if not aggressive else max(2, self._recent_window // 2)
         )
+        # P3: compute the cheap head signature once. On a hit it lets us
+        # skip the ``get_messages`` + ``get_latest_summary`` round-trips;
+        # on a miss we still fall through to the full validation below.
+        try:
+            fast_key = self._fast_slice_signature(
+                session_key, recent_window, aggressive,
+            )
+        except Exception:
+            fast_key = None
+
         cached = self._slice_cache.get(session_key)
         slice_event = "miss"
-        if cached is not None:
+        if cached is not None and fast_key is not None and (
+            self._slice_head_sig.get(session_key) == fast_key
+        ):
+            # Cheap path: nothing the static slices depend on has moved
+            # since they were built, so trust the cache without touching
+            # the recent-message window or summary row.
+            slices = cached
+            slice_event = "hit"
+        elif cached is not None:
             try:
                 # We rebuild history_msgs to recompute the live cache key —
                 # this is the same SQL the cache would have run, so when
@@ -772,9 +794,15 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                     already_summarized=live_already,
                 )
                 self._slice_cache[session_key] = slices
+            # Refresh the cheap signature so the next turn can fast-path
+            # (covers both the confirmed hit and the rebuild).
+            if fast_key is not None:
+                self._slice_head_sig[session_key] = fast_key
         else:
             slices = self._build_static_slices(session_key, aggressive=aggressive)
             self._slice_cache[session_key] = slices
+            if fast_key is not None:
+                self._slice_head_sig[session_key] = fast_key
         self._last_slice_cache_event = slice_event
 
         persona = slices.persona

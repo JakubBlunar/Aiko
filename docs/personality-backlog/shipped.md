@@ -1075,6 +1075,102 @@ still records).
 
 ---
 
+## P3. Cheap slice-cache validation (skip two SQLite reads on a hit)
+
+`assemble_with_budget` short-circuited on a slice-cache hit, but the
+validation path still ran `get_messages` (the full recent-window
+fetch) + `get_latest_summary` on **every** typed turn just to recompute
+the cache key, even when nothing had changed. P3 adds a cheap head
+signature: [`ChatDatabase.get_history_head`](../../app/core/infra/chat_database.py)
+returns `(max_message_id, message_count, summary_signature)` via two
+scalar aggregate queries, and the assembler stores it alongside the
+slice-cache entry (`_slice_head_sig`). On a turn the new
+[`_fast_slice_signature`](../../app/core/session/prompt_assembler_helpers_mixin.py)
+(head + persona/self-image mtime + last reaction + window + aggressive)
+is compared first; when it matches, the cache is trusted **without
+touching `get_messages` / `get_latest_summary` at all**. The signature
+is a conservative superset of the full cache key — any new/deleted
+message moves `max_id`/`count`, any summary rewrite moves the summary
+signature — so a match can never serve stale slices. On a miss the
+existing full validation runs unchanged and re-stamps the signature.
+Tests: `tests/test_listening_window.py::StaticSliceCacheTests`
+(`test_hit_skips_get_messages_read`, `test_new_summary_invalidates_cache`)
+and `tests/test_chat_database.py::TestHistoryHead`.
+
+---
+
+## P4. RAG memory-hit batch lookup (`get_many`)
+
+`RagRetriever.retrieve` applied pin / tier / confidence / temporal /
+goal-alignment scoring by calling `memory_store.get(id)` **once per
+Lance hit** (up to `per_source_top_k` times), each acquiring the mirror
+lock. P4 adds [`MemoryStore.get_many`](../../app/core/memory/memory_store.py)
+(one lock acquisition, `{id: Memory}`); the retriever batch-fetches all
+hit ids once before the scoring loop and reads from the dict. Falls
+back to the per-hit `get` for duck-typed stores that don't expose
+`get_many`. Tests: `tests/test_memory_store_metadata.py::TestGetMany`.
+
+---
+
+## P18. Streaming accumulator no longer O(n²)
+
+The stream loop did `accumulator.append(delta)` then
+`full = "".join(accumulator)` **per token** — O(n²) work + allocation
+churn on long replies. P18 grows a single running `full += delta`
+string instead (CPython amortises this to linear), with `full_raw =
+full` after the loop. Byte-identical output; the reaction-tag parse and
+streaming-safe-prefix logic (which the recent streaming-bug fix
+depends on) are untouched. The further reaction-parse micro-opt from
+the sketch was deliberately *not* taken — the `^\s*\[\[reaction:…\]\]\s*\n*`
+regex greedily consumes trailing whitespace, so freezing a tag offset
+would risk re-introducing the off-by-newline streaming bug.
+Covered by `tests/test_turn_runner_mood_fallback.py`.
+
+---
+
+## P15. (Invalid) One user-text embed per turn — already handled by the LRU
+
+Marked **invalid** after validation, not implemented. The premise was
+that K6 novelty, F2 `pick_relevant`, and K29 opinion-injection each
+fire a separate HTTP `/api/embeddings` round-trip for `user_text`
+(50–200 ms × 3). In reality all three embed the *identically-normalised*
+stripped `user_text`, and [`Embedder`](../../app/llm/embedder.py) has a
+256-entry LRU keyed by `sha1(model + text)` — so all but the first
+collapse to sub-microsecond cache hits. The hot path is therefore
+already at the 2-embed steady state P15 targeted (RAG's contextual
+`ctx || query` is the only other distinct vector). The only remaining
+win — substring de-dup of the RAG `ctx || query` string against the
+raw `user_text` — is the harder follow-up already flagged as
+out-of-scope under P1, not the "thread one vector everywhere" refactor
+P15 described.
+
+---
+
+## P21. K29 borderline gate moved off the hot path
+
+When the opinion-injection heuristic returned `borderline`, the LLM
+YES/NO verdict ran **synchronously inside `assemble_with_budget`** —
+0.5–8 s of added TTFT for a one-line cue, before any token streamed.
+P21 defers it: `opinion_injection_detector.detect(defer_borderline=True)`
+returns the borderline candidate as a `PENDING` result **without
+calling the LLM**; the provider stashes it and stays silent that turn.
+The post-turn hook
+[`_resolve_opinion_injection_pending`](../../app/core/session/inner_life_part3.py)
+runs the rate-limited verdict after streaming completes, and a
+confirmed contradiction arms a one-shot cue that renders on the **next**
+turn (the stance hasn't changed in those seconds, so the lag is
+invisible). `definite` hits still fire inline — they never needed the
+LLM. Cooldown / per-session cap / K59 tease-bank arm only on the
+confirmed fire. Pending state clears on session switch / clear. The hot
+path now only ever pays the pure-Python heuristic. Tests:
+`tests/test_opinion_injection_detector.py` (`defer_borderline` returns
+PENDING / definite-still-fires / require_definite-overrides) and
+`tests/test_opinion_injection_provider.py::DeferredBorderlineTests`
+(arm-not-cooldown, no-ollama-stays-definite, resolver YES/NO/rate-limited,
+next-turn one-shot render).
+
+---
+
 ## P8. Idle-worker queue visibility + multi-worker drain
 
 `IdleWorkerScheduler` was capped at one worker per 60 s tick.

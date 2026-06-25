@@ -198,6 +198,7 @@ def detect(
     min_cosine: float = DEFAULT_MIN_COSINE,
     min_user_words: int = DEFAULT_MIN_USER_WORDS,
     require_definite: bool = DEFAULT_REQUIRE_DEFINITE,
+    defer_borderline: bool = False,
 ) -> OpinionInjectionResult | None:
     """Classify the current turn and return a result or ``None``.
 
@@ -230,6 +231,13 @@ def detect(
        client, and the cancel event so the detector stays pure).
        Pass ``None`` to skip the LLM path entirely (equivalent to
        Path C behaviour without flipping ``require_definite``).
+
+    6. ``defer_borderline`` (P21): when ``True``, a borderline candidate
+       that clears the predicate + cosine gates is returned *without*
+       calling ``llm_gate`` -- the result carries ``llm_verdict="PENDING"``
+       and the caller is expected to run the (rate-limited, expensive)
+       LLM verdict off the hot path and render the cue a turn later.
+       The ``definite`` path is unaffected (still fires inline, no LLM).
     """
     text = (user_text or "").strip()
     if not text:
@@ -277,7 +285,22 @@ def detect(
     # (Path C): only ``definite`` heuristic results fire, the
     # borderline + no paths stay silent. Use it when LLM budget is
     # exhausted or when you want zero contrarianism risk.
-    if require_definite or llm_gate is None:
+    if require_definite:
+        return None
+    # P21: hot-path callers defer the LLM verdict. Signal the borderline
+    # candidate via a PENDING result and let the caller run the verdict
+    # post-turn (rendering the cue a turn later). The detector stays pure.
+    if defer_borderline:
+        return OpinionInjectionResult(
+            trigger="contradiction_borderline",
+            stance_text=stance.content or "",
+            stance_memory_id=int(stance.id),
+            cosine=score,
+            heuristic_label=label,
+            heuristic_signals=list(verdict.signals),
+            llm_verdict="PENDING",
+        )
+    if llm_gate is None:
         return None
     try:
         llm_answer = llm_gate(text, stance.content or "")

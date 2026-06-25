@@ -864,6 +864,31 @@ class RagRetriever:
                 top_k=self._per_source_top_k,
                 min_score=self._score_threshold,
             )
+            # P4: batch the SQLite-mirror join once instead of a locked
+            # ``get`` per hit. Falls back to the per-hit path for stores
+            # that don't expose ``get_many`` (e.g. duck-typed test doubles).
+            mem_by_id: dict[int, Any] = {}
+            if self._memory_store is not None and hasattr(
+                self._memory_store, "get_many"
+            ):
+                batch_ids: list[int] = []
+                for h in mem_hits:
+                    raw_id = getattr(h.record, "id", None)
+                    if raw_id is None:
+                        continue
+                    try:
+                        batch_ids.append(int(raw_id))
+                    except (TypeError, ValueError):
+                        continue
+                if batch_ids:
+                    try:
+                        mem_by_id = dict(self._memory_store.get_many(batch_ids))
+                    except Exception:
+                        log.debug(
+                            "rag retriever: get_many batch join raised",
+                            exc_info=True,
+                        )
+                        mem_by_id = {}
             for h in mem_hits:
                 h.score += _MEMORY_PRIOR + _memory_recency_adjust(
                     last_used_at=getattr(h.record, "last_used_at", None),
@@ -879,10 +904,14 @@ class RagRetriever:
                 if self._memory_store is not None:
                     try:
                         raw_id = getattr(h.record, "id", None)
-                        if raw_id is not None and hasattr(
-                            self._memory_store, "get"
+                        if raw_id is not None and (
+                            mem_by_id or hasattr(self._memory_store, "get")
                         ):
-                            mem = self._memory_store.get(int(raw_id))
+                            mem = (
+                                mem_by_id.get(int(raw_id))
+                                if mem_by_id
+                                else self._memory_store.get(int(raw_id))
+                            )
                             if mem is not None:
                                 if getattr(mem, "pinned", False):
                                     h.score += _MEMORY_PINNED_BONUS

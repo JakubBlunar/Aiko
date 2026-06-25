@@ -292,6 +292,58 @@ class StaticSliceCacheTests(unittest.TestCase):
             )
             self.assertEqual(assembler.last_slice_cache_event, "miss")
 
+    def test_hit_skips_get_messages_read(self) -> None:
+        # P3: on the cheap fast-path hit, the heavy recent-window read and
+        # the summary read must not run — only the scalar head query does.
+        with _TempDb() as db:
+            db.add_message(self.SESSION, "user", "anchor line one")
+            db.add_message(self.SESSION, "assistant", "anchor line two")
+            assembler = PromptAssembler(
+                db,
+                persona_path=Path("nonexistent_persona.txt"),
+                recent_window=8,
+            )
+            assembler.assemble_with_budget(
+                self.SESSION, "warm the cache",
+                context_window=4096, response_budget=256,
+            )
+            self.assertEqual(assembler.last_slice_cache_event, "miss")
+            with patch.object(
+                db, "get_messages", wraps=db.get_messages,
+            ) as spy_msgs, patch.object(
+                db, "get_latest_summary", wraps=db.get_latest_summary,
+            ) as spy_sum:
+                assembler.assemble_with_budget(
+                    self.SESSION, "second turn, nothing changed",
+                    context_window=4096, response_budget=256,
+                )
+            self.assertEqual(assembler.last_slice_cache_event, "hit")
+            spy_msgs.assert_not_called()
+            spy_sum.assert_not_called()
+
+    def test_new_summary_invalidates_cache(self) -> None:
+        # P3: a recompacted summary (new updated_at / messages_summarized)
+        # moves the head signature, so the cache must miss.
+        with _TempDb() as db:
+            db.add_message(self.SESSION, "user", "anchor")
+            assembler = PromptAssembler(
+                db,
+                persona_path=Path("nonexistent_persona.txt"),
+                recent_window=8,
+            )
+            assembler.assemble_with_budget(
+                self.SESSION, "first", context_window=4096, response_budget=256,
+            )
+            assembler.assemble_with_budget(
+                self.SESSION, "second", context_window=4096, response_budget=256,
+            )
+            self.assertEqual(assembler.last_slice_cache_event, "hit")
+            db.save_summary(self.SESSION, "a rolling summary", 4, 1)
+            assembler.assemble_with_budget(
+                self.SESSION, "third", context_window=4096, response_budget=256,
+            )
+            self.assertEqual(assembler.last_slice_cache_event, "miss")
+
     def test_prebuild_then_assemble_is_hit(self) -> None:
         with _TempDb() as db:
             db.add_message(self.SESSION, "user", "warmup line one")

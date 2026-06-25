@@ -1163,6 +1163,25 @@ class MemoryStore:
         with self._lock:
             return self._mirror.get(int(memory_id))
 
+    def get_many(self, memory_ids: Iterable[int]) -> dict[int, Memory]:
+        """Batch variant of :meth:`get`: one lock acquisition, ``{id: Memory}``.
+
+        The RAG hot loop (:meth:`RagRetriever.retrieve`) calls this once per
+        turn instead of one locked ``get`` per Lance hit (P4). Ids that don't
+        resolve (missing / non-integer) are simply absent from the result.
+        """
+        out: dict[int, Memory] = {}
+        with self._lock:
+            for raw in memory_ids:
+                try:
+                    mid = int(raw)
+                except (TypeError, ValueError):
+                    continue
+                mem = self._mirror.get(mid)
+                if mem is not None:
+                    out[mid] = mem
+        return out
+
     # ── Schema v10 temporal-awareness helpers ────────────────────────
 
     def list_by_temporal_type(

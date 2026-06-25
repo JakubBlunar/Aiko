@@ -637,8 +637,11 @@ class TurnRunner:
                 )
                 telemetry.prompt_tokens_estimate = tool_text_total
 
-        # Streaming bookkeeping.
-        accumulator: list[str] = []
+        # Streaming bookkeeping. ``full`` is grown in place (``+= delta``)
+        # rather than re-``join``-ing a list every token: CPython amortises
+        # string concatenation to linear, so the stream loop no longer pays
+        # O(n^2) allocation churn on long replies (P18).
+        full = ""
         mood: str | None = None
         ui_sent_chars = 0       # chars of meta-stripped body already sent to UI
         tts_appended_chars = 0  # chars of meta-stripped body already routed to TTS
@@ -678,8 +681,7 @@ class TurnRunner:
                     aborted = True
                     self._stop.set()
                     break
-                accumulator.append(delta)
-                full = "".join(accumulator)
+                full += delta
 
                 # Strip the leading [[reaction:X]] tag once (and only once),
                 # then operate on the body text afterwards. Phase 3
@@ -746,7 +748,7 @@ class TurnRunner:
             # Belt-and-braces: ensure the watchdog is never left armed.
             self._filler.disarm()
 
-        full_raw = "".join(accumulator)
+        full_raw = full
         if mood is None:
             # Phase 3 stack form: route the primary into ``mood`` and
             # fire companions through ``on_overlay`` so the renderer

@@ -13,57 +13,17 @@ relevant P-item if it's near the same code; otherwise pick whichever
 unblocks the testing flow you're stuck on.
 
 (P1 per-turn embed budget + timing, P2 prompt-build phase
-telemetry, P8 idle-worker queue visibility + multi-worker drain,
-P12 bulk memory-mirror on startup, P13 route-driven worker
+telemetry, P3 cheap slice-cache validation, P4 RAG memory-hit
+batch lookup, P8 idle-worker queue visibility + multi-worker
+drain, P12 bulk memory-mirror on startup, P13 route-driven worker
 model + context (with the declarative `_worker_runtime_updaters`
-cascade + worker-LLM priority gate), and P14 heuristic
-tool-pass gate have shipped — see [`shipped.md`](shipped.md).)
-
----
-
-## P3. Slice-cache validation still pays two SQLite reads
-
-**Motivation.** `assemble_with_budget` ostensibly short-circuits
-on a slice-cache hit, but the validation path still calls
-`get_messages` + `get_latest_summary` + recomputes the cache key
-before trusting cached slices. Voice prebuild helps the inner-life
-blocks, but every typed turn pays those two reads even when
-nothing changed since the last turn. A cheaper invalidator would
-let hits actually be cheap.
-
-**Key files.**
-[`app/core/session/prompt_assembler.py`](../../app/core/session/prompt_assembler.py),
-[`app/core/infra/chat_database.py`](../../app/core/infra/chat_database.py)
-(lightweight `MAX(id)` / `summaries.updated_at` head query).
-
-**Sketched approach.** Cache the `(max_message_id,
-summary_updated_at)` tuple alongside the slice-cache entry. On
-hit, do a single 2-column SELECT and compare; if equal, skip the
-`get_messages` round-trip entirely. On miss, fall back to the
-current full validation.
-
-**Effort.** Small.
-
----
-
-## P4. RAG memory-hit batch lookups
-
-**Motivation.** After Lance ANN search, `RagRetriever.retrieve`
-calls `memory_store.get(id)` per hit (up to `per_source_top_k`
-times) to apply pin / tier / confidence / temporal scoring. The
-mirror dict makes each call O(1) but the per-iteration try/except
-+ scoring is repeated work; a single batch fetch (or pre-enriching
-Lance rows once) would simplify the hot loop and make the next
-optimisation wave (e.g. async scoring, cross-source de-dupe) much
-easier to reason about.
-
-**Key files.**
-[`app/core/rag/rag_retriever.py`](../../app/core/rag/rag_retriever.py),
-[`app/core/memory/memory_store.py`](../../app/core/memory/memory_store.py)
-(`get_many` returning a dict; the in-memory mirror already has
-all the data).
-
-**Effort.** Small.
+cascade + worker-LLM priority gate), P14 heuristic tool-pass
+gate, P18 streaming-accumulator O(n²) fix, and P21 K29 borderline
+gate moved off the hot path have shipped — see
+[`shipped.md`](shipped.md). P15 was validated as **invalid** —
+the embedder LRU already collapses repeated `user_text` embeds, so
+the hot path is already at the 2-embed steady state it targeted;
+see its shipped.md note.)
 
 ---
 
@@ -258,45 +218,6 @@ measurements). Medium if we need the dual-model split.
 
 ---
 
-## P15. One user-text embed per turn, shared everywhere
-
-**Motivation.** A single turn can fire 2–4 sequential HTTP
-embedding calls on the turn thread: RAG retrieval embeds a
-*contextual* query string (`recent || user`, so the LRU can't
-collapse it with anything), K6 novelty embeds `user_text`, F2
-`pick_relevant` embeds again, K29 opinion injection embeds again.
-Post-turn adds another 2–3 (curiosity seeds, knowledge gaps,
-K22/K30 assistant-text, K20 calibration). Each call holds the
-embedder lock and competes with `MessageIndexer` for the same
-Ollama endpoint — 50–200+ ms of pure waiting per turn at local
-embed speeds, worse under contention.
-
-**Key files.**
-[`app/core/rag/rag_retriever.py`](../../app/core/rag/rag_retriever.py)
-(`retrieve` — the contextual-query embed),
-[`app/core/session/prompt_assembler.py`](../../app/core/session/prompt_assembler.py)
-(`assemble_with_budget` — natural place to compute the shared vector),
-[`app/core/conversation/novelty_detector.py`](../../app/core/conversation/novelty_detector.py),
-[`app/core/memory/knowledge_gap_extractor.py`](../../app/core/memory/knowledge_gap_extractor.py)
-(`pick_relevant`),
-[`app/core/session/inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py)
-(`_render_opinion_injection_block`),
-[`app/core/session/post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py)
-(curiosity / gaps / callback / calibration resolvers).
-
-**Sketched approach.** Compute `user_vec = embed(user_text)` once
-at the top of `assemble_with_budget` and thread it (or a tiny
-`TurnEmbeds` bundle) into every provider that only needs user
-semantics. Same pattern post-turn: one
-`embed_turn_bundle(user, assistant)` reused across all resolvers.
-RAG keeps its contextual-query embed (it's semantically
-different), so the steady state is 2 embeds on the hot path and 1
-post-turn instead of up to 7.
-
-**Effort.** Medium.
-
----
-
 ## P16. Post-turn inner-life blocks the brain loop
 
 **Motivation.** `chat_once_streaming` doesn't return until
@@ -357,28 +278,6 @@ dozens of rows instead of thousands. Pairs naturally with P4's
 
 ---
 
-## P18. Streaming accumulator rebuilds the full reply on every delta
-
-**Motivation.** The stream loop does `accumulator.append(delta)`
-then `full = "".join(accumulator)` *per token* — O(n²) total
-work and allocation churn on long replies. The loop also re-runs
-reaction-tag parsing on the rebuilt string each delta. Pure CPU
-waste sitting between the LLM and TTS dispatch.
-
-**Key files.**
-[`app/core/session/turn_runner.py`](../../app/core/session/turn_runner.py)
-(stream loop, ~577–646).
-
-**Sketched approach.** Keep a single running `full += delta`
-string (amortised linear in CPython) or an `io.StringIO`; make
-the reaction-tag parse incremental (only re-attempt while
-`len(full) < ~64` and the tag hasn't been resolved yet, since
-`[[reaction:...]]` is contractually at the start).
-
-**Effort.** Small.
-
----
-
 ## P19. RAG: one global lock + three sequential Lance searches
 
 **Motivation.** All Lance reads and writes share one
@@ -431,32 +330,6 @@ compaction one turn early, making the inline fallback nearly
 unreachable.
 
 **Effort.** Medium.
-
----
-
-## P21. K29 borderline gate runs a worker LLM call during prompt assembly
-
-**Motivation.** When the opinion-injection heuristic returns
-`borderline`, `_opinion_injection_llm_verdict` calls the worker
-model synchronously inside `assemble_with_budget` — before any
-streaming starts. When it fires, that's 0.5–8 s of added TTFT for
-a one-line prompt cue. The rate limiter bounds frequency, not
-per-fire latency.
-
-**Key files.**
-[`app/core/session/inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py)
-(`_render_opinion_injection_block`,
-`_opinion_injection_llm_verdict`).
-
-**Sketched approach.** Move the borderline check post-turn: the
-detector arms a *pending* verdict job; if the LLM confirms, the
-cue renders on the NEXT turn (the stance hasn't changed in 30
-seconds — one-turn lag is invisible). Hot path then only ever
-pays the pure-Python heuristic. `opinion_injection_require_definite=true`
-is the existing zero-code mitigation; this makes the borderline
-path safe to keep on.
-
-**Effort.** Small–medium.
 
 ---
 

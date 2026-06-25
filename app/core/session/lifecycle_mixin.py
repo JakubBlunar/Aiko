@@ -163,6 +163,11 @@ class LifecycleMixin:
         # Cooldown survives so a fresh switch doesn't accidentally
         # re-fire on the same beat that the prior session ended on.
         self._opinion_injection_session_count = 0
+        # P21 — drop any deferred borderline verdict / pending cue so the
+        # new conversation doesn't inherit a contradiction beat from the
+        # prior one.
+        self._opinion_injection_pending_borderline = None
+        self._opinion_injection_pending_cue = None
         # K28 — wipe any stashed turning-over slot so the new session
         # doesn't inherit a "this is a comeback" cue from the prior
         # one. The force-next bypass and last-fire diagnostic also
@@ -262,6 +267,8 @@ class LifecycleMixin:
         self._opinion_injection_cooldown = 0
         self._opinion_injection_force_next = False
         self._last_opinion_injection = None
+        self._opinion_injection_pending_borderline = None
+        self._opinion_injection_pending_cue = None
         # K28 — same logic: a full clear should leave no stashed
         # turning-over slot or force-next bypass.
         self._pending_turning_over_seconds = None
