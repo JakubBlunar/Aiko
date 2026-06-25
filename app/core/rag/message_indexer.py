@@ -67,7 +67,59 @@ class MessageIndexer:
         # backoff.
         self._retry_timers: set[threading.Timer] = set()
         self._retry_lock = threading.Lock()
+        # P6: lifecycle counters + queue visibility. Incremented from the
+        # DB-listener thread (enqueue), the worker thread (index), the
+        # backfill thread, and retry timers, so all mutations go through
+        # ``_bump`` under ``_stats_lock``. Surfaced via :meth:`stats` and
+        # the MCP ``get_message_indexer_stats`` tool.
+        self._stats_lock = threading.Lock()
+        self._stats: dict[str, int] = {
+            "enqueued": 0,
+            "indexed": 0,
+            "skipped_short": 0,
+            "already_present": 0,
+            "embed_failures": 0,
+            "write_failures": 0,
+            "retries_scheduled": 0,
+            "gave_up": 0,
+            "dropped_queue_full": 0,
+            "backfill_walked": 0,
+        }
+        self._last_index_at: float | None = None  # monotonic seconds
+        self._last_give_up: dict[str, object] | None = None
         self._db.add_message_listener(self._enqueue)
+
+    def _bump(self, key: str, n: int = 1) -> None:
+        with self._stats_lock:
+            self._stats[key] = self._stats.get(key, 0) + n
+
+    def stats(self) -> dict[str, object]:
+        """Snapshot of indexer counters + live queue / thread state (P6).
+
+        Cheap to call (one lock acquire + a ``qsize``). The diagnostics
+        worth watching: ``queue_depth`` (pending embeds — a sustained
+        climb means the embedder can't keep up with chat volume),
+        ``pending_retries`` (transient embed/write failures in back-off),
+        ``gave_up`` + ``last_give_up`` (rows that fell out of RAG until
+        the next startup backfill), and ``last_index_age_seconds``.
+        """
+        with self._stats_lock:
+            snapshot = dict(self._stats)
+        with self._retry_lock:
+            snapshot["pending_retries"] = len(self._retry_timers)
+        snapshot["queue_depth"] = self._queue.qsize()
+        snapshot["worker_alive"] = self._worker.is_alive()
+        snapshot["backfill_running"] = bool(
+            self._backfill_thread is not None
+            and self._backfill_thread.is_alive()
+        )
+        snapshot["last_index_age_seconds"] = (
+            None
+            if self._last_index_at is None
+            else max(0.0, time.monotonic() - self._last_index_at)
+        )
+        snapshot["last_give_up"] = self._last_give_up
+        return snapshot
 
     # ── lifecycle ───────────────────────────────────────────────────────
 
@@ -109,8 +161,10 @@ class MessageIndexer:
             return
         try:
             self._queue.put_nowait((row, 0))
+            self._bump("enqueued")
         except Exception:
-            log.debug("indexer queue full; dropping message", exc_info=True)
+            self._bump("dropped_queue_full")
+            log.warning("indexer queue full; dropping message", exc_info=True)
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -126,15 +180,18 @@ class MessageIndexer:
     def _index_one(self, row: MessageRow, attempt: int = 0) -> None:
         try:
             if self._rag.has_message(row.session_id, row.id):
+                self._bump("already_present")
                 return
         except Exception:
             pass
         text = (row.content or "").strip()
         if len(text) < _MIN_INDEX_LENGTH:
+            self._bump("skipped_short")
             return
         try:
             vec = self._embedder.embed(text)
         except Exception:
+            self._bump("embed_failures")
             log.debug("embed failed for msg %d (attempt %d)", row.id, attempt)
             self._handle_failure(row, attempt, stage="embed")
             return
@@ -148,10 +205,14 @@ class MessageIndexer:
                 created_at=row.created_at,
             )
         except Exception:
+            self._bump("write_failures")
             log.debug(
                 "rag.add_message failed for msg %d (attempt %d)", row.id, attempt
             )
             self._handle_failure(row, attempt, stage="write")
+            return
+        self._bump("indexed")
+        self._last_index_at = time.monotonic()
 
     # ── retry ───────────────────────────────────────────────────────────
 
@@ -163,6 +224,12 @@ class MessageIndexer:
         if next_attempt >= _MAX_INDEX_ATTEMPTS:
             # Visible at WARNING so silent RAG rot shows up in ``tail_logs``.
             # The startup backfill re-attempts on the next boot.
+            self._bump("gave_up")
+            self._last_give_up = {
+                "message_id": int(row.id),
+                "stage": stage,
+                "attempts": _MAX_INDEX_ATTEMPTS,
+            }
             log.warning(
                 "message indexer gave up on msg %d after %d attempts (%s stage); "
                 "RAG recall will miss it until the next startup backfill",
@@ -171,6 +238,7 @@ class MessageIndexer:
                 stage,
             )
             return
+        self._bump("retries_scheduled")
         delay = _RETRY_BACKOFF_SECONDS[
             min(attempt, len(_RETRY_BACKOFF_SECONDS) - 1)
         ]
@@ -233,6 +301,7 @@ class MessageIndexer:
                     continue
                 self._index_one(row)
                 count_indexed += 1
+                self._bump("backfill_walked")
                 # Small sleep so the embedder has breathing room and the
                 # rest of the app stays responsive on first launch.
                 time.sleep(0.01)

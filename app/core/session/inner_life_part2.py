@@ -1561,7 +1561,7 @@ class InnerLifePart2Mixin:
         # pivot trigger can still fire on K6 alone.
         prev_aiko_words: int | None = None
         try:
-            recent = self._chat_db.get_messages(self.session_key, limit=6)
+            recent = self._inner_life_recent_messages(6)
             for row in reversed(recent):
                 if row.role == "assistant" and (row.content or "").strip():
                     prev_aiko_words = len(row.content.split())

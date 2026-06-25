@@ -14,6 +14,48 @@ log = logging.getLogger("app.session")
 class InnerLifePart1Mixin:
     """Inner-life prompt-block providers (part 1 of 4)."""
 
+    # P22: floor for the shared recent-history fetch. K30 self-noticing
+    # and K54 topic-appetite read ``max(window*4, 20)`` rows (24 at the
+    # default window of 6); K23 misattunement reads 6. Fetching at least
+    # this many on the first caller lets all three share one read in the
+    # default config -- a smaller-window caller just tail-reads the cached
+    # rows, a larger-window caller refetches and updates the memo.
+    _INNER_LIFE_RECENT_MIN = 24
+
+    def _inner_life_recent_messages(self, limit: int) -> list[Any]:
+        """Shared per-assembly recent-history read (P22).
+
+        Several inner-life providers each need the last few chat rows
+        within a single ``assemble_with_budget`` pass. Routing them
+        through this memo collapses their overlapping ``get_messages``
+        queries into one read per assembly. Correctness comes from
+        keying the cache on the assembler's ``_assembly_seq`` (bumped at
+        the top of every assembly) plus the active ``session_key``, so a
+        new turn -- or a session switch -- always misses and refetches.
+
+        Returns the chat rows in the database's native (oldest-first)
+        order, same as a direct ``chat_db.get_messages`` call, so callers
+        keep using ``reversed(rows)`` to walk newest-first.
+        """
+        db = getattr(self, "_chat_db", None)
+        if db is None:
+            return []
+        want = max(int(limit), self._INNER_LIFE_RECENT_MIN)
+        assembler = getattr(self, "_prompt_assembler", None)
+        seq = getattr(assembler, "_assembly_seq", None)
+        token = (self.session_key, seq)
+        cache = getattr(self, "_inner_life_msg_cache", None)
+        # Only trust the memo inside a known assembly (seq present) so a
+        # provider call outside an assembly never serves a stale window.
+        if seq is not None and cache is not None:
+            cached_token, cached_window, cached_rows = cache
+            if cached_token == token and cached_window >= want:
+                return cached_rows
+        rows = db.get_messages(self.session_key, limit=want)
+        if seq is not None:
+            self._inner_life_msg_cache = (token, want, rows)
+        return rows
+
     def _render_affect_block(self) -> str:
         """Hot-path: read affect_state and format the ambient block."""
         try:

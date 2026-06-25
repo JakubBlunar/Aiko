@@ -15,39 +15,21 @@ unblocks the testing flow you're stuck on.
 (P1 per-turn embed budget + timing, P2 prompt-build phase
 telemetry, P3 cheap slice-cache validation, P4 RAG memory-hit
 batch lookup, P5 + P23 Lance scan push-down for
-`list_recent_user_vectors`, P8 idle-worker queue visibility +
-multi-worker drain, P10 `(role, created_at)` schedule-learner
-index, P12 bulk memory-mirror on startup, P13 route-driven worker
-model + context (with the declarative `_worker_runtime_updaters`
-cascade + worker-LLM priority gate), P14 heuristic tool-pass
-gate, P17 K22 callback-detector filtered mirror walk, P18
-streaming-accumulator O(n²) fix, P19 RAG reader-writer lock +
-parallel per-source searches, P20 deferred (async) context
-compaction, and P21 K29 borderline gate moved off the hot path
-have shipped — see [`shipped.md`](shipped.md).
+`list_recent_user_vectors`, P6 MessageIndexer queue/stats
+visibility (`get_message_indexer_stats`), P8 idle-worker queue
+visibility + multi-worker drain, P10 `(role, created_at)`
+schedule-learner index, P12 bulk memory-mirror on startup, P13
+route-driven worker model + context (with the declarative
+`_worker_runtime_updaters` cascade + worker-LLM priority gate),
+P14 heuristic tool-pass gate, P17 K22 callback-detector filtered
+mirror walk, P18 streaming-accumulator O(n²) fix, P19 RAG
+reader-writer lock + parallel per-source searches, P20 deferred
+(async) context compaction, P21 K29 borderline gate moved off the
+hot path, and P22 inner-life shared recent-history memo have
+shipped — see [`shipped.md`](shipped.md).
 P15 was validated as **invalid** — the embedder LRU already
 collapses repeated `user_text` embeds, so the hot path is already
 at the 2-embed steady state it targeted; see its shipped.md note.)
-
----
-
-## P6. MessageIndexer queue visibility
-
-**Motivation.** Startup backfill walks every session/message with
-embed + Lance write, competing with live-turn RAG/novelty embeds.
-The queue is unbounded (only logs on impossible `put_nowait`
-failure), so a slow Ollama response can stack thousands of
-pending writes invisibly. There's no MCP surface for queue depth
-/ lag — `get_rag_prefetcher_stats` exists for the prefetcher but
-not the indexer.
-
-**Key files.**
-[`app/core/rag/message_indexer.py`](../../app/core/rag/message_indexer.py),
-[`app/mcp/server.py`](../../app/mcp/server.py)
-(new `get_message_indexer_stats` tool),
-AGENTS.md log field table.
-
-**Effort.** Small.
 
 ---
 
@@ -205,35 +187,6 @@ next prompt vs. merely eventually-consistent? Audit before
 splitting — a wrong call here makes cues silently miss a turn.
 
 **Effort.** Large.
-
----
-
-## P22. Inner-life provider sweep: tiering + shared reads
-
-**Motivation.** ~35 providers run inside `assemble_with_budget`
-on every turn even on a slice-cache hit — each wrapped in a timed
-phase, many doing their own SQLite reads or mirror walks. Two
-providers (`_render_misattunement_block`,
-`_render_self_noticing_block`) issue separate overlapping
-`get_messages` queries for the same recent assistant rows within
-one assembly. Individually cheap; collectively the per-turn floor
-keeps creeping up with every new K-feature.
-
-**Key files.**
-[`app/core/session/prompt_assembler.py`](../../app/core/session/prompt_assembler.py)
-(provider loop),
-[`app/core/session/inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py).
-
-**Sketched approach.** (a) Fetch the recent-history window once
-per assembly and pass it into every provider that needs it;
-(b) short-circuit disabled features before entering their timed
-block; (c) classify providers "per-turn" vs "cacheable-for-N-
-seconds" and skip the cacheable ones inside their TTL (most
-trend/phase blocks change at minute-scale, not turn-scale). The
-existing `provider_ms` telemetry makes the win measurable
-per-provider.
-
-**Effort.** Medium–large.
 
 ---
 

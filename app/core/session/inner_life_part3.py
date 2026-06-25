@@ -642,8 +642,8 @@ class InnerLifePart3Mixin:
                 # assistant rows -- a chatty stretch can have multiple
                 # user rows between Aiko's replies, so a strict
                 # ``limit=window`` would miss some of them.
-                recent_rows = self._chat_db.get_messages(
-                    self.session_key, limit=max(window * 4, 20),
+                recent_rows = self._inner_life_recent_messages(
+                    max(window * 4, 20),
                 )
                 recent_assistant: list[str] = []
                 for row in reversed(recent_rows):
@@ -1527,8 +1527,8 @@ class InnerLifePart3Mixin:
             short_share = None
             window = max(2, int(getattr(agent, "appetite_window", 6)))
             try:
-                rows = self._chat_db.get_messages(
-                    self.session_key, limit=max(window * 4, 20),
+                rows = self._inner_life_recent_messages(
+                    max(window * 4, 20),
                 )
                 lengths: list[int] = []
                 for row in reversed(rows):

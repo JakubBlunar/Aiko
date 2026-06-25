@@ -129,6 +129,62 @@ class RetryExhaustionTests(unittest.TestCase):
         indexer.stop()
 
 
+class StatsTests(unittest.TestCase):
+    """P6: lifecycle counters + queue/thread visibility via ``stats()``."""
+
+    def test_clean_success_bumps_indexed(self) -> None:
+        rag = _FakeRag()
+        embedder = _FakeEmbedder()
+        indexer = _make(rag, embedder)
+        indexer._index_one(_row(3), attempt=0)
+        stats = indexer.stats()
+        self.assertEqual(stats["indexed"], 1)
+        self.assertEqual(stats["embed_failures"], 0)
+        self.assertEqual(stats["gave_up"], 0)
+        self.assertEqual(stats["queue_depth"], 0)
+        self.assertEqual(stats["pending_retries"], 0)
+        self.assertIsNone(stats["last_give_up"])
+        self.assertIsNotNone(stats["last_index_age_seconds"])
+        indexer.stop()
+
+    def test_embed_failure_counts_failure_and_retry(self) -> None:
+        rag = _FakeRag()
+        embedder = _FakeEmbedder(fail_times=1)
+        indexer = _make(rag, embedder)
+        indexer._index_one(_row(), attempt=0)
+        stats = indexer.stats()
+        self.assertEqual(stats["embed_failures"], 1)
+        self.assertEqual(stats["retries_scheduled"], 1)
+        self.assertEqual(stats["indexed"], 0)
+        self.assertEqual(stats["pending_retries"], 1)
+        indexer.stop()
+
+    def test_give_up_records_last_give_up(self) -> None:
+        rag = _FakeRag()
+        embedder = _FakeEmbedder(fail_times=99)
+        indexer = _make(rag, embedder)
+        with self.assertLogs("app.message_indexer", level="WARNING"):
+            indexer._index_one(_row(7), attempt=2)
+        stats = indexer.stats()
+        self.assertEqual(stats["gave_up"], 1)
+        self.assertEqual(stats["last_give_up"], {
+            "message_id": 7,
+            "stage": "embed",
+            "attempts": 3,
+        })
+        indexer.stop()
+
+    def test_short_and_already_present_counters(self) -> None:
+        rag = _FakeRag()
+        embedder = _FakeEmbedder()
+        indexer = _make(rag, embedder)
+        indexer._index_one(_row(content="hi"), attempt=0)  # below min length
+        stats = indexer.stats()
+        self.assertEqual(stats["skipped_short"], 1)
+        self.assertEqual(stats["indexed"], 0)
+        indexer.stop()
+
+
 class SuccessAndStopTests(unittest.TestCase):
     def test_clean_success_no_retry(self) -> None:
         rag = _FakeRag()

@@ -70,6 +70,14 @@ class DetectorsInitMixin:
         self._misattunement_force_next: bool = False
         self._last_misattunement_trigger: str | None = None
         self._last_misattunement_fire_turn: int | None = None
+        # P22 — shared recent-history memo. K23 misattunement, K30
+        # self-noticing and K54 topic-appetite each need the last N
+        # rows within one assembly; they route through
+        # ``_inner_life_recent_messages`` which caches a single
+        # ``get_messages`` read keyed on the assembler's per-assembly
+        # ``_assembly_seq`` so the overlapping windows collapse to one
+        # query. ``(token, window, rows)`` or ``None``.
+        self._inner_life_msg_cache: tuple[Any, int, list[Any]] | None = None
         # K29 — opinion-injection detector state. Same provider-time
         # shape as K23 (same-turn reaction), with two extra guards
         # against contrarianism: a per-session cap and an LLM
