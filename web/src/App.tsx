@@ -2,11 +2,15 @@ import { useEffect, useRef, useState } from "react";
 import { AvatarPanel } from "./components/AvatarPanel";
 import { ChatView } from "./components/ChatView";
 import { FirstRunOnboarding } from "./components/FirstRunOnboarding";
+import { FloatingPersona } from "./components/FloatingPersona";
+import { MobileNavDrawer } from "./components/MobileNavDrawer";
+import { MobileTopBar } from "./components/MobileTopBar";
 import { PanelResizeHandle } from "./components/PanelResizeHandle";
 import { PersonaWindow } from "./components/PersonaWindow";
 import { SessionSidebar } from "./components/SessionSidebar";
 import { SettingsDrawer } from "./components/SettingsDrawer";
 import { Toasts } from "./components/Toasts";
+import { useIsMobile } from "./hooks/useIsMobile";
 import { desktop } from "./desktop/commands";
 import { listenPersonaVisibility } from "./desktop/events";
 import { isTauri } from "./desktop/runtime";
@@ -105,8 +109,14 @@ function usePersonaVisibilitySync() {
 export default function App() {
   const { send, sendBytes } = useAssistantSocket();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const route = useRoute();
   const tauri = isTauri();
+  const isMobile = useIsMobile();
+  const mobilePersonaVisible = useAssistantStore(
+    (s) => s.mobilePersonaVisible,
+  );
+  const toggleMobilePersona = useAssistantStore((s) => s.toggleMobilePersona);
   const personaVisible = useAssistantStore((s) => s.personaWindowVisible);
   const personaPanelWidth = useAssistantStore((s) => s.personaPanelWidth);
   const setPersonaPanelWidth = useAssistantStore(
@@ -210,6 +220,38 @@ export default function App() {
       void desktop.openPersona();
     }
   };
+
+  // ── Phone layout ──────────────────────────────────────────────────
+  // Top bar + slide-in nav drawer + fullscreen settings + an in-page
+  // floating persona window. The desktop tree below is left completely
+  // untouched at >= 768px (see ``useIsMobile``).
+  if (isMobile) {
+    return (
+      <div className="relative flex h-full w-full flex-col overflow-hidden">
+        <MobileTopBar
+          onOpenNav={() => setMobileNavOpen(true)}
+          onTogglePersona={toggleMobilePersona}
+          personaVisible={mobilePersonaVisible}
+        />
+        <main className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+          <ChatView send={send} sendBytes={sendBytes} />
+        </main>
+        {mobilePersonaVisible ? <FloatingPersona /> : null}
+        <MobileNavDrawer
+          open={mobileNavOpen}
+          onClose={() => setMobileNavOpen(false)}
+          send={send}
+          onOpenSettings={() => setSettingsOpen(true)}
+        />
+        <SettingsDrawer
+          open={settingsOpen}
+          onClose={() => setSettingsOpen(false)}
+        />
+        <Toasts />
+        <FirstRunOnboarding />
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-full w-full overflow-hidden">

@@ -22,6 +22,14 @@ interface SessionSidebarProps {
    * survives reloads and toolbar interactions outside this component. */
   collapsed: boolean;
   onToggleCollapsed: () => void;
+  /** Fired after any navigation action (new session, switch session,
+   * open settings). The mobile nav drawer uses it to auto-close once
+   * the user picks something. No-op on desktop. */
+  onAfterNavigate?: () => void;
+  /** Hide the collapse chevron — the icon-rail collapse is meaningless
+   * inside the mobile drawer (it's already an overlay), so the phone
+   * layout passes ``true``. */
+  hideCollapseToggle?: boolean;
 }
 
 // ── Inline icons ────────────────────────────────────────────────────
@@ -151,6 +159,8 @@ export function SessionSidebar({
   personaWindowVisible = false,
   collapsed,
   onToggleCollapsed,
+  onAfterNavigate,
+  hideCollapseToggle = false,
 }: SessionSidebarProps) {
   const sessionKey = useAssistantStore((s) => s.sessionKey);
   const sessionListSignal = useAssistantStore((s) => s.sessionListSignal);
@@ -220,11 +230,16 @@ export function SessionSidebar({
 
   const handleNew = () => {
     send({ type: "new_session" });
+    onAfterNavigate?.();
   };
 
   const handleSwitch = (row: SessionRow) => {
-    if (row.session_id === activeKey) return;
+    if (row.session_id === activeKey) {
+      onAfterNavigate?.();
+      return;
+    }
     send({ type: "switch_session", session_id: row.session_id });
+    onAfterNavigate?.();
   };
 
   const handleDelete = async (row: SessionRow, evt: React.MouseEvent) => {
@@ -247,6 +262,11 @@ export function SessionSidebar({
   const handleClear = () => {
     if (!confirm("Clear all messages in the active session?")) return;
     send({ type: "clear" });
+  };
+
+  const handleOpenSettings = () => {
+    onOpenSettings();
+    onAfterNavigate?.();
   };
 
   // ── Collapsed rail ────────────────────────────────────────────────
@@ -304,7 +324,7 @@ export function SessionSidebar({
         <div className="mt-auto">
           <button
             type="button"
-            onClick={onOpenSettings}
+            onClick={handleOpenSettings}
             title="Settings"
             aria-label="Settings"
             className="flex h-9 w-9 items-center justify-center rounded-md border border-white/10 text-ink-100/70 transition hover:border-ink-400 hover:text-ink-100"
@@ -345,20 +365,22 @@ export function SessionSidebar({
             ) : null}
             <button
               type="button"
-              onClick={onOpenSettings}
+              onClick={handleOpenSettings}
               className="rounded-md border border-white/10 px-2 py-1 text-xs text-ink-100/70 hover:border-ink-400 hover:text-ink-100"
             >
               Settings
             </button>
-            <button
-              type="button"
-              onClick={onToggleCollapsed}
-              title="Collapse sidebar"
-              aria-label="Collapse sidebar"
-              className="flex h-7 w-7 items-center justify-center rounded-md border border-white/10 text-ink-100/70 transition hover:border-ink-400 hover:text-ink-100"
-            >
-              <ChevronLeftIcon className="h-3.5 w-3.5" />
-            </button>
+            {hideCollapseToggle ? null : (
+              <button
+                type="button"
+                onClick={onToggleCollapsed}
+                title="Collapse sidebar"
+                aria-label="Collapse sidebar"
+                className="flex h-7 w-7 items-center justify-center rounded-md border border-white/10 text-ink-100/70 transition hover:border-ink-400 hover:text-ink-100"
+              >
+                <ChevronLeftIcon className="h-3.5 w-3.5" />
+              </button>
+            )}
           </div>
         </div>
         <p className="mt-1 text-xs text-ink-100/50">Your AI friend</p>

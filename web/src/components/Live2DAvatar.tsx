@@ -32,6 +32,15 @@ Live2DModel.registerTicker(PIXI.Ticker);
 
 interface Live2DAvatarProps {
   manifest: AvatarProfile;
+  /** Optional per-instance zoom override. When provided it REPLACES the
+   * manifest's ``scale_multiplier`` for the fit math, so a small surface
+   * (the mobile floating persona window) can deliberately over-zoom the
+   * rig: anything > the container's aspect makes the model overflow
+   * vertically, which the fit logic resolves by top-anchoring (head
+   * pinned to the top, legs cropped) — i.e. a head + torso framing. Left
+   * undefined everywhere else so the desktop avatar rail keeps honouring
+   * the user's Avatar-settings scale slider. */
+  scaleMultiplier?: number;
 }
 
 /**
@@ -46,8 +55,16 @@ interface Live2DAvatarProps {
  * jsdom (see ``web/src/live2d/__fixtures__/`` and
  * ``web/src/live2d/channels/*.test.ts``).
  */
-export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
+export function Live2DAvatar({ manifest, scaleMultiplier }: Live2DAvatarProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  // The fit multiplier: explicit override wins, else the manifest's
+  // configured scale. Kept on a ref so the resize observer + idle
+  // callbacks (which close over the initial value) always read the
+  // current one without re-subscribing.
+  const effectiveMultiplier =
+    scaleMultiplier ?? manifest.settings.scale_multiplier ?? 1;
+  const multiplierRef = useRef(effectiveMultiplier);
+  multiplierRef.current = effectiveMultiplier;
   const appRef = useRef<PIXI.Application | null>(null);
   const modelRef = useRef<InstanceType<typeof Live2DModel> | null>(null);
   // The engine + bridge handles are kept on refs so the cleanup
@@ -121,11 +138,7 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
         }
         modelRef.current = model;
         app.stage.addChild(model);
-        fitModelToContainer(
-          model,
-          app,
-          manifest.settings.scale_multiplier ?? 1,
-        );
+        fitModelToContainer(model, app, multiplierRef.current);
 
         // Spin up the AvatarEngine. The registered channels handle
         // expression / motion / outfit / overlay / lipsync / etc.
@@ -233,11 +246,7 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
         if (!app) return;
         app.resize();
         if (model) {
-          fitModelToContainer(
-            model,
-            app,
-            manifest.settings.scale_multiplier ?? 1,
-          );
+          fitModelToContainer(model, app, multiplierRef.current);
         }
       });
     };
@@ -279,12 +288,8 @@ export function Live2DAvatar({ manifest }: Live2DAvatarProps) {
     if (!modelRef.current || !appRef.current) {
       return;
     }
-    fitModelToContainer(
-      modelRef.current,
-      appRef.current,
-      manifest.settings.scale_multiplier ?? 1,
-    );
-  }, [manifest.settings.scale_multiplier]);
+    fitModelToContainer(modelRef.current, appRef.current, effectiveMultiplier);
+  }, [effectiveMultiplier]);
 
   // ── 2. Idle motion loop -- only fires when not speaking. Cadence is
   //    biased by Aiko's current mood arousal: more restless = quicker

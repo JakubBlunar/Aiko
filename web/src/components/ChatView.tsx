@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { api } from "../api";
 import { backendBase } from "../desktop/runtime";
+import { useIsMobile } from "../hooks/useIsMobile";
 import { useMicCapture } from "../hooks/useMicCapture";
 import { useAssistantStore } from "../store";
 import type {
@@ -110,6 +111,10 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // Phones get a tighter composer: a compact mic, smaller file/send
+  // hit-targets, and a single-line min height so the row doesn't eat
+  // the screen on an iPhone SE.
+  const isMobile = useIsMobile();
   // Virtuoso virtualises the chat list so the DOM only ever holds the
   // bubbles currently on screen (plus a small overscan buffer). This
   // matters at two ends of the spectrum: long histories (50+ bubbles)
@@ -188,15 +193,19 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
   }, [lastTranscript, setLastTranscript]);
 
   // Auto-grow the input textarea up to its max-height so the row doesn't
-  // start out as a tall 2-line box but still expands naturally.
+  // start out as a tall 2-line box but still expands naturally. On phones
+  // the floor is a single 40px line and the cap is lower so a long draft
+  // never swallows the viewport; clearing ``draft`` (e.g. after send)
+  // re-runs this and collapses the box back to one line.
   useEffect(() => {
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = "auto";
-    const max = 160; // matches max-h-40 in the className
-    const next = Math.min(max, Math.max(48, el.scrollHeight));
+    const max = isMobile ? 112 : 160; // mobile: ~4 lines; desktop: max-h-40
+    const min = isMobile ? 40 : 48;
+    const next = Math.min(max, Math.max(min, el.scrollHeight));
     el.style.height = `${next}px`;
-  }, [draft]);
+  }, [draft, isMobile]);
 
   const headerReaction = useMemo(() => {
     return REACTION_EMOJI[reaction] ?? REACTION_EMOJI.neutral;
@@ -255,6 +264,12 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
         : { type: "chat", text },
     );
     setDraft("");
+    // Collapse the auto-grown box back to a single line immediately.
+    // The ``[draft]`` effect also does this on the next render, but
+    // clearing the inline height here removes any one-frame flash of the
+    // old tall height (the symptom: the composer "staying large" after
+    // submit on mobile).
+    if (textareaRef.current) textareaRef.current.style.height = "";
     setPendingAttachments([]);
     setAttachError(null);
     // Sending a message is an explicit "I want to engage with the
@@ -451,6 +466,7 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
               connected={connection.status === "connected"}
               onClick={handleMicToggle}
               remotelyOwned={remotelyOwned}
+              size={isMobile ? "compact" : "default"}
             />
             <button
               type="button"
@@ -459,7 +475,7 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
                 connection.status !== "connected" ||
                 pendingAttachments.length >= MAX_ATTACHMENTS
               }
-              className="flex h-12 w-12 shrink-0 items-center justify-center self-center rounded-xl border border-white/10 bg-black/30 text-ink-100/70 transition hover:bg-white/10 hover:text-ink-100 disabled:cursor-not-allowed disabled:opacity-40"
+              className="flex h-9 w-9 shrink-0 items-center justify-center self-center rounded-lg border border-white/10 bg-black/30 text-ink-100/70 transition hover:bg-white/10 hover:text-ink-100 disabled:cursor-not-allowed disabled:opacity-40 md:h-12 md:w-12 md:rounded-xl"
               title="Attach an image or text file"
               aria-label="Attach a file"
             >
@@ -492,13 +508,13 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
               }
               disabled={connection.status !== "connected"}
               rows={1}
-              className="h-12 max-h-40 min-h-[3rem] flex-1 resize-none self-center rounded-xl border border-white/10 bg-black/30 px-4 py-3 text-sm leading-6 text-ink-100 placeholder:text-ink-100/40 focus:border-ink-400 focus:outline-none focus:ring-2 focus:ring-ink-500/40 disabled:opacity-60"
+              className="h-10 min-h-[2.5rem] max-h-28 flex-1 resize-none self-center rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-sm leading-6 text-ink-100 placeholder:text-ink-100/40 focus:border-ink-400 focus:outline-none focus:ring-2 focus:ring-ink-500/40 disabled:opacity-60 md:h-12 md:min-h-[3rem] md:max-h-40 md:rounded-xl md:px-4 md:py-3"
             />
             {turnInProgress ? (
               <button
                 type="button"
                 onClick={() => send({ type: "stop" })}
-                className="flex h-12 min-w-[3rem] shrink-0 items-center justify-center rounded-xl bg-red-500/80 px-4 text-sm font-medium text-white transition hover:bg-red-500"
+                className="flex h-10 shrink-0 items-center justify-center rounded-lg bg-red-500/80 px-3 text-sm font-medium text-white transition hover:bg-red-500 md:h-12 md:min-w-[3rem] md:rounded-xl md:px-4"
                 title="Stop generation"
                 aria-label="Stop generation"
               >
@@ -509,7 +525,7 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
                 type="button"
                 onClick={handleSend}
                 disabled={!draft.trim() || connection.status !== "connected"}
-                className="flex h-12 min-w-[3rem] shrink-0 items-center justify-center rounded-xl bg-ink-500 px-5 text-sm font-medium text-white transition hover:bg-ink-400 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-white/40"
+                className="flex h-10 shrink-0 items-center justify-center rounded-lg bg-ink-500 px-3 text-sm font-medium text-white transition hover:bg-ink-400 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-white/40 md:h-12 md:min-w-[3rem] md:rounded-xl md:px-5"
                 title="Send message (Enter)"
                 aria-label="Send message"
               >

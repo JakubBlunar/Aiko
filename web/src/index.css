@@ -30,6 +30,20 @@ html.persona #root {
   background: transparent !important;
 }
 
+/* iOS Safari auto-zooms when a focused form control has a font-size
+   below 16px (the composer textarea is ``text-sm`` = 14px). Forcing
+   >=16px on phones removes the zoom-in jump on focus without touching
+   the desktop type scale (the media query never matches there). The
+   !important is needed to win over the Tailwind ``text-sm`` utility
+   class, which outranks a bare element selector. */
+@media (max-width: 767px) {
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
+
 /* Subtle scrollbar styling matching the dark theme */
 ::-webkit-scrollbar {
   width: 10px;
