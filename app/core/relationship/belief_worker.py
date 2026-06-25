@@ -470,6 +470,10 @@ class BeliefInferenceWorker:
                 model=self._chat_model,
                 stop_event=self._cancel_event,
                 format_json=True,
+                # Inferring what the user believes/feels from recent
+                # messages is a theory-of-mind judgement; reasoning lifts
+                # quality. num_predict stays the answer budget.
+                think=True,
                 surface="belief_worker",
             )
             for chunk in stream:

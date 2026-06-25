@@ -210,6 +210,11 @@ def decide_task_report(
             model=model,
             options={"temperature": 0.3, "num_predict": 120},
             format_json=True,
+            # Deciding whether/when/how to surface a finished task is a
+            # graded judgement (surface now / park / drop + angle);
+            # reasoning improves it. num_predict (120) stays the small
+            # answer budget — the client adds think headroom on top.
+            think=True,
             surface="task_report_decision",
         )
     except Exception:

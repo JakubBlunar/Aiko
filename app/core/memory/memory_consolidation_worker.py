@@ -508,6 +508,11 @@ class MemoryConsolidationWorker:
                 model=self._chat_model,
                 options={"temperature": 0.2, "num_predict": _MERGE_MAX_TOKENS},
                 format_json=True,
+                # Merging near-duplicate notes is a judgement call (which
+                # facts survive, how to phrase the union); reasoning helps.
+                # num_predict stays the answer budget — the client adds
+                # think headroom for the trace.
+                think=True,
                 surface="memory_consolidation",
             )
         except Exception:

@@ -44,6 +44,17 @@ class OllamaSettings:
     # reclaim VRAM. Texts longer than the window are truncated by
     # Ollama, so keep it comfortably above the largest chunk.
     embedding_num_ctx: int | None = None
+    # Extra ``num_predict`` budget the client adds automatically whenever
+    # a call is made with ``think=True``. The historical caps every
+    # worker passes as ``num_predict`` were sized for the ANSWER ONLY
+    # (the text/JSON we parse) — with a reasoning model the trace shares
+    # that same budget and would starve the answer. Rather than re-tune
+    # every worker's cap, the client treats ``num_predict`` as the answer
+    # budget and adds this headroom on top for the hidden trace. A 27B
+    # model typically reasons within ~1-2k tokens; 2048 is a safe default.
+    # Set to 0 to disable the auto-bump (then ``num_predict`` is the hard
+    # total again, thinking included).
+    think_num_predict_headroom: int = 2048
 
 
 @dataclass(slots=True)
@@ -1608,6 +1619,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
                 int(ollama["embedding_num_ctx"])
                 if ollama.get("embedding_num_ctx") is not None
                 else None
+            ),
+            think_num_predict_headroom=max(
+                0, int(ollama.get("think_num_predict_headroom", 2048)),
             ),
         ),
         audio=AudioSettings(

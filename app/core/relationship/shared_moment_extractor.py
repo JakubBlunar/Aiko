@@ -485,6 +485,10 @@ class MomentDetector:
                     "num_predict": self._llm_max_tokens,
                 },
                 model=self._model,
+                # Judging whether a stretch of conversation is a genuine
+                # shared moment (and its vibe) benefits from reasoning.
+                # num_predict stays the answer budget; client adds headroom.
+                think=True,
                 surface="shared_moments",
             )
         except Exception:

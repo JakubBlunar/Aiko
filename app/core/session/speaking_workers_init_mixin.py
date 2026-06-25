@@ -655,6 +655,7 @@ class SpeakingWorkersInitMixin:
                     self._ollama,
                     model=self._effective_worker_model,
                     max_tokens=self._memory_settings.memory_extractor_max_tokens,
+                    think=self._memory_settings.memory_extractor_think,
                     user_display_name_provider=lambda: self.user_display_name,
                 )
                 self._memory_extractor.add_listener(self._notify_memory_added)

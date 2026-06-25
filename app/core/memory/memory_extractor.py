@@ -41,6 +41,7 @@ from app.core.memory.memory_store import (
     _DEFAULT_TEMPORAL_TYPE,
 )
 from app.core.session.session_text_utils import resolve_user_name, speaker_label
+from app.llm.chat_client import content_looks_complete
 from app.llm.embedder import Embedder
 from app.llm.ollama_client import OllamaClient
 
@@ -176,6 +177,10 @@ def _build_system_prompt(
         "  durable / important ones. Fewer is better than padding.\n"
         "- Keep each 'content' to a single short sentence under ~120 "
         "  characters. Do not write paragraphs.\n"
+        "- Any private reasoning you do is separate and unlimited; this "
+        f"  length budget applies ONLY to the final JSON answer (at most "
+        f"  {max(1, int(max_memories))} memories, each under ~120 chars). "
+        "  Keep the answer compact.\n"
         "- 'kind' must be one of: fact, preference, event, relationship, self. "
         "  Use 'self' only for Aiko's first-person notes.\n"
         f"- 'temporal_type' must be one of: {valid_types}. Default to "
@@ -271,7 +276,8 @@ class MemoryExtractor:
         max_window_messages: int = 30,
         max_new_per_run: int = 5,
         max_tokens: int = 1024,
-        timeout_seconds: float = 60.0,
+        think: bool = True,
+        timeout_seconds: float = 120.0,
         user_display_name_provider: "Callable[[], str] | None" = None,
     ) -> None:
         self._db = db
@@ -282,12 +288,17 @@ class MemoryExtractor:
         self._min_window = max(2, int(min_window_messages))
         self._max_window = max(self._min_window, int(max_window_messages))
         self._max_new_per_run = max(1, int(max_new_per_run))
-        # Output token ceiling for the JSON response. The old hardcoded
-        # 512 truncated the array mid-object on longer transcripts (the
-        # model emits multiple verbose ``content`` strings), so every
-        # such run lost its whole batch. 1024 fits the capped output and
-        # the salvage parser recovers anything that still clips.
+        # Output token ceiling for the JSON ANSWER (the array we parse),
+        # NOT the reasoning trace. With ``think`` on, the OllamaClient
+        # adds ``ollama.think_num_predict_headroom`` on top of this so the
+        # trace gets its own budget; this stays the answer budget. The
+        # salvage parser recovers anything that still clips at the tail.
         self._max_tokens = max(256, int(max_tokens))
+        # Reasoning trace on/off. Default ON: the extractor's
+        # classify-and-date judgement is unreliable on reasoning models
+        # when think is suppressed. Ollama keeps the trace in
+        # ``message.thinking``, so ``chat_json`` still returns clean JSON.
+        self._think = bool(think)
         self._timeout = float(timeout_seconds)
         self._lock = threading.Lock()
         self._on_added_listeners: list = []
@@ -365,29 +376,57 @@ class MemoryExtractor:
                 timeout_seconds=self._timeout,
                 options={"temperature": 0.2, "num_predict": self._max_tokens},
                 format_json=True,
+                think=self._think,
                 surface="memory_extractor",
             )
         except Exception as exc:
             log.warning("memory extractor LLM call failed: %s", exc)
             return 0
 
-        # The OllamaClient already WARNs on a length-truncated response;
-        # note it here too so the extractor log line explains why the
-        # salvage path may have kicked in (and hints at bumping the cap).
-        if getattr(usage, "done_reason", None) == "length":
+        # done_reason="length" now reflects the THINKING + ANSWER total,
+        # not just the JSON we parse. With think on, a complete answer
+        # followed by a long reasoning trace legitimately hits the cap and
+        # is NOT a problem. Only flag a real truncation when the answer
+        # itself looks incomplete (content_looks_complete treats a closed
+        # ``}`` / ``]`` as done); otherwise the cap only clipped reasoning,
+        # which doesn't affect what we store. The client-level log carries
+        # the answer~=/thinking~= token split for tuning.
+        if (
+            getattr(usage, "done_reason", None) == "length"
+            and not content_looks_complete(content)
+        ):
             log.warning(
-                "memory extractor response truncated at num_predict=%d "
-                "(completion=%d tokens); salvaging complete objects. Raise "
-                "memory.memory_extractor_max_tokens if this is frequent.",
+                "memory extractor ANSWER truncated at num_predict=%d "
+                "(completion=%d tokens incl. reasoning); salvaging complete "
+                "objects. Raise memory.memory_extractor_max_tokens if this "
+                "is frequent.",
                 self._max_tokens, getattr(usage, "completion_tokens", 0),
             )
 
+        # Raw-response trace (mirrors turn_runner's ``llm raw response:``).
+        # The extractor's INFO line only reports COUNTS, so when a run
+        # logs "no new memories" you can't tell whether the model judged
+        # the transcript empty, returned a wrong-shaped object, or buried
+        # the JSON behind a reasoning trace (thinking models emit a lot of
+        # completion tokens that get stripped to an empty array). Enable
+        # with set_log_level("app.memory_extractor", "DEBUG").
+        log.debug("extractor raw response: %r", (content or "")[:1000])
+
         candidates = self._parse_response(content)
         if not candidates:
+            # Distinguish "model returned an empty array" (genuinely nothing
+            # durable — common on casual/short transcripts) from "model
+            # emitted output we couldn't turn into candidates" (wrong shape,
+            # stripped thinking trace, all-filtered). The stripped-content
+            # length is the tell: a few chars means an empty/near-empty body,
+            # a large body that still yields zero candidates means parsing or
+            # validation dropped everything (see the DEBUG raw line above).
+            stripped_len = len((content or "").strip())
             log.info(
-                "extractor: no new memories (transcript %d msgs, %.0f ms, %d/%d tokens)",
+                "extractor: no new memories (transcript %d msgs, %.0f ms, "
+                "%d/%d tokens, response_chars=%d)",
                 len(rows), (time.monotonic() - t0) * 1000.0,
-                usage.prompt_tokens, usage.completion_tokens,
+                usage.prompt_tokens, usage.completion_tokens, stripped_len,
             )
             return 0
 

@@ -841,7 +841,22 @@ class TurnRunner:
                         )
                     except Exception:
                         log.debug("on_touch raised", exc_info=True)
-        body_text = strip_all_meta_tags(full_raw)
+        # Reconcile against the SAME normalization the streaming path used.
+        # The streamed `visible` (and therefore `ui_sent_chars` /
+        # `tts_appended_chars`) is derived from the reaction-parsed body,
+        # and `parse_reaction_stack_at_start` does `.lstrip("\n")` on the
+        # tail — so the newline after `[[reaction:X]]\n` is gone. Running
+        # `strip_all_meta_tags(full_raw)` here instead would keep that
+        # leading newline (the helper intentionally does not `.strip()`),
+        # making `body_text` one char longer than what was streamed. The
+        # catch-up flush below would then re-emit the message's final
+        # character to both the UI (a doubled trailing char, e.g.
+        # "later..") and the TTS buffer (a lone "." synthesized as a
+        # garbled micro-utterance after a pause). Pre-stripping the
+        # reaction stack keeps the offsets aligned so the flush only fires
+        # for genuinely-held-back tails.
+        _, _, body_after_reaction = parse_reaction_stack_at_start(full_raw)
+        body_text = strip_all_meta_tags(body_after_reaction)
         # Final-flush: emit any tail that the streaming holdback was sitting on
         # (e.g. a "[[" that turned out NOT to be a tag) so the UI bubble lands
         # in the same state as the persisted message.

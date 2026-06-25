@@ -9,7 +9,8 @@
     "base_url": "http://127.0.0.1:11434",
     "chat_model": "qwen3-coder:30b",
     "temperature": 0.6,
-    "context_window": 32768
+    "context_window": 32768,
+    "think_num_predict_headroom": 2048
   },
   "chat_llm": {
     "provider": "ollama",
@@ -337,6 +338,8 @@
     "max_memories": 5000,
     "dedupe_threshold": 0.92,
     "extractor_enabled": true,
+    "memory_extractor_think": true,
+    "memory_extractor_max_tokens": 1024,
     "self_tagged_salience": 0.7,
     "tiers_enabled": true,
     "decay_rate_scratchpad": 0.05,

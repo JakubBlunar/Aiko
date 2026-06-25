@@ -316,6 +316,16 @@ _PROSODY_OPEN_TAIL_PATTERN = re.compile(
     r"\[\[prosody:[^\]]*\Z",
     flags=re.IGNORECASE,
 )
+# A complete prosody tag *with* any horizontal whitespace flanking it.
+# Used by :func:`strip_all_meta_tags` to collapse a mid-sentence tag and
+# the spaces on both sides ("cute. [[prosody:soft]] I" -> "cute. I") into
+# a single space, so the live-streamed text doesn't show a double space
+# where the tag used to be. (The persisted copy is whitespace-collapsed by
+# ``sanitize_assistant_text`` regardless; this fixes the streamed bubble.)
+_PROSODY_TAG_SURROUNDED_PATTERN = re.compile(
+    r"[ \t]*\[\[prosody:[a-z_]+\]\][ \t]*",
+    flags=re.IGNORECASE,
+)
 
 
 def parse_prosody_tag(text: str) -> str | None:
@@ -766,7 +776,12 @@ def strip_all_meta_tags(text: str) -> str:
     # The leading tag at sentence start has already been consumed by
     # :func:`consume_leading_prosody_tag` upstream and routed into the
     # cadence overlay; this strip catches misplaced / trailing tags
-    # so they don't reach TTS or the chat transcript.
+    # so they don't reach TTS or the chat transcript. Collapse the tag
+    # together with any flanking horizontal whitespace into a single
+    # space first (so a mid-sentence tag doesn't leave a double space),
+    # then fall back to the bare-tag strip for any tag missed by the
+    # whitespace variant, and finally drop an unclosed trailing opener.
+    s = _PROSODY_TAG_SURROUNDED_PATTERN.sub(" ", s)
     s = _PROSODY_TAG_PATTERN.sub("", s)
     s = _PROSODY_OPEN_TAIL_PATTERN.sub("", s)
     # F2: same treatment for [[gap:topic:question]].

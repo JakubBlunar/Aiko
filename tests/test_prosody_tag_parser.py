@@ -85,6 +85,13 @@ class StripAllMetaTagsProsodyTests(unittest.TestCase):
         self.assertIn("hi", cleaned)
         self.assertIn("there friend", cleaned)
 
+    def test_mid_sentence_tag_collapses_flanking_whitespace(self) -> None:
+        # Regression: stripping a tag with a space on both sides used to
+        # leave a double space ("cute.  I") in the streamed text.
+        cleaned = strip_all_meta_tags("cute. [[prosody:soft]] I missed you.")
+        self.assertEqual(cleaned, "cute. I missed you.")
+        self.assertNotIn("  ", cleaned)
+
     def test_partial_open_at_eol_stripped(self) -> None:
         cleaned = strip_all_meta_tags("hi there [[prosody:whisp")
         self.assertNotIn("[[prosody:", cleaned)

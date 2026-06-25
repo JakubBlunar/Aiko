@@ -634,6 +634,159 @@ class BenignThinkingTruncationTests(unittest.TestCase):
         self.assertIn("surface=dream_worker", msg)
 
 
+class NativeThinkTruncationTests(unittest.TestCase):
+    """With native ``think=True`` the reasoning trace comes back in a
+    SEPARATE ``message.thinking`` field (not inline ``<think>`` tags), so
+    the old ``had_thinking`` signal stays False. The truncation judgement
+    must instead key off the *answer* (``message.content``) completeness:
+    a complete answer + a long trace that tipped over ``num_predict`` is
+    benign; a cut-off answer is a real WARNING. The log line carries the
+    estimated answer/thinking token split either way.
+    """
+
+    def setUp(self) -> None:
+        self._ollama_settings = load_settings().ollama
+
+    def _truncated_native_think(self, *, content: str, thinking: str) -> Mock:
+        body: dict[str, object] = {
+            "message": {"content": content, "thinking": thinking},
+            "prompt_eval_count": 10,
+            "eval_count": 900,
+            "total_duration": 0,
+            "eval_duration": 0,
+            "prompt_eval_duration": 0,
+            "done_reason": "length",
+        }
+        fake = Mock()
+        fake.ok = True
+        fake.raise_for_status.return_value = None
+        fake.json.return_value = body
+        return fake
+
+    def test_native_think_complete_answer_does_not_warn(self) -> None:
+        client = OllamaClient(self._ollama_settings)
+        with patch(
+            "app.llm.ollama_client.requests.post",
+            return_value=self._truncated_native_think(
+                content='{"memories": []}',
+                thinking="a very long reasoning trace " * 40,
+            ),
+        ), self.assertNoLogs("app.llm.ollama_client", level="WARNING"):
+            content, usage = client.chat_json(
+                [{"role": "user", "content": "hi"}],
+                think=True,
+                surface="memory_extractor",
+            )
+        # Answer returned intact; truncation still recorded on usage.
+        self.assertEqual(content, '{"memories": []}')
+        self.assertEqual(usage.done_reason, "length")
+
+    def test_native_think_cut_answer_warns_with_split(self) -> None:
+        client = OllamaClient(self._ollama_settings)
+        with patch(
+            "app.llm.ollama_client.requests.post",
+            return_value=self._truncated_native_think(
+                content='{"memories": [{"content": "Jacob is learning',
+                thinking="some trace",
+            ),
+        ), self.assertLogs("app.llm.ollama_client", level="WARNING") as cap:
+            client.chat_json(
+                [{"role": "user", "content": "hi"}],
+                think=True,
+                surface="memory_extractor",
+            )
+        msg = next(
+            (r.getMessage() for r in cap.records if "truncated" in r.getMessage()),
+            "",
+        )
+        self.assertIn("surface=memory_extractor", msg)
+        # The log surfaces the answer/thinking split so "raise num_predict"
+        # advice is actionable.
+        self.assertIn("answer_tokens~=", msg)
+        self.assertIn("thinking_tokens~=", msg)
+
+
+class ThinkHeadroomTests(unittest.TestCase):
+    """``num_predict`` the workers pass is the ANSWER budget. With
+    ``think=True`` the client adds ``ollama.think_num_predict_headroom``
+    on top so the hidden reasoning trace doesn't starve the answer. With
+    ``think=False`` the cap is passed through untouched.
+    """
+
+    def setUp(self) -> None:
+        self._ollama_settings = load_settings().ollama
+
+    def _capture_post(self) -> tuple[Mock, dict]:
+        sent: dict = {}
+        body = {
+            "message": {"content": '{"ok": true}'},
+            "prompt_eval_count": 1,
+            "eval_count": 5,
+            "total_duration": 0,
+            "eval_duration": 0,
+            "prompt_eval_duration": 0,
+            "done_reason": "stop",
+        }
+        fake = Mock()
+        fake.ok = True
+        fake.raise_for_status.return_value = None
+        fake.json.return_value = body
+
+        def _post(url, json=None, **kwargs):  # noqa: A002 - mirror requests
+            sent["payload"] = json
+            return fake
+
+        return fake, sent, _post  # type: ignore[return-value]
+
+    def test_headroom_added_when_think_true(self) -> None:
+        client = OllamaClient(self._ollama_settings)
+        client._think_headroom = 2048
+        _fake, sent, _post = self._capture_post()
+        with patch("app.llm.ollama_client.requests.post", side_effect=_post):
+            client.chat_json(
+                [{"role": "user", "content": "hi"}],
+                options={"num_predict": 1024},
+                think=True,
+            )
+        self.assertEqual(sent["payload"]["options"]["num_predict"], 1024 + 2048)
+
+    def test_no_headroom_when_think_false(self) -> None:
+        client = OllamaClient(self._ollama_settings)
+        client._think_headroom = 2048
+        _fake, sent, _post = self._capture_post()
+        with patch("app.llm.ollama_client.requests.post", side_effect=_post):
+            client.chat_json(
+                [{"role": "user", "content": "hi"}],
+                options={"num_predict": 1024},
+                think=False,
+            )
+        self.assertEqual(sent["payload"]["options"]["num_predict"], 1024)
+
+    def test_headroom_zero_is_noop(self) -> None:
+        client = OllamaClient(self._ollama_settings)
+        client._think_headroom = 0
+        _fake, sent, _post = self._capture_post()
+        with patch("app.llm.ollama_client.requests.post", side_effect=_post):
+            client.chat_json(
+                [{"role": "user", "content": "hi"}],
+                options={"num_predict": 1024},
+                think=True,
+            )
+        self.assertEqual(sent["payload"]["options"]["num_predict"], 1024)
+
+    def test_headroom_applies_to_chat_with_tools(self) -> None:
+        client = OllamaClient(self._ollama_settings)
+        client._think_headroom = 1500
+        _fake, sent, _post = self._capture_post()
+        with patch("app.llm.ollama_client.requests.post", side_effect=_post):
+            client.chat_with_tools(
+                [{"role": "user", "content": "hi"}],
+                options={"num_predict": 300},
+                think=True,
+            )
+        self.assertEqual(sent["payload"]["options"]["num_predict"], 300 + 1500)
+
+
 class ContentLooksCompleteTests(unittest.TestCase):
     """Pin the heuristic that decides "answer reached a natural stop"
     so the benign-truncation downgrade only fires when we're confident.

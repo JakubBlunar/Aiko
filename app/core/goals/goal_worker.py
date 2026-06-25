@@ -560,6 +560,10 @@ class GoalWorker:
                 model=self._chat_model,
                 stop_event=self._cancel_event,
                 format_json=True,
+                # Proposing / updating long-term goals is a planning task
+                # that benefits from reasoning. num_predict stays the
+                # answer budget; the client adds think headroom.
+                think=True,
                 surface=surface,
             )
             for chunk in stream:

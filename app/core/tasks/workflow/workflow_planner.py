@@ -351,6 +351,10 @@ def decide_next_action(
             options=options,
             timeout_seconds=timeout_seconds,
             format_json=True,
+            # Picking the next workflow step from available skills is a
+            # planning decision; reasoning improves it. num_predict stays
+            # the answer budget — the client adds think headroom.
+            think=True,
             surface="workflow_planner",
         )
     except Exception:
