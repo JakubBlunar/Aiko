@@ -392,6 +392,67 @@ class IdleWorkersInitMixin:
                     "CuriosityGradientWorker init failed", exc_info=True
                 )
 
+        # K64d KnowledgeMapReflectionWorker — the introspective capstone of
+        # the K64 family. On a ~daily interval it reads the *shape* of the
+        # topic graph (richest territories + under-explored ones), runs a
+        # worker-LLM meta-thought, and writes ONE [mindmap] kind="reflection"
+        # memory. No new provider: that memory flows through the existing RAG
+        # / K28 turning-over surfacing like every other reflection. Needs the
+        # embedder + a worker LLM; failures only drop a single reflection.
+        self._knowledge_map_reflection_worker = None
+        if (
+            self._idle_scheduler is not None
+            and getattr(self, "_memory_store", None) is not None
+            and self._embedder is not None
+            and self._maintenance_client is not None
+            and self._chat_db is not None
+        ):
+            try:
+                from app.core.proactive.knowledge_map_reflection_worker import (
+                    KnowledgeMapReflectionWorker,
+                )
+
+                mem = self._memory_settings
+                self._knowledge_map_reflection_worker = (
+                    KnowledgeMapReflectionWorker(
+                        topic_graph_provider=lambda: getattr(
+                            self, "_topic_graph", None
+                        ),
+                        memory_store=self._memory_store,
+                        embedder=self._embedder,
+                        kv_get=self._chat_db.kv_get,
+                        kv_set=self._chat_db.kv_set,
+                        ollama=self._maintenance_client,
+                        model=self._effective_worker_model,
+                        enabled_provider=lambda: bool(
+                            getattr(
+                                self._settings.agent,
+                                "knowledge_map_reflection_enabled",
+                                True,
+                            )
+                        ),
+                        notify_memory_added=self._notify_memory_added,
+                        interval_seconds=(
+                            mem.knowledge_map_reflection_interval_seconds
+                        ),
+                        cooldown_hours=(
+                            mem.knowledge_map_reflection_cooldown_hours
+                        ),
+                        min_clusters=mem.knowledge_map_reflection_min_clusters,
+                        rich_top_n=mem.knowledge_map_reflection_rich_top_n,
+                        gap_top_n=mem.knowledge_map_reflection_gap_top_n,
+                        max_tokens=mem.knowledge_map_reflection_max_tokens,
+                        salience=mem.knowledge_map_reflection_salience,
+                    )
+                )
+                self._idle_scheduler.register(
+                    self._knowledge_map_reflection_worker
+                )
+            except Exception:
+                log.warning(
+                    "KnowledgeMapReflectionWorker init failed", exc_info=True
+                )
+
         # K52 WantsLedgerWorker — keeps the wants ledger stocked from
         # curiosity seeds / forward-curiosity questions / goals during
         # quiet windows. Pure ingestion, no LLM. Failures only drop

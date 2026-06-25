@@ -93,6 +93,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             curiosity_gradient_enabled=bool(
                 agent_raw.get("curiosity_gradient_enabled", True),
             ),
+            knowledge_map_reflection_enabled=bool(
+                agent_raw.get("knowledge_map_reflection_enabled", True),
+            ),
             knowledge_gap_notice_enabled=bool(
                 agent_raw.get("knowledge_gap_notice_enabled", True),
             ),

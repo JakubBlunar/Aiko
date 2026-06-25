@@ -714,11 +714,12 @@ autonomous interior life; pick any sub-idea independently.
   genuinely-curious-question cue when the live turn is on either topic —
   curiosity about the boundary of what she knows, not random. LLM-free (pure
   centroid geometry); the chat model phrases the question.
-- **K64d. Self-reflection on her own knowledge map.** A periodic
-  (low-frequency) reflection where she "looks at the shape of what she
-  knows" — which territories are rich, which are blank — and forms a
-  light meta-thought about it. Reuses the DreamWorker / ReflectionWorker
-  machinery seeded by the graph instead of raw recent memories.
+- **K64d. Self-reflection on her own knowledge map.** ✅ **Shipped** — see
+  [`shipped/awareness.md#k64d-knowledge-map-self-reflection`](shipped/awareness.md#k64d-knowledge-map-self-reflection-the-shape-of-what-i-know).
+  A ~daily idle worker reads the *shape* of the topic graph (richest
+  territories + under-explored ones), runs a worker-LLM meta-thought, and
+  writes one `[mindmap]` `kind="reflection"` memory. No new provider: that
+  memory surfaces through the existing RAG / K28 turning-over path.
 
 **Key files.** [`topic_graph.py`](../../app/core/conversation/topic_graph.py)
 (centroids + cluster mass are already computed; K64b needs a small

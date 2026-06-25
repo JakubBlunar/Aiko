@@ -899,5 +899,56 @@ for `curiosity-gradient drafted:` / `fire:`. Settings:
 knobs. Tests:
 [`tests/test_curiosity_gradient.py`](../../../tests/test_curiosity_gradient.py)
 (pure edge finder + worker cooldown/cap gates + provider plumbing).
-**Remaining K64 family:** K64d knowledge-map self-reflection (open in
-[`patterns.md`](../patterns.md)).
+
+## K64d. Knowledge-map self-reflection ("the shape of what I know")
+
+**Shipped.** The introspective capstone of the K64 *freedom of thought*
+family. Where K64a/b/c each notice something *local* about the topic graph (a
+connection, a drifting topic, an under-explored edge), K64d steps back and
+looks at the **whole shape**: which territories of Aiko's mind are rich and
+well-trodden, which are thin or blank — a rare "huh, most of what I'm carrying
+lately circles X, and I realise I've got almost nothing on Y" meta-thought.
+Unlike a/b/c (cue producers surfaced one-shot through a dedicated inner-life
+block), K64d is a *reflection* and **reuses the existing DreamWorker /
+ReflectionWorker machinery seeded by the graph** instead of raw recent
+memories — so there is **no new provider, no prompt-assembler wiring**.
+
+The [`KnowledgeMapReflectionWorker`](../../../app/core/proactive/knowledge_map_reflection_worker.py)
+is an `IdleWorker` that, on a ~daily interval during a quiet window, reads the
+graph *shape* via `interest_map` (richest = well-trodden territory, top
+`knowledge_map_reflection_rich_top_n`=5) + `knowledge_gap_clusters`
+(dense-but-unlearned = "blank in the learned sense", top
+`knowledge_map_reflection_gap_top_n`=3), runs **one worker-LLM** meta-thought
+pass (`_maintenance_client` / worker model — never the chat model, so no chat
+quota / no prompt-cache invalidation), and writes ONE `kind="reflection"`
+memory prefixed `[mindmap] ` (mirroring DreamWorker's `[dream] `
+discriminator) at scratchpad tier with `metadata.source="knowledge_map"`. That
+memory then flows through the same paths every reflection does — the RAG
+retriever, the **K28** `turning_over` between-session surfacing, the
+NarrativeWeaver — so the meta-thought surfaces naturally in Aiko's own words
+when relevant. The `turning_over` render strips the `[mindmap] ` prefix and
+keeps the waking "thinking about this" framing (the persona's "What I've been
+turning over" block gained a bullet teaching her to own it as a self-aware
+noticing of her own lopsided attention — *not* "I've been analysing my
+memory"). Skips when fewer than `knowledge_map_reflection_min_clusters`=4
+labelled clusters exist (`no_context`), or with no graph / LLM / embedder.
+Paced hard: a daily interval **plus** a `knowledge_map_reflection_cooldown_hours`=20
+wall-clock cooldown (stamped on the kv key `knowledge_map_reflection.last_fired_at`
+even on a dedupe so a near-identical reflection isn't re-attempted every tick;
+a force-run bypasses it). Every failure path is swallowed and logged at debug.
+
+**MCP-debuggable**: `get_knowledge_map_reflection_state` (switch / interval /
+cooldown stamp / dry-run of the rich + under-explored shape the worker would
+reflect on), `force_knowledge_map_reflection` (run once bypassing the
+cooldown, returns `wrote` / `memory_id` / `reflection` or a skip reason — the
+written row then surfaces on a later turn via RAG / K28, confirm it in the
+Memory tab). Grep `tail_logs(module_contains="knowledge_map_reflection")` for
+`knowledge-map-reflection wrote memory`. Settings:
+`agent.knowledge_map_reflection_enabled` + the seven
+`memory.knowledge_map_reflection_*` knobs (interval / cooldown / min_clusters
+/ rich_top_n / gap_top_n / max_tokens / salience). Tests:
+[`tests/test_knowledge_map_reflection.py`](../../../tests/test_knowledge_map_reflection.py)
+(shape read + LLM pass + `[mindmap]` write + dedupe + cooldown + `force_next`
++ `clean_reflection_output`) plus the `[mindmap]`-prefix-strip case in
+[`tests/test_turning_over_picker.py`](../../../tests/test_turning_over_picker.py).
+**The K64 freedom-of-thought family is now complete (a + b + c + d).**

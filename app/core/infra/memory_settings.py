@@ -493,6 +493,27 @@ class MemorySettings:
     # Per-edge cooldown: once a curiosity edge is noticed, don't re-notice
     # it for this long. Keyed on a stable hash of the unordered label pair.
     curiosity_gradient_edge_cooldown_hours: int = 96
+    # ── K64d: knowledge-map self-reflection (shape of what I know) ───────
+    # How often the KnowledgeMapReflectionWorker may run. Daily by default —
+    # this is the rarest, most introspective K64 beat. Floored at 60s.
+    knowledge_map_reflection_interval_seconds: int = 86400
+    # Wall-clock cooldown between map-shape reflections, independent of the
+    # scheduler interval (a force-run still bypasses it). Hours.
+    knowledge_map_reflection_cooldown_hours: int = 20
+    # Need at least this many labelled clusters before there's a "shape"
+    # worth reflecting on — otherwise the worker skips (no_context).
+    knowledge_map_reflection_min_clusters: int = 4
+    # How many of the richest (largest) clusters to feed the LLM as the
+    # "well-trodden territory" half of the prompt.
+    knowledge_map_reflection_rich_top_n: int = 5
+    # How many under-researched (dense-but-unlearned) clusters to feed as the
+    # "blank in the learned sense" half. 0 disables the gap half entirely.
+    knowledge_map_reflection_gap_top_n: int = 3
+    # num_predict cap for the worker-LLM meta-thought (it's one short note).
+    knowledge_map_reflection_max_tokens: int = 120
+    # Salience of the written [mindmap] reflection memory. Mid-range — it's a
+    # scratchpad-tier reflection that earns persistence only via retrieval.
+    knowledge_map_reflection_salience: float = 0.5
     # ── F10h: topic temperature (per-cluster affect) ─────────────────────
     # Minimum centroid cosine for the live turn to count as "on" a topic
     # cluster before its temperature is even considered. Keeps the tonal
@@ -1390,6 +1411,65 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                     memory_raw.get(
                         "curiosity_gradient_edge_cooldown_hours", 96,
                     )
+                ),
+            ),
+            knowledge_map_reflection_interval_seconds=max(
+                60,
+                int(
+                    memory_raw.get(
+                        "knowledge_map_reflection_interval_seconds", 86400,
+                    )
+                ),
+            ),
+            knowledge_map_reflection_cooldown_hours=max(
+                0,
+                int(
+                    memory_raw.get(
+                        "knowledge_map_reflection_cooldown_hours", 20,
+                    )
+                ),
+            ),
+            knowledge_map_reflection_min_clusters=max(
+                2,
+                int(
+                    memory_raw.get(
+                        "knowledge_map_reflection_min_clusters", 4,
+                    )
+                ),
+            ),
+            knowledge_map_reflection_rich_top_n=max(
+                1,
+                int(
+                    memory_raw.get(
+                        "knowledge_map_reflection_rich_top_n", 5,
+                    )
+                ),
+            ),
+            knowledge_map_reflection_gap_top_n=max(
+                0,
+                int(
+                    memory_raw.get(
+                        "knowledge_map_reflection_gap_top_n", 3,
+                    )
+                ),
+            ),
+            knowledge_map_reflection_max_tokens=max(
+                40,
+                int(
+                    memory_raw.get(
+                        "knowledge_map_reflection_max_tokens", 120,
+                    )
+                ),
+            ),
+            knowledge_map_reflection_salience=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get(
+                            "knowledge_map_reflection_salience", 0.5,
+                        )
+                    ),
                 ),
             ),
             topic_temperature_min_sim=max(

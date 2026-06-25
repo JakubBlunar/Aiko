@@ -85,6 +85,13 @@ DEFAULT_MIN_TOPICAL_SIMILARITY: float = 0.30
 _DREAM_PREFIX: str = "[dream] "
 
 
+# K64d knowledge-map reflections carry a ``[mindmap] `` content prefix
+# (see ``app/core/proactive/knowledge_map_reflection_worker.py``). They
+# surface through this same path as ordinary waking reflections, so the
+# render strips the marker but keeps the "thinking about this" framing.
+_MINDMAP_PREFIX: str = "[mindmap] "
+
+
 # ── Result type ──────────────────────────────────────────────────────────
 
 
@@ -257,6 +264,8 @@ def render_inner_life_block(
     raw = (result.content or "").strip()
     if result.dream and raw.startswith(_DREAM_PREFIX):
         raw = raw[len(_DREAM_PREFIX):].lstrip()
+    elif raw.startswith(_MINDMAP_PREFIX):
+        raw = raw[len(_MINDMAP_PREFIX):].lstrip()
     # Trim very long reflections so the cue stays compact. The
     # full content is still on the memory row; this trim is just
     # so the system prompt doesn't carry a 400-char journal entry.
