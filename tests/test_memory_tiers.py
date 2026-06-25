@@ -104,6 +104,58 @@ class TestTierRoundTrip(unittest.TestCase):
         self.assertAlmostEqual(b2.revival_score, 0.6, places=4)
 
 
+class TestTierFilteredListing(unittest.TestCase):
+    """Tier filtering must run before the offset/limit slice.
+
+    Regression: the Memory-tab tier filter used to be applied to the
+    already-paginated page in the facade, so an ``archive`` filter only
+    surfaced the archive rows that happened to fall in the newest page
+    (≈none, since archive rows sort to the bottom) while ``count_memories``
+    reported the true total — one item shown, broken pagination.
+    """
+
+    def _seed(self):
+        _, store = _store_factory()
+        # 30 long_term + 5 archive. Archive rows are added last so a
+        # recency-ordered, post-slice filter would push them off page 0.
+        for i in range(30):
+            store.add(f"long term row {i:02d}", "fact", _emb(f"lt{i}"),
+                      tier="long_term")
+        for i in range(5):
+            store.add(f"archive row {i:02d}", "fact", _emb(f"ar{i}"),
+                      tier="archive")
+        return store
+
+    def test_recent_listing_filters_tier_before_slice(self) -> None:
+        store = self._seed()
+        # Page 0 of an archive filter must return all 5 archive rows, even
+        # though they were the most-recently-added (would still be page 0)
+        # AND even if we ask for a tiny window that the long_term rows
+        # would otherwise fill.
+        page = store.list_recent(limit=50, offset=0, tier="archive")
+        self.assertEqual(len(page), 5)
+        self.assertTrue(all(m.tier == "archive" for m in page))
+        self.assertEqual(store.count_memories(tier="archive"), 5)
+
+    def test_top_listing_filters_tier_before_slice(self) -> None:
+        store = self._seed()
+        page = store.list_top(limit=50, offset=0, tier="archive")
+        self.assertEqual(len(page), 5)
+        self.assertTrue(all(m.tier == "archive" for m in page))
+
+    def test_tier_pagination_is_consistent(self) -> None:
+        store = self._seed()
+        # With a window of 2, the 5 archive rows must paginate as 2/2/1 and
+        # never leak a non-archive row.
+        seen: list[int] = []
+        for offset in (0, 2, 4):
+            page = store.list_recent(limit=2, offset=offset, tier="archive")
+            self.assertTrue(all(m.tier == "archive" for m in page))
+            seen.extend(m.id for m in page)
+        self.assertEqual(len(seen), 5)
+        self.assertEqual(len(set(seen)), 5)
+
+
 class TestWallClockDecay(unittest.TestCase):
     def test_decay_scales_with_elapsed_days(self) -> None:
         _, store = _store_factory()
