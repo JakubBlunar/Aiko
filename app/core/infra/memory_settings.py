@@ -439,6 +439,38 @@ class MemorySettings:
     # How many member content snippets to pull from each cluster as substance
     # for the worker-LLM connection prompt. 0 → labels only.
     associative_wander_member_samples: int = 3
+    # ── K64b: interest drift (budding / fading interests over time) ──────
+    # How often the InterestDriftWorker snapshots cluster mass + may draft a
+    # drift cue. Long (6h default): interests drift slowly, and each tick
+    # just adds one sample to the per-topic mass time-series.
+    interest_drift_interval_seconds: int = 21600
+    # Max drift cues drafted per local day. Small — drift is a rare,
+    # slow-burn signal.
+    interest_drift_daily_cap: int = 3
+    # Size of the kv journal ring of drafted drift cues.
+    interest_drift_journal_max: int = 6
+    # A cluster must have at least this many members to track / count as a
+    # real interest (rising or fading).
+    interest_drift_min_size: int = 4
+    # Cap on how many of the largest clusters get a mass sample per tick —
+    # bounds the kv time-series size.
+    interest_drift_max_clusters: int = 40
+    # How many mass snapshots to keep per topic (the drift window). At the
+    # 6h default that's two days of history.
+    interest_drift_window_samples: int = 8
+    # Minimum snapshots before a topic's drift is classified at all (cold
+    # topics stay silent until the window warms).
+    interest_drift_min_samples: int = 3
+    # Fractional growth across the window for a topic to read as "rising"
+    # (0.5 ≈ "grew 50% since the window start"), combined with an absolute
+    # floor of a few new members so a tiny cluster can't trip it.
+    interest_drift_rise_ratio: float = 0.5
+    # Upper bound on window growth for a sizable cluster to read as
+    # "fading" (0.05 ≈ "barely grew — attention has cooled").
+    interest_drift_fade_max_growth_ratio: float = 0.05
+    # Per-topic cooldown: once a drift is noticed for a topic, don't
+    # re-notice it for this long. Keyed on a stable hash of the label.
+    interest_drift_topic_cooldown_hours: int = 72
     # ── F10h: topic temperature (per-cluster affect) ─────────────────────
     # Minimum centroid cosine for the live turn to count as "on" a topic
     # cluster before its temperature is even considered. Keeps the tonal
@@ -1229,6 +1261,56 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             associative_wander_member_samples=max(
                 0,
                 int(memory_raw.get("associative_wander_member_samples", 3)),
+            ),
+            interest_drift_interval_seconds=max(
+                60,
+                int(
+                    memory_raw.get("interest_drift_interval_seconds", 21600)
+                ),
+            ),
+            interest_drift_daily_cap=max(
+                0,
+                int(memory_raw.get("interest_drift_daily_cap", 3)),
+            ),
+            interest_drift_journal_max=max(
+                1,
+                int(memory_raw.get("interest_drift_journal_max", 6)),
+            ),
+            interest_drift_min_size=max(
+                2,
+                int(memory_raw.get("interest_drift_min_size", 4)),
+            ),
+            interest_drift_max_clusters=max(
+                1,
+                int(memory_raw.get("interest_drift_max_clusters", 40)),
+            ),
+            interest_drift_window_samples=max(
+                2,
+                int(memory_raw.get("interest_drift_window_samples", 8)),
+            ),
+            interest_drift_min_samples=max(
+                2,
+                int(memory_raw.get("interest_drift_min_samples", 3)),
+            ),
+            interest_drift_rise_ratio=max(
+                0.0,
+                float(memory_raw.get("interest_drift_rise_ratio", 0.5)),
+            ),
+            interest_drift_fade_max_growth_ratio=max(
+                0.0,
+                float(
+                    memory_raw.get(
+                        "interest_drift_fade_max_growth_ratio", 0.05,
+                    )
+                ),
+            ),
+            interest_drift_topic_cooldown_hours=max(
+                0,
+                int(
+                    memory_raw.get(
+                        "interest_drift_topic_cooldown_hours", 72,
+                    )
+                ),
             ),
             topic_temperature_min_sim=max(
                 0.0,

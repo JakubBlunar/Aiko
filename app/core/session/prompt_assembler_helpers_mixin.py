@@ -124,6 +124,7 @@ class PromptAssemblerHelpersMixin:
         knowledge_gaps: Callable[[str], str] | None = None,
         knowledge_gap_notice: Callable[[str], str] | None = None,
         associative_wander: Callable[[str], str] | None = None,
+        interest_drift: Callable[[str], str] | None = None,
         topic_temperature: Callable[[str], str] | None = None,
         topic_confidence: Callable[[str], str] | None = None,
         knowledge_grounding: Callable[[str], str] | None = None,
@@ -226,6 +227,8 @@ class PromptAssemblerHelpersMixin:
             self._knowledge_gap_notice_provider = knowledge_gap_notice
         if associative_wander is not None:
             self._associative_wander_provider = associative_wander
+        if interest_drift is not None:
+            self._interest_drift_provider = interest_drift
         if topic_temperature is not None:
             self._topic_temperature_provider = topic_temperature
         if topic_confidence is not None:

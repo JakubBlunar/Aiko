@@ -699,12 +699,14 @@ autonomous interior life; pick any sub-idea independently.
   result is a **cue** (not a verbatim nudge), surfaced one-shot via an
   inner-life block so she can bring it up *in her own words* if it fits
   ("funny, this reminds me of..."). Rarity + cooldown are essential.
-- **K64b. Interest drift.** Track cluster *mass over time* (size +
-  recency deltas between graph builds, persisted to `kv_meta`). A
-  cluster gaining mass = a budding interest ("I've been weirdly into X
-  lately"); one decaying = a fading one. Surfaces as a slow,
-  self-aware register shift, not an announcement. Pairs with K27 day
-  colour as another slow under-current.
+- **K64b. Interest drift.** ✅ **Shipped** — see
+  [`shipped/awareness.md#k64b-interest-drift`](shipped/awareness.md#k64b-interest-drift-ive-been-weirdly-into-x-lately).
+  Tracks cluster *mass over time* (per-tick `(label, size)` snapshots
+  persisted to `kv_meta`). A cluster gaining mass = a budding interest
+  ("I've been weirdly into X lately"); a sizable one gone stagnant = a
+  fading one. Surfaces as a slow, self-aware register shift (topic-gated,
+  one-shot), not an announcement. Pairs with K27 day colour as another slow
+  under-current.
 - **K64c. Curiosity gradient from graph sparsity.** Find regions
   *adjacent* to dense clusters that are themselves thin (she's been
   near a topic a lot but never actually explored its edges) and let
