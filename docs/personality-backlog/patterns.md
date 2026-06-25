@@ -730,3 +730,149 @@ the one-shot cues, and persona copy teaching her the *register* (never
 narrate the mechanism; a drifted thought IS the response). The whole
 family leans on the cue-not-verbatim discipline and heavy cooldowns so
 interior life reads as texture, not a feature firing.
+
+---
+
+## K65. Worker modernization for the topic-cluster era (audit)
+
+**Motivation.** Several background workers predate the K9 topic graph and
+still scan / extract *globally* — over the whole memory mirror or the raw
+recent transcript — when the cluster structure now gives a much cheaper,
+sharper unit of work. None of these are broken; each is a "now that we have
+20+ real clusters, this worker can be smarter and cheaper" upgrade. They
+share one lever: read [`topic_graph.py`](../../app/core/conversation/topic_graph.py)
+(`topic_clusters` / `interest_map` / centroids) and scope the work to a
+cluster instead of the whole pool. Sub-items are independent; ship in any
+order.
+
+- **K65a. Cluster-scope the F5 conflict-detector pair scan.** Today
+  [`MemoryConflictWorker`](../../app/core/memory/memory_conflict_worker.py)
+  does an **all-pairs** cosine sweep over the allow-listed corpus, bounded
+  only by `conflict_detector_max_corpus` / `_max_pairs_per_run` caps — so on
+  a large store it samples a slice and can miss contradictions, and the
+  nested loop is O(n²). Contradictory pairs (`loves X` vs `hates X`) are by
+  construction *topically close*, i.e. almost always in the **same cluster**.
+  Restrict the pair scan to within-cluster pairs (walk
+  `topic_clusters().member_ids`), turning the cost into O(Σ kᵢ²) — typically
+  an order of magnitude smaller — which lets the caps rise and *increases*
+  coverage while *cutting* CPU. Pure win; keep the existing heuristic + LLM
+  gate untouched, only change which pairs are nominated.
+
+- **K65b. Bias the K2 belief worker toward high-mass interests.**
+  [`BeliefWorker`](../../app/core/relationship/belief_worker.py) mines only
+  the active session's last `belief_worker_lookback_turns`=12 user messages —
+  a recency window with no notion of what the user actually cares about. Pass
+  it the `interest_map` so extraction is *prioritised* on the densest
+  clusters (the topics worth holding a theory-of-mind on), and add a periodic
+  "stale-belief refresh" that re-checks beliefs whose cluster mass shifted
+  notably since they were formed. Reduces wasted LLM passes on one-off chatter
+  and keeps beliefs anchored to durable interests.
+
+- **K65c. Modernise or retire the Phase-4c `CuriosityWorker`.** The
+  speaking-window [`CuriosityWorker`](../../app/core/proactive/curiosity_worker.py)
+  drafts a next-turn "ask {user} a small follow-up about <topic>"
+  `open_question`, but its topic is just the *literal last short user turn*
+  gated on a shallow arc — it has no idea what the user is actually into.
+  Now that K9 seeds (lateral), K34 forward-curiosity (their future plans),
+  and K64c curiosity-gradient (under-explored edges) all cover richer
+  curiosity, either (a) give this worker cluster-awareness so its follow-up
+  anchors on a known-but-quiet interest, or (b) evaluate whether it's now
+  redundant and should be merged into the curiosity family / retired. Decide
+  with a quick overlap audit before adding more curiosity surface.
+
+- **K65d. Seed self-image from the interest map.**
+  [`SelfImageWorker`](../../app/core/persona/self_image_worker.py) rebuilds
+  `data/persona/self_image.txt` daily from top-salience `self` + `reflection`
+  memories only — so her self-narrative never reflects *what she's been
+  engaging with*. Feed the `interest_map` (and optionally K64b's rising/fading
+  signal) into the prompt so "lately I've been drawn to X" can legitimately
+  enter her self-image. Ties the slow self-narrative to the actual shape of
+  the conversation.
+
+- **K65e. Ground the DreamWorker in the day's hot cluster (optional).**
+  [`DreamWorker`](../../app/core/proactive/dream_worker.py) seeds between-
+  session dreams from the rolling summary + callbacks + self memories. Now
+  that K64d reflects on graph *shape*, DreamWorker could optionally bias its
+  dream toward the day's most-active cluster for a more grounded
+  "I kept turning over your X" — but watch for overlap with K64d; this is the
+  lowest-priority sub-item.
+
+---
+
+## K66. Earned familiarity — "well-trodden ground between us"
+
+**Motivation.** F10h topic temperature reads how a topic *feels* (warm /
+tender); K66 is orthogonal — it reads how *deep* the shared history on a
+topic is. When the live turn maps to a **high-mass** cluster (one the pair
+has returned to many times), Aiko has genuinely *earned fluency* there and a
+long relationship should sound like it: she can lean on shared shorthand,
+skip the 101-level scaffolding, and reference the history ("we've been over
+your training setup enough that I don't need the recap — so, the new block?").
+A passive **T5** prompt cue gated on cluster size + live-turn cosine, with
+persona copy teaching her to let depth show as *register* (shorthand,
+assumed context) and never as a stated fact ("we've discussed this 14 times"
+is exactly wrong). Distinct from K25 confidence-decay (which makes *old*
+memories hedge) — this makes *frequently-revisited* territory feel intimate.
+Key files: a new inner-life provider reading
+[`topic_graph.py`](../../app/core/conversation/topic_graph.py) `interest_map`
++ live-turn similarity, wired into
+[`prompt_assembler.py`](../../app/core/session/prompt_assembler.py) near the
+other topic cues, persona copy in
+[`aiko_companion.txt`](../../data/persona/aiko_companion.txt).
+
+---
+
+## K67. Dormant-interest re-opener — "we haven't talked about X in ages"
+
+**Motivation.** K64b notices when *Aiko's* interest fades; K34 asks about the
+*user's* upcoming plans. The missing symmetric beat: a cluster that was once a
+**high-mass user interest** and has gone *silent* for a long stretch (no new
+members in N weeks) — an established thread that quietly dropped off. On a
+natural lull, Aiko gently re-opens it ("you used to talk about your band all
+the time — still playing, or did that fizzle?"). A cue producer keyed on a
+per-cluster "last touched" age vs a peak-mass threshold, surfaced one-shot
+through an inner-life block with a long cooldown so it stays rare and warm,
+never an interrogation. Differs from K34 (future plans, not dormant past
+interests) and K64b (Aiko's interest, surfaced as register). Key files: a new
+idle worker reading cluster member timestamps from
+[`topic_graph.py`](../../app/core/conversation/topic_graph.py), a kv journal +
+inner-life provider mirroring the K64 cue-producer pattern, persona copy.
+
+---
+
+## K68. Embodied vitality — a body that has good days and tired nights
+
+**Motivation.** Aiko has *moods* (`AffectState`, reactive valence/arousal),
+*weather* (K27 day colour, stable for the day), and a *clock* (circadian), but
+she has no **body state** — a slow-moving vitality that ebbs and recovers. A
+real person is bright in the morning, flags late at night, gets drained after
+a long emotional conversation and needs to recover, runs on more energy the
+day after a good sleep. K68 is a single persistent `energy` scalar in `[0, 1]`
+on `kv_meta` that (a) follows a circadian baseline curve (lower deep at night,
+peak mid-day), (b) is *spent* by long / emotionally heavy turns (read the K57
+emotion-episode intensity + turn length) and recovered over wall-clock idle
+time, and (c) **feeds back into embodiment** rather than being narrated: it
+scales `avatar.expressiveness` (low energy → smaller gestures, slower breath
+via the existing `tickPreModel` amplitude path), biases proactivity cadence
+(a tired Aiko initiates less — nudge `ProactiveDirector` periods), and gates a
+soft "I'm a bit low-energy tonight" register cue only at the extremes. This is
+a *mechanic*, not persona text — it's the missing embodied layer between
+"what she feels" (affect) and "how she moves" (Live2D), and it makes the
+same words land differently at 2am than at noon.
+
+**Distinct from** K27 day colour (a categorical daily *flavour*, not a
+spendable resource), affect (fast, objectless valence/arousal), and circadian
+(pure time-of-day, no memory of exertion). K68 is the slow, depletable,
+recovering one — and it's the only one with a real feedback loop into the
+avatar's movement amplitude.
+
+**Key files.** New `app/core/affect/vitality.py` (pure curve + spend/recover
+math, mirroring [`vulnerability_budget.py`](../../app/core/affect/vulnerability_budget.py)),
+a `VitalityWorker` or a cheap lazy provider on `kv_meta` (mirror K27's
+[`day_color_worker.py`](../../app/core/affect/day_color_worker.py) + lazy
+fallback pattern), the post-turn spend hook in
+[`post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py), a feed into
+`avatar.expressiveness` / the `AmbientBodyChannel` amplitude and into
+[`proactive_director.py`](../../app/core/proactive/proactive_director.py)
+cadence, plus `agent.vitality_enabled`. MCP debug + a Settings readout like
+K27's `get_day_color_state`.
