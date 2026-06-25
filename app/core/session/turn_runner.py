@@ -551,20 +551,35 @@ class TurnRunner:
             response_budget=self._max_tokens,
         )
 
-        # On overflow: synchronous compaction → reassemble (aggressive) once.
+        # On projected overflow: fit *this* turn with an aggressive
+        # reassembly and schedule the real summary in the background.
+        #
+        # P20: the summariser LLM call used to run *inline* here
+        # (``compact_now``), stalling the turn for up to the worker's
+        # ``timeout_seconds`` between user-send and first token — the
+        # single worst-case latency spike in the system, landing on
+        # exactly the turns that are already the heaviest. It was never
+        # needed to *fit*: ``aggressive=True`` reassembly is guaranteed to
+        # fit (it drops oldest raw history until system+user+history is
+        # within budget), and the summary only adds to the system prompt,
+        # so deferring it never hurts the fit. We therefore reassemble
+        # aggressively for this turn (dropping the oldest raw history) and
+        # push the summariser deadline to *now* so the next turn gets a
+        # proper rolling summary instead of dropped context. ``compactions_run``
+        # stays 0 — no synchronous compaction happens anymore.
         compactions_run = 0
         if telemetry.compaction_triggered and self._summary is not None:
             log.info(
-                "context overflow projected (est=%d > budget=%d); compacting now",
+                "context overflow projected (est=%d > budget=%d); fitting this "
+                "turn aggressively and scheduling background compaction",
                 telemetry.prompt_tokens_estimate, telemetry.budget_tokens,
             )
             try:
-                wrote = self._summary.compact_now(session_key)
+                self._summary.notify_compaction_soon(session_key)
             except Exception:
-                log.exception("compact_now raised")
-                wrote = False
-            if wrote:
-                compactions_run += 1
+                log.debug(
+                    "notify_compaction_soon (overflow) failed", exc_info=True,
+                )
             messages, telemetry = self._prompt.assemble_with_budget(
                 session_key,
                 cleaned_user,

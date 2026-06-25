@@ -68,6 +68,7 @@ def _build_runner(
     stream_tokens: list[str] | None = None,
     embedder: _StubEmbedder | None = None,
     telemetry: PromptTelemetry | None = None,
+    summary_worker: Any | None = None,
 ) -> tuple[TurnRunner, _StubEmbedder, MagicMock]:
     """Construct a ``TurnRunner`` with all real-world deps mocked.
 
@@ -99,6 +100,7 @@ def _build_runner(
         temperature=0.7,
         filler_enabled=False,
         embedder=embedder,  # type: ignore[arg-type]
+        summary_worker=summary_worker,
     )
     return runner, embedder, prompt
 
@@ -259,6 +261,86 @@ class TurnDoneCachedFieldsTests(unittest.TestCase):
         self.assertIn("turn done:", haystack)
         self.assertIn("cached=800", haystack)
         self.assertIn("cached_pct=80.0", haystack)
+
+
+class _StubSummaryWorker:
+    """Records which compaction path TurnRunner took."""
+
+    def __init__(self) -> None:
+        self.compact_now_calls: list[str] = []
+        self.notify_soon_calls: list[str] = []
+
+    def compact_now(self, session_key: str) -> bool:
+        self.compact_now_calls.append(session_key)
+        return True
+
+    def notify_compaction_soon(self, session_key: str) -> None:
+        self.notify_soon_calls.append(session_key)
+
+    def notify_turn_done(self, session_key: str) -> None:
+        pass
+
+
+class DeferredCompactionTests(unittest.TestCase):
+    """P20: projected overflow no longer runs the summariser LLM inline.
+
+    It must reassemble aggressively (so the turn still fits) and push the
+    background-compaction deadline forward, never blocking first token on
+    a synchronous ``compact_now``.
+    """
+
+    def test_overflow_schedules_async_and_skips_compact_now(self) -> None:
+        summary = _StubSummaryWorker()
+        # First assembly reports overflow; the aggressive reassembly is
+        # the second return value (no overflow).
+        overflow = PromptTelemetry(
+            compaction_triggered=True,
+            prompt_tokens_estimate=9000,
+            budget_tokens=7000,
+        )
+        fitted = PromptTelemetry(compaction_triggered=False)
+        runner, _, prompt = _build_runner(summary_worker=summary)
+        prompt.assemble_with_budget = MagicMock(
+            side_effect=[([], overflow), ([], fitted)],
+        )
+        runner.run(session_key="default:main", user_text="hi")
+        # The summariser LLM (compact_now) must NOT have run on the hot path.
+        self.assertEqual(summary.compact_now_calls, [])
+        # The background compaction must have been scheduled.
+        self.assertIn("default:main", summary.notify_soon_calls)
+        # The aggressive reassembly must have run (second assemble call
+        # with aggressive=True).
+        self.assertEqual(prompt.assemble_with_budget.call_count, 2)
+        _, kwargs = prompt.assemble_with_budget.call_args_list[1]
+        self.assertTrue(kwargs.get("aggressive"))
+
+    def test_no_overflow_does_not_touch_summary(self) -> None:
+        summary = _StubSummaryWorker()
+        runner, _, prompt = _build_runner(
+            summary_worker=summary,
+            telemetry=PromptTelemetry(compaction_triggered=False),
+        )
+        runner.run(session_key="default:main", user_text="hi")
+        self.assertEqual(summary.compact_now_calls, [])
+        self.assertEqual(summary.notify_soon_calls, [])
+        # Only the initial assembly; no aggressive reassembly.
+        self.assertEqual(prompt.assemble_with_budget.call_count, 1)
+
+    def test_overflow_compactions_run_stays_zero(self) -> None:
+        summary = _StubSummaryWorker()
+        overflow = PromptTelemetry(
+            compaction_triggered=True,
+            prompt_tokens_estimate=9000,
+            budget_tokens=7000,
+        )
+        fitted = PromptTelemetry(compaction_triggered=False)
+        runner, _, prompt = _build_runner(summary_worker=summary)
+        prompt.assemble_with_budget = MagicMock(
+            side_effect=[([], overflow), ([], fitted)],
+        )
+        result = runner.run(session_key="default:main", user_text="hi")
+        # No synchronous compaction happened, so the counter is 0.
+        self.assertEqual(result.compactions_run, 0)
 
 
 if __name__ == "__main__":

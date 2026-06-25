@@ -1265,6 +1265,35 @@ falls back to inline + is idempotent).
 
 ---
 
+## P20. Synchronous LLM compaction no longer stalls the turn
+
+When a turn's assembled prompt projected over budget,
+`TurnRunner._run_inner` ran `SummaryWorker.compact_now` **inline on the
+turn thread** — a full summarisation LLM call (up to the worker's
+`timeout_seconds`) between user-send and first token, the single
+worst-case latency spike in the system, landing on exactly the heaviest
+turns. P20 removes it from the hot path. The synchronous `compact_now`
+was never needed to *fit*: the `aggressive=True` reassembly that already
+followed it is guaranteed to fit (it pops oldest raw history until
+`system+user+history` is within budget), and a fresh summary only *adds*
+to the system prompt, so deferring it never hurts the fit. The overflow
+branch now (1) calls `SummaryWorker.notify_compaction_soon(session_key)`
+to push the background-summariser deadline to *now*, and (2) reassembles
+aggressively to fit this turn by dropping the oldest raw history. The
+*next* turn picks up the proper rolling summary instead of dropped
+context — a one-turn quality dip in exchange for never blocking first
+token on a worker LLM call. `compactions_run` stays `0` (no synchronous
+compaction happens), and the post-turn `notify_compaction_soon`
+threshold check (`max_prompt_tokens_pct`) is unchanged, so most overflows
+are still pre-empted a turn early. `compact_now` stays on `SummaryWorker`
+(still unit-tested, still callable) but no longer has a hot-path caller.
+Tests: `tests/test_turn_runner_telemetry.py::DeferredCompactionTests`
+(overflow schedules async + skips `compact_now` + reassembles aggressive;
+no-overflow leaves the summary worker untouched; `compactions_run` stays
+0).
+
+---
+
 ## P8. Idle-worker queue visibility + multi-worker drain
 
 `IdleWorkerScheduler` was capped at one worker per 60 s tick.
