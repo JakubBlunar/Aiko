@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Aiko">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1a1238" />
+      <stop offset="1" stop-color="#2a1d52" />
+    </linearGradient>
+    <mask id="crescent">
+      <rect width="512" height="512" fill="black" />
+      <circle cx="256" cy="256" r="150" fill="white" />
+      <circle cx="312" cy="220" r="128" fill="black" />
+    </mask>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)" />
+  <circle cx="256" cy="256" r="150" fill="#c4b5fd" mask="url(#crescent)" />
+</svg>

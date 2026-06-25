@@ -288,6 +288,10 @@ class MemoryConsolidator:
                     "num_predict": self._max_tokens,
                 },
                 model=self._model,
+                # Reasoning model: num_predict stays the answer budget; the
+                # client adds think headroom for the trace (was truncating
+                # to an empty answer with think off).
+                think=True,
                 surface="memory_consolidator",
             )
         except Exception:

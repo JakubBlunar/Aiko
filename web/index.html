@@ -3,6 +3,15 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/aiko.svg" />
+
+    <!-- PWA: installable + standalone (no browser chrome). -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#0f0a1f" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+    <meta name="apple-mobile-web-app-title" content="Aiko" />
     <!-- maximum-scale=1 stops iOS Safari from auto-zooming when a form
          control gains focus (the 16px font-size workaround alone wasn't
          enough). iOS 10+ still honours deliberate pinch-zoom as an
@@ -19,6 +28,19 @@
   </head>
   <body>
     <div id="root"></div>
+    <!-- Portrait lock. iOS/WebKit ignores the manifest ``orientation``
+         field and ``screen.orientation.lock()``, so on iPhone the only way
+         to enforce portrait is to cover the app when the phone is held in
+         landscape. Scoped to short viewports so it only triggers on phones
+         (desktops/tablets in landscape are tall enough to never match). On
+         Android the manifest lock fires first, so this panel never shows. -->
+    <div class="rotate-lock" aria-hidden="true">
+      <div class="rotate-lock__inner">
+        <div class="rotate-lock__icon">🌙</div>
+        <p class="rotate-lock__title">Aiko works best in portrait</p>
+        <p class="rotate-lock__hint">Please rotate your device.</p>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
