@@ -174,6 +174,50 @@ class TestSummaries(unittest.TestCase):
             self.assertEqual(row.summary, "new")
 
 
+class TestHistoryHead(unittest.TestCase):
+    """P3: cheap slice-cache invalidation signature."""
+
+    def test_empty_session_is_zero_signature(self):
+        with _TempDB() as db:
+            self.assertEqual(db.get_history_head("s1"), (0, 0, ""))
+
+    def test_max_id_and_count_track_messages(self):
+        with _TempDB() as db:
+            db.add_message("s1", "user", "a")
+            db.add_message("s1", "assistant", "b")
+            max_id, count, summary_sig = db.get_history_head("s1")
+            self.assertEqual(count, 2)
+            self.assertGreater(max_id, 0)
+            self.assertEqual(summary_sig, "")
+            db.add_message("s1", "user", "c")
+            new_max, new_count, _ = db.get_history_head("s1")
+            self.assertEqual(new_count, 3)
+            self.assertGreater(new_max, max_id)
+
+    def test_session_isolation(self):
+        with _TempDB() as db:
+            db.add_message("s1", "user", "a")
+            db.add_message("s2", "user", "b")
+            db.add_message("s2", "user", "c")
+            self.assertEqual(db.get_history_head("s1")[1], 1)
+            self.assertEqual(db.get_history_head("s2")[1], 2)
+
+    def test_nonempty_summary_contributes_signature(self):
+        with _TempDB() as db:
+            db.add_message("s1", "user", "a")
+            self.assertEqual(db.get_history_head("s1")[2], "")
+            db.save_summary("s1", "a rolling summary", 4, 1)
+            sig = db.get_history_head("s1")[2]
+            self.assertNotEqual(sig, "")
+            self.assertTrue(sig.endswith(":1"))
+
+    def test_empty_summary_does_not_contribute_signature(self):
+        with _TempDB() as db:
+            db.add_message("s1", "user", "a")
+            db.save_summary("s1", "   ", 0, 0)
+            self.assertEqual(db.get_history_head("s1")[2], "")
+
+
 class TestThreadNotes(unittest.TestCase):
     """K21 fresh-eyes thread notes + sidebar title resolution."""
 

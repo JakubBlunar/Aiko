@@ -51,6 +51,16 @@ class InnerLifePart3Mixin:
             log.debug("opinion-injection import failed", exc_info=True)
             return ""
 
+        # P21: a borderline verdict confirmed by the post-turn resolver
+        # renders here, exactly one turn after the contradicting message
+        # (the stance hasn't changed in those few seconds, so the lag is
+        # invisible). One-shot: clear on read. Cooldown / cap / tease were
+        # already armed when the verdict landed, so skip the gates below.
+        pending_cue = getattr(self, "_opinion_injection_pending_cue", None)
+        if pending_cue:
+            self._opinion_injection_pending_cue = None
+            return pending_cue
+
         # Decrement cooldown first so a quiet turn always whittles
         # the counter down; otherwise a session that never trips a
         # trigger keeps a stale armed cooldown forever.
@@ -107,48 +117,39 @@ class InnerLifePart3Mixin:
             log.debug("opinion-injection: embedder failed", exc_info=True)
             return ""
 
-        # Optional LLM gate for the borderline path. ``llm_gate=None``
-        # cleanly skips the LLM branch and degrades to Path C
-        # (definite-only). The detector itself owns the heuristic
-        # call; this lambda only fires when classify_pair returns
-        # ``borderline``.
-        llm_gate = None
+        # P21: the borderline path's LLM verdict used to run *inline* here
+        # -- 0.5-8s of added TTFT on every fire, before any token streamed.
+        # We now defer it: ``detect`` returns a PENDING borderline candidate
+        # without touching the LLM, the post-turn hook
+        # (``_resolve_opinion_injection_pending``) runs the rate-limited
+        # verdict, and a confirmed cue renders one turn later via the
+        # one-shot at the top of this method. ``definite`` hits still fire
+        # inline (they never needed the LLM).
         rate_limiter = getattr(self, "_opinion_injection_rate_limiter", None)
         ollama_client = getattr(self, "_ollama", None)
-        if (
+        require_definite = bool(
+            getattr(
+                self._settings.agent,
+                "opinion_injection_require_definite",
+                False,
+            )
+        )
+        # Only defer when there's actually a way to resolve the verdict off
+        # the hot path; otherwise stay definite-only (Path C).
+        can_defer = (
             rate_limiter is not None
             and ollama_client is not None
-            and not bool(
-                getattr(
-                    self._settings.agent,
-                    "opinion_injection_require_definite",
-                    False,
-                )
-            )
-        ):
-            def _gate(user_t: str, stance_t: str) -> str | None:
-                try:
-                    if not rate_limiter.allow():
-                        return None
-                except Exception:
-                    log.debug(
-                        "opinion-injection: rate_limiter raised", exc_info=True
-                    )
-                    return None
-                return self._opinion_injection_llm_verdict(
-                    user_t, stance_t,
-                )
-
-            llm_gate = _gate
+            and not require_definite
+        )
 
         memory_settings = self._memory_settings
-        agent_settings = self._settings.agent
         try:
             result = opinion_injection_detector.detect(
                 user_text or "",
                 user_vec=user_vec,
                 self_memories=self_memories,
-                llm_gate=llm_gate,
+                llm_gate=None,
+                defer_borderline=can_defer,
                 min_cosine=float(
                     getattr(
                         memory_settings,
@@ -163,19 +164,33 @@ class InnerLifePart3Mixin:
                         opinion_injection_detector.DEFAULT_MIN_USER_WORDS,
                     )
                 ),
-                require_definite=bool(
-                    getattr(
-                        agent_settings,
-                        "opinion_injection_require_definite",
-                        False,
-                    )
-                ),
+                require_definite=require_definite,
             )
         except Exception:
             log.debug("opinion-injection detector raised", exc_info=True)
             return ""
 
         if result is None:
+            return ""
+
+        # P21: a PENDING (borderline) result means "candidate found, but
+        # the verdict costs an LLM call". Stash it for the post-turn
+        # resolver and stay silent this turn -- do NOT arm cooldown / cap /
+        # tease until the cue actually fires.
+        if result.llm_verdict == "PENDING":
+            self._opinion_injection_pending_borderline = {
+                "user_text": user_text or "",
+                "stance_text": result.stance_text,
+                "stance_memory_id": result.stance_memory_id,
+                "cosine": result.cosine,
+                "heuristic_label": result.heuristic_label,
+                "heuristic_signals": list(result.heuristic_signals),
+            }
+            log.debug(
+                "opinion-injection: borderline deferred stance_id=%d cosine=%.3f",
+                result.stance_memory_id,
+                result.cosine,
+            )
             return ""
 
         # Arm cooldown, bump per-session count, stash diagnostics
@@ -263,6 +278,146 @@ class InnerLifePart3Mixin:
             stance_text=stance_text,
             cancel_event=getattr(self, "_fact_check_cancel", None),
         )
+
+    def _resolve_opinion_injection_pending(self) -> None:
+        """P21: run the deferred K29 borderline verdict off the hot path.
+
+        Drains the ``_opinion_injection_pending_borderline`` slot armed by
+        :meth:`_render_opinion_injection_block`, runs the rate-limited
+        YES/NO/UNRELATED gate, and -- on a YES -- arms a one-shot
+        ``_opinion_injection_pending_cue`` that the *next* turn's provider
+        renders. Best-effort: any failure path drops the candidate (no
+        cue). Called from ``_post_turn_inner_life``.
+        """
+        pending = getattr(self, "_opinion_injection_pending_borderline", None)
+        if not pending:
+            return
+        # One-shot: clear regardless of outcome so a dropped verdict never
+        # lingers into a later turn.
+        self._opinion_injection_pending_borderline = None
+
+        if not bool(
+            getattr(self._settings.agent, "opinion_injection_enabled", True)
+        ):
+            return
+        if bool(
+            getattr(
+                self._settings.agent,
+                "opinion_injection_require_definite",
+                False,
+            )
+        ):
+            return
+
+        # Per-session cap: a confirmed cue still counts against the cap, so
+        # skip the LLM spend entirely once saturated.
+        session_cap = max(
+            0,
+            int(
+                getattr(
+                    self._memory_settings,
+                    "opinion_injection_per_session_cap",
+                    3,
+                )
+            ),
+        )
+        session_count = int(
+            getattr(self, "_opinion_injection_session_count", 0)
+        )
+        if session_cap > 0 and session_count >= session_cap:
+            return
+
+        rate_limiter = getattr(self, "_opinion_injection_rate_limiter", None)
+        if rate_limiter is not None:
+            try:
+                if not rate_limiter.allow():
+                    return
+            except Exception:
+                log.debug(
+                    "opinion-injection: rate_limiter raised (resolve)",
+                    exc_info=True,
+                )
+                return
+
+        user_text = str(pending.get("user_text", ""))
+        stance_text = str(pending.get("stance_text", ""))
+        verdict = self._opinion_injection_llm_verdict(user_text, stance_text)
+        if (verdict or "").strip().upper() != "YES":
+            log.debug(
+                "opinion-injection: borderline resolved verdict=%s (no cue)",
+                verdict or "-",
+            )
+            return
+
+        try:
+            from app.core.affect import opinion_injection_detector
+        except Exception:
+            log.debug("opinion-injection import failed (resolve)", exc_info=True)
+            return
+
+        result = opinion_injection_detector.OpinionInjectionResult(
+            trigger="contradiction_borderline",
+            stance_text=stance_text,
+            stance_memory_id=int(pending.get("stance_memory_id", 0) or 0),
+            cosine=float(pending.get("cosine", 0.0) or 0.0),
+            heuristic_label=str(pending.get("heuristic_label", "")),
+            heuristic_signals=list(pending.get("heuristic_signals", []) or []),
+            llm_verdict="YES",
+        )
+
+        cooldown_turns = max(
+            0,
+            int(
+                getattr(
+                    self._memory_settings,
+                    "opinion_injection_cooldown_turns",
+                    5,
+                )
+            ),
+        )
+        self._opinion_injection_cooldown = cooldown_turns
+        self._opinion_injection_session_count = session_count + 1
+        self._last_opinion_injection = result
+
+        try:
+            self._opinion_injection_pending_cue = (
+                opinion_injection_detector.render_inner_life_block(
+                    result,
+                    user_display_name=self.user_display_name,
+                )
+            )
+        except Exception:
+            log.debug(
+                "opinion-injection render failed (resolve)", exc_info=True
+            )
+            self._opinion_injection_pending_cue = None
+            return
+
+        log.info(
+            "opinion-injection fire (deferred): trigger=%s cosine=%.3f "
+            "stance_id=%d heuristic=%s llm_verdict=YES cooldown_set=%d "
+            "session_count=%d",
+            result.trigger,
+            result.cosine,
+            result.stance_memory_id,
+            result.heuristic_label,
+            cooldown_turns,
+            self._opinion_injection_session_count,
+        )
+
+        # K59: bank the hard pushback as future tease material (mirrors
+        # the definite path in _render_opinion_injection_block).
+        try:
+            quote = " ".join(user_text.split())[:120]
+            self._bank_tease_debt(
+                what="they pushed back hard on a take of yours",
+                context=f'they said "{quote}"' if quote else "",
+                source="opinion_pushback",
+            )
+        except Exception:
+            log.debug(
+                "opinion-pushback tease bank failed (resolve)", exc_info=True
+            )
 
     def _render_novelty_block(self, user_text: str) -> str:
         """K6: surface a one-line surprise/novelty signal for this turn.

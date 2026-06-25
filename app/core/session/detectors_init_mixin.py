@@ -85,6 +85,12 @@ class DetectorsInitMixin:
         self._opinion_injection_force_next: bool = False
         self._last_opinion_injection: Any = None
         self._opinion_injection_rate_limiter = None
+        # P21 — deferred borderline verdict. The hot-path provider stashes a
+        # PENDING borderline candidate in ``_pending_borderline``; the
+        # post-turn resolver runs the rate-limited LLM verdict and, on YES,
+        # arms ``_pending_cue`` (the rendered block) for the NEXT turn.
+        self._opinion_injection_pending_borderline: dict[str, Any] | None = None
+        self._opinion_injection_pending_cue: str | None = None
         # K28 — "What I've been turning over" between-session cue.
         # ``_pending_turning_over_seconds`` is armed by the post-turn
         # engagement tracker when a typed turn lands after a gap of

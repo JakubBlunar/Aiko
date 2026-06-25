@@ -160,5 +160,40 @@ class TestMetadataRoundTrip(unittest.TestCase):
             self.assertNotEqual(first.id, second.id)
 
 
+class TestGetMany(unittest.TestCase):
+    """P4: batch mirror fetch used by the RAG hot loop."""
+
+    def test_returns_dict_keyed_by_id(self) -> None:
+        with _TempStore() as store:
+            embedder = _FakeEmbedder()
+            a = store.add("fact one", "fact", embedder.embed("fact one"))
+            b = store.add("fact two", "fact", embedder.embed("fact two"))
+            got = store.get_many([a.id, b.id])
+            self.assertEqual(set(got), {a.id, b.id})
+            self.assertEqual(got[a.id].content, "fact one")
+            self.assertEqual(got[b.id].content, "fact two")
+
+    def test_missing_and_bad_ids_are_skipped(self) -> None:
+        with _TempStore() as store:
+            a = store.add("only fact", "fact", _FakeEmbedder().embed("only fact"))
+            got = store.get_many([a.id, 999_999, None, "x"])  # type: ignore[list-item]
+            self.assertEqual(set(got), {a.id})
+
+    def test_matches_per_id_get(self) -> None:
+        with _TempStore() as store:
+            embedder = _FakeEmbedder()
+            ids = [
+                store.add(f"row {i}", "fact", embedder.embed(f"row {i}")).id
+                for i in range(5)
+            ]
+            batch = store.get_many(ids)
+            for mid in ids:
+                self.assertEqual(batch[mid].content, store.get(mid).content)
+
+    def test_empty_input_returns_empty_dict(self) -> None:
+        with _TempStore() as store:
+            self.assertEqual(store.get_many([]), {})
+
+
 if __name__ == "__main__":
     unittest.main()

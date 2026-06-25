@@ -257,6 +257,17 @@ class PostTurnMixin(PostTurnHelpersMixin):
                 "knowledge_gap auto-resolve failed", exc_info=True,
             )
 
+        # P21: K29 opinion-injection borderline verdict. The hot-path
+        # provider deferred the (0.5-8s) LLM YES/NO check to here so it
+        # never blocks first-token; a confirmed contradiction arms a cue
+        # that renders on the next turn. Definite hits already fired inline.
+        try:
+            self._resolve_opinion_injection_pending()
+        except Exception:
+            log.debug(
+                "opinion-injection deferred resolve failed", exc_info=True,
+            )
+
         # K22 — callback / inside-joke detector. Post-turn cosine pass
         # between Aiko's reply and older eligible memories; hits stamp
         # ``metadata.callback_count`` + bump salience/revival_score so

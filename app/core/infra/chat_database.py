@@ -1347,6 +1347,41 @@ class ChatDatabase:
         ).fetchone()
         return SummaryRow(*row) if row else None
 
+    def get_history_head(self, session_id: str) -> tuple[int, int, str]:
+        """Cheap invalidation signature for the prompt slice cache (P3).
+
+        Returns ``(max_message_id, message_count, summary_signature)`` using
+        two scalar aggregate queries instead of materialising the recent
+        message window + the full summary row. The slice cache compares this
+        tuple on every turn; only when it moves does ``assemble_with_budget``
+        fall back to the full ``get_messages`` + ``get_latest_summary``
+        validation.
+
+        ``summary_signature`` is ``"<updated_at>:<messages_summarized>"`` for
+        the latest *non-empty* summary (mirroring the guard in
+        ``assemble_with_budget``), or ``""`` when no summary filters history.
+        Conservative by construction: any new/deleted message moves
+        ``max_id``/``count`` and any summary rewrite moves ``updated_at``, so
+        a match can never serve stale slices.
+        """
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT COALESCE(MAX(id), 0), COUNT(*) FROM messages WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        max_id = int(row[0]) if row else 0
+        count = int(row[1]) if row else 0
+        srow = conn.execute(
+            "SELECT updated_at, messages_summarized, LENGTH(TRIM(summary)) "
+            "FROM session_summaries WHERE session_id = ? "
+            "ORDER BY updated_at DESC LIMIT 1",
+            (session_id,),
+        ).fetchone()
+        summary_sig = ""
+        if srow and srow[2] and int(srow[2]) > 0:
+            summary_sig = f"{srow[0]}:{int(srow[1])}"
+        return max_id, count, summary_sig
+
     def save_summary(
         self,
         session_id: str,

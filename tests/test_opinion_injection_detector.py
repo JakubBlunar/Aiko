@@ -351,6 +351,77 @@ class HeuristicGateTests(unittest.TestCase):
         )
         self.assertIsNone(result)
 
+    def test_defer_borderline_returns_pending(self) -> None:
+        # P21: with defer_borderline the borderline candidate comes back
+        # as a PENDING result (no llm_gate call) so the caller can run
+        # the verdict off the hot path.
+        gate_calls: list[Any] = []
+
+        def gate(user_t: str, stance_t: str) -> str:
+            gate_calls.append((user_t, stance_t))
+            return "YES"
+
+        result = detect(
+            "I've been jogging 8 kilometres every morning for years",
+            user_vec=_VEC_ALIGNED,
+            self_memories=[
+                _StubMemory(
+                    id=11,
+                    content="I prefer jogging 4 kilometres every morning",
+                    embedding=_VEC_ALIGNED,
+                )
+            ],
+            llm_gate=gate,
+            defer_borderline=True,
+        )
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.trigger, "contradiction_borderline")
+        self.assertEqual(result.llm_verdict, "PENDING")
+        self.assertEqual(result.stance_memory_id, 11)
+        # The gate must NOT have been invoked on the hot path.
+        self.assertEqual(gate_calls, [])
+
+    def test_defer_borderline_definite_still_fires_inline(self) -> None:
+        # A definite contradiction never needed the LLM, so it fires
+        # immediately even under defer_borderline.
+        result = detect(
+            "I like horror movies a lot",
+            user_vec=_VEC_ALIGNED,
+            self_memories=[
+                _StubMemory(
+                    id=7,
+                    content="I don't like horror movies",
+                    embedding=_VEC_ALIGNED,
+                )
+            ],
+            llm_gate=None,
+            defer_borderline=True,
+        )
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.trigger, "contradiction_definite")
+        self.assertIsNone(result.llm_verdict)
+
+    def test_require_definite_overrides_defer(self) -> None:
+        # require_definite wins: borderline stays silent even with
+        # defer_borderline set.
+        result = detect(
+            "I've been jogging 8 kilometres every morning for years",
+            user_vec=_VEC_ALIGNED,
+            self_memories=[
+                _StubMemory(
+                    id=11,
+                    content="I prefer jogging 4 kilometres every morning",
+                    embedding=_VEC_ALIGNED,
+                )
+            ],
+            llm_gate=None,
+            defer_borderline=True,
+            require_definite=True,
+        )
+        self.assertIsNone(result)
+
     def test_require_definite_skips_llm_gate(self) -> None:
         # ``require_definite=True`` is the strictest config -- even
         # if an llm_gate IS provided, borderline results are

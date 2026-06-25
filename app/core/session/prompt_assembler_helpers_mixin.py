@@ -470,6 +470,45 @@ class PromptAssemblerHelpersMixin:
             built_at=time.monotonic(),
         )
 
+    def _fast_slice_signature(
+        self,
+        session_key: str,
+        recent_window: int,
+        aggressive: bool,
+    ) -> tuple:
+        """P3: cheap slice-cache invalidator.
+
+        Combines the DB head signature (``MAX(id)`` / ``COUNT(*)`` /
+        latest-summary watermark — two scalar queries) with the same
+        persona/self-image mtime, last-reaction, window and aggressive
+        inputs the full ``_compute_static_cache_key`` uses. A conservative
+        superset: when this tuple is unchanged the full key is guaranteed
+        unchanged too, so the hit path can skip ``get_messages`` +
+        ``get_latest_summary``.
+        """
+        head = self._db.get_history_head(session_key)
+        try:
+            persona_mtime = self._persona_path.stat().st_mtime
+        except OSError:
+            persona_mtime = 0.0
+        self_image_mtime = 0.0
+        if self._self_image_path is not None:
+            try:
+                self_image_mtime = self._self_image_path.stat().st_mtime
+            except OSError:
+                self_image_mtime = 0.0
+        return (
+            session_key,
+            head[0],
+            head[1],
+            head[2],
+            persona_mtime,
+            self_image_mtime,
+            self._last_reaction or "",
+            recent_window,
+            bool(aggressive),
+        )
+
     def _compute_static_cache_key(
         self,
         session_key: str,
