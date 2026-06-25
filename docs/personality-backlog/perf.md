@@ -22,8 +22,9 @@ model + context (with the declarative `_worker_runtime_updaters`
 cascade + worker-LLM priority gate), P14 heuristic tool-pass
 gate, P17 K22 callback-detector filtered mirror walk, P18
 streaming-accumulator O(n²) fix, P19 RAG reader-writer lock +
-parallel per-source searches, and P21 K29 borderline gate moved
-off the hot path have shipped — see [`shipped.md`](shipped.md).
+parallel per-source searches, P20 deferred (async) context
+compaction, and P21 K29 borderline gate moved off the hot path
+have shipped — see [`shipped.md`](shipped.md).
 P15 was validated as **invalid** — the embedder LRU already
 collapses repeated `user_text` embeds, so the hot path is already
 at the 2-embed steady state it targeted; see its shipped.md note.)
@@ -204,34 +205,6 @@ next prompt vs. merely eventually-consistent? Audit before
 splitting — a wrong call here makes cues silently miss a turn.
 
 **Effort.** Large.
-
----
-
-## P20. Synchronous LLM compaction stalls the turn mid-flight
-
-**Motivation.** When the projected context overflows,
-`SummaryWorker.compact_now` runs a full summarisation LLM call
-inline on the turn thread, then re-assembles the prompt — the
-user sees a multi-second dead-air gap exactly on the turns that
-are already heaviest. Rare, but the worst-case latency spike in
-the whole system.
-
-**Key files.**
-[`app/core/session/turn_runner.py`](../../app/core/session/turn_runner.py)
-(~485–503, compaction trigger),
-[`app/core/proactive/summary_worker.py`](../../app/core/proactive/summary_worker.py)
-(`compact_now`).
-
-**Sketched approach.** On overflow, truncate history aggressively
-for *this* turn only (drop oldest non-summary rows to fit) and
-schedule the real compaction on the speaking-window scheduler so
-the next turn gets the proper summary. Never run a worker LLM
-call between user-send and first token. Watch for a *projected*
-overflow threshold (e.g. 85% of budget) that triggers the async
-compaction one turn early, making the inline fallback nearly
-unreachable.
-
-**Effort.** Medium.
 
 ---
 
