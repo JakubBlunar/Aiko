@@ -62,6 +62,18 @@ Dev / debug tooling (DT-series):
   `topic_digest` memory surfaced as the coarse RAG line, and cluster
   management UX — rename / pin / forget per cluster in the Memory tab).
 
+Temporal awareness (K-time family, in [`awareness.md`](awareness.md)):
+
+- **K-time1.** Wall-clock prefixes on chat history. **Shipped.**
+- **K-time2.** Date-anchored retrieval for relative-time queries
+  (the highest-value temporal fix).
+- **K-time3.** Upcoming-horizon block — pre-computed future relative
+  times.
+- **K-time4.** Session-elapsed & mid-session gap awareness.
+- **K-time5.** Unified time-phrasing module + single "now" seam
+  (do before DT1).
+- **K-time6.** Enrich the "now" anchor with year + ISO.
+
 ### G. Background workers — [`workers.md`](workers.md)
 
 - *Cleanup* — drop or wire the unused
