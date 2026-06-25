@@ -831,9 +831,16 @@ def create_web_app(session: "SessionController") -> FastAPI:
             return FileResponse(str(_DIST_DIR / "index.html"))
 
         # SPA fallback: every non-API GET returns index.html so React Router works.
+        # The reject list holds prefixes owned by a dedicated ``app.mount`` (or
+        # the WS endpoint) — those must 404 instead of falling through to
+        # index.html. ``live2d/`` is intentionally NOT here: those runtime
+        # scripts are copied by Vite from ``public/live2d/`` into the dist root
+        # and have no mount, so they must reach the ``target.is_file()`` branch
+        # below to be served (otherwise they 404 only in the FastAPI/production
+        # path while working in dev, where Vite serves ``public/`` directly).
         @app.get("/{full_path:path}")
         def spa_fallback(full_path: str) -> FileResponse:
-            if full_path.startswith(("api/", "ws", "avatar/", "attachment-files/", "persona-text/", "assets/", "live2d/")):
+            if full_path.startswith(("api/", "ws", "avatar/", "attachment-files/", "persona-text/", "assets/")):
                 raise HTTPException(404, "not found")
             target = _DIST_DIR / full_path
             if target.is_file():

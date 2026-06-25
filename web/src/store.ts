@@ -550,10 +550,31 @@ interface AssistantState {
    * since browsers have no persona window).
    */
   personaAlwaysOnTop: boolean;
+  /**
+   * Mobile-only floating persona window. ``mobilePersonaVisible``
+   * toggles the in-page draggable/resizable avatar window (distinct
+   * from ``personaWindowVisible``, which is the desktop Tauri OS
+   * window). ``mobilePersonaRect`` is its viewport-pixel geometry,
+   * persisted so the user's chosen spot/size survives a reload. Both
+   * are per-device and never touch the backend.
+   */
+  mobilePersonaVisible: boolean;
+  mobilePersonaRect: MobilePersonaRect;
   toggleLeftSidebar: () => void;
   setLeftSidebarCollapsed: (collapsed: boolean) => void;
   setPersonaPanelWidth: (px: number) => void;
   setPersonaAlwaysOnTop: (on: boolean) => void;
+  toggleMobilePersona: () => void;
+  setMobilePersonaVisible: (visible: boolean) => void;
+  setMobilePersonaRect: (rect: MobilePersonaRect) => void;
+}
+
+/** Viewport-pixel geometry for the mobile floating persona window. */
+export interface MobilePersonaRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
 }
 
 /** State for the "Together" tab. ``page`` is zero-indexed. */
@@ -628,6 +649,59 @@ export const DEFAULT_PERSONA_PANEL_W = 440;
 const LS_LEFT_COLLAPSED = "aiko.layout.left_collapsed";
 const LS_PERSONA_PANEL_W = "aiko.layout.persona_panel_w";
 const LS_PERSONA_ALWAYS_ON_TOP = "aiko.persona.always_on_top";
+const LS_MOBILE_PERSONA_VISIBLE = "aiko.mobile.persona_visible";
+const LS_MOBILE_PERSONA_RECT = "aiko.mobile.persona_rect";
+
+// Floating mobile persona window: minimum size so a stray drag can't
+// shrink it to nothing, and a sensible default spot near the top so it
+// sits below the mobile top bar without covering the composer.
+export const MIN_MOBILE_PERSONA_W = 120;
+export const MIN_MOBILE_PERSONA_H = 150;
+export const DEFAULT_MOBILE_PERSONA_RECT: MobilePersonaRect = {
+  x: 16,
+  y: 72,
+  w: 190,
+  h: 250,
+};
+
+function clampMobilePersonaRect(rect: MobilePersonaRect): MobilePersonaRect {
+  const w = Number.isFinite(rect.w)
+    ? Math.max(MIN_MOBILE_PERSONA_W, rect.w)
+    : DEFAULT_MOBILE_PERSONA_RECT.w;
+  const h = Number.isFinite(rect.h)
+    ? Math.max(MIN_MOBILE_PERSONA_H, rect.h)
+    : DEFAULT_MOBILE_PERSONA_RECT.h;
+  const x = Number.isFinite(rect.x) ? rect.x : DEFAULT_MOBILE_PERSONA_RECT.x;
+  const y = Number.isFinite(rect.y) ? rect.y : DEFAULT_MOBILE_PERSONA_RECT.y;
+  // Note: x/y are clamped to the live viewport at render time (we don't
+  // know the window size at module load), so here we only guard against
+  // non-finite garbage and undersized boxes.
+  return { x, y, w, h };
+}
+
+function readMobilePersonaRect(): MobilePersonaRect {
+  try {
+    const raw = localStorage.getItem(LS_MOBILE_PERSONA_RECT);
+    if (raw == null) return { ...DEFAULT_MOBILE_PERSONA_RECT };
+    const parsed = JSON.parse(raw) as Partial<MobilePersonaRect>;
+    return clampMobilePersonaRect({
+      x: Number(parsed.x),
+      y: Number(parsed.y),
+      w: Number(parsed.w),
+      h: Number(parsed.h),
+    });
+  } catch {
+    return { ...DEFAULT_MOBILE_PERSONA_RECT };
+  }
+}
+
+function writeMobilePersonaRect(rect: MobilePersonaRect): void {
+  try {
+    localStorage.setItem(LS_MOBILE_PERSONA_RECT, JSON.stringify(rect));
+  } catch {
+    // No-op; see ``writeBool``.
+  }
+}
 
 function clampPanelWidth(value: number): number {
   if (!Number.isFinite(value)) return DEFAULT_PERSONA_PANEL_W;
@@ -1704,6 +1778,24 @@ export const useAssistantStore = create<AssistantState>((set) => ({
   setPersonaAlwaysOnTop: (on) => {
     writeBool(LS_PERSONA_ALWAYS_ON_TOP, on);
     set({ personaAlwaysOnTop: on });
+  },
+
+  mobilePersonaVisible: readBool(LS_MOBILE_PERSONA_VISIBLE, false),
+  mobilePersonaRect: readMobilePersonaRect(),
+  toggleMobilePersona: () =>
+    set((state) => {
+      const next = !state.mobilePersonaVisible;
+      writeBool(LS_MOBILE_PERSONA_VISIBLE, next);
+      return { mobilePersonaVisible: next };
+    }),
+  setMobilePersonaVisible: (visible) => {
+    writeBool(LS_MOBILE_PERSONA_VISIBLE, visible);
+    set({ mobilePersonaVisible: visible });
+  },
+  setMobilePersonaRect: (rect) => {
+    const clamped = clampMobilePersonaRect(rect);
+    writeMobilePersonaRect(clamped);
+    set({ mobilePersonaRect: clamped });
   },
 }));
 

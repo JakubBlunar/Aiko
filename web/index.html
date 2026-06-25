@@ -3,7 +3,16 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/aiko.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- maximum-scale=1 stops iOS Safari from auto-zooming when a form
+         control gains focus (the 16px font-size workaround alone wasn't
+         enough). iOS 10+ still honours deliberate pinch-zoom as an
+         accessibility override, so this only kills the unwanted jump.
+         viewport-fit=cover lets content extend under the notch / home
+         bar, which we'll want for the PWA pass. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover"
+    />
     <title>Aiko</title>
     <script src="/live2d/live2d.min.js"></script>
     <script src="/live2d/live2dcubismcore.min.js"></script>
