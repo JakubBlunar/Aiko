@@ -1236,6 +1236,35 @@ carries), so there's zero table access. Tests:
 
 ---
 
+## P19. RAG reader-writer lock + parallel per-source searches
+
+`RagStore` serialised **every** operation behind one
+`threading.Lock`, and `RagRetriever.retrieve` ran `search_memories` →
+`search_messages` → `search_documents` sequentially under it, so the
+three independent ANN queries summed instead of max-ing and a turn-thread
+read queued behind a `MessageIndexer` write on an unrelated table. P19
+splits this two ways. **(a)** A small reader-writer lock
+([`_RWLock`](../../app/core/rag/rag_store.py) — concurrent readers,
+exclusive writers, reader-preferring so turn-latency reads never starve
+behind a backfill write storm) replaces the coarse `Lock`; all searches /
+`knn` / `list_*` / `counts` / `has_message` take the shared read side,
+only the single-row `add` / `delete` / `ensure_vector_index` writes take
+the exclusive side. Lance datasets are MVCC-safe for concurrent reads, so
+this is sound. **(b)** `RagRetriever` gained a 3-worker
+`ThreadPoolExecutor`; `_search_all_sources` dispatches the enabled source
+searches concurrently (Lance frees the GIL during the ANN query, so the
+threads make real wall-clock progress) and joins, each guarded so one
+source raising never aborts the others. Disabled sources skip their
+search; a single active source or a closed pool (`retriever.close()`,
+wired into `SessionController.shutdown`) runs inline. The per-source
+scoring after the join is unchanged — same merge, dedupe, diversity
+re-rank, and `mark_used`. Tests: `tests/test_rag_store.py::RWLockTests`
+(concurrent readers overlap; a writer excludes a reader until it exits)
+and `::ParallelSearchTests` (all three sources searched + merged; close
+falls back to inline + is idempotent).
+
+---
+
 ## P8. Idle-worker queue visibility + multi-worker drain
 
 `IdleWorkerScheduler` was capped at one worker per 60 s tick.

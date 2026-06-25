@@ -26,10 +26,11 @@ import json
 import logging
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 import numpy as np
 import pyarrow as pa
@@ -236,10 +237,66 @@ def _documents_schema(dim: int) -> pa.Schema:
 # ── Implementation ──────────────────────────────────────────────────────────
 
 
+class _RWLock:
+    """Minimal reader-writer lock: concurrent readers, exclusive writers.
+
+    P19: the store previously serialised *every* operation behind one
+    `threading.Lock`, so the three independent searches in
+    `RagRetriever.retrieve` (memories / messages / documents) couldn't
+    overlap even when run on separate threads, and a turn-thread read
+    queued behind a `MessageIndexer` write on an unrelated table. Lance
+    datasets are safe for concurrent reads (MVCC snapshots), so searches
+    take the shared read side and only the rare single-row writes take
+    the exclusive side.
+
+    Reader-preferring on purpose: turn-latency reads must never starve
+    behind a backfill write storm. Writes are single-row `add`/`delete`
+    that complete in milliseconds, so the occasional wait for a gap in
+    reads is harmless. Not reentrant -- no store method nests one lock
+    acquisition inside another.
+    """
+
+    __slots__ = ("_cond", "_readers", "_writer")
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition()
+        self._readers = 0
+        self._writer = False
+
+    @contextmanager
+    def read(self) -> "Iterator[None]":
+        with self._cond:
+            while self._writer:
+                self._cond.wait()
+            self._readers += 1
+        try:
+            yield
+        finally:
+            with self._cond:
+                self._readers -= 1
+                if self._readers == 0:
+                    self._cond.notify_all()
+
+    @contextmanager
+    def write(self) -> "Iterator[None]":
+        with self._cond:
+            while self._writer or self._readers > 0:
+                self._cond.wait()
+            self._writer = True
+        try:
+            yield
+        finally:
+            with self._cond:
+                self._writer = False
+                self._cond.notify_all()
+
+
 class RagStore:
     """Wrapper around a single ``lancedb`` connection with three managed tables.
 
-    All public methods are thread-safe via a coarse lock. Lance is itself
+    All public methods are thread-safe via a reader-writer lock
+    (concurrent reads, exclusive writes — see :class:`_RWLock`). Lance is
+    itself
     process-safe but our calling pattern is single-process, mostly read.
     """
 
@@ -256,7 +313,7 @@ class RagStore:
         self._root.mkdir(parents=True, exist_ok=True)
         self._embedding_model = str(embedding_model)
         self._vector_dim = int(vector_dim)
-        self._lock = threading.Lock()
+        self._lock = _RWLock()
         # Lazily opened tables; ``_open_*`` is idempotent.
         self._db = lancedb.connect(str(self._root))
         self._meta_path = self._root / "meta.json"
@@ -410,7 +467,7 @@ class RagStore:
             "use_count": 0,
             "vector": self._norm(embedding),
         }
-        with self._lock:
+        with self._lock.write():
             # Upsert by deleting existing with same id then adding.
             self._memories.delete(f"id = '{row['id']}'")
             self._memories.add([row])
@@ -468,7 +525,7 @@ class RagStore:
         if not rows:
             return 0
         chunk = max(1, int(chunk_size))
-        with self._lock:
+        with self._lock.write():
             for start in range(0, len(rows), chunk):
                 batch = rows[start:start + chunk]
                 ids_csv = ", ".join(
@@ -483,7 +540,7 @@ class RagStore:
         return len(rows)
 
     def delete_memory(self, record_id: str) -> None:
-        with self._lock:
+        with self._lock.write():
             self._memories.delete(f"id = '{record_id}'")
 
     def search_memories(
@@ -530,13 +587,13 @@ class RagStore:
             "created_at": created_at or _now_iso(),
             "vector": self._norm(embedding),
         }
-        with self._lock:
+        with self._lock.write():
             self._messages.delete(f"id = '{row['id']}'")
             self._messages.add([row])
 
     def has_message(self, session_id: str, message_id: int) -> bool:
         rid = _message_row_id(session_id, message_id)
-        with self._lock:
+        with self._lock.read():
             try:
                 df = (
                     self._messages.search()
@@ -589,7 +646,7 @@ class RagStore:
         if prefix:
             safe = prefix.replace("'", "''")
             predicate = f"{predicate} AND session_id LIKE '{safe}:%'"
-        with self._lock:
+        with self._lock.read():
             try:
                 table = (
                     self._messages.search()
@@ -699,13 +756,13 @@ class RagStore:
             "created_at": created_at or _now_iso(),
             "vector": self._norm(embedding),
         }
-        with self._lock:
+        with self._lock.write():
             self._documents.delete(f"id = '{row['id']}'")
             self._documents.add([row])
 
     def delete_document(self, document_id: str) -> None:
         safe = document_id.replace("'", "''")
-        with self._lock:
+        with self._lock.write():
             self._documents.delete(f"document_id = '{safe}'")
 
     def list_documents(self) -> list[dict[str, Any]]:
@@ -714,7 +771,7 @@ class RagStore:
         We pull the ``document_id`` / ``title`` / ``created_at`` columns via
         PyArrow so the runtime doesn't need pandas just for this aggregation.
         """
-        with self._lock:
+        with self._lock.read():
             try:
                 table = self._documents.to_arrow().select(
                     ["document_id", "title", "created_at"],
@@ -784,7 +841,7 @@ class RagStore:
             return []
         self._check_dim(query_embedding)
         q = self._norm(query_embedding)
-        with self._lock:
+        with self._lock.read():
             try:
                 builder = table.search(q).metric("cosine").limit(int(top_k * 2 + 4))
                 if extra_filter:
@@ -839,7 +896,7 @@ class RagStore:
         self._check_dim(query_embedding)
         q = self._norm(query_embedding)
         want = int(top_k) + (1 if exclude_id is not None else 0)
-        with self._lock:
+        with self._lock.read():
             try:
                 rows = (
                     self._memories.search(q)
@@ -881,7 +938,7 @@ class RagStore:
         ``replace=False`` default means a second call is a cheap no-op
         once the index exists.
         """
-        with self._lock:
+        with self._lock.write():
             try:
                 rows = self._memories.count_rows()
             except Exception:
@@ -915,7 +972,7 @@ class RagStore:
     # ── stats / maintenance ─────────────────────────────────────────────
 
     def counts(self) -> dict[str, int]:
-        with self._lock:
+        with self._lock.read():
             try:
                 return {
                     TABLE_MEMORIES: self._memories.count_rows(),
@@ -927,13 +984,13 @@ class RagStore:
 
     def delete_messages_for_session(self, session_id: str) -> None:
         safe = session_id.replace("'", "''")
-        with self._lock:
+        with self._lock.write():
             self._messages.delete(f"session_id = '{safe}'")
 
     def close(self) -> None:
         # LanceDB doesn't require an explicit close, but we drop our handles
         # so subsequent calls fail fast instead of silently using a stale db.
-        with self._lock:
+        with self._lock.write():
             self._db = None  # type: ignore[assignment]
 
 

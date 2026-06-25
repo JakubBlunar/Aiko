@@ -567,6 +567,11 @@ class LifecycleMixin:
                 self._rag_prefetcher.shutdown()
             except Exception:
                 log.debug("rag prefetcher shutdown failed", exc_info=True)
+        if getattr(self, "_rag_retriever", None) is not None:
+            try:
+                self._rag_retriever.close()
+            except Exception:
+                log.debug("rag retriever close failed", exc_info=True)
         if getattr(self, "_listening_window_executor", None) is not None:
             try:
                 self._listening_window_executor.shutdown(
