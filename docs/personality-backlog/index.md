@@ -36,9 +36,17 @@ prompt for the next brainstorm, not a queue.
 ### D. New tools / capabilities — [`tools.md`](tools.md)
 
 - **D1.** Calendar / reminders tool.
-- **D2.** Image vision tool.
+- **D2.** Image vision tool. **Shipped.**
 - **D3.** Fast synchronous web-search brain tool (+ knowledge-DB
   write-back).
+
+Dev / debug tooling (DT-series):
+
+- **DT1.** Virtual clock / time-travel for time-gated features (the
+  highest-leverage debug tool here).
+- **DT2.** Relationship state inspector — one-shot consolidated snapshot.
+- **DT3.** Feature-flag catalog + "minimal mode" preset.
+- **DT4.** Scenario / conversation replay harness.
 
 ### F. Awareness + grounding — [`awareness.md`](awareness.md)
 
@@ -95,6 +103,16 @@ silent failure path). Cheap individually, compounding in aggregate.
 - **J1.** Multi-user moments / participant attribution.
 - **J2.** Exportable timeline (markdown / PDF).
 - **J3.** Axes-aware proactive nudges.
+- **J4.** Relationship-stage register.
+- **J5.** Reconnection ritual after a long absence. **Shipped.**
+- **J6.** Conflict-repair memory. **Shipped.**
+- **J7.** Moment-detection tuning (+ gift/promise ordering bug).
+- **J8.** Milestone celebration beats.
+- **J9.** Reciprocal vulnerability. **Shipped.**
+- **J10.** Appreciation beats. **Shipped.**
+- **J11.** Affection-style learning ("how he likes to be cared for").
+- **J12.** Intimacy pacing & boundary calibration.
+- **J13.** Pet-name reciprocity & evolution.
 
 ### K. Patterns to explore — [`patterns.md`](patterns.md)
 

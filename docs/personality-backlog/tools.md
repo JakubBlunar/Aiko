@@ -179,3 +179,100 @@ is a huge presence multiplier and pairs naturally with her curiosity.
   the same box as the chat model? Or always cloud-route image calls?
 - Fallback when no vision model is available: gracefully skip the tool
   and let Aiko say "I can't actually see that yet, sorry".
+
+---
+
+# Dev / debug tooling (DT-series)
+
+Not capabilities Aiko uses — tooling *we* use to build, test, and debug
+her. The codebase leans hard on the embedded MCP server for
+introspection; these fill the gaps that make personality work slow to
+verify. All DT items are debug-only and must never reach an end-user
+build.
+
+---
+
+## DT1. Virtual clock / time-travel for time-gated features
+
+**Motivation.** A large fraction of Aiko's behaviour is **wall-clock
+gated**, which makes it brutal to verify end-to-end in the live app:
+memory decay + tier promotion (schema v8), anniversaries + milestones
+(J8), the cooldowns on nearly every inner-life cue, reconnection /
+gap-return (J5 / K28 / K36), day colour (K27), routine learning (K3),
+vulnerability-budget regen (K15), the conflict-repair watch window (J6).
+Today the only way to exercise these in a running instance is to **wait
+real hours or days**. Most workers already accept an injectable
+`clock` / `now` seam *for unit tests* (grep confirms `clock=` params
+across `idle_knowledge_worker`, `belief_worker`, `goal_worker`,
+`promise_worker`, `memory_conflict_worker`, `schedule_learner`,
+`knowledge_map_reflection_worker`, …) — but there is **no runtime way to
+advance the live app's sense of "now."**
+
+**Sketched approach.** Introduce one process-wide `Clock` seam the
+`SessionController` threads into the workers + the kv decay math + every
+cooldown check (replacing scattered direct `datetime.now(timezone.utc)`
+reads on the gated paths). Expose MCP `advance_clock(hours=…, days=…)` /
+`set_clock(iso)` / `reset_clock()`. The single highest-leverage piece of
+tooling for this codebase — it turns "wait until tomorrow" into one call.
+
+**Open questions.** Which subsystems read time directly and *must* move to
+the seam vs. which can stay (the brain loop's own timing should NOT be
+virtualised — only the relationship/memory time math). Persist the offset
+across restart, or always reset to real time on boot (lean: always reset,
+gate the whole thing behind a `AIKO_DEBUG_CLOCK` env flag). **Effort.**
+Medium (the value is high enough to justify it).
+
+---
+
+## DT2. Relationship state inspector — one-shot consolidated snapshot
+
+**Motivation.** The relationship state is scattered across a dozen
+`get_*_state` MCP tools (axes, emotion episodes, tease ledger,
+vulnerability budget, beliefs, shared moments, anniversaries, day colour,
+wants ledger, …). Debugging "why is Aiko reading cold / clingy / off right
+now?" means calling many of them and assembling the picture by hand. Add
+one `get_relationship_snapshot()` MCP tool (and a read-only Settings →
+Diagnostics panel) that dumps, in one shot: the four axes + **derived
+stage** (J4), active emotion episodes (K57), vulnerability budget +
+capacity (K15), open tease debts (K59), top-N beliefs (K2), recent +
+upcoming anniversaries / milestones (J8), today's day colour (K27), and
+**which relationship-cue providers actually fired last turn**. One call,
+the whole relationship at a glance. Key files: a new aggregator that reads
+the existing stores; the per-feature `get_*_state` tools as the data
+sources. **Effort.** Small–Medium.
+
+---
+
+## DT3. Feature-flag catalog + "minimal mode" preset
+
+**Motivation.** There are dozens of `agent.*_enabled` toggles — one per K
+/ F / H feature. There's no way to (a) see them all with their current
+values + defaults + a one-line description in one place, or (b) quickly
+turn **all** inner-life cues off for clean A/B testing of a single
+feature, or for bisecting "which cue is producing this weird line." Add an
+MCP `list_feature_flags()` (name, value, default, source module, one-line
+purpose) and a `set_minimal_mode(on)` that flips every inner-life / cue
+flag off and restores them. Pairs with DT2: turn everything off, enable
+one thing, watch exactly what it does. Key files:
+[`agent_settings.py`](../../app/core/infra/agent_settings.py) (the flag
+surface), a small reflection helper, the MCP server tools. **Effort.**
+Small.
+
+---
+
+## DT4. Scenario / conversation replay harness
+
+**Motivation.** [`data/persona/golden_turns.jsonl`](../../data/persona/golden_turns.jsonl)
+already anchors a golden-turn eval, but there's no harness to drive a
+**scripted multi-turn conversation** against the live agent with a fixed
+clock (DT1) and seeded relationship state, then assert **which inner-life
+blocks fired** and snapshot the rendered system prompt per turn. Most
+personality tests today are unit-level on the pure helpers + the provider
+in isolation — they verify "the cue *would* render given this state," not
+"the cue actually fired in a real turn." This harness closes that gap and
+makes the K/F/J features regression-testable end-to-end. Build on DT1
+(deterministic time) + DT2 (state assertions) + the existing
+`send_message(skip_tts=true)` MCP path + `get_last_response_detail` (per-turn
+prompt + `provider_ms`). Key files: a new `scripts/scenario_runner.py`,
+the MCP message path, `get_last_response_detail`. **Effort.** Medium
+(largely unlocked once DT1 + DT2 exist).
