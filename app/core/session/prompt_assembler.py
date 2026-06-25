@@ -210,6 +210,10 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         # F10i: per-topic confidence self-model — hedge / earned
         # familiarity, last of the topic-graph-derived cues.
         "topic_confidence_block",
+        # K64a: associative wandering — "funny, this reminds me of ..."
+        # connects the live topic to a distant cluster. Sits with the
+        # other topic-graph-derived surfaces (it's drawn from the graph).
+        "associative_wander_block",
     ),
 }
 
@@ -332,6 +336,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # speak with earned familiarity on a rich one. Query-aware
         # (consumes ``user_text``); dropped in aggressive mode.
         self._topic_confidence_provider: Callable[[str], str] | None = None
+        # K64a: associative wandering — surface a "funny, this reminds me
+        # of ..." connection between the live topic and a distant cluster.
+        # Query-aware (consumes ``user_text``); dropped in aggressive mode.
+        self._associative_wander_provider: Callable[[str], str] | None = None
         # K61: informational-turn knowledge-grounding steer.
         self._knowledge_grounding_provider: Callable[[str], str] | None = (
             None
@@ -1036,6 +1044,23 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                         "topic confidence provider raised", exc_info=True
                     )
                     topic_confidence_block = ""
+
+        # K64a: associative wandering — surface a "funny, this reminds me
+        # of ..." connection between the live topic and a distant cluster.
+        # Query-aware (the provider gates on user_text topic relevance),
+        # dropped in aggressive mode.
+        associative_wander_block = ""
+        if not aggressive and self._associative_wander_provider is not None:
+            with _timed_phase(provider_ms, "associative_wander"):
+                try:
+                    associative_wander_block = (
+                        self._associative_wander_provider(user_text) or ""
+                    )
+                except Exception:
+                    log.debug(
+                        "associative wander provider raised", exc_info=True
+                    )
+                    associative_wander_block = ""
 
         # K61: on informational turns, steer Aiko toward learned
         # specifics (F9 ``knowledge`` / G3 ``curiosity_finding`` rows)
@@ -2309,6 +2334,11 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # F10i: per-topic confidence — hedge / earned-familiarity
             # register cue, last of the topic-graph-derived surfaces.
             system_parts.append(topic_confidence_block)
+        if associative_wander_block:
+            # K64a: associative wandering — "funny, this reminds me of ..."
+            # connection cue, sits with the other topic-graph-derived
+            # surfaces (it is drawn from the same cluster geometry).
+            system_parts.append(associative_wander_block)
 
         system_prompt = "\n\n---\n\n".join(p for p in system_parts if p)
 

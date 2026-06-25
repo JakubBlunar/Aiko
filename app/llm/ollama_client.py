@@ -67,11 +67,30 @@ def _extract_done_reason(payload: object) -> str | None:
 _BENIGN_TRUNCATION_SURFACES: frozenset[str] = frozenset({"tool_pass"})
 
 
+def _preview_answer(text: str, *, head: int = 400, tail: int = 400) -> str:
+    """One-line, length-bounded preview of generated text for truncation logs.
+
+    Shows the head and (crucially) the *tail* — the tail is what reveals
+    whether the answer was actually cut mid-sentence vs. a clean end. All
+    whitespace runs (incl. newlines) are flattened so the preview stays on
+    the single WARNING line. Returns ``"<empty>"`` for an empty answer (a
+    strong signal the whole budget went to the thinking trace).
+    """
+    flat = " ".join(text.split())
+    if not flat:
+        return "<empty>"
+    if len(flat) <= head + tail:
+        return flat
+    omitted = len(flat) - head - tail
+    return f"{flat[:head]} …[{omitted} chars omitted]… {flat[-tail:]}"
+
+
 def _warn_if_truncated(
     usage: "OllamaUsage", *, model: str, surface: str,
     benign: bool = False,
     answer_tokens: int | None = None,
     thinking_tokens: int | None = None,
+    answer_preview: str | None = None,
 ) -> None:
     """Emit a single WARNING when the *answer* hit ``num_predict``.
 
@@ -110,19 +129,24 @@ def _warn_if_truncated(
             "?" if answer_tokens is None else int(answer_tokens),
             "?" if thinking_tokens is None else int(thinking_tokens),
         )
+    # The actual generated answer (head+tail) so a human can judge whether
+    # the response was really cut or is a benign trace overrun.
+    preview = ""
+    if answer_preview is not None:
+        preview = " answer=%r" % _preview_answer(answer_preview)
     if benign:
         log.debug(
             "ollama length-capped after a complete answer: surface=%s "
-            "model=%s completion_tokens=%d%s (the reasoning trace used the "
+            "model=%s completion_tokens=%d%s%s (the reasoning trace used the "
             "remaining budget; the parsed answer is intact)",
-            surface, model, int(usage.completion_tokens), split,
+            surface, model, int(usage.completion_tokens), split, preview,
         )
         return
     log.warning(
-        "ollama answer truncated: surface=%s model=%s completion_tokens=%d%s "
+        "ollama answer truncated: surface=%s model=%s completion_tokens=%d%s%s "
         "(the parsed answer hit the num_predict cap; raise num_predict for "
         "this surface if frequent)",
-        surface, model, int(usage.completion_tokens), split,
+        surface, model, int(usage.completion_tokens), split, preview,
     )
 
 
@@ -394,6 +418,7 @@ class OllamaClient:
             benign=(had_thinking or think) and _content_looks_complete(content),
             answer_tokens=ans_tok,
             thinking_tokens=think_tok,
+            answer_preview=content,
         )
         self._announce_connection(use_model)
         tool_calls = self._parse_tool_calls(message.get("tool_calls", []))
@@ -457,6 +482,10 @@ class OllamaClient:
         usage = OllamaUsage()
         t0 = time.monotonic()
         first_token_ms: float | None = None
+        # Accumulate the streamed answer so a truncation log can preview
+        # what was actually generated. Only ``message.content`` is yielded
+        # (the thinking trace stays server-side), so this is answer-only.
+        answer_parts: list[str] = []
         try:
             with requests.post(
                 f"{self._base_url}/api/chat",
@@ -492,6 +521,7 @@ class OllamaClient:
                     if token:
                         if first_token_ms is None:
                             first_token_ms = (time.monotonic() - t0) * 1000.0
+                        answer_parts.append(token)
                         yield token
         except requests.RequestException as exc:
             elapsed_ms = (time.monotonic() - t0) * 1000.0
@@ -501,7 +531,12 @@ class OllamaClient:
             )
             raise
         self.last_usage = usage
-        _warn_if_truncated(usage, model=use_model, surface=surface)
+        _warn_if_truncated(
+            usage,
+            model=use_model,
+            surface=surface,
+            answer_preview="".join(answer_parts),
+        )
         self._announce_connection(use_model)
         elapsed_ms = (time.monotonic() - t0) * 1000.0
         log.debug(
@@ -605,6 +640,7 @@ class OllamaClient:
             benign=(had_thinking or think) and _content_looks_complete(content),
             answer_tokens=ans_tok,
             thinking_tokens=think_tok,
+            answer_preview=content,
         )
         self._announce_connection(use_model)
         log.debug(

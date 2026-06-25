@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { AudioOutputManager } from "./audio/AudioOutputManager";
 import { DEFAULT_LOGGING_SETTINGS } from "./types";
 import type {
   AttachmentRef,
@@ -414,6 +415,17 @@ interface AssistantState {
   avatar: AvatarProfile | null;
   /** Lip-sync amplitude in [0, 1]; updated at <=30 Hz from the WS. */
   audioAmplitude: number;
+  /**
+   * The single ``AudioOutputManager`` instance owned by the WS hook.
+   * Surfaced here so the Settings "Enable sound" control (mobile/iOS
+   * PWA, where audio stays locked until a gesture) can resume the
+   * underlying AudioContext directly.
+   */
+  audioOutput: AudioOutputManager | null;
+  /** True while the AudioContext is ``running`` (sound is unlocked). */
+  audioUnlocked: boolean;
+  setAudioOutput: (out: AudioOutputManager | null) => void;
+  setAudioUnlocked: (unlocked: boolean) => void;
   /**
    * Latest transient overlay pulse fired by the LLM via ``[[overlay:X]]``.
    * Cleared when ``expiresAt`` passes (renderer effects watch this).
@@ -1547,6 +1559,10 @@ export const useAssistantStore = create<AssistantState>((set) => ({
 
   avatar: null,
   audioAmplitude: 0,
+  audioOutput: null,
+  audioUnlocked: false,
+  setAudioOutput: (out) => set({ audioOutput: out }),
+  setAudioUnlocked: (unlocked) => set({ audioUnlocked: unlocked }),
   avatarOverlay: null,
   avatarMotion: null,
   setAvatar: (avatar) => set({ avatar }),

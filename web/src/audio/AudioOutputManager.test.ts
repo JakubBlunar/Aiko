@@ -111,6 +111,24 @@ class SuspendedAudioContext extends FakeAudioContext {
   }
 }
 
+/**
+ * A context that stays ``suspended`` even after ``resume()`` — models iOS
+ * before the unlocking gesture, or an audio-session interruption while the
+ * PWA is backgrounded. The drop-guard must skip scheduling rather than
+ * stockpile buffers that later burst out all at once when it resumes.
+ */
+class StuckSuspendedAudioContext extends FakeAudioContext {
+  constructor() {
+    super();
+    this.state = "suspended";
+  }
+  async resume() {
+    // Still locked: a real iOS resume() with no fresh gesture leaves the
+    // context suspended (or "interrupted").
+    this.state = "suspended";
+  }
+}
+
 /** Drain the manager's internal async chains (audio_start -> pcm). */
 async function flush(rounds = 12): Promise<void> {
   for (let i = 0; i < rounds; i++) {
@@ -299,6 +317,33 @@ describe("AudioOutputManager", () => {
     // Scheduled against the post-resume clock (0.5), not the frozen 0.0.
     expect(src.startedAt).not.toBeNull();
     expect(src.startedAt as number).toBeGreaterThanOrEqual(0.5);
+  });
+
+  it("drops PCM instead of buffering it while the context stays suspended", async () => {
+    // iOS PWA before a gesture / a backgrounded audio-session interruption:
+    // a suspended context freezes the clock, so any source we scheduled
+    // would fire in a burst the moment it later resumes (the "speaks every
+    // old message at once on reopen" bug). The manager must drop ephemeral
+    // PCM instead of stockpiling it.
+    (globalThis as unknown as { window: object }).window = {
+      AudioContext: StuckSuspendedAudioContext,
+    };
+    const mgr = new AudioOutputManager();
+
+    expect(mgr.handleFrame(ttsStartFrame(16000))).toBe("tts");
+    expect(mgr.handleFrame(ttsPcmFrame(1600))).toBe("tts");
+    expect(mgr.handleFrame(ttsPcmFrame(1600))).toBe("tts");
+    await flush();
+
+    const ctx = createdContexts[0];
+    expect(ctx).toBeDefined();
+    expect(ctx.state).toBe("suspended");
+    // No per-clip (non-loop) source was ever scheduled — only the
+    // inaudible keep-alive (loop = true) may exist.
+    const clipSources = ctx.activeSources.filter((s) => !s.loop);
+    expect(clipSources.length).toBe(0);
+    // And no clip PCM buffer was even built at the announced clip rate.
+    expect(ctx.buffers.some((b) => b.sampleRate === 16000)).toBe(false);
   });
 
   it("waits for audio_start before scheduling PCM (sample rate applied)", async () => {

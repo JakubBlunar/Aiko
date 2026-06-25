@@ -410,6 +410,35 @@ class MemorySettings:
     # Size of the kv journal ring of drafted notices. Tiny — the provider
     # surfaces the newest topic-relevant unseen entry.
     knowledge_gap_notice_journal_max: int = 6
+    # ── K64a: associative wandering (connect two distant topics) ─────────
+    # How often the AssociativeWanderWorker may draft a connection during
+    # quiet windows. Deliberately long (90 min default): a person who keeps
+    # announcing connections is exhausting, so rarity is the feature.
+    associative_wander_interval_seconds: int = 5400
+    # Global cooldown between drafts (independent of the per-tick interval),
+    # so even a long idle stretch can't produce a flurry of connections.
+    associative_wander_cooldown_seconds: int = 7200
+    # Max drafts per local day. Small — at most a couple of "this reminds me
+    # of ..." beats are available to surface in a day.
+    associative_wander_daily_cap: int = 2
+    # Size of the kv journal ring of drafted connections.
+    associative_wander_journal_max: int = 6
+    # A cluster must have at least this many members to be worth connecting
+    # — a one-off topic isn't a real strand of thought.
+    associative_wander_min_size: int = 4
+    # Upper bound on the centroid cosine of the two clusters for the pair to
+    # count as "distant". At/below this the topics are genuinely far apart
+    # (the interesting kind of connection); above it they're neighbours and
+    # the link would be obvious. 0.25 ≈ "clearly different topics".
+    associative_wander_max_pair_cosine: float = 0.25
+    # Per-pair cooldown: once a connection between two topics is drafted,
+    # don't re-connect the same pair for this long (a week default), so Aiko
+    # doesn't keep re-noticing the same link. Keyed on a stable hash of the
+    # unordered label pair in ``kv_meta`` (survives cluster renumbering).
+    associative_wander_pair_cooldown_hours: int = 168
+    # How many member content snippets to pull from each cluster as substance
+    # for the worker-LLM connection prompt. 0 → labels only.
+    associative_wander_member_samples: int = 3
     # ── F10h: topic temperature (per-cluster affect) ─────────────────────
     # Minimum centroid cosine for the live turn to count as "on" a topic
     # cluster before its temperature is even considered. Keeps the tonal
@@ -1149,6 +1178,57 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             knowledge_gap_notice_journal_max=max(
                 1,
                 int(memory_raw.get("knowledge_gap_notice_journal_max", 6)),
+            ),
+            associative_wander_interval_seconds=max(
+                60,
+                int(
+                    memory_raw.get(
+                        "associative_wander_interval_seconds", 5400,
+                    )
+                ),
+            ),
+            associative_wander_cooldown_seconds=max(
+                0,
+                int(
+                    memory_raw.get(
+                        "associative_wander_cooldown_seconds", 7200,
+                    )
+                ),
+            ),
+            associative_wander_daily_cap=max(
+                0,
+                int(memory_raw.get("associative_wander_daily_cap", 2)),
+            ),
+            associative_wander_journal_max=max(
+                1,
+                int(memory_raw.get("associative_wander_journal_max", 6)),
+            ),
+            associative_wander_min_size=max(
+                2,
+                int(memory_raw.get("associative_wander_min_size", 4)),
+            ),
+            associative_wander_max_pair_cosine=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get(
+                            "associative_wander_max_pair_cosine", 0.25,
+                        )
+                    ),
+                ),
+            ),
+            associative_wander_pair_cooldown_hours=max(
+                0,
+                int(
+                    memory_raw.get(
+                        "associative_wander_pair_cooldown_hours", 168,
+                    )
+                ),
+            ),
+            associative_wander_member_samples=max(
+                0,
+                int(memory_raw.get("associative_wander_member_samples", 3)),
             ),
             topic_temperature_min_sim=max(
                 0.0,

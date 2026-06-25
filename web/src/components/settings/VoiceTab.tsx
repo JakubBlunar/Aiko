@@ -1,6 +1,7 @@
 import type { Dispatch, SetStateAction } from "react";
 import type { AssistantSettings } from "../../types";
 import { useAssistantStore } from "../../store";
+import { MobileAudioSection } from "./MobileAudioSection";
 import { Row, Section } from "./SettingsSection";
 
 export interface DeviceLists {
@@ -80,6 +81,8 @@ export function VoiceTab({
 }: VoiceTabProps) {
   return (
     <>
+      <MobileAudioSection />
+
       <Section title="Voice (TTS)">
         <label className="block text-xs text-ink-100/60">Voice</label>
         <select

@@ -235,6 +235,59 @@ class IdleWorkersInitMixin:
                     "KnowledgeGapNoticeWorker init failed", exc_info=True
                 )
 
+        # K64a AssociativeWanderWorker — drifts across the topic graph during
+        # quiet windows, picks two *distant* clusters, and asks the worker
+        # LLM for a genuine connection ("both reward following a faint trail
+        # patiently"). The provider only surfaces it when the live turn is
+        # on one of the two topics. First member of the K64 freedom-of-
+        # thought family; paced hard (long interval + small daily cap + long
+        # per-pair cooldown) because rarity is the whole point.
+        self._associative_wander_worker = None
+        if (
+            self._idle_scheduler is not None
+            and getattr(self, "_memory_store", None) is not None
+        ):
+            try:
+                from app.core.proactive.associative_wander_worker import (
+                    AssociativeWanderWorker,
+                )
+
+                mem = self._memory_settings
+                self._associative_wander_worker = AssociativeWanderWorker(
+                    topic_graph_provider=lambda: getattr(
+                        self, "_topic_graph", None
+                    ),
+                    memory_store=self._memory_store,
+                    kv_get=self._chat_db.kv_get,
+                    kv_set=self._chat_db.kv_set,
+                    enabled_provider=lambda: bool(
+                        getattr(
+                            self._settings.agent,
+                            "associative_wander_enabled",
+                            True,
+                        )
+                    ),
+                    ollama=self._maintenance_client,
+                    model=self._effective_worker_model,
+                    interval_seconds=mem.associative_wander_interval_seconds,
+                    cooldown_seconds=mem.associative_wander_cooldown_seconds,
+                    daily_cap=mem.associative_wander_daily_cap,
+                    journal_max=mem.associative_wander_journal_max,
+                    min_size=mem.associative_wander_min_size,
+                    max_pair_cosine=mem.associative_wander_max_pair_cosine,
+                    pair_cooldown_hours=(
+                        mem.associative_wander_pair_cooldown_hours
+                    ),
+                    member_samples=mem.associative_wander_member_samples,
+                )
+                self._idle_scheduler.register(
+                    self._associative_wander_worker
+                )
+            except Exception:
+                log.warning(
+                    "AssociativeWanderWorker init failed", exc_info=True
+                )
+
         # K52 WantsLedgerWorker — keeps the wants ledger stocked from
         # curiosity seeds / forward-curiosity questions / goals during
         # quiet windows. Pure ingestion, no LLM. Failures only drop

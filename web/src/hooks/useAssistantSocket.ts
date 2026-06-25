@@ -842,33 +842,63 @@ export function useAssistantSocket(): {
   // the cost during a typed keystroke or a mouse click instead.
   // Browser autoplay policies require the gesture anyway, so this
   // also unlocks ``ctx.resume()`` for the first incoming clip.
+  // Publish the manager instance + live lock state to the store so the
+  // Settings "Enable sound" control can resume the context from a real
+  // tap and reflect whether audio is actually unlocked.
   useEffect(() => {
     const out = audioOutputRef.current;
     if (!out) return;
-    let warmed = false;
-    const warmUp = () => {
-      if (warmed) return;
-      warmed = true;
+    const store = useAssistantStore.getState();
+    store.setAudioOutput(out);
+    out.setStateListener((state) => {
+      useAssistantStore.getState().setAudioUnlocked(state === "running");
+    });
+    return () => {
+      out.setStateListener(null);
+      useAssistantStore.getState().setAudioOutput(null);
+    };
+  }, []);
+
+  useEffect(() => {
+    const out = audioOutputRef.current;
+    if (!out) return;
+    // Resume on EVERY gesture, not just the first. iOS (and PWAs
+    // especially) re-suspend the AudioContext whenever the app is
+    // backgrounded or another app grabs the audio session (a YouTube
+    // video, a phone call). A one-shot unlock leaves the context dead
+    // after any such interruption, so TTS stays silent until a fresh
+    // gesture. ``resume()`` is a cheap no-op once the context is already
+    // running, and the 50-150 ms context-creation cost is still paid only
+    // once (the first ``_ensureContext``).
+    const unlock = () => {
       void out.resume().catch(() => {
-        /* still locked — try again on the next gesture */
-        warmed = false;
+        /* still locked — the next gesture retries */
       });
-      detach();
     };
     const events: (keyof WindowEventMap)[] = [
       "pointerdown",
       "keydown",
       "touchstart",
     ];
-    const detach = () => {
-      for (const evt of events) {
-        window.removeEventListener(evt, warmUp);
+    for (const evt of events) {
+      window.addEventListener(evt, unlock, { passive: true });
+    }
+    // On returning to the foreground, drop anything that was scheduled
+    // before we left (so a stale backlog doesn't burst out) and re-unlock.
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        void out.onForeground().catch(() => {
+          /* still locked — a gesture will retry */
+        });
       }
     };
-    for (const evt of events) {
-      window.addEventListener(evt, warmUp, { once: false, passive: true });
-    }
-    return detach;
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      for (const evt of events) {
+        window.removeEventListener(evt, unlock);
+      }
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, []);
 
   return { send, sendBytes, audioOutput: audioOutputRef.current };

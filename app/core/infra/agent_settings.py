@@ -198,6 +198,14 @@ class AgentSettings:
     # Off → the KnowledgeGapNoticeWorker never registers and the inner-life
     # provider stays empty. Cadence / thresholds live under MemorySettings.
     knowledge_gap_notice_enabled: bool = True
+    # K64a: master switch for associative wandering. When on, the
+    # AssociativeWanderWorker drifts across the topic graph during quiet
+    # windows, connects two *distant* clusters via the worker LLM, and the
+    # inner-life provider surfaces the connection only when the live turn is
+    # on one of the two topics ("funny, this reminds me of ..."). Off → the
+    # worker never registers and the provider stays empty. Cadence /
+    # thresholds live under MemorySettings.
+    associative_wander_enabled: bool = True
     # F10h: master switch for the per-cluster affect ("topic temperature")
     # cue. When on, a turn that lands on a warm / tender topic cluster gets
     # a one-line tonal nudge so Aiko meets it with the right register. Off

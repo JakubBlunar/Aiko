@@ -100,66 +100,15 @@ source so a user can disable any of them.
 
 ---
 
-## F8. `knowledge` memory kind + web→RAG ingestion + retrieval boost
+## F8. `knowledge` memory kind + web→RAG retrieval boost (+ F4 source-citing)
 
-**Motivation.** Almost nothing fetched from the web survives the turn:
-only G3's `curiosity_finding` and F1's gap-resolution `fact` persist, and
-neither is a first-class, queryable knowledge store. Without an
-accumulating, retrievable knowledge pool, Aiko can never get *less*
-generic over time — every informational turn starts from the model's
-parametric knowledge. Add a real home for learned facts.
-
-**Key files.**
-[`app/core/memory/memory_store.py`](../../app/core/memory/memory_store.py)
-(`VALID_KINDS` — add `knowledge`; it mirrors into LanceDB automatically),
-[`app/core/rag/rag_retriever.py`](../../app/core/rag/rag_retriever.py)
-(retrieval boost + a `(learned)` surfacing tag, mirroring the existing
-`(curiosity)` tag),
-[`app/core/rag/rag_store.py`](../../app/core/rag/rag_store.py),
-plus the F1/G3/F7 writers that produce the findings. **Do F8 with F4**
-(source-cited memories) — every `knowledge` row should carry
-`metadata.source_url`.
-
-**Sketched approach.** New `kind="knowledge"` for distilled, impersonal,
-non-time-sensitive facts (band names in a genre, a studio's filmography,
-how a thing works), distinct from personal `fact`/`event` memory. Give
-`RagRetriever` a small score bonus for `knowledge` hits **when the live
-turn is informational** (read the K4 dialogue-act tag — don't boost
-knowledge during emotional/support turns). Dedup via the existing
-cosine-collapse path so repeat research merges instead of piling up.
-
-**Effort.** Medium.
+**Shipped** — see [`shipped/awareness.md`](shipped/awareness.md#f8-knowledge-memory-kind--webrag-retrieval-boost--f4-source-citing).
 
 ---
 
 ## F9. Interest-driven knowledge enrichment worker
 
-**Motivation.** F6-F8 give Aiko the ability to search, good sources, and
-a place to keep findings — F9 is the engine that *fills* it without
-waiting for a fact-check trigger. It reads the **topic graph (K9)** to
-find the user's recurring interests and proactively researches *specifics*
-in those domains during idle windows ("Jacob keeps bringing up shoegaze →
-learn three defining bands + albums"). This is what turns "I like a genre"
-into "I can name things in it," over weeks.
-
-**Key files.** New
-`app/core/proactive/idle_knowledge_worker.py` (register with
-[`IdleWorkerScheduler`](../../app/core/proactive/idle_worker_scheduler.py),
-mirror the F1/G3 audit-logging pattern),
-[`app/core/conversation/topic_graph.py`](../../app/core/conversation/topic_graph.py)
-(`build_topic_graph_snapshot` — interest source), F6 (reformulation),
-F7 (source routing), F8 (`knowledge` writes).
-
-**Sketched approach.** On an idle tick, pick the top under-researched
-interest cluster from the topic graph, generate 1-2 reformulated queries
-(F6) routed to the right source (F7), distil the results with the local
-worker model, and write `knowledge` memories (F8) with `source_url`.
-Per-cluster cooldown so it doesn't grind the same interest; daily cap on
-searches. **Strictly silent** — never fires a proactive message; the new
-knowledge just quietly makes her next on-topic reply sharper. MCP debug:
-`force_run("knowledge_worker")`, `get_knowledge_worker_state`.
-
-**Effort.** Medium-Large (but mostly composition of F6-F8).
+**Shipped** — see [`shipped/awareness.md`](shipped/awareness.md#f9-interest-driven-knowledge-enrichment-worker).
 
 ---
 

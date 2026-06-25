@@ -120,9 +120,49 @@ export class AudioOutputManager {
   private _lipRaf: number | null = null;
   private _lipBuf: Float32Array<ArrayBuffer> | null = null;
   private _lipPeak = LIP_PEAK_FLOOR;
+  // State subscription used by the Settings "Enable sound" control so the
+  // UI can reflect whether mobile audio is actually unlocked (the iOS PWA
+  // can silently suspend the context behind our back).
+  private _stateListener: ((state: AudioContextState) => void) | null = null;
+  private _lastEmittedState: AudioContextState | null = null;
 
   constructor(options: AudioOutputOptions = {}) {
     this._sinkId = options.sinkId ?? "";
+  }
+
+  /**
+   * Current AudioContext state, or ``"suspended"`` when no context has
+   * been created yet (i.e. audio is locked until the first gesture).
+   */
+  getState(): AudioContextState {
+    return this._ctx ? this._ctx.state : "suspended";
+  }
+
+  /**
+   * Subscribe to AudioContext state transitions (running / suspended /
+   * interrupted / closed). Fires once immediately with the current
+   * state. Pass ``null`` to unsubscribe.
+   */
+  setStateListener(
+    listener: ((state: AudioContextState) => void) | null,
+  ): void {
+    this._stateListener = listener;
+    if (listener) {
+      listener(this.getState());
+    }
+  }
+
+  private _emitState(): void {
+    const state = this.getState();
+    if (state === this._lastEmittedState) return;
+    this._lastEmittedState = state;
+    if (this._stateListener) {
+      try {
+        this._stateListener(state);
+      } catch {
+        /* listener errors are non-fatal */
+      }
+    }
   }
 
   /**
@@ -158,6 +198,18 @@ export class AudioOutputManager {
     // The gesture-gated warmup path satisfies autoplay, so this is the
     // ideal moment to (re)start the keep-alive loop.
     this._startKeepAlive(ctx);
+  }
+
+  /**
+   * Call when the page returns to the foreground (``visibilitychange`` ->
+   * ``visible``). iOS suspends the AudioContext while the PWA is
+   * backgrounded; any sources scheduled before we left would otherwise
+   * burst out the moment the context resumes. Drop that residue first,
+   * then re-unlock so subsequent live audio plays cleanly.
+   */
+  async onForeground(): Promise<void> {
+    this.flush();
+    await this.resume();
   }
 
   /** Subscribe to playback errors (decode failures, sink misroutes, …). */
@@ -274,6 +326,7 @@ export class AudioOutputManager {
         this._reportError(err);
       }
     }
+    this._emitState();
   }
 
   /**
@@ -314,6 +367,7 @@ export class AudioOutputManager {
       this._outputNode = null;
       this._lipBuf = null;
       this._ctx = new AC();
+      this._ctx.onstatechange = () => this._emitState();
       this._setupAnalyser(this._ctx);
       if (this._sinkId) {
         await this.setSinkId(this._sinkId);
@@ -336,6 +390,9 @@ export class AudioOutputManager {
     // Idempotent: keeps the context + audio endpoint warm so the first
     // clip of every turn never plays into a cold device.
     this._startKeepAlive(this._ctx);
+    // Browsers without ``onstatechange`` (and the test fake) still get a
+    // correct readout: emit the live state after every ensure/resume.
+    this._emitState();
     return this._ctx;
   }
 
@@ -545,6 +602,26 @@ export class AudioOutputManager {
       }
     }
     const ctx = await this._ensureContext();
+    // TTS / earcon audio is real-time. If the context can't play *right
+    // now* — iOS PWA before the unlocking gesture, or an OS audio-session
+    // interruption while we're backgrounded (a YouTube video, a call) —
+    // do NOT buffer the PCM. A suspended context freezes ``currentTime``,
+    // so every ``source.start(startAt)`` we'd queue lands in the past and
+    // then fires in one burst the instant the context later resumes. That
+    // is the "she suddenly speaks every old message at once on reopen"
+    // bug. Dropping is the correct behaviour for ephemeral speech: only
+    // live audio should ever reach the speaker.
+    if (ctx.state !== "running") {
+      if (this._pendingFirstPcmLog[tag]) {
+        this._pendingFirstPcmLog[tag] = false;
+        debugLog.log({
+          source: "audio",
+          kind: "dropSuspended",
+          payload: { tag, state: ctx.state },
+        });
+      }
+      return;
+    }
     const state = this._streams[tag];
     // PCM is signed 16-bit little-endian; respect the body's byteOffset
     // so the underlying ArrayBuffer (which holds the full frame) doesn't

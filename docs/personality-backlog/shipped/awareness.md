@@ -276,6 +276,87 @@ win in the whole knowledge theme — unblocks F7/F8/F9.
 ---
 
 
+## F8. `knowledge` memory kind + web→RAG retrieval boost (+ F4 source-citing)
+
+A real, accumulating home for learned facts so Aiko gets *less* generic
+over time instead of restarting from parametric knowledge every
+informational turn — and crucially a **separate lane** from personal
+memory so knowledge never fights `fact`/`event` about the user. A new
+`kind="knowledge"` in
+[`VALID_KINDS`](../../../app/core/memory/memory_store.py) holds distilled,
+impersonal, non-time-sensitive facts (band names in a genre, a studio's
+filmography, how a thing works); it mirrors into LanceDB automatically and
+dedups through the existing cosine-collapse path so repeat research merges
+instead of piling up. Every knowledge row is **source-cited (F4)**:
+`metadata` carries `{topic, source_query, source_url, source_urls,
+learned_at, cluster_key}`. Retrieval adds a small bonus
+([`_RAG_KNOWLEDGE_BONUS = 0.05`](../../../app/core/rag/rag_retriever.py))
+to knowledge hits **only on informational turns** — gated on the K4
+dialogue-act tag (`_INFORMATIONAL_ACTS = {"question"}`), so a distilled
+fact wins over an equally-similar personal memory when the user asks "what
+are some good X?" but stays neutral on emotional / banter turns where
+reciting a fact would read as a lecture. Knowledge hits surface with a
+`(learned)` suffix tag (mirroring the `(curiosity)` tag) so the persona
+rule lets Aiko present them naturally. Tests:
+[`tests/test_rag_retriever_knowledge_boost.py`](../../../tests/test_rag_retriever_knowledge_boost.py).
+
+---
+
+## F9. Interest-driven knowledge enrichment worker
+
+The engine that *fills* the F8 pool without waiting for a fact-check
+trigger:
+[`IdleKnowledgeWorker`](../../../app/core/proactive/idle_knowledge_worker.py)
+(`name="idle_knowledge"`) reads the **K9 topic graph** on idle ticks,
+scores clusters on a coverage-weighted blend of knowledge headroom (0.45)
++ conversational size (0.35) + freshness (0.20) so one big interest can't
+monopolise it, then runs a worker-LLM **research planner** that judges
+whether a cluster has an evergreen, impersonal subject worth researching
+and emits neutral search queries with every personal detail stripped
+(purely-personal clusters get a long cooldown). The chosen query is
+privacy-scrubbed (the same F6 reformulation / `scrub_claim_for_search`
+gate as F1/G3), web-searched, and distilled into ≤2 evergreen impersonal
+facts (`think=False` mechanical summarisation, confidence floor `0.6`,
+cap `0.9`) written as `knowledge` rows. Extra planner angles are queued
+per-cluster for later deepening. **Strictly silent** (never fires a
+proactive message) and **off the brain path** (idle scheduler, worker
+model). Its own `FactCheckRateLimiter` budget keyed on
+`idle_knowledge.rate_state` (per-hour `1`, per-day `4`) keeps it from
+grinding. Settings: `agent.knowledge_enrichment_enabled` /
+`knowledge_topic_extraction_enabled` /
+`knowledge_enrichment_per_{hour,day}_cap`, and `memory.knowledge_*`
+(interval `3600`s, `max_clusters_per_run` `3`, `max_per_cluster` `3`,
+`cluster_cooldown_hours` `72`, `unresearchable_cooldown_hours` `336`,
+`research_queries_per_cluster` `3`). MCP debug:
+`force_run("idle_knowledge")` /
+[`get_knowledge_worker_state`](../../../app/mcp/server_tools/memory_worker_tools.py).
+Grep: `tail_logs(module_contains="idle_knowledge")` (`knowledge start` /
+`scrubbed` / `search done` / `distil done` / `apply done`). Tests:
+[`tests/test_idle_knowledge_worker.py`](../../../tests/test_idle_knowledge_worker.py),
+[`tests/test_worker_query_reformulation.py`](../../../tests/test_worker_query_reformulation.py).
+
+---
+
+## K61. `knowledge_grounding` inner-life block (commit to specifics)
+
+The read-side companion to F8/F9: when knowledge rows are available and
+the turn is informational, this nudges Aiko to *commit to the specifics
+she's learned* instead of survey-hedging ("there are lots of great
+options…"). [`_render_knowledge_grounding_block`](../../../app/core/session/inner_life_part2.py)
+surfaces up to `knowledge_grounding_max_items` (default `2`) of the
+on-topic `knowledge` memories above
+`knowledge_grounding_min_similarity` (default `0.45`), registered as the
+`knowledge_grounding` provider and slotted in the T6 detector tier of
+[`prompt_assembler.py`](../../../app/core/session/prompt_assembler.py)
+(takes `user_text`). Persona copy in
+[`aiko_companion.txt`](../../../data/persona/aiko_companion.txt) teaches
+her to drop the specifics naturally ("oh — try Slowdive"), never as a
+lecture. Settings: `agent.knowledge_grounding_enabled` +
+`memory.knowledge_grounding_{min_similarity,max_items}`. Tests:
+[`tests/test_knowledge_grounding_provider.py`](../../../tests/test_knowledge_grounding_provider.py).
+
+---
+
 ## F10. Topic-graph utilisation (RAG / prompt / knowledge integration)
 
 **Foundation shipped.** The topic graph used to be **one giant
@@ -688,3 +769,48 @@ compute their per-cluster signal live in the provider (member walk over
 the *one* matched cluster — cheap), so any future per-cluster aggregator
 (K64b drift, F10g digest input) can share `cluster_member_ids` /
 `cluster_knowledge_stats` rather than re-deriving it.
+
+---
+
+## K64a. Associative wandering ("funny, this reminds me of ...")
+
+**Shipped.** First member of the K64 *freedom of thought* family — the
+genuinely drifting part of Aiko's interior life, as opposed to the reactive
+extract / fact-check / consolidate workers. The
+[`AssociativeWanderWorker`](../../../app/core/proactive/associative_wander_worker.py)
+is an `IdleWorker` (cue producer, not a verbatim nudge) that, during a quiet
+window: reads the K9 topic graph's labelled clusters, forms candidate pairs
+whose **centroid cosine ≤ `memory.associative_wander_max_pair_cosine`**
+(default `0.25` — genuinely *distant* topics, not neighbours) via the pure
+`find_distant_pairs`, skips any pair on its per-pair cooldown, pulls a few
+member snippets from each cluster as substance, and asks the **worker LLM**
+for ONE honest connection (`{"connects": bool, "connection": "..."}` — it
+may decline, in which case the pair is still stamped on cooldown so an
+unconnectable pair isn't retried every tick). Drafted connections append to
+the `aiko.associative_wanders` kv ring as `{at, topic_a, topic_b, pair_key,
+connection}`. The consumer
+[`InnerLifePart2Mixin._render_associative_wander_block`](../../../app/core/session/inner_life_part2.py)
+surfaces one **only when the live turn is lexically on one of the two
+topics** (`wander_relevant`, reusing F10f's `topic_relevant`), one-shot per
+`pair_key` (recorded in `associative_wander.surfaced_keys`), as a private
+T6 hint clustered with the other topic-graph-derived surfaces (after
+`topic_confidence_block`; dropped under `aggressive`). The chat model phrases
+it in her own words; the connection is **never spoken verbatim**. **Rarity is
+the feature**: paced by a long draft interval (`5400s`), a small daily cap
+(`2`), a global cooldown (`7200s`), and a **week-long per-pair cooldown**
+(`168h`, keyed on a stable hash of the unordered label pair so it survives
+cluster renumbering). Persona copy lives in the "When your mind wanders and
+connects two things" block of [`aiko_companion.txt`](../../../data/persona/aiko_companion.txt)
+(teaches the register — one light real aside, never narrate the mechanism,
+drop it silently if it doesn't fit). **MCP-debuggable**:
+`get_associative_wander_state` (switch / ring / per-pair cooldowns /
+surfaced keys / dry-run of the distant-pair picker), `force_associative_wander`
+(run once bypassing all cooldowns — picks the single most-distant pair),
+`force_associative_wander_surface` (arm the provider one-shot). Grep
+`tail_logs(module_contains="associative_wander")` for `associative-wander
+drafted:` / `no-connection:` / `fire:`. Settings: `agent.associative_wander_enabled`
++ the eight `memory.associative_wander_*` knobs. Tests:
+[`tests/test_associative_wander.py`](../../../tests/test_associative_wander.py)
+(pure helpers + worker gates + provider plumbing). **Remaining K64 family:**
+K64b interest drift, K64c curiosity gradient, K64d knowledge-map
+self-reflection (all open in [`patterns.md`](../patterns.md)).
