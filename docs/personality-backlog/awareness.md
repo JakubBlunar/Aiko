@@ -233,3 +233,73 @@ cases where the model still does its own arithmetic (cross-year spans,
 first.)
 
 ---
+
+## K-time7. Worker time toolkit — shared anchor + memory-age renderer
+
+**Motivation.** The worker-facing half of K-time5, and the answer to "give
+the workers a tool to handle time better." A codebase audit found that
+**only `MemoryExtractor` gives its LLM a "today" anchor**, and **no worker
+ever shows the LLM a memory's timestamp** — every worker hand-rolls
+`- {content}` with no age, even though the chat RAG path already has
+`rag_retriever._temporal_suffix` / `_humanize_past` / `_humanize_future`
+producing "(yesterday)" / "(planned for tonight 20:00)". Workers crunch
+memories that *have* `created_at` / `event_time` / `last_used_at`
+([`memory_store.py`](../../app/core/memory/memory_store.py) `Memory`) but
+throw the time away before the model sees it. Build one small toolkit
+(the natural extension of K-time5's `timephrase.py`) exposing three things
+workers can drop in: (1) `today_anchor(now)` — the
+"Today is {weekday, date, time} ({iso})" line `MemoryExtractor._build_system_prompt`
+already hand-writes, extracted for reuse; (2) `format_memory_block(mems, now)`
+— bullets with the temporal suffix (generalise the existing
+`_temporal_suffix`); (3) `format_transcript(rows, now)` — transcript lines
+with K-time1-style relative-age prefixes for message-crunching workers.
+Reads the single injectable "now" (DT1 clock seam), so worker tests get
+deterministic time for free. Key files: new/extended
+[`app/core/infra/timephrase.py`](../../app/core/infra/), export from
+[`rag_retriever.py`](../../app/core/rag/rag_retriever.py). **Effort.**
+Medium. **Prereq for K-time8 + K-time9.**
+
+---
+
+## K-time8. Give the "today" anchor to every relative-time-resolving worker
+
+**Motivation.** Several workers ask their LLM to *extract a time* from a
+transcript but give it **no anchor to resolve relatives against** — so
+"tonight at 8", "next Monday", "in two weeks" can't be resolved correctly.
+The worst is [`promise_worker.py`](../../app/core/memory/promise_worker.py)
+`PromiseExtractionWorker`, whose prompt asks for a `deadline` field with no
+"today is…" line at all. Same gap in
+[`belief_worker.py`](../../app/core/relationship/belief_worker.py),
+[`reflection_worker.py`](../../app/core/proactive/reflection_worker.py),
+the [`shared_moment_extractor.py`](../../app/core/relationship/shared_moment_extractor.py)
+`MomentDetector`, the summary / thread-resummary workers, and the
+[`follow_up_worker.py`](../../app/core/proactive/follow_up_worker.py)
+draft. Drop the K-time7 `today_anchor(now)` line into each of their system
+prompts (one line each). Cheap, and directly lifts extraction quality —
+relative deadlines/dates stop being mis-resolved. **Effort.** Small
+(per-worker one-liner once K-time7 exists).
+
+---
+
+## K-time9. Feed memory ages to the memory-crunching workers
+
+**Motivation.** Workers that *reason over a set of memories* make worse
+decisions because recency is invisible to them. Concretely:
+[`memory_conflict_worker.py`](../../app/core/memory/memory_conflict_worker.py)
+**already tie-breaks contradictions on `created_at` in Python but never
+tells the LLM which memory is newer** — feeding the age would let the
+contradiction gate itself prefer the fresher claim;
+[`memory_consolidation_worker.py`](../../app/core/memory/memory_consolidation_worker.py)
+merges a group of `- {content}` notes blind to whether it's folding a
+fresh note into a stale one; the new
+[`knowledge_map_reflection_worker.py`](../../app/core/proactive/knowledge_map_reflection_worker.py)
+"shape of what I know" reflection is far richer if it can see "this
+territory is *recently* hot vs. went quiet months ago"; and the curiosity
+seed / idle-curiosity workers pick staler questions without it. Swap their
+hand-rolled `- {content}` joins for the K-time7 `format_memory_block(mems,
+now)` so each row carries its age. **Effort.** Small–Medium (mostly
+swapping the formatter call once K-time7 exists). **Tonal/quality guard:**
+this is for the worker's *reasoning*, not user-facing text — the chat
+model still gets recency via RAG's own suffix.
+
+---
