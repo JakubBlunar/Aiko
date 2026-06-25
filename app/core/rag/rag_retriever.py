@@ -28,6 +28,7 @@ Design notes:
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Sequence
 
@@ -724,10 +725,29 @@ class RagRetriever:
         # against Aiko's reply and bump ``revival_score`` on rows she
         # actually cited.
         self._last_surfaced_memory_ids: list[int] = []
+        # P19: the three per-source Lance searches (memories / messages /
+        # documents) are independent and each only takes RagStore's shared
+        # read lock, so they overlap instead of summing when dispatched on
+        # this small pool. Lance releases the GIL during the ANN query, so
+        # the threads make real wall-clock progress in parallel. ``max_workers
+        # = 3`` matches the source count; the pool is idle between turns.
+        self._search_executor: ThreadPoolExecutor | None = ThreadPoolExecutor(
+            max_workers=3, thread_name_prefix="rag-search",
+        )
 
     @property
     def top_k(self) -> int:
         return self._top_k
+
+    def close(self) -> None:
+        """Release the P19 search thread pool. Idempotent."""
+        ex = self._search_executor
+        if ex is not None:
+            self._search_executor = None
+            try:
+                ex.shutdown(wait=False)
+            except Exception:
+                log.debug("rag retriever: executor shutdown raised", exc_info=True)
 
     def set_goal_store(self, store: "GoalStore | None") -> None:
         """Attach (or detach) the K1 :class:`GoalStore` after construction.
@@ -805,6 +825,54 @@ class RagRetriever:
 
     # ── retrieval ───────────────────────────────────────────────────────
 
+    def _search_all_sources(
+        self, embedding: Sequence[float],
+    ) -> tuple[list[RagHit], list[RagHit], list[RagHit]]:
+        """Run the (up to) three per-source Lance searches concurrently.
+
+        P19: returns ``(mem_hits, msg_hits, doc_hits)`` — each already
+        guarded so a single source raising never aborts the others, and
+        disabled sources come back as ``[]`` without a search. Submits the
+        enabled searches to ``_search_executor`` and joins; when the pool
+        is gone (post-``close``) or only one source is active it runs
+        inline so behaviour is identical minus the parallelism.
+        """
+        k = self._per_source_top_k
+        thr = self._score_threshold
+
+        def _mem() -> list[RagHit]:
+            return self._store.search_memories(embedding, top_k=k, min_score=thr)
+
+        def _msg() -> list[RagHit]:
+            return self._store.search_messages(embedding, top_k=k, min_score=thr)
+
+        def _doc() -> list[RagHit]:
+            return self._store.search_documents(embedding, top_k=k, min_score=thr)
+
+        tasks: list[tuple[str, Callable[[], list[RagHit]]]] = [("mem", _mem)]
+        if self._include_messages:
+            tasks.append(("msg", _msg))
+        if self._include_documents:
+            tasks.append(("doc", _doc))
+
+        results: dict[str, list[RagHit]] = {"mem": [], "msg": [], "doc": []}
+        ex = self._search_executor
+        if ex is None or len(tasks) == 1:
+            for name, fn in tasks:
+                try:
+                    results[name] = fn()
+                except Exception:
+                    log.debug("%s search failed", name, exc_info=True)
+            return results["mem"], results["msg"], results["doc"]
+
+        futures = {name: ex.submit(fn) for name, fn in tasks}
+        for name, fut in futures.items():
+            try:
+                results[name] = fut.result()
+            except Exception:
+                log.debug("%s search failed", name, exc_info=True)
+        return results["mem"], results["msg"], results["doc"]
+
     def retrieve(
         self,
         query_text: str,
@@ -857,13 +925,15 @@ class RagRetriever:
                 act = None
             informational_turn = bool(act) and act in _INFORMATIONAL_ACTS
 
+        # P19: dispatch the three independent per-source searches
+        # concurrently (each only takes RagStore's shared read lock, and
+        # Lance frees the GIL during the ANN query) so their latencies
+        # max instead of summing. The per-source scoring below is cheap
+        # CPU and stays sequential on the turn thread.
+        mem_hits, msg_hits, doc_hits = self._search_all_sources(embedding)
+
         merged: list[RagHit] = []
         try:
-            mem_hits = self._store.search_memories(
-                embedding,
-                top_k=self._per_source_top_k,
-                min_score=self._score_threshold,
-            )
             # P4: batch the SQLite-mirror join once instead of a locked
             # ``get`` per hit. Falls back to the per-hit path for stores
             # that don't expose ``get_many`` (e.g. duck-typed test doubles).
@@ -1067,11 +1137,6 @@ class RagRetriever:
 
         if self._include_messages:
             try:
-                msg_hits = self._store.search_messages(
-                    embedding,
-                    top_k=self._per_source_top_k,
-                    min_score=self._score_threshold,
-                )
                 for h in msg_hits:
                     if exclude_session_id and h.source == "message":
                         # Don't surface lines from the *current* session --
@@ -1087,11 +1152,6 @@ class RagRetriever:
 
         if self._include_documents:
             try:
-                doc_hits = self._store.search_documents(
-                    embedding,
-                    top_k=self._per_source_top_k,
-                    min_score=self._score_threshold,
-                )
                 for h in doc_hits:
                     h.score += _DOCUMENT_PRIOR
                     merged.append(h)

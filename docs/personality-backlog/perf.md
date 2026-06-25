@@ -21,7 +21,8 @@ index, P12 bulk memory-mirror on startup, P13 route-driven worker
 model + context (with the declarative `_worker_runtime_updaters`
 cascade + worker-LLM priority gate), P14 heuristic tool-pass
 gate, P17 K22 callback-detector filtered mirror walk, P18
-streaming-accumulator O(n²) fix, and P21 K29 borderline gate moved
+streaming-accumulator O(n²) fix, P19 RAG reader-writer lock +
+parallel per-source searches, and P21 K29 borderline gate moved
 off the hot path have shipped — see [`shipped.md`](shipped.md).
 P15 was validated as **invalid** — the embedder LRU already
 collapses repeated `user_text` embeds, so the hot path is already
@@ -203,33 +204,6 @@ next prompt vs. merely eventually-consistent? Audit before
 splitting — a wrong call here makes cues silently miss a turn.
 
 **Effort.** Large.
-
----
-
-## P19. RAG: one global lock + three sequential Lance searches
-
-**Motivation.** All Lance reads and writes share one
-`threading.Lock`, and `RagRetriever.retrieve` runs
-`search_memories` → `search_messages` → `search_documents`
-sequentially under it. Latencies add instead of max-ing, and the
-turn thread serialises against `MessageIndexer` writes (a slow
-embed + write on the indexer side stalls retrieval, and vice
-versa).
-
-**Key files.**
-[`app/core/rag/rag_store.py`](../../app/core/rag/rag_store.py)
-(`_search_table`, `add_message`, `_lock`),
-[`app/core/rag/rag_retriever.py`](../../app/core/rag/rag_retriever.py)
-(`retrieve`),
-[`app/core/rag/message_indexer.py`](../../app/core/rag/message_indexer.py).
-
-**Sketched approach.** Two independent wins: (a) parallelise the
-three searches in a small shared thread pool; (b) narrow the lock
-— embed outside it, use a reader-writer pattern so concurrent
-reads don't queue behind each other (Lance datasets are safe for
-concurrent reads). Do (a) first; it's contained in `retrieve`.
-
-**Effort.** Medium.
 
 ---
 

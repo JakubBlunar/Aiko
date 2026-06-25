@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import shutil
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -494,6 +495,131 @@ class RagRetrieverMergeTests(_TmpRagBase):
         )
         # The "Jacob" header is required when any non-self memory is hit.
         self.assertIn("What you know about Jacob", block)
+
+
+class RWLockTests(unittest.TestCase):
+    """P19: concurrent readers, exclusive writers."""
+
+    def test_multiple_readers_held_concurrently(self) -> None:
+        from app.core.rag.rag_store import _RWLock
+
+        lock = _RWLock()
+        barrier = threading.Barrier(3, timeout=2.0)
+        ok = []
+
+        def reader() -> None:
+            with lock.read():
+                # All three readers must be able to sit inside the read
+                # side at once; the barrier only trips if they overlap.
+                ok.append(barrier.wait())
+
+        threads = [threading.Thread(target=reader) for _ in range(3)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=3.0)
+        self.assertEqual(len(ok), 3)
+
+    def test_writer_excludes_reader(self) -> None:
+        from app.core.rag.rag_store import _RWLock
+
+        lock = _RWLock()
+        order: list[str] = []
+        writer_in = threading.Event()
+        release_writer = threading.Event()
+
+        def writer() -> None:
+            with lock.write():
+                order.append("w-enter")
+                writer_in.set()
+                release_writer.wait(timeout=2.0)
+                order.append("w-exit")
+
+        def reader() -> None:
+            # Wait until the writer is definitely inside, then try to read.
+            writer_in.wait(timeout=2.0)
+            with lock.read():
+                order.append("r-enter")
+
+        wt = threading.Thread(target=writer)
+        rt = threading.Thread(target=reader)
+        wt.start()
+        self.assertTrue(writer_in.wait(timeout=2.0))
+        rt.start()
+        # Give the reader a moment to (incorrectly) slip in if the lock
+        # were broken; it must still be blocked behind the writer.
+        time.sleep(0.1)
+        self.assertEqual(order, ["w-enter"])
+        release_writer.set()
+        wt.join(timeout=2.0)
+        rt.join(timeout=2.0)
+        self.assertEqual(order, ["w-enter", "w-exit", "r-enter"])
+
+
+class ParallelSearchTests(unittest.TestCase):
+    """P19: retrieve dispatches the three searches via the pool."""
+
+    def setUp(self) -> None:
+        self._dir = tempfile.mkdtemp()
+        self.embedder = FakeEmbedder()
+        self.store = RagStore(
+            root=Path(self._dir) / "lancedb",
+            embedding_model=self.embedder.model,
+            vector_dim=FakeEmbedder.DIM,
+        )
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self._dir, ignore_errors=True)
+
+    def test_all_sources_searched_and_merged(self) -> None:
+        v = self.embedder.embed("Jacob loves coffee")
+        self.store.add_memory(
+            record_id="m1", content="Jacob loves coffee", kind="fact",
+            embedding=v, salience=0.7,
+        )
+        self.store.add_message(
+            session_id="s1", message_id=1, role="user",
+            content="coffee talk", embedding=self.embedder.embed("coffee talk"),
+        )
+        retriever = RagRetriever(
+            self.store, self.embedder, top_k=5, score_threshold=-1.0,
+            per_source_top_k=4,
+        )
+        # Spy that every enabled source search is invoked once per call.
+        calls: list[str] = []
+        for name in ("search_memories", "search_messages", "search_documents"):
+            orig = getattr(self.store, name)
+
+            def make(n: str, fn):
+                def wrapped(*a, **k):
+                    calls.append(n)
+                    return fn(*a, **k)
+                return wrapped
+
+            setattr(self.store, name, make(name, orig))
+        hits = retriever.retrieve("Jacob loves coffee")
+        self.assertTrue(hits)
+        self.assertEqual(
+            sorted(calls),
+            ["search_documents", "search_memories", "search_messages"],
+        )
+        retriever.close()
+
+    def test_close_falls_back_to_inline(self) -> None:
+        v = self.embedder.embed("Jacob loves coffee")
+        self.store.add_memory(
+            record_id="m1", content="Jacob loves coffee", kind="fact",
+            embedding=v, salience=0.7,
+        )
+        retriever = RagRetriever(
+            self.store, self.embedder, top_k=5, score_threshold=-1.0,
+        )
+        retriever.close()
+        # After close the executor is gone; retrieve must still work inline.
+        hits = retriever.retrieve("Jacob loves coffee")
+        self.assertTrue(hits)
+        # Idempotent.
+        retriever.close()
 
 
 if __name__ == "__main__":
