@@ -351,8 +351,11 @@ class OllamaClient:
         # support tool_choice and an honoured hint on versions that do.
         if tools and tool_choice is not None:
             payload["tool_choice"] = tool_choice
-        if think:
-            payload["think"] = True
+        # Always forward the think decision (matches chat_stream / chat_json):
+        # sending think:false is what actually disables the trace on a
+        # reasoning model like qwen3. Omitting it let the model think anyway
+        # and burn a small num_predict budget on the trace -> empty answer.
+        payload["think"] = bool(think)
         t0 = time.monotonic()
         try:
             response = requests.post(

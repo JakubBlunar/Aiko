@@ -462,6 +462,10 @@ class PreThoughtWorker:
             messages,
             options={"num_predict": _MAX_TOKENS_QUESTIONS, "temperature": 0.8},
             model=self._chat_model,
+            # Generating Aiko's "pre-thoughts" is associative/creative work
+            # that benefits from reasoning; the client adds think headroom on
+            # top of num_predict so the answer survives the trace.
+            think=True,
             surface="pre_thought_worker",
         )
         return parse_questions(raw or "", max_questions=candidate_cap)
