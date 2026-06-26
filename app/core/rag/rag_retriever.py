@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Sequence
 
 import numpy as np
 
+from app.core.infra import timephrase as _tp
 from app.core.rag.rag_store import RagHit
 
 if TYPE_CHECKING:
@@ -351,128 +352,16 @@ _HOUR_SECONDS = 3600.0
 _DAY_SECONDS = 86400.0
 
 
-def _to_aware(dt: datetime) -> datetime:
-    """Promote a tz-naive datetime to UTC. No-op for aware values."""
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt
-
-
-def _parse_temporal_iso(value: str | None) -> datetime | None:
-    """ISO-8601 -> aware datetime, with ``Z`` and naive normalisation."""
-    if not value or not isinstance(value, str):
-        return None
-    text = value.strip()
-    if not text:
-        return None
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-    try:
-        dt = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    return _to_aware(dt)
-
-
-def _humanize_past(when_iso: str, now: datetime) -> str:
-    """Render ``when_iso`` as a short past-tense phrase relative to ``now``.
-
-    ``in the past`` is the safe fallback when parsing fails. Day-of-week
-    granularity kicks in for 2-6 days ago; week / month / year units take
-    over beyond that.
-    """
-    when = _parse_temporal_iso(when_iso)
-    if when is None:
-        return "in the past"
-    now = _to_aware(now)
-    delta = (now - when).total_seconds()
-    if delta < 0:
-        # Caller asked us to render a future time as past — defensive
-        # fall-through. Treat as "moments ago" so we don't print
-        # nonsense.
-        return "moments ago"
-    if delta < _HOUR_SECONDS:
-        minutes = max(1, int(delta // 60))
-        return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
-    if delta < _DAY_SECONDS:
-        hours = max(1, int(delta // _HOUR_SECONDS))
-        return f"{hours} hour{'s' if hours != 1 else ''} ago"
-    days = int(delta // _DAY_SECONDS)
-    if days == 1:
-        return "yesterday"
-    if days < 7:
-        return f"{days} days ago"
-    if days < 30:
-        weeks = days // 7
-        return f"{weeks} week{'s' if weeks != 1 else ''} ago"
-    if days < 365:
-        months = max(1, days // 30)
-        return f"{months} month{'s' if months != 1 else ''} ago"
-    years = max(1, days // 365)
-    return f"{years} year{'s' if years != 1 else ''} ago"
-
-
-def _humanize_future(when_iso: str | None, now: datetime) -> str:
-    """Render ``when_iso`` as a short future-tense phrase relative to ``now``.
-
-    Falls back to ``"soon"`` when ``when_iso`` is missing or
-    unparseable so a future_plan with no precise time still gets a
-    sensible suffix.
-    """
-    if not when_iso:
-        return "soon"
-    when = _parse_temporal_iso(when_iso)
-    if when is None:
-        return "soon"
-    now = _to_aware(now)
-    delta = (when - now).total_seconds()
-    if delta <= 0:
-        # Time has passed — caller should have flipped this to
-        # past_event by now. Render with the "should be done by now"
-        # framing so Aiko knows to ask retrospectively.
-        return "earlier"
-    # Same calendar day
-    when_local = when.astimezone()
-    now_local = now.astimezone()
-    same_day = when_local.date() == now_local.date()
-    tomorrow = (when_local.date() - now_local.date()).days == 1
-    clock = when_local.strftime("%H:%M")
-    if same_day:
-        # Pod-aware phrasing: "tonight" reads more naturally than
-        # "today at 20:00" in casual chat. Hours are local.
-        hour = when_local.hour
-        if hour < 5:
-            return f"later tonight {clock}"
-        if hour < 12:
-            return f"this morning {clock}"
-        if hour < 17:
-            return f"this afternoon {clock}"
-        if hour < 22:
-            return f"tonight {clock}"
-        return f"late tonight {clock}"
-    if tomorrow:
-        hour = when_local.hour
-        if hour < 12:
-            return f"tomorrow morning {clock}"
-        if hour < 17:
-            return f"tomorrow afternoon {clock}"
-        if hour < 22:
-            return f"tomorrow evening {clock}"
-        return f"tomorrow night {clock}"
-    days = int(delta // _DAY_SECONDS)
-    if days < 7:
-        # Use the weekday name + clock for the "next few days" bucket.
-        return f"on {when_local.strftime('%A')} {clock}"
-    if days < 14:
-        return "next week"
-    if days < 30:
-        weeks = days // 7
-        return f"in {weeks} week{'s' if weeks != 1 else ''}"
-    if days < 365:
-        months = max(1, days // 30)
-        return f"in {months} month{'s' if months != 1 else ''}"
-    years = max(1, days // 365)
-    return f"in {years} year{'s' if years != 1 else ''}"
+# K-time5: these relative-time helpers now live in
+# ``app.core.infra.timephrase`` (one canonical implementation + the
+# process-wide "now" seam the DT1 virtual clock plugs into). They are
+# re-exported here under their historical private names so existing
+# imports and tests (``from app.core.rag.rag_retriever import
+# _humanize_past`` etc.) keep working byte-identically.
+_to_aware = _tp.to_aware
+_parse_temporal_iso = _tp.parse_iso
+_humanize_past = _tp.humanize_past
+_humanize_future = _tp.humanize_future
 
 
 # Schema v10 — score adjustments for temporally-classified memories.
@@ -519,49 +408,11 @@ def _temporal_boost(mem) -> float:
     return 0.0
 
 
-def _temporal_suffix(
-    *,
-    temporal_type: str | None,
-    event_time: str | None,
-    created_at: str | None,
-    now: datetime,
-) -> str:
-    """Build the parenthetical time tag for a retrieved memory bullet.
-
-    Returns ``""`` for ``durable`` / ``preference`` / unknown types
-    (timeless memories should render with no suffix, exactly like
-    pre-v10 retrieval). ``ongoing`` gets a short "(ongoing)" tag.
-    ``past_event`` and ``future_plan`` get humanised relative-time
-    phrases sourced from ``event_time`` (with ``created_at`` as a
-    fallback for past events that lacked an explicit event_time —
-    "we learned this N days ago" is still better than no anchor).
-    """
-    if not temporal_type:
-        return ""
-    t = temporal_type.lower()
-    if t in ("durable", "preference"):
-        return ""
-    if t == "ongoing":
-        return " (ongoing)"
-    if t == "past_event":
-        anchor = event_time or created_at
-        if not anchor:
-            return ""
-        return f" ({_humanize_past(anchor, now)})"
-    if t == "future_plan":
-        when = _parse_temporal_iso(event_time)
-        if when is None:
-            return f" (planned for {_humanize_future(event_time, now)})"
-        if when <= _to_aware(now):
-            # Time has passed but the decay worker hasn't reclassified
-            # yet — render with the explicit "should be done by now"
-            # framing so Aiko picks the retrospective lane.
-            return (
-                f" (was planned for {_humanize_future(event_time, when - timedelta(seconds=1))}"
-                " — should be done by now)"
-            )
-        return f" (planned for {_humanize_future(event_time, now)})"
-    return ""
+# K-time5: the memory-bullet time tag also lives in
+# ``app.core.infra.timephrase`` now. Re-exported under its historical name
+# so callers (this module's ``format_block`` + ``MemoryRetriever`` +
+# ``test_memory_temporal``) keep working unchanged.
+_temporal_suffix = _tp.temporal_suffix
 
 
 def _is_anniversary_today(metadata: dict | None) -> bool:
