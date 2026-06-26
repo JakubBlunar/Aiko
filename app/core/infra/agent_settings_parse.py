@@ -507,6 +507,27 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             reconnection_base_gap_hours=max(
                 1.0, float(agent_raw.get("reconnection_base_gap_hours", 24.0)),
             ),
+            session_clock_enabled=bool(
+                agent_raw.get("session_clock_enabled", True),
+            ),
+            session_clock_long_minutes=max(
+                1.0, float(agent_raw.get("session_clock_long_minutes", 60.0)),
+            ),
+            session_clock_very_long_minutes=max(
+                1.0,
+                float(
+                    agent_raw.get("session_clock_very_long_minutes", 150.0)
+                ),
+            ),
+            session_clock_break_minutes=max(
+                1.0, float(agent_raw.get("session_clock_break_minutes", 30.0)),
+            ),
+            session_clock_gap_min_minutes=max(
+                0.0, float(agent_raw.get("session_clock_gap_min_minutes", 10.0)),
+            ),
+            session_clock_gap_max_minutes=max(
+                0.0, float(agent_raw.get("session_clock_gap_max_minutes", 30.0)),
+            ),
             appreciation_beats_enabled=bool(
                 agent_raw.get("appreciation_beats_enabled", True),
             ),

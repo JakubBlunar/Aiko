@@ -208,22 +208,47 @@ in `tests/test_prompt_assembler.py`, and a settings round-trip in
 
 ---
 
-## K-time4. Session-elapsed & mid-session gap awareness
+## K-time4. Session-elapsed & mid-session gap awareness — SHIPPED
 
-**Motivation.** There's cross-session gap awareness (J5 reconnection, K28)
-and per-message history age (K-time1), but **nothing about the current
-conversation's own clock**: how long *this* session has run ("we've been
-at this a while now") or a notable *mid-session* pause ("you stepped away
-for 20 min and came back" — too short for a full reconnection beat, too
-long to ignore). A tiny derived signal off the session's first-message
-timestamp plus the delta between the last two messages, rendered as an
-optional one-line cue, lets Aiko land natural beats like "it's gotten
-late and we've been talking an hour — you should sleep." Key files:
-[`session_controller.py`](../../app/core/session/session_controller.py)
-(session start time + last-message delta, both already nearly available —
-`_last_assistant_age_hours` is a cousin), a small grounding cue in the
-ambient cluster. **Tonal guard:** observe, don't police ("you've been on
-here too long"). **Effort.** Small.
+There was cross-session gap awareness (J5 reconnection, K14/K28/K36) and
+per-message history age (K-time1), but **nothing about the current
+conversation's own clock**. K-time4 adds two cheap derived sub-cues off the
+recent-message timestamps, folded into one block. The pure
+[`app/core/conversation/session_clock.py`](../../app/core/conversation/session_clock.py)
+(`continuous_burst` / `classify` / `render_block`) does the math:
+
+- **elapsed** — `continuous_burst` collapses the newest-first timestamps
+  into the duration of the current *uninterrupted sitting* (it walks back
+  only while each step's gap stays under `session_clock_break_minutes`, so a
+  session that began days ago but has a fresh burst reads as minutes, not
+  days), banded `long` (≥ 60 min) / `very_long` (≥ 150 min). Lets Aiko land
+  "we've been at this a while" or, paired with the existing circadian block,
+  "it's late and we've been talking an hour — get some rest."
+- **pause** — a notable *mid-session* pause (delta before the latest
+  message) in `[session_clock_gap_min_minutes, session_clock_gap_max_minutes)`
+  (default `[10, 30)` min). The upper bound sits **at** the K14
+  absence_curiosity floor (30 min) so K-time4 never double-fires with the
+  gap-return family that owns everything above it.
+
+Consumer is the **live** (no worker / kv)
+[`InnerLifePart4Mixin._render_session_clock_block`](../../app/core/session/inner_life_part4.py)
+— it shares the P22 `_inner_life_recent_messages` read with the other
+history-walkers — registered as the `session_clock` provider and slotted in
+the **T6** gap cluster right after `reconnection_block` (its within-session
+sibling) and before `absence_curiosity_block`. **Anti-nag via two
+watermarks:** the elapsed cue fires once **per band per sitting** (a
+`(burst_key, fired_band)` pair; a new sitting re-arms it), the pause cue
+once per latest-message anchor — an engaged conversation is never reminded
+of the clock every turn. Tonal guard lives in the rendered cue: observe,
+never police. Gated by `agent.session_clock_enabled`; all five thresholds
+are `agent.session_clock_*_minutes` floats. MCP-debuggable:
+`get_session_clock_state` (switches + knobs + watermarks + a dry-run measure
+of the live signal) / `force_session_clock_surface` (one-shot watermark
+bypass). Grep `session-clock fire:`. Tests:
+[`tests/test_session_clock.py`](../../tests/test_session_clock.py) (pure
+module + provider plumbing), a `reconnection → session_clock →
+absence_curiosity` slot test in `tests/test_prompt_assembler.py`, and a
+settings round-trip in `tests/test_settings.py`.
 
 ---
 

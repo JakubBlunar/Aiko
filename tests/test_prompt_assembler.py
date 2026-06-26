@@ -3800,6 +3800,39 @@ class PromptCachePrefixOrderingTests(unittest.TestCase):
             why="affect (T5) must precede upcoming_horizon (T6)",
         )
 
+    def test_affect_precedes_session_clock(self) -> None:
+        # K-time4: the session-clock cue is a T6 within-session time
+        # surface. It sits below the T5 affect cluster and is wired into
+        # the cascade via the ``session_clock`` provider.
+        content = self._build(
+            "p7c",
+            affect=lambda: "Affect: P_AFFECT_LINE.",
+            session_clock=lambda: (
+                "You and Jacob have been talking for P_CLOCK_LINE now."
+            ),
+        )
+        self._assert_before(
+            content, "P_AFFECT_LINE", "P_CLOCK_LINE",
+            why="affect (T5) must precede session_clock (T6)",
+        )
+
+    def test_session_clock_sits_in_gap_cluster(self) -> None:
+        # Pinned ordering: reconnection (J5, cross-session return) leads
+        # the gap cluster, the K-time4 within-session sibling follows it,
+        # and both precede K14 absence_curiosity.
+        from app.core.session.prompt_assembler import _PROMPT_BLOCK_TIERS
+
+        t6 = _PROMPT_BLOCK_TIERS["T6_detectors"]
+        self.assertIn("session_clock_block", t6)
+        self.assertLess(
+            t6.index("reconnection_block"),
+            t6.index("session_clock_block"),
+        )
+        self.assertLess(
+            t6.index("session_clock_block"),
+            t6.index("absence_curiosity_block"),
+        )
+
     def test_persona_precedes_world(self) -> None:
         # T0 persona before T4 world. World/posture cues change when
         # the user gives Aiko an item or she moves rooms; they

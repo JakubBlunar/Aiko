@@ -43,6 +43,7 @@
     "milestone_celebration_enabled": true,
     "reconnection_enabled": true,
     "reconnection_base_gap_hours": 24.0,
+    "session_clock_enabled": true,
     "appreciation_beats_enabled": true,
     "appreciation_min_closeness": 0.25,
     "appreciation_cooldown_hours": 72.0,

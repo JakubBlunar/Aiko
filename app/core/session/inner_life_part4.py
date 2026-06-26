@@ -514,6 +514,116 @@ class InnerLifePart4Mixin:
             "the gap or make them explain where they were."
         )
 
+    def _render_session_clock_block(self) -> str:
+        """K-time4: session-elapsed + mid-session pause awareness.
+
+        Two cheap derived sub-cues off the recent-message timestamps,
+        distinct from the cross-session gap family (J5 reconnection / K14
+        absence_curiosity, which own everything above the 30-min floor):
+
+        * **elapsed** — how long the *current continuous sitting* has run
+          (a run of messages with no gap > ``session_clock_break_minutes``),
+          banded ``long`` / ``very_long``. One-shot **per band per sitting**
+          via an in-memory ``(burst_key, band)`` watermark so an engaged
+          conversation isn't reminded of the clock every turn; a new sitting
+          (the burst anchor changes) re-arms it.
+        * **pause** — a notable mid-session pause in
+          ``[gap_min, gap_max)`` minutes (capped at the absence_curiosity
+          floor so it never double-fires with the gap-return family).
+          One-shot per pause via the latest-message anchor.
+
+        Shares the P22 ``_inner_life_recent_messages`` read with the other
+        history-walking providers. Tonal guard lives in the rendered cue:
+        observe, don't police.
+        """
+        agent = self._settings.agent
+        if not bool(getattr(agent, "session_clock_enabled", True)):
+            return ""
+
+        from app.core.conversation import session_clock as _sc
+        from app.core.infra import timephrase
+
+        rows = self._inner_life_recent_messages(60)
+        if not rows:
+            return ""
+        # Newest-first, aware timestamps; drop rows without a parseable ts.
+        times_desc: list[Any] = []
+        for row in reversed(rows):
+            ts = timephrase.parse_iso(getattr(row, "created_at", None))
+            if ts is not None:
+                times_desc.append(ts)
+        if not times_desc:
+            return ""
+
+        now = timephrase.now()
+        signal = _sc.classify(
+            times_desc,
+            now,
+            long_seconds=float(getattr(agent, "session_clock_long_minutes", 60.0)) * 60.0,
+            very_long_seconds=float(
+                getattr(agent, "session_clock_very_long_minutes", 150.0)
+            ) * 60.0,
+            break_seconds=float(getattr(agent, "session_clock_break_minutes", 30.0)) * 60.0,
+            gap_min_seconds=float(getattr(agent, "session_clock_gap_min_minutes", 10.0)) * 60.0,
+            gap_max_seconds=float(getattr(agent, "session_clock_gap_max_minutes", 30.0)) * 60.0,
+        )
+
+        force = bool(getattr(self, "_session_clock_force_next", False))
+        if force:
+            self._session_clock_force_next = False
+
+        # ── elapsed one-shot: per band, re-armed when the sitting changes ──
+        elapsed_band = signal.elapsed_band
+        if not force:
+            last_burst = getattr(self, "_session_clock_burst_key", None)
+            if last_burst != signal.burst_start_iso:
+                # New sitting -> forget what we'd already surfaced.
+                self._session_clock_fired_band = None
+                self._session_clock_burst_key = signal.burst_start_iso
+            _rank = {None: 0, "long": 1, "very_long": 2}
+            fired = getattr(self, "_session_clock_fired_band", None)
+            if _rank.get(elapsed_band, 0) <= _rank.get(fired, 0):
+                # Already surfaced this band (or a stronger one) this sitting.
+                elapsed_band = None
+
+        # ── pause one-shot: per latest-message anchor ──
+        gap_notable = signal.gap_notable
+        latest_iso = times_desc[0].isoformat()
+        if not force and gap_notable:
+            if getattr(self, "_session_clock_gap_anchor", None) == latest_iso:
+                gap_notable = False
+
+        if elapsed_band is None and not gap_notable:
+            return ""
+
+        render_signal = _sc.SessionClockSignal(
+            elapsed_seconds=signal.elapsed_seconds,
+            elapsed_band=elapsed_band if elapsed_band is not None else (
+                signal.elapsed_band if force else None
+            ),
+            burst_start_iso=signal.burst_start_iso,
+            gap_seconds=signal.gap_seconds,
+            gap_notable=gap_notable or (force and signal.gap_notable),
+        )
+        line = _sc.render_block(render_signal, self.user_display_name)
+        if not line:
+            return ""
+
+        # Commit the watermarks (only for the cues that actually fired).
+        if elapsed_band is not None:
+            self._session_clock_fired_band = elapsed_band
+            self._session_clock_burst_key = signal.burst_start_iso
+        if gap_notable:
+            self._session_clock_gap_anchor = latest_iso
+        log.info(
+            "session-clock fire: elapsed_band=%s elapsed_s=%.0f gap_notable=%s gap_s=%.0f",
+            elapsed_band,
+            signal.elapsed_seconds,
+            gap_notable,
+            signal.gap_seconds,
+        )
+        return line
+
     def _render_appreciation_block(self) -> str:
         """J10: rare, specific unprompted gratitude anchored to a moment.
 
