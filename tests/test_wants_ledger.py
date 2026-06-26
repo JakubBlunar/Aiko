@@ -441,7 +441,11 @@ class WorkerTests(unittest.TestCase):
 
     def test_growth_applies_each_tick(self) -> None:
         kv = _KvStore()
-        old = _NOW - timedelta(days=2)
+        # Anchor to real "now" (not the fixed _NOW): the worker's run()
+        # ticks on the wall clock, so a want seeded relative to _NOW would
+        # eventually age past max_age_days and be pruned, emptying the
+        # ledger. Two days old keeps it well inside the 14-day window.
+        old = datetime.now(timezone.utc) - timedelta(days=2)
         kv.set(wl.KV_WANTS_LEDGER, wl.serialize(
             _state_with(_want(pressure=0.15, created_at=old)),
         ))

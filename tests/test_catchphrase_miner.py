@@ -12,6 +12,7 @@ Three contract surfaces:
 """
 from __future__ import annotations
 
+import hashlib
 import time
 import unittest
 from dataclasses import dataclass
@@ -36,7 +37,12 @@ class _Row:
 
 class _FakeEmbedder:
     def embed(self, text: str) -> np.ndarray:
-        rng = np.random.default_rng(abs(hash(text)) % (2**32))
+        # Stable hash (not Python's per-process-seeded ``hash()``) so the
+        # embedding for a given phrase is identical across runs and test
+        # orders — keeps the miner's dedup deterministic under pytest-randomly.
+        digest = hashlib.sha256(text.encode("utf-8")).digest()
+        seed = int.from_bytes(digest[:4], "little")
+        rng = np.random.default_rng(seed)
         return rng.normal(size=8).astype(np.float32)
 
 

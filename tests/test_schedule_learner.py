@@ -219,12 +219,16 @@ class TestRun(unittest.TestCase):
 
     def test_run_writes_usual_hours_when_dominant_cluster(self) -> None:
         world = _build_world(min_samples=3)
-        # 8 messages on different weekday evenings (UTC 19:00). In
-        # most non-Pacific timezones this lands in the evening bucket,
-        # but the test only asserts that a string was written, not
-        # which bucket — that depends on the test runner's local TZ.
-        # 2026-05-26 is a Tuesday.
-        base = datetime(2026, 5, 26, 19, 0, tzinfo=timezone.utc)
+        # 8 messages on consecutive evenings (UTC 19:00). In most
+        # non-Pacific timezones this lands in the evening bucket, but the
+        # test only asserts that a string was written, not which bucket —
+        # that depends on the test runner's local TZ. Anchor to "now" (not
+        # a hardcoded date) so the messages always fall inside the worker's
+        # rolling window_days; 8 consecutive days always yield a dominant
+        # weekday-evening cluster regardless of which weekday "today" is.
+        base = datetime.now(timezone.utc).replace(
+            hour=19, minute=0, second=0, microsecond=0,
+        ) - timedelta(days=1)
         for d in range(8):
             _insert_user_message(
                 world["chat_db"],
@@ -243,7 +247,11 @@ class TestRun(unittest.TestCase):
 
     def test_run_idempotent_when_value_unchanged(self) -> None:
         world = _build_world(min_samples=3)
-        base = datetime(2026, 5, 26, 19, 0, tzinfo=timezone.utc)
+        # Anchor to "now" so the messages stay inside the rolling window
+        # (see test_run_writes_usual_hours_when_dominant_cluster).
+        base = datetime.now(timezone.utc).replace(
+            hour=19, minute=0, second=0, microsecond=0,
+        ) - timedelta(days=1)
         for d in range(10):
             _insert_user_message(
                 world["chat_db"], when=base - timedelta(days=d),
