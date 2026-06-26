@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from app.core.conversation import cue_register
+from app.core.infra import timephrase as _timephrase
 from app.core.infra.chat_database import ChatDatabase, MessageRow, SummaryRow
 from app.llm.token_utils import estimate_messages_tokens, estimate_tokens
 
@@ -606,10 +607,14 @@ class PromptAssemblerHelpersMixin:
         else:
             pod = "late night"
         # Use platform-safe format strings (Windows %-d / Unix %-d differ).
-        date_part = now.strftime("%A, %B %d").replace(" 0", " ")
+        # K-time6: include the year + a compact ISO date so the anchor is
+        # unambiguous for the residual cases where the model still does its
+        # own arithmetic (cross-year spans, "how long ago was X").
+        date_part = now.strftime("%A, %B %d, %Y").replace(" 0", " ")
         time_part = now.strftime("%I:%M %p").lstrip("0")
+        iso_date = now.strftime("%Y-%m-%d")
         return (
-            f"Right now it's {date_part}, {pod} ({time_part}). "
+            f"Right now it's {date_part}, {pod} ({time_part}) [{iso_date}]. "
             f"Use this naturally if it's relevant; don't announce the time "
             f"unprompted."
         )
@@ -767,46 +772,13 @@ class PromptAssemblerHelpersMixin:
         Returns ``""`` if ``created_at_iso`` can't be parsed (defensive
         — caller should treat the empty string as "skip the prefix").
         ``now`` must be a timezone-aware datetime.
+
+        K-time5: the banding logic now lives in
+        :func:`app.core.infra.timephrase.age_prefix` (single canonical
+        implementation). This stays a thin static method so existing
+        callers + ``test_prompt_assembler`` keep working.
         """
-        if not created_at_iso or not isinstance(created_at_iso, str):
-            return ""
-        text = created_at_iso.strip()
-        if not text:
-            return ""
-        if text.endswith("Z"):
-            text = text[:-1] + "+00:00"
-        try:
-            when = datetime.fromisoformat(text)
-        except ValueError:
-            return ""
-        if when.tzinfo is None:
-            when = when.replace(tzinfo=timezone.utc)
-        if now.tzinfo is None:
-            now = now.replace(tzinfo=timezone.utc)
-        delta = (now - when).total_seconds()
-        if delta < 0:
-            # Defensive: timestamps that look like the future read as
-            # "just now" rather than nonsense (clock skew between writer
-            # and reader is the most likely cause).
-            return "just now"
-        if delta < 60.0:
-            return "just now"
-        if delta < 3600.0:
-            minutes = max(1, int(delta // 60))
-            return f"{minutes} min ago"
-        # Hour-or-longer: switch to clock-time framing so the model gets
-        # an explicit "what was the wall-clock then?" anchor.
-        when_local = when.astimezone()
-        now_local = now.astimezone()
-        clock = when_local.strftime("%H:%M")
-        day_delta = (now_local.date() - when_local.date()).days
-        if day_delta <= 0:
-            return f"today {clock}"
-        if day_delta == 1:
-            return f"yesterday {clock}"
-        if day_delta < 7:
-            return f"{when_local.strftime('%A')} {clock}"
-        return f"{when_local.strftime('%b %d')} {clock}"
+        return _timephrase.age_prefix(created_at_iso, now)
 
     @staticmethod
     def _fit_history(
