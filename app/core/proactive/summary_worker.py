@@ -16,6 +16,7 @@ import threading
 import time
 from typing import Callable, TYPE_CHECKING
 
+from app.core.infra import timephrase
 from app.core.infra.chat_database import ChatDatabase
 from app.llm.ollama_client import OllamaClient
 from app.llm.token_utils import estimate_tokens
@@ -203,8 +204,18 @@ class SummaryWorker:
         user_prompt_parts.append(f"New transcript:\n{transcript}")
         user_prompt_parts.append("Write the updated combined summary.")
 
+        # K-time8: anchor "now" and ask the model to resolve relative dates,
+        # so a summary re-read days later doesn't carry a stale "yesterday".
+        system_content = (
+            timephrase.today_anchor()
+            + "\n\n"
+            + _SYSTEM_PROMPT
+            + " When the transcript uses relative time ('yesterday', 'next "
+            "week'), rewrite it as a concrete date so the summary stays "
+            "accurate when read later."
+        )
         messages = [
-            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "system", "content": system_content},
             {"role": "user", "content": "\n\n".join(user_prompt_parts)},
         ]
 

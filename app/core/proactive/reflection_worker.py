@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.affect.affect_state import felt_phrase
+from app.core.infra import timephrase
 from app.core.session.session_text_utils import resolve_user_name
 
 if TYPE_CHECKING:
@@ -257,8 +258,14 @@ class ReflectionWorker:
             messages = [
                 {
                     "role": "system",
-                    "content": _build_reflection_prompt(
-                        resolve_user_name(self._user_display_name_provider),
+                    # K-time8: anchor "now" so a reflection that references
+                    # relative time lands on a real date, not a stale word.
+                    "content": (
+                        timephrase.today_anchor()
+                        + "\n\n"
+                        + _build_reflection_prompt(
+                            resolve_user_name(self._user_display_name_provider),
+                        )
                     ),
                 },
                 {
