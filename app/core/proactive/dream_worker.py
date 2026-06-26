@@ -194,6 +194,9 @@ class DreamWorker:
                     "num_predict": self._max_tokens,
                 },
                 model=self._model,
+                # Dream synthesis is associative/creative; reasoning helps.
+                # The client adds think headroom so the answer survives.
+                think=True,
                 surface="dream_worker",
             )
             llm_ms = (time.monotonic() - t0) * 1000.0
