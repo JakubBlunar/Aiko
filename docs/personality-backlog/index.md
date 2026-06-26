@@ -70,15 +70,10 @@ Temporal awareness (K-time family, in [`awareness.md`](awareness.md)):
 - **K-time3.** Upcoming-horizon block — pre-computed future relative
   times.
 - **K-time4.** Session-elapsed & mid-session gap awareness.
-- **K-time5.** Unified time-phrasing module + single "now" seam
-  (do before DT1).
-- **K-time6.** Enrich the "now" anchor with year + ISO.
-- **K-time7.** Worker time toolkit — shared "today" anchor +
-  memory-age renderer (prereq for K-time8/9).
-- **K-time8.** Give the "today" anchor to every relative-time-resolving
-  worker (promise / belief / reflection / moments / summary).
-- **K-time9.** Feed memory ages to the memory-crunching workers
-  (conflict / consolidation / knowledge-map / curiosity).
+- **K-time5–9.** Canonical `timephrase` module + single "now" seam,
+  richer ISO now-anchor, worker time toolkit, "today" anchor in the
+  extract workers, and memory ages fed to the consolidation merge.
+  **Shipped.**
 
 ### G. Background workers — [`workers.md`](workers.md)
 
