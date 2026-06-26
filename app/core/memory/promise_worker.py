@@ -41,6 +41,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
+from app.core.infra import timephrase
 from app.core.memory.conflict_heuristics import _content_words, _tokenize
 from app.core.memory.fact_check_privacy import scrub_claim_for_search
 from app.core.memory.promise_extractor import Promise
@@ -468,8 +469,18 @@ class PromiseExtractionWorker:
 
     def _extract_with_llm(self, scrubbed_transcript: str) -> list[Promise] | None:
         user_content = _USER_TEMPLATE.format(transcript=scrubbed_transcript)
+        # K-time8: anchor the extractor in wall-clock time so a stated
+        # deadline like "tomorrow" / "next Monday" can be resolved to a
+        # concrete date instead of left as a stale relative word.
+        system_content = (
+            _SYSTEM_PROMPT
+            + "\n\n"
+            + timephrase.today_anchor(self._clock())
+            + " If a deadline is relative ('tomorrow', 'tonight', 'next "
+            "Monday'), resolve it against this into a concrete day/time."
+        )
         messages = [
-            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "system", "content": system_content},
             {"role": "user", "content": user_content},
         ]
         if log.isEnabledFor(logging.DEBUG):
@@ -477,7 +488,7 @@ class PromiseExtractionWorker:
                 "promise-worker extract prompt: model=%s prompt_chars=%d "
                 "user_payload=%r",
                 self._chat_model,
-                len(user_content) + len(_SYSTEM_PROMPT),
+                len(user_content) + len(system_content),
                 _preview(user_content),
             )
         chunks: list[str] = []
