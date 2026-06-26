@@ -66,7 +66,8 @@ Temporal awareness (K-time family, in [`awareness.md`](awareness.md)):
 
 - **K-time1.** Wall-clock prefixes on chat history. **Shipped.**
 - **K-time2.** Date-anchored retrieval for relative-time queries
-  (the highest-value temporal fix).
+  (`time_expr.parse_time_window` + RAG date-window boost + empty-window
+  anti-confabulation guard). **Shipped.**
 - **K-time3.** Upcoming-horizon block — pre-computed future relative
   times.
 - **K-time4.** Session-elapsed & mid-session gap awareness.
