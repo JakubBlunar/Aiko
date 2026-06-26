@@ -538,6 +538,19 @@ class MemorySettings:
     topic_confidence_familiar_threshold: float = 0.7
     # Global cooldown (in turns) after a confidence cue fires.
     topic_confidence_cooldown_turns: int = 6
+    # ── K-time3: upcoming-horizon block (pre-resolved future times) ──────
+    # How far ahead the forward sweep looks for ``future_plan`` events
+    # (in days). Within this window the resolved phrasing stays specific
+    # ("tomorrow morning 09:00", "on Friday 18:00"); beyond it the cue
+    # stays silent.
+    upcoming_horizon_days: int = 7
+    # Maximum number of upcoming events listed in the cue, soonest-first.
+    upcoming_horizon_max_items: int = 3
+    # Cooldown (in turns) before the *same* set of upcoming plans is
+    # re-surfaced — a new or freshly-passed plan re-surfaces immediately
+    # (the set's signature changes). Keeps the heads-up from nagging every
+    # turn while still resurfacing periodically for an imminent event.
+    upcoming_horizon_cooldown_turns: int = 6
     # K61: minimum cosine similarity for a learned fact to count as
     # "relevant to what the user just asked" in the knowledge-grounding
     # inner-life block. Higher → the steer fires only on a tight
@@ -1520,6 +1533,18 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             topic_confidence_cooldown_turns=max(
                 0,
                 int(memory_raw.get("topic_confidence_cooldown_turns", 6)),
+            ),
+            upcoming_horizon_days=max(
+                1,
+                int(memory_raw.get("upcoming_horizon_days", 7)),
+            ),
+            upcoming_horizon_max_items=max(
+                1,
+                int(memory_raw.get("upcoming_horizon_max_items", 3)),
+            ),
+            upcoming_horizon_cooldown_turns=max(
+                0,
+                int(memory_raw.get("upcoming_horizon_cooldown_turns", 6)),
             ),
             knowledge_grounding_min_similarity=max(
                 0.0,

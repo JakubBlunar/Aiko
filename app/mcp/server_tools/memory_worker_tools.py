@@ -1883,6 +1883,95 @@ def register(mcp, session: "SessionController") -> None:
             return f"force_topic_confidence_surface raised: {exc}"
 
     @mcp.tool()
+    def get_upcoming_horizon_state() -> str:
+        """K-time3 — dump the upcoming-horizon cue state + a dry-run scan.
+
+        Shows the master switch, the horizon / max-items / cooldown knobs,
+        the live cooldown remaining + last surfaced signature, and a
+        dry-run of the forward sweep: every ``future_plan`` memory due
+        within the window with its pre-resolved relative phrase. First
+        stop for "why didn't Aiko mention the thing coming up tomorrow?".
+        """
+        out: dict[str, Any] = {
+            "enabled": bool(
+                getattr(
+                    session._settings.agent, "upcoming_horizon_enabled", True
+                )
+            ),
+            "provider_force_next": bool(
+                getattr(session, "_upcoming_horizon_force_next", False)
+            ),
+            "cooldown_remaining": int(
+                getattr(session, "_upcoming_horizon_cooldown", 0) or 0
+            ),
+            "last_signature": getattr(session, "_upcoming_horizon_sig", ""),
+        }
+        mem = getattr(session, "_memory_settings", None)
+        out["settings"] = {
+            "horizon_days": int(getattr(mem, "upcoming_horizon_days", 7)),
+            "max_items": int(getattr(mem, "upcoming_horizon_max_items", 3)),
+            "cooldown_turns": int(
+                getattr(mem, "upcoming_horizon_cooldown_turns", 6)
+            ),
+        }
+        store = getattr(session, "_memory_store", None)
+        if store is not None:
+            try:
+                from app.core.conversation.upcoming_horizon import (
+                    build_signature,
+                    select_upcoming,
+                )
+                from app.core.infra import timephrase
+
+                now = timephrase.now()
+                events = select_upcoming(
+                    store.list_by_temporal_type("future_plan"),
+                    now,
+                    horizon_days=out["settings"]["horizon_days"],
+                    max_items=out["settings"]["max_items"],
+                )
+                out["upcoming"] = [
+                    {
+                        "id": getattr(m, "id", None),
+                        "content": (getattr(m, "content", "") or "")[:120],
+                        "event_time": getattr(m, "event_time", None),
+                        "resolved": timephrase.humanize_future(
+                            getattr(m, "event_time", None), now
+                        ),
+                    }
+                    for m in events
+                ]
+                out["current_signature"] = build_signature(events)
+            except Exception as exc:  # pragma: no cover -- diag tool
+                out["upcoming_error"] = str(exc)
+        return json.dumps(out, indent=2, default=str)
+
+    @mcp.tool()
+    def force_upcoming_horizon_surface() -> str:
+        """K-time3 — arm a one-shot bypass on the upcoming-horizon provider.
+
+        Sets ``_upcoming_horizon_force_next`` so the next provider call
+        ignores the cooldown + signature gate (the horizon window must
+        still hold at least one ``future_plan``). Then ``send_message``
+        and verify the "Coming up ..." line lands in
+        ``get_last_response_detail``'s system_prompt.
+        """
+        try:
+            session._upcoming_horizon_force_next = True
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next provider call ignores the cooldown + "
+                        "signature gate (window must hold >=1 future_plan)"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_upcoming_horizon_surface raised: {exc}"
+
+    @mcp.tool()
     def get_topic_tracking_state() -> str:
         """F10k — dump the novelty detector's semantic topic-tracking state.
 

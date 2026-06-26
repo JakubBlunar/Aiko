@@ -440,6 +440,7 @@
     "knowledge_gap_notice_enabled": true,
     "topic_temperature_enabled": true,
     "topic_confidence_enabled": true,
+    "upcoming_horizon_enabled": true,
     "cluster_scoped_memory_hygiene_enabled": true,
     "topic_tracking_enabled": true,
     "knowledge_topic_extraction_enabled ": false,

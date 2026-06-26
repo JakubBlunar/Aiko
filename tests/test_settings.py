@@ -335,6 +335,28 @@ class CuriositySeedSettingsTests(unittest.TestCase):
         self.assertAlmostEqual(result.memory.topic_temperature_threshold, 0.0)
         self.assertEqual(result.memory.topic_temperature_cooldown_turns, 0)
 
+    def test_upcoming_horizon_settings_round_trip(self) -> None:
+        # Defaults.
+        result = load_settings(config_path=self._write_config())
+        self.assertTrue(result.agent.upcoming_horizon_enabled)
+        self.assertEqual(result.memory.upcoming_horizon_days, 7)
+        self.assertEqual(result.memory.upcoming_horizon_max_items, 3)
+        self.assertEqual(result.memory.upcoming_horizon_cooldown_turns, 6)
+        # Overrides + clamps.
+        path = self._write_config(
+            agent_extra={"upcoming_horizon_enabled": False},
+            memory_extra={
+                "upcoming_horizon_days": 0,            # floor 1
+                "upcoming_horizon_max_items": 0,       # floor 1
+                "upcoming_horizon_cooldown_turns": -5,  # floor 0
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.upcoming_horizon_enabled)
+        self.assertEqual(result.memory.upcoming_horizon_days, 1)
+        self.assertEqual(result.memory.upcoming_horizon_max_items, 1)
+        self.assertEqual(result.memory.upcoming_horizon_cooldown_turns, 0)
+
     def test_cluster_scoped_memory_hygiene_round_trip(self) -> None:
         result = load_settings(config_path=self._write_config())
         self.assertTrue(result.agent.cluster_scoped_memory_hygiene_enabled)

@@ -3786,6 +3786,20 @@ class PromptCachePrefixOrderingTests(unittest.TestCase):
             why="affect (T5) must precede knowledge_gaps (T6)",
         )
 
+    def test_affect_precedes_upcoming_horizon(self) -> None:
+        # K-time3: the upcoming-horizon cue is a T6 future-plan surface.
+        # It must sit below the T5 affect cluster (and is wired into the
+        # cascade via the ``upcoming_horizon`` provider).
+        content = self._build(
+            "p7b",
+            affect=lambda: "Affect: P_AFFECT_LINE.",
+            upcoming_horizon=lambda: "Coming up for Jacob: P_HORIZON_LINE.",
+        )
+        self._assert_before(
+            content, "P_AFFECT_LINE", "P_HORIZON_LINE",
+            why="affect (T5) must precede upcoming_horizon (T6)",
+        )
+
     def test_persona_precedes_world(self) -> None:
         # T0 persona before T4 world. World/posture cues change when
         # the user gives Aiko an item or she moves rooms; they

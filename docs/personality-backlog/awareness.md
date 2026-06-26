@@ -167,23 +167,44 @@ recall proves too lossy. Tests: `tests/test_time_expr.py` (22),
 
 ---
 
-## K-time3. Upcoming-horizon block — pre-computed future relative times
+## K-time3. Upcoming-horizon block — pre-computed future relative times — SHIPPED
 
-**Motivation.** Future date arithmetic is exactly where the LLM fails, and
-future plans only reach Aiko today if *semantic* RAG happens to surface
-them. Add a proactive **forward scan** over `event_time` rows
-(`future_plan` / agenda / D1 reminders) within a horizon window (e.g. the
-next 7 days) and render a single terse "coming up" inner-life cue with the
-relative phrasing **already resolved** ("tomorrow morning", "in 3 days",
-"this weekend") so Aiko never computes a future date herself.
-`rag_retriever._humanize_future` already exists — this is the missing
-*forward sweep* that doesn't wait for a semantic hit. Surfaces only when
-something falls in the window; one-shot / anti-repeat watermarked so it
-doesn't nag. Pairs with D1 (reminders), the agenda block, and the
-[`follow_up_worker`](../../app/core/proactive/follow_up_worker.py). Key
-files: a forward scan in the memory/agenda layer, a new inner-life
-provider + its tier in [`prompt_assembler.py`](../../app/core/session/prompt_assembler.py).
-**Tonal guard:** a heads-up, not a calendar readout. **Effort.** Medium.
+Future date arithmetic is exactly where an LLM companion drifts ("in 3 days"
+/ "next Tuesday" computed by reasoning, gotten wrong), and a future plan only
+reached Aiko if *semantic* RAG happened to surface it. K-time3 adds the
+missing **forward sweep**: the pure
+[`app/core/conversation/upcoming_horizon.py`](../../app/core/conversation/upcoming_horizon.py)
+(`select_upcoming` / `build_signature` / `render_block`) filters
+`future_plan` memories whose `event_time` lands in `(now, now +
+upcoming_horizon_days]` (default 7), sorts soonest-first, caps at
+`upcoming_horizon_max_items` (default 3), and renders one terse "Coming up
+for {name}: …" cue with the relative phrasing **already resolved** by the
+canonical [`timephrase.humanize_future`](../../app/core/infra/timephrase.py)
+("tomorrow morning 09:00", "on Friday 18:00") so the chat model never
+recomputes a date. The cue carries an explicit "use these, don't recalculate"
++ "heads-up only, never recite like a calendar" tonal guard.
+
+Consumer is the **live** (no worker / kv)
+[`InnerLifePart2Mixin._render_upcoming_horizon_block`](../../app/core/session/inner_life_part2.py)
+— a single mirror scan + a couple of ISO parses — registered as the
+`upcoming_horizon` provider and slotted in the **T6** tier right after
+`follow_up_block` (both are future-plan / time-anchored surfaces). **Anti-nag
+via signature + cooldown:** the cue re-surfaces immediately when the upcoming
+set's signature changes (a plan appears or slides out of the window) and
+otherwise sits out `upcoming_horizon_cooldown_turns` (default 6) so an
+unchanged calendar isn't recited every turn. Gated by
+`agent.upcoming_horizon_enabled`. Pairs with the
+[`follow_up_worker`](../../app/core/proactive/follow_up_worker.py) (which
+covers the *retrospective* "how did it go?" half once an event passes) and
+the `temporal_suffix` RAG tag (which only fires on a semantic hit).
+MCP-debuggable: `get_upcoming_horizon_state` (switches + knobs + cooldown +
+last signature + a dry-run of the window with resolved phrases) /
+`force_upcoming_horizon_surface` (one-shot bypass of the cooldown +
+signature gate). Grep `upcoming-horizon fire:`. Tests:
+[`tests/test_upcoming_horizon.py`](../../tests/test_upcoming_horizon.py)
+(pure module + provider plumbing), an `affect → upcoming_horizon` slot test
+in `tests/test_prompt_assembler.py`, and a settings round-trip in
+`tests/test_settings.py`.
 
 ---
 

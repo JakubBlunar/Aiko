@@ -157,6 +157,10 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "away_activities_block",
         "forward_curiosity_block",
         "follow_up_block",
+        # K-time3: forward sweep over future_plan rows due in the horizon
+        # window, with the relative times pre-resolved. Clusters with the
+        # other future-plan / time-anchored cues (follow_up).
+        "upcoming_horizon_block",
         "appreciation_block",
         "reciprocal_vulnerability_block",
         "novelty_block",
@@ -464,6 +468,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # Independent of the gap-return cue family (does not touch
         # _gap_cue_surfaced).
         self._follow_up_provider: Callable[[], str] | None = None
+        # K-time3: upcoming-horizon cue. A forward sweep over future_plan
+        # rows due within the horizon window, rendered with the relative
+        # times pre-resolved so the model never recomputes a future date.
+        self._upcoming_horizon_provider: Callable[[], str] | None = None
         # K5 mood-shell tilt. NOT one-shot -- derived fresh every turn
         # from current affect / relationship axes / pending moments,
         # so the renderer is stateless from the assembler's POV.
@@ -1402,6 +1410,20 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                     log.debug("follow_up provider raised", exc_info=True)
                     follow_up_block = ""
 
+        # K-time3 upcoming-horizon: pre-resolved future relative times for
+        # plans due within the horizon window. Time-anchored (not gap-gated),
+        # independent of the _gap_cue_surfaced family.
+        upcoming_horizon_block = ""
+        if getattr(self, "_upcoming_horizon_provider", None) is not None:
+            with _timed_phase(provider_ms, "upcoming_horizon"):
+                try:
+                    upcoming_horizon_block = (
+                        self._upcoming_horizon_provider() or ""
+                    )
+                except Exception:
+                    log.debug("upcoming_horizon provider raised", exc_info=True)
+                    upcoming_horizon_block = ""
+
         # J10 appreciation beat. Rare (long cooldown), specific, anchored
         # to a recent positive shared moment. Volatile one-shot so it
         # lives in T6 with the gap family rather than T1 — when it fires
@@ -2218,6 +2240,11 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # how it went". Time-anchored, independent of the gap-cue
             # family, watermark-gated one-shot.
             system_parts.append(follow_up_block)
+        if upcoming_horizon_block:
+            # K-time3: "coming up ..." with the relative times pre-resolved.
+            # Sits right after the follow_up cue — both are future-plan /
+            # time-anchored surfaces. Cooldown + signature gated.
+            system_parts.append(upcoming_horizon_block)
         if appreciation_block:
             # J10: rare specific gratitude anchored to a recent positive
             # shared moment. Cooldown + anti-repeat watermarked one-shot.
