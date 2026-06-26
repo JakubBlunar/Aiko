@@ -55,6 +55,7 @@ from app.core.relationship.belief_store import (
     SOURCE_WORKER,
     VALID_KINDS,
 )
+from app.core.infra import timephrase
 from app.core.memory.fact_check_privacy import scrub_claim_for_search
 from app.core.proactive.idle_worker import default_is_ready
 
@@ -450,8 +451,11 @@ class BeliefInferenceWorker:
 
     def _extract_with_llm(self, scrubbed_transcript: str) -> list[_BeliefTuple] | None:
         user_content = _USER_TEMPLATE.format(transcript=scrubbed_transcript)
+        # K-time8: anchor "now" so the model resolves relative phrases in the
+        # transcript ("he was stressed yesterday") instead of guessing.
+        system_content = f"{timephrase.today_anchor(self._clock())}\n\n{_SYSTEM_PROMPT}"
         messages = [
-            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "system", "content": system_content},
             {"role": "user", "content": user_content},
         ]
         if log.isEnabledFor(logging.DEBUG):
@@ -459,7 +463,7 @@ class BeliefInferenceWorker:
                 "belief-worker extract prompt: model=%s prompt_chars=%d "
                 "user_payload=%r",
                 self._chat_model,
-                len(user_content) + len(_SYSTEM_PROMPT),
+                len(user_content) + len(system_content),
                 _preview(user_content),
             )
         chunks: list[str] = []

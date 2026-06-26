@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
+from app.core.infra import timephrase
 from app.core.session.session_text_utils import resolve_user_name, speaker_label
 
 if TYPE_CHECKING:
@@ -472,8 +473,14 @@ class MomentDetector:
             messages = [
                 {
                     "role": "system",
-                    "content": _build_llm_prompt(
-                        resolve_user_name(self._user_display_name_provider),
+                    # K-time8: anchor "now" so the `what` summary resolves
+                    # relative phrases in the recent transcript to real dates.
+                    "content": (
+                        timephrase.today_anchor()
+                        + "\n\n"
+                        + _build_llm_prompt(
+                            resolve_user_name(self._user_display_name_provider),
+                        )
                     ),
                 },
                 {"role": "user", "content": block},
