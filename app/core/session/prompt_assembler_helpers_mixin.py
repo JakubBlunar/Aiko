@@ -148,6 +148,7 @@ class PromptAssemblerHelpersMixin:
         away_activities: Callable[[], str] | None = None,
         forward_curiosity: Callable[[], str] | None = None,
         follow_up: Callable[[], str] | None = None,
+        upcoming_horizon: Callable[[], str] | None = None,
         mood_shell: Callable[[], str] | None = None,
         novelty: Callable[[str], str] | None = None,
         stagnation: Callable[[str], str] | None = None,
@@ -275,6 +276,8 @@ class PromptAssemblerHelpersMixin:
             self._forward_curiosity_provider = forward_curiosity
         if follow_up is not None:
             self._follow_up_provider = follow_up
+        if upcoming_horizon is not None:
+            self._upcoming_horizon_provider = upcoming_horizon
         if mood_shell is not None:
             self._mood_shell_provider = mood_shell
         if novelty is not None:

@@ -602,6 +602,7 @@ class SpeakingWorkersInitMixin:
             away_activities=self._render_away_activities_block,
             forward_curiosity=self._render_forward_curiosity_block,
             follow_up=self._render_follow_up_block,
+            upcoming_horizon=self._render_upcoming_horizon_block,
             mood_shell=self._render_mood_shell_block,
             novelty=self._render_novelty_block,
             stagnation=self._render_stagnation_block,

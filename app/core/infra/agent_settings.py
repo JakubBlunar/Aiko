@@ -240,6 +240,13 @@ class AgentSettings:
     # from cluster size + learned-fact coverage (no worker); thresholds /
     # cooldown live under MemorySettings.
     topic_confidence_enabled: bool = True
+    # K-time3: master switch for the upcoming-horizon block. When on, a
+    # cheap forward sweep over ``future_plan`` memories due within the
+    # horizon window renders one terse "coming up" cue with the relative
+    # times **already resolved** (so Aiko never recomputes a future date).
+    # Off → the provider stays empty. Window / cap / cooldown live under
+    # MemorySettings.
+    upcoming_horizon_enabled: bool = True
     # ── K61 personality backlog: knowledge-grounding steer ────────────
     # Master switch for the ``knowledge_grounding`` inner-life block
     # (:meth:`InnerLifeProvidersMixin._render_knowledge_grounding_block`).

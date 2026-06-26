@@ -963,6 +963,98 @@ class InnerLifePart2Mixin:
         )
         return line
 
+    def _render_upcoming_horizon_block(self) -> str:
+        """K-time3: surface a "coming up" heads-up with pre-resolved times.
+
+        A cheap forward sweep over ``future_plan`` memories whose
+        ``event_time`` falls within ``memory.upcoming_horizon_days`` of now,
+        rendered as one terse cue with the relative phrasing **already
+        worked out** by :mod:`app.core.infra.timephrase` — so the chat model
+        never recomputes a future date (the thing LLMs reliably get wrong).
+        This is the missing *forward sweep*: ``rag_retriever`` only tags a
+        future plan with its resolved time if semantic RAG happens to surface
+        it; here it surfaces by time, not relevance.
+
+        Anti-nag: the cue re-surfaces the moment the upcoming set *changes*
+        (a new plan appears, or one slides out of the window), but otherwise
+        sits out a per-turn cooldown (``upcoming_horizon_cooldown_turns``) so
+        an unchanged calendar isn't recited every turn. Computed live (no
+        worker / kv): a single mirror scan + a couple of ISO parses.
+
+        MCP debug: ``force_upcoming_horizon_surface`` arms
+        ``_upcoming_horizon_force_next`` to bypass the cooldown + signature
+        gate (the window must still hold at least one plan).
+        """
+        if not bool(
+            getattr(self._settings.agent, "upcoming_horizon_enabled", True)
+        ):
+            return ""
+        store = getattr(self, "_memory_store", None)
+        if store is None:
+            return ""
+
+        force = bool(getattr(self, "_upcoming_horizon_force_next", False))
+        if force:
+            self._upcoming_horizon_force_next = False
+
+        try:
+            from app.core.conversation.upcoming_horizon import (
+                build_signature,
+                render_block,
+                select_upcoming,
+            )
+            from app.core.infra import timephrase
+        except Exception:
+            log.debug("upcoming_horizon import failed", exc_info=True)
+            return ""
+
+        mem_settings = self._memory_settings
+        horizon_days = int(
+            getattr(mem_settings, "upcoming_horizon_days", 7)
+        )
+        max_items = int(
+            getattr(mem_settings, "upcoming_horizon_max_items", 3)
+        )
+
+        now = timephrase.now()
+        try:
+            candidates = store.list_by_temporal_type("future_plan")
+        except Exception:
+            log.debug("upcoming_horizon: list future_plan failed", exc_info=True)
+            return ""
+
+        events = select_upcoming(
+            candidates, now, horizon_days=horizon_days, max_items=max_items,
+        )
+        if not events:
+            # Nothing on the horizon: forget the last signature so a plan
+            # that appears later always reads as "new" and surfaces fresh.
+            self._upcoming_horizon_sig = ""
+            return ""
+
+        sig = build_signature(events)
+        last_sig = getattr(self, "_upcoming_horizon_sig", "")
+        cooldown = int(getattr(self, "_upcoming_horizon_cooldown", 0) or 0)
+        if not force and sig == last_sig and cooldown > 0:
+            self._upcoming_horizon_cooldown = cooldown - 1
+            return ""
+
+        line = render_block(events, now, self.user_display_name)
+        if not line:
+            return ""
+
+        self._upcoming_horizon_sig = sig
+        self._upcoming_horizon_cooldown = max(
+            0, int(getattr(mem_settings, "upcoming_horizon_cooldown_turns", 6))
+        )
+        log.info(
+            "upcoming-horizon fire: count=%d cooldown=%d sig=%s",
+            len(events),
+            self._upcoming_horizon_cooldown,
+            sig[:80],
+        )
+        return line
+
     def _render_knowledge_gap_notice_block(self, user_text: str) -> str:
         """F10f: surface one "I keep circling X but never dug in" cue.
 
