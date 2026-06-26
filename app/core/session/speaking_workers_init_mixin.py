@@ -541,6 +541,16 @@ class SpeakingWorkersInitMixin:
         # greeted from, so the same return isn't re-greeted before Aiko's
         # reply collapses the gap.
         self._reconnection_anchored_at: str | None = None
+        # K-time4: session-clock watermarks. ``_burst_key`` identifies the
+        # current continuous sitting (re-arms the elapsed cue when it
+        # changes); ``_fired_band`` is the strongest elapsed band already
+        # surfaced this sitting; ``_gap_anchor`` is the latest-message ts
+        # the mid-session pause cue last fired from. ``_force_next`` is the
+        # MCP one-shot bypass.
+        self._session_clock_burst_key: str | None = None
+        self._session_clock_fired_band: str | None = None
+        self._session_clock_gap_anchor: str | None = None
+        self._session_clock_force_next: bool = False
         # J10: MCP one-shot bypass for the appreciation-beat cooldown.
         self._appreciation_force_next: bool = False
         # J9: MCP one-shot bypass for the reciprocal-vulnerability gates.
@@ -596,6 +606,7 @@ class SpeakingWorkersInitMixin:
             opinion_injection=self._render_opinion_injection_block,
             absence_curiosity=self._render_absence_curiosity_block,
             reconnection=self._render_reconnection_block,
+            session_clock=self._render_session_clock_block,
             appreciation=self._render_appreciation_block,
             reciprocal_vulnerability=self._render_reciprocal_vulnerability_block,
             turning_over=self._render_turning_over_block,

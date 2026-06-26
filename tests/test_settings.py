@@ -3571,6 +3571,64 @@ class ReconnectionSettingsTests(unittest.TestCase):
         self.assertAlmostEqual(a.reconnection_base_gap_hours, 1.0)
 
 
+class SessionClockSettingsTests(unittest.TestCase):
+    """K-time4: session-clock agent knobs default / round-trip / clamp."""
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(self, agent_extra: dict | None = None) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(json.loads(default_path.read_text(encoding="utf-8")))
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_defaults(self) -> None:
+        a = load_settings(config_path=self._write_config()).agent
+        self.assertTrue(a.session_clock_enabled)
+        self.assertAlmostEqual(a.session_clock_long_minutes, 60.0)
+        self.assertAlmostEqual(a.session_clock_very_long_minutes, 150.0)
+        self.assertAlmostEqual(a.session_clock_break_minutes, 30.0)
+        self.assertAlmostEqual(a.session_clock_gap_min_minutes, 10.0)
+        self.assertAlmostEqual(a.session_clock_gap_max_minutes, 30.0)
+
+    def test_overrides_round_trip(self) -> None:
+        path = self._write_config(agent_extra={
+            "session_clock_enabled": False,
+            "session_clock_long_minutes": 45.0,
+            "session_clock_very_long_minutes": 120.0,
+            "session_clock_gap_max_minutes": 25.0,
+        })
+        a = load_settings(config_path=path).agent
+        self.assertFalse(a.session_clock_enabled)
+        self.assertAlmostEqual(a.session_clock_long_minutes, 45.0)
+        self.assertAlmostEqual(a.session_clock_very_long_minutes, 120.0)
+        self.assertAlmostEqual(a.session_clock_gap_max_minutes, 25.0)
+
+    def test_floors(self) -> None:
+        path = self._write_config(agent_extra={
+            "session_clock_long_minutes": 0.0,    # floor 1
+            "session_clock_break_minutes": -5.0,  # floor 1
+            "session_clock_gap_min_minutes": -3.0,  # floor 0
+        })
+        a = load_settings(config_path=path).agent
+        self.assertAlmostEqual(a.session_clock_long_minutes, 1.0)
+        self.assertAlmostEqual(a.session_clock_break_minutes, 1.0)
+        self.assertAlmostEqual(a.session_clock_gap_min_minutes, 0.0)
+
+
 class AppreciationSettingsTests(unittest.TestCase):
     """J10: appreciation-beat agent knobs default / round-trip / clamp."""
 

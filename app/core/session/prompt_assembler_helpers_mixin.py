@@ -142,6 +142,7 @@ class PromptAssemblerHelpersMixin:
         opinion_injection: Callable[[str], str] | None = None,
         absence_curiosity: Callable[[], str] | None = None,
         reconnection: Callable[[], str] | None = None,
+        session_clock: Callable[[], str] | None = None,
         appreciation: Callable[[], str] | None = None,
         reciprocal_vulnerability: Callable[[str], str] | None = None,
         turning_over: Callable[[], str] | None = None,
@@ -264,6 +265,8 @@ class PromptAssemblerHelpersMixin:
             self._absence_curiosity_provider = absence_curiosity
         if reconnection is not None:
             self._reconnection_provider = reconnection
+        if session_clock is not None:
+            self._session_clock_provider = session_clock
         if appreciation is not None:
             self._appreciation_provider = appreciation
         if reciprocal_vulnerability is not None:

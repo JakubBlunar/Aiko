@@ -1972,6 +1972,107 @@ def register(mcp, session: "SessionController") -> None:
             return f"force_upcoming_horizon_surface raised: {exc}"
 
     @mcp.tool()
+    def get_session_clock_state() -> str:
+        """K-time4 — dump the session-clock cue state + a dry-run measure.
+
+        Shows the master switch, the elapsed / break / pause-band knobs,
+        the live watermarks (current sitting key, strongest elapsed band
+        already surfaced, last pause anchor, force flag), and a dry-run of
+        the derived signal off the recent-message timestamps: the current
+        continuous-sitting duration + band and the pause before the latest
+        message. First stop for "why didn't Aiko notice we'd been at this
+        for an hour / that I stepped away?".
+        """
+        agent = session._settings.agent
+        out: dict[str, Any] = {
+            "enabled": bool(getattr(agent, "session_clock_enabled", True)),
+            "force_next": bool(
+                getattr(session, "_session_clock_force_next", False)
+            ),
+            "burst_key": getattr(session, "_session_clock_burst_key", None),
+            "fired_band": getattr(session, "_session_clock_fired_band", None),
+            "gap_anchor": getattr(session, "_session_clock_gap_anchor", None),
+            "settings": {
+                "long_minutes": float(
+                    getattr(agent, "session_clock_long_minutes", 60.0)
+                ),
+                "very_long_minutes": float(
+                    getattr(agent, "session_clock_very_long_minutes", 150.0)
+                ),
+                "break_minutes": float(
+                    getattr(agent, "session_clock_break_minutes", 30.0)
+                ),
+                "gap_min_minutes": float(
+                    getattr(agent, "session_clock_gap_min_minutes", 10.0)
+                ),
+                "gap_max_minutes": float(
+                    getattr(agent, "session_clock_gap_max_minutes", 30.0)
+                ),
+            },
+        }
+        try:
+            from app.core.conversation import session_clock as _sc
+            from app.core.infra import timephrase
+
+            rows = session._chat_db.get_messages(session.session_key, limit=60)
+            times_desc = [
+                ts
+                for ts in (
+                    timephrase.parse_iso(getattr(r, "created_at", None))
+                    for r in reversed(rows)
+                )
+                if ts is not None
+            ]
+            now = timephrase.now()
+            signal = _sc.classify(
+                times_desc,
+                now,
+                long_seconds=out["settings"]["long_minutes"] * 60.0,
+                very_long_seconds=out["settings"]["very_long_minutes"] * 60.0,
+                break_seconds=out["settings"]["break_minutes"] * 60.0,
+                gap_min_seconds=out["settings"]["gap_min_minutes"] * 60.0,
+                gap_max_seconds=out["settings"]["gap_max_minutes"] * 60.0,
+            )
+            out["measure"] = {
+                "elapsed_seconds": round(signal.elapsed_seconds, 1),
+                "elapsed_band": signal.elapsed_band,
+                "burst_start_iso": signal.burst_start_iso,
+                "gap_seconds": round(signal.gap_seconds, 1),
+                "gap_notable": signal.gap_notable,
+                "rows_seen": len(times_desc),
+            }
+        except Exception as exc:  # pragma: no cover -- diag tool
+            out["measure_error"] = str(exc)
+        return json.dumps(out, indent=2, default=str)
+
+    @mcp.tool()
+    def force_session_clock_surface() -> str:
+        """K-time4 — arm a one-shot bypass on the session-clock provider.
+
+        Sets ``_session_clock_force_next`` so the next provider call
+        ignores the per-band / per-pause watermarks and renders whatever
+        the live signal currently is (an elapsed band and/or a notable
+        pause must still actually hold). Then ``send_message`` and verify
+        the "been talking for ..." / "was away about ..." line lands in
+        ``get_last_response_detail``'s system_prompt.
+        """
+        try:
+            session._session_clock_force_next = True
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next provider call ignores the band / pause "
+                        "watermarks (a live elapsed band and/or notable "
+                        "pause must still hold)"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_session_clock_surface raised: {exc}"
+
+    @mcp.tool()
     def get_topic_tracking_state() -> str:
         """F10k — dump the novelty detector's semantic topic-tracking state.
 

@@ -101,6 +101,24 @@ class AgentSettings:
     # lonely episode (felt) and K28/K36 (next-turn "what I was up to").
     reconnection_enabled: bool = True
     reconnection_base_gap_hours: float = 24.0
+    # K-time4: session-elapsed & mid-session gap awareness. A cheap derived
+    # signal off the recent-message timestamps, distinct from the
+    # cross-session gap family (J5 reconnection / K14 absence_curiosity).
+    # Two independent sub-cues fold into one block:
+    #   * elapsed  — how long the *current continuous sitting* has run (a
+    #     run of messages with no gap > session_clock_break_minutes),
+    #     banded at long / very-long; one-shot per band per sitting.
+    #   * pause    — a notable *mid-session* pause (the delta before the
+    #     latest message) in [gap_min, gap_max) minutes; the upper bound
+    #     sits at the absence_curiosity floor (30 min) so it never
+    #     double-fires with the gap-return family.
+    # Tonal guard (in the rendered cue): observe, don't police.
+    session_clock_enabled: bool = True
+    session_clock_long_minutes: float = 60.0
+    session_clock_very_long_minutes: float = 150.0
+    session_clock_break_minutes: float = 30.0
+    session_clock_gap_min_minutes: float = 10.0
+    session_clock_gap_max_minutes: float = 30.0
     # J10: appreciation beats. Rare, specific unprompted gratitude anchored
     # to a recent positive shared moment. Gated by closeness + a long
     # wall-clock cooldown so it stays a treat, never a tic.

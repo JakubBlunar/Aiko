@@ -152,6 +152,9 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "misattunement_block",
         "opinion_injection_block",
         "reconnection_block",
+        # K-time4: within-session elapsed + mid-session pause. Sits with
+        # the gap cluster (same-session sibling of reconnection).
+        "session_clock_block",
         "absence_curiosity_block",
         "turning_over_block",
         "away_activities_block",
@@ -435,6 +438,8 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # one self-computes the gap at assembly time (so it can colour the
         # FIRST reply back), closeness-scaled, one-shot per return.
         self._reconnection_provider: Callable[[], str] | None = None
+        # K-time4: within-session elapsed + mid-session pause cue.
+        self._session_clock_provider: Callable[[], str] | None = None
         # J10 appreciation beat. Rare, specific gratitude anchored to a
         # recent positive shared moment; closeness + long cooldown gated.
         self._appreciation_provider: Callable[[], str] | None = None
@@ -1315,6 +1320,18 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                 except Exception:
                     log.debug("reconnection provider raised", exc_info=True)
                     reconnection_block = ""
+
+        # K-time4 session-clock: how long this sitting has run + a notable
+        # mid-session pause. Sibling of reconnection (a within-session time
+        # cue rather than a cross-session return). One-shot watermarked.
+        session_clock_block = ""
+        if getattr(self, "_session_clock_provider", None) is not None:
+            with _timed_phase(provider_ms, "session_clock"):
+                try:
+                    session_clock_block = self._session_clock_provider() or ""
+                except Exception:
+                    log.debug("session_clock provider raised", exc_info=True)
+                    session_clock_block = ""
 
         # K14 typed-mode absence-curiosity one-shot. Empty on most
         # turns (only fires when the post-turn tracker stashed an
@@ -2207,6 +2224,11 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # curiosity so the greeting reads before the "what were you up
             # to" follow-ons.
             system_parts.append(reconnection_block)
+        if session_clock_block:
+            # K-time4: within-session time awareness (elapsed sitting +
+            # notable mid-session pause). Sits with the gap cluster — it's
+            # the "same conversation, but a while" sibling of reconnection.
+            system_parts.append(session_clock_block)
         if absence_curiosity_block:
             # K14 typed-mode: "Jacob was away for a few hours before
             # this message" sits right next to the other reaction-
