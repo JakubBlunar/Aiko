@@ -139,25 +139,31 @@ leave.
 
 ---
 
-## K-time2. Date-anchored retrieval for relative-time queries
+## K-time2. Date-anchored retrieval for relative-time queries — SHIPPED
 
-**Motivation.** The single highest-value temporal fix. The extractor
-resolves relative phrases at **write** time, but **nothing resolves them
-at query time** — RAG is a pure semantic cosine pass, so "what did I tell
-you *yesterday* about the dashboard?" or "remember that thing from *last
-week*?" retrieves the semantic nearest neighbours regardless of when they
-were said. Aiko then answers confidently off the wrong day. Parse the time
-expression in the user's message deterministically and use it to *filter
-or boost* retrieval toward that window. Key files: a new
-[`app/core/infra/time_expr.py`](../../app/core/infra/) (regex set —
-`yesterday`, `this morning`, `last week`, `on Monday`, `N days/weeks ago`,
-`last month`, `back in March` — resolved against the now-anchor to a
-`(start, end)` range), [`rag_retriever.py`](../../app/core/rag/rag_retriever.py)
-(a date-window score bonus / filter over the existing `created_at` +
-`event_time`), and [`chat_database.py`](../../app/core/infra/chat_database.py)
-(a direct "messages in `[start, end]`" lookup for "what did we say
-then"). **Tonal guard:** when the window is empty, Aiko should say she
-doesn't have anything from then, not confabulate. **Effort.** Medium.
+Resolves relative-time phrases at **query** time (the extractor already
+did it at write time). New [`app/core/infra/time_expr.py`](../../app/core/infra/time_expr.py)
+`parse_time_window(text, now)` turns `yesterday` / `last night` / `this
+morning` / `last week` / `this week` / `last month` / `N days|weeks|months
+ago` / `last N days` / `on Monday` / `back in March` / `tomorrow` / `next
+week` into a concrete `[start, end]` `TimeWindow` against the
+`timephrase` now-anchor (so it's DT1-virtual-clock-ready and
+deterministic in tests). Past windows carry a `guardable` flag (the
+clearly-retrospective ones) so chit-chat like "how are you today" never
+arms the guard. [`rag_retriever.py`](../../app/core/rag/rag_retriever.py)
+parses the **raw** query text (not the recent-turns-expanded query) and
+adds `_RAG_TIME_WINDOW_BONUS=0.08` to any memory/message hit whose
+`created_at` *or* `event_time` falls inside the window — a soft boost,
+not a hard filter, so a timezone skew on a day boundary only shifts the
+nudge. **Tonal guard:** `block_for` appends an anti-confabulation note
+(`time_window_guard_note()`) when a guardable query surfaced zero
+in-window hits, phrased as private guidance ("RAG only sees the semantic
+top-N, so 'nothing surfaced' != 'nothing exists'") rather than a hard
+claim. Did **not** add the `chat_database` direct `[start, end]` message
+lookup — the soft boost over the existing semantic pass covers the need
+without a new query path; revisit if "what exactly did we say then"
+recall proves too lossy. Tests: `tests/test_time_expr.py` (22),
+`tests/test_rag_retriever_time_window.py` (7).
 
 ---
 
