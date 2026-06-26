@@ -65,10 +65,22 @@ class TimeWindow:
     direction: str
     guardable: bool = False
 
-    def contains(self, when: datetime | None) -> bool:
+    def contains(self, when: "datetime | str | None") -> bool:
+        """True when ``when`` falls inside ``[start, end]``.
+
+        Accepts a datetime (naive treated as UTC) or an ISO-8601 string
+        (the form ``created_at`` / ``event_time`` are stored in); anything
+        empty / unparseable is treated as "not in window".
+        """
         if when is None:
             return False
-        aware = timephrase.to_aware(when)
+        if isinstance(when, str):
+            aware = timephrase.parse_iso(when)
+        else:
+            try:
+                aware = timephrase.to_aware(when)
+            except (AttributeError, TypeError):
+                return False
         if aware is None:
             return False
         return self.start <= aware <= self.end

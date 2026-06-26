@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Sequence
 import numpy as np
 
 from app.core.infra import timephrase as _tp
+from app.core.infra.time_expr import TimeWindow, parse_time_window
 from app.core.rag.rag_store import RagHit
 
 if TYPE_CHECKING:
@@ -136,6 +137,14 @@ _RAG_ALIGNMENT_BOOST_CAP = 0.05
 # the pinned / anniversary nudges so it nudges ordering near-ties
 # rather than overpowering raw cosine relevance.
 _RAG_KNOWLEDGE_BONUS = 0.05
+
+# K-time2 — additive score bonus for a memory/message hit whose recorded
+# date (``created_at`` / ``event_time``) falls inside the relative-time
+# window the user's query named ("yesterday", "last week", ...). Larger
+# than the knowledge bonus because an explicit time reference is a strong,
+# deliberate retrieval signal. Stays a soft boost, not a hard filter, so a
+# timezone skew on a day boundary only shifts the nudge.
+_RAG_TIME_WINDOW_BONUS = 0.08
 # Dialogue acts that count as "informational" for the knowledge boost.
 # ``question`` is the K4 label for "asking for information / a soft
 # request" (there is no separate ``info_seeking`` act).
@@ -576,6 +585,12 @@ class RagRetriever:
         # against Aiko's reply and bump ``revival_score`` on rows she
         # actually cited.
         self._last_surfaced_memory_ids: list[int] = []
+        # K-time2 — the relative-time window parsed from the last query's
+        # text (e.g. "yesterday" -> a concrete day range) and how many of
+        # the surfaced hits actually fell inside it. ``block_for`` reads
+        # these to drive the empty-window anti-confabulation guard.
+        self._last_time_window: "TimeWindow | None" = None
+        self._last_time_window_hit_count: int = 0
         # P19: the three per-source Lance searches (memories / messages /
         # documents) are independent and each only takes RagStore's shared
         # read lock, so they overlap instead of summing when dispatched on
@@ -783,6 +798,17 @@ class RagRetriever:
         # CPU and stays sequential on the turn thread.
         mem_hits, msg_hits, doc_hits = self._search_all_sources(embedding)
 
+        # K-time2 — parse a relative-time window from the *raw* user text
+        # (not the recent-turns-expanded query, which could carry a stale
+        # time phrase from an earlier turn). Hits recorded inside the window
+        # get a score nudge below; the in-window count drives the guard.
+        time_window: TimeWindow | None = None
+        try:
+            time_window = parse_time_window(query_text, _tp.now())
+        except Exception:
+            log.debug("rag retriever: time-window parse failed", exc_info=True)
+        time_window_hits = 0
+
         merged: list[RagHit] = []
         try:
             # P4: batch the SQLite-mirror join once instead of a locked
@@ -970,6 +996,22 @@ class RagRetriever:
                                 h.relevance_until = getattr(
                                     mem, "relevance_until", None
                                 )
+                                # K-time2 — boost when the memory's
+                                # recorded date or its anchored event
+                                # time lands inside the window the query
+                                # named ("yesterday" etc.). Either field
+                                # matching counts: a fact recorded then,
+                                # or a past/future event dated then.
+                                if time_window is not None and (
+                                    time_window.contains(
+                                        getattr(mem, "created_at", None)
+                                    )
+                                    or time_window.contains(
+                                        getattr(mem, "event_time", None)
+                                    )
+                                ):
+                                    h.score += _RAG_TIME_WINDOW_BONUS
+                                    time_window_hits += 1
                                 # Apply the relevance-window filter
                                 # *and* the future-plan boost. We tag
                                 # the hit with a sentinel score so
@@ -997,6 +1039,13 @@ class RagRetriever:
                     h.score = h.score + _MESSAGE_PRIOR + _recency_bonus(
                         getattr(h.record, "created_at", "")
                     )
+                    # K-time2 — same date-window nudge for chat snippets
+                    # said inside the named window.
+                    if time_window is not None and time_window.contains(
+                        getattr(h.record, "created_at", None)
+                    ):
+                        h.score += _RAG_TIME_WINDOW_BONUS
+                        time_window_hits += 1
                     merged.append(h)
             except Exception:
                 log.debug("message search failed", exc_info=True)
@@ -1087,6 +1136,11 @@ class RagRetriever:
         # overlap between Aiko's reply and each surfaced memory) before
         # the next retrieve() clobbers the list.
         self._last_surfaced_memory_ids = list(ids)
+        # K-time2 — snapshot the parsed window + how many hits fell inside
+        # it so block_for can decide whether to add the anti-confabulation
+        # guard for an empty retrospective window.
+        self._last_time_window = time_window
+        self._last_time_window_hit_count = time_window_hits
         if self._memory_store is not None and ids:
             try:
                 self._memory_store.mark_used(ids)
@@ -1103,6 +1157,31 @@ class RagRetriever:
         run the post-turn revival keyword-overlap check.
         """
         return list(self._last_surfaced_memory_ids)
+
+    @property
+    def last_time_window(self) -> "TimeWindow | None":
+        """The relative-time window parsed from the most recent query."""
+        return self._last_time_window
+
+    def time_window_guard_note(self) -> str | None:
+        """Anti-confabulation note for a retrospective query that surfaced
+        nothing from the window it named (K-time2).
+
+        Returns ``None`` unless the last query named a *guardable* (clearly
+        retrospective) window AND zero surfaced hits fell inside it. Phrased
+        as private guidance to Aiko rather than a hard claim — RAG only sees
+        the semantic top-N, so "nothing surfaced" is not "nothing exists".
+        """
+        win = self._last_time_window
+        if win is None or not win.guardable:
+            return None
+        if self._last_time_window_hit_count > 0:
+            return None
+        return (
+            f"[Note: nothing from {win.label} surfaced in memory. If asked "
+            f"about {win.label} specifically and you don't actually recall "
+            f"it, say so plainly instead of guessing.]"
+        )
 
     # ── cluster-scoped recall (F10d) ────────────────────────────────────
 
@@ -1708,7 +1787,7 @@ class RagRetriever:
             recent_turns=recent_turns,
             exclude_session_id=exclude_session_id,
         )
-        return self.format_block(
+        block = self.format_block(
             hits,
             user_display_name=user_display_name,
             fade_hedge_enabled=self._fade_hedge_enabled,
@@ -1719,6 +1798,13 @@ class RagRetriever:
             confidence_decay_floor=self._confidence_decay_floor,
             confidence_decay_distant_threshold=self._confidence_decay_distant_threshold,
         )
+        # K-time2 — append the empty-window anti-confabulation guard. Fires
+        # even when the block is otherwise empty (a retrospective query that
+        # surfaced nothing from its window is exactly when the guard matters).
+        note = self.time_window_guard_note()
+        if note:
+            block = f"{block}\n{note}".strip() if block else note
+        return block
 
     # ── internals ───────────────────────────────────────────────────────
 
