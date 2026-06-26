@@ -200,106 +200,41 @@ here too long"). **Effort.** Small.
 
 ---
 
-## K-time5. Unified time-phrasing module + single "now" seam
+## K-time5–9. Temporal toolkit + worker time-awareness — SHIPPED
 
-**Motivation.** Relative phrasing is computed in **~6 independent
-humanizers** with slightly different bandings —
-[`reconnection.humanize_gap`](../../app/core/relationship/reconnection.py),
-[`promise_lifecycle.humanize_age`](../../app/core/memory/promise_lifecycle.py),
-[`rag_retriever._humanize_past/_future`](../../app/core/rag/rag_retriever.py),
-the [`prompt_assembler_helpers`](../../app/core/session/prompt_assembler_helpers_mixin.py)
-age-prefix, [`follow_up._humanize_clock`](../../app/core/proactive/follow_up_worker.py),
-and [`wants_ledger`](../../app/core/conversation/wants_ledger.py) — so the
-*same instant* can read "yesterday" on one surface and "1 day ago" on
-another in the same turn. Consolidate into one
-[`app/core/infra/timephrase.py`](../../app/core/infra/) (past / future /
-duration / clock formatters) used everywhere, reading a **single
-injectable "now"** — which is also exactly where the DT1 virtual clock
-plugs in. Removes drift, keeps every relative phrase consistent, and is
-the prerequisite that makes DT1 (and DT4's deterministic scenarios) clean.
-**Effort.** Medium (mechanical), high consistency payoff. Do before DT1.
+Shipped together as the [`app/core/infra/timephrase.py`](../../app/core/infra/timephrase.py)
+canonical module plus worker wiring. What landed:
 
----
+- **K-time5 (now seam + consolidation).** `timephrase.py` holds the single
+  injectable "now" (`now()` / `set_now_provider()` — the DT1 virtual-clock
+  hook) plus the canonical `humanize_past` / `humanize_future` /
+  `temporal_suffix` / `age_prefix`. `rag_retriever.py` and
+  `prompt_assembler_helpers_mixin._format_age` now delegate here (re-exported
+  as aliases so existing callers/tests stay byte-identical).
+- **K-time6 (richer now anchor).** `_ambient_block` appends the year and a
+  compact `[YYYY-MM-DD]` ISO stamp to "Right now it's …" so cross-year /
+  "how long ago" arithmetic is unambiguous.
+- **K-time7 (worker toolkit).** `today_anchor(now)`, `format_memory_line`,
+  `format_memory_block(mems, now)`, and `format_transcript(rows, now)`
+  exposed for workers, reading the same now seam (so worker tests get
+  deterministic time).
+- **K-time8 (today anchor in extract workers).** `today_anchor()` prepended
+  to the system prompts of `promise_worker` (deadline resolution — the worst
+  offender), `belief_worker`, `shared_moment_extractor`, `reflection_worker`,
+  and `summary_worker` (plus an explicit "rewrite relative time as a concrete
+  date" instruction so stored summaries don't go stale).
+- **K-time9 (memory ages to crunchers).** `memory_consolidation_worker`
+  renders its merge group via `format_memory_block(group, now)` and is told
+  to prefer the fresher note on conflict.
 
-## K-time6. Enrich the "now" anchor with year + ISO
-
-**Motivation.** `_ambient_block` renders "Right now it's Friday, June 26,
-afternoon (1:33 PM)" — **no year**, friendly-form only. For the residual
-cases where the model still does its own arithmetic (cross-year spans,
-"how long ago was X"), append the year and a compact ISO stamp
-(`2026-06-26`) so the anchor is unambiguous. Trivial one-liner in
-[`prompt_assembler_helpers_mixin.py`](../../app/core/session/prompt_assembler_helpers_mixin.py)
-`_ambient_block`. **Effort.** Trivial. (Fold into K-time5 if that lands
-first.)
-
----
-
-## K-time7. Worker time toolkit — shared anchor + memory-age renderer
-
-**Motivation.** The worker-facing half of K-time5, and the answer to "give
-the workers a tool to handle time better." A codebase audit found that
-**only `MemoryExtractor` gives its LLM a "today" anchor**, and **no worker
-ever shows the LLM a memory's timestamp** — every worker hand-rolls
-`- {content}` with no age, even though the chat RAG path already has
-`rag_retriever._temporal_suffix` / `_humanize_past` / `_humanize_future`
-producing "(yesterday)" / "(planned for tonight 20:00)". Workers crunch
-memories that *have* `created_at` / `event_time` / `last_used_at`
-([`memory_store.py`](../../app/core/memory/memory_store.py) `Memory`) but
-throw the time away before the model sees it. Build one small toolkit
-(the natural extension of K-time5's `timephrase.py`) exposing three things
-workers can drop in: (1) `today_anchor(now)` — the
-"Today is {weekday, date, time} ({iso})" line `MemoryExtractor._build_system_prompt`
-already hand-writes, extracted for reuse; (2) `format_memory_block(mems, now)`
-— bullets with the temporal suffix (generalise the existing
-`_temporal_suffix`); (3) `format_transcript(rows, now)` — transcript lines
-with K-time1-style relative-age prefixes for message-crunching workers.
-Reads the single injectable "now" (DT1 clock seam), so worker tests get
-deterministic time for free. Key files: new/extended
-[`app/core/infra/timephrase.py`](../../app/core/infra/), export from
-[`rag_retriever.py`](../../app/core/rag/rag_retriever.py). **Effort.**
-Medium. **Prereq for K-time8 + K-time9.**
-
----
-
-## K-time8. Give the "today" anchor to every relative-time-resolving worker
-
-**Motivation.** Several workers ask their LLM to *extract a time* from a
-transcript but give it **no anchor to resolve relatives against** — so
-"tonight at 8", "next Monday", "in two weeks" can't be resolved correctly.
-The worst is [`promise_worker.py`](../../app/core/memory/promise_worker.py)
-`PromiseExtractionWorker`, whose prompt asks for a `deadline` field with no
-"today is…" line at all. Same gap in
-[`belief_worker.py`](../../app/core/relationship/belief_worker.py),
-[`reflection_worker.py`](../../app/core/proactive/reflection_worker.py),
-the [`shared_moment_extractor.py`](../../app/core/relationship/shared_moment_extractor.py)
-`MomentDetector`, the summary / thread-resummary workers, and the
-[`follow_up_worker.py`](../../app/core/proactive/follow_up_worker.py)
-draft. Drop the K-time7 `today_anchor(now)` line into each of their system
-prompts (one line each). Cheap, and directly lifts extraction quality —
-relative deadlines/dates stop being mis-resolved. **Effort.** Small
-(per-worker one-liner once K-time7 exists).
-
----
-
-## K-time9. Feed memory ages to the memory-crunching workers
-
-**Motivation.** Workers that *reason over a set of memories* make worse
-decisions because recency is invisible to them. Concretely:
-[`memory_conflict_worker.py`](../../app/core/memory/memory_conflict_worker.py)
-**already tie-breaks contradictions on `created_at` in Python but never
-tells the LLM which memory is newer** — feeding the age would let the
-contradiction gate itself prefer the fresher claim;
-[`memory_consolidation_worker.py`](../../app/core/memory/memory_consolidation_worker.py)
-merges a group of `- {content}` notes blind to whether it's folding a
-fresh note into a stale one; the new
-[`knowledge_map_reflection_worker.py`](../../app/core/proactive/knowledge_map_reflection_worker.py)
-"shape of what I know" reflection is far richer if it can see "this
-territory is *recently* hot vs. went quiet months ago"; and the curiosity
-seed / idle-curiosity workers pick staler questions without it. Swap their
-hand-rolled `- {content}` joins for the K-time7 `format_memory_block(mems,
-now)` so each row carries its age. **Effort.** Small–Medium (mostly
-swapping the formatter call once K-time7 exists). **Tonal/quality guard:**
-this is for the worker's *reasoning*, not user-facing text — the chat
-model still gets recency via RAG's own suffix.
+**Evaluated and skipped by design:** `memory_conflict_worker` (its winner
+selection already tie-breaks on `created_at` in Python; the LLM only judges
+contradiction, so ages add no value there) and `idle_curiosity_worker`
+(already picks the oldest `open_question` in Python). **Follow-up (not
+built):** the `knowledge_map_reflection_worker` feeds cluster *labels +
+sizes*, not memory rows, so `format_memory_block` doesn't fit — giving it
+per-cluster recency ("this territory is recently hot vs. went quiet months
+ago") would need the topic graph to expose cluster recency stats. Tracked
+as a future enrichment.
 
 ---
