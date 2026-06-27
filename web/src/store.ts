@@ -424,8 +424,18 @@ interface AssistantState {
   audioOutput: AudioOutputManager | null;
   /** True while the AudioContext is ``running`` (sound is unlocked). */
   audioUnlocked: boolean;
+  /**
+   * Per-device audio mute. When ``true`` this device never plays TTS /
+   * earcon PCM and the server drops it from the audio-owner election
+   * (so another device keeps playing, or everything goes silent if
+   * every device is muted). Persisted to ``localStorage`` so the choice
+   * survives a reload; pushed to the server via the ``audio_mute`` WS
+   * command on every (re)connect and whenever it toggles.
+   */
+  audioMuted: boolean;
   setAudioOutput: (out: AudioOutputManager | null) => void;
   setAudioUnlocked: (unlocked: boolean) => void;
+  setAudioMuted: (muted: boolean) => void;
   /**
    * Latest transient overlay pulse fired by the LLM via ``[[overlay:X]]``.
    * Cleared when ``expiresAt`` passes (renderer effects watch this).
@@ -663,6 +673,7 @@ const LS_PERSONA_PANEL_W = "aiko.layout.persona_panel_w";
 const LS_PERSONA_ALWAYS_ON_TOP = "aiko.persona.always_on_top";
 const LS_MOBILE_PERSONA_VISIBLE = "aiko.mobile.persona_visible";
 const LS_MOBILE_PERSONA_RECT = "aiko.mobile.persona_rect";
+const LS_AUDIO_MUTED = "aiko.audio.muted";
 
 // Floating mobile persona window: minimum size so a stray drag can't
 // shrink it to nothing, and a sensible default spot near the top so it
@@ -1561,8 +1572,13 @@ export const useAssistantStore = create<AssistantState>((set) => ({
   audioAmplitude: 0,
   audioOutput: null,
   audioUnlocked: false,
+  audioMuted: readBool(LS_AUDIO_MUTED, false),
   setAudioOutput: (out) => set({ audioOutput: out }),
   setAudioUnlocked: (unlocked) => set({ audioUnlocked: unlocked }),
+  setAudioMuted: (muted) => {
+    writeBool(LS_AUDIO_MUTED, muted);
+    set({ audioMuted: muted });
+  },
   avatarOverlay: null,
   avatarMotion: null,
   setAvatar: (avatar) => set({ avatar }),
