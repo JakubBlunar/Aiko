@@ -12,6 +12,7 @@ for any moved method must patch
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any
 from app.core.conversation.backchannel_classifier import BackchannelHint
 from collections.abc import Callable
@@ -141,7 +142,19 @@ class VoiceMixin:
         if not candidate.is_available:
             log.warning("Failed to load STT model: %s", normalized)
             return False
+        # Tear down the outgoing recorder's subprocesses before swapping
+        # in the new one — otherwise the old transcription/reader children
+        # are orphaned and spin on a broken pipe, flooding the log. Run in
+        # a daemon thread so a slow join can't block the settings change;
+        # shutdown() sets the shared event synchronously so the children
+        # stop regardless.
+        old = self._realtime_stt
         self._realtime_stt = candidate
+        if old is not None:
+            try:
+                threading.Thread(target=old.shutdown, daemon=True).start()
+            except Exception:
+                log.debug("old STT recorder shutdown failed", exc_info=True)
         return True
 
     @property
