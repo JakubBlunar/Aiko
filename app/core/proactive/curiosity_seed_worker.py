@@ -80,7 +80,15 @@ _USER_TEMPLATE = (
 
 _MIN_SEEDS = 3
 _MAX_SEEDS = 5
-_MAX_TOKENS = 320
+# Generation cap for the seed JSON. Each seed is up to topic(<=80) +
+# prompt_text(<=160) + why(<=120) chars of content, which lands around
+# 110-130 tokens of JSON apiece, so a full _MAX_SEEDS set needs ~600-700
+# tokens. 320 truncated the array mid-object (the closing braces never
+# arrived, so json.loads failed and the whole run produced nothing).
+# This is only a ceiling — with format_json the model stops as soon as
+# the object closes, so the extra headroom costs nothing on normal runs
+# and just removes the truncation on full sets.
+_MAX_TOKENS = 768
 _MAX_CLUSTERS = 8
 _MAX_ACTIVE_LIST = 8
 _MAX_PERSONA_CHARS = 800
