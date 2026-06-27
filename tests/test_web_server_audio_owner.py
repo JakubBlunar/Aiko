@@ -139,6 +139,72 @@ class AudioOwnerElectionTests(unittest.TestCase):
             )
             self.assertEqual(evt_b["owner_id"], hello_b["client_id"])
 
+    def test_most_recently_visible_client_takes_over(self) -> None:
+        # "Most-recently-active wins": A is the incumbent, but once B
+        # becomes visible *after* A, audio follows to B (the device the
+        # user just picked up).
+        client, _ = _build_client()
+        with client.websocket_connect("/ws") as ws_a, \
+                client.websocket_connect("/ws") as ws_b:
+            _hello_a = ws_a.receive_json()
+            hello_b = ws_b.receive_json()
+            ws_a.send_json({"type": "presence", "visible": True})
+            ws_b.send_json({"type": "presence", "visible": True})
+            evt_b = _drain_until(
+                ws_b,
+                lambda m: m.get("type") == "audio_owner_changed"
+                and m.get("owner_id") == hello_b["client_id"],
+            )
+            self.assertEqual(evt_b["owner_id"], hello_b["client_id"])
+
+
+class AudioMuteTests(unittest.TestCase):
+    def test_muting_owner_hands_off_then_unmute_reclaims(self) -> None:
+        client, _ = _build_client()
+        with client.websocket_connect("/ws") as ws_a, \
+                client.websocket_connect("/ws") as ws_b:
+            hello_a = ws_a.receive_json()
+            hello_b = ws_b.receive_json()
+            # Both visible; B becomes active last so B owns audio.
+            ws_a.send_json({"type": "presence", "visible": True})
+            ws_b.send_json({"type": "presence", "visible": True})
+            _drain_until(
+                ws_b,
+                lambda m: m.get("type") == "audio_owner_changed"
+                and m.get("owner_id") == hello_b["client_id"],
+            )
+            # Mute the owner (B) -> the visible, unmuted sibling A takes over.
+            ws_b.send_json({"type": "audio_mute", "muted": True})
+            evt = _drain_until(
+                ws_a,
+                lambda m: m.get("type") == "audio_owner_changed"
+                and m.get("owner_id") == hello_a["client_id"],
+            )
+            self.assertEqual(evt["owner_id"], hello_a["client_id"])
+            # Unmute B -> it is stamped active again and reclaims playback.
+            ws_b.send_json({"type": "audio_mute", "muted": False})
+            evt2 = _drain_until(
+                ws_b,
+                lambda m: m.get("type") == "audio_owner_changed"
+                and m.get("owner_id") == hello_b["client_id"],
+            )
+            self.assertEqual(evt2["owner_id"], hello_b["client_id"])
+
+    def test_muting_only_client_silences_everywhere(self) -> None:
+        client, _ = _build_client()
+        with client.websocket_connect("/ws") as ws:
+            hello = ws.receive_json()
+            self.assertEqual(hello["audio_owner_id"], hello["client_id"])
+            ws.send_json({"type": "audio_mute", "muted": True})
+            # No eligible (unmuted) client -> silence everywhere. Drain
+            # past any connect-time owner event to the None re-election.
+            evt = _drain_until(
+                ws,
+                lambda m: m.get("type") == "audio_owner_changed"
+                and m.get("owner_id") is None,
+            )
+            self.assertIsNone(evt["owner_id"])
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

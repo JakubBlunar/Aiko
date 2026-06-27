@@ -1693,6 +1693,12 @@ export type WsClientCommand =
    * need to know which signal flipped. Gates the typed-mode
    * proactive-silence timer so a backgrounded UI never gets nudged. */
   | { type: "presence"; visible: boolean }
+  /** Per-device audio mute. When ``true`` the server drops this client
+   * from the audio-owner election so another device keeps playing (or
+   * everything goes silent if every device is muted). Unmuting marks
+   * the device active so it takes over playback. Persisted per-device
+   * in ``localStorage`` and re-sent on every (re)connect. */
+  | { type: "audio_mute"; muted: boolean }
   /** Foreground app the user is in. Desktop-only; browser shells
    * never emit this. ``null`` covers "couldn't determine" / "user
    * is in our own window". Backend silently drops these events when

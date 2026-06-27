@@ -95,9 +95,47 @@ maintains a single `voice_owner_id` slot on the hub.
   too (the mic button on a non-owner window renders the
   "take over" affordance instead of the active state).
 
-TTS, earcons, transcripts, and every other broadcast event go to **all**
-connected clients regardless of ownership. The lock only governs
-microphone *input*.
+Transcripts and every other JSON state event go to **all** connected
+clients regardless of ownership. The `voice_owner_id` lock only governs
+microphone *input*. Audio **output** has its own owner — see below.
+
+## Audio output ownership
+
+TTS / earcon PCM is **not** broadcast to every client. Without a lock,
+the desktop shell's hidden persona webview AND the visible main window
+both receive and play each clip ~tens of ms apart — audible as an
+echo/mumble on the first sentence of every turn. So the hub elects a
+single **audio owner** and sends binary audio frames only to it
+(`_send_audio_bytes_async` targets one socket; lipsync `audio_amplitude`
+JSON still broadcasts so a hidden persona can keep animating its mouth).
+
+The election (`_Hub._elect_audio_owner_locked`) is **most-recently-active
+wins**:
+
+- Each client's "active" stamp (`_last_active_by_client`) is bumped when
+  its window goes visible/focused (a `presence` `visible: false -> true`
+  transition) or when the user unmutes it. Connecting alone does **not**
+  stamp — so a second, still-hidden window can't steal audio from the
+  incumbent before it reports activity (ties break toward the current
+  owner, then insertion order).
+- The owner is the highest-stamped **unmuted** client, preferring a
+  currently-visible one and falling back to any unmuted client (incl.
+  hidden) so audio is never silently lost when no window is foregrounded.
+- Result: audio follows whichever device you most recently picked up,
+  while still only ever playing on **one** device.
+
+**Per-device mute.** Each client carries an `audio_muted` flag, toggled
+from Settings → Sound (all platforms) and persisted per-device in
+`localStorage` (key `aiko.audio.muted`). The client pushes it up via the
+`audio_mute` WS command on every (re)connect and whenever it toggles. A
+muted client is dropped from the election entirely: another device keeps
+playing, or — if every device is muted — `owner=None` and everything
+goes silent. A muted client also gates playback locally
+(`shouldPlayAudio`) so the gap between toggling and the re-election
+landing is silent too. Owner changes broadcast `audio_owner_changed`.
+
+Tests: `tests/test_web_server_audio_owner.py` (`AudioOwnerElectionTests`
++ `AudioMuteTests`).
 
 ## Client side
 

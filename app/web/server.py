@@ -199,6 +199,26 @@ class _Hub:
         # ``discard`` -- which already returns the freed id -- can clean
         # up without an extra back-pointer.
         self._visible_by_client: dict[str, bool] = {}
+        # Per-client audio mute. A muted client is removed from the audio
+        # owner election entirely (see ``_elect_audio_owner_locked``) so
+        # the user can silence any one device while another keeps playing
+        # -- and muting every device yields ``owner=None`` (silence). The
+        # toggle lives client-side (persisted in ``localStorage``) and is
+        # pushed up via the ``audio_mute`` WS command. Defaults to unmuted.
+        self._audio_muted_by_client: dict[str, bool] = {}
+        # "Most-recently-active" ordering for the audio-owner election.
+        # ``_active_seq`` is a monotonic counter bumped whenever a client
+        # becomes active (its window goes visible/focused, or the user
+        # unmutes it); ``_last_active_by_client`` records each client's
+        # latest stamp. The owner is the highest-stamped *unmuted* client,
+        # preferring a visible one -- so audio follows whichever device
+        # the user most recently picked up, while still only ever playing
+        # on ONE device (no cross-window echo). Connect alone does NOT
+        # stamp (so a second, still-hidden window can't steal audio from
+        # the incumbent); the client's eager first ``presence`` frame is
+        # what stamps it active.
+        self._active_seq: int = 0
+        self._last_active_by_client: dict[str, int] = {}
 
     def attach_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
@@ -213,6 +233,7 @@ class _Hub:
             # its initial frame eagerly on mount, so the gap is small).
 
             self._visible_by_client.setdefault(client_id, False)
+            self._audio_muted_by_client.setdefault(client_id, False)
 
     def discard(self, ws: WebSocket) -> str | None:
         """Remove ``ws``; if it owned the mic, return the freed id."""
@@ -221,22 +242,52 @@ class _Hub:
             client_id = self._sockets.pop(ws, None)
             if client_id is not None:
                 self._visible_by_client.pop(client_id, None)
+                self._audio_muted_by_client.pop(client_id, None)
+                self._last_active_by_client.pop(client_id, None)
                 if self._voice_owner_id == client_id:
                     released = client_id
                     self._voice_owner_id = None
         return released
+
+    def _stamp_active_locked(self, client_id: str) -> None:
+        """Mark ``client_id`` as the most-recently-active client.
+
+        Caller holds ``self._lock``. Bumps the monotonic sequence so the
+        next election prefers this client. Used on a hidden->visible
+        transition and on unmute.
+        """
+        self._active_seq += 1
+        self._last_active_by_client[client_id] = self._active_seq
 
     def set_client_presence(self, client_id: str, visible: bool) -> None:
         """Record the latest ``presence`` frame from ``client_id``.
 
         No-op for unknown ids (e.g. a disconnect raced the frame); the
         dict only grows on :meth:`add` so the cache can't leak across
-        reconnects.
+        reconnects. A hidden->visible transition stamps the client active
+        so audio follows the device the user just brought to the front.
         """
         with self._lock:
             if client_id not in self._visible_by_client:
                 return
+            was_visible = self._visible_by_client[client_id]
             self._visible_by_client[client_id] = bool(visible)
+            if visible and not was_visible:
+                self._stamp_active_locked(client_id)
+
+    def set_client_audio_muted(self, client_id: str, muted: bool) -> None:
+        """Record a client's audio-mute toggle.
+
+        No-op for unknown ids. Unmuting is a strong "I want sound here"
+        signal, so it stamps the client active -- it will win the
+        most-recently-active election and become the audio owner.
+        """
+        with self._lock:
+            if client_id not in self._audio_muted_by_client:
+                return
+            self._audio_muted_by_client[client_id] = bool(muted)
+            if not muted:
+                self._stamp_active_locked(client_id)
 
     def any_client_visible(self) -> bool:
         """``True`` iff at least one connected client most-recently
@@ -255,39 +306,66 @@ class _Hub:
         """Pick the single client that should play audio. Caller holds
         ``self._lock``.
 
+        Policy: the **most-recently-active** *unmuted* client wins,
+        preferring one that is currently visible. "Active" is stamped
+        when a client's window goes visible/focused or the user unmutes
+        it (see :meth:`_stamp_active_locked`), so audio follows whichever
+        device the user most recently picked up while only ever playing
+        on ONE device (no cross-window echo).
+
         Rules, in order:
-          1. Stability — if the current owner is still connected AND is
-             either visible OR nobody is visible, keep it (avoids
-             flip-flopping the owner mid-session).
-          2. Otherwise prefer the first-connected *visible* client (a
+          1. Drop muted clients entirely. If every client is muted the
+             result is ``None`` (silence everywhere -- the user asked for
+             it explicitly on every device).
+          2. Among the unmuted clients, prefer the *visible* ones (a
              hidden persona webview reports ``visible=False`` so it is
-             never chosen while a real window is up).
-          3. Otherwise (no visible clients) fall back to the
-             first-connected client so audio is never silently lost.
+             never chosen while a real window is up); fall back to all
+             unmuted clients (incl. hidden) so audio is never silently
+             lost when no window is foregrounded.
+          3. Within that pool pick the highest activity stamp; ties break
+             toward the current owner, then insertion order -- so a
+             second, still-hidden window connecting can never steal audio
+             from the incumbent before it reports activity.
         """
         client_ids = list(self._sockets.values())
         if not client_ids:
             return None
-        visible = [cid for cid in client_ids if self._visible_by_client.get(cid)]
+        unmuted = [
+            cid for cid in client_ids
+            if not self._audio_muted_by_client.get(cid, False)
+        ]
+        if not unmuted:
+            return None
+        visible = [cid for cid in unmuted if self._visible_by_client.get(cid)]
+        pool = visible or unmuted
         current = self._audio_owner_id
-        if current is not None and current in client_ids:
-            if self._visible_by_client.get(current) or not visible:
-                return current
-        if visible:
-            return visible[0]
-        return client_ids[0]
+
+        def _rank(cid: str) -> tuple[int, bool]:
+            return (
+                self._last_active_by_client.get(cid, 0),
+                cid == current,
+            )
+
+        return max(pool, key=_rank)
 
     def recompute_audio_owner(self) -> tuple[bool, str | None]:
         """Re-elect the audio owner. Returns ``(changed, owner_id)``.
 
         Call after any event that can change eligibility: connect,
-        disconnect, or a ``presence`` update.
+        disconnect, a ``presence`` update, or an ``audio_mute`` toggle.
         """
         with self._lock:
             new_owner = self._elect_audio_owner_locked()
             changed = new_owner != self._audio_owner_id
             self._audio_owner_id = new_owner
-            return changed, new_owner
+            n_clients = len(self._sockets)
+        if changed:
+            log.info(
+                "audio-owner elected: owner=%s clients=%d (most-recently-active)",
+                new_owner,
+                n_clients,
+            )
+        return changed, new_owner
 
     @property
     def audio_owner_id(self) -> str | None:
@@ -1153,6 +1231,21 @@ def create_web_app(session: "SessionController") -> FastAPI:
                             await _broadcast_audio_owner_async(_owner)
                     except Exception:
                         log.debug("audio owner recompute on presence failed", exc_info=True)
+
+                elif msg_type == "audio_mute":
+                    # Per-device mute toggle. A muted client is dropped
+                    # from the audio-owner election (so another device can
+                    # keep playing, or everything goes silent if every
+                    # device is muted); unmuting marks this device active
+                    # so it takes over playback.
+                    muted = bool(msg.get("muted", False))
+                    hub.set_client_audio_muted(client_id, muted)
+                    try:
+                        _changed, _owner = hub.recompute_audio_owner()
+                        if _changed:
+                            await _broadcast_audio_owner_async(_owner)
+                    except Exception:
+                        log.debug("audio owner recompute on mute failed", exc_info=True)
 
                 elif msg_type == "user_activity":
                     # Foreground app the user is in (Tauri shell only;

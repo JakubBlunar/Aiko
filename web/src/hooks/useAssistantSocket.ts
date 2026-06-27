@@ -630,7 +630,11 @@ export function useAssistantSocket(): {
   // two windows play the same clip. Play when the server hasn't elected
   // anyone yet (single-client boot) or when we are the owner.
   const shouldPlayAudio = useCallback((): boolean => {
-    const { audioOwnerId, clientId } = useAssistantStore.getState();
+    const { audioOwnerId, clientId, audioMuted } = useAssistantStore.getState();
+    // Muted here: never play, regardless of ownership. The server also
+    // drops a muted client from the election, but this local gate closes
+    // the brief window between toggling mute and the re-election landing.
+    if (audioMuted) return false;
     if (!audioOwnerId) return true;
     return audioOwnerId === clientId;
   }, []);
@@ -807,6 +811,18 @@ export function useAssistantSocket(): {
     }
     ws.send(frame);
   }, []);
+
+  // Keep the server's per-client mute in sync with the persisted local
+  // toggle. Fires whenever the toggle flips AND on every (re)connect
+  // (the server forgets mute state across reconnects -- each socket is a
+  // fresh client_id defaulting to unmuted -- so a persisted ``muted``
+  // must be re-announced once the link is back up).
+  const connectionStatus = useAssistantStore((s) => s.connection.status);
+  const audioMuted = useAssistantStore((s) => s.audioMuted);
+  useEffect(() => {
+    if (connectionStatus !== "connected") return;
+    send({ type: "audio_mute", muted: audioMuted });
+  }, [connectionStatus, audioMuted, send]);
 
   // Re-route audio when the OS adds / removes devices (eg. plug in
   // headphones while the app is open). We keep the cached deviceId
