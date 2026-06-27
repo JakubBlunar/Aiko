@@ -129,6 +129,26 @@ class StuckSuspendedAudioContext extends FakeAudioContext {
   }
 }
 
+/**
+ * A context that boots in iOS's non-standard ``"interrupted"`` state (set
+ * after backgrounding / a call / Siri) and recovers to ``running`` when
+ * ``resume()`` is called within a gesture — exactly what the iPhone PWA
+ * does. The manager must treat ``interrupted`` like ``suspended`` and
+ * resume it, otherwise every PCM frame is dropped ("media shows playing
+ * but no voice"). ``resume()`` advances the clock so we can prove the
+ * clip scheduled against the live (post-resume) time.
+ */
+class InterruptedAudioContext extends FakeAudioContext {
+  constructor() {
+    super();
+    this.state = "interrupted" as AudioContextState;
+  }
+  async resume() {
+    this.state = "running";
+    this.currentTime = 0.5;
+  }
+}
+
 /** Drain the manager's internal async chains (audio_start -> pcm). */
 async function flush(rounds = 12): Promise<void> {
   for (let i = 0; i < rounds; i++) {
@@ -317,6 +337,33 @@ describe("AudioOutputManager", () => {
     // Scheduled against the post-resume clock (0.5), not the frozen 0.0.
     expect(src.startedAt).not.toBeNull();
     expect(src.startedAt as number).toBeGreaterThanOrEqual(0.5);
+  });
+
+  it("resumes an iOS 'interrupted' context so PCM still plays", async () => {
+    // Regression: iOS Safari / standalone PWAs park the AudioContext in a
+    // non-standard ``"interrupted"`` state after backgrounding / a call /
+    // Siri. The old resume guards only checked ``=== "suspended"``, so an
+    // interrupted context never resumed and ``_enqueuePcm`` dropped every
+    // frame — the "iPhone shows media playing but no voice, and Restart
+    // sound doesn't help" bug. The manager must resume it like a
+    // suspended one.
+    (globalThis as unknown as { window: object }).window = {
+      AudioContext: InterruptedAudioContext,
+    };
+    const mgr = new AudioOutputManager();
+
+    expect(mgr.handleFrame(ttsStartFrame(16000))).toBe("tts");
+    expect(mgr.handleFrame(ttsPcmFrame(1600))).toBe("tts");
+    await flush();
+
+    const ctx = createdContexts[0];
+    expect(ctx).toBeDefined();
+    // Recovered to running, and the clip PCM actually scheduled.
+    expect(ctx.state).toBe("running");
+    const clipSources = ctx.activeSources.filter((s) => !s.loop);
+    expect(clipSources.length).toBe(1);
+    expect(clipSources[0].stateAtStart).toBe("running");
+    expect(clipSources[0].startedAt as number).toBeGreaterThanOrEqual(0.5);
   });
 
   it("drops PCM instead of buffering it while the context stays suspended", async () => {
