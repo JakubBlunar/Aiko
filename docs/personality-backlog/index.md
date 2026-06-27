@@ -69,8 +69,8 @@ Temporal awareness (K-time family, in [`awareness.md`](awareness.md)):
   (`time_expr.parse_time_window` + RAG date-window boost + empty-window
   anti-confabulation guard). **Shipped.**
 - **K-time3.** Upcoming-horizon block — pre-computed future relative
-  times.
-- **K-time4.** Session-elapsed & mid-session gap awareness.
+  times. **Shipped.**
+- **K-time4.** Session-elapsed & mid-session gap awareness. **Shipped.**
 - **K-time5–9.** Canonical `timephrase` module + single "now" seam,
   richer ISO now-anchor, worker time toolkit, "today" anchor in the
   extract workers, and memory ages fed to the consolidation merge.
