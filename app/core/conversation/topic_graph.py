@@ -58,6 +58,7 @@ import logging
 import math
 import threading
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -107,6 +108,28 @@ _LEARNED_KINDS: frozenset[str] = frozenset({"knowledge", "curiosity_finding"})
 # mirror-read chokepoints (``_snapshot_mirror`` / ``_ensure_cached``) and
 # the incremental ``on_memory_added`` path all skip these kinds.
 _NON_CLUSTERING_KINDS: frozenset[str] = frozenset({"topic_digest"})
+
+
+def _days_since(iso_ts: str, now: datetime) -> float | None:
+    """Days from ``now`` back to ``iso_ts`` (UTC ISO-8601), or ``None``.
+
+    Returns ``None`` for empty / unparseable input. Negative deltas (clock
+    skew / a future-dated touch) clamp to ``0.0``. Used by
+    :meth:`TopicGraph.cluster_activity` to express per-cluster recency.
+    """
+    if not iso_ts:
+        return None
+    text = iso_ts.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    delta = (now - dt).total_seconds() / 86400.0
+    return max(0.0, delta)
 
 # Upper bound on the per-node neighbour fan-out. Keeps the mutual-k-NN
 # graph sparse on large corpora even though ``k`` grows with ``log2(n)``.
@@ -455,6 +478,24 @@ class InterestEntry:
 
 
 @dataclass(slots=True, frozen=True)
+class InterestActivity:
+    """K-time9 follow-up: an interest-map row enriched with *recency*.
+
+    Same ``label`` + ``size`` as :class:`InterestEntry`, plus the cluster's
+    most-recent member activity (``last_active`` ISO, max of each member's
+    ``last_used_at`` / ``created_at``) and ``days_since`` (days from now to
+    that touch, ``None`` when no member timestamp resolved). Lets the
+    knowledge-map reflection say "this territory is recently hot vs. went
+    quiet months ago" instead of just "big vs. small".
+    """
+
+    label: str
+    size: int
+    last_active: str
+    days_since: float | None
+
+
+@dataclass(slots=True, frozen=True)
 class KnowledgeGapCluster:
     """One F10f knowledge-gap candidate: a dense topic cluster that is
     *thin* on ``kind="knowledge"`` coverage.
@@ -674,6 +715,68 @@ class TopicGraph:
                 entries.append(InterestEntry(label=label, size=size))
         entries.sort(key=lambda e: e.size, reverse=True)
         return entries[:n]
+
+    def cluster_activity(
+        self, *, top_n: int = 5, min_size: int | None = None,
+    ) -> list[InterestActivity]:
+        """Like :meth:`interest_map` but enriched with per-cluster recency.
+
+        K-time9 follow-up. For each of the largest labelled clusters, joins
+        every member's most-recent touch (``last_used_at`` / ``created_at``)
+        from the memory mirror to find when that territory was last active,
+        and reports ``days_since``. Unlike :meth:`interest_map` this does a
+        single bulk mirror snapshot, so it is **not** hot-path cheap -- it's
+        meant for the low-frequency ``KnowledgeMapReflectionWorker`` (daily),
+        not the per-turn prompt. Always empty in the non-persistent mode.
+        """
+        if not self.persistent:
+            return []
+        floor = (
+            self._min_cluster_size
+            if min_size is None
+            else max(self._min_cluster_size, int(min_size))
+        )
+        n = max(1, int(top_n))
+        self._ensure_warm()
+        # One bulk snapshot of member touch timestamps under the store's
+        # own lock (the documented in-process mirror touch). Sequential
+        # with ``self._lock`` below, never nested, so no lock-order risk.
+        touch_by_id: dict[int, str] = {}
+        ms = self._memory_store
+        try:
+            with ms._lock:  # type: ignore[attr-defined]
+                for m in ms._mirror.values():  # type: ignore[attr-defined]
+                    touch_by_id[int(m.id)] = (
+                        m.last_used_at or m.created_at or ""
+                    )
+        except Exception:
+            log.debug("cluster_activity mirror snapshot failed", exc_info=True)
+            touch_by_id = {}
+        now = datetime.now(timezone.utc)
+        out: list[InterestActivity] = []
+        with self._lock:
+            for cluster in self._live.values():
+                size = len(cluster.member_ids)
+                if size < floor:
+                    continue
+                label = (cluster.label or "").strip()
+                if not label:
+                    continue
+                last = ""
+                for mid in cluster.member_ids:
+                    touch = touch_by_id.get(int(mid), "")
+                    if touch and touch > last:
+                        last = touch
+                out.append(
+                    InterestActivity(
+                        label=label,
+                        size=size,
+                        last_active=last,
+                        days_since=_days_since(last, now),
+                    )
+                )
+        out.sort(key=lambda e: e.size, reverse=True)
+        return out[:n]
 
     def knowledge_gap_clusters(
         self,
@@ -1507,6 +1610,7 @@ def build_topic_graph_snapshot(
 __all__ = [
     "TopicCluster",
     "InterestEntry",
+    "InterestActivity",
     "KnowledgeGapCluster",
     "TopicGraph",
     "build_topic_graph_snapshot",

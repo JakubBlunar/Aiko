@@ -336,6 +336,71 @@ class InterestMapTests(unittest.TestCase):
         self.assertEqual([e.label for e in entries], ["cats"])
 
 
+class ClusterActivityTests(unittest.TestCase):
+    """K-time9 follow-up ``TopicGraph.cluster_activity``: interest-map rows
+    enriched with per-cluster recency (most-recent member touch)."""
+
+    def _graph(self, mem, cs) -> TopicGraph:
+        return TopicGraph(
+            mem, similarity=0.55, min_cluster_size=2,
+            filter_threshold=0.65, cluster_store=cs,
+        )
+
+    def test_non_persistent_returns_empty(self) -> None:
+        g = TopicGraph(_two_cluster_store(), min_cluster_size=2)
+        self.assertFalse(g.persistent)
+        self.assertEqual(g.cluster_activity(), [])
+
+    def test_recency_reflects_most_recent_member_touch(self) -> None:
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime.now(timezone.utc)
+        recent = (now - timedelta(days=2)).isoformat()
+        old = (now - timedelta(days=300)).isoformat()
+        # Cat cluster: recently touched (last_used_at). Herb cluster: old,
+        # last touched ~300 days ago (created_at only).
+        store = _StubMemoryStore()
+        for mem in [
+            _StubMemory(1, "cat naps", _vec([0.95, 0.30, 0.0, 0.0]), last_used_at=recent),
+            _StubMemory(2, "kittens", _vec([0.92, 0.39, 0.0, 0.0]), last_used_at=recent),
+            _StubMemory(3, "warm cats", _vec([0.97, 0.25, 0.0, 0.0]), last_used_at=recent),
+            _StubMemory(10, "basil", _vec([0.0, 0.0, 0.95, 0.30]), created_at=old),
+            _StubMemory(11, "rosemary", _vec([0.0, 0.0, 0.92, 0.39]), created_at=old),
+            _StubMemory(12, "herbs", _vec([0.0, 0.0, 0.97, 0.25]), created_at=old),
+        ]:
+            store.add(mem)
+        _, cs = _cluster_store()
+        g = self._graph(store, cs)
+        clusters = g.topic_clusters()
+        for c in clusters:
+            g.set_cluster_label(c.cluster_id, "cats" if 1 in c.member_ids else "herbs")
+        by_label = {e.label: e for e in g.cluster_activity(top_n=5, min_size=2)}
+        self.assertEqual(set(by_label), {"cats", "herbs"})
+        # Cat cluster is hot; herb cluster went quiet long ago.
+        self.assertLess(by_label["cats"].days_since, 7)
+        self.assertGreater(by_label["herbs"].days_since, 180)
+        # last_active is the max member touch.
+        self.assertEqual(by_label["cats"].last_active, recent)
+        self.assertEqual(by_label["herbs"].last_active, old)
+
+    def test_unparseable_timestamp_yields_none_days(self) -> None:
+        store = _StubMemoryStore()
+        for mem in [
+            _StubMemory(1, "cat naps", _vec([0.95, 0.30, 0.0, 0.0]), created_at="not-a-date", last_used_at=None),
+            _StubMemory(2, "kittens", _vec([0.92, 0.39, 0.0, 0.0]), created_at="", last_used_at=None),
+            _StubMemory(3, "warm cats", _vec([0.97, 0.25, 0.0, 0.0]), created_at="", last_used_at=None),
+        ]:
+            store.add(mem)
+        _, cs = _cluster_store()
+        g = self._graph(store, cs)
+        for c in g.topic_clusters():
+            g.set_cluster_label(c.cluster_id, "cats")
+        entries = g.cluster_activity(top_n=5, min_size=2)
+        self.assertTrue(entries)
+        # "not-a-date" doesn't parse, "" is empty -> last_active "" -> None.
+        self.assertIsNone(entries[0].days_since)
+
+
 class ClusterMemberAndCoarseMatchTests(unittest.TestCase):
     """F10c/F10d graph readers: ``cluster_member_ids`` (sibling drill-in)
     and ``best_clusters_for`` (coarse centroid match)."""
