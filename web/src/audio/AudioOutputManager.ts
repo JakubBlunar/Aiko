@@ -188,7 +188,7 @@ export class AudioOutputManager {
    */
   async resume(): Promise<void> {
     const ctx = await this._ensureContext();
-    if (ctx.state === "suspended") {
+    if (this._needsResume(ctx)) {
       try {
         await ctx.resume();
       } catch (err) {
@@ -198,6 +198,25 @@ export class AudioOutputManager {
     // The gesture-gated warmup path satisfies autoplay, so this is the
     // ideal moment to (re)start the keep-alive loop.
     this._startKeepAlive(ctx);
+  }
+
+  /**
+   * Whether ``ctx`` should be resumed. iOS Safari / standalone PWAs park
+   * the AudioContext in a **non-standard** ``"interrupted"`` state after
+   * backgrounding, a phone call, Siri, or another app grabbing the audio
+   * session — distinct from the ``"suspended"`` state every other browser
+   * uses. We must resume for BOTH (anything that isn't already running and
+   * isn't permanently closed); gating only on ``"suspended"`` left an
+   * interrupted context stuck forever, after which ``_enqueuePcm`` silently
+   * drops every PCM frame — the "iPhone shows media playing but no voice
+   * comes out, and Restart sound doesn't help" bug. Standard browsers only
+   * ever report ``suspended`` / ``running`` / ``closed``, so this is a
+   * no-op for them. ``state`` is read as a loose string because the DOM
+   * ``AudioContextState`` union doesn't include ``"interrupted"``.
+   */
+  private _needsResume(ctx: AudioContext): boolean {
+    const state = ctx.state as string;
+    return state !== "running" && state !== "closed";
   }
 
   /**
@@ -379,8 +398,11 @@ export class AudioOutputManager {
     // against a frozen clock every chunk computes the same start time
     // and they play on top of each other (echo + mumble on the first
     // sentence). Resume here so every caller gets a live clock before
-    // it reads ``currentTime`` or schedules a buffer.
-    if (this._ctx.state === "suspended") {
+    // it reads ``currentTime`` or schedules a buffer. ``_needsResume``
+    // also catches the iOS-only ``"interrupted"`` state so a context
+    // parked there by a backgrounding / call recovers instead of
+    // dropping every frame forever.
+    if (this._needsResume(this._ctx)) {
       try {
         await this._ctx.resume();
       } catch (err) {
