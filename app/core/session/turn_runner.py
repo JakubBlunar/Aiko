@@ -30,6 +30,7 @@ from app.core.voice.filler_injector import FillerInjector
 from app.core.infra.log_context import reset_turn_id, set_turn_id
 from app.core.session.prompt_assembler import PromptAssembler, PromptTelemetry
 from app.core.services.response_text_service import (
+    extract_diary_entries,
     parse_reaction_at_start,
     parse_reaction_stack_at_start,
     safe_visible_prefix,
@@ -940,6 +941,11 @@ class TurnRunner:
                 session_key=session_key,
                 assistant_message_id=assistant_message_id,
             )
+            self._extract_diary_memories(
+                full_raw,
+                session_key=session_key,
+                assistant_message_id=assistant_message_id,
+            )
             self._post_turn(session_key)
 
         # Per plan: one structured INFO line per turn so a single grep
@@ -1378,6 +1384,68 @@ class TurnRunner:
                 continue
             if memory is not None:
                 log.info("%s memory: %s", kind, content)
+                if self._on_memory_added is not None:
+                    try:
+                        self._on_memory_added(memory)
+                    except Exception:
+                        log.debug("on_memory_added listener raised", exc_info=True)
+
+    def _extract_diary_memories(
+        self,
+        raw_text: str,
+        *,
+        session_key: str,
+        assistant_message_id: int | None,
+    ) -> None:
+        """Harvest ``[[diary:...]]`` tags into ``diary`` memories (H9).
+
+        Aiko's intentional, self-authored journal channel. Unlike the
+        ``[[remember:...]]`` family these are *not* deduped (``skip_dedupe``)
+        — each entry is its own journal moment even if it echoes an earlier
+        one — and they land on the durable ``long_term`` tier so they
+        survive decay and read back as a real diary over time. Surfaced
+        read-only in the Diary UI tab. Failures are swallowed: a broken
+        diary harvest must never kill the turn.
+        """
+        if (
+            self._memory_store is None
+            or self._embedder is None
+            or not raw_text
+        ):
+            return
+        seen: set[str] = set()
+        for body in extract_diary_entries(raw_text):
+            content = body.strip()
+            # A diary entry should be a real sentence, not a stray token.
+            if len(content) < 8:
+                continue
+            key = content.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                embedding = self._embedder.embed(content)
+            except Exception as exc:
+                log.debug("diary memory embed failed: %s", exc)
+                continue
+            try:
+                memory = self._memory_store.add(
+                    content=content,
+                    kind="diary",
+                    embedding=embedding,
+                    salience=self._self_tagged_salience,
+                    source_session=session_key,
+                    source_message_id=assistant_message_id,
+                    tier="long_term",
+                    temporal_type="durable",
+                    # Each diary entry is preserved as its own moment.
+                    skip_dedupe=True,
+                )
+            except Exception as exc:
+                log.debug("diary memory insert failed: %s", exc)
+                continue
+            if memory is not None:
+                log.info("diary memory: %s", content)
                 if self._on_memory_added is not None:
                     try:
                         self._on_memory_added(memory)

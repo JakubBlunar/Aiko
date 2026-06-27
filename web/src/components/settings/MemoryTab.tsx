@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import type { Memory, MemoryOrder, MemoryTier } from "../../types";
 import { MEMORY_KINDS, MEMORY_TIERS } from "../../types";
+import { stripJournalPrefix } from "../../lib/journalText";
 import { Section } from "./SettingsSection";
 import { KnowledgeGapsPanel } from "./memory/KnowledgeGapsPanel";
 import { MemoryConflictsPanel } from "./memory/MemoryConflictsPanel";
@@ -488,7 +489,31 @@ export function MemoryTab({
                 ) : (
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0 flex-1">
-                      <p className="break-words text-ink-100/90">{memory.content}</p>
+                      {(() => {
+                        // Reflections written by the dream / knowledge-map
+                        // workers carry a ``[dream] `` / ``[mindmap] ``
+                        // content prefix that is a functional discriminator,
+                        // not user-facing text. Strip it for display and show
+                        // a small badge instead so the raw tag never leaks.
+                        const { text, badge } = stripJournalPrefix(memory.content);
+                        return (
+                          <p className="break-words text-ink-100/90">
+                            {badge ? (
+                              <span
+                                className="mr-1.5 rounded bg-violet-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-violet-200"
+                                title={
+                                  badge === "dream"
+                                    ? "A between-sessions dream (DreamWorker)."
+                                    : "A noticing about the shape of what she knows (knowledge-map reflection)."
+                                }
+                              >
+                                {badge}
+                              </span>
+                            ) : null}
+                            {text}
+                          </p>
+                        );
+                      })()}
                       <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-wide text-ink-100/40">
                         <span className="rounded bg-white/5 px-1.5 py-0.5 text-ink-100/60">
                           {memory.kind}

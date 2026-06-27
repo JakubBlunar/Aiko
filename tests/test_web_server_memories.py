@@ -155,6 +155,31 @@ class _MemoryState:
     def delete_memory(self, memory_id: int) -> bool:
         return self.rows.pop(int(memory_id), None) is not None
 
+    # H9 diary surface — mirrors the real facade's journal-kind clamping.
+    DIARY_KINDS = ("reflection", "shared_moment", "open_question")
+
+    def _diary_kinds(self, kind: str | None) -> set[str]:
+        norm = (kind or "").strip().lower()
+        if norm and norm in self.DIARY_KINDS:
+            return {norm}
+        return set(self.DIARY_KINDS)
+
+    def list_diary(
+        self,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        kind: str | None = None,
+    ) -> list[dict[str, Any]]:
+        kinds = self._diary_kinds(kind)
+        rows = [r for r in self.rows.values() if r["kind"] in kinds]
+        rows.sort(key=lambda r: -r["id"])  # recent: highest id first
+        return rows[offset : offset + limit]
+
+    def diary_count(self, *, kind: str | None = None) -> int:
+        kinds = self._diary_kinds(kind)
+        return len([r for r in self.rows.values() if r["kind"] in kinds])
+
 
 def _build_client() -> tuple[TestClient, _MemoryState]:
     state = _MemoryState()
@@ -167,6 +192,8 @@ def _build_client() -> tuple[TestClient, _MemoryState]:
     session.update_memory.side_effect = state.update_memory
     session.set_memory_pinned.side_effect = state.set_memory_pinned
     session.delete_memory.side_effect = state.delete_memory
+    session.list_diary.side_effect = state.list_diary
+    session.diary_count.side_effect = state.diary_count
     app = create_web_app(session)
     return TestClient(app), state
 
@@ -278,6 +305,48 @@ class CreateMemoryEndpointTests(unittest.TestCase):
         client, _ = _build_client()
         response = client.post("/api/memories", json={"content": "  "})
         self.assertEqual(response.status_code, 400)
+
+
+class GetDiaryEndpointTests(unittest.TestCase):
+    def _seed_mixed(self, state: _MemoryState) -> None:
+        state.add_memory("[dream] back in the orchard", kind="reflection")
+        state.add_memory("Jacob prefers tea", kind="fact")
+        state.add_memory("[mindmap] mostly work lately", kind="reflection")
+        state.add_memory("we laughed about the cat", kind="shared_moment")
+        state.add_memory("what's his sister's name", kind="open_question")
+        state.add_memory("user is a morning person", kind="preference")
+
+    def test_only_journal_kinds_surface(self) -> None:
+        client, state = _build_client()
+        self._seed_mixed(state)
+        body = client.get("/api/diary").json()
+        kinds = {row["kind"] for row in body["entries"]}
+        self.assertEqual(kinds, {"reflection", "shared_moment", "open_question"})
+        self.assertEqual(body["total"], 4)
+        self.assertTrue(body["enabled"])
+
+    def test_kind_filter_clamped_to_journal_set(self) -> None:
+        client, state = _build_client()
+        self._seed_mixed(state)
+        # A non-journal kind must never pull factual rows through /api/diary.
+        body = client.get("/api/diary?kind=fact").json()
+        self.assertEqual({row["kind"] for row in body["entries"]}, {
+            "reflection", "shared_moment", "open_question",
+        })
+
+    def test_kind_filter_narrows(self) -> None:
+        client, state = _build_client()
+        self._seed_mixed(state)
+        body = client.get("/api/diary?kind=reflection").json()
+        self.assertEqual({row["kind"] for row in body["entries"]}, {"reflection"})
+        self.assertEqual(body["total"], 2)
+
+    def test_pagination(self) -> None:
+        client, state = _build_client()
+        self._seed_mixed(state)
+        body = client.get("/api/diary?limit=2&offset=0").json()
+        self.assertEqual(len(body["entries"]), 2)
+        self.assertEqual(body["total"], 4)
 
 
 class _ConflictState:

@@ -1330,6 +1330,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             away_activities_enabled=bool(
                 agent_raw.get("away_activities_enabled", True),
             ),
+            diary_worker_enabled=bool(
+                agent_raw.get("diary_worker_enabled", True),
+            ),
             forward_curiosity_enabled=bool(
                 agent_raw.get("forward_curiosity_enabled", True),
             ),

@@ -293,6 +293,45 @@ _MOMENT_OPEN_TAIL_PATTERN = re.compile(
     flags=re.IGNORECASE,
 )
 
+# H9: [[diary:entry text]] — an intentional first-person diary entry Aiko
+# chooses to write. Stripped from chat text and TTS; persisted to a
+# ``diary`` memory row by :class:`TurnRunner`. Matches the [[remember:…]]
+# family so the streaming hold in :func:`safe_visible_prefix` already
+# covers the in-progress tail.
+_DIARY_TAG_PATTERN = re.compile(
+    r"\[\[diary:[^\]]*?\]\]",
+    flags=re.IGNORECASE,
+)
+_DIARY_OPEN_TAIL_PATTERN = re.compile(
+    r"\[\[diary:[^\]]*\Z",
+    flags=re.IGNORECASE,
+)
+# Capturing variant used by :func:`extract_diary_entries` to pull the body.
+_DIARY_TAG_CAPTURE = re.compile(
+    r"\[\[diary:(?P<body>[^\]]+?)\]\]",
+    flags=re.IGNORECASE,
+)
+
+
+def extract_diary_entries(text: str) -> list[str]:
+    """Return the body of every fully-formed ``[[diary:...]]`` tag.
+
+    H9 — Aiko's self-authored diary channel. Each returned string is the
+    entry text (trimmed) in the order it appeared. Whitespace-only bodies
+    are dropped; deduplication / length gating is the caller's job (the
+    :class:`TurnRunner` harvest applies a minimum length and a per-turn
+    seen-set).
+    """
+    source = str(text or "")
+    if not source:
+        return []
+    out: list[str] = []
+    for match in _DIARY_TAG_CAPTURE.finditer(source):
+        body = (match.group("body") or "").strip()
+        if body:
+            out.append(body)
+    return out
+
 # Layer 3 (expressive speech): [[prosody:NAME]] — per-sentence vocal
 # delivery tag, orthogonal to [[reaction:X]] (mood label) and the
 # stage-direction earcons. Five values for v1: ``whisper``, ``soft``,
@@ -769,6 +808,9 @@ def strip_all_meta_tags(text: str) -> str:
     # Schema v7: same treatment for [[moment:vibe:summary]].
     s = _MOMENT_TAG_PATTERN.sub("", s)
     s = _MOMENT_OPEN_TAIL_PATTERN.sub("", s)
+    # H9: same treatment for [[diary:entry] self-authored journal entries.
+    s = _DIARY_TAG_PATTERN.sub("", s)
+    s = _DIARY_OPEN_TAIL_PATTERN.sub("", s)
     # H1: same treatment for [[arc:NAME]] self-tags.
     s = _ARC_TAG_PATTERN.sub("", s)
     s = _ARC_OPEN_TAIL_PATTERN.sub("", s)
@@ -897,6 +939,7 @@ _META_OPENERS = (
     "[[outfit:",
     "[[motion:",
     "[[moment:",
+    "[[diary:",
     "[[arc:",
     "[[gap:",
     "[[conflict:",
@@ -931,6 +974,8 @@ def _looks_like_partial_opener(suffix: str) -> bool:
     if lowered.startswith("[[overlay:") and "]]" not in lowered:
         return True
     if lowered.startswith("[[moment:") and "]]" not in lowered:
+        return True
+    if lowered.startswith("[[diary:") and "]]" not in lowered:
         return True
     if lowered.startswith("[[arc:") and "]]" not in lowered:
         return True

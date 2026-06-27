@@ -101,6 +101,56 @@ class StripAllMetaTagsTests(unittest.TestCase):
         self.assertEqual(out.strip(), "hello there")
         self.assertNotIn("[[conflict", out)
 
+    def test_diary_tag_is_dropped_with_content(self) -> None:
+        # H9 [[diary:...]] is Aiko's private journal entry: invisible in
+        # chat / TTS, but the body survives in the extraction path.
+        from app.core.services.response_text_service import extract_diary_entries
+
+        text = (
+            "That really landed for me. "
+            "[[diary:Today felt close. I want to remember this one.]] "
+            "Anyway, what else is up?"
+        )
+        out = strip_all_meta_tags(text)
+        self.assertNotIn("[[diary", out)
+        self.assertNotIn("I want to remember this one", out)
+        self.assertIn("That really landed for me", out)
+        self.assertIn("what else is up", out)
+        entries = extract_diary_entries(text)
+        self.assertEqual(
+            entries, ["Today felt close. I want to remember this one."],
+        )
+
+    def test_unclosed_diary_at_end_is_suppressed(self) -> None:
+        out = strip_all_meta_tags("hello there [[diary:still writing")
+        self.assertEqual(out.strip(), "hello there")
+        self.assertNotIn("[[diary", out)
+
+    def test_diary_tag_held_back_while_streaming(self) -> None:
+        # The in-progress tail must be held until the closing ]] arrives.
+        held = safe_visible_prefix("I think [[diary:today was")
+        self.assertNotIn("[[diary", held)
+        self.assertNotIn("today was", held)
+        self.assertIn("I think", held)
+        done = safe_visible_prefix("I think [[diary:today was good]] really.")
+        self.assertNotIn("[[diary", done)
+        self.assertIn("I think", done)
+        self.assertIn("really", done)
+
+    def test_extract_multiple_diary_entries_in_order(self) -> None:
+        from app.core.services.response_text_service import extract_diary_entries
+
+        text = "[[diary:first thought]] middle [[diary:second thought]]"
+        self.assertEqual(
+            extract_diary_entries(text), ["first thought", "second thought"],
+        )
+
+    def test_extract_diary_entries_empty(self) -> None:
+        from app.core.services.response_text_service import extract_diary_entries
+
+        self.assertEqual(extract_diary_entries(""), [])
+        self.assertEqual(extract_diary_entries("no tags here"), [])
+
 
 class ConflictTagHoldbackTests(unittest.TestCase):
     """The streaming holdback must wait for the closing ``]]`` before

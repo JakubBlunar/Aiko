@@ -392,6 +392,71 @@ def register(mcp, session: "SessionController") -> None:
             return f"force_away_activities_surface raised: {exc}"
 
     @mcp.tool()
+    def get_diary_worker_state() -> str:
+        """H9 — dump the away-diary worker state.
+
+        Returns a JSON dict with the master switch, whether the worker
+        registered (needs a MemoryStore + embedder), the live
+        ``away`` reading (``True`` == no UI client connected, which is
+        the gate the worker fires on), whether a worker LLM is wired,
+        the cadence knobs, the cooldown / daily-cap watermarks, and the
+        current recent-context length. ``away=False`` means a UI client
+        is connected and the worker is deferring to the live
+        ``[[diary:...]]`` tag.
+        """
+        try:
+            worker = getattr(session, "_diary_worker", None)
+            if worker is None:
+                return json.dumps(
+                    {
+                        "enabled": bool(
+                            getattr(
+                                session._settings.agent,
+                                "diary_worker_enabled",
+                                True,
+                            )
+                        ),
+                        "worker_registered": False,
+                        "connected_clients": int(
+                            getattr(session, "_connected_clients", 0)
+                        ),
+                    },
+                    indent=2,
+                )
+            state = worker.state()
+            state["worker_registered"] = True
+            state["connected_clients"] = int(
+                getattr(session, "_connected_clients", 0)
+            )
+            return json.dumps(state, indent=2)
+        except Exception as exc:
+            return f"get_diary_worker_state raised: {exc}"
+
+    @mcp.tool()
+    def force_diary_entry() -> str:
+        """H9 — run the away-diary worker once, right now.
+
+        Arms a one-shot bypass of the away / cooldown / daily-cap gates
+        (the recent-context + worker-LLM requirements still apply) and
+        calls ``run()`` directly. On success a fresh ``diary`` memory is
+        written and appears in the Diary tab. Use this to verify the
+        away-journal path end-to-end without having to close every UI
+        window and wait for a quiet tick.
+        """
+        try:
+            worker = getattr(session, "_diary_worker", None)
+            if worker is None:
+                return json.dumps(
+                    {"error": "worker not registered (no MemoryStore/embedder?)"},
+                    indent=2,
+                )
+            worker.force_next()
+            result = worker.run()
+            return json.dumps({"ran": True, "result": result}, indent=2)
+        except Exception as exc:
+            return f"force_diary_entry raised: {exc}"
+
+    @mcp.tool()
     def get_forward_curiosity_state() -> str:
         """K34 — dump the forward-curiosity worker + surfacing state.
 

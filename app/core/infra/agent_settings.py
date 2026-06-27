@@ -1641,6 +1641,16 @@ class AgentSettings:
     # cadence + gap knobs live on ``MemorySettings.away_activities_*``.
     away_activities_enabled: bool = True
 
+    # ── H9: away-diary worker ─────────────────────────────────────────
+    # Master switch for the :class:`DiaryWorker` — Aiko's idle journal.
+    # Off → the worker never registers. On (default) → during quiet
+    # windows with NO UI client connected, Aiko reflects on the recent
+    # conversation and writes one short ``diary`` memory (surfaced in the
+    # Diary tab). While a window is open the live ``[[diary:...]]`` tag
+    # owns the channel instead, so the two never double-write. Cadence
+    # knobs live on ``MemorySettings.diary_worker_*``.
+    diary_worker_enabled: bool = True
+
     # ── K34: "forward curiosity" ──────────────────────────────────────
     # Master switch for the forward-question producer + its surfacing
     # cue. Off → the ForwardCuriosityWorker never registers and the

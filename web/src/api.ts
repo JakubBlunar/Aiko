@@ -275,6 +275,22 @@ export const api = {
   /** Schema v8: per-tier memory totals for the Memory tab header. */
   getMemoryCounts: () =>
     jsonFetch<MemoryCounts>("/api/memories/counts"),
+  /** H9: Aiko's diary — paginated, newest-first journal-flavoured memories. */
+  getDiary: (
+    options: { limit?: number; offset?: number; kind?: string | null } = {},
+  ) => {
+    const params = new URLSearchParams({
+      limit: String(options.limit ?? 50),
+      offset: String(options.offset ?? 0),
+    });
+    if (options.kind) params.set("kind", options.kind);
+    return jsonFetch<{
+      entries: Memory[];
+      count: number;
+      total: number;
+      enabled: boolean;
+    }>(`/api/diary?${params.toString()}`);
+  },
   deleteMemory: (id: number) =>
     jsonFetch<{ deleted: number }>(`/api/memories/${id}`, {
       method: "DELETE",

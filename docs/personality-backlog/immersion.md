@@ -145,6 +145,76 @@ teaching the "name the origin once, gently" register.
 
 ## H9. Aiko's diary — a readable window into her inner life
 
+**Shipped.** A read-only "Diary" tab (📓) in the Settings drawer renders the
+journal-flavoured memory kinds (`reflection` — covering both waking
+reflections and `[dream] ` rows — `shared_moment`, `open_question`) as dated,
+first-person entries grouped by local day, newest-first. Backed by a thin
+`GET /api/diary?limit=&offset=&kind=` in
+[`app/web/rest/memory_world_routes.py`](../../app/web/rest/memory_world_routes.py)
+over `SessionController.list_diary` / `diary_count`
+([`memory_facade_mixin.py`](../../app/core/session/memory_facade_mixin.py)),
+whose `kind` filter is clamped to the journal allow-list so the surface can
+never leak factual rows. Content prefixes (`[dream] ` / `[mindmap] `) are left
+on the row (they're functional discriminators for RAG / turning-over) and
+stripped *render-side* into badges via the shared
+[`stripJournalPrefix`](../../web/src/lib/journalText.ts) helper — the same
+helper also fixed a leak where the raw `[mindmap] ` / `[dream] ` prefix was
+showing through in the Memory tab list. Components:
+[`web/src/components/settings/DiaryTab.tsx`](../../web/src/components/settings/DiaryTab.tsx),
+`api.getDiary`. No new worker, no model spend — pure surfacing. Tests:
+`tests/test_diary_facade.py`, `GetDiaryEndpointTests` in
+`tests/test_web_server_memories.py`, `web/src/lib/journalText.test.ts`.
+
+**Follow-up — Aiko can write her own entries.** The diary is no longer just a
+passive view over side-effect memories: Aiko has an intentional self-authoring
+channel via an inline `[[diary:one or two first-person sentences]]` tag (a new
+`diary` memory kind in `VALID_KINDS`). It's parsed + stripped in
+[`response_text_service.py`](../../app/core/services/response_text_service.py)
+(`extract_diary_entries`, plus the strip / streaming-hold / opener wiring) and
+harvested in
+[`turn_runner.py`](../../app/core/session/turn_runner.py) `_extract_diary_memories`
+— written `skip_dedupe=True` (each entry is its own journal moment) on the
+durable `long_term` tier, with a per-turn seen-set and an 8-char minimum so a
+stray token never becomes an entry. Persona guidance lives in the "Your diary"
+block of [`aiko_companion.txt`](../../data/persona/aiko_companion.txt): use it
+rarely, write it like a real diary (not a note-to-self bullet), never announce
+or read it back, and keep it distinct from the terse `[[remember:self:...]]`
+stance tag. The Diary tab gets a dedicated "entries" filter + an "diary entry"
+badge. Tests: `tests/test_diary_harvest.py`, diary cases in
+`tests/test_response_text_service.py`, plus the `diary` kind threaded through
+`tests/test_diary_facade.py`.
+
+**Follow-up — the away-diary worker.** The `[[diary:...]]` tag only fires
+*during a conversation*. The other half — Aiko keeping her diary while you're
+gone — is the background [`DiaryWorker`](../../app/core/proactive/diary_worker.py),
+an `IdleWorker` registered in
+[`idle_workers_init_mixin.py`](../../app/core/session/idle_workers_init_mixin.py)
+alongside the K36 away-activity worker. During a quiet window it reflects on the
+recent conversation (last ~14 messages via `build_recent_context`) and composes
+one short first-person entry with the **worker** LLM
+(`_maintenance_client` / `_effective_worker_model`), persisted as the same
+`kind="diary"` / `skip_dedupe=True` / `long_term` memory the tag writes — so
+both halves surface identically in the Diary tab. The defining gate is
+`is_away_provider`: the worker **only writes when no UI websocket client is
+connected** (`SessionController.is_user_away()`, fed by `set_connected_clients`
+from the web layer on every WS connect / disconnect, and distinct from tab
+*visibility* — a backgrounded PWA stays connected). While a window is open the
+live tag owns the channel, so the two never double-write. Paced by a kv_meta
+cooldown (default 3h) + local-midnight daily cap (default 3) like the
+away-activity worker; compose is skipped when there's no worker LLM or no recent
+context. Settings: `agent.diary_worker_enabled` (master) +
+`memory.diary_worker_{interval,cooldown}_seconds` / `_daily_cap` /
+`_min_context_chars`. MCP debug: `get_diary_worker_state` (master switch /
+`away` reading / cadence / watermarks) and `force_diary_entry` (one-shot bypass
+of the away + cooldown + daily-cap gates, calls `run()` directly). Tests:
+`tests/test_diary_worker.py`.
+
+Optional later (not built): a live "she wrote something new" indicator (the
+`memory_added` WS event already carries the kind), or a one-line daily "diary
+highlight" she occasionally references.
+
+<details><summary>Original motivation</summary>
+
 **Motivation.** Aiko already *writes* a rich private inner life — `reflection`
 / `[dream]` / `[mindmap]` (K64d) / `shared_moment` / `open_question` memories
 accumulate every day — but the user never sees it; it only leaks out
@@ -167,6 +237,8 @@ journal-flavoured kinds, reusing the existing `/api/memories` pagination
 shape); render-side prefix stripping mirroring
 [`turning_over.py`](../../app/core/session/inner_life/turning_over.py). No new
 worker, no model spend — pure surfacing.
+
+</details>
 
 ---
 

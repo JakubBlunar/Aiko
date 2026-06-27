@@ -296,6 +296,17 @@ class _Hub:
         with self._lock:
             return any(self._visible_by_client.values())
 
+    def client_count(self) -> int:
+        """Number of currently-connected websocket clients.
+
+        Distinct from :meth:`any_client_visible` — a backgrounded PWA
+        keeps its socket open but reports ``visible=False``. The diary
+        worker gates on *connected* (this) rather than *visible* so it
+        only writes when {user} is genuinely away (no UI attached at
+        all)."""
+        with self._lock:
+            return len(self._sockets)
+
     def snapshot(self) -> list[tuple[WebSocket, str]]:
         with self._lock:
             return list(self._sockets.items())
@@ -994,6 +1005,15 @@ def create_web_app(session: "SessionController") -> FastAPI:
         hub.add(ws, client_id)
         ws.client_id = client_id  # type: ignore[attr-defined]
 
+        # Tell the session a UI client is now attached. The diary worker
+        # gates on this: it only writes "while you were away" entries when
+        # no client is connected, deferring to the live ``[[diary:...]]``
+        # tag while a window is open.
+        try:
+            session.set_connected_clients(hub.client_count())
+        except Exception:
+            log.debug("set_connected_clients on connect failed", exc_info=True)
+
         # Elect the audio owner now that this socket is registered, so
         # the hello below carries an accurate ``audio_owner_id`` and a
         # change (e.g. the first client connecting) is announced to all.
@@ -1281,6 +1301,13 @@ def create_web_app(session: "SessionController") -> FastAPI:
                 session.set_user_present(hub.any_client_visible())
             except Exception:
                 log.debug("set_user_present on disconnect failed", exc_info=True)
+            # Update the connected-client count so the diary worker knows
+            # whether anyone is still attached (closing the last window
+            # flips this to 0 and re-enables the away-diary path).
+            try:
+                session.set_connected_clients(hub.client_count())
+            except Exception:
+                log.debug("set_connected_clients on disconnect failed", exc_info=True)
             # Re-elect the audio owner: if the client that just left was
             # the owner, hand playback to a remaining (preferably
             # visible) window so the next turn still has sound.

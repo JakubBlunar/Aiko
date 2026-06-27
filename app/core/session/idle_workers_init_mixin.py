@@ -141,6 +141,60 @@ class IdleWorkersInitMixin:
                     "IdleAwayActivityWorker init failed", exc_info=True
                 )
 
+        # H9 DiaryWorker — Aiko's away journal. During quiet windows with
+        # NO UI client connected, she reflects on the recent conversation
+        # and writes one short ``diary`` memory. While a window is open
+        # the live ``[[diary:...]]`` tag owns the channel (the worker's
+        # ``is_away_provider`` gate defers), so the two never
+        # double-write. Needs the memory store + embedder; the worker LLM
+        # is optional but compose is skipped without it. Failures only
+        # drop the away-diary path.
+        if (
+            self._idle_scheduler is not None
+            and getattr(self, "_memory_store", None) is not None
+            and getattr(self, "_embedder", None) is not None
+        ):
+            try:
+                from app.core.proactive.diary_worker import (
+                    DiaryWorker,
+                    build_recent_context,
+                )
+
+                mem = self._memory_settings
+                self._diary_worker = DiaryWorker(
+                    memory_store=self._memory_store,
+                    embed=lambda text: self._embedder.embed(text),
+                    recent_context_provider=lambda: build_recent_context(
+                        self._chat_db.get_messages(self.session_key, limit=14),
+                        self.user_display_name,
+                    ),
+                    is_away_provider=lambda: self.is_user_away(),
+                    user_display_name_provider=lambda: self.user_display_name,
+                    kv_get=self._chat_db.kv_get,
+                    kv_set=self._chat_db.kv_set,
+                    enabled_provider=lambda: bool(
+                        getattr(
+                            self._settings.agent,
+                            "diary_worker_enabled",
+                            True,
+                        )
+                    ),
+                    ollama=self._maintenance_client,
+                    model=self._effective_worker_model,
+                    on_memory_added=self._notify_memory_added,
+                    day_color_provider=lambda: self._chat_db.kv_get(
+                        "aiko.day_color"
+                    ),
+                    source_session_provider=lambda: self.session_key,
+                    interval_seconds=mem.diary_worker_interval_seconds,
+                    cooldown_seconds=mem.diary_worker_cooldown_seconds,
+                    daily_cap=mem.diary_worker_daily_cap,
+                    min_context_chars=mem.diary_worker_min_context_chars,
+                )
+                self._idle_scheduler.register(self._diary_worker)
+            except Exception:
+                log.warning("DiaryWorker init failed", exc_info=True)
+
         # K34 ForwardCuriosityWorker — drafts "I've been wondering ..."
         # questions about the user's life during quiet windows. No world
         # dependency (reads memory + profile only); shares the idle
