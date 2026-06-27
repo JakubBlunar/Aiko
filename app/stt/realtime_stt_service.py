@@ -221,6 +221,44 @@ class RealtimeSttService:
             if chars and result:
                 log.debug("STT transcript: %s", result.replace("\n", " "))
 
+    def shutdown(self) -> None:
+        """Terminate the RealtimeSTT subprocesses so they don't orphan-spin.
+
+        RealtimeSTT spawns a transcription (and, with a mic, a reader)
+        subprocess whose ``poll_connection`` loop only exits when the
+        shared ``shutdown_event`` is set — which happens inside the
+        recorder's own ``shutdown()``. If the parent process exits
+        *without* calling it, those children are orphaned, their pipe
+        ends raise ``BrokenPipeError [WinError 109]`` on the next poll,
+        and the loop spins forever flooding ``ERROR:root:`` (and starving
+        everything else). Calling ``recorder.shutdown()`` sets the event
+        first thing, so the children stop immediately even if the
+        subsequent join/terminate is only best-effort.
+
+        Idempotent: the recorder's ``shutdown()`` guards on its own
+        ``is_shut_down`` flag, and we null our reference so a second call
+        (or any concurrent ``feed_audio`` / ``text``) is a no-op.
+        """
+        rec = self._recorder
+        # Drop the reference first so ``is_available`` flips False and any
+        # concurrent feed/text call short-circuits instead of racing the
+        # subprocess teardown.
+        self._recorder = None
+        self._context_active = False
+        if rec is None:
+            return
+        shutdown = getattr(rec, "shutdown", None)
+        if not callable(shutdown):
+            return
+        try:
+            shutdown()
+        except (BrokenPipeError, OSError, EOFError):
+            # The pipe may already be dead — the important side effect
+            # (setting shutdown_event) still ran. Nothing more to do.
+            pass
+        except Exception as exc:
+            log.debug("STT recorder shutdown raised: exc=%r", exc)
+
     def transcribe(self, audio_path: str | Path) -> str:
         """Transcribe a WAV file by feeding its contents to the recorder."""
         if self._recorder is None or wave is None or np is None:

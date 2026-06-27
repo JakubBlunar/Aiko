@@ -612,9 +612,16 @@ class LifecycleMixin:
                 self._embedder.close()
             except Exception:
                 log.debug("embedder close failed", exc_info=True)
+        # Fully shut down the RealtimeSTT recorder (not just its capture
+        # context). This sets the subprocesses' shared shutdown_event so
+        # their poll loops exit; skipping it orphans the children, which
+        # then spin on a BrokenPipeError flooding the log. Run in a daemon
+        # thread with a join timeout so a slow subprocess join can't wedge
+        # app exit — the event is set synchronously at the top of
+        # shutdown(), so even a timed-out join still stops the spin.
         try:
-            t = threading.Thread(target=self._realtime_stt.stop_context, daemon=True)
+            t = threading.Thread(target=self._realtime_stt.shutdown, daemon=True)
             t.start()
-            t.join(timeout=2.0)
+            t.join(timeout=6.0)
         except Exception:
             pass
