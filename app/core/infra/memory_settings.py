@@ -604,6 +604,16 @@ class MemorySettings:
     away_activities_daily_cap: int = 6
     away_activities_min_gap_hours: float = 4.0
     away_activities_journal_max: int = 8
+    # H9 away-diary worker cadence. ``interval`` is how often the
+    # scheduler may consider it; ``cooldown`` is the wall-clock floor
+    # between actual entries (3h default — a diary written too often
+    # stops meaning anything); ``daily_cap`` bounds entries per local
+    # day; ``min_context_chars`` is the minimum recent-transcript length
+    # before there's anything worth reflecting on.
+    diary_worker_interval_seconds: int = 1800
+    diary_worker_cooldown_seconds: int = 10800
+    diary_worker_daily_cap: int = 3
+    diary_worker_min_context_chars: int = 80
     # K34 ForwardCuriosityWorker cadence + pacing. The worker runs during
     # quiet windows (default every 30 min) and, paced by a per-fire
     # cooldown (default 1h) + daily cap, drafts one forward question into
@@ -1608,6 +1618,22 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             away_activities_journal_max=max(
                 1,
                 int(memory_raw.get("away_activities_journal_max", 8)),
+            ),
+            diary_worker_interval_seconds=max(
+                30,
+                int(memory_raw.get("diary_worker_interval_seconds", 1800)),
+            ),
+            diary_worker_cooldown_seconds=max(
+                0,
+                int(memory_raw.get("diary_worker_cooldown_seconds", 10800)),
+            ),
+            diary_worker_daily_cap=max(
+                0,
+                int(memory_raw.get("diary_worker_daily_cap", 3)),
+            ),
+            diary_worker_min_context_chars=max(
+                0,
+                int(memory_raw.get("diary_worker_min_context_chars", 80)),
             ),
             forward_curiosity_interval_seconds=max(
                 30,

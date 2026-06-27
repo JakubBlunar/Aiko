@@ -213,6 +213,30 @@ class ProactivePresenceMixin:
             self._typed_silence_armed_budget = float(remaining)
             timer.start()
 
+    def set_connected_clients(self, count: int) -> None:
+        """Public: record how many UI websocket clients are attached.
+
+        Called by the web layer on every connect / disconnect. The
+        diary worker (H9) reads :meth:`is_user_away` (derived from this
+        count) so it only writes "while you were away" entries when no
+        window is open — when a client is connected, Aiko uses the live
+        ``[[diary:...]]`` tag instead. Coerced to a non-negative int.
+        """
+        try:
+            self._connected_clients = max(0, int(count))
+        except (TypeError, ValueError):
+            self._connected_clients = 0
+
+    def is_user_away(self) -> bool:
+        """``True`` when no UI websocket client is currently connected.
+
+        Stronger than ``not self._user_present`` (tab visibility): a
+        backgrounded PWA stays connected-but-hidden, which is *not*
+        away. The diary worker gates on this so it never double-writes
+        with the live tag path while a window is open.
+        """
+        return int(getattr(self, "_connected_clients", 0)) <= 0
+
     def set_user_active_app(self, app: str | None) -> None:
         """Public: update the foreground app the user is in.
 

@@ -47,6 +47,35 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
             "enabled": session.memory_store is not None,
         })
 
+    @app.get("/api/diary")
+    def list_diary(
+        limit: int = 50,
+        offset: int = 0,
+        kind: str | None = None,
+    ) -> JSONResponse:
+        """H9 — Aiko's diary: a read-only window into her inner life.
+
+        Paginated, newest-first view over the journal-flavoured memory
+        kinds (reflections / dreams / mindmap noticings / shared moments
+        / open questions). Reuses the ``/api/memories`` pagination shape.
+        The ``kind`` filter is clamped to the journal allow-list inside
+        the facade, so this surface can never leak factual rows.
+        """
+        clamped_limit = max(1, min(int(limit), 200))
+        clamped_offset = max(0, int(offset))
+        kind_norm = (kind or "").strip().lower() or None
+        items = session.list_diary(
+            limit=clamped_limit,
+            offset=clamped_offset,
+            kind=kind_norm,
+        )
+        return JSONResponse({
+            "entries": items,
+            "count": len(items),
+            "total": session.diary_count(kind=kind_norm),
+            "enabled": session.memory_store is not None,
+        })
+
     @app.get("/api/memories/counts")
     def memory_counts() -> JSONResponse:
         """Per-tier memory totals (schema v8). Drives the Memory tab header."""

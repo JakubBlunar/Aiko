@@ -123,6 +123,11 @@ class DetectorsInitMixin:
         self._away_activities_force_next: bool = False
         self._gap_cue_surfaced: bool = False
         self._away_activity_worker: Any = None
+        # H9 — the away-diary worker. ``None`` until registered in
+        # ``idle_workers_init_mixin`` (skipped when there's no memory
+        # store / embedder). The MCP ``get_diary_worker_state`` /
+        # ``force_diary_entry`` tools read it.
+        self._diary_worker: Any = None
         # K34 — "forward curiosity". ``_pending_forward_curiosity_
         # seconds`` is armed by the post-turn tracker on a typed gap >=
         # ``memory.forward_curiosity_min_gap_hours`` (default 4h). The
@@ -652,6 +657,17 @@ class DetectorsInitMixin:
         self._typed_silence_timer: threading.Timer | None = None
         self._typed_silence_lock = threading.Lock()
         self._user_present: bool = True
+        # Number of UI websocket clients currently attached. Written by
+        # the web layer on connect / disconnect (see
+        # ``set_connected_clients``). Distinct from ``_user_present`` (tab
+        # visibility) — a backgrounded PWA stays *connected* but reports
+        # not-visible. The diary worker (H9) gates on
+        # ``is_user_away()`` (== zero connected clients) so it only writes
+        # "while you were away" entries when no window is open at all,
+        # deferring to the live ``[[diary:...]]`` tag otherwise. Defaults
+        # to ``0`` so a headless boot (backend up, no UI yet) reads as
+        # away.
+        self._connected_clients: int = 0
         # Wall-clock (monotonic) when the timer was last armed AND the
         # silence budget at that moment. Used to re-arm with a smaller
         # remainder when presence flips ``False -> True`` mid-budget.

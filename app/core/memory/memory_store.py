@@ -222,6 +222,16 @@ VALID_KINDS = {
     # the coarse answer, and the F10c expansion path prefers it over raw
     # sibling enumeration to cap prompt size on big clusters.
     "topic_digest",
+    # H9 — an intentional first-person diary entry Aiko chooses to write
+    # via an inline ``[[diary:...]]`` tag (as opposed to the reflections /
+    # dreams / moments she produces as a side effect). Written by
+    # :class:`app.core.session.turn_runner.TurnRunner` straight from the
+    # tag body, ``skip_dedupe=True`` so each entry is preserved as its own
+    # journal moment, on the durable ``long_term`` tier. Surfaced read-only
+    # in the "Diary" UI tab alongside the other journal-flavoured kinds;
+    # otherwise a normal pool member (decays slowly, pinnable, retrievable
+    # through ordinary cosine RAG).
+    "diary",
 }
 
 
