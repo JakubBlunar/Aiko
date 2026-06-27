@@ -1260,6 +1260,61 @@ class ChatDatabase:
             return {}
         return {int(r[0]): (r[1], r[2]) for r in rows}
 
+    def messages_in_range(
+        self,
+        start_iso: str,
+        end_iso: str,
+        *,
+        limit: int = 8,
+        exclude_session_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return messages whose ``created_at`` falls in ``[start_iso, end_iso]``.
+
+        K-time2 direct time-window recall: when a query names a clearly
+        retrospective window ("what did we say yesterday?") the semantic
+        top-N can miss the actual lines. This is the verbatim fallback —
+        a bounded range scan (``idx_messages_role_created`` /
+        ``created_at`` ordering) returning the most recent ``limit`` rows
+        in the window, newest first. ``exclude_session_id`` drops the live
+        session (already in the recent-window context).
+
+        Bounds are inclusive ISO-8601 strings; comparison is lexicographic,
+        which is monotonic for the ``+00:00``-suffixed UTC timestamps
+        :func:`_now_iso` writes. Callers may pass widened bounds and
+        re-filter precisely (the retriever does, via ``TimeWindow.contains``)
+        so a stray tz-format difference can't drop a correct row.
+
+        Returns plain dicts shaped for :meth:`MessageRecord.from_row`.
+        """
+        if limit <= 0 or not start_iso or not end_iso:
+            return []
+        conn = self._get_conn()
+        sql = (
+            "SELECT id, session_id, role, content, created_at "
+            "FROM messages WHERE created_at >= ? AND created_at <= ?"
+        )
+        params: list[Any] = [start_iso, end_iso]
+        if exclude_session_id:
+            sql += " AND session_id != ?"
+            params.append(exclude_session_id)
+        sql += " ORDER BY created_at DESC, id DESC LIMIT ?"
+        params.append(int(limit))
+        try:
+            rows = conn.execute(sql, params).fetchall()
+        except sqlite3.OperationalError:
+            return []
+        return [
+            {
+                "id": f"{r[1]}:{r[0]}",
+                "session_id": r[1],
+                "message_id": int(r[0]),
+                "role": r[2],
+                "content": r[3],
+                "created_at": r[4],
+            }
+            for r in rows
+        ]
+
     def update_message_dialogue_act(
         self, message_id: int, dialogue_act: str | None
     ) -> bool:

@@ -477,6 +477,15 @@ class AgentSettings:
     # sibling enumeration and at most this many raw siblings still follow
     # (the digest is the gist; a couple of specifics drill in). Floor 0.
     rag_digest_sibling_cap: int = 1
+    # K-time2 direct recall: when a query names a clearly retrospective
+    # time window ("yesterday", "last Tuesday", "back in March"), also
+    # pull the actual messages from that window straight out of SQLite so
+    # verbatim "what did we say then" recall isn't limited to the semantic
+    # top-N. ``rag_direct_recall_enabled`` is the master switch;
+    # ``rag_direct_recall_max_messages`` caps how many lines are injected
+    # per turn (floor 0 = disabled).
+    rag_direct_recall_enabled: bool = True
+    rag_direct_recall_max_messages: int = 6
     # F10e: "interest map" prompt block. A terse T1 (semi-stable) inner-
     # life line listing the top few labelled topic clusters by size --
     # "the things you and the user keep coming back to" -- so Aiko carries

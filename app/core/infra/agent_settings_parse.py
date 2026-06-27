@@ -241,6 +241,13 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
                 0,
                 int(agent_raw.get("rag_digest_sibling_cap", 1)),
             ),
+            rag_direct_recall_enabled=bool(
+                agent_raw.get("rag_direct_recall_enabled", True),
+            ),
+            rag_direct_recall_max_messages=max(
+                0,
+                int(agent_raw.get("rag_direct_recall_max_messages", 6)),
+            ),
             interest_map_enabled=bool(
                 agent_raw.get("interest_map_enabled", True),
             ),

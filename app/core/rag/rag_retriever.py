@@ -36,7 +36,7 @@ import numpy as np
 
 from app.core.infra import timephrase as _tp
 from app.core.infra.time_expr import TimeWindow, parse_time_window
-from app.core.rag.rag_store import RagHit
+from app.core.rag.rag_store import MessageRecord, RagHit
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
@@ -145,6 +145,13 @@ _RAG_KNOWLEDGE_BONUS = 0.05
 # deliberate retrieval signal. Stays a soft boost, not a hard filter, so a
 # timezone skew on a day boundary only shifts the nudge.
 _RAG_TIME_WINDOW_BONUS = 0.08
+# K-time2 direct recall — base score for a message pulled by the direct
+# ``[start, end]`` DB lookup (rather than matched on cosine). Sits above
+# the score threshold so the actual lines from the named day reliably
+# surface for a recall query, but below a strong semantic memory hit
+# (cosine > base) so genuine topical matches still rank first. The
+# in-window time bonus + the per-message recency bonus ride on top.
+_DIRECT_RECALL_BASE = 0.55
 # Dialogue acts that count as "informational" for the knowledge boost.
 # ``question`` is the K4 label for "asking for information / a soft
 # request" (there is no separate ``info_seeking`` act).
@@ -483,6 +490,8 @@ class RagRetriever:
         topic_digest_surface_enabled: bool = True,
         digest_sibling_cap: int = 1,
         topic_digest_provider: "Callable[[int], int | None] | None" = None,
+        direct_recall_enabled: bool = True,
+        direct_recall_max_messages: int = 6,
     ) -> None:
         self._store = store
         self._embedder = embedder
@@ -591,6 +600,13 @@ class RagRetriever:
         # these to drive the empty-window anti-confabulation guard.
         self._last_time_window: "TimeWindow | None" = None
         self._last_time_window_hit_count: int = 0
+        # K-time2 direct recall — when a *guardable* (clearly retrospective)
+        # time window is named, also pull the actual messages from that
+        # window straight out of SQLite so verbatim "what did we say then"
+        # recall isn't limited to the semantic top-N. Needs ``chat_db``
+        # wired; ``direct_recall_max_messages`` caps the injection per turn.
+        self._direct_recall_enabled = bool(direct_recall_enabled)
+        self._direct_recall_max = max(0, int(direct_recall_max_messages))
         # P19: the three per-source Lance searches (memories / messages /
         # documents) are independent and each only takes RagStore's shared
         # read lock, so they overlap instead of summing when dispatched on
@@ -690,6 +706,58 @@ class RagRetriever:
             self._digest_sibling_cap = max(0, int(digest_sibling_cap))
 
     # ── retrieval ───────────────────────────────────────────────────────
+
+    def _direct_recall_hits(
+        self, window: "TimeWindow", exclude_session_id: str | None,
+    ) -> list[RagHit]:
+        """Pull the actual messages recorded inside ``window`` from SQLite.
+
+        K-time2 direct recall. Returns synthetic ``message`` :class:`RagHit`
+        objects scored around :data:`_DIRECT_RECALL_BASE` (+ the in-window
+        time bonus + per-message recency) so they reliably surface for a
+        recall query without overpowering a strong semantic memory hit.
+        The SQL bounds are widened by a day on each side and the rows are
+        re-filtered through ``window.contains`` so a tz-format difference
+        between the now-anchor and the stored timestamps can't drop a row.
+        """
+        if self._chat_db is None or self._direct_recall_max <= 0:
+            return []
+        day = timedelta(days=1)
+        try:
+            lo = (window.start - day).isoformat()
+            hi = (window.end + day).isoformat()
+        except Exception:
+            return []
+        # Fetch a little extra so the precise in-window re-filter below can
+        # still return up to the cap after trimming the widened margins.
+        rows = self._chat_db.messages_in_range(
+            lo, hi,
+            limit=self._direct_recall_max * 3,
+            exclude_session_id=exclude_session_id,
+        )
+        hits: list[RagHit] = []
+        for row in rows:
+            created = row.get("created_at")
+            if not window.contains(created):
+                continue
+            try:
+                record = MessageRecord.from_row(row)
+            except Exception:
+                continue
+            score = (
+                _DIRECT_RECALL_BASE
+                + _RAG_TIME_WINDOW_BONUS
+                + _recency_bonus(created or "")
+            )
+            hits.append(RagHit(source="message", score=score, record=record))
+            if len(hits) >= self._direct_recall_max:
+                break
+        if hits:
+            log.debug(
+                "rag retriever: direct recall window=%s hits=%d",
+                window.label, len(hits),
+            )
+        return hits
 
     def _search_all_sources(
         self, embedding: Sequence[float],
@@ -1049,6 +1117,34 @@ class RagRetriever:
                     merged.append(h)
             except Exception:
                 log.debug("message search failed", exc_info=True)
+
+            # K-time2 direct recall — for a clearly retrospective window
+            # ("yesterday", "last Tuesday", "back in March") the semantic
+            # top-N can miss the actual lines from that day entirely. Pull
+            # them straight out of SQLite and inject as message hits so
+            # verbatim recall is guaranteed, not luck-of-the-cosine. Bounded
+            # by ``_direct_recall_max`` and gated to guardable windows so it
+            # never fires on chit-chat like "how are you today". Dedup by
+            # text below collapses any overlap with the semantic hits.
+            if (
+                self._direct_recall_enabled
+                and self._direct_recall_max > 0
+                and self._chat_db is not None
+                and time_window is not None
+                and time_window.guardable
+            ):
+                try:
+                    direct_hits = self._direct_recall_hits(
+                        time_window, exclude_session_id,
+                    )
+                    merged.extend(direct_hits)
+                    # The injected lines are in-window by construction, so
+                    # count them toward the guard (an empty semantic pass on
+                    # a day we *do* have messages for shouldn't read as "I
+                    # have nothing from then").
+                    time_window_hits = max(time_window_hits, len(direct_hits))
+                except Exception:
+                    log.debug("direct-recall lookup failed", exc_info=True)
 
         if self._include_documents:
             try:

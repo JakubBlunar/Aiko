@@ -743,6 +743,20 @@ class SessionController(
                                     1,
                                 )
                             ),
+                            direct_recall_enabled=bool(
+                                getattr(
+                                    self._settings.agent,
+                                    "rag_direct_recall_enabled",
+                                    True,
+                                )
+                            ),
+                            direct_recall_max_messages=int(
+                                getattr(
+                                    self._settings.agent,
+                                    "rag_direct_recall_max_messages",
+                                    6,
+                                )
+                            ),
                         )
                     except Exception:
                         log.warning("RagRetriever failed to init", exc_info=True)
