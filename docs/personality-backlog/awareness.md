@@ -159,11 +159,31 @@ nudge. **Tonal guard:** `block_for` appends an anti-confabulation note
 (`time_window_guard_note()`) when a guardable query surfaced zero
 in-window hits, phrased as private guidance ("RAG only sees the semantic
 top-N, so 'nothing surfaced' != 'nothing exists'") rather than a hard
-claim. Did **not** add the `chat_database` direct `[start, end]` message
-lookup — the soft boost over the existing semantic pass covers the need
-without a new query path; revisit if "what exactly did we say then"
-recall proves too lossy. Tests: `tests/test_time_expr.py` (22),
+claim. Tests: `tests/test_time_expr.py` (22),
 `tests/test_rag_retriever_time_window.py` (7).
+
+**Follow-up shipped — direct `[start, end]` message recall.** The soft
+boost biases the *semantic* top-N but can't surface a line that simply
+wasn't in the top-N, so verbatim "what exactly did we say last Tuesday?"
+recall was lossy. [`ChatDatabase.messages_in_range(start_iso, end_iso,
+*, limit, exclude_session_id)`](../../app/core/infra/chat_database.py) is
+the verbatim fallback: a bounded `created_at` range scan (newest-first,
+capped), and [`RagRetriever`](../../app/core/rag/rag_retriever.py) injects
+its rows as synthetic `message` hits — but **only** for *guardable*
+(clearly retrospective) windows, so it never fires on chit-chat like "how
+are you today". The injected hits score around `_DIRECT_RECALL_BASE=0.55`
+(+ the in-window time bonus + per-message recency) so the actual lines
+reliably surface for a recall query without overpowering a strong
+semantic memory hit; the dedup-by-text pass collapses any overlap with the
+semantic message hits, and the SQL bounds are widened ±1 day then
+re-filtered through `TimeWindow.contains` so a tz-format difference can't
+drop a row. The injected lines also count toward `time_window_hits`, so an
+empty *semantic* pass on a day we *do* have messages for no longer trips
+the anti-confabulation guard. Gated by `agent.rag_direct_recall_enabled`
+(default on) + `agent.rag_direct_recall_max_messages` (default 6, floor 0
+= disabled). Tests: `tests/test_rag_retriever_direct_recall.py` (DB method
++ retriever integration), plus a settings round-trip in
+`tests/test_settings.py`.
 
 ---
 

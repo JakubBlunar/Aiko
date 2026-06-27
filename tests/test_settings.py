@@ -264,6 +264,22 @@ class CuriositySeedSettingsTests(unittest.TestCase):
         self.assertAlmostEqual(result.agent.rag_expand_trigger_score, 0.7)
         self.assertAlmostEqual(result.agent.rag_expand_min_sim, 0.6)
 
+    def test_rag_direct_recall_settings_round_trip(self) -> None:
+        # Defaults (K-time2 direct recall).
+        result = load_settings(config_path=self._write_config())
+        self.assertTrue(result.agent.rag_direct_recall_enabled)
+        self.assertEqual(result.agent.rag_direct_recall_max_messages, 6)
+        # Overrides + floor (max clamps to >= 0).
+        path = self._write_config(
+            agent_extra={
+                "rag_direct_recall_enabled": False,
+                "rag_direct_recall_max_messages": -4,
+            },
+        )
+        result = load_settings(config_path=path)
+        self.assertFalse(result.agent.rag_direct_recall_enabled)
+        self.assertEqual(result.agent.rag_direct_recall_max_messages, 0)
+
     def test_recall_topic_tool_setting_round_trip(self) -> None:
         result = load_settings(config_path=self._write_config())
         self.assertTrue(result.tools.recall_topic)
