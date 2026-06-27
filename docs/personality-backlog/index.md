@@ -74,8 +74,9 @@ Temporal awareness (K-time family, in [`awareness.md`](awareness.md)):
 - **K-time4.** Session-elapsed & mid-session gap awareness. **Shipped.**
 - **K-time5–9.** Canonical `timephrase` module + single "now" seam,
   richer ISO now-anchor, worker time toolkit, "today" anchor in the
-  extract workers, and memory ages fed to the consolidation merge.
-  **Shipped.**
+  extract workers, memory ages fed to the consolidation merge, and
+  per-cluster recency (`TopicGraph.cluster_activity`) in the knowledge-map
+  reflection so "hot vs. gone quiet" territory reads through. **Shipped.**
 
 ### G. Background workers — [`workers.md`](workers.md)
 

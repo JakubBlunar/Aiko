@@ -19,6 +19,7 @@ from app.core.proactive.knowledge_map_reflection_worker import (
     MINDMAP_PREFIX,
     KnowledgeMapReflectionWorker,
     clean_reflection_output,
+    recency_phrase,
 )
 
 
@@ -29,6 +30,40 @@ from app.core.proactive.knowledge_map_reflection_worker import (
 class _Entry:
     label: str
     size: int
+
+
+@dataclass
+class _Activity:
+    label: str
+    size: int
+    last_active: str
+    days_since: float | None
+
+
+class _FakeGraphWithActivity:
+    """Graph exposing ``cluster_activity`` (the K-time9 recency path)."""
+
+    def __init__(self, rich: list[_Activity], gaps: list[_Entry] | None = None) -> None:
+        self._rich = rich
+        self._gaps = gaps or []
+
+    def cluster_activity(self, *, top_n: int = 5, min_size=None) -> list[_Activity]:
+        return list(self._rich)[:top_n]
+
+    def knowledge_gap_clusters(self, *, top_n: int = 3, **_kw) -> list[_Entry]:
+        return list(self._gaps)[:top_n]
+
+
+class _CapturingLLM:
+    def __init__(self, reply: str = "noticing things") -> None:
+        self.reply = reply
+        self.last_user = ""
+
+    def chat(self, messages, **kw) -> str:
+        for m in messages:
+            if m.get("role") == "user":
+                self.last_user = m.get("content", "")
+        return self.reply
 
 
 class _FakeGraph:
@@ -261,6 +296,49 @@ class WorkerTests(unittest.TestCase):
         worker, _kv = _make_worker(graph=graph, gap_top_n=0)
         worker.run()
         self.assertEqual(graph.gap_calls, 0)
+
+
+class RecencyPhraseTests(unittest.TestCase):
+    def test_none_is_blank(self) -> None:
+        self.assertEqual(recency_phrase(None), "")
+
+    def test_buckets(self) -> None:
+        self.assertEqual(recency_phrase(1.0), "hot this week")
+        self.assertEqual(recency_phrase(7.0), "hot this week")
+        self.assertEqual(recency_phrase(20.0), "active recently")
+        self.assertEqual(recency_phrase(60.0), "cooled off, weeks since")
+        self.assertEqual(recency_phrase(150.0), "quiet for a couple months")
+        self.assertEqual(recency_phrase(400.0), "gone quiet, months since")
+
+
+class ClusterActivityShapeTests(unittest.TestCase):
+    """The worker reads recency via ``cluster_activity`` when available and
+    threads the recency phrase into the LLM seed payload."""
+
+    def test_recency_phrases_reach_the_llm_payload(self) -> None:
+        rich = [
+            _Activity("work stuff", 20, "x", 2.0),     # hot this week
+            _Activity("old hobby", 12, "y", 300.0),    # gone quiet, months since
+            _Activity("cooking", 8, "z", 60.0),        # cooled off, weeks since
+            _Activity("travel", 6, "w", 20.0),         # active recently
+        ]
+        llm = _CapturingLLM()
+        worker, _kv = _make_worker(
+            graph=_FakeGraphWithActivity(rich), llm=llm, min_clusters=4,
+        )
+        result = worker.run()
+        self.assertEqual(result["wrote"], 1)
+        self.assertIn("hot this week", llm.last_user)
+        self.assertIn("gone quiet, months since", llm.last_user)
+        self.assertIn("how recently active", llm.last_user)
+
+    def test_falls_back_to_interest_map_without_cluster_activity(self) -> None:
+        # The legacy _FakeGraph has no cluster_activity -> interest_map path,
+        # recency-free, still writes a reflection (back-compat).
+        llm = _CapturingLLM()
+        worker, _kv = _make_worker(graph=_FakeGraph(rich=_rich(5)), llm=llm)
+        self.assertEqual(worker.run()["wrote"], 1)
+        self.assertIn("topic 0", llm.last_user)
 
 
 if __name__ == "__main__":

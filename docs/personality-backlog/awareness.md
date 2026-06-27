@@ -302,11 +302,25 @@ canonical module plus worker wiring. What landed:
 **Evaluated and skipped by design:** `memory_conflict_worker` (its winner
 selection already tie-breaks on `created_at` in Python; the LLM only judges
 contradiction, so ages add no value there) and `idle_curiosity_worker`
-(already picks the oldest `open_question` in Python). **Follow-up (not
-built):** the `knowledge_map_reflection_worker` feeds cluster *labels +
-sizes*, not memory rows, so `format_memory_block` doesn't fit — giving it
-per-cluster recency ("this territory is recently hot vs. went quiet months
-ago") would need the topic graph to expose cluster recency stats. Tracked
-as a future enrichment.
+(already picks the oldest `open_question` in Python).
+
+**Follow-up shipped — per-cluster recency in the knowledge-map reflection.**
+The `knowledge_map_reflection_worker` feeds cluster *labels + sizes*, not
+memory rows, so `format_memory_block` didn't fit — it needed the topic
+graph to expose cluster recency. [`TopicGraph.cluster_activity(top_n,
+min_size)`](../../app/core/conversation/topic_graph.py) now does: like
+`interest_map` but with one bulk mirror snapshot to find each cluster's
+most-recent member touch (`last_used_at` / `created_at`), returning a new
+`InterestActivity(label, size, last_active, days_since)`. It's a daily-worker
+read, not hot-path. The worker's `_read_shape` prefers `cluster_activity`
+(falling back to the recency-free `interest_map` for older / duck-typed
+graphs), buckets `days_since` into a short tag via `recency_phrase`
+(`hot this week` / `active recently` / `cooled off, weeks since` /
+`quiet for a couple months` / `gone quiet, months since`), and threads it
+into the LLM seed so Aiko can notice "this territory's recently hot vs.
+went quiet months ago" instead of just "big vs. small". Tests:
+`tests/test_topic_graph_persistent.py::ClusterActivityTests` and
+`RecencyPhraseTests` + `ClusterActivityShapeTests` in
+`tests/test_knowledge_map_reflection.py`.
 
 ---

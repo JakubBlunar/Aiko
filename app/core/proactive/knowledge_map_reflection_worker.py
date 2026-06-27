@@ -81,11 +81,33 @@ def _build_system_prompt() -> str:
         "sentence or two) about the *shape* of what you know — a real "
         "noticing, e.g. 'most of what I'm carrying lately circles X, and I "
         "realise I've got almost nothing on Y even though it keeps brushing "
-        "past.' NOT a greeting, NOT a question, NOT a to-do — just a private "
-        "note to yourself.\n"
+        "past.' Each topic notes how recently it's been active — feel free "
+        "to notice when a territory has gone quiet for a while, or when one "
+        "is suddenly hot. NOT a greeting, NOT a question, NOT a to-do — just "
+        "a private note to yourself.\n"
         "\n"
         "Output ONLY the sentence(s). No quotes, no JSON, no preamble."
     )
+
+
+def recency_phrase(days_since: float | None) -> str:
+    """Bucket a cluster's days-since-last-touch into a short recency tag.
+
+    K-time9 follow-up: lets the reflection seed distinguish "recently hot"
+    territory from one that "went quiet months ago". Empty string when no
+    timestamp resolved (the LLM then just sees size, as before).
+    """
+    if days_since is None:
+        return ""
+    if days_since <= 7:
+        return "hot this week"
+    if days_since <= 30:
+        return "active recently"
+    if days_since <= 90:
+        return "cooled off, weeks since"
+    if days_since <= 180:
+        return "quiet for a couple months"
+    return "gone quiet, months since"
 
 
 def clean_reflection_output(raw: str) -> str:
@@ -254,23 +276,36 @@ class KnowledgeMapReflectionWorker:
 
     def _read_shape(
         self, graph: "TopicGraph",
-    ) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
-        """Return ``(rich, gaps)`` as ``(label, size)`` lists.
+    ) -> tuple[list[tuple[str, int, float | None]], list[tuple[str, int]]]:
+        """Return ``(rich, gaps)`` — rich as ``(label, size, days_since)``.
 
-        ``rich`` = the largest labelled clusters (well-trodden territory);
+        ``rich`` = the largest labelled clusters (well-trodden territory),
+        each carrying how long since that territory was last active so the
+        reflection can read "recently hot vs. went quiet months ago";
         ``gaps`` = dense-but-under-researched clusters (familiar in
-        conversation, blank in *learned* knowledge). Both are cheap reads
-        and tolerate the non-persistent / in-memory graph mode (empty).
+        conversation, blank in *learned* knowledge). Both tolerate the
+        non-persistent / in-memory graph mode (empty). Falls back to the
+        recency-free ``interest_map`` if ``cluster_activity`` is unavailable
+        (older graph / duck-typed stub).
         """
-        rich: list[tuple[str, int]] = []
+        rich: list[tuple[str, int, float | None]] = []
+        top_n = max(self._rich_top_n, self._min_clusters)
         try:
-            entries = graph.interest_map(
-                top_n=max(self._rich_top_n, self._min_clusters),
-            )
-            for e in entries:
-                label = (getattr(e, "label", "") or "").strip()
-                if label:
-                    rich.append((label, int(getattr(e, "size", 0) or 0)))
+            activity = getattr(graph, "cluster_activity", None)
+            if callable(activity):
+                for e in activity(top_n=top_n):
+                    label = (getattr(e, "label", "") or "").strip()
+                    if label:
+                        rich.append((
+                            label,
+                            int(getattr(e, "size", 0) or 0),
+                            getattr(e, "days_since", None),
+                        ))
+            else:
+                for e in graph.interest_map(top_n=top_n):
+                    label = (getattr(e, "label", "") or "").strip()
+                    if label:
+                        rich.append((label, int(getattr(e, "size", 0) or 0), None))
         except Exception:
             log.debug("knowledge_map_reflection interest_map failed", exc_info=True)
 
@@ -290,14 +325,16 @@ class KnowledgeMapReflectionWorker:
 
     def _compose(
         self,
-        rich: list[tuple[str, int]],
+        rich: list[tuple[str, int, float | None]],
         gaps: list[tuple[str, int]],
     ) -> str:
         rich_lines = "\n".join(
-            f"  - {label} ({size} memories)" for label, size in rich[: self._rich_top_n]
+            self._rich_line(label, size, days)
+            for label, size, days in rich[: self._rich_top_n]
         )
         payload = [
-            "The richest territories of what you hold (topic — how much):",
+            "The richest territories of what you hold "
+            "(topic — how much — how recently active):",
             rich_lines or "  (nothing substantial yet)",
         ]
         if gaps:
@@ -323,6 +360,13 @@ class KnowledgeMapReflectionWorker:
             log.debug("knowledge_map_reflection LLM call failed", exc_info=True)
             return ""
         return clean_reflection_output(raw)
+
+    @staticmethod
+    def _rich_line(label: str, size: int, days_since: float | None) -> str:
+        phrase = recency_phrase(days_since)
+        if phrase:
+            return f"  - {label} ({size} memories, {phrase})"
+        return f"  - {label} ({size} memories)"
 
     # ── gates / helpers ────────────────────────────────────────────────
 
@@ -371,4 +415,5 @@ __all__ = [
     "KnowledgeMapReflectionWorker",
     "MINDMAP_PREFIX",
     "clean_reflection_output",
+    "recency_phrase",
 ]
