@@ -1066,4 +1066,204 @@ def register(mcp, session: "SessionController") -> None:
         except Exception as exc:
             return f"force_topic_appetite raised: {exc}"
 
+    @mcp.tool()
+    def get_affection_style_state() -> str:
+        """J11 — dump the learned affection-style weighting.
+
+        Returns the master switch, the learned weight per affection
+        kind (touch / teasing / appreciation / words / space, summing
+        to ~1.0 from a uniform 0.2 baseline), the current top kind, the
+        live bias multiplier each gate would apply right now, the
+        previous turn's tagged kinds (next-turn attribution target),
+        the reaction→kind confirmation map, and the full settings
+        snapshot.
+
+        The weighting is learned primarily from passive K14 engagement
+        (no reactions required) and only ever tilts the appreciation /
+        tease cooldowns — it is never rendered into a prompt and never
+        announced. Repro loop:
+
+        1. ``get_affection_style_state`` — read current weights.
+        2. React to a few of Aiko's messages (or call
+           ``add_user_reaction``) and/or send warm vs. curt replies.
+        3. ``get_affection_style_state`` again — the relevant kind's
+           weight should drift; ``force_affection_style_decay`` pulls
+           it back toward uniform.
+        """
+        try:
+            from app.core.relationship import affection_style as _af
+
+            agent = session._settings.agent
+            chat_db = getattr(session, "_chat_db", None)
+            stored = None
+            if chat_db is not None:
+                try:
+                    stored = chat_db.kv_get(_af.KV_AFFECTION_STYLE)
+                except Exception:
+                    stored = None
+            state = _af.deserialize(stored)
+            strength = float(
+                getattr(agent, "affection_style_bias_strength", 0.5)
+            )
+            floor = float(getattr(agent, "affection_style_bias_floor", 0.6))
+            ceil = float(getattr(agent, "affection_style_bias_ceil", 1.5))
+            return json.dumps(
+                {
+                    "enabled": bool(
+                        getattr(agent, "affection_style_enabled", True)
+                    ),
+                    "weights": {
+                        k: round(state.weight_of(k), 4)
+                        for k in _af.AFFECTION_KINDS
+                    },
+                    "top_kind": _af.top_kind(state),
+                    "updated_at": state.updated_at,
+                    "bias_multipliers": {
+                        k: round(
+                            _af.bias_multiplier(
+                                state, k, strength=strength,
+                                floor=floor, ceil=ceil,
+                            ),
+                            4,
+                        )
+                        for k in _af.AFFECTION_KINDS
+                    },
+                    "prev_turn_kinds": list(
+                        getattr(session, "_prev_affection_kinds", []) or []
+                    ),
+                    "reaction_to_kind": dict(_af.REACTION_TO_KIND),
+                    "settings": {
+                        "learning_rate": float(
+                            getattr(
+                                agent, "affection_style_learning_rate", 0.04,
+                            )
+                        ),
+                        "reaction_weight": float(
+                            getattr(
+                                agent, "affection_style_reaction_weight", 0.06,
+                            )
+                        ),
+                        "floor": float(
+                            getattr(agent, "affection_style_floor", 0.05)
+                        ),
+                        "decay_half_life_days": float(
+                            getattr(
+                                agent,
+                                "affection_style_decay_half_life_days",
+                                30.0,
+                            )
+                        ),
+                        "bias_strength": strength,
+                        "bias_floor": floor,
+                        "bias_ceil": ceil,
+                        "decay_interval_seconds": int(
+                            getattr(
+                                agent,
+                                "affection_style_decay_interval_seconds",
+                                21600,
+                            )
+                        ),
+                    },
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"get_affection_style_state raised: {exc}"
+
+    @mcp.tool()
+    def set_affection_style(kind: str, weight: float) -> str:
+        """J11 — force one affection kind's raw weight, then renormalise.
+
+        Test helper to push the weighting into a known shape without
+        replaying turns. ``kind`` must be one of touch / teasing /
+        appreciation / words / space; ``weight`` is the pre-normalise
+        raw share (the other kinds keep their current shares and the
+        whole vector is re-floored + renormalised). Returns the new
+        weights.
+        """
+        try:
+            from datetime import datetime, timezone
+
+            from app.core.relationship import affection_style as _af
+
+            norm = (kind or "").strip().lower()
+            if norm not in _af.AFFECTION_KINDS:
+                return json.dumps(
+                    {"error": "unknown kind", "kinds": list(_af.AFFECTION_KINDS)}
+                )
+            agent = session._settings.agent
+            chat_db = getattr(session, "_chat_db", None)
+            if chat_db is None:
+                return "chat_db not available"
+            state = _af.deserialize(chat_db.kv_get(_af.KV_AFFECTION_STYLE))
+            raw = {k: state.weight_of(k) for k in _af.AFFECTION_KINDS}
+            raw[norm] = max(0.0, float(weight))
+            # Floor + renormalise (same posture as the pure module's
+            # internal _normalise). Done inline here so the debug tool
+            # doesn't reach into a private helper.
+            floor = max(
+                0.0,
+                min(
+                    1.0 / len(_af.AFFECTION_KINDS),
+                    float(getattr(agent, "affection_style_floor", 0.05)),
+                ),
+            )
+            floored = {k: max(floor, raw[k]) for k in _af.AFFECTION_KINDS}
+            total = sum(floored.values()) or 1.0
+            persisted = _af.AffectionStyleState(
+                weights={k: v / total for k, v in floored.items()},
+                updated_at=datetime.now(timezone.utc).isoformat(),
+            )
+            chat_db.kv_set(_af.KV_AFFECTION_STYLE, _af.serialize(persisted))
+            return json.dumps(
+                {
+                    "weights": {
+                        k: round(persisted.weight_of(k), 4)
+                        for k in _af.AFFECTION_KINDS
+                    },
+                    "top_kind": _af.top_kind(persisted),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"set_affection_style raised: {exc}"
+
+    @mcp.tool()
+    def reset_affection_style() -> str:
+        """J11 — wipe the learned weighting back to uniform."""
+        try:
+            from app.core.relationship import affection_style as _af
+
+            chat_db = getattr(session, "_chat_db", None)
+            if chat_db is None:
+                return "chat_db not available"
+            chat_db.kv_set(
+                _af.KV_AFFECTION_STYLE, _af.serialize(_af.uniform_state()),
+            )
+            return json.dumps({"reset": True})
+        except Exception as exc:
+            return f"reset_affection_style raised: {exc}"
+
+    @mcp.tool()
+    def force_affection_style_decay() -> str:
+        """J11 — run the AffectionStyleDecayWorker once, ignoring gates.
+
+        Pulls the learned weights one step toward uniform per the
+        configured half-life. Returns the run result (``decayed`` /
+        ``top`` or a skip reason).
+        """
+        sched = getattr(session, "_idle_scheduler", None)
+        if sched is None:
+            return "scheduler not running"
+        try:
+            result = sched.force_run("affection_style_decay")
+        except KeyError:
+            return (
+                "affection_style_decay worker not registered "
+                "(agent.affection_style_enabled may be off)"
+            )
+        except Exception as exc:
+            return f"force_affection_style_decay raised: {exc}"
+        return json.dumps(result or {}, indent=2, default=str)
+
 

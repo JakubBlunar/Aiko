@@ -1428,9 +1428,15 @@ class InnerLifePart3Mixin:
                         humor = 0.0
                 if humor < float(getattr(agent, "tease_min_humor", 0.2)):
                     return ""
-                # Wall-clock cooldown between offers.
+                # Wall-clock cooldown between offers. J11 tilts it: if
+                # teasing is the care language this user responds to, the
+                # cooldown shortens a little (lengthens if it lands flat),
+                # bounded by the bias band — never off.
                 cooldown_h = float(
                     getattr(agent, "tease_collect_cooldown_hours", 12.0)
+                )
+                cooldown_h = cooldown_h / max(
+                    0.1, self._affection_style_bias("teasing")
                 )
                 last_raw = chat_db.kv_get("aiko.tease_last_offer_at")
                 if last_raw and cooldown_h > 0.0:
