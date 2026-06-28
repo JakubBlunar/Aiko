@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { debugLog } from "../../log";
 import { useAssistantStore } from "../../store";
 import type { MetricsResponse, MetricsSnapshot } from "../../types";
+import { fmtMs } from "@/lib/time";
+import { MeterBar } from "@/components/MeterBar";
 import { PersonaRegressionPanel } from "./PersonaRegressionPanel";
 import { Section } from "./SettingsSection";
 
@@ -40,7 +42,6 @@ export function DiagnosticsSection({
       : promptTokens && ctxWindow
         ? promptTokens / ctxWindow
         : 0;
-  const fillPct = Math.min(100, Math.round(promptPct * 100));
   const sourceLabel: Record<string, string> = {
     client: "auto-detected from provider",
     ollama_show: "auto-detected from Ollama", // legacy label, kept for back-compat
@@ -62,17 +63,8 @@ export function DiagnosticsSection({
             </span>
           </span>
         </div>
-        <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-white/10">
-          <div
-            className={`h-full ${
-              promptPct < 0.6
-                ? "bg-emerald-400"
-                : promptPct < 0.85
-                  ? "bg-amber-400"
-                  : "bg-rose-500"
-            }`}
-            style={{ width: `${fillPct}%` }}
-          />
+        <div className="mt-2">
+          <MeterBar pct={promptPct} />
         </div>
         <div className="mt-1 flex justify-between text-[11px] tabular-nums text-ink-100/60">
           <span>{promptTokens.toLocaleString()} used</span>
@@ -299,12 +291,6 @@ function DebugLoggingBlock({ onApplyPatch, busy }: DebugLoggingBlockProps) {
       </div>
     </div>
   );
-}
-
-function fmtMs(value: number | undefined): string {
-  if (!value) return "—";
-  if (value < 1000) return `${Math.round(value)} ms`;
-  return `${(value / 1000).toFixed(2)} s`;
 }
 
 function Stat({ label, value }: { label: string; value: string }) {

@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useAssistantStore } from "@/store";
+import { fmtMs } from "@/lib/time";
+import { MeterBar } from "@/components/MeterBar";
 
 /**
  * Compact pill in the ChatView header showing how full the LLM context is and
@@ -100,7 +102,6 @@ function ContextPopover({ ctxWindow, ctxSource }: PopoverProps) {
       : promptTokens && ctxWindow
         ? promptTokens / ctxWindow
         : 0;
-  const fillPct = Math.min(100, Math.round(promptPct * 100));
 
   const sourceLabel: Record<string, string> = {
     client: "auto-detected from provider",
@@ -120,17 +121,8 @@ function ContextPopover({ ctxWindow, ctxSource }: PopoverProps) {
         {sourceLabel[ctxSource] ?? ctxSource}
       </div>
 
-      <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-white/10">
-        <div
-          className={`h-full ${
-            promptPct < 0.6
-              ? "bg-emerald-400"
-              : promptPct < 0.85
-                ? "bg-amber-400"
-                : "bg-rose-500"
-          }`}
-          style={{ width: `${fillPct}%` }}
-        />
+      <div className="mt-3">
+        <MeterBar pct={promptPct} />
       </div>
       <div className="mt-1 flex justify-between text-[11px] tabular-nums text-ink-100/60">
         <span>{promptTokens.toLocaleString()} used</span>
@@ -187,12 +179,6 @@ function ContextPopover({ ctxWindow, ctxSource }: PopoverProps) {
       </div>
     </div>
   );
-}
-
-function fmtMs(value: number | undefined): string {
-  if (!value) return "—";
-  if (value < 1000) return `${Math.round(value)} ms`;
-  return `${(value / 1000).toFixed(2)} s`;
 }
 
 function Row({ label, value }: { label: string; value: number | undefined }) {
