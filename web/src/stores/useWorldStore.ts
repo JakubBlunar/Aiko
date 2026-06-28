@@ -1,3 +1,4 @@
+import { create } from "zustand";
 import type {
   WorldItem,
   WorldLocation,
@@ -5,19 +6,20 @@ import type {
   WorldSnapshot,
   WorldState,
 } from "@/types";
-import type { SliceCreator } from "../types";
 
+/**
+ * Standalone store for Aiko's room (virtual world). Extracted from the
+ * composed ``useAssistantStore`` (phase 4a) so ``world_updated`` patches
+ * only re-run the World tab + avatar-panel selectors.
+ */
 export interface WorldSlice {
-  // Aiko's room (virtual world). Single in-memory snapshot — small
-  // enough that we don't need pagination. ``world`` is null until the
-  // first GET /api/world resolves.
   world: WorldSnapshot | null;
   setWorld: (snapshot: WorldSnapshot | null) => void;
   /** Reducer for ``world_updated``: surgically merges the patch. */
   applyWorldPatch: (patch: WorldPatch) => void;
 }
 
-export const createWorldSlice: SliceCreator<WorldSlice> = (set) => ({
+export const useWorldStore = create<WorldSlice>()((set) => ({
   world: null,
   setWorld: (snapshot) => set({ world: snapshot }),
   applyWorldPatch: (patch) =>
@@ -101,4 +103,4 @@ export const createWorldSlice: SliceCreator<WorldSlice> = (set) => ({
       }
       return {};
     }),
-});
+}));

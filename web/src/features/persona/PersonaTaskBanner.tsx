@@ -47,6 +47,7 @@ import { useCallback, useMemo, useState } from "react";
 
 import { api } from "@/api";
 import { useAssistantStore } from "@/store";
+import { useTasksStore } from "@/stores/useTasksStore";
 import type { TaskSnapshot } from "@/types";
 
 export interface PersonaTaskBannerProps {
@@ -78,8 +79,8 @@ export function pickAwaitingTask(
 export function PersonaTaskBanner({
   enabled = true,
 }: PersonaTaskBannerProps) {
-  const tasksById = useAssistantStore((s) => s.tasksView.tasksById);
-  const activeIds = useAssistantStore((s) => s.tasksView.activeIds);
+  const tasksById = useTasksStore((s) => s.tasksView.tasksById);
+  const activeIds = useTasksStore((s) => s.tasksView.activeIds);
   const pushToast = useAssistantStore((s) => s.pushToast);
 
   const [dismissed, setDismissed] = useState<Set<number>>(new Set());

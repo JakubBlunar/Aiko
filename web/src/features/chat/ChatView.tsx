@@ -5,6 +5,7 @@ import { backendBase } from "@/desktop/runtime";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useMicCapture } from "@/hooks/useMicCapture";
 import { useAssistantStore } from "@/store";
+import { useTasksStore } from "@/stores/useTasksStore";
 import type {
   AttachmentRef,
   ToolEvent,
@@ -168,7 +169,7 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
       ? `${s.streamingDraft.id}:${s.streamingDraft.content.length}`
       : "",
   );
-  const activeTaskSignature = useAssistantStore((s) => {
+  const activeTaskSignature = useTasksStore((s) => {
     const view = s.tasksView;
     return view.activeIds
       .map((id) => {

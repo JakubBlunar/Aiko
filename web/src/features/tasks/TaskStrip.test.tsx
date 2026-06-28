@@ -204,16 +204,16 @@ describe("TaskStrip — source-level wiring", () => {
 
   it("subscribes to the store via individual selectors (no whole-state reads)", () => {
     expect(stripSource).toMatch(
-      /useAssistantStore\(\(s\)\s*=>\s*s\.tasksView\.tasksById\)/,
+      /useTasksStore\(\(s\)\s*=>\s*s\.tasksView\.tasksById\)/,
     );
     expect(stripSource).toMatch(
-      /useAssistantStore\(\(s\)\s*=>\s*s\.tasksView\.activeIds\)/,
+      /useTasksStore\(\(s\)\s*=>\s*s\.tasksView\.activeIds\)/,
     );
     expect(stripSource).toMatch(
-      /useAssistantStore\(\s*\(s\)\s*=>\s*s\.dismissTaskFromStrip,?\s*\)/,
+      /useTasksStore\(\s*\(s\)\s*=>\s*s\.dismissTaskFromStrip,?\s*\)/,
     );
     expect(stripSource).toMatch(
-      /useAssistantStore\(\s*\(s\)\s*=>\s*s\.sweepRecentlyCompletedTasks,?\s*\)/,
+      /useTasksStore\(\s*\(s\)\s*=>\s*s\.sweepRecentlyCompletedTasks,?\s*\)/,
     );
   });
 

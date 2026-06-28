@@ -1,11 +1,14 @@
+import { create } from "zustand";
 import type { TaskProgressPatch, TaskSnapshot, TaskStatus } from "@/types";
-import type { SliceCreator } from "../types";
 
+/**
+ * Standalone store for background-task state. Extracted from the composed
+ * ``useAssistantStore`` (phase 4a) because task progress is the highest-churn
+ * event stream in the app — isolating it here means a ``task_progress`` tick
+ * only re-runs the selectors of the TaskStrip / Tasks tab / persona banner,
+ * not every subscriber of the old monolithic store.
+ */
 export interface TasksSlice {
-  // Background tasks (chunk 14). The brain orchestration tasks API
-  // surfaces in a compact ``TaskStrip`` above the chat and a paginated
-  // ``TasksTab`` in the SettingsDrawer. ``tasksById`` is canonical; both
-  // surfaces project from it.
   tasksView: {
     tasksById: Record<number, TaskSnapshot>;
     activeIds: number[];
@@ -42,7 +45,7 @@ export interface TasksSlice {
   sweepRecentlyCompletedTasks: (maxAgeMs: number) => void;
 }
 
-export const createTasksSlice: SliceCreator<TasksSlice> = (set) => ({
+export const useTasksStore = create<TasksSlice>()((set) => ({
   tasksView: {
     tasksById: {},
     activeIds: [],
@@ -262,4 +265,4 @@ export const createTasksSlice: SliceCreator<TasksSlice> = (set) => ({
         tasksView: { ...view, activeIds: remaining },
       };
     }),
-});
+}));

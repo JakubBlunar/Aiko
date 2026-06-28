@@ -1,5 +1,6 @@
 import { Live2DAvatar } from "./Live2DAvatar";
 import { useAssistantStore } from "@/store";
+import { useWorldStore } from "@/stores/useWorldStore";
 import type { WorldSnapshot } from "@/types";
 
 /** Turn slugs like ``window_seat`` / ``curled_up`` / ``watching_screens``
@@ -45,7 +46,7 @@ export function AvatarPanel() {
   const reaction = useAssistantStore((s) => s.reaction);
   const voiceMode = useAssistantStore((s) => s.voiceMode);
   const avatar = useAssistantStore((s) => s.avatar);
-  const world = useAssistantStore((s) => s.world);
+  const world = useWorldStore((s) => s.world);
   const connectionStatus = useAssistantStore((s) => s.connection.status);
   const panelWidth = useAssistantStore((s) => s.personaPanelWidth);
 
