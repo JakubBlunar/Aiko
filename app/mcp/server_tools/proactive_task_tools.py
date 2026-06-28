@@ -486,6 +486,95 @@ def register(mcp, session: "SessionController") -> None:
             return f"force_idle_seed_surface raised: {exc}"
 
     @mcp.tool()
+    def get_hobby_state() -> str:
+        """H19 — dump Aiko's current hobby / ongoing-project state.
+
+        Shows the master switch, the cadence knobs, and the live
+        ``aiko.current_hobby`` kv blob (label, progress, advances,
+        started_at). The standing line is rendered into the prompt by
+        ``_render_hobby_block``; takeaways surface through the H17 cue.
+        """
+        try:
+            from app.core.proactive.hobby_worker import load_hobby
+
+            chat_db = getattr(session, "_chat_db", None)
+            state = load_hobby(chat_db.kv_get) if chat_db else None
+            mem = session._memory_settings
+            return json.dumps(
+                {
+                    "enabled": bool(
+                        getattr(
+                            session._settings.agent,
+                            "hobby_worker_enabled",
+                            True,
+                        )
+                    ),
+                    "worker_registered": getattr(
+                        session, "_hobby_worker", None
+                    )
+                    is not None,
+                    "interval_seconds": int(
+                        getattr(mem, "hobby_worker_interval_seconds", 3600)
+                    ),
+                    "advance_min_hours": float(
+                        getattr(mem, "hobby_advance_min_hours", 6.0)
+                    ),
+                    "milestone_every": int(
+                        getattr(mem, "hobby_milestone_every", 3)
+                    ),
+                    "max_advances": int(
+                        getattr(mem, "hobby_max_advances", 12)
+                    ),
+                    "current": state,
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"get_hobby_state raised: {exc}"
+
+    @mcp.tool()
+    def force_hobby_advance() -> str:
+        """H19 — advance the current hobby once, right now.
+
+        Bypasses the wall-clock advance pacing by arming a one-shot flag,
+        then calls ``run()`` directly so progress climbs immediately and a
+        milestone seed lands if this advance hits the cadence. Starts a
+        hobby first if none exists yet.
+        """
+        try:
+            worker = getattr(session, "_hobby_worker", None)
+            if worker is None:
+                return json.dumps(
+                    {"error": "worker not registered"}, indent=2
+                )
+            worker._force_advance = True
+            result = worker.run()
+            return json.dumps({"ran": True, "result": result}, indent=2)
+        except Exception as exc:
+            return f"force_hobby_advance raised: {exc}"
+
+    @mcp.tool()
+    def force_hobby_rotate() -> str:
+        """H19 — rotate to a fresh hobby right now.
+
+        Arms a one-shot rotate flag and calls ``run()`` so the current
+        thread wraps up (emitting a "finished X, starting Y" seed via the
+        H17 cue) and a new hobby begins. No-op message if no hobby exists
+        yet (call ``force_hobby_advance`` first to start one).
+        """
+        try:
+            worker = getattr(session, "_hobby_worker", None)
+            if worker is None:
+                return json.dumps(
+                    {"error": "worker not registered"}, indent=2
+                )
+            worker._force_rotate = True
+            result = worker.run()
+            return json.dumps({"ran": True, "result": result}, indent=2)
+        except Exception as exc:
+            return f"force_hobby_rotate raised: {exc}"
+
+    @mcp.tool()
     def get_diary_worker_state() -> str:
         """H9 — dump the away-diary worker state.
 

@@ -193,6 +193,32 @@ def load_idle_seeds(kv_get: Callable[[str], str | None]) -> list[dict[str, Any]]
     return [e for e in blob if isinstance(e, dict)]
 
 
+def append_idle_seed(
+    kv_get: Callable[[str], str | None],
+    kv_set: Callable[[str, str], None],
+    entry: dict[str, Any],
+    *,
+    max_entries: int,
+) -> bool:
+    """Append ``entry`` to the H17 idle-seed ring, trimming to ``max_entries``.
+
+    Shared by the away-activity producer (:meth:`IdleAwayActivityWorker.
+    _maybe_emit_seed`) and the H19 hobby worker so a hobby takeaway surfaces
+    through the same one-shot ``_render_idle_seed_block`` cue. Returns ``True``
+    on a successful write, ``False`` if the kv write raised.
+    """
+    seeds = load_idle_seeds(kv_get)
+    seeds.append(entry)
+    if max_entries > 0 and len(seeds) > max_entries:
+        seeds = seeds[-max_entries:]
+    try:
+        kv_set(IDLE_SEEDS_KEY, json.dumps(seeds))
+    except Exception:
+        log.debug("idle_seed ring write failed", exc_info=True)
+        return False
+    return True
+
+
 class IdleAwayActivityWorker:
     """IdleWorker that gives Aiko a quiet, room-grounded inner life."""
 
@@ -358,21 +384,18 @@ class IdleAwayActivityWorker:
         if not seed:
             return None
 
-        seeds = load_idle_seeds(self._kv_get)
-        seeds.append(
+        ok = append_idle_seed(
+            self._kv_get,
+            self._kv_set,
             {
                 "at": now.isoformat(timespec="seconds"),
                 "activity": plan.activity,
                 "key": plan.key,
                 "seed": seed,
-            }
+            },
+            max_entries=self._idle_seed_max_ring,
         )
-        if len(seeds) > self._idle_seed_max_ring:
-            seeds = seeds[-self._idle_seed_max_ring:]
-        try:
-            self._kv_set(IDLE_SEEDS_KEY, json.dumps(seeds))
-        except Exception:
-            log.debug("idle_seed ring write failed", exc_info=True)
+        if not ok:
             return None
         self._bump_seed_day_count(now)
         log.info(
@@ -946,6 +969,9 @@ __all__ = [
     "IdleAwayActivityWorker",
     "ActivityPlan",
     "AWAY_ACTIVITIES_JOURNAL_KEY",
+    "IDLE_SEEDS_KEY",
     "load_journal",
     "append_journal",
+    "load_idle_seeds",
+    "append_idle_seed",
 ]

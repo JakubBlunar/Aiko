@@ -174,6 +174,33 @@ class IdleWorkersInitMixin:
                     "IdleAwayActivityWorker init failed", exc_info=True
                 )
 
+        # H19 HobbyWorker — Aiko's ongoing personal project. Maintains a
+        # single multi-day "current hobby" that advances during quiet
+        # windows + occasionally yields a takeaway seed (via the shared H17
+        # idle-seed cue). Needs only kv + settings; the worker LLM is
+        # optional (seeds are skipped without it). Failures drop the hobby.
+        if self._idle_scheduler is not None:
+            try:
+                from app.core.proactive.hobby_worker import HobbyWorker
+
+                mem = self._memory_settings
+                self._hobby_worker = HobbyWorker(
+                    chat_db=self._chat_db,
+                    agent_settings=self._settings.agent,
+                    memory_settings=mem,
+                    user_display_name_provider=(
+                        lambda: self.user_display_name
+                    ),
+                    ollama=self._maintenance_client,
+                    model=self._effective_worker_model,
+                    idle_seed_max_ring=getattr(
+                        mem, "idle_seed_max_ring", 6,
+                    ),
+                )
+                self._idle_scheduler.register(self._hobby_worker)
+            except Exception:
+                log.warning("HobbyWorker init failed", exc_info=True)
+
         # H9 DiaryWorker — Aiko's away journal. During quiet windows with
         # NO UI client connected, she reflects on the recent conversation
         # and writes one short ``diary`` memory. While a window is open

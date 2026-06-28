@@ -882,6 +882,50 @@ class InnerLifePart2Mixin:
             "you can ask — drop it if it doesn't fit."
         )
 
+    def _render_hobby_block(self) -> str:
+        """H19: standing "what she's been up to lately" line.
+
+        Reads the :class:`HobbyWorker`'s ``aiko.current_hobby`` kv blob and
+        renders one terse line giving Aiko continuity of intent — a real
+        answer to "what have you been up to?" that progresses across days.
+        Empty when the worker hasn't started a hobby yet. The actual
+        takeaways ("I'm three chapters in and ugh, the betrayal") surface
+        separately through the H17 idle-seed cue.
+        """
+        if not bool(
+            getattr(self._settings.agent, "hobby_worker_enabled", True)
+        ):
+            return ""
+
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is None or not hasattr(chat_db, "kv_get"):
+            return ""
+
+        try:
+            from app.core.proactive.hobby_worker import load_hobby
+            from app.core.world.hobby import render_hobby_line
+        except Exception:
+            log.debug("hobby block import failed", exc_info=True)
+            return ""
+
+        state = load_hobby(chat_db.kv_get)
+        if not state:
+            return ""
+
+        label = str(state.get("label") or "").strip()
+        if not label:
+            return ""
+        try:
+            progress = int(state.get("progress", 0))
+        except (TypeError, ValueError):
+            progress = 0
+        unit = str(state.get("unit") or "step")
+        line = render_hobby_line(label, progress, unit)
+        return (
+            f"Lately, in your own time, you've been {line}. Bring it up only "
+            "if it comes up naturally — don't force it."
+        )
+
     def _render_idle_seed_block(self) -> str:
         """H17: surface one "while I was <doing X> I started wondering ..." cue.
 
