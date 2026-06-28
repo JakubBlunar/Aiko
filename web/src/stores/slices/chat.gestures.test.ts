@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { useAssistantStore } from "./store";
+import { useAssistantStore } from "../../store";
 
 /**
  * B7: open-vocabulary touch-gesture descriptors on the store.

@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { useTogetherStore } from "./stores/useTogetherStore";
+import { useTogetherStore } from "./useTogetherStore";
 import type {
   RelationshipAxes,
   SharedMoment,
   TogetherSummary,
-} from "./types";
+} from "../types";
 
 /**
  * Tests for the ``togetherView`` slice of the Zustand store.

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { useAssistantStore } from "./store";
-import type { AgendaItem } from "./types";
+import { useAssistantStore } from "../../store";
+import type { AgendaItem } from "../../types";
 
 /**
  * I3: agenda store contract.

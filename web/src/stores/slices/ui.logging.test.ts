@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { useAssistantStore } from "./store";
+import { useAssistantStore } from "../../store";
 
 /**
  * Tests for the ``loggingSettings`` slice of the Zustand store.

@@ -1,13 +1,13 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { useWorldStore } from "./stores/useWorldStore";
-import { WORLD_KINDS } from "./types";
+import { useWorldStore } from "./useWorldStore";
+import { WORLD_KINDS } from "../types";
 import type {
   WorldItem,
   WorldLocation,
   WorldSnapshot,
   WorldState,
-} from "./types";
+} from "../types";
 
 /**
  * Tests for the ``world`` Zustand slice + ``applyWorldPatch`` reducer.

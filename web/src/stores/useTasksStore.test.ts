@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { useTasksStore } from "./stores/useTasksStore";
-import type { TaskSnapshot, TaskStatus } from "./types";
+import { useTasksStore } from "./useTasksStore";
+import type { TaskSnapshot, TaskStatus } from "../types";
 
 /**
  * Covers the Zustand reducers backing the chunk-14 task surfaces
