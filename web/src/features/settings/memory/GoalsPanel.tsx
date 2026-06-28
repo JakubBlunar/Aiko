@@ -3,6 +3,7 @@ import { api } from "../../../api";
 import type { Memory } from "../../../types";
 import { formatRelative } from "../SettingsSection";
 import { useAsyncResource } from "@/hooks/useAsyncResource";
+import { CheckboxField } from "@/components/CheckboxField";
 import { Panel } from "@/components/Panel";
 import { RefreshButton } from "@/components/RefreshButton";
 import { ErrorBanner } from "@/components/ErrorBanner";
@@ -116,14 +117,13 @@ export function GoalsPanel() {
           <span className="ml-2 text-ink-100/40">({activeCount} active)</span>
         </span>
         <div className="flex items-center gap-2 text-ink-100/50">
-          <label className="flex items-center gap-1">
-            <input
-              type="checkbox"
-              checked={showArchived}
-              onChange={(e) => setShowArchived(e.target.checked)}
-            />
+          <CheckboxField
+            className="gap-1"
+            checked={showArchived}
+            onChange={setShowArchived}
+          >
             <span>show archived</span>
-          </label>
+          </CheckboxField>
           <RefreshButton
             onClick={onRun}
             loading={running || loading}

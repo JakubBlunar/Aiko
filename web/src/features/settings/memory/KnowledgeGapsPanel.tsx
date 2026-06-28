@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 import { api } from "../../../api";
 import type { Memory } from "../../../types";
 import { useAsyncResource } from "@/hooks/useAsyncResource";
+import { CheckboxField } from "@/components/CheckboxField";
 import { Panel } from "@/components/Panel";
 import { RefreshButton } from "@/components/RefreshButton";
 import { ErrorBanner } from "@/components/ErrorBanner";
@@ -76,14 +77,13 @@ export function KnowledgeGapsPanel() {
           <span className="ml-2 text-ink-100/40">({gaps.length})</span>
         </span>
         <div className="flex items-center gap-2 text-ink-100/50">
-          <label className="flex items-center gap-1">
-            <input
-              type="checkbox"
-              checked={includeResolved}
-              onChange={(e) => setIncludeResolved(e.target.checked)}
-            />
+          <CheckboxField
+            className="gap-1"
+            checked={includeResolved}
+            onChange={setIncludeResolved}
+          >
             <span>show resolved</span>
-          </label>
+          </CheckboxField>
           <RefreshButton onClick={refresh} loading={loading} />
         </div>
       </div>
