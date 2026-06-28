@@ -423,6 +423,54 @@ class WorldMixin:
             except Exception:
                 log.debug("reaction warm_glow queue failed", exc_info=True)
 
+        # J11: affection-style confirmation booster. A K32 reaction is
+        # the explicit confirmation channel — map it to the affection
+        # kind it reads as (REACTION_TO_KIND) and nudge the learned
+        # weighting toward it. Sparse by design and never required:
+        # J11 learns primarily from passive engagement (post-turn), so
+        # this only refines. ``surprise`` (and any unmapped kind) is a
+        # no-op inside ``apply_reaction_confirmation``.
+        if bool(getattr(agent, "affection_style_enabled", True)):
+            try:
+                from datetime import datetime, timezone
+
+                from app.core.relationship import affection_style as _af
+
+                chat_db = getattr(self, "_chat_db", None)
+                if (
+                    chat_db is not None
+                    and normalized_kind in _af.REACTION_TO_KIND
+                ):
+                    now = datetime.now(timezone.utc)
+                    state = _af.deserialize(
+                        chat_db.kv_get(_af.KV_AFFECTION_STYLE)
+                    )
+                    new_state = _af.apply_reaction_confirmation(
+                        state,
+                        normalized_kind,
+                        now,
+                        reaction_weight=float(
+                            getattr(
+                                agent, "affection_style_reaction_weight", 0.06,
+                            ),
+                        ),
+                        floor=float(
+                            getattr(agent, "affection_style_floor", 0.05),
+                        ),
+                    )
+                    chat_db.kv_set(
+                        _af.KV_AFFECTION_STYLE, _af.serialize(new_state),
+                    )
+                    log.info(
+                        "affection-style confirm: reaction=%s -> kind=%s",
+                        normalized_kind,
+                        _af.REACTION_TO_KIND[normalized_kind],
+                    )
+            except Exception:
+                log.debug(
+                    "affection-style reaction confirm failed", exc_info=True,
+                )
+
         # Axes bump (optional master switch). Driven by the
         # RelationshipAxesUpdater so the per-turn clamp, broadcast
         # debounce, and persist path all behave identically to the

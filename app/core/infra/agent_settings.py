@@ -1279,6 +1279,40 @@ class AgentSettings:
     vulnerability_budget_tier2_cost: int = 3
     vulnerability_budget_tier3_cost: int = 6
 
+    # ── J11: affection-style learning ─────────────────────────────────
+    # Learn which way of expressing care (touch / teasing / appreciation
+    # / words / giving space) reliably lands for this user and tilt the
+    # expression mix toward it. Primary signal is passive engagement
+    # (K14) attributed to the kind Aiko expressed last turn; K32
+    # reactions are an optional confirmation booster. Never announced,
+    # never collapses a channel (the bias multiplier is floored).
+    affection_style_enabled: bool = True
+    # Per-turn nudge applied to a kind's share from one passive
+    # engagement observation. Small so the weighting moves over many
+    # turns, not one.
+    affection_style_learning_rate: float = 0.04
+    # Extra nudge from an explicit K32 reaction confirmation. Slightly
+    # larger than the passive rate (a deliberate click is stronger
+    # evidence than an inferred engagement band).
+    affection_style_reaction_weight: float = 0.06
+    # Minimum share any single kind keeps after renormalisation. With
+    # five kinds the uniform share is 0.2; a 0.05 floor means even a
+    # never-rewarded channel keeps a quarter of its uniform odds.
+    affection_style_floor: float = 0.05
+    # Half-life (days) of the slow decay toward uniform run by the idle
+    # worker. ~30 days means a learned preference fades over a month of
+    # the opposite signal — long enough to be stable, short enough to
+    # track a real change in the relationship.
+    affection_style_decay_half_life_days: float = 30.0
+    # How hard the learned weight tilts a gate. 0 disables biasing
+    # entirely (learning still runs + stays observable); the multiplier
+    # is 1 + strength * (weight/uniform - 1), clamped to the band below.
+    affection_style_bias_strength: float = 0.5
+    affection_style_bias_floor: float = 0.6
+    affection_style_bias_ceil: float = 1.5
+    # Idle-worker decay cadence (seconds). Default 6h.
+    affection_style_decay_interval_seconds: int = 21600
+
     # ── K31 + K32: soft physicality (touch + reactions) ───────────────
     # Master switch for the K31 ``[[touch:KIND]]`` tag family. When
     # off, the streaming parser silently drops touch tags before they

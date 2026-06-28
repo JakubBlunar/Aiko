@@ -1267,6 +1267,99 @@ class PostTurnMixin(PostTurnHelpersMixin):
             except Exception:
                 log.debug("engagement tracker raised", exc_info=True)
 
+        # J11 — affection-style learning. Two passes, both cheap + pure:
+        #   1. Attribute the engagement we just observed (K14
+        #      last_result: how the user responded *this* turn) back to
+        #      the affection kind(s) Aiko expressed on the PREVIOUS turn.
+        #      Warm engagement lifts those kinds' share, a cold / curt
+        #      reply lowers them. This is the primary, reaction-free
+        #      signal — it runs whenever the engagement tracker is warm.
+        #   2. Tag the kind(s) THIS turn carried (touch tag / tease mood
+        #      / J10 appreciation fire / warm words / short = space) and
+        #      stash them for next turn's attribution.
+        # The K32 reaction confirmation booster lives in
+        # ``world_mixin.apply_user_reaction`` (sparse, optional). The
+        # learned weighting is never rendered into a prompt — it only
+        # tilts the touch / tease / appreciation gates (see C3).
+        agent_settings = getattr(self._settings, "agent", None)
+        if agent_settings is not None and bool(
+            getattr(agent_settings, "affection_style_enabled", True)
+        ):
+            try:
+                from datetime import datetime, timezone
+
+                from app.core.relationship import affection_style as _af
+
+                chat_db = getattr(self, "_chat_db", None)
+                if chat_db is not None:
+                    now = datetime.now(timezone.utc)
+                    state = _af.deserialize(
+                        chat_db.kv_get(_af.KV_AFFECTION_STYLE)
+                    )
+                    changed = False
+
+                    # Pass 1: attribute engagement to previous turn's kinds.
+                    prev_kinds = getattr(self, "_prev_affection_kinds", None)
+                    tracker = getattr(self, "_engagement_tracker", None)
+                    last = tracker.last_result if tracker is not None else None
+                    if prev_kinds and last is not None and last.warmed:
+                        signal = _af.engagement_to_signal(
+                            last.label, last.length_z,
+                        )
+                        if signal != 0.0:
+                            state = _af.apply_observation(
+                                state,
+                                prev_kinds,
+                                signal,
+                                now,
+                                learning_rate=float(
+                                    getattr(
+                                        agent_settings,
+                                        "affection_style_learning_rate",
+                                        0.04,
+                                    )
+                                ),
+                                floor=float(
+                                    getattr(
+                                        agent_settings,
+                                        "affection_style_floor",
+                                        0.05,
+                                    )
+                                ),
+                            )
+                            changed = True
+                            log.info(
+                                "affection-style attribute: kinds=%s "
+                                "label=%s signal=%+.3f",
+                                prev_kinds, last.label, signal,
+                            )
+
+                    # Pass 2: tag this turn for next-turn attribution.
+                    kinds = _af.classify_turn_affection(
+                        raw_assistant_text,
+                        reaction,
+                        appreciation_fired=bool(
+                            getattr(
+                                self, "_appreciation_fired_last_turn", False,
+                            )
+                        ),
+                        reply_chars=len(assistant_text or ""),
+                    )
+                    self._prev_affection_kinds = kinds
+                    self._appreciation_fired_last_turn = False
+
+                    if changed:
+                        try:
+                            chat_db.kv_set(
+                                _af.KV_AFFECTION_STYLE, _af.serialize(state),
+                            )
+                        except Exception:
+                            log.debug(
+                                "affection-style kv_set failed", exc_info=True,
+                            )
+            except Exception:
+                log.debug("affection-style hook raised", exc_info=True)
+
         # Snapshot the per-turn gift / promise-kept flags ONCE, before any
         # consumer clears them. Both the relationship-axes updater and the
         # moment-detector scheduler read these signals; previously the axes
