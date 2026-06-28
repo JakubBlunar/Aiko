@@ -11,12 +11,13 @@ dependencies = [
   "scipy>=1.13.0",
   "soundfile>=0.13.0",
   "audioop-lts>=0.2.1; python_version>='3.13'",
-  # Web/MCP servers
+  # Web/MCP servers. FastAPI backs the whole HTTP/WebSocket layer
+  # (app/web/server.py + all REST modules); pin it explicitly rather
+  # than relying on it arriving transitively through ``mcp`` so a clean
+  # install (e.g. a slim Docker image) can't boot without it.
+  "fastapi>=0.110.0",
   "uvicorn>=0.30.0",
   "mcp>=1.0.0",
-  # Speech-to-text and text-to-speech
-  "realtimestt>=0.3.100",
-  "pocket-tts>=1.1.0",
   # RAG: LanceDB-backed vector store for memories, messages, and documents.
   "lancedb>=0.13.0",
   "pyarrow>=16.0.0",
@@ -33,6 +34,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Server-side voice: speech-to-text (RealtimeSTT -> faster-whisper +
+# Silero VAD) and text-to-speech (Pocket-TTS). These pull in the heavy
+# PyTorch / whisper stack, so they live behind an extra: the core app
+# imports them defensively (try/except in app/stt + app/tts) and boots
+# fine text-only when they're absent. ``pip install .`` = slim/text;
+# ``pip install .[voice]`` = full voice. The slim Docker image omits
+# this extra; the full image installs it.
+voice = [
+  "realtimestt>=0.3.100",
+  "pocket-tts>=1.1.0",
+]
 wake-word = [
   "openwakeword>=0.6.0",
 ]
@@ -40,7 +52,7 @@ dev = [
   "pytest>=8.0.0",
 ]
 all = [
-  "english-speaking-assistant[wake-word,dev]",
+  "english-speaking-assistant[voice,wake-word,dev]",
 ]
 
 [project.scripts]

@@ -1,0 +1,59 @@
+# Keep the build context small and never ship dev/user state into the image.
+
+# VCS / tooling
+.git
+.gitignore
+.github
+.cursor
+.cursorrules
+AGENTS.md
+agent-transcripts
+*.md
+!README.md
+
+# Python caches / envs
+.venv
+venv
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.ruff_cache
+.mypy_cache
+
+# Node — frontend deps + build output are reinstalled/rebuilt in the image
+node_modules
+web/node_modules
+web/dist
+web/.vite
+
+# Tauri desktop build artifacts (irrelevant to the container)
+web/src-tauri/target
+web/src-tauri/gen
+
+# Tests
+tests
+
+# Runtime / user state under data/. The persona text is kept (seeded into
+# the volume by the entrypoint); the avatar reseeds from live-2d-models/.
+data/*.db
+data/*.db-shm
+data/*.db-wal
+data/lancedb
+data/documents
+data/attachments
+data/personas
+data/uploads
+data/app.log*
+data/crashlog.txt
+data/persona/self_image.txt
+data/persona/golden_turns.jsonl
+
+# Local config overrides + secrets must never be baked in
+config/user.json
+.env
+
+# Misc
+*.log
+.DS_Store

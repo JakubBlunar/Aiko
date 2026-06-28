@@ -1,0 +1,69 @@
+# Aiko — docker compose.
+#
+# Default: runs only the Aiko backend and connects to an Ollama you run on
+# the host (host.docker.internal:11434). Just:
+#
+#   cp .env.example .env       # optional — tweak profile / port / ollama url
+#   docker compose up -d --build
+#   open http://localhost:6275
+#
+# Optional: run Ollama in a container too (no host install needed):
+#
+#   docker compose --profile with-ollama up -d --build
+#   docker compose exec ollama ollama pull qwen3-coder:30b
+#   docker compose exec ollama ollama pull qwen3-embedding:0.6b
+#
+# When using the in-compose Ollama, set AIKO_OLLAMA_BASE_URL in .env to
+# http://ollama:11434 (so Aiko reaches the sibling service, not the host).
+
+services:
+  aiko:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # slim (text + avatar) or full (adds server-side voice). See Dockerfile.
+        PROFILE: ${AIKO_PROFILE:-slim}
+    image: aiko:${AIKO_PROFILE:-slim}
+    restart: unless-stopped
+    ports:
+      - "${AIKO_PORT:-6275}:6275"
+    environment:
+      AIKO_WEB_HOST: "0.0.0.0"
+      AIKO_WEB_PORT: "6275"
+      # host.docker.internal -> the Ollama running on your host machine.
+      # Switch to http://ollama:11434 when using the with-ollama profile.
+      AIKO_OLLAMA_BASE_URL: ${AIKO_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+    # Lets the container resolve the host on Linux (Docker Desktop adds this
+    # automatically on Mac/Windows, but it's harmless to set everywhere).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Persists chat history, memories, the LanceDB index and the active
+      # avatar across container rebuilds.
+      - aiko-data:/app/data
+
+  # Optional containerised Ollama. Start it with: --profile with-ollama
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["with-ollama"]
+    restart: unless-stopped
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      # Pulled models live here and survive recreation — pull once, reuse.
+      - ollama-models:/root/.ollama
+    # GPU passthrough (NVIDIA only; needs the NVIDIA Container Toolkit on the
+    # host). Uncomment to let the containerised Ollama use the GPU. On macOS
+    # there is no Docker GPU passthrough — run Ollama natively there instead.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+volumes:
+  aiko-data:
+  ollama-models:
