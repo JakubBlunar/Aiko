@@ -5,33 +5,28 @@ import type { BeliefsSlice } from "./slices/beliefs";
 import type { ChatSlice } from "./slices/chat";
 import type { LayoutSlice } from "./slices/layout";
 import type { LlmSlice } from "./slices/llm";
-import type { MemorySlice } from "./slices/memory";
 import type { MetricsSlice } from "./slices/metrics";
 import type { NotificationsSlice } from "./slices/notifications";
 import type { SessionSlice } from "./slices/session";
-import type { TasksSlice } from "./slices/tasks";
-import type { TogetherSlice } from "./slices/together";
 import type { UiSlice } from "./slices/ui";
 import type { VoiceSlice } from "./slices/voice";
-import type { WorldSlice } from "./slices/world";
 
 /**
- * The full assistant store shape: the intersection of every slice. Slices
- * compose into a single Zustand store today (``useAssistantStore`` is the
- * compatibility facade); this intersection is what each slice's ``set`` /
- * ``get`` operate against, so cross-slice reads stay type-safe.
+ * The core assistant store shape: the intersection of every slice composed
+ * into ``useAssistantStore``. This is what each slice's ``set`` / ``get``
+ * operate against, so cross-slice reads stay type-safe.
+ *
+ * The high-churn domains (tasks, memory, world, together) are intentionally
+ * NOT part of this intersection — they live in standalone stores
+ * (``stores/use*Store.ts``).
  */
 export type AppState = SessionSlice &
   MetricsSlice &
   ChatSlice &
   VoiceSlice &
   AvatarSlice &
-  MemorySlice &
   BeliefsSlice &
   AgendaSlice &
-  TasksSlice &
-  WorldSlice &
-  TogetherSlice &
   LlmSlice &
   NotificationsSlice &
   UiSlice &

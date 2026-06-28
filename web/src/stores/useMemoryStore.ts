@@ -1,10 +1,13 @@
+import { create } from "zustand";
 import type { Memory, MemoryCounts, MemoryTier } from "@/types";
-import type { SliceCreator } from "../types";
 
+/**
+ * Standalone store for the long-term-memory view. Extracted from the
+ * composed ``useAssistantStore`` (phase 4a) so ``memory_added`` /
+ * ``memory_updated`` / ``memory_deleted`` WS bursts only re-run the Memory
+ * tab's selectors, not the whole app.
+ */
 export interface MemorySlice {
-  // Long-term memories. The Memory tab uses ``memoryView`` (paginated +
-  // filtered slice). ``memoriesEnabled`` mirrors the backend's
-  // ``memory.enabled`` config so the UI can grey out the tab.
   memoryView: {
     items: Memory[];
     total: number;
@@ -41,7 +44,7 @@ export interface MemorySlice {
   applyMemoryDeleted: (id: number) => void;
 }
 
-export const createMemorySlice: SliceCreator<MemorySlice> = (set) => ({
+export const useMemoryStore = create<MemorySlice>()((set) => ({
   memoryView: {
     items: [],
     total: 0,
@@ -148,4 +151,4 @@ export const createMemorySlice: SliceCreator<MemorySlice> = (set) => ({
         },
       };
     }),
-});
+}));

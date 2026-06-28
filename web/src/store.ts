@@ -5,24 +5,25 @@ import { createBeliefsSlice } from "./stores/slices/beliefs";
 import { createChatSlice } from "./stores/slices/chat";
 import { createLayoutSlice } from "./stores/slices/layout";
 import { createLlmSlice } from "./stores/slices/llm";
-import { createMemorySlice } from "./stores/slices/memory";
 import { createMetricsSlice } from "./stores/slices/metrics";
 import { createNotificationsSlice } from "./stores/slices/notifications";
 import { createSessionSlice } from "./stores/slices/session";
-import { createTasksSlice } from "./stores/slices/tasks";
-import { createTogetherSlice } from "./stores/slices/together";
 import { createUiSlice } from "./stores/slices/ui";
 import { createVoiceSlice } from "./stores/slices/voice";
-import { createWorldSlice } from "./stores/slices/world";
 import type { AppState } from "./stores/types";
 
 /**
- * The single application store. ``store.ts`` is intentionally thin: it
+ * The core application store. ``store.ts`` is intentionally thin: it
  * composes the per-domain slices under ``stores/slices/`` into one Zustand
  * store and re-exports the public surface consumers already import from
  * ``@/store``. The slice files own the state shape + reducers; this file
- * only wires them together (and stays the compatibility facade while the
- * high-churn slices are extracted into standalone stores in a later phase).
+ * only wires them together.
+ *
+ * The four highest-churn domains — tasks, memory, world, together — live in
+ * their own standalone stores (``stores/use{Tasks,Memory,World,Together}Store``)
+ * so their frequent WS events don't re-run every subscriber of the core
+ * store. New high-churn domains should follow that pattern rather than being
+ * added here.
  */
 export const useAssistantStore = create<AppState>()((...a) => ({
   ...createSessionSlice(...a),
@@ -30,12 +31,8 @@ export const useAssistantStore = create<AppState>()((...a) => ({
   ...createChatSlice(...a),
   ...createVoiceSlice(...a),
   ...createAvatarSlice(...a),
-  ...createMemorySlice(...a),
   ...createBeliefsSlice(...a),
   ...createAgendaSlice(...a),
-  ...createTasksSlice(...a),
-  ...createWorldSlice(...a),
-  ...createTogetherSlice(...a),
   ...createLlmSlice(...a),
   ...createNotificationsSlice(...a),
   ...createUiSlice(...a),
@@ -63,5 +60,14 @@ export {
   MIN_PERSONA_PANEL_W,
   type MobilePersonaRect,
 } from "./stores/slices/layout";
-export type { TogetherViewSlice } from "./stores/slices/together";
+// Standalone high-churn stores, re-exported so existing ``@/store`` imports
+// keep resolving. New code should import these from their own modules.
+export { useTasksStore } from "./stores/useTasksStore";
+export type { TasksSlice } from "./stores/useTasksStore";
+export { useMemoryStore } from "./stores/useMemoryStore";
+export type { MemorySlice } from "./stores/useMemoryStore";
+export { useWorldStore } from "./stores/useWorldStore";
+export type { WorldSlice } from "./stores/useWorldStore";
+export { useTogetherStore } from "./stores/useTogetherStore";
+export type { TogetherSlice, TogetherViewSlice } from "./stores/useTogetherStore";
 export type { AppState } from "./stores/types";

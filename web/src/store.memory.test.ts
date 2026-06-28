@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { useAssistantStore } from "./store";
+import { useMemoryStore } from "./stores/useMemoryStore";
 import type { Memory, MemoryOrder, MemoryTier } from "./types";
 
 /**
@@ -46,7 +46,7 @@ function seedView(overrides: {
   tierFilter?: MemoryTier | null;
   order?: MemoryOrder;
 }) {
-  useAssistantStore.getState().setMemoryView({
+  useMemoryStore.getState().setMemoryView({
     items: overrides.items ?? [],
     total: overrides.total ?? 0,
     cap: 5000,
@@ -66,8 +66,8 @@ beforeEach(() => {
 describe("memoryView — applyMemoryAdded", () => {
   it("prepends to page 0 + recent when no filter is active", () => {
     seedView({ items: [makeMemory({ id: 2 })], total: 1 });
-    useAssistantStore.getState().applyMemoryAdded(makeMemory({ id: 5 }));
-    const view = useAssistantStore.getState().memoryView;
+    useMemoryStore.getState().applyMemoryAdded(makeMemory({ id: 5 }));
+    const view = useMemoryStore.getState().memoryView;
     expect(view.items[0].id).toBe(5);
     expect(view.total).toBe(2);
   });
@@ -78,24 +78,24 @@ describe("memoryView — applyMemoryAdded", () => {
       total: 2,
       pageSize: 2,
     });
-    useAssistantStore.getState().applyMemoryAdded(makeMemory({ id: 3 }));
-    const view = useAssistantStore.getState().memoryView;
+    useMemoryStore.getState().applyMemoryAdded(makeMemory({ id: 3 }));
+    const view = useMemoryStore.getState().memoryView;
     expect(view.items.map((m) => m.id)).toEqual([3, 1]);
     expect(view.items.length).toBe(2);
   });
 
   it("bumps total but does not prepend when not on page 0", () => {
     seedView({ items: [makeMemory({ id: 1 })], total: 100, page: 1 });
-    useAssistantStore.getState().applyMemoryAdded(makeMemory({ id: 5 }));
-    const view = useAssistantStore.getState().memoryView;
+    useMemoryStore.getState().applyMemoryAdded(makeMemory({ id: 5 }));
+    const view = useMemoryStore.getState().memoryView;
     expect(view.items[0].id).toBe(1); // unchanged
     expect(view.total).toBe(101);
   });
 
   it("bumps total but does not prepend when order=top", () => {
     seedView({ items: [makeMemory({ id: 1 })], total: 5, order: "top" });
-    useAssistantStore.getState().applyMemoryAdded(makeMemory({ id: 5 }));
-    const view = useAssistantStore.getState().memoryView;
+    useMemoryStore.getState().applyMemoryAdded(makeMemory({ id: 5 }));
+    const view = useMemoryStore.getState().memoryView;
     expect(view.items[0].id).toBe(1);
     expect(view.total).toBe(6);
   });
@@ -106,10 +106,10 @@ describe("memoryView — applyMemoryAdded", () => {
       total: 1,
       kindFilter: "fact",
     });
-    useAssistantStore
+    useMemoryStore
       .getState()
       .applyMemoryAdded(makeMemory({ id: 9, kind: "event" }));
-    const view = useAssistantStore.getState().memoryView;
+    const view = useMemoryStore.getState().memoryView;
     expect(view.items[0].id).toBe(1);
     // Filter doesn't match, so total stays put.
     expect(view.total).toBe(1);
@@ -121,10 +121,10 @@ describe("memoryView — applyMemoryAdded", () => {
       total: 1,
       kindFilter: "fact",
     });
-    useAssistantStore
+    useMemoryStore
       .getState()
       .applyMemoryAdded(makeMemory({ id: 9, kind: "fact" }));
-    const view = useAssistantStore.getState().memoryView;
+    const view = useMemoryStore.getState().memoryView;
     expect(view.items[0].id).toBe(9);
     expect(view.total).toBe(2);
   });
@@ -139,10 +139,10 @@ describe("memoryView — applyMemoryUpdated", () => {
       ],
       total: 2,
     });
-    useAssistantStore
+    useMemoryStore
       .getState()
       .applyMemoryUpdated(makeMemory({ id: 1, content: "new" }));
-    const view = useAssistantStore.getState().memoryView;
+    const view = useMemoryStore.getState().memoryView;
     expect(view.items[0]).toMatchObject({ id: 1, content: "new" });
     expect(view.items[1]).toMatchObject({ id: 2, content: "stable" });
     // Replace doesn't touch total.
@@ -151,10 +151,10 @@ describe("memoryView — applyMemoryUpdated", () => {
 
   it("no-ops when the row isn't on the current page", () => {
     seedView({ items: [makeMemory({ id: 1 })], total: 50 });
-    useAssistantStore
+    useMemoryStore
       .getState()
       .applyMemoryUpdated(makeMemory({ id: 999, content: "off-page" }));
-    const view = useAssistantStore.getState().memoryView;
+    const view = useMemoryStore.getState().memoryView;
     expect(view.items.map((m) => m.id)).toEqual([1]);
     expect(view.total).toBe(50);
   });
@@ -166,8 +166,8 @@ describe("memoryView — applyMemoryDeleted", () => {
       items: [makeMemory({ id: 1 }), makeMemory({ id: 2 })],
       total: 5,
     });
-    useAssistantStore.getState().applyMemoryDeleted(2);
-    const view = useAssistantStore.getState().memoryView;
+    useMemoryStore.getState().applyMemoryDeleted(2);
+    const view = useMemoryStore.getState().memoryView;
     expect(view.items.map((m) => m.id)).toEqual([1]);
     expect(view.total).toBe(4);
   });
@@ -179,8 +179,8 @@ describe("memoryView — applyMemoryDeleted", () => {
       items: [makeMemory({ id: 1 })],
       total: 10,
     });
-    useAssistantStore.getState().applyMemoryDeleted(99);
-    const view = useAssistantStore.getState().memoryView;
+    useMemoryStore.getState().applyMemoryDeleted(99);
+    const view = useMemoryStore.getState().memoryView;
     expect(view.total).toBe(10);
     expect(view.items.length).toBe(1);
   });
@@ -189,36 +189,36 @@ describe("memoryView — applyMemoryDeleted", () => {
 describe("memoryView — page / filter setters reset page", () => {
   it("setMemoryKindFilter resets page to 0", () => {
     seedView({ items: [], total: 0, page: 3 });
-    useAssistantStore.getState().setMemoryKindFilter("fact");
-    expect(useAssistantStore.getState().memoryView.page).toBe(0);
-    expect(useAssistantStore.getState().memoryView.kindFilter).toBe("fact");
+    useMemoryStore.getState().setMemoryKindFilter("fact");
+    expect(useMemoryStore.getState().memoryView.page).toBe(0);
+    expect(useMemoryStore.getState().memoryView.kindFilter).toBe("fact");
   });
 
   it("setMemoryOrder resets page to 0", () => {
     seedView({ items: [], total: 0, page: 2 });
-    useAssistantStore.getState().setMemoryOrder("top");
-    expect(useAssistantStore.getState().memoryView.page).toBe(0);
-    expect(useAssistantStore.getState().memoryView.order).toBe("top");
+    useMemoryStore.getState().setMemoryOrder("top");
+    expect(useMemoryStore.getState().memoryView.page).toBe(0);
+    expect(useMemoryStore.getState().memoryView.order).toBe("top");
   });
 
   it("setMemoryPage clamps negative pages to 0", () => {
     seedView({ items: [], total: 0, page: 1 });
-    useAssistantStore.getState().setMemoryPage(-3);
-    expect(useAssistantStore.getState().memoryView.page).toBe(0);
+    useMemoryStore.getState().setMemoryPage(-3);
+    expect(useMemoryStore.getState().memoryView.page).toBe(0);
   });
 
   it("setMemoryTierFilter resets page to 0 and updates filter", () => {
     seedView({ items: [], total: 0, page: 4 });
-    useAssistantStore.getState().setMemoryTierFilter("scratchpad");
-    const view = useAssistantStore.getState().memoryView;
+    useMemoryStore.getState().setMemoryTierFilter("scratchpad");
+    const view = useMemoryStore.getState().memoryView;
     expect(view.page).toBe(0);
     expect(view.tierFilter).toBe("scratchpad");
   });
 
   it("setMemoryCounts stores the per-tier counts snapshot", () => {
     const counts = { scratchpad: 4, long_term: 12, archive: 3, total: 19 };
-    useAssistantStore.getState().setMemoryCounts(counts);
-    expect(useAssistantStore.getState().memoryView.counts).toEqual(counts);
+    useMemoryStore.getState().setMemoryCounts(counts);
+    expect(useMemoryStore.getState().memoryView.counts).toEqual(counts);
   });
 });
 
@@ -232,10 +232,10 @@ describe("memoryView — tier-aware applyMemoryAdded", () => {
       total: 1,
       tierFilter: "scratchpad",
     });
-    useAssistantStore
+    useMemoryStore
       .getState()
       .applyMemoryAdded(makeMemory({ id: 5, tier: "scratchpad" }));
-    const view = useAssistantStore.getState().memoryView;
+    const view = useMemoryStore.getState().memoryView;
     expect(view.items[0].id).toBe(5);
     expect(view.total).toBe(2);
   });
@@ -246,10 +246,10 @@ describe("memoryView — tier-aware applyMemoryAdded", () => {
       total: 1,
       tierFilter: "scratchpad",
     });
-    useAssistantStore
+    useMemoryStore
       .getState()
       .applyMemoryAdded(makeMemory({ id: 7, tier: "long_term" }));
-    const view = useAssistantStore.getState().memoryView;
+    const view = useMemoryStore.getState().memoryView;
     expect(view.items.map((m) => m.id)).toEqual([1]);
     expect(view.total).toBe(1);
   });

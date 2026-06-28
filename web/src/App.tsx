@@ -21,6 +21,7 @@ import { useAssistantSocket } from "./hooks/useAssistantSocket";
 import { usePresenceReporter } from "./hooks/usePresenceReporter";
 import { debugLog } from "./log";
 import { useAssistantStore } from "./store";
+import { useWorldStore } from "./stores/useWorldStore";
 
 /** Tiny hash-router. ``location.hash === "#/persona"`` -> the persona
  * HUD. Anything else -> the full chat layout. We avoid pulling in a
@@ -150,7 +151,7 @@ export default function App() {
     (s) => s.setActivityAwarenessEnabled,
   );
   const setLoggingSettings = useAssistantStore((s) => s.setLoggingSettings);
-  const setWorld = useAssistantStore((s) => s.setWorld);
+  const setWorld = useWorldStore((s) => s.setWorld);
   // Seed the toggle from /api/settings on mount so the activity
   // reporter picks up a previously-saved opt-in without waiting for
   // the user to open the settings drawer. Failure is non-fatal:

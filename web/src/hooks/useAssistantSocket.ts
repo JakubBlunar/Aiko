@@ -11,6 +11,10 @@ import { playDone, playThinking } from "../earcons";
 import { isMobileViewport } from "./useIsMobile";
 import { debugLog } from "../log";
 import { useAssistantStore } from "../store";
+import { useMemoryStore } from "../stores/useMemoryStore";
+import { useTasksStore } from "../stores/useTasksStore";
+import { useTogetherStore } from "../stores/useTogetherStore";
+import { useWorldStore } from "../stores/useWorldStore";
 import type { WsClientCommand, WsServerEvent } from "../types";
 
 /**
@@ -94,6 +98,13 @@ export function useAssistantSocket(): {
 
   const handleEvent = useCallback((evt: WsServerEvent) => {
     const store = useAssistantStore.getState();
+    // High-churn domains live in standalone stores (phase 4a). Bind their
+    // getState snapshots once per event so the dispatch cases below route to
+    // the right store. Actions are stable, so this is cheap.
+    const memory = useMemoryStore.getState();
+    const tasks = useTasksStore.getState();
+    const together = useTogetherStore.getState();
+    const world = useWorldStore.getState();
 
     // Tap every WS event into the debug log so the entire dispatch
     // stream is recoverable from ``app.log``. ``debugLog.log`` is a
@@ -378,7 +389,7 @@ export function useAssistantSocket(): {
         break;
 
       case "memory_added": {
-        store.applyMemoryAdded(evt.memory);
+        memory.applyMemoryAdded(evt.memory);
         // Keep the toast readable but don't chop a memory mid-thought:
         // show up to ~220 chars and mark truncation with an ellipsis so
         // it's clear there's more in the Memory tab.
@@ -392,11 +403,11 @@ export function useAssistantSocket(): {
       }
 
       case "memory_updated":
-        store.applyMemoryUpdated(evt.memory);
+        memory.applyMemoryUpdated(evt.memory);
         break;
 
       case "memory_deleted":
-        store.applyMemoryDeleted(evt.id);
+        memory.applyMemoryDeleted(evt.id);
         break;
 
       case "belief_added":
@@ -416,7 +427,7 @@ export function useAssistantSocket(): {
         break;
 
       case "world_updated":
-        store.applyWorldPatch(evt.patch);
+        world.applyWorldPatch(evt.patch);
         break;
 
       case "thread_note_updated":
@@ -430,15 +441,15 @@ export function useAssistantSocket(): {
         // {deleted_moment_id} (delete). Both keep the Together tab
         // timeline + total in sync without a refetch.
         if (evt.patch.moment) {
-          store.upsertSharedMoment(evt.patch.moment);
+          together.upsertSharedMoment(evt.patch.moment);
         } else if (typeof evt.patch.deleted_moment_id === "number") {
-          store.removeSharedMoment(evt.patch.deleted_moment_id);
+          together.removeSharedMoment(evt.patch.deleted_moment_id);
         }
         break;
       }
 
       case "relationship_axes_updated":
-        store.setRelationshipAxes(evt.axes);
+        together.setRelationshipAxes(evt.axes);
         break;
 
       case "avatar_settings_changed":
@@ -534,7 +545,7 @@ export function useAssistantSocket(): {
         // ``visible_to_user=false`` filter is enforced server-side
         // in ``app/web/server.py`` so anything reaching us is
         // safe to surface.
-        store.applyTaskStarted(evt.task);
+        tasks.applyTaskStarted(evt.task);
         break;
 
       case "task_progress":
@@ -542,7 +553,7 @@ export function useAssistantSocket(): {
         // ``docs/brain-orchestration.md`` § "Progress events are
         // UI-only"). They never park a prompt cue; the strip
         // just moves the bar.
-        store.applyTaskProgress(evt.task_id, evt.patch || {});
+        tasks.applyTaskProgress(evt.task_id, evt.patch || {});
         break;
 
       case "task_input_needed":
@@ -551,7 +562,7 @@ export function useAssistantSocket(): {
         // prompt + click-options. The chat-first answer path
         // (Aiko asks naturally in her next turn) is unaffected
         // by this — the strip is the optional click-fallback.
-        store.applyTaskInputNeeded(evt.task);
+        tasks.applyTaskInputNeeded(evt.task);
         break;
 
       case "task_completed":
@@ -559,7 +570,7 @@ export function useAssistantSocket(): {
         // ``done`` / ``failed`` / ``cancelled``. The strip keeps
         // the chip visible briefly; the sweep helper drops it
         // after ``TASK_STRIP_FADE_MS``.
-        store.applyTaskCompleted(evt.task);
+        tasks.applyTaskCompleted(evt.task);
         break;
 
       case "audio_amplitude": {

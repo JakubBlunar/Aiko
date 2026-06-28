@@ -1,9 +1,9 @@
+import { create } from "zustand";
 import type {
   RelationshipAxes,
   SharedMoment,
   TogetherSummary,
 } from "@/types";
-import type { SliceCreator } from "../types";
 
 /** State for the "Together" tab. ``page`` is zero-indexed. */
 export interface TogetherViewSlice {
@@ -16,10 +16,12 @@ export interface TogetherViewSlice {
   loading: boolean;
 }
 
+/**
+ * Standalone store for the "Together" tab. Extracted from the composed
+ * ``useAssistantStore`` (phase 4a) so ``shared_moment_updated`` /
+ * ``relationship_axes_updated`` events only re-run the Together tab.
+ */
 export interface TogetherSlice {
-  /** Schema v7: "Together" tab slice — phase/days/turns header,
-   * milestones, relationship axes bars, anniversary card, and a
-   * paginated timeline of shared moments. */
   togetherView: TogetherViewSlice;
   setTogetherSummary: (summary: TogetherSummary | null) => void;
   setSharedMoments: (
@@ -36,7 +38,7 @@ export interface TogetherSlice {
   setRelationshipAxes: (axes: RelationshipAxes) => void;
 }
 
-export const createTogetherSlice: SliceCreator<TogetherSlice> = (set) => ({
+export const useTogetherStore = create<TogetherSlice>()((set) => ({
   togetherView: {
     summary: null,
     moments: [],
@@ -130,4 +132,4 @@ export const createTogetherSlice: SliceCreator<TogetherSlice> = (set) => ({
           : state.togetherView.summary,
       },
     })),
-});
+}));

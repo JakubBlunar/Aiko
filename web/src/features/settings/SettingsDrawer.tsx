@@ -17,6 +17,10 @@ import type {
   WorldLocation,
 } from "@/types";
 import { useAssistantStore } from "@/store";
+import { useMemoryStore } from "@/stores/useMemoryStore";
+import { useTasksStore } from "@/stores/useTasksStore";
+import { useTogetherStore } from "@/stores/useTogetherStore";
+import { useWorldStore } from "@/stores/useWorldStore";
 import { Section } from "./SettingsSection";
 import { IdentitySection } from "./IdentitySection";
 import { ChatProviderSection } from "./ChatProviderSection";
@@ -93,17 +97,17 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<SettingsTabId>("chat");
-  const memoryView = useAssistantStore((s) => s.memoryView);
-  const memoriesEnabled = useAssistantStore((s) => s.memoriesEnabled);
-  const setMemoryView = useAssistantStore((s) => s.setMemoryView);
-  const setMemoryPage = useAssistantStore((s) => s.setMemoryPage);
-  const setMemoryKindFilter = useAssistantStore((s) => s.setMemoryKindFilter);
-  const setMemoryTierFilter = useAssistantStore((s) => s.setMemoryTierFilter);
-  const setMemoryOrder = useAssistantStore((s) => s.setMemoryOrder);
-  const setMemoryCounts = useAssistantStore((s) => s.setMemoryCounts);
-  const applyMemoryUpdated = useAssistantStore((s) => s.applyMemoryUpdated);
-  const applyMemoryDeleted = useAssistantStore((s) => s.applyMemoryDeleted);
-  const applyMemoryAdded = useAssistantStore((s) => s.applyMemoryAdded);
+  const memoryView = useMemoryStore((s) => s.memoryView);
+  const memoriesEnabled = useMemoryStore((s) => s.memoriesEnabled);
+  const setMemoryView = useMemoryStore((s) => s.setMemoryView);
+  const setMemoryPage = useMemoryStore((s) => s.setMemoryPage);
+  const setMemoryKindFilter = useMemoryStore((s) => s.setMemoryKindFilter);
+  const setMemoryTierFilter = useMemoryStore((s) => s.setMemoryTierFilter);
+  const setMemoryOrder = useMemoryStore((s) => s.setMemoryOrder);
+  const setMemoryCounts = useMemoryStore((s) => s.setMemoryCounts);
+  const applyMemoryUpdated = useMemoryStore((s) => s.applyMemoryUpdated);
+  const applyMemoryDeleted = useMemoryStore((s) => s.applyMemoryDeleted);
+  const applyMemoryAdded = useMemoryStore((s) => s.applyMemoryAdded);
   const [memoryError, setMemoryError] = useState<string | null>(null);
   const [memoryBusy, setMemoryBusy] = useState(false);
   const [memoryEditingId, setMemoryEditingId] = useState<number | null>(null);
@@ -120,13 +124,11 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
   }>({ content: "", kind: "fact", salience: 0.6 });
 
   // ── Tasks tab (chunk 14) ───────────────────────────────────────────
-  const tasksView = useAssistantStore((s) => s.tasksView);
-  const setTasksPage = useAssistantStore((s) => s.setTasksPage);
-  const setTaskStatusFilter = useAssistantStore((s) => s.setTaskStatusFilter);
-  const setTasksLoading = useAssistantStore((s) => s.setTasksLoading);
-  const dismissTaskFromStrip = useAssistantStore(
-    (s) => s.dismissTaskFromStrip,
-  );
+  const tasksView = useTasksStore((s) => s.tasksView);
+  const setTasksPage = useTasksStore((s) => s.setTasksPage);
+  const setTaskStatusFilter = useTasksStore((s) => s.setTaskStatusFilter);
+  const setTasksLoading = useTasksStore((s) => s.setTasksLoading);
+  const dismissTaskFromStrip = useTasksStore((s) => s.dismissTaskFromStrip);
   const [tasksError, setTasksError] = useState<string | null>(null);
 
   const avatar = useAssistantStore((s) => s.avatar);
@@ -158,8 +160,8 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
   // ── World tab state ────────────────────────────────────────────────
   // Keep the world snapshot in the global store so live ``world_updated``
   // WS patches can land surgically without us refetching here.
-  const world = useAssistantStore((s) => s.world);
-  const setWorld = useAssistantStore((s) => s.setWorld);
+  const world = useWorldStore((s) => s.world);
+  const setWorld = useWorldStore((s) => s.setWorld);
   const [worldBusy, setWorldBusy] = useState(false);
   const [worldError, setWorldError] = useState<string | null>(null);
   const [worldGiveOpen, setWorldGiveOpen] = useState(false);
@@ -223,15 +225,15 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
   }, [setWorld]);
 
   // ── Together tab state ────────────────────────────────────────────
-  const togetherView = useAssistantStore((s) => s.togetherView);
-  const setTogetherSummary = useAssistantStore((s) => s.setTogetherSummary);
-  const setSharedMoments = useAssistantStore((s) => s.setSharedMoments);
-  const setTogetherLoading = useAssistantStore((s) => s.setTogetherLoading);
-  const setTogetherVibeFilter = useAssistantStore(
+  const togetherView = useTogetherStore((s) => s.togetherView);
+  const setTogetherSummary = useTogetherStore((s) => s.setTogetherSummary);
+  const setSharedMoments = useTogetherStore((s) => s.setSharedMoments);
+  const setTogetherLoading = useTogetherStore((s) => s.setTogetherLoading);
+  const setTogetherVibeFilter = useTogetherStore(
     (s) => s.setTogetherVibeFilter,
   );
-  const upsertSharedMoment = useAssistantStore((s) => s.upsertSharedMoment);
-  const removeSharedMoment = useAssistantStore((s) => s.removeSharedMoment);
+  const upsertSharedMoment = useTogetherStore((s) => s.upsertSharedMoment);
+  const removeSharedMoment = useTogetherStore((s) => s.removeSharedMoment);
   const [togetherError, setTogetherError] = useState<string | null>(null);
   const [editingMomentId, setEditingMomentId] = useState<number | null>(null);
   const [momentDraft, setMomentDraft] = useState<{

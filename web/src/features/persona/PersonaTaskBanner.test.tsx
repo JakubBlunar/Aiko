@@ -131,10 +131,10 @@ describe("pickAwaitingTask — pure selector", () => {
 describe("PersonaTaskBanner — source-level wiring", () => {
   it("subscribes to the canonical strip selectors (not whole-state reads)", () => {
     expect(bannerSource).toMatch(
-      /useAssistantStore\(\(s\)\s*=>\s*s\.tasksView\.tasksById\)/,
+      /useTasksStore\(\(s\)\s*=>\s*s\.tasksView\.tasksById\)/,
     );
     expect(bannerSource).toMatch(
-      /useAssistantStore\(\(s\)\s*=>\s*s\.tasksView\.activeIds\)/,
+      /useTasksStore\(\(s\)\s*=>\s*s\.tasksView\.activeIds\)/,
     );
     expect(bannerSource).toMatch(
       /useAssistantStore\(\(s\)\s*=>\s*s\.pushToast\)/,

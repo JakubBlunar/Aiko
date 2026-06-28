@@ -27,7 +27,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { api } from "@/api";
-import { useAssistantStore } from "@/store";
+import { useTasksStore } from "@/stores/useTasksStore";
 import type { TaskSnapshot, TaskStatus } from "@/types";
 
 /** How long a terminal chip stays visible after its ``completed_at``
@@ -282,12 +282,10 @@ export function TaskChip({
 }
 
 export function TaskStrip() {
-  const tasksById = useAssistantStore((s) => s.tasksView.tasksById);
-  const activeIds = useAssistantStore((s) => s.tasksView.activeIds);
-  const dismissTaskFromStrip = useAssistantStore(
-    (s) => s.dismissTaskFromStrip,
-  );
-  const sweepRecentlyCompletedTasks = useAssistantStore(
+  const tasksById = useTasksStore((s) => s.tasksView.tasksById);
+  const activeIds = useTasksStore((s) => s.tasksView.activeIds);
+  const dismissTaskFromStrip = useTasksStore((s) => s.dismissTaskFromStrip);
+  const sweepRecentlyCompletedTasks = useTasksStore(
     (s) => s.sweepRecentlyCompletedTasks,
   );
 

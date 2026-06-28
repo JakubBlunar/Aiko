@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { useAssistantStore } from "./store";
+import { useTogetherStore } from "./stores/useTogetherStore";
 import type {
   RelationshipAxes,
   SharedMoment,
@@ -79,13 +79,13 @@ function makeSummary(overrides: Partial<TogetherSummary> = {}): TogetherSummary 
 
 describe("togetherView slice — setters", () => {
   beforeEach(() => {
-    useAssistantStore.setState(freshState());
+    useTogetherStore.setState(freshState());
   });
 
   it("setTogetherSummary stores a summary", () => {
     const s = makeSummary();
-    useAssistantStore.getState().setTogetherSummary(s);
-    expect(useAssistantStore.getState().togetherView.summary).toEqual(s);
+    useTogetherStore.getState().setTogetherSummary(s);
+    expect(useTogetherStore.getState().togetherView.summary).toEqual(s);
   });
 
   it("setSharedMoments replaces the page", () => {
@@ -93,28 +93,28 @@ describe("togetherView slice — setters", () => {
       makeMoment(1, "2026-05-01T12:00:00+00:00"),
       makeMoment(2, "2026-05-02T12:00:00+00:00"),
     ];
-    useAssistantStore
+    useTogetherStore
       .getState()
       .setSharedMoments(moments, 2, 0, 20, null);
-    const tv = useAssistantStore.getState().togetherView;
+    const tv = useTogetherStore.getState().togetherView;
     expect(tv.moments).toEqual(moments);
     expect(tv.total).toBe(2);
     expect(tv.page).toBe(0);
   });
 
   it("setTogetherLoading toggles loading", () => {
-    useAssistantStore.getState().setTogetherLoading(true);
-    expect(useAssistantStore.getState().togetherView.loading).toBe(true);
-    useAssistantStore.getState().setTogetherLoading(false);
-    expect(useAssistantStore.getState().togetherView.loading).toBe(false);
+    useTogetherStore.getState().setTogetherLoading(true);
+    expect(useTogetherStore.getState().togetherView.loading).toBe(true);
+    useTogetherStore.getState().setTogetherLoading(false);
+    expect(useTogetherStore.getState().togetherView.loading).toBe(false);
   });
 
   it("setTogetherVibeFilter resets the page to 0", () => {
-    useAssistantStore.setState({
+    useTogetherStore.setState({
       togetherView: { ...freshState().togetherView, page: 4, vibeFilter: null },
     });
-    useAssistantStore.getState().setTogetherVibeFilter("warm");
-    const tv = useAssistantStore.getState().togetherView;
+    useTogetherStore.getState().setTogetherVibeFilter("warm");
+    const tv = useTogetherStore.getState().togetherView;
     expect(tv.vibeFilter).toBe("warm");
     expect(tv.page).toBe(0);
   });
@@ -122,11 +122,11 @@ describe("togetherView slice — setters", () => {
 
 describe("togetherView slice — upsertSharedMoment", () => {
   beforeEach(() => {
-    useAssistantStore.setState(freshState());
+    useTogetherStore.setState(freshState());
   });
 
   it("inserts a new moment in chronological order (newest first)", () => {
-    useAssistantStore.getState().setSharedMoments(
+    useTogetherStore.getState().setSharedMoments(
       [
         makeMoment(1, "2026-05-01T12:00:00+00:00"),
         makeMoment(2, "2026-04-01T12:00:00+00:00"),
@@ -136,28 +136,28 @@ describe("togetherView slice — upsertSharedMoment", () => {
       20,
       null,
     );
-    useAssistantStore
+    useTogetherStore
       .getState()
       .upsertSharedMoment(makeMoment(3, "2026-05-15T12:00:00+00:00"));
-    const tv = useAssistantStore.getState().togetherView;
+    const tv = useTogetherStore.getState().togetherView;
     expect(tv.moments.map((m) => m.id)).toEqual([3, 1, 2]);
     expect(tv.total).toBe(3);
   });
 
   it("updates an existing moment in place without touching total", () => {
-    useAssistantStore.getState().setSharedMoments(
+    useTogetherStore.getState().setSharedMoments(
       [makeMoment(1, "2026-05-01T12:00:00+00:00", "warm")],
       1,
       0,
       20,
       null,
     );
-    useAssistantStore.getState().upsertSharedMoment(
+    useTogetherStore.getState().upsertSharedMoment(
       makeMoment(1, "2026-05-01T12:00:00+00:00", "tender", {
         summary: "edited",
       }),
     );
-    const tv = useAssistantStore.getState().togetherView;
+    const tv = useTogetherStore.getState().togetherView;
     expect(tv.moments).toHaveLength(1);
     expect(tv.moments[0].vibe).toBe("tender");
     expect(tv.moments[0].summary).toBe("edited");
@@ -165,33 +165,33 @@ describe("togetherView slice — upsertSharedMoment", () => {
   });
 
   it("drops a vibe-mismatched moment from the active filter view", () => {
-    useAssistantStore.getState().setSharedMoments(
+    useTogetherStore.getState().setSharedMoments(
       [makeMoment(1, "2026-05-01T12:00:00+00:00", "warm")],
       1,
       0,
       20,
       "warm",
     );
-    useAssistantStore.getState().upsertSharedMoment(
+    useTogetherStore.getState().upsertSharedMoment(
       makeMoment(1, "2026-05-01T12:00:00+00:00", "playful"),
     );
-    const tv = useAssistantStore.getState().togetherView;
+    const tv = useTogetherStore.getState().togetherView;
     expect(tv.moments).toEqual([]);
     expect(tv.total).toBe(0);
   });
 
   it("ignores a new mismatched moment when a vibe filter is active", () => {
-    useAssistantStore.getState().setSharedMoments(
+    useTogetherStore.getState().setSharedMoments(
       [],
       0,
       0,
       20,
       "warm",
     );
-    useAssistantStore.getState().upsertSharedMoment(
+    useTogetherStore.getState().upsertSharedMoment(
       makeMoment(99, "2026-05-01T12:00:00+00:00", "playful"),
     );
-    const tv = useAssistantStore.getState().togetherView;
+    const tv = useTogetherStore.getState().togetherView;
     expect(tv.moments).toEqual([]);
     expect(tv.total).toBe(0);
   });
@@ -199,11 +199,11 @@ describe("togetherView slice — upsertSharedMoment", () => {
 
 describe("togetherView slice — removeSharedMoment", () => {
   beforeEach(() => {
-    useAssistantStore.setState(freshState());
+    useTogetherStore.setState(freshState());
   });
 
   it("removes the row and decrements total", () => {
-    useAssistantStore.getState().setSharedMoments(
+    useTogetherStore.getState().setSharedMoments(
       [
         makeMoment(1, "2026-05-01T12:00:00+00:00"),
         makeMoment(2, "2026-04-01T12:00:00+00:00"),
@@ -213,22 +213,22 @@ describe("togetherView slice — removeSharedMoment", () => {
       20,
       null,
     );
-    useAssistantStore.getState().removeSharedMoment(1);
-    const tv = useAssistantStore.getState().togetherView;
+    useTogetherStore.getState().removeSharedMoment(1);
+    const tv = useTogetherStore.getState().togetherView;
     expect(tv.moments.map((m) => m.id)).toEqual([2]);
     expect(tv.total).toBe(1);
   });
 
   it("is a no-op when the moment is not on the current page", () => {
-    useAssistantStore.getState().setSharedMoments(
+    useTogetherStore.getState().setSharedMoments(
       [makeMoment(1, "2026-05-01T12:00:00+00:00")],
       5,
       0,
       20,
       null,
     );
-    useAssistantStore.getState().removeSharedMoment(999);
-    const tv = useAssistantStore.getState().togetherView;
+    useTogetherStore.getState().removeSharedMoment(999);
+    const tv = useTogetherStore.getState().togetherView;
     expect(tv.moments).toHaveLength(1);
     expect(tv.total).toBe(5);
   });
@@ -236,11 +236,11 @@ describe("togetherView slice — removeSharedMoment", () => {
 
 describe("togetherView slice — setRelationshipAxes", () => {
   beforeEach(() => {
-    useAssistantStore.setState(freshState());
+    useTogetherStore.setState(freshState());
   });
 
   it("updates the axes inside the summary", () => {
-    useAssistantStore.getState().setTogetherSummary(makeSummary());
+    useTogetherStore.getState().setTogetherSummary(makeSummary());
     const next: RelationshipAxes = {
       user_id: "jacob",
       closeness: 0.9,
@@ -249,9 +249,9 @@ describe("togetherView slice — setRelationshipAxes", () => {
       comfort: 0.6,
       updated_at: "2026-05-28T00:00:00+00:00",
     };
-    useAssistantStore.getState().setRelationshipAxes(next);
+    useTogetherStore.getState().setRelationshipAxes(next);
     expect(
-      useAssistantStore.getState().togetherView.summary?.axes,
+      useTogetherStore.getState().togetherView.summary?.axes,
     ).toEqual(next);
   });
 
@@ -264,8 +264,8 @@ describe("togetherView slice — setRelationshipAxes", () => {
       comfort: 0.6,
       updated_at: "2026-05-28T00:00:00+00:00",
     };
-    useAssistantStore.getState().setRelationshipAxes(next);
-    expect(useAssistantStore.getState().togetherView.summary).toBeNull();
+    useTogetherStore.getState().setRelationshipAxes(next);
+    expect(useTogetherStore.getState().togetherView.summary).toBeNull();
   });
 });
 
