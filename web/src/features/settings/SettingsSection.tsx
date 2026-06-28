@@ -5,8 +5,13 @@ import type { ReactNode } from "react";
  * monolithic SettingsDrawer.tsx during the file-size refactor
  * (see AGENTS.md "File size guidance"). Every settings tab uses
  * these so they live in one place at the root of the
- * `web/src/components/settings/` folder.
+ * `web/src/features/settings/` folder.
  */
+
+// Re-exported from the shared lib so the Memory-tab panels keep their
+// existing ``import { formatRelative } from "../SettingsSection"`` while
+// the single implementation lives in one place.
+export { formatRelative } from "@/lib/time";
 
 export function Section({
   title,
@@ -38,21 +43,4 @@ export function Row({
       <span className="font-mono text-ink-100/80">{value}</span>
     </div>
   );
-}
-
-/**
- * Compact "X seconds/minutes/hours/days ago" formatter used by
- * the Memory-tab status panels (BeliefsPanel, FactCheckerStatusFooter,
- * CuriositySeedsPanel). `null` / unparseable input renders as
- * "never" so call sites don't need to guard.
- */
-export function formatRelative(iso: string | null): string {
-  if (!iso) return "never";
-  const t = Date.parse(iso);
-  if (!Number.isFinite(t)) return "never";
-  const delta = Math.max(0, (Date.now() - t) / 1000);
-  if (delta < 60) return `${Math.round(delta)}s ago`;
-  if (delta < 3600) return `${Math.round(delta / 60)}m ago`;
-  if (delta < 86400) return `${Math.round(delta / 3600)}h ago`;
-  return `${Math.round(delta / 86400)}d ago`;
 }
